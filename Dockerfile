@@ -8,7 +8,7 @@ RUN mkdir -p /usr/src/app
 WORKDIR /usr/src/app
 COPY music_assistant /usr/src/app
 RUN chmod a+x /usr/src/app/main.py
-RUN pip install --upgrade requirements.txt
+RUN pip install --upgrade -r requirements.txt
 
 VOLUME ["/data"]
 

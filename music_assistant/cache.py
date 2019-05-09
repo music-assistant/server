@@ -20,8 +20,9 @@ class Cache(object):
     _busy_tasks = []
     _database = None
 
-    def __init__(self):
+    def __init__(self, datapath):
         '''Initialize our caching class'''
+        self._datapath = datapath
         asyncio.ensure_future(self._do_cleanup())
         LOGGER.debug("Initialized")
 
@@ -132,7 +133,7 @@ class Cache(object):
 
     def _get_database(self):
         '''get reference to our sqllite _database - performs basic integrity check'''
-        dbfile = "/tmp/simplecache.db"
+        dbfile = os.path.join(self._datapath, "simplecache.db")
         try:
             connection = sqlite3.connect(dbfile, timeout=30, isolation_level=None)
             connection.execute('SELECT * FROM simplecache LIMIT 1')

@@ -154,6 +154,8 @@ class Music():
             prov_item_id = prov_mapping['item_id']
             prov_obj = self.providers[prov_id]
             items += await prov_obj.album_tracks(prov_item_id)
+            if items:
+                break # no need to pull in dups
         items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
         return items
 
@@ -166,6 +168,8 @@ class Music():
             prov_item_id = prov_mapping['item_id']
             prov_obj = self.providers[prov_id]
             items += await prov_obj.playlist_tracks(prov_item_id, offset=offset, limit=limit)
+            if items:
+                break
         items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
         return items
 

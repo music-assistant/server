@@ -37,11 +37,11 @@ class Main():
         signal.signal(signal.SIGTERM, self.stop)
 
         # init database and metadata modules
-        self.db = Database(self.event_loop)
+        self.db = Database(datapath, self.event_loop)
         # allow some time for the database to initialize
         while not self.db.db_ready:
             time.sleep(0.5) 
-        self.cache = Cache()
+        self.cache = Cache(datapath)
         self.metadata = MetaData(self.event_loop, self.db, self.cache)
         self.music = Music(self)
         self.player = Player(self)

@@ -8,13 +8,11 @@ from models import MediaType, Artist, Album, Track, Playlist
 from typing import List
 import aiosqlite
 
-DBFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),"database.db")
-
 class Database():
 
-    def __init__(self, event_loop, dbfile=DBFILE):
+    def __init__(self, datapath, event_loop):
         self.event_loop = event_loop
-        self.dbfile = dbfile
+        self.dbfile = os.path.join(datapath, "database.db")
         self.db_ready = False
         event_loop.run_until_complete(self.__init_database())
 

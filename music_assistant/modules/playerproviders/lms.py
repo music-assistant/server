@@ -33,7 +33,7 @@ def setup(mass):
 def config_entries():
     ''' get the config entries for this provider (list with key/value pairs)'''
     return [
-        (CONF_ENABLED, True, CONF_ENABLED),
+        (CONF_ENABLED, False, CONF_ENABLED),
         (CONF_HOSTNAME, 'localhost', CONF_HOSTNAME), 
         (CONF_PORT, 9000, CONF_PORT)
         ]

@@ -6,3 +6,5 @@ uvloop
 slugify
 asyncio_throttle
 aiocometd
+aiosqlite
+pytaglib
