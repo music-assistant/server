@@ -1,0 +1,14 @@
+{
+  "name": "Music Assistant",
+  "version": "0.0.1",
+  "description": "Media library manager for (streaming) media",
+  "slug": "music_assistant",
+  "startup": "application",
+  "boot": "auto",
+  "map": [],
+  "host_network": true,
+  "options": {
+  },
+  "schema": {
+  }
+}

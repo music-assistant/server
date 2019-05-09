@@ -1,0 +1,5 @@
+
+.DS_Store
+*.db
+*.pyc
+music_assistant/config.json

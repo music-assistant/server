@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+
+    <head>
+        <meta charset="utf-8" />
+        <title>Music Assistant</title>
+        <link href="https://fonts.googleapis.com/css?family=Roboto:100,300,400,500,700,900|Material+Icons" rel="stylesheet">
+        <link href="https://cdn.jsdelivr.net/npm/vuetify/dist/vuetify.min.css" rel="stylesheet">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, minimal-ui">
+        <link rel="icon" href="./images/icons/icon-128x128.png">
+        <link rel="manifest" href="./manifest.json">
+        <link rel="apple-touch-icon" sizes="180x180" href="./images/icons/icon-192x192.png">
+        <link href="./css/site.css" rel="stylesheet">
+    </head>
+
+    <body>
+
+        <div id="app">
+            <v-app light>
+                <v-content>
+                    <headermenu></headermenu>
+                    <player></player>
+                    <router-view :key="$route.path"></router-view>
+                </v-content>
+                <v-dialog
+                    v-model="$globals.loading"
+                    persistent
+                    width="300"
+                    >
+                    <v-card
+                        color="primary"
+                        dark
+                    >
+                        <v-card-text>
+                        Please stand by
+                        <v-progress-linear
+                            indeterminate
+                            color="white"
+                            class="mb-0"
+                        ></v-progress-linear>
+                        </v-card-text>
+                    </v-card>
+                </v-dialog>
+                
+            </v-app>
+        </div>
+
+
+        <script src="https://cdn.jsdelivr.net/npm/vue@2.6.10/dist/vue.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vuetify/dist/vuetify.js"></script>
+        <script src="https://unpkg.com/vue-router/dist/vue-router.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.10/lodash.min.js"></script>
+        <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/moment@2.20.1/moment.min.js"></script>
+        <script src="https://unpkg.com/vee-validate@2.0.0-rc.25/dist/vee-validate.js"></script>
+        <script src="https://unpkg.com/http-vue-loader"></script>
+
+        <script>
+            function isMobile() {
+                return document.body.clientWidth < 800;
+            }
+            function showPlayMenu (item) {
+                this.$globals.playmenuitem = item;
+                this.$globals.showplaymenu = !this.$globals.showplaymenu;
+                }
+
+            function clickItem (item) {
+                var endpoint = "";
+                if (item.media_type == 1)
+                    endpoint = "/artists/"
+                else if (item.media_type == 2)
+                    endpoint = "/albums/"
+                else if (item.media_type == 3)
+                    {
+                    this.showPlayMenu(item);
+                    return;
+                    }
+                else if (item.media_type == 4)
+                    endpoint = "/playlists/"
+                item_id = item.item_id.toString();
+                var url = endpoint + item_id;
+                router.push({ path: url});
+            }
+
+            String.prototype.formatDuration = function () {
+                var sec_num = parseInt(this, 10); // don't forget the second param
+                var hours   = Math.floor(sec_num / 3600);
+                var minutes = Math.floor((sec_num - (hours * 3600)) / 60);
+                var seconds = sec_num - (hours * 3600) - (minutes * 60);
+
+                if (hours   < 10) {hours   = "0"+hours;}
+                if (minutes < 10) {minutes = "0"+minutes;}
+                if (seconds < 10) {seconds = "0"+seconds;}
+                if (hours == '00')
+                    return minutes+':'+seconds;
+                else
+                    return hours+':'+minutes+':'+seconds;
+            }
+            function toggleLibrary (item) {
+                var endpoint = "/api/" + item.media_type + "/";
+                item_id = item.item_id.toString();
+                var action = "/remove"
+                if (item.in_library.length == 0)
+                    action = "/add"
+                var url = endpoint + item_id + action;
+                console.log('loading ' + url);
+                axios
+                    .get(url)
+                    .then(result => {
+                        data = result.data;
+                        console.log(data);
+                        if (action == "/remove")
+                            item.in_library = []
+                        else
+                        item.in_library = [provider]
+                        })
+                    .catch(error => {
+                        console.log("error", error);
+                    });
+
+            };
+        </script>
+
+        <!-- Vue Pages and Components here -->
+        <script src='./pages/home.vue.js'></script>
+        <script src='./pages/browse.vue.js'></script>
+
+        <script src='./pages/artistdetails.vue.js'></script>
+        <script src='./pages/albumdetails.vue.js'></script>
+        <script src='./pages/trackdetails.vue.js'></script>
+        <script src='./pages/playlistdetails.vue.js'></script>
+        <script src='./pages/search.vue.js'></script>
+        <script src='./pages/queue.vue.js'></script>
+        
+
+        <script src='./components/headermenu.vue.js'></script>
+        <script src='./components/player.vue.js'></script>
+        <script src='./components/listviewItem.vue.js'></script>
+        <script src='./components/readmore.vue.js'></script>
+        <script src='./components/playmenu.vue.js'></script>
+        <script src='./components/volumecontrol.vue.js'></script>
+        <script src='./components/infoheader.vue.js'></script>
+        <script src='./components/qualityicon.vue.js'></script>
+        <script src='./pages/config.vue.js'></script>
+        
+        <script>
+        Vue.use(VueRouter);
+        Vue.use(VeeValidate);
+        Vue.use(Vuetify);
+
+
+        const routes = [
+            {
+            path: '/',
+            component: home
+            },
+            {
+                path: '/config',
+                component: Config,
+            },
+            {
+                path: '/queue/:player_id',
+                component: Queue,
+                props: route => ({ ...route.params, ...route.query })
+            },
+            {
+                path: '/artists/:media_id',
+                component: ArtistDetails,
+                props: route => ({ ...route.params, ...route.query })
+            },
+            {
+                path: '/albums/:media_id',
+                component: AlbumDetails,
+                props: route => ({ ...route.params, ...route.query })
+            },
+            {
+                path: '/tracks/:media_id',
+                component: TrackDetails,
+                props: route => ({ ...route.params, ...route.query })
+            },
+            {
+                path: '/playlists/:media_id',
+                component: PlaylistDetails,
+                props: route => ({ ...route.params, ...route.query })
+            },
+            {
+                path: '/search',
+                component: Search,
+                props: route => ({ ...route.params, ...route.query })
+            },
+            {
+                path: '/:mediatype',
+                component: Browse,
+                props: route => ({ ...route.params, ...route.query })
+            },
+        ]
+
+        let router = new VueRouter({
+            //mode: 'history',
+            routes // short for `routes: routes`
+        })
+
+        router.beforeEach((to, from, next) => {
+            next()
+        })
+
+        const globalStore = new Vue({
+            data: {
+                windowtitle: 'Home',
+                loading: false,
+                showplaymenu: false,
+                playmenuitem: null
+            }
+        })
+        Vue.prototype.$globals = globalStore;
+        Vue.prototype.isMobile = isMobile;
+        Vue.prototype.toggleLibrary = toggleLibrary;
+        Vue.prototype.showPlayMenu = showPlayMenu;
+        Vue.prototype.clickItem= clickItem;
+
+        var app = new Vue({
+            el: '#app',
+            watch: {},
+            mounted() {
+
+            },
+            data: { },
+            methods: {},
+            router
+        })
+    </script>
+    </body>
+
+</html>
