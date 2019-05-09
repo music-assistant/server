@@ -12,7 +12,6 @@ import shutil
 import slugify as unicode_slug
 import uuid
 import json
-import pkgutil
 import time
 
 from database import Database

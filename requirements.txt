@@ -2,3 +2,7 @@ cytoolz
 aiohttp
 spotify_token
 pychromecast
+uvloop
+slugify
+asyncio_throttle
+aiocometd
