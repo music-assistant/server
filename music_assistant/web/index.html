@@ -79,7 +79,7 @@
                     endpoint = "/playlists/"
                 item_id = item.item_id.toString();
                 var url = endpoint + item_id;
-                router.push({ path: url});
+                router.push({ path: url, params: {provider: item.provider}});
             }
 
             String.prototype.formatDuration = function () {

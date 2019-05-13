@@ -38,7 +38,7 @@ class Database():
             await db.execute('CREATE TABLE IF NOT EXISTS metadata(item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, key TEXT NOT NULL, value TEXT, UNIQUE(item_id, media_type, key));')
             await db.execute('CREATE TABLE IF NOT EXISTS external_ids(item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, key TEXT NOT NULL, value TEXT, UNIQUE(item_id, media_type, key, value));')
             
-            await db.execute('CREATE TABLE IF NOT EXISTS playlists(playlist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, owner TEXT NOT NULL, UNIQUE(name, owner));')
+            await db.execute('CREATE TABLE IF NOT EXISTS playlists(playlist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, owner TEXT NOT NULL, is_editable BOOLEAN NOT NULL, UNIQUE(name, owner));')
             await db.execute('CREATE TABLE IF NOT EXISTS playlist_tracks(playlist_id INTEGER NOT NULL, track_id INTEGER NOT NULL, position INTEGER, UNIQUE(playlist_id, track_id));')
             
             await db.commit()
@@ -100,13 +100,66 @@ class Database():
             sql_query = ' WHERE track_id in (SELECT item_id FROM library_items WHERE media_type = %d)' % MediaType.Track
         return await self.tracks(sql_query, limit=limit, offset=offset, orderby=orderby)
     
-    async def library_playlists(self, provider=None, limit=100000, offset=0, orderby='name') -> List[Playlist]:
-        ''' get all library playlists, optionally filtered by provider'''
-        if provider != None:
-            sql_query = ' WHERE playlist_id in (SELECT item_id FROM library_items WHERE provider = "%s" AND media_type = %d)' % (provider,MediaType.Playlist)
-        else:
-            sql_query = ' WHERE playlist_id in (SELECT item_id FROM library_items WHERE media_type = %d)' % MediaType.Playlist
-        return await self.playlists(sql_query, limit=limit, offset=offset, orderby=orderby)
+    async def playlists(self, filter_query=None, provider=None, limit=100000, offset=0, orderby='name') -> List[Playlist]:
+        ''' fetch all playlist records from table'''
+        playlists = []
+        sql_query = 'SELECT * FROM playlists'
+        if filter_query:
+            sql_query += filter_query
+        elif provider != None:
+            sql_query += ' WHERE playlist_id in (SELECT item_id FROM provider_mappings WHERE provider = "%s" AND media_type = %d)' % (provider,MediaType.Playlist)
+        sql_query += ' ORDER BY %s' % orderby
+        if limit:
+            sql_query += ' LIMIT %d OFFSET %d' %(limit, offset)
+        async with aiosqlite.connect(self.dbfile) as db:
+            async with db.execute(sql_query) as cursor:
+                db_rows = await cursor.fetchall()
+            for db_row in db_rows:
+                playlist = Playlist()
+                playlist.item_id = db_row[0]
+                playlist.name = db_row[1]
+                playlist.owner = db_row[2]
+                playlist.is_editable = db_row[3]
+                playlist.metadata = await self.__get_metadata(playlist.item_id, MediaType.Playlist, db)
+                playlist.provider_ids = await self.__get_prov_ids(playlist.item_id, MediaType.Playlist, db)
+                playlist.in_library = await self.__get_library_providers(playlist.item_id, MediaType.Playlist, db)
+                playlists.append(playlist)
+        return playlists
+
+    async def playlist(self, playlist_id:int) -> Playlist:
+        ''' get playlist record by id '''
+        playlist_id = try_parse_int(playlist_id)
+        playlists = await self.playlists(' WHERE playlist_id = %s' % playlist_id)
+        if not playlists:
+            return None
+        return playlists[0]
+
+    async def add_playlist(self, playlist:Playlist):
+        ''' add a new playlist record into table'''
+        assert(playlist.name)
+        async with aiosqlite.connect(self.dbfile, timeout=20) as db:
+            async with db.execute('SELECT (playlist_id) FROM playlists WHERE name=? AND owner=?;', (playlist.name, playlist.owner)) as cursor:
+                result = await cursor.fetchone()
+                if result:
+                    playlist_id = result[0]
+                    # update existing
+                    sql_query = 'UPDATE playlists SET is_editable=? WHERE playlist_id=?;'
+                    await db.execute(sql_query, (playlist.is_editable, playlist_id))
+                else:
+                    # insert playlist
+                    sql_query = 'INSERT OR REPLACE INTO playlists (name, owner, is_editable) VALUES(?,?,?);'
+                    await db.execute(sql_query, (playlist.name, playlist.owner, playlist.is_editable))
+                    # get id from newly created item (the safe way)
+                    async with db.execute('SELECT (playlist_id) FROM playlists WHERE name=? AND owner=?;', (playlist.name,playlist.owner)) as cursor:
+                        playlist_id = await cursor.fetchone()
+                        playlist_id = playlist_id[0]
+                    LOGGER.info('added playlist %s to database: %s' %(playlist.name, playlist_id))
+            # add/update metadata
+            await self.__add_prov_ids(playlist_id, MediaType.Playlist, playlist.provider_ids, db)
+            await self.__add_metadata(playlist_id, MediaType.Playlist, playlist.metadata, db)
+            # save
+            await db.commit()
+        return playlist_id
 
     async def add_to_library(self, item_id:int, media_type:MediaType, provider:str):
         ''' add an item to the library (item must already be present in the db!) '''
@@ -195,7 +248,7 @@ class Database():
             await self.__add_external_ids(artist_id, MediaType.Artist, artist.external_ids, db)
             # save
             await db.commit()
-        LOGGER.debug('added artist %s (%s) to database: %s' %(artist.name, artist.provider_ids, artist_id))
+        LOGGER.info('added artist %s (%s) to database: %s' %(artist.name, artist.provider_ids, artist_id))
         return artist_id
     
     async def albums(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=False) -> List[Album]:
@@ -273,7 +326,7 @@ class Database():
             await self.__add_external_ids(album_id, MediaType.Album, album.external_ids, db)
             # save
             await db.commit()
-        LOGGER.debug('added album %s (%s) to database: %s' %(album.name, album.provider_ids, album_id))
+        LOGGER.info('added album %s (%s) to database: %s' %(album.name, album.provider_ids, album_id))
         return album_id
 
     async def tracks(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=False) -> List[Track]:
@@ -354,58 +407,8 @@ class Database():
             await self.__add_external_ids(track_id, MediaType.Track, track.external_ids, db)
             # save to db
             await db.commit()
-        LOGGER.debug('added track %s (%s) to database: %s' %(track.name, track.provider_ids, track_id))
+        LOGGER.info('added track %s (%s) to database: %s' %(track.name, track.provider_ids, track_id))
         return track_id
-
-    async def playlists(self, filter_query=None, limit=100000, offset=0, orderby='name') -> List[Playlist]:
-        ''' fetch all playlist records from table'''
-        playlists = []
-        sql_query = 'SELECT * FROM playlists'
-        if filter_query:
-            sql_query += ' ' + filter_query
-        sql_query += ' ORDER BY %s' % orderby
-        if limit:
-            sql_query += ' LIMIT %d OFFSET %d' %(limit, offset)
-        async with aiosqlite.connect(self.dbfile) as db:
-            async with db.execute(sql_query) as cursor:
-                db_rows = await cursor.fetchall()
-            for db_row in db_rows:
-                playlist = Playlist()
-                playlist.item_id = db_row[0]
-                playlist.name = db_row[1]
-                playlist.owner = db_row[2]
-                playlist.metadata = await self.__get_metadata(playlist.item_id, MediaType.Playlist, db)
-                playlist.provider_ids = await self.__get_prov_ids(playlist.item_id, MediaType.Playlist, db)
-                playlist.in_library = await self.__get_library_providers(playlist.item_id, MediaType.Playlist, db)
-                playlists.append(playlist)
-        return playlists
-
-    async def playlist(self, playlist_id:int) -> Playlist:
-        ''' get playlist record by id '''
-        playlist_id = try_parse_int(playlist_id)
-        playlists = await self.playlists('WHERE playlist_id = %s' % playlist_id)
-        if not playlists:
-            return None
-        return playlists[0]
-
-    async def add_playlist(self, playlist:Playlist):
-        ''' add a new playlist record into table'''
-        assert(playlist.name)
-        async with aiosqlite.connect(self.dbfile, timeout=20) as db:
-            # insert playlist
-            sql_query = 'INSERT OR IGNORE INTO playlists (name, owner) VALUES(?,?);'
-            await db.execute(sql_query, (playlist.name, playlist.owner))
-            # get id from newly created item (the safe way)
-            async with db.execute('SELECT (playlist_id) FROM playlists WHERE name=? AND owner=?;', (playlist.name,playlist.owner)) as cursor:
-                playlist_id = await cursor.fetchone()
-                playlist_id = playlist_id[0]
-            # add metadata
-            await self.__add_prov_ids(playlist_id, MediaType.Playlist, playlist.provider_ids, db)
-            await self.__add_metadata(playlist_id, MediaType.Playlist, playlist.metadata, db)
-            # save
-            await db.commit()
-        LOGGER.debug('added playlist %s to database: %s' %(playlist.name, playlist_id))
-        return playlist_id
 
     async def artist_tracks(self, artist_id, limit=1000000, offset=0, orderby='name') -> List[Track]:
         ''' get all library tracks for the given artist '''

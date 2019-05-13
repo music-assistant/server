@@ -8,3 +8,4 @@ asyncio_throttle
 aiocometd
 aiosqlite
 pytaglib
+python-slugify

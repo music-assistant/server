@@ -3,14 +3,17 @@
 
 import asyncio
 import os
-from utils import run_periodic, LOGGER, try_parse_int
+from utils import run_periodic, LOGGER, try_parse_int, try_parse_float
 import aiohttp
 from difflib import SequenceMatcher as Matcher
 from models import MediaType, PlayerState, MusicPlayer
 from typing import List
 import toolz
 import operator
-
+import socket
+import random
+from copy import deepcopy
+import functools
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODULES_PATH = os.path.join(BASE_DIR, "modules", "playerproviders" )
@@ -37,33 +40,46 @@ class Player():
 
     async def player_command(self, player_id, cmd, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
-        if not player_id in self._players:
-            LOGGER.warning('Player %s not found' % player_id)
-            return False
         player = self._players[player_id]
+        player_settings = await self.get_player_config(player)
+        # handle some common workarounds
+        if cmd in ['pause', 'play'] and cmd_args == 'toggle':
+            cmd = 'pause' if player.state == PlayerState.Playing else 'play'
+        if cmd == 'volume' and cmd_args == 'up':
+            cmd_args = try_parse_int(cmd_args) + 2
+        elif cmd == 'volume' and cmd_args == 'down':
+            cmd_args = try_parse_int(cmd_args) - 2
         if player.group_parent and cmd not in ['power', 'volume', 'mute']:
             # redirect playlist related commands to parent player
             return await self.player_command(player.group_parent, cmd, cmd_args)
+        # handle hass integration
+        if self.mass.hass:
+            if cmd == 'power' and cmd_args == 'on' and player_settings.get('hass_power_entity') and player_settings.get('hass_power_entity_source'):
+                service_data = { 'entity_id': player_settings['hass_power_entity'], 'source':player_settings['hass_power_entity_source'] }
+                await self.mass.hass.call_service('media_player', 'select_source', service_data)
+            elif cmd == 'power' and player_settings.get('hass_power_entity'):
+                domain = player_settings['hass_power_entity'].split('.')[0]
+                service_data = { 'entity_id': player_settings['hass_power_entity']}
+                await self.mass.hass.call_service(domain, 'turn_%s' % cmd_args, service_data)
+            if cmd == 'volume' and player_settings.get('hass_volume_entity'):
+                service_data = { 'entity_id': player_settings['hass_power_entity'], 'volume_level': int(cmd_args)/100}
+                await self.mass.hass.call_service('media_player', 'volume_set', service_data)
+                cmd_args = 100 # just force full volume on actual player if volume is outsourced to hass
         if cmd == 'power' and player.mute_as_power:
             cmd = 'mute'
             cmd_args = 'on' if cmd_args == 'off' else 'off' # invert logic (power ON is mute OFF)
-        if cmd == 'volume' and player.apply_group_volume:
+        player_childs = [item for item in self._players.values() if item.group_parent == player_id]
+        is_group = len(player_childs) > 0
+        if is_group and cmd == 'volume' and player.apply_group_volume:
             # group volume, apply to childs (if any)
             cur_volume = player.volume_level
-            if cmd_args == 'up':
-                new_volume = cur_volume + 2
-            elif cmd_args == 'down':
-                new_volume = cur_volume - 2
-            else:
-                new_volume = try_parse_int(cmd_args)
+            new_volume = try_parse_int(cmd_args)
             if new_volume < cur_volume:
                 volume_dif = new_volume - cur_volume
             else:
                 volume_dif = cur_volume - new_volume
-            for child_player in await self.players():
-                if child_player.group_parent == player_id:
-                    LOGGER.debug("%s - %s - %s" % (child_player.name, child_player.state, child_player.muted))
-                if child_player.group_parent == player_id and child_player.state != PlayerState.Off:
+            for child_player in player_childs:
+                if child_player.enabled and child_player.powered:
                     cur_child_volume = child_player.volume_level
                     new_child_volume = cur_child_volume + volume_dif
                     LOGGER.debug('apply group volume %s to child %s' %(new_child_volume, child_player.name))
@@ -80,13 +96,19 @@ class Player():
         self._players.pop(player_id, None)
         asyncio.ensure_future(self.mass.event('player removed', player_id))
 
+    async def trigger_update(self, player_id):
+        ''' manually trigger update for a player '''
+        await self.update_player(self._players[player_id])
+    
     async def update_player(self, player_details):
         ''' update (or add) player '''
+        player_details = deepcopy(player_details)
         LOGGER.debug('Incoming msg from %s' % player_details.name)
         player_id = player_details.player_id
         player_settings = await self.get_player_config(player_details)
         player_changed = False
         if not player_id in self._players:
+            # first message from player
             self._players[player_id] = MusicPlayer()
             player = self._players[player_id]
             player.player_id = player_id
@@ -101,6 +123,27 @@ class Player():
         player_details.disable_volume = player_settings['disable_volume']
         player_details.mute_as_power = player_settings['mute_as_power']
         player_details.apply_group_volume = player_settings['apply_group_volume']
+
+        # handle hass integration
+        if self.mass.hass:
+            if player_settings.get('hass_power_entity') and player_settings.get('hass_power_entity_source'):
+                hass_state = await self.mass.hass.get_state(
+                        player_settings['hass_power_entity'],
+                        attribute='source',
+                        register_listener=functools.partial(self.trigger_update, player_id))
+                player_details.powered = hass_state == player_settings['hass_power_entity_source']
+            elif player_settings.get('hass_power_entity'):
+                hass_state = await self.mass.hass.get_state(
+                        player_settings['hass_power_entity'],
+                        attribute='state',
+                        register_listener=functools.partial(self.trigger_update, player_id))
+                player_details.powered = hass_state != 'off'
+            if player_settings.get('hass_volume_entity'):
+                hass_state = await self.mass.hass.get_state(
+                        player_settings['hass_volume_entity'], 
+                        attribute='volume_level',
+                        register_listener=functools.partial(self.trigger_update, player_id))
+                player_details.volume_level = int(try_parse_float(hass_state)*100)
         
         # handle mute as power setting
         if player_details.mute_as_power:
@@ -110,15 +153,17 @@ class Player():
             player_details.group_parent = player_settings['group_parent']
         if player_details.group_parent and player_details.group_parent in self._players:
             parent_player = self._players[player_details.group_parent]
-            if player_details.powered and player_details.state != PlayerState.Playing:
-                player_details.cur_item_time = parent_player.cur_item_time
-                player_details.cur_item = parent_player.cur_item
+            player_details.cur_item_time = parent_player.cur_item_time
+            player_details.cur_item = parent_player.cur_item
+            player_details.state = parent_player.state
         # handle group volume setting
+        player_childs = [item for item in self._players.values() if item.group_parent == player_id]
+        player_details.is_group = len(player_childs) > 0
         if player_details.is_group and player_details.apply_group_volume:
             group_volume = 0
             active_players = 0
-            for child_player in self._players.values():
-                if child_player.group_parent == player_id and child_player.enabled and child_player.powered:
+            for child_player in player_childs:
+                if child_player.enabled and child_player.powered:
                     group_volume += child_player.volume_level
                     active_players += 1
             group_volume = group_volume / active_players if active_players else 0
@@ -133,6 +178,8 @@ class Player():
         if player_changed:
             # player is added or updated!
             asyncio.ensure_future(self.mass.event('player updated', player))
+            for child in player_childs:
+                asyncio.create_task(self.trigger_update(child.player_id))
 
     async def get_player_config(self, player_details):
         ''' get or create player config '''
@@ -155,80 +202,70 @@ class Player():
             play media on a player 
             player_id: id of the player
             media_item: media item that should be played (Track, Album, Artist, Playlist)
-            queue_opt: replace, next or add
+            queue_opt: play, replace, next or add
         '''
         if not player_id in self._players:
             LOGGER.warning('Player %s not found' % player_id)
             return False
-        prov_id = self._players[player_id].player_provider
-        prov = self.providers[prov_id]
-        # check supported music providers by this player and work out how to handle playback...
-        musicprovider = None
-        item_id = None
-        for prov_id, supported_types in prov.supported_musicproviders:
-            if media_item.provider_ids.get(prov_id):
-                musicprovider = prov_id
-                prov_item_id = media_item.provider_ids[prov_id]
-                if media_item.media_type in supported_types:
-                    # the provider can handle this media_type directly !
-                    uri = await self.get_item_uri(media_item.media_type, prov_item_id, prov_id)
-                    return await prov.play_media(player_id, uri, queue_opt)
-                else:
-                    # manually enqueue the tracks of this listing
-                    return await self.queue_items(player_id, media_item, queue_opt)
-            elif prov_id == 'http':
-                # fallback to http streaming
-                if media_item.media_type == MediaType.Track:
-                    for media_prov_id, media_prov_item_id in media_item.provider_ids.items():
-                        stream_details = await self.mass.music.providers[media_prov_id].get_stream_details(media_prov_item_id)
-                        return await prov.play_media(player_id, stream_details['url'], queue_opt)
-                else:
-                    return await self.queue_items(player_id, media_item, queue_opt)
-        raise Exception("Musicprovider %s and/or mediatype %s not supported by player %s !" % ("/".join(media_item.provider_ids.keys()), media_item.media_type, player_id) )
-
-    async def queue_items(self, player_id, media_item, queue_opt):
-        ''' extract a list of items and manually enqueue the tracks '''
-        tracks = []
-        #TODO: respect shuffle
+        player_prov = self.providers[self._players[player_id].player_provider]
+        # collect tracks to play
         if media_item.media_type == MediaType.Artist:
-            tracks = await self.mass.music.artist_toptracks(media_item.item_id)
+            tracks = await self.mass.music.artist_toptracks(media_item.item_id, provider=media_item.provider)
         elif media_item.media_type == MediaType.Album:
-            tracks = await self.mass.music.album_tracks(media_item.item_id)
+            tracks = await self.mass.music.album_tracks(media_item.item_id, provider=media_item.provider)
         elif media_item.media_type == MediaType.Playlist:
-            tracks = await self.mass.music.playlist_tracks(media_item.item_id, offset=0, limit=0)
-        if queue_opt == 'replace':
-            await self.play_media(player_id, tracks[0], 'replace')
-            tracks = tracks[1:]
-            queue_opt = 'add'
+            tracks = await self.mass.music.playlist_tracks(media_item.item_id, provider=media_item.provider, offset=0, limit=0) 
+        else:
+            tracks = [media_item] # single track
+        # check supported music providers by this player and work out how to handle playback...
+        playable_tracks = []
         for track in tracks:
-            await self.play_media(player_id, track, queue_opt)
+            # sort by quality
+            match_found = False
+            for prov_media in sorted(track.provider_ids, key=operator.itemgetter('quality'), reverse=True):
+                media_provider = prov_media['provider']
+                media_item_id = prov_media['item_id']
+                player_supported_provs = player_prov.supported_musicproviders
+                if media_provider in player_supported_provs:
+                    # the provider can handle this media_type directly !
+                    track.uri = await self.get_track_uri(media_item_id, media_provider)
+                    playable_tracks.append(track)
+                    match_found = True
+                elif 'http' in player_prov.supported_musicproviders:
+                    # fallback to http streaming if supported
+                    track.uri = await self.get_track_uri(media_item_id, media_provider, True)
+                    playable_tracks.append(track)
+                    match_found = True
+                if match_found:
+                    break
+        if playable_tracks:
+            if self._players[player_id].shuffle_enabled:
+                random.shuffle(playable_tracks)
+            if queue_opt in ['next', 'play'] and len(playable_tracks) > 1:
+                queue_opt = 'replace' # always assume playback of multiple items as new queue
+            return await player_prov.play_media(player_id, playable_tracks, queue_opt)
+        else:
+            raise Exception("Musicprovider %s and/or mediatype %s not supported by player %s !" % ("/".join(media_item.provider_ids), media_item.media_type, player_id) )
+    
+    async def get_track_uri(self, item_id, provider, http_stream=False):
+        ''' generate the URL/URI for a media item '''
+        uri = ""
+        if http_stream:
+            host = socket.gethostbyname(socket.gethostname())
+            uri = 'http://%s:8095/stream/%s/%s'% (host, provider, item_id)
+        elif provider == "spotify":
+            uri = 'spotify://spotify:track:%s' % item_id
+        elif provider == "qobuz":
+            uri = 'qobuz://%s.flac' % item_id
+        elif provider == "file":
+            uri = 'file://%s' % item_id
+        return uri
 
     async def player_queue(self, player_id, offset=0, limit=50):
         ''' return the items in the player's queue '''
         player = self._players[player_id]
         player_prov = self.providers[player.player_provider]
-        if player_prov.supports_queue:
-            return await player_prov.player_queue(player_id, offset=offset, limit=limit)
-        else:
-            # TODO: Implement 'fake' queue
-            raise NotImplementedError
-    
-    async def get_item_uri(self, media_type, item_id, provider):
-        ''' generate the URL/URI for a media item '''
-        uri = ""
-        if provider == "spotify" and media_type == MediaType.Track:
-            uri = 'spotify://spotify:track:%s' % item_id
-        elif provider == "spotify" and media_type == MediaType.Album:
-            uri = 'spotify://spotify:album:%s' % item_id
-        elif provider == "spotify" and media_type == MediaType.Artist:
-            uri = 'spotify://spotify:artist:%s' % item_id
-        elif provider == "spotify" and media_type == MediaType.Playlist:
-            uri = 'spotify://spotify:playlist:%s' % item_id
-        elif provider == "qobuz" and media_type == MediaType.Track:
-            uri = 'qobuz://%s.flac' % item_id
-        elif provider == "file":
-            uri = 'file://%s' % item_id
-        return uri
+        return await player_prov.player_queue(player_id, offset=offset, limit=limit)
 
     def load_providers(self):
         ''' dynamically load providers '''

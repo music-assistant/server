@@ -191,9 +191,19 @@ Vue.component("player", {
     },
     playItem(item, queueopt) {
       console.log('playItem: ' + item);
-      var cmd = 'players/' + this.active_player_id + '/play_media/' + item.media_type + '/' + item.item_id + '/' + queueopt;
-      console.log(cmd);
-      this.ws.send(cmd);
+      var api_url = 'api/players/' + this.active_player_id + '/play_media/' + item.media_type + '/' + item.item_id + '/' + queueopt;
+      axios
+      .get(api_url, {
+        params: {
+          provider: item.provider
+        }
+      })
+      .then(result => {
+        console.log(result.data);
+      })
+      .catch(error => {
+        console.log("error", error);
+      });
     },
     switchPlayer (new_player_id) {
       this.active_player_id = new_player_id;

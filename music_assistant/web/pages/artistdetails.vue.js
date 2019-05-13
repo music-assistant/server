@@ -75,7 +75,7 @@ var ArtistDetails = Vue.component('ArtistDetails', {
       this.$globals.loading = true;
       const api_url = '/api/artists/' + this.media_id
       axios
-        .get(api_url, { params: { lazy: lazy }})
+        .get(api_url, { params: { lazy: lazy, provider: this.provider }})
         .then(result => {
           data = result.data;
           this.info = data;

@@ -55,6 +55,7 @@ class Artist(object):
     ''' representation of an artist '''
     def __init__(self):
         self.item_id = None
+        self.provider = 'database'
         self.name = ''
         self.sort_name = ''
         self.metadata = {}
@@ -69,6 +70,7 @@ class Album(object):
     ''' representation of an album '''
     def __init__(self):
         self.item_id = None
+        self.provider = 'database'
         self.name = '' 
         self.metadata = {}
         self.version = ''
@@ -87,6 +89,7 @@ class Track(object):
     ''' representation of a track '''
     def __init__(self):
         self.item_id = None
+        self.provider = 'database'
         self.name = ''
         self.duration = 0
         self.version = ''
@@ -114,13 +117,14 @@ class Playlist(object):
     ''' representation of a playlist '''
     def __init__(self):
         self.item_id = None
+        self.provider = 'database'
         self.name = ''
         self.owner = ''
         self.provider_ids = []
         self.metadata = {}
         self.media_type = MediaType.Playlist
         self.in_library = []
-
+        self.is_editable = False
 
 class MusicProvider():
     ''' 
@@ -147,8 +151,7 @@ class MusicProvider():
             # artist not yet in local database so fetch details
             artist_details = await self.get_artist(prov_item_id)
             if not artist_details:
-                LOGGER.warning('artist not found: %s' % prov_item_id)
-                return None
+                raise Exception('artist not found: %s' % prov_item_id)
             if lazy:
                 asyncio.create_task(self.add_artist(artist_details))
                 artist_details.is_lazy = True
@@ -156,14 +159,14 @@ class MusicProvider():
             item_id = await self.add_artist(artist_details)
         return await self.mass.db.artist(item_id)
 
-    async def add_artist(self, artist_details, skip_match=False) -> int:
+    async def add_artist(self, artist_details) -> int:
         ''' add artist to local db and return the new database id'''
         musicbrainz_id = None
         for item in artist_details.external_ids:
             if item.get("musicbrainz"):
                 musicbrainz_id = item["musicbrainz"]
         if not musicbrainz_id:
-            musicbrainz_id = await self.get_artist_musicbrainz_id(artist_details, allow_fallback=not skip_match)
+            musicbrainz_id = await self.get_artist_musicbrainz_id(artist_details)
         if not musicbrainz_id:
             return
         # grab additional metadata
@@ -172,20 +175,21 @@ class MusicProvider():
             artist_details.metadata = await self.mass.metadata.get_artist_metadata(musicbrainz_id, artist_details.metadata)
         item_id = await self.mass.db.add_artist(artist_details)
         # also fetch same artist on all providers
-        if not skip_match:
-            new_artist = await self.mass.db.artist(item_id)
+        new_artist = await self.mass.db.artist(item_id)
+        new_artist_toptracks = await self.get_artist_toptracks(artist_details.item_id)
+        if new_artist_toptracks:
             item_provider_keys = [item['provider'] for item in new_artist.provider_ids]
             for prov_id, provider in self.mass.music.providers.items():
                 if not prov_id in item_provider_keys:
-                    await provider.match_artist(new_artist)
+                    await provider.match_artist(new_artist, new_artist_toptracks)
         return item_id
 
-    async def get_artist_musicbrainz_id(self, artist_details:Artist, allow_fallback=False):
+    async def get_artist_musicbrainz_id(self, artist_details:Artist):
         ''' fetch musicbrainz id by performing search with both the artist and one of it's albums or tracks '''
         musicbrainz_id = ""
         # try with album first
         lookup_albums = await self.get_artist_albums(artist_details.item_id)
-        for lookup_album in lookup_albums[:10]:
+        for lookup_album in lookup_albums[:5]:
             lookup_album_upc = None
             for item in lookup_album.external_ids:
                 if item.get("upc"):
@@ -196,21 +200,21 @@ class MusicProvider():
             if musicbrainz_id:
                 break
         # fallback to track
-        lookup_tracks = await self.get_artist_toptracks(artist_details.item_id)
-        for lookup_track in lookup_tracks[:10]:
-            lookup_track_isrc = None
-            for item in lookup_track.external_ids:
-                if item.get("isrc"):
-                    lookup_track_isrc = item["isrc"]
+        if not musicbrainz_id:
+            lookup_tracks = await self.get_artist_toptracks(artist_details.item_id)
+            for lookup_track in lookup_tracks:
+                lookup_track_isrc = None
+                for item in lookup_track.external_ids:
+                    if item.get("isrc"):
+                        lookup_track_isrc = item["isrc"]
+                        break
+                musicbrainz_id = await self.mass.metadata.get_mb_artist_id(artist_details.name, 
+                            trackname=lookup_track.name, track_isrc=lookup_track_isrc)
+                if musicbrainz_id:
                     break
-            musicbrainz_id = await self.mass.metadata.get_mb_artist_id(artist_details.name, 
-                        trackname=lookup_track.name, track_isrc=lookup_track_isrc)
-            if musicbrainz_id:
-                break
         if not musicbrainz_id:
             LOGGER.warning("Unable to get musicbrainz ID for artist %s !" % artist_details.name)
-            if allow_fallback:
-                musicbrainz_id = artist_details.name
+            musicbrainz_id = artist_details.name
         return musicbrainz_id
 
     async def album(self, prov_item_id, lazy=True) -> Album:
@@ -220,8 +224,7 @@ class MusicProvider():
             # album not yet in local database so fetch details
             album_details = await self.get_album(prov_item_id)
             if not album_details:
-                LOGGER.warning('album not found: %s' % prov_item_id)
-                return album_details
+                raise Exception('album not found: %s' % prov_item_id)
             if lazy:
                 asyncio.create_task(self.add_album(album_details))
                 album_details.is_lazy = True
@@ -229,19 +232,18 @@ class MusicProvider():
             item_id = await self.add_album(album_details)
         return await self.mass.db.album(item_id)
 
-    async def add_album(self, album_details, skip_match=False) -> int:
+    async def add_album(self, album_details) -> int:
         ''' add album to local db and return the new database id'''
         # we need to fetch album artist too
         db_album_artist = await self.artist(album_details.artist.item_id, lazy=False)
         album_details.artist = db_album_artist
         item_id = await self.mass.db.add_album(album_details)
         # also fetch same album on all providers
-        if not skip_match:
-            new_album = await self.mass.db.album(item_id)
-            item_provider_keys = [item['provider'] for item in new_album.provider_ids]
-            for prov_id, provider in self.mass.music.providers.items():
-                if not prov_id in item_provider_keys:
-                    await provider.match_album(new_album)
+        new_album = await self.mass.db.album(item_id)
+        item_provider_keys = [item['provider'] for item in new_album.provider_ids]
+        for prov_id, provider in self.mass.music.providers.items():
+            if not prov_id in item_provider_keys:
+                await provider.match_album(new_album)
         return item_id
 
     async def track(self, prov_item_id, lazy=True, track_details=None) -> Track:
@@ -252,60 +254,55 @@ class MusicProvider():
             if not track_details:
                 track_details = await self.get_track(prov_item_id)
             if not track_details:
-                LOGGER.warning('track not found: %s' % prov_item_id)
-                return None
+                raise Exception('track not found: %s' % prov_item_id)
             if lazy:
-                asyncio.ensure_future(self.add_track(track_details))
+                asyncio.create_task(self.add_track(track_details))
                 track_details.is_lazy = True
                 return track_details
             item_id = await self.add_track(track_details)
         return await self.mass.db.track(item_id)
 
-    async def add_track(self, track_details, prov_album_id=None, skip_match=False) -> int:
+    async def add_track(self, track_details, prov_album_id=None) -> int:
         ''' add track to local db and return the new database id'''
         track_artists = []
-        assert(track_details)
         # we need to fetch track artists too
         for track_artist in track_details.artists:
-            prov_item_id = track_artist.item_id
-            db_track_artist = await self.artist(prov_item_id, lazy=False)
-            assert(db_track_artist)
-            track_artists.append(db_track_artist)
+            db_track_artist = await self.artist(track_artist.item_id, lazy=False)
+            if db_track_artist:
+                track_artists.append(db_track_artist)
         track_details.artists = track_artists
         if not prov_album_id:
             prov_album_id = track_details.album.item_id
         track_details.album = await self.album(prov_album_id, lazy=False)
         item_id = await self.mass.db.add_track(track_details)
         # also fetch same track on all providers
-        if not skip_match:
-            new_track = await self.mass.db.track(item_id)
-            item_provider_keys = [item['provider'] for item in new_track.provider_ids]
-            for prov_id, provider in self.mass.music.providers.items():
-                if not prov_id in item_provider_keys:
-                    await provider.match_track(new_track)
+        new_track = await self.mass.db.track(item_id)
+        item_provider_keys = [item['provider'] for item in new_track.provider_ids]
+        for prov_id, provider in self.mass.music.providers.items():
+            if not prov_id in item_provider_keys:
+                await provider.match_track(new_track)
         return item_id
     
-    async def playlist(self, prov_item_id) -> Playlist:
+    async def playlist(self, prov_playlist_id) -> Playlist:
         ''' return playlist details for the given provider playlist id '''
-        item_id = await self.mass.db.get_database_id(self.prov_id, prov_item_id, MediaType.Playlist)
-        if item_id:
-            return await self.mass.db.playlist(item_id)
+        db_id = await self.mass.db.get_database_id(self.prov_id, prov_playlist_id, MediaType.Playlist)
+        if db_id:
+            # synced playlist, return database details
+            return await self.mass.db.playlist(db_id)
         else:
-            return await self.get_playlist(prov_item_id)
-
-    async def add_playlist(self, playlist_details) -> int:
-        ''' add playlist to local db and return the (new) database id'''
-        item_id = await self.mass.db.add_playlist(playlist_details)
-        return item_id
+            return await self.get_playlist(prov_playlist_id)
 
     async def album_tracks(self, prov_album_id) -> List[Track]:
         ''' return album tracks for the given provider album id'''
         items = []
         album = await self.get_album(prov_album_id)
         for prov_track in await self.get_album_tracks(prov_album_id):
-            prov_track.album = album
-            track = await self.track(prov_track.item_id, track_details=prov_track)
-            items.append(track)
+            db_id = await self.mass.db.get_database_id(self.prov_id, prov_track.item_id, MediaType.Track) 
+            if db_id:
+                items.append( await self.mass.db.track(db_id) )
+            else:
+                prov_track.album = album
+                items.append(prov_track)
         return items
 
     async def playlist_tracks(self, prov_playlist_id, limit=100, offset=0) -> List[Track]:
@@ -320,7 +317,6 @@ class MusicProvider():
                     items.append( await self.mass.db.track(db_id) )
                 else:
                     items.append(prov_track)
-                    asyncio.create_task(self.add_track(prov_track))
         return items
     
     async def artist_toptracks(self, prov_item_id) -> List[Track]:
@@ -332,7 +328,6 @@ class MusicProvider():
                 items.append( await self.mass.db.track(db_id) )
             else:
                 items.append(prov_track)
-                asyncio.create_task(self.add_track(prov_track))
         return items
 
     async def artist_albums(self, prov_item_id) -> List[Track]:
@@ -344,49 +339,42 @@ class MusicProvider():
                 items.append( await self.mass.db.album(db_id) )
             else:
                 items.append(prov_album)
-                asyncio.create_task(self.add_album(prov_album))
         return items
     
-    async def match_artist(self, searchartist:Artist):
+    async def match_artist(self, searchartist:Artist, searchtracks:List[Track]):
         ''' try to match artist in this provider by supplying db artist '''
-        for prov_mapping in searchartist.provider_ids:
-            if prov_mapping["provider"] == self.prov_id:
-                return # we already have a mapping on this provider
-        search_results = await self.search(searchartist.name, [MediaType.Artist], limit=2)
-        for item in search_results["artists"]:
-            if item.name.lower() == searchartist.name.lower():
-                # just lazy load this item in the database, it will be matched automagically ;-)
-                db_id = await self.mass.db.get_database_id(self.prov_id, item.item_id, MediaType.Artist)
-                if not db_id:
-                    asyncio.create_task(self.add_artist(item, skip_match=True))
+        for searchtrack in searchtracks:
+            searchstr = "%s - %s" %(searchartist.name, searchtrack.name)
+            search_results = await self.search(searchstr, [MediaType.Track], limit=5)
+            for item in search_results["tracks"]:
+                if item.name == searchtrack.name and item.version == searchtrack.version and item.album.name == searchtrack.album.name:
+                    # double safety check - artist must match exactly !
+                    for artist in item.artists:
+                        if artist.name == searchartist.name:
+                            # just load this item in the database, it will be matched automagically ;-)
+                            return await self.artist(artist.item_id, lazy=False)
 
     async def match_album(self, searchalbum:Album):
         ''' try to match album in this provider by supplying db album '''
-        for prov_mapping in searchalbum.provider_ids:
-            if prov_mapping["provider"] == self.prov_id:
-                return # we already have a mapping on this provider
         searchstr = "%s - %s %s" %(searchalbum.artist.name, searchalbum.name, searchalbum.version)
         search_results = await self.search(searchstr, [MediaType.Album], limit=5)
         for item in search_results["albums"]:
             if item.name == searchalbum.name and item.version == searchalbum.version and item.artist.name == searchalbum.artist.name:
-                # just lazy load this item in the database, it will be matched automagically ;-)
-                db_id = await self.mass.db.get_database_id(self.prov_id, item.item_id, MediaType.Album)
-                if not db_id:
-                    asyncio.create_task(self.add_album(item, skip_match=True))
+                # just load this item in the database, it will be matched automagically ;-)
+                await self.album(item.item_id, lazy=False)
 
-    async def match_track(self, searchtrack:Album):
+    async def match_track(self, searchtrack:Track):
         ''' try to match track in this provider by supplying db track '''
-        for prov_mapping in searchtrack.provider_ids:
-            if prov_mapping["provider"] == self.prov_id:
-                return # we already have a mapping on this provider
         searchstr = "%s - %s" %(searchtrack.artists[0].name, searchtrack.name)
+        searchartists = [item.name for item in searchtrack.artists]
         search_results = await self.search(searchstr, [MediaType.Track], limit=5)
         for item in search_results["tracks"]:
             if item.name == searchtrack.name and item.version == searchtrack.version and item.album.name == searchtrack.album.name:
-                # just lazy load this item in the database, it will be matched automagically ;-)
-                db_id = await self.mass.db.get_database_id(self.prov_id, item.item_id, MediaType.Track)
-                if not db_id:
-                    asyncio.create_task(self.add_track(item, skip_match=True))
+                # double safety check - artist must match exactly !
+                for artist in item.artists:
+                    if artist.name in searchartists:
+                        # just load this item in the database, it will be matched automagically ;-)
+                        await self.track(item.item_id, lazy=False)
 
     ### Provider specific implementation #####
 
@@ -406,7 +394,7 @@ class MusicProvider():
         ''' retrieve library tracks from the provider '''
         raise NotImplementedError
 
-    async def get_library_playlists(self) -> List[Playlist]:
+    async def get_playlists(self) -> List[Playlist]:
         ''' retrieve library/subscribed playlists from the provider '''
         raise NotImplementedError
 
@@ -462,7 +450,7 @@ class MusicPlayer():
         self.player_id = None
         self.player_provider = None
         self.name = ''
-        self.state = PlayerState.Off
+        self.state = PlayerState.Stopped
         self.powered = False
         self.cur_item = Track()
         self.cur_item_time = 0
@@ -486,13 +474,7 @@ class PlayerProvider():
     name = 'My great Musicplayer provider' # display name
     prov_id = 'my_provider' # used as id
     icon = ''
-    supports_queue = True # whether this provider has native support for a queue
-    supports_http_stream = True # whether we can fallback to http streaming
-    supported_musicproviders = [ # list with tuples of supported provider_id and media_types this playerprovider supports NATIVELY, order by preference/quality
-            ('qobuz', [MediaType.Track]), 
-            ('file', [MediaType.Track, MediaType.Artist, MediaType.Album, MediaType.Playlist]),
-            ('spotify', [MediaType.Track, MediaType.Artist, MediaType.Album, MediaType.Playlist])
-        ]
+    supported_musicproviders = ['qobuz', 'file', 'spotify', 'http'] # list of supported music provider uri's this playerprovider supports NATIVELY
     
     def __init__(self, mass):
         self.mass = mass
@@ -500,17 +482,17 @@ class PlayerProvider():
     ### Common methods and properties ####
 
 
-    async def play_media(self, player_id, uri, queue_opt='play'):
+    async def play_media(self, player_id, media_items:List[Track], queue_opt='play'):
         ''' 
             play media on a player
             params:
             - player_id: id of the player
-            - uri: the uri for/to the media item (e.g. spotify:track:1234 or http://pathtostream)
+            - media_items: List of Tracks to play, each Track will contain uri attribute (e.g. spotify:track:1234 or http://pathtostream)
             - queue_opt: 
                 replace: replace whatever is currently playing with this media
                 next: the given media will be played after the currently playing track
                 add: add to the end of the queue
-                play: keep existing queue but play the given item now
+                play: keep existing queue but play the given item(s) now first
         '''
         raise NotImplementedError
 

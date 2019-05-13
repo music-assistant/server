@@ -45,14 +45,14 @@ class QobuzProvider(MusicProvider):
         self._cur_user = None
         self.mass = mass
         self.cache = mass.cache
-        self.http_session = aiohttp.ClientSession(loop=mass.event_loop)
+        self.http_session = aiohttp.ClientSession(loop=mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
         self.__username = username
         self.__password = password
         self.__user_auth_token = None
         self.__app_id = "285473059"
         self.__app_secret = "47249d0eaefa6bf43a959c09aacdbce8"
         self.__logged_in = False
-        self.throttler = Throttler(rate_limit=1, period=0.5)
+        self.throttler = Throttler(rate_limit=1, period=1)
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''
@@ -125,7 +125,7 @@ class QobuzProvider(MusicProvider):
                 result.append(track)
         return result 
 
-    async def get_library_playlists(self) -> List[Playlist]:
+    async def get_playlists(self) -> List[Playlist]:
         ''' retrieve playlists from the provider '''
         result = []
         for item in await self.__get_all_items("playlist/getUserPlaylists", key='playlists'):
@@ -188,7 +188,7 @@ class QobuzProvider(MusicProvider):
         result = await self.__get_data('artist/get', params)
         albums = []
         for item in result['albums']['items']:
-            if item["streamable"] and item['artist']['id'] == int(prov_artist_id):
+            if str(item['artist']['id']) == str(prov_artist_id):
                 album = await self.__parse_album(item)
                 if album:
                     albums.append(album)
@@ -196,8 +196,16 @@ class QobuzProvider(MusicProvider):
 
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
         ''' get a list of most popular tracks for the given artist '''
-        # artist toptracks not supported on Qobuz
-        return []
+        # artist toptracks not supported on Qobuz, so use search instead
+        items = []
+        artist = await self.get_artist(prov_artist_id)
+        params = {"query": artist.name, "limit": 10, "type": "tracks" }
+        searchresult = await self.__get_data("catalog/search", params)
+        for item in searchresult["tracks"]["items"]:
+            if "performer" in item and str(item["performer"]["id"]) == str(prov_artist_id):
+                track = await self.__parse_track(item)
+                items.append(track)
+        return items
     
     async def add_library(self, prov_item_id, media_type:MediaType):
         ''' add item to library '''
@@ -234,22 +242,27 @@ class QobuzProvider(MusicProvider):
     
     async def get_stream(self, track_id):
         ''' get audio stream for a track '''
+        sox_effects='vol -12 dB'
         track_details = await self.get_stream_details(track_id)
         url = track_details['url']
-        async with self.http_session.get(url) as response:
-            while True:
-                chunk = await response.content.read(262144)
-                if not chunk:
-                    LOGGER.debug('end of stream')
-                    break
+        env = os.environ.copy()
+        env["SOX_OPTS"] = "−−multi−threaded −−replay−gain track"
+        cmd = 'curl -s -X GET "%s" | sox -t flac - -t flac - %s' % (url, sox_effects)
+        process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, env=env)
+        while not process.stdout.at_eof():
+            chunk = await process.stdout.readline()
+            if chunk:
                 yield chunk
+            else:
+                break
     
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''
         artist = Artist()
         if not artist_obj.get('id'):
             return None
-        artist.item_id = artist_obj['id'] # temporary id
+        artist.item_id = artist_obj['id']
+        artist.provider = self.prov_id
         artist.provider_ids.append({
             "provider": self.prov_id,
             "item_id": artist_obj['id']
@@ -272,9 +285,10 @@ class QobuzProvider(MusicProvider):
         album = Album()
         if not album_obj.get('id') or not album_obj["streamable"] or not album_obj["displayable"]:
             # some safety checks
-            LOGGER.warning("invalid/unavailable album found: %s" % album_obj.get('id'))
+            LOGGER.debug("invalid/unavailable album found: %s" % album_obj.get('id'))
             return None
-        album.item_id = album_obj['id'] # temporary id
+        album.item_id = album_obj['id']
+        album.provider = self.prov_id
         album.provider_ids.append({
             "provider": self.prov_id,
             "item_id": album_obj['id'],
@@ -317,12 +331,16 @@ class QobuzProvider(MusicProvider):
         track = Track()
         if not track_obj.get('id') or not track_obj["streamable"] or not track_obj["displayable"]:
             # some safety checks
-            LOGGER.warning("invalid/unavailable track found: %s" % track_obj.get('id'))
+            LOGGER.debug("invalid/unavailable track found: %s" % track_obj.get('id'))
             return None
-        track.item_id = track_obj['id'] # temporary id
+        track.item_id = track_obj['id']
+        track.provider = self.prov_id
         if track_obj.get('performer') and not 'Various ' in track_obj['performer']:
             artist = await self.__parse_artist(track_obj['performer'])
-            track.artists.append(artist)
+            if not artist:
+                artist = self.get_artist(track_obj['performer']['id'])
+            if artist:
+                track.artists.append(artist)
         if not track.artists:
             # try to grab artist from album
             if track_obj.get('album') and track_obj['album'].get('artist') and not 'Various ' in track_obj['album']['artist']:
@@ -388,13 +406,15 @@ class QobuzProvider(MusicProvider):
         playlist = Playlist()
         if not playlist_obj.get('id'):
             return None
-        playlist.item_id = playlist_obj['id'] # temporary id
+        playlist.item_id = playlist_obj['id']
+        playlist.provider = self.prov_id
         playlist.provider_ids.append({
             "provider": self.prov_id,
             "item_id": playlist_obj['id']
         })
         playlist.name = playlist_obj['name']
         playlist.owner = playlist_obj['owner']['name']
+        playlist.is_editable = playlist_obj['owner']['id'] == self._cur_user["id"] or playlist_obj['is_collaborative']
         if playlist_obj.get('images300'):
             playlist.metadata["image"] = playlist_obj['images300'][0]
         if playlist_obj.get('url'):
@@ -407,8 +427,9 @@ class QobuzProvider(MusicProvider):
             return self.__user_auth_token
         params = { "username": self.__username, "password": self.__password}
         details = await self.__get_data("user/login", params, ignore_cache=True)
+        self._cur_user = details["user"]
         self.__user_auth_token = details["user_auth_token"]
-        LOGGER.info("Succesfully logged in to Qobuz as %s" % (details["user"]["display_name"]))
+        LOGGER.info("Succesfully logged in to Qobuz as %s" % (self._cur_user["display_name"]))
         return details["user_auth_token"]
 
     async def __get_all_items(self, endpoint, params={}, key="playlists", limit=0, offset=0, cache_checksum=None):
@@ -464,14 +485,14 @@ class QobuzProvider(MusicProvider):
             params["request_sig"] = request_sig
             params["app_id"] = self.__app_id
             params["user_auth_token"] = self.__user_auth_token
-
-        async with self.http_session.get(url, headers=headers, params=params) as response:
-            result = await response.json()
-            if 'error' in result:
-                LOGGER.error(url)
-                LOGGER.error(params)
-                LOGGER.error(result)
-                result = None
-            result = await response.json()
-            return result
+        async with self.throttler:
+            async with self.http_session.get(url, headers=headers, params=params) as response:
+                result = await response.json()
+                if 'error' in result:
+                    LOGGER.error(url)
+                    LOGGER.error(params)
+                    LOGGER.error(result)
+                    result = None
+                result = await response.json()
+                return result
 

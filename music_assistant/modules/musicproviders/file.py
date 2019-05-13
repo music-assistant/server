@@ -90,7 +90,7 @@ class FileProvider(MusicProvider):
             result += await self.get_album_tracks(album.item_id)
         return result
     
-    async def get_library_playlists(self) -> List[Playlist]:
+    async def get_playlists(self) -> List[Playlist]:
         ''' retrieve playlists from disk '''
         if not self._playlists_dir:
             return []
@@ -113,7 +113,8 @@ class FileProvider(MusicProvider):
         else:
             name = prov_item_id.split("/")[-1]
         artist = Artist()
-        artist.item_id = prov_item_id # temporary id
+        artist.item_id = prov_item_id
+        artist.provider = self.prov_id
         artist.name = name
         artist.provider_ids.append({
             "provider": self.prov_id,
@@ -133,7 +134,8 @@ class FileProvider(MusicProvider):
             name = prov_item_id.split("/")[-1]
             artistpath = prov_item_id.rsplit("/", 1)[0]
         album = Album()
-        album.item_id = prov_item_id # temporary id
+        album.item_id = prov_item_id
+        album.provider = self.prov_id
         album.name, album.version = parse_track_title(name)
         album.artist = await self.get_artist(artistpath)
         if not album.artist:
@@ -158,8 +160,10 @@ class FileProvider(MusicProvider):
             return None
         filepath = prov_item_id
         playlist = Playlist()
-        playlist.item_id = filepath # temporary id
+        playlist.item_id = filepath
+        playlist.provider = self.prov_id
         playlist.name = filepath.split('\\')[-1].split('/')[-1].replace('.m3u', '')
+        playlist.is_editable = True
         playlist.provider_ids.append({
             "provider": self.prov_id,
             "item_id": filepath
@@ -257,7 +261,8 @@ class FileProvider(MusicProvider):
         except:
             return None # not a media file ?
         track.duration = song.length
-        track.item_id = filename # temporary id
+        track.item_id = filename
+        track.provider = self.prov_id
         name = song.tags['TITLE'][0]
         track.name, track.version = parse_track_title(name)
         if "\\" in filename:

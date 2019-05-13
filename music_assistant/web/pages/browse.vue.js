@@ -23,7 +23,7 @@ var Browse = Vue.component('Browse', {
       </v-list>
     </section>
   `,
-  props: ['mediatype'],
+  props: ['mediatype', 'provider'],
   data() {
     return {
       selected: [2],
@@ -43,7 +43,7 @@ var Browse = Vue.component('Browse', {
       this.$globals.loading = true
       const api_url = '/api/' + this.mediatype;
       axios
-        .get(api_url, { params: { offset: this.offset, limit: 50 }})
+        .get(api_url, { params: { offset: this.offset, limit: 50, provider: this.provider }})
         .then(result => {
           data = result.data;
           this.items.push(...data);

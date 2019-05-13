@@ -16,6 +16,16 @@ Vue.component("playmenu", {
 			</v-list-tile>
 			<v-divider></v-divider>
 
+			<v-list-tile avatar @click="$emit('playItem', $globals.playmenuitem, 'replace')">
+				<v-list-tile-avatar>
+					<v-icon>play_circle_outline</v-icon>
+				</v-list-tile-avatar>
+				<v-list-tile-content>
+					<v-list-tile-title>Replace</v-list-tile-title>
+				</v-list-tile-content>
+			</v-list-tile>
+			<v-divider></v-divider>
+
 			<v-list-tile avatar @click="$emit('playItem', $globals.playmenuitem, 'next')">
 				<v-list-tile-avatar>
 					<v-icon>queue_play_next</v-icon>

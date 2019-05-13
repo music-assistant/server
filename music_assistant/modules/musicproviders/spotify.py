@@ -10,6 +10,7 @@ sys.path.append("..")
 from utils import run_periodic, LOGGER, parse_track_title
 from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+from asyncio_throttle import Throttler
 import json
 import aiohttp
 from cache import use_cache
@@ -42,7 +43,8 @@ class SpotifyProvider(MusicProvider):
         self._cur_user = None
         self.mass = mass
         self.cache = mass.cache
-        self.http_session = aiohttp.ClientSession(loop=mass.event_loop)
+        self.http_session = aiohttp.ClientSession(loop=mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
+        self.throttler = Throttler(rate_limit=1, period=1)
         self._username = username
         self._password = password
         self.__auth_token = {}
@@ -119,7 +121,7 @@ class SpotifyProvider(MusicProvider):
                 result.append(track)
         return result 
 
-    async def get_library_playlists(self) -> List[Playlist]:
+    async def get_playlists(self) -> List[Playlist]:
         ''' retrieve playlists from the provider '''
         result = []
         for item in await self.__get_all_items("me/playlists"):
@@ -183,11 +185,13 @@ class SpotifyProvider(MusicProvider):
 
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
         ''' get a list of 10 most popular tracks for the given artist '''
+        artist = await self.get_artist(prov_artist_id)
         items = await self.__get_data('artists/%s/top-tracks' % prov_artist_id)
         tracks = []
         for item in items['tracks']:
             track = await self.__parse_track(item)
             if track:
+                track.artists = [artist]
                 tracks.append(track)
         return tracks
 
@@ -245,29 +249,46 @@ class SpotifyProvider(MusicProvider):
         import socket
         host = socket.gethostbyname(socket.gethostname())
         return {
-            'mime_type': 'audio/ogg',
+            'mime_type': 'audio/flac',
             'duration': track.duration,
             'sampling_rate': 44100,
             'bit_depth': 16,
             'url': 'http://%s/stream/spotify/%s' % (host, track_id)
         }
-    
     async def get_stream(self, track_id):
+        ''' get audio stream for a track '''
+        sox_effects='vol -12 dB'
+        import subprocess
+        spotty = self.get_spotty_binary()
+        env = os.environ.copy()
+        env["SOX_OPTS"] = "−−multi−threaded −−replay−gain track"
+        cmd = spotty +  ' -n temp -u ' + self._username + ' -p ' + self._password + ' --pass-through --single-track ' + track_id
+        cmd += ' | sox -t ogg - -t flac - %s' % sox_effects
+        process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, env=env)
+        while not process.stdout.at_eof():
+            chunk = await process.stdout.readline()
+            if chunk:
+                yield chunk
+        await process.wait()
+
+    async def get_stream__old(self, track_id, sox_effects='vol -12 dB'):
         ''' get audio stream for a track '''
         import subprocess
         spotty = self.get_spotty_binary()
-        cmd = [spotty, '-n', 'temp', '-u', self._username, '-p', self._password, '--pass-through', '--single-track', track_id]
-        process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE)
+        os.environ["SOX_OPTS"] = "−−multi−threaded −−replay−gain track"
+        cmd = spotty +  ' -n temp -u ' + self._username + ' -p ' + self._password + ' --pass-through --single-track ' + track_id + ' | sox -t ogg -- - -t flac - %s' % sox_effects
+        process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE)
         while not process.stdout.at_eof():
-            line = await process.stdout.readline()
-            if line:
-                yield line
+            chunk = await process.stdout.readline()
+            if chunk:
+                yield chunk
         await process.wait()
     
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''
         artist = Artist()
-        artist.item_id = artist_obj['id'] # temporary id
+        artist.item_id = artist_obj['id']
+        artist.provider = self.prov_id
         artist.provider_ids.append({
             "provider": self.prov_id,
             "item_id": artist_obj['id']
@@ -292,7 +313,8 @@ class SpotifyProvider(MusicProvider):
         if not album_obj['id'] or album_obj.get('is_playable') == False:
             return None
         album = Album()
-        album.item_id = album_obj['id'] # temporary id
+        album.item_id = album_obj['id']
+        album.provider = self.prov_id
         album.name, album.version = parse_track_title(album_obj['name'])
         for artist in album_obj['artists']:
             album.artist = await self.__parse_artist(artist)
@@ -336,7 +358,8 @@ class SpotifyProvider(MusicProvider):
         if track_obj['is_local'] or not track_obj['id'] or not track_obj['is_playable']:
             return None
         track = Track()
-        track.item_id = track_obj['id'] # temporary id
+        track.item_id = track_obj['id']
+        track.provider = self.prov_id
         for track_artist in track_obj['artists']:
             artist = await self.__parse_artist(track_artist)
             if artist:
@@ -369,13 +392,15 @@ class SpotifyProvider(MusicProvider):
         playlist = Playlist()
         if not playlist_obj.get('id'):
             return None
-        playlist.item_id = playlist_obj['id'] # temporary id
+        playlist.item_id = playlist_obj['id']
+        playlist.provider = self.prov_id
         playlist.provider_ids.append({
             "provider": self.prov_id,
             "item_id": playlist_obj['id']
         })
         playlist.name = playlist_obj['name']
         playlist.owner = playlist_obj['owner']['display_name']
+        playlist.is_editable = playlist_obj['owner']['id'] == self.sp_user["id"] or playlist_obj['collaborative']
         if playlist_obj.get('images'):
             playlist.metadata["image"] = playlist_obj['images'][0]['url']
         if playlist_obj.get('external_urls'):
@@ -472,13 +497,14 @@ class SpotifyProvider(MusicProvider):
         params['country'] = 'from_token'
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
-        async with self.http_session.get(url, headers=headers, params=params) as response:
-            result = await response.json()
-            if 'error' in result:
-                LOGGER.error(url)
-                LOGGER.error(params)
-                raise Exception(result['error'])
-            return result
+        async with self.throttler:
+            async with self.http_session.get(url, headers=headers, params=params) as response:
+                result = await response.json()
+                if 'error' in result:
+                    LOGGER.error(url)
+                    LOGGER.error(params)
+                    return None
+                return result
 
     async def __delete_data(self, endpoint, params={}):
         ''' get data from api'''

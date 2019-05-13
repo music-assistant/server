@@ -10,14 +10,17 @@ from aiohttp import web
 from models import MediaType, media_type_from_string
 from functools import partial
 json_serializer = partial(json.dumps, default=lambda x: x.__dict__)
-
+import ssl
 
 class Api():
     ''' expose our data through json api '''
     
-    def __init__(self, mass):
+    def __init__(self, mass, ssl_cert, ssl_key):
         self.mass = mass
+        self._ssl_cert = ssl_cert
+        self._ssl_key = ssl_key
         self.http_session = aiohttp.ClientSession()
+        mass.event_loop.create_task(self.setup_web())
 
     def stop(self):
         self.runner.cleanup()
@@ -48,8 +51,12 @@ class Api():
         
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, '0.0.0.0', 8095)
-        await site.start()
+        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ssl_context.load_cert_chain(self._ssl_cert, self._ssl_key)
+        http_site = web.TCPSite(self.runner, '0.0.0.0', 8095)
+        https_site = web.TCPSite(self.runner, '0.0.0.0', 8096, ssl_context=ssl_context)
+        await http_site.start()
+        await https_site.start()
 
     async def get_items(self, request):
         ''' get multiple library items'''
@@ -71,22 +78,25 @@ class Api():
         media_id = request.match_info.get('media_id')
         action = request.match_info.get('action','')
         lazy = request.rel_url.query.get('lazy', '') != 'false'
+        provider = request.rel_url.query.get('provider')
         if action:
-            result = await self.mass.music.item_action(media_id, media_type, action)
+            result = await self.mass.music.item_action(media_id, media_type, provider, action)
         else:
-            result = await self.mass.music.item(media_id, media_type, lazy=lazy)
+            result = await self.mass.music.item(media_id, media_type, provider, lazy=lazy)
         return web.json_response(result, dumps=json_serializer)
 
     async def artist_toptracks(self, request):
         ''' get top tracks for given artist '''
         artist_id = request.match_info.get('artist_id')
-        result = await self.mass.music.artist_toptracks(artist_id)
+        provider = request.rel_url.query.get('provider')
+        result = await self.mass.music.artist_toptracks(artist_id, provider)
         return web.json_response(result, dumps=json_serializer)
 
     async def artist_albums(self, request):
         ''' get (all) albums for given artist '''
         artist_id = request.match_info.get('artist_id')
-        result = await self.mass.music.artist_albums(artist_id)
+        provider = request.rel_url.query.get('provider')
+        result = await self.mass.music.artist_albums(artist_id, provider)
         return web.json_response(result, dumps=json_serializer)
 
     async def playlist_tracks(self, request):
@@ -94,13 +104,15 @@ class Api():
         playlist_id = request.match_info.get('playlist_id')
         limit = int(request.query.get('limit', 50))
         offset = int(request.query.get('offset', 0))
-        result = await self.mass.music.playlist_tracks(playlist_id, offset=offset, limit=limit)
+        provider = request.rel_url.query.get('provider')
+        result = await self.mass.music.playlist_tracks(playlist_id, provider, offset=offset, limit=limit)
         return web.json_response(result, dumps=json_serializer)
 
     async def album_tracks(self, request):
         ''' get album tracks from provider'''
         album_id = request.match_info.get('album_id')
-        result = await self.mass.music.album_tracks(album_id)
+        provider = request.rel_url.query.get('provider')
+        result = await self.mass.music.album_tracks(album_id, provider)
         return web.json_response(result, dumps=json_serializer)
 
     async def search(self, request):
@@ -142,7 +154,8 @@ class Api():
         media_type = media_type_from_string(media_type_str)
         media_id = request.match_info.get('media_id')
         queue_opt = request.match_info.get('queue_opt','')
-        media_item = await self.mass.music.item(media_id, media_type, lazy=True)
+        provider = request.rel_url.query.get('provider')
+        media_item = await self.mass.music.item(media_id, media_type, provider, lazy=True)
         result = await self.mass.player.play_media(player_id, media_item, queue_opt)
         return web.json_response(result, dumps=json_serializer) 
     
@@ -185,16 +198,16 @@ class Api():
                         players = await self.mass.player.players()
                         ws_msg = {'message': 'players', 'message_details': players}
                         await ws.send_json(ws_msg, dumps=json_serializer)
-                    elif msg.data.startswith('players') and '/play_media/' in msg.data:
-                        #'players/{player_id}/play_media/{media_type}/{media_id}/{queue_opt}'
-                        msg_data_parts = msg.data.split('/')
-                        player_id = msg_data_parts[1]
-                        media_type = msg_data_parts[3]
-                        media_type = media_type_from_string(media_type)
-                        media_id = msg_data_parts[4]
-                        queue_opt = msg_data_parts[5] if len(msg_data_parts) == 6 else 'replace'
-                        media_item = await self.mass.music.item(media_id, media_type, lazy=True)
-                        await self.mass.player.play_media(player_id, media_item, queue_opt)
+                    # elif msg.data.startswith('players') and '/play_media/' in msg.data:
+                    #     #'players/{player_id}/play_media/{media_type}/{media_id}/{queue_opt}'
+                    #     msg_data_parts = msg.data.split('/')
+                    #     player_id = msg_data_parts[1]
+                    #     media_type = msg_data_parts[3]
+                    #     media_type = media_type_from_string(media_type)
+                    #     media_id = msg_data_parts[4]
+                    #     queue_opt = msg_data_parts[5] if len(msg_data_parts) == 6 else 'replace'
+                    #     media_item = await self.mass.music.item(media_id, media_type, lazy=True)
+                    #     await self.mass.player.play_media(player_id, media_item, queue_opt)
 
                     elif msg.data.startswith('players') and '/cmd/' in msg.data:
                         # players/{player_id}/cmd/{cmd} or players/{player_id}/cmd/{cmd}/{cmd_args}
@@ -231,10 +244,13 @@ class Api():
         ''' start streaming audio from provider '''
         track_id = request.match_info.get('track_id')
         provider = request.match_info.get('provider')
-        stream_details = await self.mass.music.providers[provider].get_stream_details(track_id)
+        #stream_details = await self.mass.music.providers[provider].get_stream_details(track_id)
+        # resp = web.StreamResponse(status=200,
+        #                         reason='OK',
+        #                         headers={'Content-Type': stream_details['mime_type']})
         resp = web.StreamResponse(status=200,
-                                reason='OK',
-                                headers={'Content-Type': stream_details['mime_type']})
+                                 reason='OK',
+                                 headers={'Content-Type': 'audio/flac'})
         await resp.prepare(request)
         async for chunk in self.mass.music.providers[provider].get_stream(track_id):
             await resp.write(chunk)

@@ -3,7 +3,7 @@
 
 import asyncio
 import os
-from utils import run_periodic, run_async_background_task, LOGGER
+from utils import run_periodic, run_async_background_task, LOGGER, try_parse_int
 import aiohttp
 from difflib import SequenceMatcher as Matcher
 from models import MediaType
@@ -27,16 +27,16 @@ class Music():
         # schedule sync task
         mass.event_loop.create_task(self.sync_music_providers())
 
-    async def item(self, item_id, media_type:MediaType, lazy=True):
+    async def item(self, item_id, media_type:MediaType, provider='database', lazy=True):
         ''' get single music item by id and media type'''
         if media_type == MediaType.Artist:
-            return await self.artist(item_id, lazy=lazy)
+            return await self.artist(item_id, provider, lazy=lazy)
         elif media_type == MediaType.Album:
-            return await self.album(item_id, lazy=lazy)
+            return await self.album(item_id, provider, lazy=lazy)
         elif media_type == MediaType.Track:
-            return await self.track(item_id, lazy=lazy)
+            return await self.track(item_id, provider, lazy=lazy)
         elif media_type == MediaType.Playlist:
-            return await self.playlist(item_id)
+            return await self.playlist(item_id, provider)
         else:
             return None
 
@@ -52,9 +52,9 @@ class Music():
         ''' return all library tracks, optionally filtered by provider '''
         return await self.mass.db.library_tracks(provider=provider_filter, limit=limit, offset=offset, orderby=orderby)
 
-    async def library_playlists(self, limit=0, offset=0, orderby='name', provider_filter=None):
+    async def playlists(self, limit=0, offset=0, orderby='name', provider_filter=None):
         ''' return all library playlists, optionally filtered by provider '''
-        return await self.mass.db.library_playlists(provider=provider_filter, limit=limit, offset=offset, orderby=orderby)
+        return await self.mass.db.playlists(provider=provider_filter, limit=limit, offset=offset, orderby=orderby)
 
     async def library_items(self, media_type:MediaType, limit=0, offset=0, orderby='name', provider_filter=None):
         ''' get multiple music items in library'''
@@ -65,62 +65,37 @@ class Music():
         elif media_type == MediaType.Track:
             return await self.library_tracks(limit=limit, offset=offset, orderby=orderby, provider_filter=provider_filter)
         elif media_type == MediaType.Playlist:
-            return await self.library_playlists(limit=limit, offset=offset, orderby=orderby, provider_filter=provider_filter)
+            return await self.playlists(limit=limit, offset=offset, orderby=orderby, provider_filter=provider_filter)
 
-    async def artist(self, item_id, lazy=True):
+    async def artist(self, item_id, provider='database', lazy=True):
         ''' get artist by id '''
-        artist = await self.mass.db.artist(item_id)
-        if artist:
-            return artist
-        # not a database id, probably a provider id
-        for provider in self.providers.values():
-            artist = await provider.artist(item_id, lazy=lazy)
-            if artist:
-                return artist
-        raise Exception("Artist %s is not found" % item_id)
+        if not provider or provider == 'database':
+            return await self.mass.db.artist(item_id)
+        return await self.providers[provider].artist(item_id, lazy=lazy)
 
-    async def album(self, item_id, lazy=True):
+    async def album(self, item_id, provider='database', lazy=True):
         ''' get album by id '''
-        album = await self.mass.db.album(item_id)
-        if album:
-            return album
-        # not a database id, probably a provider id
-        for provider in self.providers.values():
-            album = await provider.album(item_id, lazy=lazy)
-            if album:
-                return album
-        raise Exception("Album %s is not found" % item_id)
+        if not provider or provider == 'database':
+            return await self.mass.db.album(item_id)
+        return await self.providers[provider].album(item_id, lazy=lazy)
 
-    async def track(self, item_id, lazy=True):
+    async def track(self, item_id, provider='database', lazy=True):
         ''' get track by id '''
-        track = await self.mass.db.track(item_id)
-        if track:
-            return track
-        # not a database id, probably a provider id
-        for provider in self.providers.values():
-            track = await provider.track(item_id, lazy=lazy)
-            if track:
-                return track
-        raise Exception("Track %s is not found" % item_id)
+        if not provider or provider == 'database':
+            return await self.mass.db.track(item_id)
+        return await self.providers[provider].track(item_id, lazy=lazy)
 
-    async def playlist(self, item_id):
+    async def playlist(self, item_id, provider='database'):
         ''' get playlist by id '''
-        playlist = await self.mass.db.playlist(item_id)
-        if playlist:
-            return playlist
-        # not a database id, probably a provider id
-        for provider in self.providers.values():
-            playlist = await provider.playlist(item_id)
-            if playlist:
-                return playlist
-        raise Exception("Playlist %s is not found" % item_id)
+        if not provider or provider == 'database':
+            return await self.mass.db.playlist(item_id)
+        return await self.providers[provider].playlist(item_id)
 
-    async def artist_toptracks(self, artist_id):
+    async def artist_toptracks(self, artist_id, provider='database'):
         ''' get top tracks for given artist '''
-        items = []
-        artist = await self.artist(artist_id)
+        artist = await self.artist(artist_id, provider)
         # always append database tracks
-        items += await self.mass.db.artist_tracks(artist.item_id)
+        items = await self.mass.db.artist_tracks(artist.item_id)
         for prov_mapping in artist.provider_ids:
             prov_id = prov_mapping['provider']
             prov_item_id = prov_mapping['item_id']
@@ -130,12 +105,11 @@ class Music():
         items.sort(key=lambda x: x.name, reverse=False)
         return items
 
-    async def artist_albums(self, artist_id):
+    async def artist_albums(self, artist_id, provider='database'):
         ''' get (all) albums for given artist '''
-        items = []
-        artist = await self.artist(artist_id)
+        artist = await self.artist(artist_id, provider)
         # always append database tracks
-        items += await self.mass.db.artist_albums(artist.item_id)
+        items = await self.mass.db.artist_albums(artist.item_id)
         for prov_mapping in artist.provider_ids:
             prov_id = prov_mapping['provider']
             prov_item_id = prov_mapping['item_id']
@@ -145,33 +119,39 @@ class Music():
         items.sort(key=lambda x: x.name, reverse=False)
         return items
 
-    async def album_tracks(self, album_id):
+    async def album_tracks(self, album_id, provider='database'):
         ''' get the album tracks for given album '''
         items = []
-        album = await self.album(album_id)
+        album = await self.album(album_id, provider)
         for prov_mapping in album.provider_ids:
             prov_id = prov_mapping['provider']
             prov_item_id = prov_mapping['item_id']
             prov_obj = self.providers[prov_id]
             items += await prov_obj.album_tracks(prov_item_id)
-            if items:
-                break # no need to pull in dups
         items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
         return items
 
-    async def playlist_tracks(self, playlist_id, offset=0, limit=50):
+    async def playlist_tracks(self, playlist_id, provider='database', offset=0, limit=50):
         ''' get the tracks for given playlist '''
-        items = []
-        playlist = await self.playlist(playlist_id)
-        for prov_mapping in playlist.provider_ids:
-            prov_id = prov_mapping['provider']
-            prov_item_id = prov_mapping['item_id']
-            prov_obj = self.providers[prov_id]
-            items += await prov_obj.playlist_tracks(prov_item_id, offset=offset, limit=limit)
-            if items:
-                break
-        items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
-        return items
+        playlist = None
+        if not provider or provider == 'database':
+            playlist = await self.mass.db.playlist(playlist_id)
+        if playlist and playlist.is_editable:
+            # database synced playlist, return tracks from db...
+            return await self.mass.db.playlist_tracks(playlist.item_id, offset=offset, limit=limit)
+        else:
+            # return playlist tracks from provider
+            items = []
+            playlist = await self.playlist(playlist_id)
+            for prov_mapping in playlist.provider_ids:
+                prov_id = prov_mapping['provider']
+                prov_item_id = prov_mapping['item_id']
+                prov_obj = self.providers[prov_id]
+                items += await prov_obj.playlist_tracks(prov_item_id, offset=offset, limit=limit)
+                if items:
+                    break
+            items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
+            return items
 
     async def search(self, searchquery, media_types:List[MediaType], limit=10, online=False):
         ''' search database or providers '''
@@ -188,10 +168,10 @@ class Music():
                 items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
         return result
 
-    async def item_action(self, item_id, media_type, action=None):
+    async def item_action(self, item_id, media_type, provider='database', action=None):
         ''' perform action on item (such as library add/remove) '''
         result = None
-        item = await self.item(item_id, media_type)
+        item = await self.item(item_id, media_type, provider)
         if item and action in ['add', 'remove']:
             # remove or add item to the library
             for prov_mapping in result.provider_ids:
@@ -205,17 +185,6 @@ class Music():
                             result = await prov.remove_library(prov_item_id, media_type)
         return result
     
-    def get_music_provider(self, item_id):
-        ''' get musicprovider object by id '''
-        prov_obj = None
-        if isinstance(item_id,int) or not '_' in item_id:
-            prov_obj = self.mass.db
-        else:
-            prov_id = item_id.split('_')[0]
-            item_id = item_id.split('_')[1]
-            prov_obj = self.providers[prov_id]
-        return item_id, prov_obj
-
     @run_periodic(3600)
     async def sync_music_providers(self):
         ''' periodic sync of all music providers '''
@@ -227,7 +196,7 @@ class Music():
             await self.sync_library_artists(prov_id)
             await self.sync_library_albums(prov_id)
             await self.sync_library_tracks(prov_id)
-            await self.sync_library_playlists(prov_id)
+            await self.sync_playlists(prov_id)
         self.sync_running = False
         
     async def sync_library_artists(self, prov_id):
@@ -238,12 +207,10 @@ class Music():
         cur_items = await music_provider.get_library_artists()
         cur_db_ids = []
         for item in cur_items:
-            db_id = await self.mass.db.get_database_id(prov_id, item.item_id, MediaType.Artist)
-            if db_id == None:
-                db_id = await music_provider.add_artist(item)
-            cur_db_ids.append(db_id)
-            if not db_id in prev_db_ids:
-                await self.mass.db.add_to_library(db_id, MediaType.Artist, prov_id)
+            db_item = await music_provider.artist(item.item_id, lazy=False)
+            cur_db_ids.append(db_item.item_id)
+            if not db_item.item_id in prev_db_ids:
+                await self.mass.db.add_to_library(db_item.item_id, MediaType.Artist, prov_id)
         # process deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
@@ -258,12 +225,13 @@ class Music():
         cur_items = await music_provider.get_library_albums()
         cur_db_ids = []
         for item in cur_items:
-            db_id = await self.mass.db.get_database_id(prov_id, item.item_id, MediaType.Album)
-            if db_id == None:
-                db_id = await music_provider.add_album(item)
-            cur_db_ids.append(db_id)
-            if not db_id in prev_db_ids:
-                await self.mass.db.add_to_library(db_id, MediaType.Album, prov_id)
+            db_item = await music_provider.album(item.item_id, lazy=False)
+            cur_db_ids.append(db_item.item_id)
+            # precache album tracks...
+            for album_track in await music_provider.get_album_tracks(item.item_id):
+                await music_provider.track(album_track.item_id)
+            if not db_item.item_id in prev_db_ids:
+                await self.mass.db.add_to_library(db_item.item_id, MediaType.Album, prov_id)
         # process deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
@@ -278,34 +246,32 @@ class Music():
         cur_items = await music_provider.get_library_tracks()
         cur_db_ids = []
         for item in cur_items:
-            db_id = await self.mass.db.get_database_id(prov_id, item.item_id, MediaType.Track)
-            if db_id == None:
-                db_id = await music_provider.add_track(item)
-            cur_db_ids.append(db_id)
-            if not db_id in prev_db_ids:
-                await self.mass.db.add_to_library(db_id, MediaType.Track, prov_id)
+            db_item = await music_provider.track(item.item_id, lazy=False)
+            cur_db_ids.append(db_item.item_id)
+            if not db_item.item_id in prev_db_ids:
+                await self.mass.db.add_to_library(db_item.item_id, MediaType.Track, prov_id)
         # process deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
                 await self.mass.db.remove_from_library(db_id, MediaType.Track, prov_id)
         LOGGER.info("Finished syncing Tracks for provider %s" % prov_id)
 
-    async def sync_library_playlists(self, prov_id):
+    async def sync_playlists(self, prov_id):
         ''' sync library playlists for given provider'''
         music_provider = self.providers[prov_id]
-        prev_items = await self.library_playlists(provider_filter=prov_id)
+        prev_items = await self.playlists(provider_filter=prov_id)
         prev_db_ids = [item.item_id for item in prev_items]
-        cur_items = await music_provider.get_library_playlists()
+        cur_items = await music_provider.get_playlists()
         cur_db_ids = []
         for item in cur_items:
-            db_id = await self.mass.db.get_database_id(prov_id, item.item_id, MediaType.Playlist)
-            if db_id == None:
-                db_id = await music_provider.add_playlist(item)
+            # always add to db because playlist attributes could have changed
+            db_id = await self.mass.db.add_playlist(item)
             cur_db_ids.append(db_id)
             if not db_id in prev_db_ids:
                 await self.mass.db.add_to_library(db_id, MediaType.Playlist, prov_id)
-            # playlist tracks
-            #asyncio.create_task( self.sync_playlist_tracks(db_id, prov_id, item.item_id) )
+            if item.is_editable:
+                # precache/sync playlist tracks (user owned playlists only)
+                asyncio.create_task( self.sync_playlist_tracks(db_id, prov_id, item.item_id) )
         # process playlist deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
@@ -323,14 +289,12 @@ class Music():
         for item in cur_items:
             # we need to do this the complicated way because the file provider can return tracks from other providers
             for prov_mapping in item.provider_ids:
-                item_prov_id = prov_mapping['provider']
+                item_provider = prov_mapping['provider']
                 prov_item_id = prov_mapping['item_id']
-                db_id = await self.mass.db.get_database_id(item_prov_id, prov_item_id, MediaType.Track)
-                if db_id == None:
-                    db_id = await self.providers[item_prov_id].add_track(item)
-                if not db_id in cur_db_ids:
-                    cur_db_ids.append(db_id)
-                    await self.mass.db.add_playlist_track(db_playlist_id, db_id, pos)
+                db_item = await self.providers[item_provider].track(prov_item_id, lazy=False)
+                cur_db_ids.append(db_item.item_id)
+                if not db_item.item_id in prev_db_ids:
+                    await self.mass.db.add_playlist_track(db_playlist_id, db_item.item_id, pos)
             pos += 1
         # process playlist track deletions
         for db_id in prev_db_ids:

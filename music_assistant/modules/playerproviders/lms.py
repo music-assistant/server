@@ -51,14 +51,7 @@ class LMSProvider(PlayerProvider):
         self._port = port
         self._players = {}
         self.last_msg_received = 0
-        self.supports_queue = True # whether this provider has native support for a queue
-        self.supports_http_stream = True # whether we can fallback to http streaming
-        self.supported_musicproviders = [
-            ('qobuz', [MediaType.Track]), 
-            ('file', [MediaType.Track, MediaType.Artist, MediaType.Album, MediaType.Playlist]),
-            ('spotify', [MediaType.Track, MediaType.Artist, MediaType.Album, MediaType.Playlist]), 
-            ('http', [MediaType.Track])
-        ]
+        self.supported_musicproviders = ['qobuz', 'file', 'spotify', 'http']
         self.http_session = aiohttp.ClientSession(loop=mass.event_loop)
         # we use a combi of active polling and subscriptions because the cometd implementation of LMS is somewhat unreliable
         asyncio.ensure_future(self.__lms_events())
@@ -81,49 +74,45 @@ class LMSProvider(PlayerProvider):
             lms_commands = ['playlist', 'index', '-1']
         elif cmd == 'stop':
             lms_commands = ['playlist', 'stop']
-        elif cmd == 'power' and cmd_args in ['on', '1', 1]:
-            lms_commands = ['power', '1']
-        elif cmd == 'power' and cmd_args in ['off', '0', 0]:
+        elif cmd == 'power' and cmd_args == 'off':
             lms_commands = ['power', '0']
-        elif cmd == 'volume' and cmd_args == 'up':
-            lms_commands = ['mixer', 'volume', '+2']
-        elif cmd == 'volume' and cmd_args == 'down':
-            lms_commands = ['mixer', 'volume', '-2']
+        elif cmd == 'power':
+            lms_commands = ['power', '1']
         elif cmd == 'volume':
             lms_commands = ['mixer', 'volume', cmd_args]
-        elif cmd == 'mute' and cmd_args in ['on', '1', 1]:
-            lms_commands = ['mixer', 'muting', '1']
-        elif cmd == 'mute' and cmd_args in ['off', '0', 0]:
+        elif cmd == 'mute' and cmd_args == 'off':
             lms_commands = ['mixer', 'muting', '0']
+        elif cmd == 'mute':
+            lms_commands = ['mixer', 'muting', '1']
         return await self.__get_data(lms_commands, player_id=player_id)
 
-    async def play_media(self, player_id, uri, queue_opt='play'):
+    async def play_media(self, player_id, media_items, queue_opt='play'):
         ''' 
             play media on a player
-            params:
-            - player_id: id of the player
-            - uri: the uri for/to the media item (e.g. spotify:track:1234 or http://pathtostream)
-            - queue_opt: 
-                replace: replace whatever is currently playing with this media
-                next: the given media will be played after the currently playing track
-                add: add to the end of the queue
-                play: keep existing queue but play the given item now
         '''
         if queue_opt == 'play':
-            cmd = ['playlist', 'insert', uri]
+            cmd = ['playlist', 'insert', media_items[0].uri]
             await self.__get_data(cmd, player_id=player_id)
-            cmd2 = ['playlist', 'index', '+1']
-            return await self.__get_data(cmd2, player_id=player_id)
+            cmd = ['playlist', 'index', '+1']
+            await self.__get_data(cmd, player_id=player_id)
+            for track in media_items[1:]:
+                cmd = ['playlist', 'insert', track.uri]
+                await self.__get_data(cmd, player_id=player_id)
         elif queue_opt == 'replace':
-            cmd = ['playlist', 'play', uri]
-            return await self.__get_data(cmd, player_id=player_id)
+            cmd = ['playlist', 'play', media_items[0].uri]
+            await self.__get_data(cmd, player_id=player_id)
+            for track in media_items[1:]:
+                cmd = ['playlist', 'add', track.uri]
+                await self.__get_data(cmd, player_id=player_id)
         elif queue_opt == 'next':
-            cmd = ['playlist', 'insert', uri]
-            return await self.__get_data(cmd, player_id=player_id)
+            for track in media_items:
+                cmd = ['playlist', 'insert', track.uri]
+                await self.__get_data(cmd, player_id=player_id)
         else:
-            cmd = ['playlist', 'add', uri]
-            return await self.__get_data(cmd, player_id=player_id)
-        
+            for track in media_items:
+                cmd = ['playlist', 'add', track.uri]
+                await self.__get_data(cmd, player_id=player_id)
+    
     async def player_queue(self, player_id, offset=0, limit=50):
         ''' return the items in the player's queue '''
         items = []

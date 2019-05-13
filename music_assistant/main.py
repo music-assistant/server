@@ -6,7 +6,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import re
 import uvloop
-import logging
 import os
 import shutil
 import slugify as unicode_slug
@@ -21,10 +20,11 @@ from utils import run_periodic, LOGGER
 from cache import Cache
 from music import Music
 from player import Player
+from modules.homeassistant import setup as hass_setup
 
 class Main():
 
-    def __init__(self, datapath):
+    def __init__(self, datapath, ssl_cert, ssl_key):
         uvloop.install()
         self._datapath = datapath
         self.parse_config()
@@ -43,20 +43,21 @@ class Main():
             time.sleep(0.5) 
         self.cache = Cache(datapath)
         self.metadata = MetaData(self.event_loop, self.db, self.cache)
+
+        # init modules
+        self.api = Api(self, ssl_cert, ssl_key)
+        self.hass = hass_setup(self)
         self.music = Music(self)
         self.player = Player(self)
 
-        # init web/api
-        self.api = Api(self)
-        asyncio.ensure_future(self.api.setup_web())
-        
         # start the event loop
         self.event_loop.run_forever()
 
     async def event(self, msg, msg_details=None):
         ''' signal event '''
         LOGGER.debug("Event: %s - %s" %(msg, msg_details))
-        for listener in self.event_listeners.values():
+        listeners = list(self.event_listeners.values())
+        for listener in listeners:
             await listener(msg, msg_details)
 
     async def add_event_listener(self, cb):
@@ -81,18 +82,19 @@ class Main():
     def parse_config(self):
         '''get config from config file'''
         config = {
+            "base": {},
             "musicproviders": {},
             "playerproviders": {},
             "player_settings": 
                 {
                     "__desc__":
                     [
+                        ("enabled", False, "Enable player"),
                         ("name", "", "Custom name for this player"),
                         ("group_parent", "<player>", "Group this player with another player"),
                         ("mute_as_power", False, "Use muting as power control"),
                         ("disable_volume", False, "Disable volume controls"),
-                        ("apply_group_volume", False, "Apply group volume to childs (for group players only)"),
-                        ("enabled", False, "Enable player")
+                        ("apply_group_volume", False, "Apply group volume to childs (for group players only)")
                     ]
                 }
             }
@@ -119,5 +121,7 @@ if __name__ == "__main__":
     datapath = sys.argv[1:]
     if not datapath:
         datapath = os.path.dirname(os.path.abspath(__file__))
-    Main(datapath)
+    ssl_cert = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'certificate.cert')
+    ssl_key = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'privkey.pem')
+    Main(datapath, ssl_cert, ssl_key)
     

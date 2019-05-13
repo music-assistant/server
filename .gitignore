@@ -3,3 +3,5 @@
 *.db
 *.pyc
 music_assistant/config.json
+*.cert
+*.pem

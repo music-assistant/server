@@ -4,13 +4,14 @@
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-
-logformat = logging.Formatter('%(asctime)-15s %(levelname)-5s %(module)s -- %(message)s')
-LOGGER = logging.getLogger("music_assistant")
+logformat = logging.Formatter('%(asctime)-15s %(levelname)-5s %(name)s.%(module)s -- %(message)s')
 consolehandler = logging.StreamHandler()
 consolehandler.setFormatter(logformat)
+LOGGER = logging.getLogger(__package__)
+LOGGER.setLevel(logging.INFO)
 LOGGER.addHandler(consolehandler)
-LOGGER.setLevel(logging.DEBUG)
+
+
 
 def run_periodic(period):
     def scheduler(fcn):
@@ -51,6 +52,12 @@ def try_parse_int(possible_int):
     except:
         return 0
 
+def try_parse_float(possible_float):
+    try:
+        return float(possible_float)
+    except:
+        return 0
+
 def parse_track_title(track_title):
     ''' try to parse clean track title and version from the title '''
     track_title = track_title.lower()
@@ -73,8 +80,15 @@ def parse_track_title(track_title):
                         version = title_part
                         title = title.split(splitter+version)[0]
     title = title.strip().title()
-    # version substitues
-
+    # version substitutes
+    if "radio" in version:
+        version = "radio version"
+    elif "album" in version:
+        version = "album version"
+    elif "single" in version:
+        version = "single version"
+    elif "remaster" in version:
+        version = "remaster"
     version = version.strip().title()
     return title, version
 

@@ -11,6 +11,38 @@ var Config = Vue.component('Config', {
 
       <v-list two-line>
 
+        <!-- base/generic config -->
+        <v-list-group prepend-icon="settings" no-action>
+            <template v-slot:activator>
+              <v-list-tile>
+                <v-list-tile-content>
+                  <v-list-tile-title>Generic settings</v-list-tile-title>
+                </v-list-tile-content>
+              </v-list-tile>
+            </template>
+            <template v-for="(conf_value, conf_key) in conf.base">
+                <v-list-tile>
+                  <v-list-tile-avatar>
+                      <img :src="'images/icons/' + conf_key + '.png'"/>
+                  </v-list-tile-avatar>
+                  <v-list-tile-content>
+                    <v-list-tile-title class="title">{{ conf_key }}</v-list-tile-title>
+                  </v-list-tile-content>
+                </v-list-tile>
+                
+                <div v-for="conf_item_key in conf.base[conf_key].__desc__">
+                  <v-list-tile>
+                        <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="conf_item_key[2]"></v-switch>
+                        <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box type="password"></v-text-field>
+                        <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box type="password"></v-select>
+                        <v-text-field v-else v-model="conf.base[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box></v-text-field>
+                  </v-list-tile>
+              </div>
+              <v-divider></v-divider>
+            </template>
+          </v-list-group>
+
+
           <!-- music providers -->
           <v-list-group prepend-icon="library_music" no-action>
               <template v-slot:activator>

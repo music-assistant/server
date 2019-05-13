@@ -23,8 +23,8 @@ import pychromecast
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.controllers import BaseController
 from pychromecast.controllers.spotify import SpotifyController
-import logging
-logging.getLogger("pychromecast").setLevel(logging.WARNING)
+from pychromecast.controllers.media import MediaController
+import types
 
 def setup(mass):
     ''' setup the provider'''
@@ -49,12 +49,8 @@ class ChromecastProvider(PlayerProvider):
         self.icon = ''
         self.mass = mass
         self._players = {}
-        self.supports_queue = False
-        self.supports_http_stream = True
-        self.supported_musicproviders = [
-            ('spotify', [MediaType.Track, MediaType.Artist, MediaType.Album, MediaType.Playlist]), 
-            ('http', [MediaType.Track])
-        ]
+        self._chromecasts = {}
+        self.supported_musicproviders = ['http']
         self.http_session = aiohttp.ClientSession(loop=mass.event_loop)
         asyncio.ensure_future(self.__discover_chromecasts())
         
@@ -64,63 +60,152 @@ class ChromecastProvider(PlayerProvider):
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
         if cmd == 'play':
-            self._players[player_id].cast.media_controller.play()
+            self._chromecasts[player_id].media_controller.play()
         elif cmd == 'pause':
-            self._players[player_id].cast.media_controller.pause()
+            self._chromecasts[player_id].media_controller.pause()
         elif cmd == 'stop':
-            self._players[player_id].cast.media_controller.stop()
+            self._chromecasts[player_id].media_controller.stop()
         elif cmd == 'next':
-            self._players[player_id].cast.media_controller.queue_next()
+            self._chromecasts[player_id].media_controller.queue_next()
         elif cmd == 'previous':
-            self._players[player_id].cast.media_controller.queue_previous()
-        elif cmd == 'power' and cmd_args in ['on', '1', 1]:
-            # power is not supported
-            self._players[player_id].state = PlayerState.Stopped
-            self._players[player_id].cast.media_controller.play()
-        elif cmd == 'power' and cmd_args in ['off', '0', 0]:
-            # power is not supported
-            self._players[player_id].state = PlayerState.Off
-            self._players[player_id].cast.media_controller.stop()
+            self._chromecasts[player_id].media_controller.queue_previous()
+        elif cmd == 'power' and cmd_args == 'off':
+            self._players[player_id].powered = False # power is not supported
+            await self.mass.player.update_player(self._players[player_id])
+        elif cmd == 'power':
+            self._players[player_id].powered = True # power is not supported
         elif cmd == 'volume':
-            self._players[player_id].cast.set_volume(try_parse_int(cmd_args)/100)
-        elif cmd == 'mute' and cmd_args in ['on', '1', 1]:
-            self._players[player_id].cast.set_volume_muted(True)
-        elif cmd == 'mute' and cmd_args in ['off', '0', 0]:
-            self._players[player_id].cast.set_volume_muted(False)
+            self._chromecasts[player_id].set_volume(try_parse_int(cmd_args)/100)
+        elif cmd == 'mute' and cmd_args == 'off':
+            self._chromecasts[player_id].set_volume_muted(False)
+        elif cmd == 'mute':
+            self._chromecasts[player_id].set_volume_muted(True)
+        elif cmd == 'power':
+            pass # power is not supported on chromecast
 
-    async def play_media(self, player_id, uri, queue_opt='play'):
+    async def player_queue(self, player_id, offset=0, limit=50):
+        ''' return the items in the player's queue '''
+        items = []
+        for item in self._chromecasts[player_id].queue[offset:limit]:
+            track = await self.__track_from_uri(item['media']['contentId'])
+            if track:
+                items.append(track)
+        return items
+    
+    async def create_queue_item(self, track):
+        '''create queue item from track info '''
+        return {
+            'autoplay' : True,
+            'preloadTime' : 10,
+            'playbackDuration': int(track.duration),
+            'startTime' : 0,
+            'activeTrackIds' : [],
+            'media': {
+                'contentId':  track.uri,
+                'customData': {'provider': track.provider},
+                'contentType': "audio/flac",
+                'streamType': 'BUFFERED',
+                'metadata': {
+                    'title': track.name,
+                    'artist': track.artists[0].name,
+                },
+                'duration': int(track.duration)
+            }
+        }
+    
+    async def play_media(self, player_id, media_items, queue_opt='play'):
         ''' 
             play media on a player
-            params:
-            - player_id: id of the player
-            - uri: the uri for/to the media item (e.g. spotify:track:1234 or http://pathtostream)
-            - queue_opt: 
-                replace: replace whatever is currently playing with this media
-                next: the given media will be played after the currently playing track
-                add: add to the end of the queue
-                play: keep existing queue but play the given item now
         '''
-        if uri.startswith('spotify:'):
-            # native spotify playback
-            uri = uri.replace('spotify://', '')
-            from pychromecast.controllers.spotify import SpotifyController
-            spotify =  self.mass.music.providers['spotify']
-            token = await spotify.get_token()
-            sp = SpController(token['accessToken'], token['expiresIn'])
-            self._players[player_id].cast.register_handler(sp)
-            sp.launch_app()
-            spotify_player_id = sp.device
-            if spotify_player_id:
-                return await spotify.play_media(spotify_player_id, uri)
-            else:
-                LOGGER.error('player not found in spotify! %s' % player_id)
-        elif uri.startswith('http'):
-            self._players[player_id].cast.media_controller.play_media(uri, 'audio/flac')
-        else:
-            raise Exception("Not supported media_type or uri")
+        player = self._chromecasts[player_id]
+        media_controller = player.media_controller
+        receiver_ctrl = media_controller._socket_client.receiver_controller
+        cur_queue_index = 0
+        if media_controller.queue_cur_id != None:
+            for item in media_controller.queue_items:
+                # status queue may contain at max 3 tracks (previous, current and next)
+                if item['itemId'] == media_controller.queue_cur_id:
+                    cur_queue_item = item
+                    # find out the current index
+                    for counter, value in enumerate(player.queue):
+                        if value['media']['contentId'] == cur_queue_item['media']['contentId']:
+                            cur_queue_index = counter
+                            break
+                    break
+        if (not media_controller.queue_cur_id or not media_controller.status.media_session_id or not player.queue):
+            queue_opt = 'replace'
 
+        new_queue_items = []
+        for track in media_items:
+            queue_item = await self.create_queue_item(track)
+            new_queue_items.append(queue_item)
+
+        if (queue_opt in ['replace', 'play'] or not media_controller.queue_cur_id or 
+                not media_controller.status.media_session_id or not player.queue):
+            # load new Chromecast queue with items
+            if queue_opt == 'add':
+                # append items to queue
+                player.queue = player.queue + new_queue_items
+                startindex = cur_queue_index
+            elif queue_opt == 'play':
+                # keep current queue but append new items at begin and start playing first item
+                player.queue = new_queue_items + player.queue[cur_queue_index:] + player.queue[:cur_queue_index]
+                startindex = 0
+            elif queue_opt == 'next':
+                # play the new items after the current playing item (insert before current next item)
+                player.queue = new_queue_items + player.queue[cur_queue_index:] + player.queue[:cur_queue_index]
+                startindex = cur_queue_index
+            else:
+                # overwrite the whole queue with new item(s)
+                player.queue = new_queue_items
+                startindex = 0
+            # load first 10 items as soon as possible
+            queuedata = { 
+                    "type": 'QUEUE_LOAD',
+                    "repeatMode":  "REPEAT_ALL" if player.repeat_enabled else "REPEAT_OFF",
+                    "shuffle": player.shuffle_enabled,
+                    "queueType": "PLAYLIST",
+                    "startIndex":    startindex,    # Item index to play after this request or keep same item if undefined
+                    "items": player.queue[:10]
+            }
+            await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
+            # append the rest of the items in the queue in chunks
+            for chunk in chunks(player.queue[10:], 100):
+                await asyncio.sleep(1)
+                queuedata = { "type": 'QUEUE_INSERT', "items": chunk }
+                await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
+        elif queue_opt == 'add':
+            # existing queue is playing: simply append items to the end of the queue (in small chunks)
+            player.queue = player.queue + new_queue_items
+            insertbefore = None
+            for chunk in chunks(new_queue_items, 100):
+                queuedata = { "type": 'QUEUE_INSERT', "items": chunk }
+                await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
+                await asyncio.sleep(1)
+        elif queue_opt == 'next':
+            # play the new items after the current playing item (insert before current next item)
+            player.queue = player.queue[:cur_queue_index] + new_queue_items + player.queue[cur_queue_index:]
+            queuedata = { 
+                        "type": 'QUEUE_INSERT',
+                        "insertBefore":     media_controller.queue_cur_id+1,
+                        "items":            new_queue_items[:200] # limit of the queue message
+                }
+            await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
+            
     ### Provider specific (helper) methods #####
-    
+
+    async def __send_player_queue(self, receiver_ctrl, media_controller, queuedata):
+        '''send new data to the CC queue'''
+        def app_launched_callback():
+                LOGGER.info("app_launched_callback")
+                """Plays media after chromecast has switched to requested app."""
+                queuedata['mediaSessionId'] = media_controller.status.media_session_id
+                LOGGER.info('')
+                LOGGER.info('')
+                media_controller.send_message(queuedata, inc_session_id=False)
+        receiver_ctrl.launch_app(media_controller.app_id,
+                                callback_function=app_launched_callback)
+
     async def __handle_player_state(self, chromecast, caststatus=None, mediastatus=None):
         ''' handle a player state message from the socket '''
         player_id = str(chromecast.uuid)
@@ -144,10 +229,8 @@ class ChromecastProvider(PlayerProvider):
 
     async def __parse_track(self, mediastatus):
         ''' parse track in CC to our internal format '''
-        if mediastatus.content_type == 'application/x-spotify.track':
-            track_id = mediastatus.content_id.replace('spotify:track:','')
-            track = await self.mass.music.providers['spotify'].track(track_id)
-        else:
+        track = await self.__track_from_uri(mediastatus.content_id)
+        if not track:
             # TODO: match this info manually in the DB!!
             track = Track()
             artist = mediastatus.artist
@@ -157,6 +240,23 @@ class ChromecastProvider(PlayerProvider):
             track.duration = try_parse_int(mediastatus.duration)
             if mediastatus.media_metadata and mediastatus.media_metadata.get('images'):
                 track.metadata.image = mediastatus.media_metadata['images'][-1]['url']
+        return track
+
+    async def __track_from_uri(self, uri):
+        ''' try to parse uri loaded in CC to a track we understand '''
+        track = None
+        if uri.startswith('spotify://track:') and 'spotify' in self.mass.music.providers:
+            track_id = uri.replace('spotify:track:','')
+            track = await self.mass.music.providers['spotify'].track(track_id)
+        elif uri.startswith('qobuz://') and 'qobuz' in self.mass.music.providers:
+            track_id = uri.replace('qobuz://','').replace('.flac','')
+            track = await self.mass.music.providers['qobuz'].track(track_id)
+        elif uri.startswith('http') and '/stream' in uri:
+            try:
+                item_id = uri.split('/')[-1]
+                provider = uri.split('/')[-2]
+                track = await self.mass.music.providers[provider].track(item_id)
+            except: pass
         return track
 
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):
@@ -184,7 +284,13 @@ class ChromecastProvider(PlayerProvider):
                 player = MusicPlayer()
                 player.player_id = player_id
                 player.name = chromecast.name
+                player.player_provider = self.prov_id
                 chromecast.start()
+                # patch the receive message method for handling queue status updates
+                chromecast.queue = []
+                chromecast.media_controller.queue_items = []
+                chromecast.media_controller.queue_cur_id = None
+                chromecast.media_controller.receive_message = types.MethodType(receive_message, chromecast.media_controller)
                 listenerCast = StatusListener(chromecast, self.__handle_player_state, self.mass.event_loop)
                 chromecast.register_status_listener(listenerCast)
                 listenerMedia = StatusMediaListener(chromecast, self.__handle_player_state, self.mass.event_loop)
@@ -196,11 +302,14 @@ class ChromecastProvider(PlayerProvider):
                     chromecast.register_handler(mz)
                     chromecast.register_connection_listener(MZConnListener(mz))
                     chromecast.wait()
-                player.cast = chromecast
-                player.player_provider = self.prov_id
+                self._chromecasts[player_id] = chromecast
                 self._players[player_id] = player
         LOGGER.info('Chromecast discovery done...')
 
+def chunks(l, n):
+    """Yield successive n-sized chunks from l."""
+    for i in range(0, len(l), n):
+        yield l[i:i + n]
 
 class StatusListener:
     def __init__(self, chromecast, callback, loop):
@@ -211,7 +320,6 @@ class StatusListener:
     def new_cast_status(self, status):
         asyncio.run_coroutine_threadsafe(self.__handle_player_state(self.chromecast, caststatus=status), self.loop)
 
-
 class StatusMediaListener:
     def __init__(self, chromecast, callback, loop):
         self.chromecast= chromecast
@@ -220,7 +328,6 @@ class StatusMediaListener:
 
     def new_media_status(self, status):
         asyncio.run_coroutine_threadsafe(self.__handle_player_state(self.chromecast, mediastatus=status), self.loop)
-
 
 class MZConnListener:
     def __init__(self, mz):
@@ -248,7 +355,6 @@ class MZListener:
         asyncio.run_coroutine_threadsafe(
                 self.__handle_group_members_update(self._mz), self._loop)
 
-
 class SpController(SpotifyController):
     """ Controller to interact with Spotify namespace. """
     def receive_message(self, message, data):
@@ -261,3 +367,19 @@ class SpController(SpotifyController):
             self.device = data['payload']['deviceID']
             self.is_launched = True
         return True
+
+def receive_message(self, message, data):
+    """ Called when a media message is received. """
+    #LOGGER.info('message: %s - data: %s'%(message, data))
+    if data['type'] == 'MEDIA_STATUS':
+        try:
+            self.queue_items = data['status'][0]['items']
+        except:
+            pass
+        try:
+            self.queue_cur_id = data['status'][0]['currentItemId']
+        except:
+            pass
+        self._process_media_status(data)
+        return True
+    return False

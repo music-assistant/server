@@ -60,7 +60,7 @@ class MusicBrainz():
     def __init__(self, event_loop, cache):
         self.event_loop = event_loop
         self.cache = cache
-        self.http_session = aiohttp.ClientSession(loop=event_loop)
+        self.http_session = aiohttp.ClientSession(loop=event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
         self.throttler = Throttler(rate_limit=1, period=1)
 
     async def search_artist_by_album(self, artistname, albumname=None, album_upc=None):
@@ -76,15 +76,16 @@ class MusicBrainz():
             params = {'query': 'artist:"%s" AND release:"%s"' % (searchartist, searchalbum)}
         result = await self.get_data(endpoint, params)
         if result and result.get('releases'):
-            for strictness in [1, 0.95, 0.9, 0.8]:
+            for strictness in [1, 0.95, 0.9]:
                 for item in result['releases']:
-                    for artist in item['artist-credit']:
-                        artist = artist['artist']
-                        if Matcher(None, artist['name'].lower(), artistname.lower()).ratio() >= strictness:
-                            return artist['id']
-                        for item in artist.get('aliases',[]):
-                            if item['name'].lower() == artistname.lower():
+                    if album_upc or Matcher(None, item['title'].lower(), albumname.lower()).ratio() >= strictness:
+                        for artist in item['artist-credit']:
+                            artist = artist['artist']
+                            if Matcher(None, artist['name'].lower(), artistname.lower()).ratio() >= strictness:
                                 return artist['id']
+                            for item in artist.get('aliases',[]):
+                                if item['name'].lower() == artistname.lower():
+                                    return artist['id']
         return ''
 
     async def search_artist_by_track(self, artistname, trackname=None, track_isrc=None):
@@ -101,21 +102,22 @@ class MusicBrainz():
             params = {'query': '"%s" AND artist:"%s"' % (searchtrack, searchartist)}
         result = await self.get_data(endpoint, params)
         if result and result.get('recordings'):
-            for strictness in [1, 0.95, 0.9, 0.8]:
+            for strictness in [1, 0.95]:
                 for item in result['recordings']:
-                    for artist in item['artist-credit']:
-                        artist = artist['artist']
-                        if Matcher(None, artist['name'].lower(), artistname.lower()).ratio() >= strictness:
-                            return artist['id']
-                        for item in artist.get('aliases',[]):
-                            if item['name'].lower() == artistname.lower():
+                    if track_isrc or Matcher(None, item['title'].lower(), trackname.lower()).ratio() >= strictness:
+                        for artist in item['artist-credit']:
+                            artist = artist['artist']
+                            if Matcher(None, artist['name'].lower(), artistname.lower()).ratio() >= strictness:
                                 return artist['id']
+                            for item in artist.get('aliases',[]):
+                                if item['name'].lower() == artistname.lower():
+                                    return artist['id']
         return ''
 
     @use_cache(30)
     async def get_data(self, endpoint, params={}):
         ''' get data from api'''
-        url = 'https://musicbrainz.org/ws/2/%s' % endpoint
+        url = 'http://musicbrainz.org/ws/2/%s' % endpoint
         headers = {'User-Agent': 'Music Assistant/1.0.0 https://github.com/marcelveldt'}
         params['fmt'] = 'json'
         async with self.throttler:
@@ -134,8 +136,8 @@ class FanartTv():
     def __init__(self, event_loop, cache):
         self.event_loop = event_loop
         self.cache = cache
-        self.http_session = aiohttp.ClientSession(loop=event_loop)
-        self.throttler = Throttler(rate_limit=5, period=1)
+        self.http_session = aiohttp.ClientSession(loop=event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
+        self.throttler = Throttler(rate_limit=1, period=1)
 
     async def artist_images(self, mb_artist_id):
         ''' retrieve images by musicbrainz artist id '''
