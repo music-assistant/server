@@ -45,10 +45,12 @@ class Player():
         # handle some common workarounds
         if cmd in ['pause', 'play'] and cmd_args == 'toggle':
             cmd = 'pause' if player.state == PlayerState.Playing else 'play'
+        if cmd == 'power' and cmd_args == 'toggle':
+            cmd_args = 'off' if player.powered else 'on'
         if cmd == 'volume' and cmd_args == 'up':
-            cmd_args = try_parse_int(cmd_args) + 2
+            cmd_args = player.volume_level + 2
         elif cmd == 'volume' and cmd_args == 'down':
-            cmd_args = try_parse_int(cmd_args) - 2
+            cmd_args = player.volume_level - 2
         if player.group_parent and cmd not in ['power', 'volume', 'mute']:
             # redirect playlist related commands to parent player
             return await self.player_command(player.group_parent, cmd, cmd_args)

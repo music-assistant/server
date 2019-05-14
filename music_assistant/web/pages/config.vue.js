@@ -22,9 +22,6 @@ var Config = Vue.component('Config', {
             </template>
             <template v-for="(conf_value, conf_key) in conf.base">
                 <v-list-tile>
-                  <v-list-tile-avatar>
-                      <img :src="'images/icons/' + conf_key + '.png'"/>
-                  </v-list-tile-avatar>
                   <v-list-tile-content>
                     <v-list-tile-title class="title">{{ conf_key }}</v-list-tile-title>
                   </v-list-tile-content>

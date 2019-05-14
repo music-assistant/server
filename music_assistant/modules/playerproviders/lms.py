@@ -187,7 +187,8 @@ class LMSProvider(PlayerProvider):
                 # player is a groupplayer, retrieve childs
                 group_player_child_ids = await self.__get_group_childs(player_id)
                 for child_player_id in group_player_child_ids:
-                    self._players[child_player_id].group_parent = player_id
+                    if child_player_id in self._players:
+                        self._players[child_player_id].group_parent = player_id
             elif player.group_parent:
                 # check if player parent is still correct
                 group_player_child_ids = await self.__get_group_childs(player.group_parent)

@@ -5,3 +5,4 @@
 music_assistant/config.json
 *.cert
 *.pem
+music_assistant/testrun.sh

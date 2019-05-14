@@ -15,16 +15,16 @@ import time
 
 from database import Database
 from metadata import MetaData
-from api import Api
 from utils import run_periodic, LOGGER
 from cache import Cache
 from music import Music
 from player import Player
 from modules.homeassistant import setup as hass_setup
+from modules.web import setup as web_setup
 
 class Main():
 
-    def __init__(self, datapath, ssl_cert, ssl_key):
+    def __init__(self, datapath):
         uvloop.install()
         self._datapath = datapath
         self.parse_config()
@@ -40,12 +40,12 @@ class Main():
         self.db = Database(datapath, self.event_loop)
         # allow some time for the database to initialize
         while not self.db.db_ready:
-            time.sleep(0.5) 
+            time.sleep(0.15)
         self.cache = Cache(datapath)
         self.metadata = MetaData(self.event_loop, self.db, self.cache)
 
         # init modules
-        self.api = Api(self, ssl_cert, ssl_key)
+        self.web = web_setup(self)
         self.hass = hass_setup(self)
         self.music = Music(self)
         self.player = Player(self)
@@ -112,16 +112,14 @@ class Main():
         ''' properly close all connections'''
         print('stop requested!')
         self.save_config()
-        self.api.stop()
+        self.web.stop()
         print('stopping event loop...')
         self.event_loop.stop()
         self.event_loop.close()
 
 if __name__ == "__main__":
-    datapath = sys.argv[1:]
+    datapath = sys.argv[1]
     if not datapath:
         datapath = os.path.dirname(os.path.abspath(__file__))
-    ssl_cert = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'certificate.cert')
-    ssl_key = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'privkey.pem')
-    Main(datapath, ssl_cert, ssl_key)
+    Main(datapath)
     

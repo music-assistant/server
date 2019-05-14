@@ -1,11 +1,13 @@
 {
   "name": "Music Assistant",
-  "version": "0.0.1",
+  "version": "0.0.4",
   "description": "Media library manager for (streaming) media",
   "slug": "music_assistant",
   "startup": "application",
   "boot": "auto",
-  "map": [],
+  "arch": ["amd64"],
+  "map": ["share:rw","ssl"],
+  "webui": "http://[HOST]:[PORT:8095]",
   "host_network": true,
   "options": {
   },

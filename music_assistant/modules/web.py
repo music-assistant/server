@@ -12,19 +12,49 @@ from functools import partial
 json_serializer = partial(json.dumps, default=lambda x: x.__dict__)
 import ssl
 
-class Api():
-    ''' expose our data through json api '''
+def setup(mass):
+    ''' setup the module and read/apply config'''
+    create_config_entries(mass.config)
+    conf = mass.config['base']['web']
+    if conf['ssl_certificate'] and os.path.isfile(conf['ssl_certificate']):
+        ssl_cert = conf['ssl_certificate']
+    else:
+        ssl_cert = ''
+    if conf['ssl_key'] and os.path.isfile(conf['ssl_key']):
+        ssl_key = conf['ssl_key']
+    else:
+        ssl_key = ''
+    hostname = conf['hostname']
+    return Web(mass, ssl_cert, ssl_key, hostname)
+
+def create_config_entries(config):
+    ''' get the config entries for this module (list with key/value pairs)'''
+    config_entries = [
+        ('ssl_certificate', '', 'Path to ssl certificate file'), 
+        ('ssl_key', '', 'Path to ssl keyfile'),
+        ('hostname', '', 'Hostname (FQDN used in the certificate)')
+        ]
+    if not config['base'].get('web'):
+        config['base']['web'] = {}
+    config['base']['web']['__desc__'] = config_entries
+    for key, def_value, desc in config_entries:
+        if not key in config['base']['web']:
+            config['base']['web'][key] = def_value
+
+class Web():
+    ''' webserver and json/websocket api '''
     
-    def __init__(self, mass, ssl_cert, ssl_key):
+    def __init__(self, mass, ssl_cert, ssl_key, hostname):
         self.mass = mass
         self._ssl_cert = ssl_cert
         self._ssl_key = ssl_key
+        self._hostname = hostname
         self.http_session = aiohttp.ClientSession()
         mass.event_loop.create_task(self.setup_web())
 
     def stop(self):
-        self.runner.cleanup()
-        self.http_session.close()
+        asyncio.create_task(self.runner.cleanup())
+        asyncio.create_task(self.http_session.close())
 
     async def setup_web(self):
         app = web.Application()
@@ -51,12 +81,13 @@ class Api():
         
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        ssl_context.load_cert_chain(self._ssl_cert, self._ssl_key)
         http_site = web.TCPSite(self.runner, '0.0.0.0', 8095)
-        https_site = web.TCPSite(self.runner, '0.0.0.0', 8096, ssl_context=ssl_context)
         await http_site.start()
-        await https_site.start()
+        if self._ssl_cert and self._ssl_key:
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(self._ssl_cert, self._ssl_key)
+            https_site = web.TCPSite(self.runner, '0.0.0.0', 8096, ssl_context=ssl_context)
+            await https_site.start()
 
     async def get_items(self, request):
         ''' get multiple library items'''

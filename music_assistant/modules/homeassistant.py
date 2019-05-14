@@ -29,40 +29,42 @@ import slugify as slug
 
 def setup(mass):
     ''' setup the module and read/apply config'''
-    if not mass.config['base'].get('homeassistant'):
-        mass.config['base']['homeassistant'] = {}
+    create_config_entries(mass.config)
     conf = mass.config['base']['homeassistant']
-    conf['__desc__'] = config_entries()
-    for key, def_value, desc in config_entries():
-        if not key in conf:
-            conf[key] = def_value
     enabled = conf.get(CONF_ENABLED)
     token = conf.get('token')
     url = conf.get('url')
     if enabled and url and token:
-        # append hass player config settings
-        hass_player_conf = [("hass_power_entity", "", "Attach player power to homeassistant entity"),
-                        ("hass_power_entity_source", "", "Source on the homeassistant entity (optional)"),
-                        ("hass_volume_entity", "", "Attach player volume to homeassistant entity")]
-        for key, default, desc in hass_player_conf:
-            entry_found = False
-            for value in mass.config['player_settings']['__desc__']:
-                if value[0] == key:
-                    entry_found = True
-                    break
-            if not entry_found:
-                mass.config['player_settings']['__desc__'].append((key, default, desc))
         return HomeAssistant(mass, url, token)
     return None
 
-def config_entries():
+def create_config_entries(config):
     ''' get the config entries for this module (list with key/value pairs)'''
-    return [
+    config_entries = [
         (CONF_ENABLED, False, CONF_ENABLED),
         ('url', 'localhost', 'URL to homeassistant (e.g. https://homeassistant:8123)'), 
         ('token', '<password>', 'Long Lived Access Token'),
         ('publish_players', True, 'Publish players to Home Assistant')
         ]
+    if not config['base'].get('homeassistant'):
+        config['base']['homeassistant'] = {}
+    config['base']['homeassistant']['__desc__'] = config_entries
+    for key, def_value, desc in config_entries:
+        if not key in config['base']['homeassistant']:
+            config['base']['homeassistant'][key] = def_value
+    # append hass player config settings
+    if config['base']['homeassistant'][CONF_ENABLED]:
+        hass_player_conf = [("hass_power_entity", "", "Attach player power to homeassistant entity"),
+                        ("hass_power_entity_source", "", "Source on the homeassistant entity (optional)"),
+                        ("hass_volume_entity", "", "Attach player volume to homeassistant entity")]
+        for key, default, desc in hass_player_conf:
+            entry_found = False
+            for value in config['player_settings']['__desc__']:
+                if value[0] == key:
+                    entry_found = True
+                    break
+            if not entry_found:
+                config['player_settings']['__desc__'].append((key, default, desc))
 
 class HomeAssistant():
     ''' HomeAssistant integration '''
@@ -135,8 +137,15 @@ class HomeAssistant():
                     await self.mass.player.player_command(player_id, 'power', 'on')
                 elif service == 'turn_off':
                     await self.mass.player.player_command(player_id, 'power', 'off')
+                elif service == 'toggle':
+                    await self.mass.player.player_command(player_id, 'power', 'toggle')
                 elif service == 'volume_mute':
-                    await self.mass.player.player_command(player_id, 'mute', service_data['is_volume_muted'])
+                    args = 'on' if service_data['is_volume_muted'] else 'off'
+                    await self.mass.player.player_command(player_id, 'mute', args)
+                elif service == 'volume_up':
+                    await self.mass.player.player_command(player_id, 'volume', 'up')
+                elif service == 'volume_down':
+                    await self.mass.player.player_command(player_id, 'volume', 'down')
                 elif service == 'volume_set':
                     volume_level = service_data['volume_level']*100
                     await self.mass.player.player_command(player_id, 'volume', volume_level)
