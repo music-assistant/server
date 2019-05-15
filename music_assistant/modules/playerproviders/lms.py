@@ -116,13 +116,11 @@ class LMSProvider(PlayerProvider):
     async def player_queue(self, player_id, offset=0, limit=50):
         ''' return the items in the player's queue '''
         items = []
-        cur_index = await self.__get_data(["playlist", "index", "?"], player_id=player_id)
-        cur_index = int(cur_index['_index'])
-        offset += cur_index # we do not care about already played tracks
         player_details = await self.__get_data(["status", offset, limit, "tags:aAcCdegGijJKlostuxyRwk"], player_id=player_id)
-        for item in player_details['playlist_loop']:
-            track = await self.__parse_track(item)
-            items.append(track)
+        if 'playlist_loop' in player_details:
+            for item in player_details['playlist_loop']:
+                track = await self.__parse_track(item)
+                items.append(track)
         return items
 
     ### Provider specific (helper) methods #####
@@ -223,8 +221,9 @@ class LMSProvider(PlayerProvider):
         track = Track()
         track.name = track_details['title']
         track.duration = int(track_details['duration'])
-        image = "http://%s:%s%s" % (self._host, self._port, track_details['artwork_url'])
-        track.metadata['image'] = image
+        if 'artwork_url' in track_details:
+            image = "http://%s:%s%s" % (self._host, self._port, track_details['artwork_url'])
+            track.metadata['image'] = image
         return track
 
     async def __get_group_childs(self, group_player_id):
@@ -237,7 +236,7 @@ class LMSProvider(PlayerProvider):
     
     async def __lms_events(self):
         # Receive events from LMS through CometD socket
-        while True:
+        while self.mass.event_loop.is_running():
             try:
                 last_msg_received = 0
                 async with Client("http://%s:%s/cometd" % (self._host, self._port), 

@@ -74,6 +74,7 @@ class HomeAssistant():
         self._published_players = {}
         self._tracked_states = {}
         self._state_listeners = []
+        self._sources = []
         self._token = token
         if url.startswith('https://'):
             self._use_ssl = True
@@ -87,6 +88,7 @@ class HomeAssistant():
         LOGGER.info('Homeassistant integration is enabled')
         mass.event_loop.create_task(self.__hass_websocket())
         mass.event_loop.create_task(self.mass.add_event_listener(self.mass_event))
+        mass.event_loop.create_task(self.__get_sources())
 
     async def get_state(self, entity_id, attribute='state', register_listener=None):
         ''' get state of a hass entity'''
@@ -159,8 +161,32 @@ class HomeAssistant():
                     await self.mass.player.player_command(player_id, 'next')
                 elif service == 'media_play_pause':
                     await self.mass.player.player_command(player_id, 'pause', 'toggle')
-                # TODO: handle media play !
+                elif service == 'play_media':
+                    return await self.__handle_play_media(player_id, service_data)
 
+    async def __handle_play_media(self, player_id, service_data):
+        ''' handle play_media request from homeassistant'''
+        media_content_type = service_data['media_content_type'].lower()
+        media_content_id = service_data['media_content_id']
+        queue_opt = 'add' if service_data.get('enqueue') else 'play'
+        if media_content_type == 'playlist' and not '://' in media_content_id:
+            media_items = []
+            for playlist_str in media_content_id.split(','):
+                playlist_str = playlist_str.strip()
+                playlist = await self.mass.music.playlist_by_name(playlist_str)
+                if playlist:
+                    media_items.append(playlist)
+            return await self.mass.player.play_media(player_id, media_items, queue_opt)
+        elif media_content_type == 'playlist' and 'spotify://playlist' in media_content_id:
+            # TODO: handle parsing of other uri's here
+            playlist = self.mass.music.providers['spotify'].playlist(media_content_id.split(':')[-1])
+            return await self.mass.player.play_media(player_id, playlist, queue_opt)
+        elif media_content_id.startswith('http'):
+            track = Track()
+            track.uri = media_content_id
+            track.provider = 'http'
+            return await self.mass.player.play_media(player_id, track, queue_opt)
+    
     async def publish_player(self, player):
         ''' publish player details to hass'''
         if not self.mass.config['base']['homeassistant']['publish_players']:
@@ -169,8 +195,10 @@ class HomeAssistant():
         entity_id = 'media_player.mass_' + slug.slugify(player.name, separator='_').lower()
         state = player.state if player.powered else 'off'
         state_attributes = {
-                "supported_features": 58303, 
+                "supported_features": 65471, 
                 "friendly_name": player.name,
+                "source_list": self._sources,
+                "source": 'unknown',
                 "volume_level": player.volume_level/100,
                 "is_volume_muted": player.muted,
                 "media_duration": player.cur_item.duration if player.cur_item else 0,
@@ -196,6 +224,11 @@ class HomeAssistant():
             msg['service_data'] = service_data
         return await self.__send_ws(msg)
 
+    @run_periodic(120)
+    async def __get_sources(self):
+        ''' we build a list of all playlists to use as player sources '''
+        self._sources = [playlist.name for playlist in await self.mass.music.playlists()]
+
     async def __set_state(self, entity_id, new_state, state_attributes={}):
         ''' set state to hass entity '''
         data = {
@@ -207,7 +240,7 @@ class HomeAssistant():
     
     async def __hass_websocket(self):
         ''' Receive events from Hass through websockets '''
-        while True:
+        while self.mass.event_loop.is_running():
             try:
                 protocol = 'wss' if self._use_ssl else 'ws'
                 async with self.http_session.ws_connect('%s://%s/api/websocket' % (protocol, self._host)) as ws:
@@ -250,7 +283,7 @@ class HomeAssistant():
                             break
             except Exception as exc:
                 LOGGER.exception(exc)
-                asyncio.sleep(10)
+                await asyncio.sleep(10)
 
     async def __get_data(self, endpoint):
         ''' get data from hass rest api'''

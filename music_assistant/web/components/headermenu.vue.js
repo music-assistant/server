@@ -24,7 +24,7 @@ Vue.component("headermenu", {
             </v-btn>
             <v-spacer></v-spacer>
             <v-spacer></v-spacer>
-            <v-btn icon>
+            <v-btn icon v-on:click="$router.push('/search')">
                 <v-icon>search</v-icon>
               </v-btn>
         </v-layout>

@@ -91,6 +91,13 @@ class Music():
             return await self.mass.db.playlist(item_id)
         return await self.providers[provider].playlist(item_id)
 
+    async def playlist_by_name(self, name):
+        ''' get playlist by name '''
+        for playlist in await self.playlists():
+            if playlist.name == name:
+                return playlist
+        return None
+    
     async def artist_toptracks(self, artist_id, provider='database'):
         ''' get top tracks for given artist '''
         artist = await self.artist(artist_id, provider)

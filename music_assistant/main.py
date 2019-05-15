@@ -4,6 +4,7 @@
 import sys
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 import re
 import uvloop
 import os
@@ -32,10 +33,6 @@ class Main():
         self.bg_executor = ThreadPoolExecutor(max_workers=5)
         self.event_listeners = {}
 
-        import signal
-        signal.signal(signal.SIGINT, self.stop)
-        signal.signal(signal.SIGTERM, self.stop)
-
         # init database and metadata modules
         self.db = Database(datapath, self.event_loop)
         # allow some time for the database to initialize
@@ -51,7 +48,14 @@ class Main():
         self.player = Player(self)
 
         # start the event loop
-        self.event_loop.run_forever()
+        try:
+            self.event_loop.run_forever()
+        except (KeyboardInterrupt, SystemExit):
+            LOGGER.info('Exit requested!')
+            self.save_config()
+            self.event_loop.close()
+            LOGGER.info('Shutdown complete.')
+
 
     async def event(self, msg, msg_details=None):
         ''' signal event '''
@@ -85,37 +89,15 @@ class Main():
             "base": {},
             "musicproviders": {},
             "playerproviders": {},
-            "player_settings": 
-                {
-                    "__desc__":
-                    [
-                        ("enabled", False, "Enable player"),
-                        ("name", "", "Custom name for this player"),
-                        ("group_parent", "<player>", "Group this player with another player"),
-                        ("mute_as_power", False, "Use muting as power control"),
-                        ("disable_volume", False, "Disable volume controls"),
-                        ("apply_group_volume", False, "Apply group volume to childs (for group players only)")
-                    ]
-                }
+            "player_settings": {}
             }
         conf_file = os.path.join(self._datapath, 'config.json')
         if os.path.isfile(conf_file):
             with open(conf_file) as f:
                 data = f.read()
-                stored_config = json.loads(data)
-                for key in config.keys():
-                    if stored_config.get(key):
-                        config[key].update(stored_config[key])
+                if data:
+                    config = json.loads(data)
         self.config = config
-
-    def stop(self, signum=None, frame=None):
-        ''' properly close all connections'''
-        print('stop requested!')
-        self.save_config()
-        self.web.stop()
-        print('stopping event loop...')
-        self.event_loop.stop()
-        self.event_loop.close()
 
 if __name__ == "__main__":
     datapath = sys.argv[1]

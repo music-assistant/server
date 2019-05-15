@@ -1,6 +1,6 @@
 {
   "name": "Music Assistant",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Media library manager for (streaming) media",
   "slug": "music_assistant",
   "startup": "application",

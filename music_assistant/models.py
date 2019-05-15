@@ -460,9 +460,7 @@ class MusicPlayer():
         self.muted = False
         self.group_parent = None # set to id of REAL group/parent player
         self.is_group = False # is this player a group player ?
-        self.disable_volume = False
-        self.mute_as_power = False
-        self.apply_group_volume = False
+        self.settings = {}
         self.enabled = False
 
 class PlayerProvider():

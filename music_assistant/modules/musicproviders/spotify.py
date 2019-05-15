@@ -255,6 +255,7 @@ class SpotifyProvider(MusicProvider):
             'bit_depth': 16,
             'url': 'http://%s/stream/spotify/%s' % (host, track_id)
         }
+    
     async def get_stream(self, track_id):
         ''' get audio stream for a track '''
         sox_effects='vol -12 dB'
