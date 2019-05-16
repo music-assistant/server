@@ -1,13 +1,6 @@
 var Browse = Vue.component('Browse', {
   template: `
     <section>
-      <v-flex xs12>
-        <v-card class="flex" tile style="background-color:rgba(0,0,0,.54);color:#ffffff;"> 
-          <v-card-title class="title justify-center">
-              {{ $globals.windowtitle }}
-          </v-card-title>
-        </v-card>
-      </v-flex>    
       <v-list two-line>
         <listviewItem 
             v-for="(item, index) in items"
@@ -34,7 +27,7 @@ var Browse = Vue.component('Browse', {
   created() {
     this.showavatar = true;
     mediatitle = 
-    this.$globals.windowtitle = this.mediatype.charAt(0).toUpperCase() + this.mediatype.slice(1);
+    this.$globals.windowtitle = this.$t(this.mediatype)
     this.scroll(this.Browse);
     this.getItems();
   },

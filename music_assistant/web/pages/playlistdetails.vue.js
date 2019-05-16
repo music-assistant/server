@@ -36,7 +36,7 @@ var PlaylistDetails = Vue.component('PlaylistDetails', {
     }
   },
   created() {
-    this.$globals.windowtitle = "Playlist info"
+    this.$globals.windowtitle = ""
     this.getInfo();
     this.getPlaylistTracks();
     this.scroll(this.Browse);

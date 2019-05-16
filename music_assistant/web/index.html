@@ -20,7 +20,8 @@
                 <v-content>
                     <headermenu></headermenu>
                     <player></player>
-                    <router-view :key="$route.path"></router-view>
+                    <router-view app :key="$route.path"></router-view>      
+                    <searchbox/>             
                 </v-content>
                 <v-dialog
                     v-model="$globals.loading"
@@ -41,12 +42,13 @@
                         </v-card-text>
                     </v-card>
                 </v-dialog>
-                
             </v-app>
         </div>
 
 
-        <script src="https://cdn.jsdelivr.net/npm/vue@2.6.10/dist/vue.js"></script>
+        <!-- <script src="https://cdn.jsdelivr.net/npm/vue@2.6.10/dist/vue.js"></script> -->
+        <script src="https://unpkg.com/vue/dist/vue.js"></script>
+        <script src="https://unpkg.com/vue-i18n/dist/vue-i18n.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/vuetify/dist/vuetify.js"></script>
         <script src="https://unpkg.com/vue-router/dist/vue-router.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.10/lodash.min.js"></script>
@@ -131,6 +133,7 @@
         <script src='./pages/playlistdetails.vue.js'></script>
         <script src='./pages/search.vue.js'></script>
         <script src='./pages/queue.vue.js'></script>
+        <script src='./pages/config.vue.js'></script>
         
 
         <script src='./components/headermenu.vue.js'></script>
@@ -141,12 +144,15 @@
         <script src='./components/volumecontrol.vue.js'></script>
         <script src='./components/infoheader.vue.js'></script>
         <script src='./components/qualityicon.vue.js'></script>
-        <script src='./pages/config.vue.js'></script>
+        <script src='./components/searchbox.vue.js'></script>
+        
+        <script src='./strings.js'></script>
         
         <script>
         Vue.use(VueRouter);
         Vue.use(VeeValidate);
         Vue.use(Vuetify);
+        Vue.use(VueI18n);
 
 
         const routes = [
@@ -209,6 +215,7 @@
                 windowtitle: 'Home',
                 loading: false,
                 showplaymenu: false,
+                showsearchbox: false,
                 playmenuitem: null
             }
         })
@@ -217,12 +224,19 @@
         Vue.prototype.toggleLibrary = toggleLibrary;
         Vue.prototype.showPlayMenu = showPlayMenu;
         Vue.prototype.clickItem= clickItem;
+        
+        const i18n = new VueI18n({
+            locale: navigator.language.split('-')[0],
+            fallbackLocale: 'en',
+            enableInSFC: true,
+            messages
+            })
 
         var app = new Vue({
+            i18n,
             el: '#app',
             watch: {},
             mounted() {
-
             },
             data: { },
             methods: {},

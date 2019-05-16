@@ -1,13 +1,6 @@
 var Config = Vue.component('Config', {
   template: `
     <section>
-      <v-flex xs12>
-        <v-card class="flex" tile style="background-color:rgba(0,0,0,.54);color:#ffffff;"> 
-          <v-card-title class="title justify-center">
-              {{ $globals.windowtitle }}
-          </v-card-title>
-        </v-card>
-      </v-flex>    
 
       <v-list two-line>
 
@@ -16,7 +9,7 @@ var Config = Vue.component('Config', {
             <template v-slot:activator>
               <v-list-tile>
                 <v-list-tile-content>
-                  <v-list-tile-title>Generic settings</v-list-tile-title>
+                  <v-list-tile-title>{{ $t('generic_settings') }}</v-list-tile-title>
                 </v-list-tile-content>
               </v-list-tile>
             </template>
@@ -29,10 +22,10 @@ var Config = Vue.component('Config', {
                 
                 <div v-for="conf_item_key in conf.base[conf_key].__desc__">
                   <v-list-tile>
-                        <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="conf_item_key[2]"></v-switch>
-                        <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box type="password"></v-text-field>
-                        <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box type="password"></v-select>
-                        <v-text-field v-else v-model="conf.base[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box></v-text-field>
+                        <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])"></v-switch>
+                        <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-text-field>
+                        <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-select>
+                        <v-text-field v-else v-model="conf.base[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box></v-text-field>
                   </v-list-tile>
               </div>
               <v-divider></v-divider>
@@ -45,7 +38,7 @@ var Config = Vue.component('Config', {
               <template v-slot:activator>
                 <v-list-tile>
                   <v-list-tile-content>
-                    <v-list-tile-title>Music Providers</v-list-tile-title>
+                    <v-list-tile-title>{{ $t('music_providers') }}</v-list-tile-title>
                   </v-list-tile-content>
                 </v-list-tile>
               </template>
@@ -61,10 +54,10 @@ var Config = Vue.component('Config', {
                   
                   <div v-for="conf_item_key in conf.musicproviders[conf_key].__desc__">
                     <v-list-tile>
-                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="conf_item_key[2]"></v-switch>
-                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box type="password"></v-text-field>
-                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box type="password"></v-select>
-                          <v-text-field v-else v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box></v-text-field>
+                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])"></v-switch>
+                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-text-field>
+                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-select>
+                          <v-text-field v-else v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box></v-text-field>
                     </v-list-tile>
                 </div>
                 <v-divider></v-divider>
@@ -76,7 +69,7 @@ var Config = Vue.component('Config', {
               <template v-slot:activator>
                 <v-list-tile>
                   <v-list-tile-content>
-                    <v-list-tile-title>Player Providers</v-list-tile-title>
+                    <v-list-tile-title>{{ $t('player_providers') }}</v-list-tile-title>
                   </v-list-tile-content>
                 </v-list-tile>
               </template>
@@ -92,10 +85,10 @@ var Config = Vue.component('Config', {
                   
                   <div v-for="conf_item_key in conf.playerproviders[conf_key].__desc__">
                     <v-list-tile>
-                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="conf_item_key[2]"></v-switch>
-                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box type="password"></v-text-field>
-                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box type="password"></v-select>
-                          <v-text-field v-else v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="conf_item_key[2]" box></v-text-field>
+                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])"></v-switch>
+                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-text-field>
+                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-select>
+                          <v-text-field v-else v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box></v-text-field>
                     </v-list-tile>
                 </div>
                 <v-divider></v-divider>
@@ -107,7 +100,7 @@ var Config = Vue.component('Config', {
               <template v-slot:activator>
                 <v-list-tile>
                   <v-list-tile-content>
-                    <v-list-tile-title>Player settings</v-list-tile-title>
+                    <v-list-tile-title>{{ $t('player_settings') }}</v-list-tile-title>
                   </v-list-tile-content>
                 </v-list-tile>
               </template>
@@ -121,22 +114,22 @@ var Config = Vue.component('Config', {
                   
                   <div v-for="conf_item_key in conf.player_settings.__desc__" v-if="conf.player_settings[key].enabled">
                     <v-list-tile>
-                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="conf_item_key[2]"></v-switch>
-                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="conf_item_key[2]" box type="password"></v-text-field>
-                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="conf_item_key[2]" 
+                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t(conf_item_key[2])"></v-switch>
+                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-text-field>
+                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t(conf_item_key[2])" 
                             :items="playersLst"
                             item-text="name"
                             item-value="id" box>
                           </v-select>
-                          <v-text-field v-else v-model="conf.player_settings[key][conf_item_key[0]]" :label="conf_item_key[2]" box></v-text-field>
+                          <v-text-field v-else v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box></v-text-field>
                     </v-list-tile>
                     <v-list-tile v-if="!conf.player_settings[key].enabled">
-                          <v-switch v-model="conf.player_settings[key].enabled" label="Enabled"></v-switch>
+                          <v-switch v-model="conf.player_settings[key].enabled" :label="$t('enabled')"></v-switch>
                     </v-list-tile>
                 </div>
                 <div v-if="!conf.player_settings[key].enabled">
                     <v-list-tile>
-                        <v-switch v-model="conf.player_settings[key].enabled" label="Enabled"></v-switch>
+                        <v-switch v-model="conf.player_settings[key].enabled" :label="$t('enabled')"></v-switch>
                     </v-list-tile>
                 </div>
                 <v-divider></v-divider>
@@ -166,7 +159,7 @@ var Config = Vue.component('Config', {
 
   },
   created() {
-    this.$globals.windowtitle = "Configuration";
+    this.$globals.windowtitle = this.$t('settings');
     this.getPlayers();
     this.getConfig();
     console.log(this.$globals.all_players);

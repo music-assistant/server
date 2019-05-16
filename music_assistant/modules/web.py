@@ -30,9 +30,9 @@ def setup(mass):
 def create_config_entries(config):
     ''' get the config entries for this module (list with key/value pairs)'''
     config_entries = [
-        ('ssl_certificate', '', 'Path to ssl certificate file'), 
-        ('ssl_key', '', 'Path to ssl keyfile'),
-        ('hostname', '', 'Hostname (FQDN used in the certificate)')
+        ('ssl_certificate', '', 'web_ssl_cert'), 
+        ('ssl_key', '', 'web_ssl_key'),
+        ('hostname', '', 'web_ssl_host')
         ]
     if not config['base'].get('web'):
         config['base']['web'] = {}

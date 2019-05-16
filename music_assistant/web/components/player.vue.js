@@ -39,7 +39,7 @@ Vue.component("player", {
                   <v-btn flat icon @click="$router.push('/queue/' + active_player_id)">
                       <v-flex xs12 class="vertical-btn">
                       <v-icon large>queue_music</v-icon>
-                      <span class="caption">Queue</span>
+                      <span class="caption">{{ $t('queue') }}</span>
                     </v-flex>    
                   </v-btn>
               </v-list-tile-action> 
@@ -116,9 +116,6 @@ Vue.component("player", {
                         <volumecontrol v-bind:players="players" v-bind:player_id="player.player_id" v-on:setPlayerVolume="setPlayerVolume" v-on:togglePlayerPower="togglePlayerPower"/>
                       </v-menu>
                   </v-list-tile-action> 
-
-
-
               </v-list-tile>
             <v-divider></v-divider>
             </div>

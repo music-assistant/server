@@ -56,7 +56,7 @@ var AlbumDetails = Vue.component('AlbumDetails', {
     }
   },
   created() {
-    this.$globals.windowtitle = "Album info"
+    this.$globals.windowtitle = ""
     this.getInfo();
     this.getAlbumTracks();
   },

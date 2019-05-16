@@ -14,7 +14,26 @@ Vue.component("headermenu", {
         </v-list>
     </v-navigation-drawer>
     
-    <v-toolbar fixed flat dense dark color="transparent" scroll-off-screen > 
+
+    <v-toolbar app flat dense dark v-if="$globals.windowtitle" > 
+        <v-layout align-center>
+            <v-btn icon v-on:click="menu=!menu">
+              <v-icon>menu</v-icon>
+            </v-btn>
+            <v-btn @click="$router.go(-1)" icon>
+              <v-icon>arrow_back</v-icon>
+            </v-btn>
+            <v-spacer></v-spacer>
+            <v-card-title class="title justify-center">
+                      {{ $globals.windowtitle }}
+                  </v-card-title>
+            <v-spacer></v-spacer>
+            <v-btn icon v-on:click="$globals.showsearchbox = true">
+                <v-icon>search</v-icon>
+              </v-btn>
+        </v-layout>
+    </v-toolbar>
+    <v-toolbar flat fixed dense dark scroll-off-screen color="transparent" v-if="!$globals.windowtitle" > 
         <v-layout align-center>
             <v-btn icon v-on:click="menu=!menu">
               <v-icon>menu</v-icon>
@@ -24,7 +43,7 @@ Vue.component("headermenu", {
             </v-btn>
             <v-spacer></v-spacer>
             <v-spacer></v-spacer>
-            <v-btn icon v-on:click="$router.push('/search')">
+            <v-btn icon v-on:click="$globals.showsearchbox = true">
                 <v-icon>search</v-icon>
               </v-btn>
         </v-layout>
@@ -38,13 +57,13 @@ Vue.component("headermenu", {
     return {
       menu: false,
       items: [
-        { title: "Home", icon: "home", path: "/" },
-        { title: "Artists", icon: "person", path: "/artists" },
-        { title: "Albums", icon: "album", path: "/albums" },
-        { title: "Tracks", icon: "audiotrack", path: "/tracks" },
-        { title: "Playlists", icon: "playlist_play", path: "/playlists" },
-        { title: "Search", icon: "search", path: "/search" },
-        { title: "Config", icon: "settings", path: "/config" }
+        { title: this.$t('home'), icon: "home", path: "/" },
+        { title: this.$t('artists'), icon: "person", path: "/artists" },
+        { title: this.$t('albums'), icon: "album", path: "/albums" },
+        { title: this.$t('tracks'), icon: "audiotrack", path: "/tracks" },
+        { title: this.$t('playlists'), icon: "playlist_play", path: "/playlists" },
+        { title: this.$t('search'), icon: "search", path: "/search" },
+        { title: this.$t('settings'), icon: "settings", path: "/config" }
       ]
     }
   },

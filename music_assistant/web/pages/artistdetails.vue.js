@@ -59,7 +59,7 @@ var ArtistDetails = Vue.component('ArtistDetails', {
     }
   },
   created() {
-    this.$globals.windowtitle = "Artist info"
+    this.$globals.windowtitle = ""
     this.getInfo();
   },
   methods: {

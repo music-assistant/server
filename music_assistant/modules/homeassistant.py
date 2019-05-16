@@ -41,10 +41,10 @@ def setup(mass):
 def create_config_entries(config):
     ''' get the config entries for this module (list with key/value pairs)'''
     config_entries = [
-        (CONF_ENABLED, False, CONF_ENABLED),
-        ('url', 'localhost', 'URL to homeassistant (e.g. https://homeassistant:8123)'), 
-        ('token', '<password>', 'Long Lived Access Token'),
-        ('publish_players', True, 'Publish players to Home Assistant')
+        (CONF_ENABLED, False, 'enabled'),
+        ('url', 'localhost', 'hass_url'), 
+        ('token', '<password>', 'hass_token'),
+        ('publish_players', True, 'hass_publish')
         ]
     if not config['base'].get('homeassistant'):
         config['base']['homeassistant'] = {}
@@ -54,9 +54,9 @@ def create_config_entries(config):
             config['base']['homeassistant'][key] = def_value
     # append hass player config settings
     if config['base']['homeassistant'][CONF_ENABLED]:
-        hass_player_conf = [("hass_power_entity", "", "Attach player power to homeassistant entity"),
-                        ("hass_power_entity_source", "", "Source on the homeassistant entity (optional)"),
-                        ("hass_volume_entity", "", "Attach player volume to homeassistant entity")]
+        hass_player_conf = [("hass_power_entity", "", "hass_player_power"),
+                        ("hass_power_entity_source", "", "hass_player_source"),
+                        ("hass_volume_entity", "", "hass_player_volume")]
         for key, default, desc in hass_player_conf:
             entry_found = False
             for value in config['player_settings']['__desc__']:

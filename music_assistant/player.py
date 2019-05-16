@@ -32,14 +32,14 @@ class Player():
     def create_config_entries(self):
         ''' sets the config entries for this module (list with key/value pairs)'''
         self.mass.config['player_settings']['__desc__'] = [
-            ("enabled", False, "Enable player"),
-            ("name", "", "Custom name for this player"),
-            ("group_parent", "<player>", "Group this player to another player"),
-            ("mute_as_power", False, "Use muting as power control"),
-            ("disable_volume", False, "Disable volume controls"),
-            ("apply_group_volume", False, "Apply group volume to childs (for group players only)"),
-            ("apply_group_power", False, "Apply group power based on childs (for group players only)"),
-            ("play_power_on", False, "Issue play command on power on")
+            ("enabled", False, "player_enabled"),
+            ("name", "", "player_name"),
+            ("group_parent", "<player>", "player_group_with"),
+            ("mute_as_power", False, "player_mute_power"),
+            ("disable_volume", False, "player_disable_vol"),
+            ("apply_group_volume", False, "player_group_vol"),
+            ("apply_group_power", False, "player_group_pow"),
+            ("play_power_on", False, "player_power_play")
         ]
     
     async def players(self):
@@ -95,9 +95,16 @@ class Player():
         ''' handle hass integration in player command '''
         if not self.mass.hass:
             return
-        if cmd == 'power' and cmd_args == 'on' and player.settings.get('hass_power_entity') and player.settings.get('hass_power_entity_source'):
-            service_data = { 'entity_id': player.settings['hass_power_entity'], 'source':player.settings['hass_power_entity_source'] }
-            await self.mass.hass.call_service('media_player', 'select_source', service_data)
+        if cmd == 'power' and player.settings.get('hass_power_entity') and player.settings.get('hass_power_entity_source'):
+            cur_source = await self.mass.hass.get_state(player.settings['hass_power_entity'], attribute='source')
+            if cmd_args == 'on' and not cur_source:
+                service_data = { 'entity_id': player.settings['hass_power_entity'], 'source':player.settings['hass_power_entity_source'] }
+                await self.mass.hass.call_service('media_player', 'select_source', service_data)
+            elif cmd_args == 'off' and cur_source == player.settings['hass_power_entity_source']:
+                service_data = { 'entity_id': player.settings['hass_power_entity'] }
+                await self.mass.hass.call_service('media_player', 'turn_off', service_data)
+            else:
+                LOGGER.warning('Ignoring power command as required source is not active')
         elif cmd == 'power' and player.settings.get('hass_power_entity'):
             domain = player.settings['hass_power_entity'].split('.')[0]
             service_data = { 'entity_id': player.settings['hass_power_entity']}

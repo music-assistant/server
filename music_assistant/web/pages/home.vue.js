@@ -1,15 +1,6 @@
 var home = Vue.component("Home", {
   template: `
   <section>
-      <v-flex xs12 justify-center>
-        <v-card color="cyan darken-2" class="white--text" img="../images/info_gradient.jpg">
-        
-          <div class="text-xs-center" style="height:40px" id="whitespace_top"/>      
-          <v-card-title class="display-1 justify-center" style="text-shadow: 1px 1px #000000;">
-              Music Assistant
-          </v-card-title>
-        </v-card>
-      </v-flex>    
       <v-list>
         <v-list-tile 
           v-for="item in items" :key="item.title" @click="$router.push(item.path)">
@@ -34,13 +25,13 @@ var home = Vue.component("Home", {
     };
   },
   created() {
-    this.$globals.windowtitle = "Home"
+    this.$globals.windowtitle = this.$t('home');
     this.items= [
-        { title: "Artists", icon: "person", path: "/artists" },
-        { title: "Albums", icon: "album", path: "/albums" },
-        { title: "Tracks", icon: "audiotrack", path: "/tracks" },
-        { title: "Playlists", icon: "playlist_play", path: "/playlists" },
-        { title: "Search", icon: "search", path: "/search" }
+        { title: this.$t('artists'), icon: "person", path: "/artists" },
+        { title: this.$t('albums'), icon: "album", path: "/albums" },
+        { title: this.$t('tracks'), icon: "audiotrack", path: "/tracks" },
+        { title: this.$t('playlists'), icon: "playlist_play", path: "/playlists" },
+        { title: this.$t('search'), icon: "search", path: "/search" }
     ]
   },
   methods: {

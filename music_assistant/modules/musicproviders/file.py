@@ -28,8 +28,8 @@ def config_entries():
     ''' get the config entries for this provider (list with key/value pairs)'''
     return [
         (CONF_ENABLED, False, CONF_ENABLED),
-        ("music_dir", "", "Path to music files"), 
-        ("playlists_dir", "", "Path to playlists")
+        ("music_dir", "", "file_prov_music_path"), 
+        ("playlists_dir", "", "file_prov_playlists_path")
         ]
 
 class FileProvider(MusicProvider):

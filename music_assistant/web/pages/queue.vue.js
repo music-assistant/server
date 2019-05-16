@@ -1,30 +1,17 @@
 var Queue = Vue.component('Queue', {
   template: `
   <section>
-      <infoheader v-bind:info="info"/>
-      <v-tabs
-          v-model="active"
-          color="transparent"
-          light
-          slider-color="black"
-        >
-          <v-tab ripple>Queue</v-tab>
-          <v-tab-item>
-            <v-card flat>
-            <v-list two-line>
-                  <listviewItem 
-                      v-for="(item, index) in items" 
-                      v-bind:item="item"
-                      :key="item.db_id"
-                      :hideavatar="isMobile()"
-                      :hidetracknum="true"
-                      :hideproviders="isMobile()"
-                      :hidelibrary="isMobile()">
-                  </listviewItem>
-                </v-list>
-            </v-card>
-          </v-tab-item>
-        </v-tabs>
+        <v-list two-line>
+        <listviewItem 
+            v-for="(item, index) in items" 
+            v-bind:item="item"
+            :key="item.db_id"
+            :hideavatar="isMobile()"
+            :hidetracknum="true"
+            :hideproviders="isMobile()"
+            :hidelibrary="isMobile()">
+        </listviewItem>
+      </v-list>
       </section>`,
   props: ['player_id'],
   data() {
@@ -36,8 +23,7 @@ var Queue = Vue.component('Queue', {
     }
   },
   created() {
-    this.$globals.windowtitle = "Queue"
-    //this.getInfo();
+    this.$globals.windowtitle = this.$t('queue')
     this.getQueueTracks();
     this.scroll(this.Queue);
   },
