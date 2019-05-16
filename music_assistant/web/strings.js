@@ -18,6 +18,8 @@ const messages = {
         player_settings: "Player settings",
         type_to_search: "Type here to search...",
         enabled: "Enabled",
+        add_library: "Add to library",
+        remove_library: "Remove from library",
         // settings strings
         username: "Username",
         password: "Password",
@@ -44,6 +46,7 @@ const messages = {
         file_prov_playlists_path: "Path to playlists (.m3u)",
         // player strings
         players: "Players",
+        play: "Play",
         play_on: "Play on:",
         play_now: "Play Now",
         play_next: "Play Next",
@@ -75,6 +78,8 @@ const messages = {
         player_settings: "Speler instellingen",
         enabled: "Ingeschakeld",
         type_to_search: "Type hier om te zoeken...",
+        add_library: "Voeg toe aan bibliotheek",
+        remove_library: "Verwijder uit bibliotheek",
         // settings strings
         username: "Gebruikersnaam",
         password: "Wachtwoord",
@@ -101,6 +106,7 @@ const messages = {
         file_prov_playlists_path: "Pad naar playlist bestanden (.m3u)",
         // player strings
         players: "Spelers",
+        play: "Afspelen",
         play_on: "Afspelen op:",
         play_now: "Nu afspelen",
         play_next: "Speel als volgende af",

@@ -8,7 +8,7 @@ Vue.component("infoheader", {
               :height="isMobile() ? '300' : '370'"
               position="center top" 
               :src="getFanartImage()"
-              gradient="to top right, rgba(100,115,201,.33), rgba(25,32,72,.7)"
+              gradient="to bottom, rgba(0,0,0,.65), rgba(0,0,0,.35)"
             >
             <div class="text-xs-center" style="height:40px" id="whitespace_top"/>
 
@@ -51,9 +51,9 @@ Vue.component("infoheader", {
 
                   <!-- play/info buttons -->
                   <div style="margin-left:8px;">
-                      <v-btn color="blue-grey" @click="showPlayMenu(info)"  class="white--text"><v-icon v-if="!isMobile()" left dark>play_circle_outline</v-icon>Play</v-btn>
-                      <v-btn v-if="!!info.in_library && info.in_library.length == 0" color="blue-grey" @click="toggleLibrary(info)"  class="white--text"><v-icon v-if="!isMobile()" left dark>favorite_border</v-icon>Add to library</v-btn>
-                      <v-btn v-if="!!info.in_library && info.in_library.length > 0" color="blue-grey" @click="toggleLibrary(info)"  class="white--text"><v-icon v-if="!isMobile()" left dark>favorite</v-icon>Remove from library</v-btn>
+                      <v-btn color="blue-grey" @click="showPlayMenu(info)"  class="white--text"><v-icon v-if="!isMobile()" left dark>play_circle_outline</v-icon>{{ $t('play') }}</v-btn>
+                      <v-btn v-if="!!info.in_library && info.in_library.length == 0" color="blue-grey" @click="toggleLibrary(info)"  class="white--text"><v-icon v-if="!isMobile()" left dark>favorite_border</v-icon>{{ $t('add_library') }}</v-btn>
+                      <v-btn v-if="!!info.in_library && info.in_library.length > 0" color="blue-grey" @click="toggleLibrary(info)"  class="white--text"><v-icon v-if="!isMobile()" left dark>favorite</v-icon>{{ $t('remove_library') }}</v-btn>
                   </div>
 
                   <!-- Description/metadata -->
