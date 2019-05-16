@@ -240,6 +240,16 @@
             watch: {},
             mounted() {
             },
+            created() {
+                // little hack to force refresh PWA on iOS by simple reloading it every hour
+                var d = new Date();
+                var cur_update = d.getDay() + d.getHours();
+                if (localStorage.getItem('last_update') != cur_update)
+                {
+                    localStorage.setItem('last_update', cur_update);
+                    window.location.reload(true);
+                }
+            },
             data: { },
             methods: {},
             router
