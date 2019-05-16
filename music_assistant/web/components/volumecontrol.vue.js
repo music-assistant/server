@@ -8,7 +8,7 @@ Vue.component("volumecontrol", {
 						</v-list-tile-avatar>
 						<v-list-tile-content>
 							<v-list-tile-title>{{ players[player_id].name }}</v-list-tile-title>
-							<v-list-tile-sub-title>{{ players[player_id].state }}</v-list-tile-sub-title>
+							<v-list-tile-sub-title>{{ $t('state.' + players[player_id].state) }}</v-list-tile-sub-title>
 						</v-list-tile-content>
 						</v-list-tile-action>
 					</v-list-tile>
@@ -39,6 +39,8 @@ Vue.component("volumecontrol", {
 										prepend-icon="volume_down"
 										append-icon="volume_up"
 										@end="$emit('setPlayerVolume', child_id, $event)"
+										@click:append="$emit('setPlayerVolume', child_id, 'up')"
+        								@click:prepend="$emit('setPlayerVolume', child_id, 'down')"
 									></v-slider>
 								</v-list-tile-sub-title>
 							</v-list-tile-content>

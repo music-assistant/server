@@ -40,7 +40,7 @@ var TrackDetails = Vue.component('TrackDetails', {
     }
   },
   created() {
-    this.$globals.windowtitle = "Track info"
+    this.$globals.windowtitle = ""
     this.getInfo();
   },
   methods: {

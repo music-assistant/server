@@ -81,7 +81,8 @@
                     endpoint = "/playlists/"
                 item_id = item.item_id.toString();
                 var url = endpoint + item_id;
-                router.push({ path: url, params: {provider: item.provider}});
+                console.log(url + ' - ' + item.provider);
+                router.push({ path: url, query: {provider: item.provider}});
             }
 
             String.prototype.formatDuration = function () {
@@ -143,7 +144,7 @@
         <script src='./components/playmenu.vue.js'></script>
         <script src='./components/volumecontrol.vue.js'></script>
         <script src='./components/infoheader.vue.js'></script>
-        <script src='./components/qualityicon.vue.js'></script>
+        <script src='./components/providericons.vue.js'></script>
         <script src='./components/searchbox.vue.js'></script>
         
         <script src='./strings.js'></script>

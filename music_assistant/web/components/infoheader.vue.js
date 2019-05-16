@@ -5,7 +5,7 @@ Vue.component("infoheader", {
             <v-img
               class="white--text"
               width="100%"
-              height="370"
+              :height="isMobile() ? '300' : '370'"
               position="center top" 
               :src="getFanartImage()"
               gradient="to top right, rgba(100,115,201,.33), rgba(25,32,72,.7)"
@@ -20,12 +20,7 @@ Vue.component("infoheader", {
 								
 								<!-- tech specs and provider icons -->
 								<div style="margin-top:10px;">
-									<a v-for="(value, key) in info.provider_ids" :href="info.metadata[key + '_url']" target="_blank" :key="key">
-										<img height="30" :src="'/images/icons/' + key + '.png'" style="padding-right:5px" />
-									</a>
-									<div style="text-shadow: 1px 1px #000000;vertical-align:top;margin-left:30px;margin-top:-35px;">
-											<qualityicon v-if="info.media_type == 3" v-bind:item="info" :height="30" :compact="false"/>
-									</div>
+									<providericons v-bind:item="info" :height="30" :compact="false"/>
 								</div>
               </v-flex>
               
@@ -42,10 +37,10 @@ Vue.component("infoheader", {
 													<a style="color:#2196f3" v-on:click="clickItem(artist)">{{ artist.name }}</a>
 													<label style="color:#2196f3" v-if="artistindex + 1 < info.artists.length" :key="artistindex"> / </label>
 											</span>
-											<span v-if="!!info.artist" class="headline">
-													<a style="color:#2196f3" v-on:click="clickItem(artist)">{{ info.artist.name }}</a>
+											<span v-if="info.artist" class="headline">
+													<a style="color:#2196f3" v-on:click="clickItem(info.artist)">{{ info.artist.name }}</a>
 											</span>
-											<span v-if="!!info.owner" class="headline">
+											<span v-if="info.owner" class="headline">
 													<a style="color:#2196f3" v-on:click="">{{ info.owner }}</a>
 											</span>
 									</v-card-title>
@@ -88,6 +83,8 @@ Vue.component("infoheader", {
 	methods: { 
 		getFanartImage() {
 			var img = '';
+			if (!this.info)
+				return ''
       if (this.info.metadata && this.info.metadata.fanart)
 				img = this.info.metadata.fanart;
 			else if (this.info.artists)
@@ -95,10 +92,14 @@ Vue.component("infoheader", {
 						if (artist.metadata && artist.metadata.fanart)
 							img = artist.metadata.fanart;
 					});
+			else if (this.info.artist && this.info.artist.metadata.fanart)
+				img = this.info.artist.metadata.fanart;
 			return img;
 		},
 		getThumb() {
 			var img = '';
+			if (!this.info)
+				return ''
       if (this.info.metadata && this.info.metadata.image)
 				img = this.info.metadata.image;
 			else if (this.info.album && this.info.album.metadata && this.info.album.metadata.image)
@@ -112,6 +113,8 @@ Vue.component("infoheader", {
 		},
 		getDescription() {
 			var desc = '';
+			if (!this.info)
+				return ''
       if (this.info.metadata && this.info.metadata.description)
 				return this.info.metadata.description;
 			else if (this.info.metadata && this.info.metadata.biography)

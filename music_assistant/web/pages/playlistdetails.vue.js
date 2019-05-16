@@ -33,6 +33,7 @@ var PlaylistDetails = Vue.component('PlaylistDetails', {
       info: {},
       items: [],
       offset: 0,
+      active: 0
     }
   },
   created() {

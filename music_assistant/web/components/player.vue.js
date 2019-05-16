@@ -85,7 +85,7 @@ Vue.component("player", {
     <!-- players side menu -->
     <v-navigation-drawer right app clipped temporary v-model="menu">
         <v-card-title class="headline">
-            <b>Players</b>
+            <b>{{ $t('players') }}</b>
         </v-card-title>
         <v-list two-line>
             <v-divider></v-divider>
@@ -98,7 +98,7 @@ Vue.component("player", {
                       <v-list-tile-title class="title">{{ player.name }}</v-list-tile-title>
 
                       <v-list-tile-sub-title v-if="player.cur_item" class="body-1" :key="player.state">
-                          {{ player.state }}
+                          {{ $t('state.' + player.state) }}
                       </v-list-tile-sub-title>
 
                   </v-list-tile-content>
@@ -121,7 +121,7 @@ Vue.component("player", {
             </div>
         </v-list>
     </v-navigation-drawer>
-    <playmenu v-model="$globals.showplaymenu" v-on:playItem="playItem"/>
+    <playmenu v-model="$globals.showplaymenu" v-on:playItem="playItem" :active_player="active_player" />
   </div>
   
   `,
@@ -261,7 +261,7 @@ Vue.component("player", {
         // TODO: store previous player in local storage
         if (!this.active_player_id)
           for (var player_id in this.players)
-            if (this.players[player_id].state == 'playing' && this.players[player_id].enabled) {
+            if (this.players[player_id].state == 'playing' && this.players[player_id].enabled && !this.players[player_id].group_parent) {
               // prefer the first playing player
               this.active_player_id = player_id;
               break; 
@@ -269,7 +269,7 @@ Vue.component("player", {
         if (!this.active_player_id)
           for (var player_id in this.players) {
             // fallback to just the first player
-            if (this.players[player_id].enabled)
+            if (this.players[player_id].enabled && !this.players[player_id].group_parent)
             {
               this.active_player_id = player_id;
               break; 

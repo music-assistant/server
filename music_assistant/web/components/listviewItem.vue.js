@@ -30,7 +30,7 @@ Vue.component("listviewItem", {
                 <label v-if="!hidetracknum && item.track_number" style="color:grey">  -  disc {{ item.disc_number }} track {{ item.track_number }}</label>
             </v-list-tile-sub-title>
             <v-list-tile-sub-title v-if="item.artist">
-                <a v-on:click="clickItem(artist)" @click.stop="">{{ item.artist.name }}</a>
+                <a v-on:click="clickItem(item.artist)" @click.stop="">{{ item.artist.name }}</a>
             </v-list-tile-sub-title>
 
             <v-list-tile-sub-title v-if="!!item.owner">
@@ -39,17 +39,7 @@ Vue.component("listviewItem", {
 
           </v-list-tile-content>
 
-          <qualityicon v-if="item.media_type == 3" v-bind:item="item" :height="25" :compact="true" :dark="true" :hiresonly="true"/>
-
-          <v-list-tile-action v-if="!hideproviders" v-for="provider in item.provider_ids" :key="provider.provider + provider.item_id">
-            <v-tooltip bottom>
-              <template v-slot:activator="{ on }">
-                <img v-on="on" height="20" :src="'images/icons/' + provider.provider + '.png'"/>
-              </template>
-              <span v-if="provider.details">{{ provider.details }}</span>
-              <span v-if="!provider.details">{{ provider.quality }}</span>
-            </v-tooltip>
-          </v-list-tile-action> 
+          <providericons v-bind:item="item" :height="20" :compact="true" :dark="true" :hiresonly="hideproviders"/>
 
           <v-list-tile-action v-if="!hidelibrary">
               <v-tooltip bottom>
@@ -78,11 +68,7 @@ Vue.component("listviewItem", {
      `,
 props: ['item', 'index', 'totalitems', 'hideavatar', 'hidetracknum', 'hideproviders', 'hidemenu', 'hidelibrary', 'hideduration'],
 data() {
-  return {
-    selected: [2],
-    items: [],
-    offset: 0,
-  }
+  return {}
   },
 methods: {
   }

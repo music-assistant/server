@@ -42,6 +42,19 @@ const messages = {
         player_power_play: "Issue play command on power on",
         file_prov_music_path: "Path to music files",
         file_prov_playlists_path: "Path to playlists (.m3u)",
+        // player strings
+        players: "Players",
+        play_on: "Play on:",
+        play_now: "Play Now",
+        play_next: "Play Next",
+        add_queue: "Add to Queue",
+        show_info: "Show info",
+        state: {        
+            playing: "playing",
+            stopped: "stopped",
+            paused: "paused",
+            off: "off"
+        }
 
     },
 
@@ -86,5 +99,18 @@ const messages = {
         player_power_play: "Automatisch afspelen bij inschakelen",
         file_prov_music_path: "Pad naar muziek bestanden",
         file_prov_playlists_path: "Pad naar playlist bestanden (.m3u)",
+        // player strings
+        players: "Spelers",
+        play_on: "Afspelen op:",
+        play_now: "Nu afspelen",
+        play_next: "Speel als volgende af",
+        add_queue: "Voeg toe aan wachtrij",
+        show_info: "Bekijk informatie",
+        state: {        
+            playing: "afspelen",
+            stopped: "gestopt",
+            paused: "gepauzeerd",
+            off: "uitgeschakeld"
+        }
     }
 }
