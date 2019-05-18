@@ -127,7 +127,7 @@ class ChromecastProvider(PlayerProvider):
                 if item['itemId'] == media_controller.queue_cur_id:
                     cur_queue_item = item
                     # find out the current index
-                    for counter, value in enumerate(pcastplayerlayer.queue):
+                    for counter, value in enumerate(castplayer.queue):
                         if value['media']['contentId'] == cur_queue_item['media']['contentId']:
                             cur_queue_index = counter
                             break
