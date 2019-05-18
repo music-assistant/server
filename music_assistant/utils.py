@@ -4,6 +4,7 @@
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
+import socket
 logformat = logging.Formatter('%(asctime)-15s %(levelname)-5s %(name)s.%(module)s -- %(message)s')
 consolehandler = logging.StreamHandler()
 consolehandler.setFormatter(logformat)
@@ -92,6 +93,14 @@ def parse_track_title(track_title):
     version = version.strip().title()
     return title, version
 
-async def kill_proc(proc):
-    proc.kill()
-    await proc.communicate()
+def get_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # doesn't even have to be reachable
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP

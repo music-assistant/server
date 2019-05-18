@@ -6,7 +6,7 @@ import os
 from typing import List
 import sys
 import time
-from utils import run_periodic, LOGGER, parse_track_title, run_background_task
+from utils import run_periodic, LOGGER, parse_track_title
 from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 from asyncio_throttle import Throttler

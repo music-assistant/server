@@ -3,7 +3,7 @@
 
 import asyncio
 import os
-from utils import run_periodic, LOGGER, try_parse_int, try_parse_float, kill_proc
+from utils import run_periodic, LOGGER, try_parse_int, try_parse_float, get_ip
 import aiohttp
 from difflib import SequenceMatcher as Matcher
 from models import MediaType, PlayerState, MusicPlayer
@@ -34,6 +34,7 @@ class Player():
         self.providers = {}
         self._players = {}
         self.create_config_entries()
+        self.local_ip = get_ip()
         # create needed temp/cache dirs
         if not os.path.isdir(AUDIO_CACHE_DIR):
             os.makedirs(AUDIO_CACHE_DIR)
@@ -330,8 +331,7 @@ class Player():
         ''' generate the URL/URI for a media item '''
         uri = ""
         if http_stream:
-            host = socket.gethostbyname(socket.gethostname())
-            uri = 'http://%s:8095/stream/%s/%s'% (host, provider, item_id)
+            uri = 'http://%s:8095/stream/%s/%s'% (self.local_ip, provider, item_id)
         elif provider == "spotify":
             uri = 'spotify://spotify:track:%s' % item_id
         elif provider == "qobuz":
