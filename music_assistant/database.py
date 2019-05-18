@@ -178,9 +178,10 @@ class Database():
             if media_type == MediaType.Playlist:
                 sql_query = 'DELETE FROM playlist_tracks WHERE playlist_id=?;'
                 await db.execute(sql_query, (item_id,))
-            if media_type == MediaType.Playlist:
                 sql_query = 'DELETE FROM playlists WHERE playlist_id=?;'
                 await db.execute(sql_query, (item_id,))
+                sql_query = 'DELETE FROM provider_mappings WHERE item_id=? AND media_type=? AND provider=?;'
+                await db.execute(sql_query, (item_id,media_type, provider))
             await db.commit()
     
     async def artists(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=False) -> List[Artist]:

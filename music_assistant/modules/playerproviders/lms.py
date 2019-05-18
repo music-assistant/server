@@ -6,10 +6,9 @@ import os
 from typing import List
 import random
 import sys
-sys.path.append("..")
-from utils import run_periodic, LOGGER, parse_track_title
-from models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
+from music_assistant.utils import run_periodic, LOGGER, parse_track_title
+from music_assistant.models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from music_assistant.constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
 import json
 import aiohttp
 import time
@@ -17,7 +16,7 @@ import datetime
 import hashlib
 from asyncio_throttle import Throttler
 from aiocometd import Client, ConnectionType, Extension
-from cache import use_cache
+from music_assistant.modules.cache import use_cache
 import copy
 
 def setup(mass):
@@ -52,6 +51,7 @@ class LMSProvider(PlayerProvider):
         self._players = {}
         self.last_msg_received = 0
         self.supported_musicproviders = ['qobuz', 'file', 'spotify', 'http']
+        self.supported_musicproviders = ['http']
         self.http_session = aiohttp.ClientSession(loop=mass.event_loop)
         # we use a combi of active polling and subscriptions because the cometd implementation of LMS is somewhat unreliable
         asyncio.ensure_future(self.__lms_events())
@@ -217,6 +217,10 @@ class LMSProvider(PlayerProvider):
                 return await self.mass.music.providers['spotify'].track(track_id)
             except Exception as exc:
                 LOGGER.error(exc)
+        elif track_url.startswith('http') and '/stream' in track_url:
+            item_id = track_url.split('/')[-1]
+            provider = track_url.split('/')[-2]
+            return await self.mass.music.providers[provider].track(item_id)
         # fallback to a generic track
         track = Track()
         track.name = track_details['title']

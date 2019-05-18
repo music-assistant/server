@@ -6,15 +6,14 @@ import os
 from typing import List
 import sys
 import time
-sys.path.append("..")
-from utils import run_periodic, LOGGER, parse_track_title
-from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+from music_assistant.utils import run_periodic, LOGGER, parse_track_title, run_background_task
+from music_assistant.models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 from asyncio_throttle import Throttler
 import json
 import aiohttp
-from cache import use_cache
-
+from music_assistant.modules.cache import use_cache
+import concurrent
 
 def setup(mass):
     ''' setup the provider'''
@@ -40,6 +39,7 @@ class SpotifyProvider(MusicProvider):
     def __init__(self, mass, username, password):
         self.name = 'Spotify'
         self.prov_id = 'spotify'
+        self.audio_fmt = 'ogg'
         self._cur_user = None
         self.mass = mass
         self.cache = mass.cache
@@ -242,49 +242,30 @@ class SpotifyProvider(MusicProvider):
         elif offset_uri != None: # only for playlists/albums!
             opts["offset"] = {"uri": offset_uri }
         return await self.__put_data('me/player/play', {"device_id": device_id}, opts)
-
-    async def get_stream_details(self, track_id):
-        ''' returns the stream details for the provider '''
-        track = await self.track(track_id)
-        import socket
-        host = socket.gethostbyname(socket.gethostname())
-        return {
-            'mime_type': 'audio/flac',
-            'duration': track.duration,
-            'sampling_rate': 44100,
-            'bit_depth': 16,
-            'url': 'http://%s/stream/spotify/%s' % (host, track_id)
-        }
     
-    async def get_stream(self, track_id):
-        ''' get audio stream for a track '''
-        sox_effects='vol -12 dB'
-        import subprocess
-        spotty = self.get_spotty_binary()
-        env = os.environ.copy()
-        env["SOX_OPTS"] = "−−multi−threaded −−replay−gain track"
-        cmd = spotty +  ' -n temp -u ' + self._username + ' -p ' + self._password + ' --pass-through --single-track ' + track_id
-        cmd += ' | sox -t ogg - -t flac - %s' % sox_effects
-        process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, env=env)
-        while not process.stdout.at_eof():
-            chunk = await process.stdout.readline()
-            if chunk:
-                yield chunk
-        await process.wait()
-
-    async def get_stream__old(self, track_id, sox_effects='vol -12 dB'):
+    async def get_audio_stream(self, track_id):
         ''' get audio stream for a track '''
         import subprocess
         spotty = self.get_spotty_binary()
-        os.environ["SOX_OPTS"] = "−−multi−threaded −−replay−gain track"
-        cmd = spotty +  ' -n temp -u ' + self._username + ' -p ' + self._password + ' --pass-through --single-track ' + track_id + ' | sox -t ogg -- - -t flac - %s' % sox_effects
-        process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE)
-        while not process.stdout.at_eof():
-            chunk = await process.stdout.readline()
-            if chunk:
-                yield chunk
-        await process.wait()
-    
+        args = ['-n', 'temp', '-u', self._username, '-p', self._password, '--pass-through', '--single-track', track_id]
+        process = await asyncio.create_subprocess_exec(spotty, *args, stdout=asyncio.subprocess.PIPE)
+        try:
+            while not process.stdout.at_eof():
+                chunk = await process.stdout.read(2000000)
+                if chunk:
+                    yield chunk
+                else:
+                    break
+        except (GeneratorExit, Exception):
+            while True:
+                if not await process.stdout.read(2000000):
+                    break
+            await process.wait()
+            LOGGER.info("stream cancelled for track_id %s" % track_id)
+        else:
+            await process.wait()
+            LOGGER.info("end of stream for track_id %s" % track_id)
+        
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''
         artist = Artist()
@@ -357,6 +338,7 @@ class SpotifyProvider(MusicProvider):
         if 'track' in track_obj:
             track_obj = track_obj['track']
         if track_obj['is_local'] or not track_obj['id'] or not track_obj['is_playable']:
+            LOGGER.warning("invalid/unavailable track found: %s - %s" % (track_obj.get('id'), track_obj.get('name')))
             return None
         track = Track()
         track.item_id = track_obj['id']

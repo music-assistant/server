@@ -8,7 +8,7 @@ sys.path.append("..")
 from utils import run_periodic, LOGGER, parse_track_title
 from difflib import SequenceMatcher as Matcher
 import asyncio
-from cache import use_cache
+from modules.cache import use_cache
 
 
 class MediaType(IntEnum):
@@ -99,8 +99,8 @@ class Track(object):
         self.artists = []
         self.provider_ids = []
         self.album = None
-        self.disc_number = 0
-        self.track_number = 0
+        self.disc_number = 1
+        self.track_number = 1
         self.media_type = MediaType.Track
         self.in_library = []
         self.is_lazy = False
@@ -109,7 +109,8 @@ class Track(object):
             return NotImplemented
         return (self.name == other.name and 
                 self.version == other.version and
-                self.item_id == other.item_id)
+                self.item_id == other.item_id and
+                self.provider == other.provider)
     def __ne__(self, other):
         return not self.__eq__(other)
 
@@ -137,6 +138,7 @@ class MusicProvider():
     name = 'My great Music provider' # display name
     prov_id = 'my_provider' # used as id
     icon = ''
+    audio_fmt = 'flac' # the audio format used by this provider when streaming
 
     def __init__(self, mass):
         self.mass = mass
@@ -275,12 +277,10 @@ class MusicProvider():
             prov_album_id = track_details.album.item_id
         track_details.album = await self.album(prov_album_id, lazy=False)
         item_id = await self.mass.db.add_track(track_details)
-        # also fetch same track on all providers
+        # also fetch same track on all providers (will also get other quality versions)
         new_track = await self.mass.db.track(item_id)
-        item_provider_keys = [item['provider'] for item in new_track.provider_ids]
         for prov_id, provider in self.mass.music.providers.items():
-            if not prov_id in item_provider_keys:
-                await provider.match_track(new_track)
+            await provider.match_track(new_track)
         return item_id
     
     async def playlist(self, prov_playlist_id) -> Playlist:
@@ -436,6 +436,14 @@ class MusicProvider():
 
     async def remove_library(self, prov_item_id, media_type:MediaType):
         ''' remove item from library '''
+        raise NotImplementedError
+
+    async def add_playlist_tracks(self, prov_playlist_id, prov_track_ids):
+        ''' add track(s) to playlist '''
+        raise NotImplementedError
+
+    async def remove_playlist_tracks(self, prov_playlist_id, prov_track_ids):
+        ''' remove track(s) from playlist '''
         raise NotImplementedError
     
 class PlayerState(str, Enum):

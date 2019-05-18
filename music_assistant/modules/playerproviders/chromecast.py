@@ -6,10 +6,9 @@ import os
 from typing import List
 import random
 import sys
-sys.path.append("..")
-from utils import run_periodic, run_background_task, LOGGER, parse_track_title, try_parse_int
-from models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
+from music_assistant.utils import run_periodic, run_background_task, LOGGER, parse_track_title, try_parse_int
+from music_assistant.models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from music_assistant.constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
 import json
 import aiohttp
 import time
@@ -17,7 +16,7 @@ import datetime
 import hashlib
 from asyncio_throttle import Throttler
 from aiocometd import Client, ConnectionType, Extension
-from cache import use_cache
+from music_assistant.modules.cache import use_cache
 import copy
 import pychromecast
 from pychromecast.controllers.multizone import MultizoneController
@@ -117,8 +116,9 @@ class ChromecastProvider(PlayerProvider):
         ''' 
             play media on a player
         '''
-        player = self._chromecasts[player_id]
-        media_controller = player.media_controller
+        castplayer = self._chromecasts[player_id]
+        player = self._players[player_id]
+        media_controller = castplayer.media_controller
         receiver_ctrl = media_controller._socket_client.receiver_controller
         cur_queue_index = 0
         if media_controller.queue_cur_id != None:
@@ -127,12 +127,12 @@ class ChromecastProvider(PlayerProvider):
                 if item['itemId'] == media_controller.queue_cur_id:
                     cur_queue_item = item
                     # find out the current index
-                    for counter, value in enumerate(player.queue):
+                    for counter, value in enumerate(pcastplayerlayer.queue):
                         if value['media']['contentId'] == cur_queue_item['media']['contentId']:
                             cur_queue_index = counter
                             break
                     break
-        if (not media_controller.queue_cur_id or not media_controller.status.media_session_id or not player.queue):
+        if (not media_controller.queue_cur_id or not media_controller.status.media_session_id or not castplayer.queue):
             queue_opt = 'replace'
 
         new_queue_items = []
@@ -141,23 +141,23 @@ class ChromecastProvider(PlayerProvider):
             new_queue_items.append(queue_item)
 
         if (queue_opt in ['replace', 'play'] or not media_controller.queue_cur_id or 
-                not media_controller.status.media_session_id or not player.queue):
+                not media_controller.status.media_session_id or not castplayer.queue):
             # load new Chromecast queue with items
             if queue_opt == 'add':
                 # append items to queue
-                player.queue = player.queue + new_queue_items
+                castplayer.queue = castplayer.queue + new_queue_items
                 startindex = cur_queue_index
             elif queue_opt == 'play':
                 # keep current queue but append new items at begin and start playing first item
-                player.queue = new_queue_items + player.queue[cur_queue_index:] + player.queue[:cur_queue_index]
+                castplayer.queue = new_queue_items + castplayer.queue[cur_queue_index:] + castplayer.queue[:cur_queue_index]
                 startindex = 0
             elif queue_opt == 'next':
                 # play the new items after the current playing item (insert before current next item)
-                player.queue = new_queue_items + player.queue[cur_queue_index:] + player.queue[:cur_queue_index]
+                castplayer.queue = new_queue_items + castplayer.queue[cur_queue_index:] + plcastplayerayer.queue[:cur_queue_index]
                 startindex = cur_queue_index
             else:
                 # overwrite the whole queue with new item(s)
-                player.queue = new_queue_items
+                castplayer.queue = new_queue_items
                 startindex = 0
             # load first 10 items as soon as possible
             queuedata = { 
@@ -166,17 +166,17 @@ class ChromecastProvider(PlayerProvider):
                     "shuffle": player.shuffle_enabled,
                     "queueType": "PLAYLIST",
                     "startIndex":    startindex,    # Item index to play after this request or keep same item if undefined
-                    "items": player.queue[:10]
+                    "items": castplayer.queue[:10]
             }
             await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
             # append the rest of the items in the queue in chunks
-            for chunk in chunks(player.queue[10:], 100):
+            for chunk in chunks(castplayer.queue[10:], 100):
                 await asyncio.sleep(1)
                 queuedata = { "type": 'QUEUE_INSERT', "items": chunk }
                 await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
         elif queue_opt == 'add':
             # existing queue is playing: simply append items to the end of the queue (in small chunks)
-            player.queue = player.queue + new_queue_items
+            castplayer.queue = castplayer.queue + new_queue_items
             insertbefore = None
             for chunk in chunks(new_queue_items, 100):
                 queuedata = { "type": 'QUEUE_INSERT', "items": chunk }
@@ -184,7 +184,7 @@ class ChromecastProvider(PlayerProvider):
                 await asyncio.sleep(1)
         elif queue_opt == 'next':
             # play the new items after the current playing item (insert before current next item)
-            player.queue = player.queue[:cur_queue_index] + new_queue_items + player.queue[cur_queue_index:]
+            player.queue = castplayer.queue[:cur_queue_index] + new_queue_items + castplayer.queue[cur_queue_index:]
             queuedata = { 
                         "type": 'QUEUE_INSERT',
                         "insertBefore":     media_controller.queue_cur_id+1,
@@ -252,11 +252,9 @@ class ChromecastProvider(PlayerProvider):
             track_id = uri.replace('qobuz://','').replace('.flac','')
             track = await self.mass.music.providers['qobuz'].track(track_id)
         elif uri.startswith('http') and '/stream' in uri:
-            try:
-                item_id = uri.split('/')[-1]
-                provider = uri.split('/')[-2]
-                track = await self.mass.music.providers[provider].track(item_id)
-            except: pass
+            item_id = uri.split('/')[-1]
+            provider = uri.split('/')[-2]
+            track = await self.mass.music.providers[provider].track(item_id)
         return track
 
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):

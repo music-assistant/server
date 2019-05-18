@@ -6,12 +6,11 @@ import os
 from typing import List
 import sys
 import time
-sys.path.append("..")
-from utils import run_periodic, LOGGER, parse_track_title
-from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_ENABLED
+from music_assistant.utils import run_periodic, LOGGER, parse_track_title
+from music_assistant.models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from music_assistant.constants import CONF_ENABLED
 import taglib
-from cache import use_cache
+from music_assistant.modules.cache import use_cache
 
 
 def setup(mass):
@@ -204,7 +203,7 @@ class FileProvider(MusicProvider):
                         track = await self.__parse_track_from_uri(line)
                         if track:
                             tracks.append(track)
-                    if len(tracks) == limit:
+                    if limit and len(tracks) == limit:
                         break
         return tracks
 
@@ -294,19 +293,31 @@ class FileProvider(MusicProvider):
             track.disc_number = int(song.tags['DISCNUMBER'][0])
         if 'TRACKNUMBER' in song.tags:
             track.track_number = int(song.tags['TRACKNUMBER'][0])
+        quality_details = ""
         if filename.endswith('.flac'):
-            # TODO: try to get more quality info
+            # TODO: get bit depth
             quality = TrackQuality.FLAC_LOSSLESS
+            if song.sampleRate > 192000:
+                quality = TrackQuality.FLAC_LOSSLESS_HI_RES_4
+            elif song.sampleRate > 96000:
+                quality = TrackQuality.FLAC_LOSSLESS_HI_RES_3
+            elif song.sampleRate > 48000:
+                quality = TrackQuality.FLAC_LOSSLESS_HI_RES_2
+            quality_details = "%s Khz" % (song.sampleRate/1000)
         elif filename.endswith('.ogg'):
             quality = TrackQuality.LOSSY_OGG
+            quality_details = "%s kbps" % (song.bitrate)
         elif filename.endswith('.m4a'):
             quality = TrackQuality.LOSSY_AAC
+            quality_details = "%s kbps" % (song.bitrate)
         else:
             quality = TrackQuality.LOSSY_MP3
+            quality_details = "%s kbps" % (song.bitrate)
         track.provider_ids.append({
             "provider": self.prov_id,
             "item_id": filename,
-            "quality": quality
+            "quality": quality,
+            "details": quality_details
         })
         return track
                 
@@ -330,4 +341,3 @@ class FileProvider(MusicProvider):
         if track:
             return track
         return None
-

@@ -4,18 +4,16 @@
 import asyncio
 import os
 from typing import List
-import sys
-sys.path.append("..")
-from utils import run_periodic, LOGGER, parse_track_title
-from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+from music_assistant.utils import run_periodic, LOGGER, parse_track_title
+from music_assistant.models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 import json
 import aiohttp
 import time
 import datetime
 import hashlib
 from asyncio_throttle import Throttler
-from cache import use_cache
+from music_assistant.modules.cache import use_cache
 
 
 def setup(mass):
@@ -42,6 +40,7 @@ class QobuzProvider(MusicProvider):
     def __init__(self, mass, username, password):
         self.name = 'Qobuz'
         self.prov_id = 'qobuz'
+        self.audio_fmt = 'flac'
         self._cur_user = None
         self.mass = mass
         self.cache = mass.cache
@@ -180,6 +179,7 @@ class QobuzProvider(MusicProvider):
             playlist_track = await self.__parse_track(track_obj)
             if playlist_track:
                 tracks.append(playlist_track)
+            # TODO: should we look for an alternative track version if the original is marked unavailable ?
         return tracks
 
     async def get_artist_albums(self, prov_artist_id, limit=100, offset=0) -> List[Album]:
@@ -235,26 +235,35 @@ class QobuzProvider(MusicProvider):
         await self.mass.db.remove_from_library(item.item_id, media_type, self.prov_id)
         LOGGER.debug("deleted item %s from %s - %s" %(prov_item_id, self.prov_id, result))
     
-    async def get_stream_details(self, track_id):
-        ''' returns the stream details for the provider '''
-        params = {'format_id': 27, 'track_id': track_id, 'intent': 'stream'}
-        return await self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True)
+    async def add_playlist_tracks(self, prov_playlist_id, prov_track_ids):
+        ''' add track(s) to playlist '''
+        params = {
+            'playlist_id': prov_playlist_id,
+            'track_ids': ",".join(prov_track_ids)
+        }
+        return await self.__get_data('playlist/addTracks', params)
+
+    async def remove_playlist_tracks(self, prov_playlist_id, prov_track_ids):
+        ''' remove track(s) from playlist '''
+        playlist_track_ids = []
+        params = {'playlist_id': prov_playlist_id, 'extra': 'tracks'}
+        for track in await self.__get_all_items("playlist/get", params, key='tracks', limit=0):
+            if track['id'] in prov_track_ids:
+                playlist_track_ids.append(track['playlist_track_id'])
+        params = {'playlist_id': prov_playlist_id, 'track_ids': ",".join(playlist_track_ids)}
+        return await self.__get_data('playlist/deleteTracks', params)
     
-    async def get_stream(self, track_id):
+    async def get_audio_stream(self, track_id):
         ''' get audio stream for a track '''
-        sox_effects='vol -12 dB'
-        track_details = await self.get_stream_details(track_id)
-        url = track_details['url']
-        env = os.environ.copy()
-        env["SOX_OPTS"] = "−−multi−threaded −−replay−gain track"
-        cmd = 'curl -s -X GET "%s" | sox -t flac - -t flac - %s' % (url, sox_effects)
-        process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, env=env)
-        while not process.stdout.at_eof():
-            chunk = await process.stdout.readline()
-            if chunk:
+        params = {'format_id': 27, 'track_id': track_id, 'intent': 'stream'}
+        streamdetails = await self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True)
+        async with self.http_session.get(streamdetails['url']) as resp:
+            while True:
+                chunk = await resp.content.read(2000000)
+                if not chunk:
+                    break
                 yield chunk
-            else:
-                break
+        LOGGER.info("end of stream for track_id %s" % track_id)
     
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''
@@ -285,7 +294,7 @@ class QobuzProvider(MusicProvider):
         album = Album()
         if not album_obj.get('id') or not album_obj["streamable"] or not album_obj["displayable"]:
             # some safety checks
-            LOGGER.debug("invalid/unavailable album found: %s" % album_obj.get('id'))
+            LOGGER.warning("invalid/unavailable album found: %s" % album_obj.get('id'))
             return None
         album.item_id = album_obj['id']
         album.provider = self.prov_id
@@ -331,7 +340,7 @@ class QobuzProvider(MusicProvider):
         track = Track()
         if not track_obj.get('id') or not track_obj["streamable"] or not track_obj["displayable"]:
             # some safety checks
-            LOGGER.debug("invalid/unavailable track found: %s" % track_obj.get('id'))
+            LOGGER.warning("invalid/unavailable track found: %s - %s" % (track_obj.get('id'), track_obj.get('name')))
             return None
         track.item_id = track_obj['id']
         track.provider = self.prov_id

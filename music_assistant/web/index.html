@@ -12,6 +12,7 @@
         <link rel="apple-touch-icon" href="./images/icons/icon-apple.png">
         <meta name="apple-mobile-web-app-capable" content="yes">
         <link href="./css/site.css" rel="stylesheet">
+        <link href="./css/vue-loading.css" rel="stylesheet">
     </head>
 
     <body>
@@ -24,30 +25,11 @@
                     <router-view app :key="$route.path"></router-view>      
                     <searchbox/>             
                 </v-content>
-                <v-dialog
-                    v-model="$globals.loading"
-                    persistent
-                    width="300"
-                    >
-                    <v-card
-                        color="primary"
-                        dark
-                    >
-                        <v-card-text>
-                        Please stand by
-                        <v-progress-linear
-                            indeterminate
-                            color="white"
-                            class="mb-0"
-                        ></v-progress-linear>
-                        </v-card-text>
-                    </v-card>
-                </v-dialog>
+                <loading :active.sync="$globals.loading" :can-cancel="true" color="#2196f3" loader="dots"></loading>
             </v-app>
         </div>
 
 
-        <!-- <script src="https://cdn.jsdelivr.net/npm/vue@2.6.10/dist/vue.js"></script> -->
         <script src="https://unpkg.com/vue/dist/vue.js"></script>
         <script src="https://unpkg.com/vue-i18n/dist/vue-i18n.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/vuetify/dist/vuetify.js"></script>
@@ -56,7 +38,7 @@
         <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/moment@2.20.1/moment.min.js"></script>
         <script src="https://unpkg.com/vee-validate@2.0.0-rc.25/dist/vee-validate.js"></script>
-        <script src="https://unpkg.com/http-vue-loader"></script>
+        <script src="./lib/vue-loading-overlay.js"></script>
 
         <script>
             function isMobile() {
@@ -82,7 +64,6 @@
                     endpoint = "/playlists/"
                 item_id = item.item_id.toString();
                 var url = endpoint + item_id;
-                console.log(url + ' - ' + item.provider);
                 router.push({ path: url, query: {provider: item.provider}});
             }
 
@@ -109,7 +90,7 @@
                 var url = endpoint + item_id + action;
                 console.log('loading ' + url);
                 axios
-                    .get(url)
+                    .get(url, { params: { provider: item.provider }})
                     .then(result => {
                         data = result.data;
                         console.log(data);
@@ -155,6 +136,7 @@
         Vue.use(VeeValidate);
         Vue.use(Vuetify);
         Vue.use(VueI18n);
+        Vue.use(VueLoading);
 
 
         const routes = [
@@ -239,6 +221,9 @@
             el: '#app',
             watch: {},
             mounted() {
+            },
+            components: {
+                Loading: VueLoading
             },
             created() {
                 // little hack to force refresh PWA on iOS by simple reloading it every hour

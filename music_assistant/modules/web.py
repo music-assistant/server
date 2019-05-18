@@ -3,11 +3,11 @@
 
 import asyncio
 import os
-from utils import run_periodic, LOGGER
+from music_assistant.utils import run_periodic, LOGGER
 import json
 import aiohttp
 from aiohttp import web
-from models import MediaType, media_type_from_string
+from music_assistant.models import MediaType, media_type_from_string
 from functools import partial
 json_serializer = partial(json.dumps, default=lambda x: x.__dict__)
 import ssl
@@ -224,22 +224,11 @@ class Web():
                     await self.mass.remove_event_listener(cb_id)
                     await ws.close()
                 else:
-                    # for now we only use WS for player commands
+                    # for now we only use WS for (simple) player commands
                     if msg.data == 'players':
                         players = await self.mass.player.players()
                         ws_msg = {'message': 'players', 'message_details': players}
                         await ws.send_json(ws_msg, dumps=json_serializer)
-                    # elif msg.data.startswith('players') and '/play_media/' in msg.data:
-                    #     #'players/{player_id}/play_media/{media_type}/{media_id}/{queue_opt}'
-                    #     msg_data_parts = msg.data.split('/')
-                    #     player_id = msg_data_parts[1]
-                    #     media_type = msg_data_parts[3]
-                    #     media_type = media_type_from_string(media_type)
-                    #     media_id = msg_data_parts[4]
-                    #     queue_opt = msg_data_parts[5] if len(msg_data_parts) == 6 else 'replace'
-                    #     media_item = await self.mass.music.item(media_id, media_type, lazy=True)
-                    #     await self.mass.player.play_media(player_id, media_item, queue_opt)
-
                     elif msg.data.startswith('players') and '/cmd/' in msg.data:
                         # players/{player_id}/cmd/{cmd} or players/{player_id}/cmd/{cmd}/{cmd_args}
                         msg_data_parts = msg.data.split('/')
@@ -275,14 +264,10 @@ class Web():
         ''' start streaming audio from provider '''
         track_id = request.match_info.get('track_id')
         provider = request.match_info.get('provider')
-        #stream_details = await self.mass.music.providers[provider].get_stream_details(track_id)
-        # resp = web.StreamResponse(status=200,
-        #                         reason='OK',
-        #                         headers={'Content-Type': stream_details['mime_type']})
         resp = web.StreamResponse(status=200,
                                  reason='OK',
                                  headers={'Content-Type': 'audio/flac'})
         await resp.prepare(request)
-        async for chunk in self.mass.music.providers[provider].get_stream(track_id):
+        async for chunk in self.mass.player.get_audio_stream(track_id, provider):
             await resp.write(chunk)
         return resp

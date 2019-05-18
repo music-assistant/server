@@ -15,11 +15,11 @@ import json
 import time
 
 from database import Database
-from metadata import MetaData
 from utils import run_periodic, LOGGER
-from cache import Cache
-from music import Music
-from player import Player
+from modules.metadata import MetaData
+from modules.cache import Cache
+from modules.music import Music
+from modules.player import Player
 from modules.homeassistant import setup as hass_setup
 from modules.web import setup as web_setup
 
@@ -27,7 +27,7 @@ class Main():
 
     def __init__(self, datapath):
         uvloop.install()
-        self._datapath = datapath
+        self.datapath = datapath
         self.parse_config()
         self.event_loop = asyncio.get_event_loop()
         self.bg_executor = ThreadPoolExecutor(max_workers=5)
@@ -76,8 +76,8 @@ class Main():
     def save_config(self):
         ''' save config to file '''
         # backup existing file
-        conf_file = os.path.join(self._datapath, 'config.json')
-        conf_file_backup = os.path.join(self._datapath, 'config.json')
+        conf_file = os.path.join(self.datapath, 'config.json')
+        conf_file_backup = os.path.join(self.datapath, 'config.json')
         if os.path.isfile(conf_file):
             shutil.move(conf_file, conf_file_backup)
         with open(conf_file, 'w') as f:
@@ -91,7 +91,7 @@ class Main():
             "playerproviders": {},
             "player_settings": {}
             }
-        conf_file = os.path.join(self._datapath, 'config.json')
+        conf_file = os.path.join(self.datapath, 'config.json')
         if os.path.isfile(conf_file):
             with open(conf_file) as f:
                 data = f.read()

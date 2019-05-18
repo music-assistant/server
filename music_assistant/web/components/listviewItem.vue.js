@@ -49,8 +49,8 @@ Vue.component("listviewItem", {
                           <v-icon height="20" v-if="item.in_library.length == 0">favorite_border</v-icon>
                       </v-btn>
                   </template>
-                  <span v-if="item.in_library.length > 0">Item is added to the library</span>
-                  <span v-if="item.in_library.length == 0">Add item to the library</span>
+                  <span v-if="item.in_library.length > 0">{{ $t('remove_library') }}</span>
+                  <span v-if="item.in_library.length == 0">{{ $t('add_library') }}</span>
               </v-tooltip>
           </v-list-tile-action>
 

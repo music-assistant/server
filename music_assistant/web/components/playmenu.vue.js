@@ -63,7 +63,7 @@ Vue.component("playmenu", {
 	methods: { 
 		itemClick(cmd) {
       if (cmd == 'info')
-				this.$router.push({ path: '/tracks/' + this.$globals.playmenuitem.item_id, params: {provider: this.$globals.playmenuitem.provider}})
+				this.$router.push({ path: '/tracks/' + this.$globals.playmenuitem.item_id, query: {provider: this.$globals.playmenuitem.provider}})
 			else
 				this.$emit('playItem', this.$globals.playmenuitem, cmd)
 			// close dialog

@@ -92,3 +92,6 @@ def parse_track_title(track_title):
     version = version.strip().title()
     return title, version
 
+async def kill_proc(proc):
+    proc.kill()
+    await proc.communicate()
