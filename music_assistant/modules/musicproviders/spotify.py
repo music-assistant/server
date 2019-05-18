@@ -6,13 +6,13 @@ import os
 from typing import List
 import sys
 import time
-from music_assistant.utils import run_periodic, LOGGER, parse_track_title, run_background_task
-from music_assistant.models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+from utils import run_periodic, LOGGER, parse_track_title, run_background_task
+from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 from asyncio_throttle import Throttler
 import json
 import aiohttp
-from music_assistant.modules.cache import use_cache
+from modules.cache import use_cache
 import concurrent
 
 def setup(mass):

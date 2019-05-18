@@ -3,11 +3,11 @@
 
 import asyncio
 import os
-from music_assistant.utils import run_periodic, LOGGER
+from utils import run_periodic, LOGGER
 import json
 import aiohttp
 from aiohttp import web
-from music_assistant.models import MediaType, media_type_from_string
+from models import MediaType, media_type_from_string
 from functools import partial
 json_serializer = partial(json.dumps, default=lambda x: x.__dict__)
 import ssl

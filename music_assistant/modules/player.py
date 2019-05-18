@@ -3,10 +3,10 @@
 
 import asyncio
 import os
-from music_assistant.utils import run_periodic, LOGGER, try_parse_int, try_parse_float, kill_proc
+from utils import run_periodic, LOGGER, try_parse_int, try_parse_float, kill_proc
 import aiohttp
 from difflib import SequenceMatcher as Matcher
-from music_assistant.models import MediaType, PlayerState, MusicPlayer
+from models import MediaType, PlayerState, MusicPlayer
 from typing import List
 import toolz
 import operator
@@ -190,7 +190,7 @@ class Player():
         if player_details.is_group and player.settings['apply_group_power']:
             await self.__update_player_group_power(player_details, player_childs)
         # compare values to detect changes
-        if player.cur_item.name != player_details.cur_item.name:
+        if player.cur_item and player_details.cur_item and player.cur_item.name != player_details.cur_item.name:
             player_changed = True
         player.cur_item = player_details.cur_item
         for key, cur_value in player.__dict__.items():

@@ -4,16 +4,16 @@
 import asyncio
 import os
 from typing import List
-from music_assistant.utils import run_periodic, LOGGER, parse_track_title
-from music_assistant.models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+from utils import run_periodic, LOGGER, parse_track_title
+from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 import json
 import aiohttp
 import time
 import datetime
 import hashlib
 from asyncio_throttle import Throttler
-from music_assistant.modules.cache import use_cache
+from modules.cache import use_cache
 
 
 def setup(mass):

@@ -6,11 +6,11 @@ import os
 from typing import List
 import sys
 import time
-from music_assistant.utils import run_periodic, LOGGER, parse_track_title
-from music_assistant.models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from music_assistant.constants import CONF_ENABLED
+from utils import run_periodic, LOGGER, parse_track_title
+from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from constants import CONF_ENABLED
 import taglib
-from music_assistant.modules.cache import use_cache
+from modules.cache import use_cache
 
 
 def setup(mass):

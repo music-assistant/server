@@ -3,10 +3,10 @@
 
 import asyncio
 import os
-from music_assistant.utils import run_periodic, run_async_background_task, LOGGER, try_parse_int
+from utils import run_periodic, run_async_background_task, LOGGER, try_parse_int
 import aiohttp
 from difflib import SequenceMatcher as Matcher
-from music_assistant.models import MediaType, Track, Artist, Album, Playlist
+from models import MediaType, Track, Artist, Album, Playlist
 from typing import List
 import toolz
 import operator

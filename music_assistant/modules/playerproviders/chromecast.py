@@ -6,9 +6,9 @@ import os
 from typing import List
 import random
 import sys
-from music_assistant.utils import run_periodic, run_background_task, LOGGER, parse_track_title, try_parse_int
-from music_assistant.models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from music_assistant.constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
+from utils import run_periodic, run_background_task, LOGGER, parse_track_title, try_parse_int
+from models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
 import json
 import aiohttp
 import time
@@ -16,7 +16,7 @@ import datetime
 import hashlib
 from asyncio_throttle import Throttler
 from aiocometd import Client, ConnectionType, Extension
-from music_assistant.modules.cache import use_cache
+from modules.cache import use_cache
 import copy
 import pychromecast
 from pychromecast.controllers.multizone import MultizoneController

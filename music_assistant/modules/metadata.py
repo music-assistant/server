@@ -3,12 +3,12 @@
 
 import asyncio
 import os
-from music_assistant.utils import run_periodic, LOGGER
+from utils import run_periodic, LOGGER
 import json
 import aiohttp
 from asyncio_throttle import Throttler
 from difflib import SequenceMatcher as Matcher
-from music_assistant.modules.cache import use_cache
+from modules.cache import use_cache
 from yarl import URL
 import re
 
