@@ -74,11 +74,11 @@ class ChromecastProvider(PlayerProvider):
             self._chromecasts[player_id].media_controller.queue_prev()
         elif cmd == 'power' and cmd_args == 'off':
             self._players[player_id].powered = False
-            self.mass.event_loop.create_task(self.mass.player.trigger_update(player_id))
             self._chromecasts[player_id].media_controller.stop() # power is not supported so send stop instead
+            await self.mass.player.update_player(self._players[player_id])
         elif cmd == 'power':
             self._players[player_id].powered = True
-            self.mass.event_loop.create_task(self.mass.player.trigger_update(player_id))
+            await self.mass.player.update_player(self._players[player_id])
         elif cmd == 'volume':
             self._chromecasts[player_id].set_volume(try_parse_int(cmd_args)/100)
         elif cmd == 'mute' and cmd_args == 'off':
@@ -248,15 +248,17 @@ class ChromecastProvider(PlayerProvider):
         if caststatus:
             player.muted = caststatus.volume_muted
             player.volume_level = caststatus.volume_level * 100
-            #player.powered = ????
-            # chromecast does not support power on/of ?
         if mediastatus:
+            # chromecast does not support power on/of so we use idle state instead
             if mediastatus.player_state in ['PLAYING', 'BUFFERING']:
                 player.state = PlayerState.Playing
+                player.powered = True
             elif mediastatus.player_state == 'PAUSED':
                 player.state = PlayerState.Paused
+                player.powered = True
             else:
                 player.state = PlayerState.Stopped
+                player.powered = player.powered
             player.cur_item = await self.__parse_track(mediastatus)
             player.cur_item_time = try_parse_int(mediastatus.current_time)
         await self.mass.player.update_player(player)
