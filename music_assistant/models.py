@@ -463,7 +463,7 @@ class MusicPlayer():
         self.cur_item = Track()
         self.cur_item_time = 0
         self.volume_level = 0
-        self.shuffle_enabled = False
+        self.shuffle_enabled = True
         self.repeat_enabled = False
         self.muted = False
         self.group_parent = None # set to id of REAL group/parent player
