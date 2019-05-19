@@ -39,7 +39,6 @@ class SpotifyProvider(MusicProvider):
     def __init__(self, mass, username, password):
         self.name = 'Spotify'
         self.prov_id = 'spotify'
-        self.audio_fmt = 'ogg'
         self._cur_user = None
         self.mass = mass
         self.cache = mass.cache
@@ -243,6 +242,10 @@ class SpotifyProvider(MusicProvider):
             opts["offset"] = {"uri": offset_uri }
         return await self.__put_data('me/player/play', {"device_id": device_id}, opts)
     
+    async def get_stream_content_type(self, track_id):
+        ''' return the content type for the given track when it will be streamed'''
+        return 'ogg'
+
     async def get_audio_stream(self, track_id):
         ''' get audio stream for a track '''
         import subprocess

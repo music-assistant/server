@@ -11,6 +11,7 @@ from models import MediaType, media_type_from_string
 from functools import partial
 json_serializer = partial(json.dumps, default=lambda x: x.__dict__)
 import ssl
+import concurrent
 
 def setup(mass):
     ''' setup the module and read/apply config'''
@@ -267,7 +268,17 @@ class Web():
         resp = web.StreamResponse(status=200,
                                  reason='OK',
                                  headers={'Content-Type': 'audio/flac'})
+        if request.method.upper() == 'HEAD':
+            return resp
         await resp.prepare(request)
+        cancelled = False
         async for chunk in self.mass.player.get_audio_stream(track_id, provider):
-            await resp.write(chunk)
-        return resp
+            if cancelled:
+                continue # just consume all bytes in stream to prevent deadlocks in the subprocess based iterators
+            try:
+                await resp.write(chunk)
+            except (asyncio.CancelledError, concurrent.futures._base.CancelledError, ConnectionResetError):
+                LOGGER.error('client disconnect?')
+                cancelled = True
+        if not cancelled:
+            return resp

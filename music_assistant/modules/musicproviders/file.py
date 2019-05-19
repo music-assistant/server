@@ -229,18 +229,9 @@ class FileProvider(MusicProvider):
             tracks += await self.get_album_tracks(album.item_id)
         return tracks[:10]
 
-    async def get_stream_details(self, track_id):
-        ''' returns the stream details for the given track '''
-        track = await self.track(track_id)
-        import socket
-        host = socket.gethostbyname(socket.gethostname())
-        return {
-            'mime_type': 'audio/flac',
-            'duration': track.duration,
-            'sampling_rate': 44100,
-            'bit_depth': 16,
-            'url': 'http://%s/stream/file/%s' % (host, track_id)
-        }
+    async def get_stream_content_type(self, track_id):
+        ''' return the content type for the given track when it will be streamed'''
+        return track_id.split('.')[-1]
     
     async def get_stream(self, track_id):
         ''' get audio stream for a track '''

@@ -138,7 +138,6 @@ class MusicProvider():
     name = 'My great Music provider' # display name
     prov_id = 'my_provider' # used as id
     icon = ''
-    audio_fmt = 'flac' # the audio format used by this provider when streaming
 
     def __init__(self, mass):
         self.mass = mass
@@ -445,6 +444,15 @@ class MusicProvider():
     async def remove_playlist_tracks(self, prov_playlist_id, prov_track_ids):
         ''' remove track(s) from playlist '''
         raise NotImplementedError
+
+    async def get_stream_content_type(self, track_id):
+        ''' return the content type for the given track when it will be streamed'''
+        raise NotImplementedError
+    
+    async def get_stream(self, track_id):
+        ''' get audio stream for a track '''
+        raise NotImplementedError
+    
     
 class PlayerState(str, Enum):
     Off = "off"

@@ -40,7 +40,6 @@ class QobuzProvider(MusicProvider):
     def __init__(self, mass, username, password):
         self.name = 'Qobuz'
         self.prov_id = 'qobuz'
-        self.audio_fmt = 'flac'
         self._cur_user = None
         self.mass = mass
         self.cache = mass.cache
@@ -253,6 +252,10 @@ class QobuzProvider(MusicProvider):
         params = {'playlist_id': prov_playlist_id, 'track_ids': ",".join(playlist_track_ids)}
         return await self.__get_data('playlist/deleteTracks', params)
     
+    async def get_stream_content_type(self, track_id):
+        ''' return the content type for the given track when it will be streamed'''
+        return 'flac' #TODO handle other file formats on qobuz?
+
     async def get_audio_stream(self, track_id):
         ''' get audio stream for a track '''
         params = {'format_id': 27, 'track_id': track_id, 'intent': 'stream'}

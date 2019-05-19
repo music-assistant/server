@@ -59,7 +59,10 @@ class ChromecastProvider(PlayerProvider):
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
         if cmd == 'play':
-            self._chromecasts[player_id].media_controller.play()
+            if self._chromecasts[player_id].media_controller.status.media_session_id:
+                self._chromecasts[player_id].media_controller.play()
+            else:
+                await self.__resume_queue(player_id)
         elif cmd == 'pause':
             self._chromecasts[player_id].media_controller.pause()
         elif cmd == 'stop':
@@ -67,20 +70,17 @@ class ChromecastProvider(PlayerProvider):
         elif cmd == 'next':
             self._chromecasts[player_id].media_controller.queue_next()
         elif cmd == 'previous':
-            self._chromecasts[player_id].media_controller.queue_previous()
+            self._chromecasts[player_id].media_controller.queue_prev()
         elif cmd == 'power' and cmd_args == 'off':
-            self._players[player_id].powered = False # power is not supported
-            await self.mass.player.update_player(self._players[player_id])
+            self._chromecasts[player_id].quit_app() # power is not supported so send quit app instead
         elif cmd == 'power':
-            self._players[player_id].powered = True # power is not supported
+            self._chromecasts[player_id].media_controller.launch()
         elif cmd == 'volume':
             self._chromecasts[player_id].set_volume(try_parse_int(cmd_args)/100)
         elif cmd == 'mute' and cmd_args == 'off':
             self._chromecasts[player_id].set_volume_muted(False)
         elif cmd == 'mute':
             self._chromecasts[player_id].set_volume_muted(True)
-        elif cmd == 'power':
-            pass # power is not supported on chromecast
 
     async def player_queue(self, player_id, offset=0, limit=50):
         ''' return the items in the player's queue '''
@@ -153,7 +153,7 @@ class ChromecastProvider(PlayerProvider):
                 startindex = 0
             elif queue_opt == 'next':
                 # play the new items after the current playing item (insert before current next item)
-                castplayer.queue = new_queue_items + castplayer.queue[cur_queue_index:] + plcastplayerayer.queue[:cur_queue_index]
+                castplayer.queue = new_queue_items + castplayer.queue[cur_queue_index:] + castplayer.queue[:cur_queue_index]
                 startindex = cur_queue_index
             else:
                 # overwrite the whole queue with new item(s)
@@ -169,11 +169,12 @@ class ChromecastProvider(PlayerProvider):
                     "items": castplayer.queue[:10]
             }
             await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
+            await asyncio.sleep(1)
             # append the rest of the items in the queue in chunks
             for chunk in chunks(castplayer.queue[10:], 100):
-                await asyncio.sleep(1)
                 queuedata = { "type": 'QUEUE_INSERT', "items": chunk }
                 await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
+                await asyncio.sleep(0.1)
         elif queue_opt == 'add':
             # existing queue is playing: simply append items to the end of the queue (in small chunks)
             castplayer.queue = castplayer.queue + new_queue_items
@@ -181,7 +182,7 @@ class ChromecastProvider(PlayerProvider):
             for chunk in chunks(new_queue_items, 100):
                 queuedata = { "type": 'QUEUE_INSERT', "items": chunk }
                 await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.1)
         elif queue_opt == 'next':
             # play the new items after the current playing item (insert before current next item)
             player.queue = castplayer.queue[:cur_queue_index] + new_queue_items + castplayer.queue[cur_queue_index:]
@@ -194,6 +195,34 @@ class ChromecastProvider(PlayerProvider):
             
     ### Provider specific (helper) methods #####
 
+    async def __resume_queue(self, player_id):
+        ''' resume queue play after power off '''
+        player = self._players[player_id]
+        castplayer = self._chromecasts[player_id]
+        media_controller = castplayer.media_controller
+        receiver_ctrl = media_controller._socket_client.receiver_controller
+        startindex = 0
+        if player.cur_item and player.cur_item.name:
+            for index, item in enumerate(castplayer.queue):
+                if item['media']['metadata']['title'] == player.cur_item.name:
+                    startindex = index
+                    break
+        queuedata = { 
+                "type": 'QUEUE_LOAD',
+                "repeatMode":  "REPEAT_ALL" if player.repeat_enabled else "REPEAT_OFF",
+                "shuffle": player.shuffle_enabled,
+                "queueType": "PLAYLIST",
+                "startIndex":    startindex,    # Item index to play after this request or keep same item if undefined
+                "items": castplayer.queue[:10]
+        }
+        await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
+        await asyncio.sleep(1)
+        # append the rest of the items in the queue in chunks
+        for chunk in chunks(castplayer.queue[10:], 100):
+            await asyncio.sleep(0.1)
+            queuedata = { "type": 'QUEUE_INSERT', "items": chunk }
+            await self.__send_player_queue(receiver_ctrl, media_controller, queuedata)
+        
     async def __send_player_queue(self, receiver_ctrl, media_controller, queuedata):
         '''send new data to the CC queue'''
         def app_launched_callback():
@@ -215,7 +244,7 @@ class ChromecastProvider(PlayerProvider):
         if caststatus:
             player.muted = caststatus.volume_muted
             player.volume_level = caststatus.volume_level * 100
-            player.powered = not caststatus.is_stand_by
+            player.powered = chromecast.media_controller.status.media_session_id != None
         if mediastatus:
             if mediastatus.player_state in ['PLAYING', 'BUFFERING']:
                 player.state = PlayerState.Playing
