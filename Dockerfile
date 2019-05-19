@@ -1,7 +1,7 @@
 FROM python:3.7.3-alpine
 
 # install deps
-RUN apk add build-base python-dev flac sox taglib-dev zip curl
+RUN apk add build-base python-dev flac sox taglib-dev zip curl ffmpeg ffmpeg-dev sox-dev
 COPY requirements.txt requirements.txt
 RUN pip install --upgrade -r requirements.txt
 
