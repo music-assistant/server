@@ -73,8 +73,10 @@ class ChromecastProvider(PlayerProvider):
         elif cmd == 'previous':
             self._chromecasts[player_id].media_controller.queue_prev()
         elif cmd == 'power' and cmd_args == 'off':
+            self._players[player_id].powered = False
             self._chromecasts[player_id].quit_app() # power is not supported so send quit app instead
         elif cmd == 'power':
+            self._players[player_id].powered = True
             self._chromecasts[player_id].media_controller.launch()
         elif cmd == 'volume':
             self._chromecasts[player_id].set_volume(try_parse_int(cmd_args)/100)
@@ -245,7 +247,8 @@ class ChromecastProvider(PlayerProvider):
         if caststatus:
             player.muted = caststatus.volume_muted
             player.volume_level = caststatus.volume_level * 100
-            player.powered = chromecast.media_controller.status.media_session_id != None
+            #player.powered = ????
+            # chromecast does not support power on/of ?
         if mediastatus:
             if mediastatus.player_state in ['PLAYING', 'BUFFERING']:
                 player.state = PlayerState.Playing

@@ -57,7 +57,7 @@ class Player():
             ("apply_group_power", False, "player_group_pow"),
             ("play_power_on", False, "player_power_play"),
             ("sox_effects", '', "http_streamer_sox_effects"),
-            ("force_http_streamer", '', "force_http_streamer")
+            ("force_http_streamer", False, "force_http_streamer")
         ]
         # config for the http streamer
         config_entries = [
