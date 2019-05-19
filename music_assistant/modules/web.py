@@ -263,14 +263,15 @@ class Web():
 
     async def stream(self, request):
         ''' start streaming audio from provider '''
-        track_id = request.match_info.get('track_id')
-        provider = request.match_info.get('provider')
+        player_id = request.query.get('player_id')
+        track_id = request.query.get('track_id')
+        provider = request.query.get('provider')
         resp = web.StreamResponse(status=200,
                                  reason='OK',
                                  headers={'Content-Type': 'audio/flac'})
+        await resp.prepare(request)
         if request.method.upper() == 'HEAD':
             return resp
-        await resp.prepare(request)
         cancelled = False
         async for chunk in self.mass.player.get_audio_stream(track_id, provider):
             if cancelled:

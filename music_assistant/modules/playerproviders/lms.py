@@ -51,7 +51,6 @@ class LMSProvider(PlayerProvider):
         self._players = {}
         self.last_msg_received = 0
         self.supported_musicproviders = ['qobuz', 'file', 'spotify', 'http']
-        self.supported_musicproviders = ['http']
         self.http_session = aiohttp.ClientSession(loop=mass.event_loop)
         # we use a combi of active polling and subscriptions because the cometd implementation of LMS is somewhat unreliable
         asyncio.ensure_future(self.__lms_events())

@@ -36,7 +36,7 @@ class Player():
         self.create_config_entries()
         self.local_ip = get_ip()
         # create needed temp/cache dirs
-        if not os.path.isdir(AUDIO_CACHE_DIR):
+        if self.mass.config['base']['http_streamer']['enable_cache'] and not os.path.isdir(AUDIO_CACHE_DIR):
             os.makedirs(AUDIO_CACHE_DIR)
         if not os.path.isdir(AUDIO_TEMP_DIR):
             os.makedirs(AUDIO_TEMP_DIR)
@@ -45,6 +45,7 @@ class Player():
 
     def create_config_entries(self):
         ''' sets the config entries for this module (list with key/value pairs)'''
+        # player specific settings
         self.mass.config['player_settings']['__desc__'] = [
             ("enabled", False, "player_enabled"),
             ("name", "", "player_name"),
@@ -53,8 +54,24 @@ class Player():
             ("disable_volume", False, "player_disable_vol"),
             ("apply_group_volume", False, "player_group_vol"),
             ("apply_group_power", False, "player_group_pow"),
-            ("play_power_on", False, "player_power_play")
+            ("play_power_on", False, "player_power_play"),
+            ("sox_effects", '', "http_streamer_sox_effects"),
+            ("force_http_streamer", '', "force_http_streamer")
         ]
+        # config for the http streamer
+        config_entries = [
+            ('volume_normalisation', '', 'enable_r128_volume_normalisation'), 
+            ('target_volume', '-12', 'target_volume_lufs'),
+            ('fallback_gain_correct', '', 'fallback_gain_correct'),
+            ('enable_cache', True, 'enable_audio_cache'),
+            ('trim_silence', True, 'trim_silence')
+            ]
+        if not self.mass.config['base'].get('http_streamer'):
+            self.mass.config['base']['http_streamer'] = {}
+        self.mass.config['base']['http_streamer']['__desc__'] = config_entries
+        for key, def_value, desc in config_entries:
+            if not key in self.mass.config['base']['http_streamer']:
+                self.mass.config['base']['http_streamer'][key] = def_value
     
     async def players(self):
         ''' return all players '''
@@ -306,7 +323,7 @@ class Player():
                     media_provider = prov_media['provider']
                     media_item_id = prov_media['item_id']
                     player_supported_provs = player_prov.supported_musicproviders
-                    if media_provider in player_supported_provs:
+                    if media_provider in player_supported_provs and not self.mass.config['player_settings'][player_id]['force_http_streamer']:
                         # the provider can handle this media_type directly !
                         track.uri = await self.get_track_uri(media_item_id, media_provider)
                         playable_tracks.append(track)
@@ -346,13 +363,17 @@ class Player():
         player_prov = self.providers[player.player_provider]
         return await player_prov.player_queue(player_id, offset=offset, limit=limit)
 
-    async def get_audio_stream(self, track_id, provider):
-        ''' get audio stream from provider and apply additional effects/processing where needed'''
+    async def get_audio_stream(self, track_id, provider, player_id=None):
+        ''' get audio stream from provider and apply additional effects/processing where/if needed'''
         input_content_type = await self.mass.music.providers[provider].get_stream_content_type(track_id)
         cachefile = self.__get_track_cache_filename(track_id, provider)
-        gain_correct = await self.__get_track_gain_correct(track_id, provider)
-        LOGGER.info("apply gain correction of %s" % gain_correct)
-        sox_effects='vol %s dB' % gain_correct
+        sox_effects = ''
+        if self.mass.config['base']['http_streamer']['volume_normalisation']:
+            gain_correct = await self.__get_track_gain_correct(track_id, provider)
+            LOGGER.info("apply gain correction of %s" % gain_correct)
+            sox_effects='vol %s dB' % gain_correct
+        if player_id and self.mass.config['player_settings'][player_id]['sox_effects']:
+            sox_effects += ' ' + self.mass.config['player_settings'][player_id]['sox_effects']
         if os.path.isfile(cachefile):
             # we have a cache file for this track which we can use
             args = ['-t', 'flac', cachefile, '-t', 'flac', '-C', '0', '-', *sox_effects.split(' ')]
@@ -379,31 +400,31 @@ class Player():
         ''' analyze track audio, for now we only calculate EBU R128 loudness '''
         LOGGER.info('Start analyzing file %s' % tmpfile)
         cachefile = self.__get_track_cache_filename(track_id, provider)
-        strip_silence = True # TODO: attach config setting
-        if not os.path.isfile(cachefile):
-            # not needed to do processing if there already is a cachedfile
-            bs1770_binary = self.__get_bs1770_binary()
-            if bs1770_binary:
-                # calculate integrated r128 loudness with bs1770
-                analyse_dir = os.path.join(self.mass.datapath, 'analyse_info')
-                analysis_file = os.path.join(analyse_dir, "%s_%s.xml" %(provider, track_id.split(os.sep)[-1]))
-                if not os.path.isfile(analysis_file):
-                    if not os.path.isdir(analyse_dir):
-                        os.makedirs(analyse_dir)
-                    cmd = '%s %s --loglevel quiet --xml --ebu -f %s' % (bs1770_binary, tmpfile, analysis_file)
-                    process = await asyncio.create_subprocess_shell(cmd)
-                    await process.wait()
-            # use sox to store cache file (optionally strip silence from start and end)
-            if strip_silence:
-                cmd = 'sox -t %s %s -t flac -C 5 %s silence 1 0.1 1%% reverse silence 1 0.1 1%% reverse' %(content_type, tmpfile, cachefile)
-            else:
-                # cachefile is always stored as flac 
-                cmd = 'sox -t %s %s -t flac -C 5 %s' %(content_type, tmpfile, cachefile)
-            process = await asyncio.create_subprocess_shell(cmd)
-            await process.wait()
+        # not needed to do processing if there already is a cachedfile
+        bs1770_binary = self.__get_bs1770_binary()
+        if bs1770_binary:
+            # calculate integrated r128 loudness with bs1770
+            analyse_dir = os.path.join(self.mass.datapath, 'analyse_info')
+            analysis_file = os.path.join(analyse_dir, "%s_%s.xml" %(provider, track_id.split(os.sep)[-1]))
+            if not os.path.isfile(analysis_file):
+                if not os.path.isdir(analyse_dir):
+                    os.makedirs(analyse_dir)
+                cmd = '%s %s --xml --ebu -f %s' % (bs1770_binary, tmpfile, analysis_file)
+                process = await asyncio.create_subprocess_shell(cmd)
+                await process.wait()
+            if self.mass.config['base']['http_streamer']['enable_cache']:
+                # use sox to store cache file (optionally strip silence from start and end)
+                if self.mass.config['base']['http_streamer']['trim_silence']:
+                    cmd = 'sox -t %s %s -t flac -C 5 %s silence 1 0.1 1%% reverse silence 1 0.1 1%% reverse' %(content_type, tmpfile, cachefile)
+                else:
+                    # cachefile is always stored as flac 
+                    cmd = 'sox -t %s %s -t flac -C 5 %s' %(content_type, tmpfile, cachefile)
+                process = await asyncio.create_subprocess_shell(cmd)
+                await process.wait()
         # always clean up temp file
-        if os.path.isfile(tmpfile):
+        while os.path.isfile(tmpfile):
             os.remove(tmpfile)
+            await asyncio.sleep(0.5)
         LOGGER.info('Fininished analyzing file %s' % tmpfile)
     
     async def __get_track_gain_correct(self, track_id, provider):
