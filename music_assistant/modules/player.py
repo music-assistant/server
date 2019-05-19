@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 import concurrent
 import aiohttp
 import random
+import urllib
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODULES_PATH = os.path.join(BASE_DIR, "playerproviders" )
@@ -60,9 +61,9 @@ class Player():
         ]
         # config for the http streamer
         config_entries = [
-            ('volume_normalisation', '', 'enable_r128_volume_normalisation'), 
-            ('target_volume', '-12', 'target_volume_lufs'),
-            ('fallback_gain_correct', '', 'fallback_gain_correct'),
+            ('volume_normalisation', True, 'enable_r128_volume_normalisation'), 
+            ('target_volume', '-23', 'target_volume_lufs'),
+            ('fallback_gain_correct', '-12', 'fallback_gain_correct'),
             ('enable_cache', True, 'enable_audio_cache'),
             ('trim_silence', True, 'trim_silence')
             ]
@@ -325,12 +326,12 @@ class Player():
                     player_supported_provs = player_prov.supported_musicproviders
                     if media_provider in player_supported_provs and not self.mass.config['player_settings'][player_id]['force_http_streamer']:
                         # the provider can handle this media_type directly !
-                        track.uri = await self.get_track_uri(media_item_id, media_provider)
+                        track.uri = await self.get_track_uri(media_item_id, media_provider, player_id)
                         playable_tracks.append(track)
                         match_found = True
                     elif 'http' in player_prov.supported_musicproviders:
                         # fallback to http streaming if supported
-                        track.uri = await self.get_track_uri(media_item_id, media_provider, True)
+                        track.uri = await self.get_track_uri(media_item_id, media_provider, player_id, True)
                         playable_tracks.append(track)
                         match_found = True
                     if match_found:
@@ -344,11 +345,13 @@ class Player():
         else:
             raise Exception("Musicprovider and/or media not supported by player %s !" % (player_id) )
     
-    async def get_track_uri(self, item_id, provider, http_stream=False):
+    async def get_track_uri(self, item_id, provider, player_id, http_stream=False):
         ''' generate the URL/URI for a media item '''
         uri = ""
         if http_stream:
-            uri = 'http://%s:8095/stream/%s/%s'% (self.local_ip, provider, item_id)
+            params = {"provider": provider, "track_id": str(item_id), "player_id": str(player_id)}
+            params_str = urllib.parse.urlencode(params)
+            uri = 'http://%s:8095/stream?%s'% (self.local_ip, params_str)
         elif provider == "spotify":
             uri = 'spotify://spotify:track:%s' % item_id
         elif provider == "qobuz":
@@ -367,22 +370,22 @@ class Player():
         ''' get audio stream from provider and apply additional effects/processing where/if needed'''
         input_content_type = await self.mass.music.providers[provider].get_stream_content_type(track_id)
         cachefile = self.__get_track_cache_filename(track_id, provider)
-        sox_effects = ''
+        sox_effects = []
         if self.mass.config['base']['http_streamer']['volume_normalisation']:
             gain_correct = await self.__get_track_gain_correct(track_id, provider)
             LOGGER.info("apply gain correction of %s" % gain_correct)
-            sox_effects='vol %s dB' % gain_correct
+            sox_effects += ['vol', '%s dB' % gain_correct]
         if player_id and self.mass.config['player_settings'][player_id]['sox_effects']:
-            sox_effects += ' ' + self.mass.config['player_settings'][player_id]['sox_effects']
+            sox_effects += self.mass.config['player_settings'][player_id]['sox_effects'].split('/')
         if os.path.isfile(cachefile):
             # we have a cache file for this track which we can use
-            args = ['-t', 'flac', cachefile, '-t', 'flac', '-C', '0', '-', *sox_effects.split(' ')]
+            args = ['-t', 'flac', cachefile, '-t', 'flac', '-', *sox_effects]
             process = await asyncio.create_subprocess_exec('sox', *args, 
                     stdout=asyncio.subprocess.PIPE)
             buffer_task = None
         else:
             # stream from provider
-            args = ['-t', input_content_type, '-', '-t', 'flac', '-C', '0', '-', *sox_effects.split(' ')]
+            args = ['-t', input_content_type, '-', '-t', 'flac', '-', *sox_effects]
             process = await asyncio.create_subprocess_exec('sox', *args, 
                     stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE)
             buffer_task = asyncio.create_task(
@@ -415,10 +418,10 @@ class Player():
             if self.mass.config['base']['http_streamer']['enable_cache']:
                 # use sox to store cache file (optionally strip silence from start and end)
                 if self.mass.config['base']['http_streamer']['trim_silence']:
-                    cmd = 'sox -t %s %s -t flac -C 5 %s silence 1 0.1 1%% reverse silence 1 0.1 1%% reverse' %(content_type, tmpfile, cachefile)
+                    cmd = 'sox -t %s %s -t flac -C5 %s silence 1 0.1 1%% reverse silence 1 0.1 1%% reverse' %(content_type, tmpfile, cachefile)
                 else:
                     # cachefile is always stored as flac 
-                    cmd = 'sox -t %s %s -t flac -C 5 %s' %(content_type, tmpfile, cachefile)
+                    cmd = 'sox -t %s %s -t flac -C5 %s' %(content_type, tmpfile, cachefile)
                 process = await asyncio.create_subprocess_shell(cmd)
                 await process.wait()
         # always clean up temp file
@@ -429,8 +432,8 @@ class Player():
     
     async def __get_track_gain_correct(self, track_id, provider):
         ''' get the gain correction that should be applied to a track '''
-        target_gain = -23
-        fallback_gain = -14 # fallback if no analyse info is available
+        target_gain = int(self.mass.config['base']['http_streamer']['target_volume'])
+        fallback_gain = int(self.mass.config['base']['http_streamer']['fallback_gain_correct'])
         analysis_file = os.path.join(self.mass.datapath, 'analyse_info', "%s_%s.xml" %(provider, track_id.split(os.sep)[-1]))
         if not os.path.isfile(analysis_file):
             return fallback_gain

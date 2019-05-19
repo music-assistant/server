@@ -18,6 +18,7 @@ from asyncio_throttle import Throttler
 from aiocometd import Client, ConnectionType, Extension
 from modules.cache import use_cache
 import copy
+import urllib
 
 def setup(mass):
     ''' setup the provider'''
@@ -217,9 +218,10 @@ class LMSProvider(PlayerProvider):
             except Exception as exc:
                 LOGGER.error(exc)
         elif track_url.startswith('http') and '/stream' in track_url:
-            item_id = track_url.split('/')[-1]
-            provider = track_url.split('/')[-2]
-            return await self.mass.music.providers[provider].track(item_id)
+            params = urllib.parse.parse_qs(track_url.split('?')[1])
+            track_id = params['track_id']
+            provider = params['provider']
+            return await self.mass.music.providers[provider].track(track_id)
         # fallback to a generic track
         track = Track()
         track.name = track_details['title']

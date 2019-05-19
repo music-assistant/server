@@ -24,6 +24,7 @@ from pychromecast.controllers import BaseController
 from pychromecast.controllers.spotify import SpotifyController
 from pychromecast.controllers.media import MediaController
 import types
+import urllib
 
 def setup(mass):
     ''' setup the provider'''
@@ -281,9 +282,10 @@ class ChromecastProvider(PlayerProvider):
             track_id = uri.replace('qobuz://','').replace('.flac','')
             track = await self.mass.music.providers['qobuz'].track(track_id)
         elif uri.startswith('http') and '/stream' in uri:
-            item_id = uri.split('/')[-1]
-            provider = uri.split('/')[-2]
-            track = await self.mass.music.providers[provider].track(item_id)
+            params = urllib.parse.parse_qs(uri.split('?')[1])
+            track_id = params['track_id']
+            provider = params['provider']
+            track = await self.mass.music.providers[provider].track(track_id)
         return track
 
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):

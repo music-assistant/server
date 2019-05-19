@@ -60,7 +60,7 @@ class Web():
     async def setup_web(self):
         app = web.Application()
         app.add_routes([web.get('/ws', self.websocket_handler)])
-        app.add_routes([web.get('/stream/{provider}/{track_id}', self.stream)])
+        app.add_routes([web.get('/stream', self.stream)])
         app.add_routes([web.get('/api/search', self.search)])
         app.add_routes([web.get('/api/config', self.get_config)])
         app.add_routes([web.post('/api/config', self.save_config)])
