@@ -219,8 +219,8 @@ class LMSProvider(PlayerProvider):
                 LOGGER.error(exc)
         elif track_url.startswith('http') and '/stream' in track_url:
             params = urllib.parse.parse_qs(track_url.split('?')[1])
-            track_id = params['track_id']
-            provider = params['provider']
+            track_id = params['track_id'][0]
+            provider = params['provider'][0]
             return await self.mass.music.providers[provider].track(track_id)
         # fallback to a generic track
         track = Track()

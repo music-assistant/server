@@ -11,6 +11,7 @@ from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Al
 from constants import CONF_ENABLED
 import taglib
 from modules.cache import use_cache
+import base64
 
 
 def setup(mass):
@@ -104,34 +105,37 @@ class FileProvider(MusicProvider):
 
     async def get_artist(self, prov_item_id) -> Artist:
         ''' get full artist details by id '''
-        if not os.path.isdir(prov_item_id):
-            LOGGER.error("artist path does not exist: %s" % prov_item_id)
-            return None
-        if "\\" in prov_item_id:
-            name = prov_item_id.split("\\")[-1]
+        if not os.sep in prov_item_id:
+            itempath = base64.b64decode(prov_item_id).decode('utf-8')
         else:
-            name = prov_item_id.split("/")[-1]
+            itempath = prov_item_id
+            prov_item_id = base64.b64encode(itempath.encode('utf-8')).decode('utf-8')
+        if not os.path.isdir(itempath):
+            LOGGER.error("artist path does not exist: %s" % itempath)
+            return None
+        name = itempath.split(os.sep)[-1]
         artist = Artist()
         artist.item_id = prov_item_id
         artist.provider = self.prov_id
         artist.name = name
         artist.provider_ids.append({
             "provider": self.prov_id,
-            "item_id": prov_item_id
+            "item_id": artist.item_id
         })
         return artist
         
     async def get_album(self, prov_item_id) -> Album:
         ''' get full album details by id '''
-        if not os.path.isdir(prov_item_id):
-            LOGGER.error("album path does not exist: %s" % prov_item_id)
-            return None
-        if "\\" in prov_item_id:
-            name = prov_item_id.split("\\")[-1]
-            artistpath = prov_item_id.rsplit("\\", 1)[0]
+        if not os.sep in prov_item_id:
+            itempath = base64.b64decode(prov_item_id).decode('utf-8')
         else:
-            name = prov_item_id.split("/")[-1]
-            artistpath = prov_item_id.rsplit("/", 1)[0]
+            itempath = prov_item_id
+            prov_item_id = base64.b64encode(itempath.encode('utf-8')).decode('utf-8')
+        if not os.path.isdir(itempath):
+            LOGGER.error("album path does not exist: %s" % itempath)
+            return None
+        name = itempath.split(os.sep)[-1]
+        artistpath = itempath.rsplit(os.sep, 1)[0]
         album = Album()
         album.item_id = prov_item_id
         album.provider = self.prov_id
@@ -147,25 +151,33 @@ class FileProvider(MusicProvider):
 
     async def get_track(self, prov_item_id) -> Track:
         ''' get full track details by id '''
-        if not os.path.isfile(prov_item_id):
-            LOGGER.error("track path does not exist: %s" % prov_item_id)
+        if not os.sep in prov_item_id:
+            itempath = base64.b64decode(prov_item_id).decode('utf-8')
+        else:
+            itempath = prov_item_id
+        if not os.path.isfile(itempath):
+            LOGGER.error("track path does not exist: %s" % itempath)
             return None
-        return await self.__parse_track(prov_item_id)
+        return await self.__parse_track(itempath)
 
     async def get_playlist(self, prov_item_id) -> Playlist:
         ''' get full playlist details by id '''
-        if not os.path.isfile(prov_item_id):
-            LOGGER.error("playlist path does not exist: %s" % prov_item_id)
+        if not os.sep in prov_item_id:
+            itempath = base64.b64decode(prov_item_id).decode('utf-8')
+        else:
+            itempath = prov_item_id
+            prov_item_id = base64.b64encode(itempath.encode('utf-8')).decode('utf-8')
+        if not os.path.isfile(itempath):
+            LOGGER.error("playlist path does not exist: %s" % itempath)
             return None
-        filepath = prov_item_id
         playlist = Playlist()
-        playlist.item_id = filepath
+        playlist.item_id = prov_item_id
         playlist.provider = self.prov_id
-        playlist.name = filepath.split('\\')[-1].split('/')[-1].replace('.m3u', '')
+        playlist.name = itempath.split(os.sep)[-1].replace('.m3u', '')
         playlist.is_editable = True
         playlist.provider_ids.append({
             "provider": self.prov_id,
-            "item_id": filepath
+            "item_id": prov_item_id
         })
         playlist.owner = 'disk'
         return playlist
@@ -173,7 +185,10 @@ class FileProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id) -> List[Track]:
         ''' get album tracks for given album id '''
         result = []
-        albumpath = prov_album_id
+        if not os.sep in prov_album_id:
+            albumpath = base64.b64decode(prov_album_id).decode('utf-8')
+        else:
+            albumpath = prov_album_id
         if not os.path.isdir(albumpath):
             LOGGER.error("album path does not exist: %s" % albumpath)
             return []
@@ -190,11 +205,15 @@ class FileProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id, limit=50, offset=0) -> List[Track]:
         ''' get playlist tracks for given playlist id '''
         tracks = []
-        if not os.path.isfile(prov_playlist_id):
-            LOGGER.error("playlist path does not exist: %s" % prov_playlist_id)
+        if not os.sep in prov_playlist_id:
+            itempath = base64.b64decode(prov_playlist_id).decode('utf-8')
+        else:
+            itempath = prov_playlist_id
+        if not os.path.isfile(itempath):
+            LOGGER.error("playlist path does not exist: %s" % itempath)
             return []
         counter = 0
-        with open(prov_playlist_id) as f:
+        with open(itempath) as f:
             for line in f.readlines():
                 line = line.strip()
                 if line and not line.startswith('#'):
@@ -210,7 +229,10 @@ class FileProvider(MusicProvider):
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
         ''' get a list of albums for the given artist '''
         result = []
-        artistpath = prov_artist_id
+        if not os.sep in prov_artist_id:
+            artistpath = base64.b64decode(prov_artist_id).decode('utf-8')
+        else:
+            artistpath = prov_artist_id
         if not os.path.isdir(artistpath):
             LOGGER.error("artist path does not exist: %s" % artistpath)
             return []
@@ -231,10 +253,14 @@ class FileProvider(MusicProvider):
 
     async def get_stream_content_type(self, track_id):
         ''' return the content type for the given track when it will be streamed'''
+        if not os.sep in track_id:
+            track_id = base64.b64decode(track_id).decode('utf-8')
         return track_id.split('.')[-1]
     
-    async def get_stream(self, track_id):
+    async def get_audio_stream(self, track_id):
         ''' get audio stream for a track '''
+        if not os.sep in track_id:
+            track_id = base64.b64decode(track_id).decode('utf-8')
         with open(track_id) as f:
             while True:
                 line = f.readline()
@@ -250,15 +276,13 @@ class FileProvider(MusicProvider):
             song = taglib.File(filename)
         except:
             return None # not a media file ?
+        prov_item_id = base64.b64encode(filename.encode('utf-8')).decode('utf-8')
         track.duration = song.length
-        track.item_id = filename
+        track.item_id = prov_item_id
         track.provider = self.prov_id
         name = song.tags['TITLE'][0]
         track.name, track.version = parse_track_title(name)
-        if "\\" in filename:
-            albumpath = filename.rsplit("\\",1)[0]
-        else:
-            albumpath = filename.rsplit("/",1)[0]
+        albumpath = filename.rsplit(os.sep,1)[0]
         track.album = await self.get_album(albumpath)
         artists = []
         for artist_str in song.tags['ARTIST']:
@@ -272,7 +296,7 @@ class FileProvider(MusicProvider):
                 artist.item_id = fake_artistpath # temporary id
                 artist.provider_ids.append({
                         "provider": self.prov_id,
-                        "item_id": fake_artistpath
+                        "item_id": base64.b64encode(fake_artistpath.encode('utf-8')).decode('utf-8')
                     })
             artists.append(artist)
         track.artists = artists
@@ -306,7 +330,7 @@ class FileProvider(MusicProvider):
             quality_details = "%s kbps" % (song.bitrate)
         track.provider_ids.append({
             "provider": self.prov_id,
-            "item_id": filename,
+            "item_id": prov_item_id,
             "quality": quality,
             "details": quality_details
         })

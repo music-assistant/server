@@ -74,10 +74,11 @@ class ChromecastProvider(PlayerProvider):
             self._chromecasts[player_id].media_controller.queue_prev()
         elif cmd == 'power' and cmd_args == 'off':
             self._players[player_id].powered = False
-            self._chromecasts[player_id].quit_app() # power is not supported so send quit app instead
+            self.mass.event_loop.create_task(self.mass.player.trigger_update(player_id))
+            self._chromecasts[player_id].media_controller.stop() # power is not supported so send stop instead
         elif cmd == 'power':
             self._players[player_id].powered = True
-            self._chromecasts[player_id].media_controller.launch()
+            self.mass.event_loop.create_task(self.mass.player.trigger_update(player_id))
         elif cmd == 'volume':
             self._chromecasts[player_id].set_volume(try_parse_int(cmd_args)/100)
         elif cmd == 'mute' and cmd_args == 'off':
@@ -286,8 +287,8 @@ class ChromecastProvider(PlayerProvider):
             track = await self.mass.music.providers['qobuz'].track(track_id)
         elif uri.startswith('http') and '/stream' in uri:
             params = urllib.parse.parse_qs(uri.split('?')[1])
-            track_id = params['track_id']
-            provider = params['provider']
+            track_id = params['track_id'][0]
+            provider = params['provider'][0]
             track = await self.mass.music.providers[provider].track(track_id)
         return track
 

@@ -161,6 +161,24 @@ class Player():
         player.volume_level = new_volume
         return True
 
+    async def __check_player_group_power(self, player_details, player_childs):
+        ''' handle group power '''
+        childs_powered = False
+        for child_player in player_childs:
+            if child_player.powered:
+                childs_powered = True
+                break
+        if player_details.powered and not childs_powered:
+            # all childs turned off so turn off group player
+            LOGGER.info('all childs turned off so turn off group player %s' % player_details.name)
+            await self.player_command(player_details.player_id, 'power', 'off')
+            player_details.powered = False
+        elif not player_details.powered and childs_powered:
+            # all childs turned off but group player still off, so turn it on
+            LOGGER.info('child(s) turned on but group player still off, so turn it on %s' % player_details.name)
+            await self.player_command(player_details.player_id, 'power', 'on')
+            player_details.powered = True
+    
     async def remove_player(self, player_id):
         ''' handle a player remove '''
         self._players.pop(player_id, None)
@@ -207,7 +225,7 @@ class Player():
         if player_details.is_group and player.settings['apply_group_volume']:
             await self.__update_player_group_volume(player_details, player_childs)
         if player_details.is_group and player.settings['apply_group_power']:
-            await self.__update_player_group_power(player_details, player_childs)
+            await self.__check_player_group_power(player_details, player_childs)
         # compare values to detect changes
         if player.cur_item and player_details.cur_item and player.cur_item.name != player_details.cur_item.name:
             player_changed = True
@@ -265,24 +283,6 @@ class Player():
         group_volume = group_volume / active_players if active_players else 0
         player_details.volume_level = group_volume
     
-    async def __update_player_group_power(self, player_details, player_childs):
-        ''' handle group power '''
-        player_powered = False
-        for child_player in player_childs:
-            if child_player.powered:
-                player_powered = True
-                break
-        if player_details.powered and not player_powered:
-            # all childs turned off so turn off group player
-            LOGGER.info('all childs turned off so turn off group player %s' % player_details.name)
-            await self. player_command(player_details.player_id, 'power', 'off')
-            player_details.powered = False
-        elif not player_details.powered and player_powered:
-            # all childs turned off but group player still off, so turn it on
-            LOGGER.info('all childs turned off but group player still off, so turn it on %s' % player_details.name)
-            await self. player_command(player_details.player_id, 'power', 'on')
-            player_details.powered = True
-
     async def __get_player_settings(self, player_id):
         ''' get (or create) player config '''
         player_settings = self.mass.config['player_settings'].get(player_id,{})
@@ -415,7 +415,7 @@ class Player():
                 cmd = '%s %s --xml --ebu -f %s' % (bs1770_binary, tmpfile, analysis_file)
                 process = await asyncio.create_subprocess_shell(cmd)
                 await process.wait()
-            if self.mass.config['base']['http_streamer']['enable_cache']:
+            if self.mass.config['base']['http_streamer']['enable_cache'] and not os.path.isfile(cachefile):
                 # use sox to store cache file (optionally strip silence from start and end)
                 if self.mass.config['base']['http_streamer']['trim_silence']:
                     cmd = 'sox -t %s %s -t flac -C5 %s silence 1 0.1 1%% reverse silence 1 0.1 1%% reverse' %(content_type, tmpfile, cachefile)
