@@ -147,20 +147,14 @@ class Music():
             playlist = await self.mass.db.playlist(playlist_id)
         if playlist and playlist.is_editable:
             # database synced playlist, return tracks from db...
-            return await self.mass.db.playlist_tracks(playlist.item_id, offset=offset, limit=limit)
+            return await self.mass.db.playlist_tracks(
+                    playlist.item_id, offset=offset, limit=limit)
         else:
             # return playlist tracks from provider
-            items = []
-            playlist = await self.playlist(playlist_id)
-            for prov_mapping in playlist.provider_ids:
-                prov_id = prov_mapping['provider']
-                prov_item_id = prov_mapping['item_id']
-                prov_obj = self.providers[prov_id]
-                items += await prov_obj.playlist_tracks(prov_item_id, offset=offset, limit=limit)
-                if items:
-                    break
-            items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
-            return items
+            playlist = await self.playlist(playlist_id, provider)
+            prov = playlist.provider_ids[0]
+            return await self.providers[prov['provider']].playlist_tracks(
+                    prov['item_id'], offset=offset, limit=limit)
 
     async def search(self, searchquery, media_types:List[MediaType], limit=10, online=False) -> dict:
         ''' search database or providers '''

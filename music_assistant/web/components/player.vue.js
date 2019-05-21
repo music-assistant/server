@@ -188,6 +188,7 @@ Vue.component("player", {
     },
     playItem(item, queueopt) {
       console.log('playItem: ' + item);
+      this.$globals.loading = true;
       var api_url = 'api/players/' + this.active_player_id + '/play_media/' + item.media_type + '/' + item.item_id + '/' + queueopt;
       axios
       .get(api_url, {
@@ -197,9 +198,11 @@ Vue.component("player", {
       })
       .then(result => {
         console.log(result.data);
+        this.$globals.loading = false;
       })
       .catch(error => {
         console.log("error", error);
+        this.$globals.loading = false;
       });
     },
     switchPlayer (new_player_id) {

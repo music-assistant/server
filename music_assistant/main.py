@@ -30,7 +30,8 @@ class Main():
         self.datapath = datapath
         self.parse_config()
         self.event_loop = asyncio.get_event_loop()
-        self.bg_executor = ThreadPoolExecutor(max_workers=5)
+        self.bg_executor = ThreadPoolExecutor()
+        self.event_loop.set_default_executor(self.bg_executor)
         self.event_listeners = {}
 
         # init database and metadata modules

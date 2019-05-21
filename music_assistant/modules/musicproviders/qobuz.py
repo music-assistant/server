@@ -259,13 +259,20 @@ class QobuzProvider(MusicProvider):
     async def get_audio_stream(self, track_id):
         ''' get audio stream for a track '''
         params = {'format_id': 27, 'track_id': track_id, 'intent': 'stream'}
-        streamdetails = await self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True)
-        async with self.http_session.get(streamdetails['url']) as resp:
-            while True:
-                chunk = await resp.content.read(2000000)
-                if not chunk:
-                    break
-                yield chunk
+        # we are called from other thread
+        streamdetails_future = asyncio.run_coroutine_threadsafe(
+            self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True),
+            self.mass.event_loop
+        )
+        streamdetails = streamdetails_future.result()
+        async with aiohttp.ClientSession(loop=asyncio.get_event_loop(), connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
+            async with session.get(streamdetails['url']) as resp:
+                while True:
+                    chunk = await resp.content.read(512000)
+                    if not chunk:
+                        break
+                    yield chunk
+                    await asyncio.sleep(0.1)
         LOGGER.info("end of stream for track_id %s" % track_id)
     
     async def __parse_artist(self, artist_obj):

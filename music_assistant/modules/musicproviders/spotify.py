@@ -252,22 +252,13 @@ class SpotifyProvider(MusicProvider):
         spotty = self.get_spotty_binary()
         args = ['-n', 'temp', '-u', self._username, '-p', self._password, '--pass-through', '--single-track', track_id]
         process = await asyncio.create_subprocess_exec(spotty, *args, stdout=asyncio.subprocess.PIPE)
-        try:
-            while not process.stdout.at_eof():
-                chunk = await process.stdout.read(2000000)
-                if chunk:
-                    yield chunk
-                else:
-                    break
-        except (GeneratorExit, Exception):
-            while True:
-                if not await process.stdout.read(2000000):
-                    break
-            await process.wait()
-            LOGGER.info("stream cancelled for track_id %s" % track_id)
-        else:
-            await process.wait()
-            LOGGER.info("end of stream for track_id %s" % track_id)
+        while not process.stdout.at_eof():
+            chunk = await process.stdout.read(512000)
+            if not chunk:
+                break
+            yield chunk
+            await asyncio.sleep(0.1)
+        LOGGER.info("end of stream for track_id %s" % track_id)
         
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''

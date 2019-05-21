@@ -187,7 +187,8 @@ class Player():
 
     async def trigger_update(self, player_id):
         ''' manually trigger update for a player '''
-        await self.update_player(self._players[player_id])
+        if player_id in self._players:
+            await self.update_player(self._players[player_id])
     
     async def update_player(self, player_details):
         ''' update (or add) player '''
@@ -368,6 +369,18 @@ class Player():
         return await player_prov.player_queue(player_id, offset=offset, limit=limit)
 
     async def get_audio_stream(self, track_id, provider, player_id=None):
+        ''' get audio stream for a track '''
+        queue = asyncio.Queue()
+        run_async_background_task(
+            self.mass.bg_executor, self.__get_audio_stream, queue, track_id, provider, player_id)
+        while True:
+            chunk = await queue.get()
+            if not chunk:
+                break
+            yield chunk
+            queue.task_done()
+
+    async def __get_audio_stream(self, audioqueue, track_id, provider, player_id=None):
         ''' get audio stream from provider and apply additional effects/processing where/if needed'''
         input_content_type = await self.mass.music.providers[provider].get_stream_content_type(track_id)
         cachefile = self.__get_track_cache_filename(track_id, provider)
@@ -391,15 +404,17 @@ class Player():
             LOGGER.info("Running sox with args: %s" % args)
             process = await asyncio.create_subprocess_shell(args,
                     stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE)
-            buffer_task = asyncio.create_task(
-                    self.__fill_audio_buffer(process.stdin, track_id, provider, input_content_type))
-        # yield the chunks from stdout
+            buffer_task = asyncio.get_event_loop().create_task(
+                     self.__fill_audio_buffer(process.stdin, track_id, provider, input_content_type))
+        # put chunks from stdout into queue
         while not process.stdout.at_eof():
-            chunk = await process.stdout.read(2000000)
+            chunk = await process.stdout.read(512000)
+            await audioqueue.put(chunk)
             if not chunk:
                 break
-            yield chunk
+            await asyncio.sleep(0.1)
         await process.wait()
+        await audioqueue.put('') # indicate EOF
         LOGGER.info("streaming of track_id %s completed" % track_id)
 
     async def __get_player_sox_options(self, track_id, provider, player_id):
@@ -412,7 +427,11 @@ class Player():
             max_sample_rate = try_parse_int(self.mass.config['player_settings'][player_id]['max_sample_rate'])
             if max_sample_rate:
                 quality = TrackQuality.LOSSY_MP3
-                track = await self.mass.music.track(track_id, provider)
+                track_future = asyncio.run_coroutine_threadsafe(
+                    self.mass.music.track(track_id, provider),
+                    self.mass.event_loop
+                )
+                track = track_future.result()
                 for item in track.provider_ids:
                     if item['provider'] == provider and item['item_id'] == track_id:
                         quality = item['quality']
@@ -475,9 +494,9 @@ class Player():
             gain_correct = fallback_gain # fallback value
             if os.path.isfile(analysis_file):
                 os.remove(analysis_file)
-                # cachefile = self.__get_track_cache_filename(track_id, provider)
                 # reschedule analyze task to try again
-                # asyncio.create_task(self.__analyze_track_audio(cachefile, track_id, provider))
+                cachefile = self.__get_track_cache_filename(track_id, provider)
+                self.mass.event_loop.create_task(self.__analyze_audio(cachefile, track_id, provider, 'flac'))
         return round(gain_correct,2)
 
     async def __fill_audio_buffer(self, buf, track_id, provider, content_type):
@@ -493,9 +512,8 @@ class Player():
         await buf.drain()
         buf.write_eof()
         fd.close()
-        # successfull completion, send tmpfile to be processed in the background
-        #asyncio.create_task(self.__process_audio(tmpfile, track_id, provider))
-        run_async_background_task(self.mass.bg_executor, self.__analyze_audio, tmpfile, track_id, provider, content_type)
+        # successfull completion, send tmpfile to be processed in the background in main loop
+        self.mass.event_loop.create_task(self.__analyze_audio(tmpfile, track_id, provider, content_type))
         LOGGER.info("fill_audio_buffer complete for track %s" % track_id)
         return
 
