@@ -269,17 +269,20 @@ class Web():
         resp = web.StreamResponse(status=200,
                                  reason='OK',
                                  headers={'Content-Type': 'audio/flac'})
-        await resp.prepare(request)
-        if request.method.upper() == 'HEAD':
-            return resp
-        cancelled = False
-        async for chunk in self.mass.player.get_audio_stream(track_id, provider):
-            if cancelled:
-                continue # just consume all bytes in stream to prevent deadlocks in the subprocess based iterators
-            try:
-                await resp.write(chunk)
-            except (asyncio.CancelledError, concurrent.futures._base.CancelledError, ConnectionResetError):
-                LOGGER.error('client disconnect?')
-                cancelled = True
-        if not cancelled:
-            return resp
+        try:
+            await resp.prepare(request)
+            if request.method.upper() == 'HEAD':
+                return resp
+            cancelled = False
+            async for chunk in self.mass.player.get_audio_stream(track_id, provider, player_id):
+                if cancelled:
+                    continue # just consume all bytes in stream to prevent deadlocks in the subprocess based iterators
+                try:
+                    await resp.write(chunk)
+                except (asyncio.CancelledError, concurrent.futures._base.CancelledError, ConnectionResetError):
+                    LOGGER.error('client disconnect?')
+                    cancelled = True
+            if not cancelled:
+                return resp
+        except AttributeError:
+            LOGGER.error('client disconnect?')

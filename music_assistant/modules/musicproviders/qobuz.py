@@ -400,7 +400,7 @@ class QobuzProvider(MusicProvider):
         elif track_obj['maximum_sampling_rate'] > 48:
             quality = TrackQuality.FLAC_LOSSLESS_HI_RES_2
         elif track_obj['maximum_bit_depth'] > 16:
-            quality = TrackQuality.FLAC_LOSSLES_HI_RES_1
+            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_1
         elif track_obj.get('format_id',0) == 5:
             quality = TrackQuality.LOSSY_AAC
         else:

@@ -6,7 +6,7 @@ import os
 from utils import run_periodic, LOGGER, try_parse_int, try_parse_float, get_ip, run_async_background_task
 import aiohttp
 from difflib import SequenceMatcher as Matcher
-from models import MediaType, PlayerState, MusicPlayer
+from models import MediaType, PlayerState, MusicPlayer, TrackQuality
 from typing import List
 import toolz
 import operator
@@ -57,6 +57,7 @@ class Player():
             ("apply_group_power", False, "player_group_pow"),
             ("play_power_on", False, "player_power_play"),
             ("sox_effects", '', "http_streamer_sox_effects"),
+            ("max_sample_rate", '96000', "max_sample_rate"),
             ("force_http_streamer", False, "force_http_streamer")
         ]
         # config for the http streamer
@@ -370,23 +371,25 @@ class Player():
         ''' get audio stream from provider and apply additional effects/processing where/if needed'''
         input_content_type = await self.mass.music.providers[provider].get_stream_content_type(track_id)
         cachefile = self.__get_track_cache_filename(track_id, provider)
-        sox_effects = []
+        sox_effects = ''
+         # sox settings
         if self.mass.config['base']['http_streamer']['volume_normalisation']:
             gain_correct = await self.__get_track_gain_correct(track_id, provider)
             LOGGER.info("apply gain correction of %s" % gain_correct)
-            sox_effects += ['vol', '%s dB' % gain_correct]
-        if player_id and self.mass.config['player_settings'][player_id]['sox_effects']:
-            sox_effects += self.mass.config['player_settings'][player_id]['sox_effects'].split('/')
+            sox_effects += ' vol %s dB ' % gain_correct
+        sox_effects += await self.__get_player_sox_options(track_id, provider, player_id)
         if os.path.isfile(cachefile):
             # we have a cache file for this track which we can use
-            args = ['-t', 'flac', cachefile, '-t', 'flac', '-', *sox_effects]
-            process = await asyncio.create_subprocess_exec('sox', *args, 
+            args = 'sox -t flac %s -t flac -C 0 - %s' % (cachefile, sox_effects)
+            LOGGER.info("Running sox with args: %s" % args)
+            process = await asyncio.create_subprocess_shell(args, 
                     stdout=asyncio.subprocess.PIPE)
             buffer_task = None
         else:
             # stream from provider
-            args = ['-t', input_content_type, '-', '-t', 'flac', '-', *sox_effects]
-            process = await asyncio.create_subprocess_exec('sox', *args, 
+            args = 'sox -t %s - -t flac -C 0 - %s' % (input_content_type, sox_effects)
+            LOGGER.info("Running sox with args: %s" % args)
+            process = await asyncio.create_subprocess_shell(args,
                     stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE)
             buffer_task = asyncio.create_task(
                     self.__fill_audio_buffer(process.stdin, track_id, provider, input_content_type))
@@ -399,6 +402,31 @@ class Player():
         await process.wait()
         LOGGER.info("streaming of track_id %s completed" % track_id)
 
+    async def __get_player_sox_options(self, track_id, provider, player_id):
+        ''' get player specific sox options '''
+        sox_effects = ' '
+        if not player_id:
+            return ''
+        if self.mass.config['player_settings'][player_id]['max_sample_rate']:
+            # downsample if needed
+            max_sample_rate = try_parse_int(self.mass.config['player_settings'][player_id]['max_sample_rate'])
+            if max_sample_rate:
+                quality = TrackQuality.LOSSY_MP3
+                track = await self.mass.music.track(track_id, provider)
+                for item in track.provider_ids:
+                    if item['provider'] == provider and item['item_id'] == track_id:
+                        quality = item['quality']
+                        break
+                if quality > TrackQuality.FLAC_LOSSLESS_HI_RES_3 and max_sample_rate == 192000:
+                    sox_effects += 'rate -v 192000'
+                elif quality > TrackQuality.FLAC_LOSSLESS_HI_RES_2 and max_sample_rate == 96000:
+                    sox_effects += 'rate -v 96000'
+                elif quality > TrackQuality.FLAC_LOSSLESS_HI_RES_1 and max_sample_rate == 48000:
+                    sox_effects += 'rate -v 48000'
+        if self.mass.config['player_settings'][player_id]['sox_effects']:
+            sox_effects += self.mass.config['player_settings'][player_id]['sox_effects']
+        return sox_effects + ' '
+        
     async def __analyze_audio(self, tmpfile, track_id, provider, content_type):
         ''' analyze track audio, for now we only calculate EBU R128 loudness '''
         LOGGER.info('Start analyzing file %s' % tmpfile)

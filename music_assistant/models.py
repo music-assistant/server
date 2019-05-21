@@ -45,7 +45,7 @@ class TrackQuality(IntEnum):
     LOSSY_OGG = 1
     LOSSY_AAC = 2
     FLAC_LOSSLESS = 6 # 44.1/48khz 16 bits HI-RES
-    FLAC_LOSSLES_HI_RES_1 = 7 # 44.1/48khz 24 bits HI-RES
+    FLAC_LOSSLESS_HI_RES_1 = 7 # 44.1/48khz 24 bits HI-RES
     FLAC_LOSSLESS_HI_RES_2 = 8 # 88.2/96khz 24 bits HI-RES
     FLAC_LOSSLESS_HI_RES_3 = 9 # 176/192khz 24 bits HI-RES
     FLAC_LOSSLESS_HI_RES_4 = 10 # above 192khz 24 bits HI-RES
