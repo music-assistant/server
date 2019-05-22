@@ -145,7 +145,10 @@ class LMSProvider(PlayerProvider):
         player.shuffle_enabled = player_details.get('playlist shuffle',0) != 0
         player.repeat_enabled = player_details.get('playlist repeat',0) != 0
         # player state
-        player.powered = player_details['power'] == 1
+        if 'power' in player_details:
+            player.powered = player_details['power'] == 1
+        else:
+            print(player_details) # DEBUG
         if player_details['mode'] == 'play':
             player.state = PlayerState.Playing
         elif player_details['mode'] == 'pause':
