@@ -26,14 +26,18 @@ def setup(mass):
     else:
         ssl_key = ''
     hostname = conf['hostname']
-    return Web(mass, ssl_cert, ssl_key, hostname)
+    http_port = conf['http_port']
+    https_port = conf['https_port']
+    return Web(mass, http_port, https_port, ssl_cert, ssl_key, hostname)
 
 def create_config_entries(config):
     ''' get the config entries for this module (list with key/value pairs)'''
     config_entries = [
+        ('http_port', 8095, 'web_http_port'),
+        ('https_port', 8096, 'web_https_port'),
         ('ssl_certificate', '', 'web_ssl_cert'), 
         ('ssl_key', '', 'web_ssl_key'),
-        ('hostname', '', 'web_ssl_host')
+        ('cert_fqdn_host', '', 'cert_fqdn_host')
         ]
     if not config['base'].get('web'):
         config['base']['web'] = {}
@@ -45,11 +49,13 @@ def create_config_entries(config):
 class Web():
     ''' webserver and json/websocket api '''
     
-    def __init__(self, mass, ssl_cert, ssl_key, hostname):
+    def __init__(self, mass, http_port, https_port, ssl_cert, ssl_key, cert_fqdn_host):
         self.mass = mass
+        self._http_port = http_port
+        self._https_port = https_port
         self._ssl_cert = ssl_cert
         self._ssl_key = ssl_key
-        self._hostname = hostname
+        self._cert_fqdn_host = cert_fqdn_host
         self.http_session = aiohttp.ClientSession()
         mass.event_loop.create_task(self.setup_web())
 
@@ -82,12 +88,12 @@ class Web():
         
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        http_site = web.TCPSite(self.runner, '0.0.0.0', 8095)
+        http_site = web.TCPSite(self.runner, '0.0.0.0', self._http_port)
         await http_site.start()
         if self._ssl_cert and self._ssl_key:
             ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ssl_context.load_cert_chain(self._ssl_cert, self._ssl_key)
-            https_site = web.TCPSite(self.runner, '0.0.0.0', 8096, ssl_context=ssl_context)
+            https_site = web.TCPSite(self.runner, '0.0.0.0', self._https_port, ssl_context=ssl_context)
             await https_site.start()
 
     async def get_items(self, request):

@@ -477,7 +477,7 @@ class MusicPlayer():
         self.group_parent = None # set to id of REAL group/parent player
         self.is_group = False # is this player a group player ?
         self.settings = {}
-        self.enabled = False
+        self.enabled = True
 
 class PlayerProvider():
     ''' 

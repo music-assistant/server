@@ -9,3 +9,4 @@ aiocometd
 aiosqlite
 pytaglib
 python-slugify
+netaddr

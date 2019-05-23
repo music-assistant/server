@@ -290,7 +290,10 @@ class Player():
         player_settings = self.mass.config['player_settings'].get(player_id,{})
         for key, def_value, desc in self.mass.config['player_settings']['__desc__']:
             if not key in player_settings:
-                player_settings[key] = def_value
+                if (isinstance(def_value, str) and def_value.startswith('<')):
+                    player_settings[key] = None
+                else:
+                    player_settings[key] = def_value
         self.mass.config['player_settings'][player_id] = player_settings
         return player_settings
 
@@ -353,7 +356,7 @@ class Player():
         if http_stream:
             params = {"provider": provider, "track_id": str(item_id), "player_id": str(player_id)}
             params_str = urllib.parse.urlencode(params)
-            uri = 'http://%s:8095/stream?%s'% (self.local_ip, params_str)
+            uri = 'http://%s:%s/stream?%s'% (self.local_ip, self.mass.config['base']['web']['http_port'], params_str)
         elif provider == "spotify":
             uri = 'spotify://spotify:track:%s' % item_id
         elif provider == "qobuz":
@@ -408,7 +411,7 @@ class Player():
                      self.__fill_audio_buffer(process.stdin, track_id, provider, input_content_type))
         # put chunks from stdout into queue
         while not process.stdout.at_eof():
-            chunk = await process.stdout.read(512000)
+            chunk = await process.stdout.read(10240000)
             await audioqueue.put(chunk)
             if not chunk:
                 break
