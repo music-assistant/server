@@ -65,6 +65,8 @@ class Web():
 
     async def setup_web(self):
         app = web.Application()
+        app.add_routes([web.get('/jsonrpc.js', self.json_rpc)])
+        app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.get('/ws', self.websocket_handler)])
         app.add_routes([web.get('/stream', self.stream)])
         app.add_routes([web.get('/api/search', self.search)])
@@ -85,7 +87,6 @@ class Web():
         app.add_routes([web.get('/api/{media_type}/{media_id}', self.get_item)])
         app.add_routes([web.get('/', self.index)])
         app.router.add_static("/", "./web")  
-        
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         http_site = web.TCPSite(self.runner, '0.0.0.0', self._http_port)
@@ -280,3 +281,37 @@ class Web():
             async for chunk in self.mass.http_streamer.get_audio_stream(track_id, provider, player_id):
                 await resp.write(chunk)
         return resp
+
+    async def json_rpc(self, request):
+        ''' 
+            implement fake LMS jsonrpc interface 
+            for some compatability with tools that talk to lms
+            only support for basic commands
+        '''
+        data = await request.json()
+        params = data['params']
+        player_id = params[0]
+        cmds = params[1]
+        cmd_str = " ".join(cmds)
+        if cmd_str in ['play', 'pause', 'stop']:
+            await self.mass.player.player_command(player_id, cmd_str)
+        elif 'power' in cmd_str:
+            await self.mass.player.player_command(player_id, cmd_str, cmd_str[1])
+        elif cmd_str == 'playlist index +1':
+            await self.mass.player.player_command(player_id, 'next')
+        elif cmd_str == 'playlist index -1':
+            await self.mass.player.player_command(player_id, 'previous')
+        elif 'mixer volume' in cmd_str:
+            await self.mass.player.player_command(player_id, 'volume', cmd_str[2])
+        elif cmd_str == 'mixer muting 1':
+            await self.mass.player.player_command(player_id, 'mute', 'on')
+        elif cmd_str == 'mixer muting 0':
+            await self.mass.player.player_command(player_id, 'mute', 'off')
+        elif cmd_str == 'button volup':
+            await self.mass.player.player_command(player_id, 'volume', 'up')
+        elif cmd_str == 'button voldown':
+            await self.mass.player.player_command(player_id, 'volume', 'down')
+        elif cmd_str == 'button power':
+            await self.mass.player.player_command(player_id, 'power', 'toggle')
+        return web.Response(text='success')
+        

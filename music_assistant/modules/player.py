@@ -46,9 +46,9 @@ class Player():
             cmd = 'pause' if player.state == PlayerState.Playing else 'play'
         if cmd == 'power' and cmd_args == 'toggle':
             cmd_args = 'off' if player.powered else 'on'
-        if cmd == 'volume' and cmd_args == 'up':
+        if cmd == 'volume' and (cmd_args == 'up' or '+' in cmd_args):
             cmd_args = player.volume_level + 2
-        elif cmd == 'volume' and cmd_args == 'down':
+        elif cmd == 'volume' and (cmd_args == 'down' or '-' in cmd_args):
             cmd_args = player.volume_level - 2
         # redirect playlist related commands to parent player
         if player.group_parent and cmd not in ['power', 'volume', 'mute']:

@@ -45,6 +45,7 @@ class PyLMSServer(PlayerProvider):
         self.buffer = b''
         self.last_msg_received = 0
         self.supported_musicproviders = ['http']
+        
         # start slimproto server
         mass.event_loop.create_task(asyncio.start_server(self.__handle_socket_client, '0.0.0.0', 3483))
         # setup discovery
@@ -53,7 +54,6 @@ class PyLMSServer(PlayerProvider):
                 family=socket.AF_INET, reuse_address=True, reuse_port=True,
             allow_broadcast=True)
         mass.event_loop.create_task(listen)
-        
 
      ### Provider specific implementation #####
 
@@ -202,32 +202,30 @@ class PyLMSServer(PlayerProvider):
                 self._lmsplayers[lms_player.player_id] = lms_player
             asyncio.create_task(self.__handle_player_event(lms_player.player_id, event, event_data))
 
-        @run_periodic(5)
-        async def send_heartbeat():
-            try:
+        try:
+            @run_periodic(5)
+            async def send_heartbeat():
                 timestamp = int(time.time())
                 data = lms_player.pack_stream(b"t", replayGain=timestamp, flags=0)
                 lms_player.send_frame(b"strm", data)
-            except RuntimeError:
-                reader.close()
 
-        lms_player.send_frame = send_frame
-        lms_player.send_event = handle_event
-        heartbeat_task = asyncio.create_task(send_heartbeat())
-        
-        # keep reading bytes from the socket
-        while True:
-            data = await reader.read(64)
-            if data:
-                lms_player.dataReceived(data)
-            else:
-                break
+            lms_player.send_frame = send_frame
+            lms_player.send_event = handle_event
+            heartbeat_task = asyncio.create_task(send_heartbeat())
+            
+            # keep reading bytes from the socket
+            while True:
+                data = await reader.read(64)
+                if data:
+                    lms_player.dataReceived(data)
+                else:
+                    break
+        except RuntimeError:
+            LOGGER.warning("connection lost")
         # disconnect
         heartbeat_task.cancel()
         asyncio.create_task(self.__handle_player_event(lms_player.player_id, 'disconnected'))
 
-    
-    ### Provider specific implementation #####
 
 class PyLMSPlayer(object):
     ''' very basic Python implementation of SlimProto '''

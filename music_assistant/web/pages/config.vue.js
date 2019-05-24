@@ -92,14 +92,14 @@ var Config = Vue.component('Config', {
         playersLst.push({id: player_id, name: this.conf.player_settings[player_id].name})
       return playersLst;
     }
-
   },
   watch: {
-    conf: {
-      handler: _.debounce(function (val) {
-        console.log("save config needed!");
-        this.saveConfig();
-      }, 1000)
+    'conf': {
+        handler: _.debounce(function (val, oldVal) {
+          console.log("save config needed!");
+          this.saveConfig();
+        }, 5000),
+        deep: true
     }
   },
   created() {
