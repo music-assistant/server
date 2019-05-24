@@ -251,6 +251,11 @@ class Player():
             ("max_sample_rate", '96000', "max_sample_rate"),
             ("force_http_streamer", False, "force_http_streamer")
         ]
+        if self.mass.config['base'].get('homeassistant',{})["enabled"]:
+            # append hass specific config entries
+            config_entries += [("hass_power_entity", "", "hass_player_power"),
+                            ("hass_power_entity_source", "", "hass_player_source"),
+                            ("hass_volume_entity", "", "hass_player_volume")]
         player_settings = self.mass.config['player_settings'].get(player_id,{})
         for key, def_value, desc in config_entries:
             if not key in player_settings:

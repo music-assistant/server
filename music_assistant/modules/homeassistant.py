@@ -50,19 +50,6 @@ def create_config_entries(config):
     for key, def_value, desc in config_entries:
         if not key in config['base']['homeassistant']:
             config['base']['homeassistant'][key] = def_value
-    # append hass player config settings
-    if config['base']['homeassistant'][CONF_ENABLED]:
-        hass_player_conf = [("hass_power_entity", "", "hass_player_power"),
-                        ("hass_power_entity_source", "", "hass_player_source"),
-                        ("hass_volume_entity", "", "hass_player_volume")]
-        for key, default, desc in hass_player_conf:
-            entry_found = False
-            for value in config['player_settings']['__desc__']:
-                if value[0] == key:
-                    entry_found = True
-                    break
-            if not entry_found:
-                config['player_settings']['__desc__'].append((key, default, desc))
 
 class HomeAssistant():
     ''' HomeAssistant integration '''
