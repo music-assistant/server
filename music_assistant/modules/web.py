@@ -277,6 +277,6 @@ class Web():
                                  headers={'Content-Type': 'audio/flac'})
         await resp.prepare(request)
         if request.method.upper() != 'HEAD':
-            async for chunk in self.mass.player.get_audio_stream(track_id, provider, player_id):
+            async for chunk in self.mass.http_streamer.get_audio_stream(track_id, provider, player_id):
                 await resp.write(chunk)
         return resp

@@ -96,11 +96,11 @@ class PyLMSServer(PlayerProvider):
         if queue_opt == 'replace' or not self._player_queue[player_id]:
             # overwrite queue with new items
             self._player_queue[player_id] = media_items
-            await self.__queue_play(player_id, 0)
+            await self.__queue_play(player_id, 0, send_flush=True)
         elif queue_opt == 'play':
             # replace current item with new item(s)
             self._player_queue[player_id] = self._player_queue[player_id][:cur_queue_index] + media_items + self._player_queue[player_id][cur_queue_index+1:]
-            await self.__queue_play(player_id, cur_queue_index)
+            await self.__queue_play(player_id, cur_queue_index, send_flush=True)
         elif queue_opt == 'next':
             # insert new items at current index +1
             self._player_queue[player_id] = self._player_queue[player_id][:cur_queue_index+1] + media_items + self._player_queue[player_id][cur_queue_index+1:]
@@ -110,13 +110,14 @@ class PyLMSServer(PlayerProvider):
 
     ### Provider specific (helper) methods #####
 
-    async def __queue_play(self, player_id, index):
+    async def __queue_play(self, player_id, index, send_flush=False):
         ''' send play command to player '''
-        if not index:
+        if index == None:
             index = self._player_queue_index[player_id]
         if len(self._player_queue[player_id]) >= index-1:
             track = self._player_queue[player_id][index]
-            self._lmsplayers[player_id].stop()
+            if send_flush:
+                self._lmsplayers[player_id].flush()
             self._lmsplayers[player_id].play(track.uri)
             self._player_queue_index[player_id] = index
 
@@ -201,9 +202,18 @@ class PyLMSServer(PlayerProvider):
                 self._lmsplayers[lms_player.player_id] = lms_player
             asyncio.create_task(self.__handle_player_event(lms_player.player_id, event, event_data))
 
+        @run_periodic(5)
+        async def send_heartbeat():
+            try:
+                timestamp = int(time.time())
+                data = lms_player.pack_stream(b"t", replayGain=timestamp, flags=0)
+                lms_player.send_frame(b"strm", data)
+            except RuntimeError:
+                reader.close()
+
         lms_player.send_frame = send_frame
         lms_player.send_event = handle_event
-        heartbeat_task = asyncio.create_task(self.send_heartbeat(lms_player))
+        heartbeat_task = asyncio.create_task(send_heartbeat())
         
         # keep reading bytes from the socket
         while True:
@@ -216,12 +226,7 @@ class PyLMSServer(PlayerProvider):
         heartbeat_task.cancel()
         asyncio.create_task(self.__handle_player_event(lms_player.player_id, 'disconnected'))
 
-    @run_periodic(5)
-    async def send_heartbeat(self, lms_player):
-        timestamp = int(time.time())
-        data = lms_player.pack_stream(b"t", replayGain=timestamp, flags=0)
-        lms_player.send_frame(b"strm", data)
-
+    
     ### Provider specific implementation #####
 
 class PyLMSPlayer(object):
@@ -288,6 +293,10 @@ class PyLMSPlayer(object):
         data = self.pack_stream(b"q", autostart=b"0", flags=0)
         self.send_frame(b"strm", data)
 
+    def flush(self):
+        data = self.pack_stream(b"f", autostart=b"1", flags=0)
+        self.send_frame(b"strm", data)
+
     def pause(self):
         data = self.pack_stream(b"p", autostart=b"0", flags=0)
         self.send_frame(b"strm", data)
@@ -337,7 +346,8 @@ class PyLMSPlayer(object):
         self._volume.volume = new_vol
         self.send_volume()
     
-    def play(self, uri, crossfade=False):
+    def play(self, uri, crossfade=True):
+        # TODO: attach crossfade to a config setting
         command = b's'
         autostart = b'3' # we use direct stream for now so let the player do the messy work with buffers
         transType= b'1' if crossfade else b'0'

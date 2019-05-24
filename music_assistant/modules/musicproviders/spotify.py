@@ -253,11 +253,11 @@ class SpotifyProvider(MusicProvider):
         args = ['-n', 'temp', '-u', self._username, '-p', self._password, '--pass-through', '--single-track', track_id]
         process = await asyncio.create_subprocess_exec(spotty, *args, stdout=asyncio.subprocess.PIPE)
         while not process.stdout.at_eof():
-            chunk = await process.stdout.read(10240000)
+            chunk = await process.stdout.read(128000)
             if not chunk:
                 break
             yield chunk
-            await asyncio.sleep(0.1)
+        await process.wait()
         LOGGER.info("end of stream for track_id %s" % track_id)
         
     async def __parse_artist(self, artist_obj):
@@ -477,10 +477,10 @@ class SpotifyProvider(MusicProvider):
         async with self.throttler:
             async with self.http_session.get(url, headers=headers, params=params) as response:
                 result = await response.json()
-                if 'error' in result:
+                if not result or 'error' in result:
                     LOGGER.error(url)
                     LOGGER.error(params)
-                    return None
+                    result = None
                 return result
 
     async def __delete_data(self, endpoint, params={}):

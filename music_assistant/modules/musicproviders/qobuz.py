@@ -268,11 +268,10 @@ class QobuzProvider(MusicProvider):
         async with aiohttp.ClientSession(loop=asyncio.get_event_loop(), connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
             async with session.get(streamdetails['url']) as resp:
                 while True:
-                    chunk = await resp.content.read(10240000)
+                    chunk = await resp.content.read(512000)
                     if not chunk:
                         break
                     yield chunk
-                    await asyncio.sleep(0.1)
         LOGGER.info("end of stream for track_id %s" % track_id)
     
     async def __parse_artist(self, artist_obj):
@@ -507,11 +506,10 @@ class QobuzProvider(MusicProvider):
         async with self.throttler:
             async with self.http_session.get(url, headers=headers, params=params) as response:
                 result = await response.json()
-                if 'error' in result:
+                if not result or 'error' in result:
                     LOGGER.error(url)
                     LOGGER.error(params)
                     LOGGER.error(result)
                     result = None
-                result = await response.json()
                 return result
 

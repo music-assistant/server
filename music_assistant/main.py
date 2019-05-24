@@ -20,6 +20,7 @@ from modules.metadata import MetaData
 from modules.cache import Cache
 from modules.music import Music
 from modules.player import Player
+from modules.http_streamer import HTTPStreamer
 from modules.homeassistant import setup as hass_setup
 from modules.web import setup as web_setup
 
@@ -47,6 +48,7 @@ class Main():
         self.hass = hass_setup(self)
         self.music = Music(self)
         self.player = Player(self)
+        self.http_streamer = HTTPStreamer(self)
 
         # start the event loop
         try:
@@ -71,18 +73,25 @@ class Main():
         self.event_listeners[cb_id] = cb
 
     async def remove_event_listener(self, cb_id):
-        ''' add callback to our event listeners '''
+        ''' remove callback from our event listeners '''
         self.event_listeners.pop(cb_id, None)
 
     def save_config(self):
         ''' save config to file '''
         # backup existing file
         conf_file = os.path.join(self.datapath, 'config.json')
-        conf_file_backup = os.path.join(self.datapath, 'config.json')
+        conf_file_backup = os.path.join(self.datapath, 'config.json.backup')
         if os.path.isfile(conf_file):
             shutil.move(conf_file, conf_file_backup)
+        # remove description keys from config
+        final_conf = {}
+        for key, value in self.config.items():
+            final_conf[key] = {}
+            for subkey, subvalue in value.items():
+                if subkey != "__desc__":
+                    final_conf[key][subkey] = subvalue
         with open(conf_file, 'w') as f:
-            f.write(json.dumps(self.config, indent=4))
+            f.write(json.dumps(final_conf, indent=4))
         
     def parse_config(self):
         '''get config from config file'''

@@ -2,161 +2,105 @@ var Config = Vue.component('Config', {
   template: `
     <section>
 
-      <v-list two-line>
+        <v-tabs v-model="active" color="transparent" light slider-color="black">
+            <v-tab ripple v-for="(conf_value, conf_key) in conf" :key="conf_key">{{ $t('conf.'+conf_key) }}</v-tab>
+                  <v-tab-item v-for="(conf_value, conf_key) in conf" :key="conf_key">
 
-        <!-- base/generic config -->
-        <v-list-group prepend-icon="settings" no-action>
-            <template v-slot:activator>
-              <v-list-tile>
-                <v-list-tile-content>
-                  <v-list-tile-title>{{ $t('generic_settings') }}</v-list-tile-title>
-                </v-list-tile-content>
-              </v-list-tile>
-            </template>
-            <template v-for="(conf_value, conf_key) in conf.base">
-                <v-list-tile>
-                  <v-list-tile-content>
-                    <v-list-tile-title class="title">{{ conf_key }}</v-list-tile-title>
-                  </v-list-tile-content>
-                </v-list-tile>
-                
-                <div v-for="conf_item_key in conf.base[conf_key].__desc__">
-                  <v-list-tile>
-                        <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])"></v-switch>
-                        <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-text-field>
-                        <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.base[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-select>
-                        <v-text-field v-else v-model="conf.base[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box></v-text-field>
-                  </v-list-tile>
-              </div>
-              <v-divider></v-divider>
-            </template>
-          </v-list-group>
+                      <!-- generic and module settings -->
+                      <v-list two-line v-if="conf_key != 'player_settings'">
+                          <v-list-group no-action v-for="(conf_subvalue, conf_subkey) in conf[conf_key]" :key="conf_key+conf_subkey">
+                            <template v-slot:activator>
+                                <v-list-tile>
+                                  <v-list-tile-avatar>
+                                      <img :src="'images/icons/' + conf_subkey + '.png'"/>
+                                  </v-list-tile-avatar>
+                                  <v-list-tile-content>
+                                      <v-list-tile-title>{{ $t('conf.'+conf_subkey) }}</v-list-tile-title>
+                                  </v-list-tile-content>
+                                </v-list-tile>
+                              </template>
+                              <div v-for="conf_item_key in conf[conf_key][conf_subkey].__desc__">
+                                    <v-list-tile>
+                                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])"></v-switch>
+                                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box type="password"></v-text-field>
+                                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box type="password"></v-select>
+                                          <v-text-field v-else v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box></v-text-field>
+                                    </v-list-tile>
+                                </div>
+                                <v-divider></v-divider>
+                            </v-list-group>
+                      </v-list two-line>
+
+                      <!-- player settings -->
+                      <v-list two-line v-if="conf_key == 'player_settings'">
+                          <v-list-group no-action v-for="(player, key) in players" v-if="key != '__desc__' && key in players" :key="key">
+                                <template v-slot:activator>
+                                    <v-list-tile>
+                                      <v-list-tile-avatar>
+                                          <img :src="'images/icons/' + players[key].player_provider + '.png'"/>
+                                      </v-list-tile-avatar>
+                                      <v-list-tile-content>
+                                        <v-list-tile-title class="title">{{ players[key].name }}</v-list-tile-title>
+                                        <v-list-tile-sub-title class="title">{{ key }}</v-list-tile-sub-title>
+                                      </v-list-tile-content>
+                                  </v-list-tile>
+                              </template>
+                              <div v-for="conf_item_key in conf.player_settings.__desc__" v-if="conf.player_settings[key].enabled">
+                                  <v-list-tile>
+                                        <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])"></v-switch>
+                                        <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box type="password"></v-text-field>
+                                        <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" 
+                                          :items="playersLst"
+                                          item-text="name"
+                                          item-value="id" box>
+                                        </v-select>
+                                        <v-text-field v-else v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box></v-text-field>
+                                  </v-list-tile>
+                                  <v-list-tile v-if="!conf.player_settings[key].enabled">
+                                        <v-switch v-model="conf.player_settings[key].enabled" :label="$t('conf.'+'enabled')"></v-switch>
+                                  </v-list-tile>
+                              </div>
+                              <div v-if="!conf.player_settings[key].enabled">
+                                  <v-list-tile>
+                                      <v-switch v-model="conf.player_settings[key].enabled" :label="$t('conf.'+'enabled')"></v-switch>
+                                  </v-list-tile>
+                              </div>
+                                <v-divider></v-divider>
+                            </v-list-group>
+                      </v-list two-line>
+                  </v-tab-item>
+            </v-tab>
+        </v-tabs>
 
 
-          <!-- music providers -->
-          <v-list-group prepend-icon="library_music" no-action>
-              <template v-slot:activator>
-                <v-list-tile>
-                  <v-list-tile-content>
-                    <v-list-tile-title>{{ $t('music_providers') }}</v-list-tile-title>
-                  </v-list-tile-content>
-                </v-list-tile>
-              </template>
-              <template v-for="(conf_value, conf_key) in conf.musicproviders">
-                  <v-list-tile>
-                    <v-list-tile-avatar>
-                        <img :src="'images/icons/' + conf_key + '.png'"/>
-                    </v-list-tile-avatar>
-                    <v-list-tile-content>
-                      <v-list-tile-title class="title">{{ conf_key }}</v-list-tile-title>
-                    </v-list-tile-content>
-                  </v-list-tile>
-                  
-                  <div v-for="conf_item_key in conf.musicproviders[conf_key].__desc__">
-                    <v-list-tile>
-                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])"></v-switch>
-                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-text-field>
-                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-select>
-                          <v-text-field v-else v-model="conf.musicproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box></v-text-field>
-                    </v-list-tile>
-                </div>
-                <v-divider></v-divider>
-              </template>
-            </v-list-group>
-
-          <!-- player providers -->
-          <v-list-group prepend-icon="speaker_group" no-action>
-              <template v-slot:activator>
-                <v-list-tile>
-                  <v-list-tile-content>
-                    <v-list-tile-title>{{ $t('player_providers') }}</v-list-tile-title>
-                  </v-list-tile-content>
-                </v-list-tile>
-              </template>
-              <template v-for="(conf_value, conf_key) in conf.playerproviders">
-                  <v-list-tile>
-                    <v-list-tile-avatar>
-                        <img :src="'images/icons/' + conf_key + '.png'"/>
-                    </v-list-tile-avatar>
-                    <v-list-tile-content>
-                      <v-list-tile-title class="title">{{ conf_key }}</v-list-tile-title>
-                    </v-list-tile-content>
-                  </v-list-tile>
-                  
-                  <div v-for="conf_item_key in conf.playerproviders[conf_key].__desc__">
-                    <v-list-tile>
-                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])"></v-switch>
-                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-text-field>
-                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-select>
-                          <v-text-field v-else v-model="conf.playerproviders[conf_key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box></v-text-field>
-                    </v-list-tile>
-                </div>
-                <v-divider></v-divider>
-              </template>
-            </v-list-group>
-
-          <!-- player settings -->
-          <v-list-group prepend-icon="speaker" no-action>
-              <template v-slot:activator>
-                <v-list-tile>
-                  <v-list-tile-content>
-                    <v-list-tile-title>{{ $t('player_settings') }}</v-list-tile-title>
-                  </v-list-tile-content>
-                </v-list-tile>
-              </template>
-              <template v-for="(player, key) in players" v-if="key != '__desc__' && key in players">
-                  <v-list-tile>
-                    <v-list-tile-content>
-                      <v-list-tile-title class="title">{{ players[key].name }}</v-list-tile-title>
-                      <v-list-tile-sub-title class="title">ID: {{ key }} Provider: {{ players[key].player_provider }}</v-list-tile-sub-title>
-                    </v-list-tile-content>
-                  </v-list-tile>
-                  
-                  <div v-for="conf_item_key in conf.player_settings.__desc__" v-if="conf.player_settings[key].enabled">
-                    <v-list-tile>
-                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t(conf_item_key[2])"></v-switch>
-                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box type="password"></v-text-field>
-                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t(conf_item_key[2])" 
-                            :items="playersLst"
-                            item-text="name"
-                            item-value="id" box>
-                          </v-select>
-                          <v-text-field v-else v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t(conf_item_key[2])" box></v-text-field>
-                    </v-list-tile>
-                    <v-list-tile v-if="!conf.player_settings[key].enabled">
-                          <v-switch v-model="conf.player_settings[key].enabled" :label="$t('enabled')"></v-switch>
-                    </v-list-tile>
-                </div>
-                <div v-if="!conf.player_settings[key].enabled">
-                    <v-list-tile>
-                        <v-switch v-model="conf.player_settings[key].enabled" :label="$t('enabled')"></v-switch>
-                    </v-list-tile>
-                </div>
-                <v-divider></v-divider>
-              </template>
-            </v-list-group>
-
-            <v-btn @click="saveConfig()">Save</v-btn>
-        </v-list>
     </section>
   `,
   props: [],
   data() {
     return {
       conf: {},
-      players: {}
+      players: {},
+      active: 0
     }
   },
   computed: {
     playersLst()
     {
       var playersLst = [];
-      for (player_id in this.conf.player_settings)
-        if (player_id != '__desc__')
-          playersLst.push({id: player_id, name: this.conf.player_settings[player_id].name})
+      playersLst.push({id: null, name: this.$t('conf.'+'not_grouped')})
+      for (player_id in this.players)
+        playersLst.push({id: player_id, name: this.conf.player_settings[player_id].name})
       return playersLst;
     }
 
+  },
+  watch: {
+    conf: {
+      handler: _.debounce(function (val) {
+        console.log("save config needed!");
+        this.saveConfig();
+      }, 1000)
+    }
   },
   created() {
     this.$globals.windowtitle = this.$t('settings');

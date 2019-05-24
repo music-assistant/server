@@ -61,7 +61,9 @@ class ChromecastProvider(PlayerProvider):
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
         if cmd == 'play':
-            if self._chromecasts[player_id].media_controller.status.player_is_paused:
+            if self._chromecasts[player_id].media_controller.status.player_is_playing:
+                pass
+            elif self._chromecasts[player_id].media_controller.status.player_is_paused:
                 self._chromecasts[player_id].media_controller.play()
             else:
                 await self.__resume_queue(player_id)

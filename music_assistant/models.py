@@ -468,7 +468,7 @@ class MusicPlayer():
         self.name = ''
         self.state = PlayerState.Stopped
         self.powered = False
-        self.cur_item = Track()
+        self.cur_item = None
         self.cur_item_time = 0
         self.volume_level = 0
         self.shuffle_enabled = True
