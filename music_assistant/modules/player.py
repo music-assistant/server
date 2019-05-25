@@ -196,11 +196,11 @@ class Player():
             # player is added or updated!
             asyncio.ensure_future(self.mass.event('player updated', player))
             # is groupplayer, trigger update of its childs
-            for child in player_childs:
-                asyncio.create_task(self.trigger_update(child.player_id))
-            # if child player in a group, trigger update of parent
-            if player.group_parent:
-                asyncio.create_task(self.trigger_update(player.group_parent))
+            # for child in player_childs:
+            #     asyncio.create_task(self.trigger_update(child.player_id))
+            # # if child player in a group, trigger update of parent
+            # if player.group_parent:
+            #     asyncio.create_task(self.trigger_update(player.group_parent))
 
     async def __update_player_hass_settings(self, player_details, player_settings):
         ''' handle home assistant integration on a player '''
