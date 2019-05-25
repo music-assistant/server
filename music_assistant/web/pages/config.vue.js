@@ -45,7 +45,7 @@ var Config = Vue.component('Config', {
                                       </v-list-tile-content>
                                   </v-list-tile>
                               </template>
-                              <div v-for="conf_item_key in conf.player_settings.__desc__" v-if="conf.player_settings[key].enabled">
+                              <div v-for="conf_item_key in conf.player_settings[key].__desc__" v-if="conf.player_settings[key].enabled">
                                   <v-list-tile>
                                         <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])"></v-switch>
                                         <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box type="password"></v-text-field>
@@ -96,9 +96,12 @@ var Config = Vue.component('Config', {
   watch: {
     'conf': {
         handler: _.debounce(function (val, oldVal) {
-          console.log("save config needed!");
-          this.saveConfig();
-        }, 5000),
+          if (oldVal.base) {
+            console.log("save config needed!");
+            this.saveConfig();
+            this.$toasted.show(this.$t('conf.conf_saved'))
+          }
+        }, 1000),
         deep: true
     }
   },

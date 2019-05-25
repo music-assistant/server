@@ -39,6 +39,8 @@
         <script src="https://cdn.jsdelivr.net/npm/moment@2.20.1/moment.min.js"></script>
         <script src="https://unpkg.com/vee-validate@2.0.0-rc.25/dist/vee-validate.js"></script>
         <script src="./lib/vue-loading-overlay.js"></script>
+        <script src="https://unpkg.com/vue-toasted"></script>
+
 
         <script>
             function isMobile() {
@@ -137,6 +139,7 @@
         Vue.use(Vuetify);
         Vue.use(VueI18n);
         Vue.use(VueLoading);
+        Vue.use(Toasted, {duration: 5000, fullWidth: true});
 
 
         const routes = [

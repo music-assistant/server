@@ -59,21 +59,15 @@ class Player():
         if cmd == 'power' and player.settings['mute_as_power']:
             cmd = 'mute'
             cmd_args = 'on' if cmd_args == 'off' else 'off' # invert logic (power ON is mute OFF)
-        # handle group volume for group players
-        player_childs = [item for item in self._players.values() if item.group_parent == player_id]
-        if player.is_group and cmd == 'volume' and player.settings['apply_group_volume']:
-            return await self.__player_command_group_volume(player, player_childs, cmd_args)
-        if player.is_group and cmd == 'power' and cmd_args == 'off':
-            for item in player_childs:
-                await self.player_command(item.player_id, cmd, cmd_args)
         # normal execution of command on player
         prov_id = self._players[player_id].player_provider
         prov = self.providers[prov_id]
         await prov.player_command(player_id, cmd, cmd_args)
         # handle play on power on
         if cmd == 'power' and cmd_args == 'on' and player.settings['play_power_on']:
-            LOGGER.info('play_power_on %s' % player.name)
             await prov.player_command(player_id, 'play')
+        # handle group volume/power for group players
+        await self.__player_group_commands(player, cmd, cmd_args)
 
     async def __player_command_hass_integration(self, player, cmd, cmd_args):
         ''' handle hass integration in player command '''
@@ -113,23 +107,32 @@ class Player():
         player.volume_level = new_volume
         return True
 
-    async def __check_player_group_power(self, player_details, player_childs):
-        ''' handle group power '''
-        childs_powered = False
-        for child_player in player_childs:
-            if child_player.powered:
-                childs_powered = True
-                break
-        if player_details.powered and not childs_powered:
-            # all childs turned off so turn off group player
-            LOGGER.info('all childs turned off so turn off group player %s' % player_details.name)
-            await self.player_command(player_details.player_id, 'power', 'off')
-            player_details.powered = False
-        elif not player_details.powered and childs_powered:
-            # all childs turned off but group player still off, so turn it on
-            LOGGER.info('child(s) turned on but group player still off, so turn it on %s' % player_details.name)
-            await self.player_command(player_details.player_id, 'power', 'on')
-            player_details.powered = True
+    async def __player_group_commands(self, player, cmd, cmd_args):
+        ''' handle group power/volume commands '''
+        if player.is_group:
+            player_childs = [item for item in self._players.values() if item.group_parent == player.player_id]
+            if player.settings['apply_group_volume'] and cmd == 'volume':
+                return await self.__player_command_group_volume(player, player_childs, cmd_args)
+            if player.settings['apply_group_power'] and cmd == 'power' and cmd_args == 'off':
+                for item in player_childs:
+                    if item.powered:
+                        await self.player_command(item.player_id, cmd, cmd_args)
+        elif player.group_parent and player.group_parent in self._players:
+            group_player = self._players[player.group_parent]
+            if group_player.settings['apply_group_power']:
+                player_childs = [item for item in self._players.values() if item.group_parent == group_player.player_id]
+                if not group_player.powered and cmd == 'power' and cmd_args == 'on':
+                    # power on group player
+                    await self.player_command(group_player.player_id, 'power', 'on')
+                elif group_player.powered and cmd == 'power' and cmd_args == 'off':
+                    # check if the group player should still be turned on
+                    new_powered = False
+                    for child_player in player_childs:
+                        if child_player.player_id != player.player_id and child_player.powered:
+                            new_powered = True
+                            break
+                    if not new_powered:
+                        await self.player_command(group_player.player_id, 'power', 'off')
     
     async def remove_player(self, player_id):
         ''' handle a player remove '''
@@ -156,11 +159,10 @@ class Player():
             player_changed = True
         else:
             player = self._players[player_id]
-        player.settings = await self.__get_player_settings(player_id)
+        player.settings = await self.__get_player_settings(player_details)
         # handle basic player settings
         player_details.enabled = player.settings['enabled']
         player_details.name = player.settings['name'] if player.settings['name'] else player_details.name
-        player_details.group_parent = player.settings['group_parent'] if player.settings['group_parent'] else player_details.group_parent
         # handle hass integration
         await self.__update_player_hass_settings(player_details, player.settings)
         # handle mute as power setting
@@ -173,12 +175,12 @@ class Player():
             player_details.cur_item = parent_player.cur_item
             player_details.state = parent_player.state
         # handle group volume/power setting
-        player_childs = [item for item in self._players.values() if item.group_parent == player_id]
-        player_details.is_group = len(player_childs) > 0
-        if player_details.is_group and player.settings['apply_group_volume']:
-            await self.__update_player_group_volume(player_details, player_childs)
-        if player_details.is_group and player.settings['apply_group_power']:
-            await self.__check_player_group_power(player_details, player_childs)
+        if player_details.is_group:
+            player_childs = [item for item in self._players.values() if item.group_parent == player_id]
+            if player.settings['apply_group_volume']:
+                player_details.volume_level = await self.__get_group_volume(player_childs)
+            if player.settings['apply_group_power']:
+                player_details.powered = await self.__get_group_power(player_childs)
         # compare values to detect changes
         if player.cur_item and player_details.cur_item and player.cur_item.name != player_details.cur_item.name:
             player_changed = True
@@ -225,7 +227,7 @@ class Player():
                     register_listener=functools.partial(self.trigger_update, player_id))
             player_details.volume_level = int(try_parse_float(hass_state)*100)
     
-    async def __update_player_group_volume(self, player_details, player_childs):
+    async def __get_group_volume(self, player_childs):
         ''' handle group volume '''
         group_volume = 0
         active_players = 0
@@ -234,24 +236,39 @@ class Player():
                 group_volume += child_player.volume_level
                 active_players += 1
         group_volume = group_volume / active_players if active_players else 0
-        player_details.volume_level = group_volume
+        return group_volume
+
+    async def __get_group_power(self, player_childs):
+        ''' handle group volume '''
+        group_power = False
+        for child_player in player_childs:
+            if child_player.enabled and child_player.powered:
+                group_power = True
+                break
+        return group_power
     
-    async def __get_player_settings(self, player_id):
+    async def __get_player_settings(self, player_details):
         ''' get (or create) player config '''
+        player_id = player_details.player_id
         config_entries = [ # default config entries for a player
             ("enabled", False, "player_enabled"),
             ("name", "", "player_name"),
-            ("group_parent", "<player>", "player_group_with"),
             ("mute_as_power", False, "player_mute_power"),
             ("disable_volume", False, "player_disable_vol"),
-            ("apply_group_volume", False, "player_group_vol"),
-            ("apply_group_power", False, "player_group_pow"),
-            ("play_power_on", False, "player_power_play"),
             ("sox_effects", '', "http_streamer_sox_effects"),
             ("max_sample_rate", '96000', "max_sample_rate"),
             ("force_http_streamer", False, "force_http_streamer")
         ]
-        if self.mass.config['base'].get('homeassistant',{})["enabled"]:
+        if player_details.is_group:
+            config_entries += [ # group player settings
+                ("apply_group_volume", False, "player_group_vol"),
+                ("apply_group_power", False, "player_group_pow")
+            ]
+        if player_details.is_group or not player_details.group_parent:
+            config_entries += [ # play on power on setting
+                ("play_power_on", False, "player_power_play"),
+            ]
+        if self.mass.config['base'].get('homeassistant',{}).get("enabled"):
             # append hass specific config entries
             config_entries += [("hass_power_entity", "", "hass_player_power"),
                             ("hass_power_entity_source", "", "hass_player_source"),
@@ -264,6 +281,7 @@ class Player():
                 else:
                     player_settings[key] = def_value
         self.mass.config['player_settings'][player_id] = player_settings
+        self.mass.config['player_settings'][player_id]['__desc__'] = config_entries
         return player_settings
 
     async def play_media(self, player_id, media_item, queue_opt='play'):

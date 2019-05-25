@@ -145,7 +145,8 @@ const messages = {
             http_streamer_sox_effects: "Eigen sox effects toepassen op audio (alleen voor ingebouwde streamer). Zie http://sox.sourceforge.net/sox.html#EFFECTS",
             max_sample_rate: "Maximale sample rate welke deze speler ondersteund, hoger wordt gedownsampled.",
             force_http_streamer: "Forceer het gebruik van de ingebouwde streamer, ook al heeft de speler directe ondersteuning voor de muziek provider",
-            not_grouped: "Niet gegroepeerd"
+            not_grouped: "Niet gegroepeerd",
+            conf_saved: "Configutaion saved, restart app to make effective"
         },
         // player strings
         players: "Spelers",

@@ -59,7 +59,6 @@ class Main():
             self.event_loop.close()
             LOGGER.info('Shutdown complete.')
 
-
     async def event(self, msg, msg_details=None):
         ''' signal event '''
         LOGGER.debug("Event: %s - %s" %(msg, msg_details))
