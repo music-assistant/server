@@ -90,7 +90,7 @@ class ChromecastProvider(PlayerProvider):
             self._chromecasts[player_id].set_volume_muted(False)
         elif cmd == 'mute':
             self._chromecasts[player_id].set_volume_muted(True)
-        #self._chromecasts[player_id].wait()
+        self._chromecasts[player_id].wait()
 
     async def player_queue(self, player_id, offset=0, limit=50):
         ''' return the current items in the player's queue '''
@@ -238,7 +238,7 @@ class ChromecastProvider(PlayerProvider):
                 """Plays media after chromecast has switched to requested app."""
                 queuedata['mediaSessionId'] = media_controller.status.media_session_id
                 media_controller.send_message(queuedata, inc_session_id=False)
-                #castplayer.wait()
+                castplayer.wait()
         receiver_ctrl.launch_app(media_controller.app_id,
                                 callback_function=app_launched_callback)
 
@@ -311,7 +311,7 @@ class ChromecastProvider(PlayerProvider):
                     self.mass.event_loop.create_task(self.mass.player.update_player(self._players[member]))
 
     async def __chromecast_discovered(self, chromecast):
-        LOGGER.info("discovered chromecast: %s" % chromecast)
+        LOGGER.debug("discovered chromecast: %s" % chromecast)
         player_id = str(chromecast.uuid)
         ip_change = False
         if player_id in self._chromecasts and chromecast.uri != self._chromecasts[player_id].uri:
@@ -344,7 +344,7 @@ class ChromecastProvider(PlayerProvider):
                 self._player_queue[player_id] = []
             chromecast.wait()
 
-    @run_periodic(600)
+    @run_periodic(3600)
     async def __discover_chromecasts(self):
         ''' discover chromecasts on the network '''
         LOGGER.info('Running Chromecast discovery...')

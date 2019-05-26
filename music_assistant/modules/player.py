@@ -58,18 +58,19 @@ class Player():
             return await self.player_command(player.group_parent, cmd, cmd_args)
         # handle hass integration
         await self.__player_command_hass_integration(player, cmd, cmd_args)
+        # handle group volume/power for group players
+        await self.__player_group_commands(player, cmd, cmd_args)
         # handle mute as power
         if cmd == 'power' and player.settings['mute_as_power']:
-            args = 'on' if cmd_args == 'off' else 'off' # invert logic (power ON is mute OFF)
-            await prov.player_command(player_id, 'mute', args)
+            cmd = 'mute'
+            cmd_args = 'on' if cmd_args == 'off' else 'off' # invert logic (power ON is mute OFF)
         # handle play on power on
         if cmd == 'power' and cmd_args == 'on' and player.settings['play_power_on']:
             cmd = 'play'
             cmd_args = None
         # normal execution of command on player
         await prov.player_command(player_id, cmd, cmd_args)
-        # handle group volume/power for group players
-        await self.__player_group_commands(player, cmd, cmd_args)
+        
 
     async def __player_command_hass_integration(self, player, cmd, cmd_args):
         ''' handle hass integration in player command '''
