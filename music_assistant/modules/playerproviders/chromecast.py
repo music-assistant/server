@@ -202,10 +202,8 @@ class ChromecastProvider(PlayerProvider):
 
     async def __resume_queue(self, player_id):
         ''' resume queue play after power off '''
-        
-        player = self._players[player_id]
         queue_index = await self.__get_cur_queue_index(player_id)
-        print('resume queue at index %s' % queue_index)
+        LOGGER.info('resume queue at index %s' % queue_index)
         tracks = self._player_queue[player_id]
         await self.__queue_load(player_id, tracks, queue_index)
 
@@ -251,7 +249,6 @@ class ChromecastProvider(PlayerProvider):
                 queuedata['mediaSessionId'] = media_controller.status.media_session_id
                 media_controller.send_message(queuedata, inc_session_id=False)
                 castplayer.wait()
-                await asyncio.sleep(0.2)
         receiver_ctrl.launch_app(media_controller.app_id,
                                 callback_function=app_launched_callback)
 
