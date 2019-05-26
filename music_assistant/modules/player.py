@@ -71,7 +71,6 @@ class Player():
         # normal execution of command on player
         await prov.player_command(player_id, cmd, cmd_args)
         
-
     async def __player_command_hass_integration(self, player, cmd, cmd_args):
         ''' handle hass integration in player command '''
         if not self.mass.hass:
@@ -168,6 +167,8 @@ class Player():
         # handle basic player settings
         player_details.enabled = player.settings['enabled']
         player_details.name = player.settings['name'] if player.settings['name'] else player_details.name
+        if player.settings['group_parent']:
+            player_details.group_parent = player.settings['group_parent']
         # handle hass integration
         await self.__update_player_hass_settings(player_details, player.settings)
         # handle mute as power setting
@@ -264,7 +265,8 @@ class Player():
             ("disable_volume", False, "player_disable_vol"),
             ("sox_effects", '', "http_streamer_sox_effects"),
             ("max_sample_rate", '96000', "max_sample_rate"),
-            ("force_http_streamer", False, "force_http_streamer")
+            ("force_http_streamer", False, "force_http_streamer"),
+            ("group_parent", '<player>', "group_parent")
         ]
         if player_details.is_group:
             config_entries += [ # group player settings
