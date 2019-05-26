@@ -167,8 +167,10 @@ class ChromecastProvider(PlayerProvider):
                 "items": queue_items # only load 50 tracks at once or the socket will crash
         }
         await self.__send_player_queue(castplayer, queuedata)
+        await asyncio.sleep(0.2)
         if len(new_tracks) > 50:
             await self.__queue_insert(player_id, new_tracks[51:])
+            await asyncio.sleep(0.2)
 
     async def __queue_insert(self, player_id, new_tracks, insert_before=None):
         ''' insert item into the player queue '''
