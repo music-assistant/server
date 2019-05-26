@@ -62,7 +62,7 @@ class ChromecastProvider(PlayerProvider):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
         count = 0
         while self._chromecasts[player_id].is_busy and count < 10:
-            asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)
             count += 1
         self._chromecasts[player_id].is_busy = True
         if cmd == 'play':
@@ -108,7 +108,7 @@ class ChromecastProvider(PlayerProvider):
         '''
         count = 0
         while self._chromecasts[player_id].is_busy and count < 10:
-            asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)
             count += 1
         self._chromecasts[player_id].is_busy = True
         castplayer = self._chromecasts[player_id]

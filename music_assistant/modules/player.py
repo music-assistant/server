@@ -123,11 +123,7 @@ class Player():
             group_player = self._players[player.group_parent]
             if group_player.settings['apply_group_power']:
                 player_childs = [item for item in self._players.values() if item.group_parent == group_player.player_id]
-                if not group_player.powered and cmd == 'power' and cmd_args == 'on':
-                    # power on group player
-                    self.mass.event_loop.create_task(
-                            self.player_command(group_player.player_id, 'power', 'on'))
-                elif group_player.powered and cmd == 'power' and cmd_args == 'off':
+                if group_player.powered and cmd == 'power' and cmd_args == 'off':
                     # check if the group player should still be turned on
                     new_powered = False
                     for child_player in player_childs:
@@ -135,8 +131,7 @@ class Player():
                             new_powered = True
                             break
                     if not new_powered:
-                        self.mass.event_loop.create_task(
-                                self.player_command(group_player.player_id, 'power', 'off'))
+                        await self.player_command(group_player.player_id, 'power', 'off')
     
     async def remove_player(self, player_id):
         ''' handle a player remove '''
