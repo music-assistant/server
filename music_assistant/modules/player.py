@@ -36,7 +36,7 @@ class Player():
         ''' return players by id '''
         return self._players[player_id]
 
-    async def player_command(self, player_id, cmd, cmd_args=None):
+    async def player_command(self, player_id, cmd, cmd_args=None, skip_group_commands=False):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
         if player_id not in self._players:
             return
@@ -59,7 +59,8 @@ class Player():
         # handle hass integration
         await self.__player_command_hass_integration(player, cmd, cmd_args)
         # handle group volume/power for group players
-        await self.__player_group_commands(player, cmd, cmd_args)
+        if not skip_group_commands:
+            asyncio.create_task(self.__player_group_commands(player, cmd, cmd_args))
         # handle mute as power
         if cmd == 'power' and player.settings['mute_as_power']:
             cmd = 'mute'
@@ -105,7 +106,7 @@ class Player():
                 cur_child_volume = child_player.volume_level
                 new_child_volume = cur_child_volume + (cur_child_volume * volume_dif_percent)
                 child_player.volume_level = new_child_volume
-                await self.player_command(child_player.player_id, 'volume', new_child_volume)
+                await self.player_command(child_player.player_id, 'volume', new_child_volume, True)
         player.volume_level = new_volume
         return True
 
@@ -118,7 +119,7 @@ class Player():
             if player.settings['apply_group_power'] and cmd == 'power' and cmd_args == 'off':
                 for item in player_childs:
                     if item.powered:
-                        await self.player_command(item.player_id, cmd, cmd_args)
+                        await self.player_command(item.player_id, cmd, cmd_args, True)
         elif player.group_parent and player.group_parent in self._players:
             group_player = self._players[player.group_parent]
             if group_player.settings['apply_group_power']:
@@ -131,7 +132,7 @@ class Player():
                             new_powered = True
                             break
                     if not new_powered:
-                        await self.player_command(group_player.player_id, 'power', 'off')
+                        await self.player_command(group_player.player_id, 'power', 'off', True)
     
     async def remove_player(self, player_id):
         ''' handle a player remove '''
