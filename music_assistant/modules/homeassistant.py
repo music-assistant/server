@@ -265,7 +265,7 @@ class HomeAssistant():
                                 else:
                                     LOGGER.info(data)
                         elif msg.type == aiohttp.WSMsgType.ERROR:
-                            break
+                            raise Exception("error in websocket")
             except Exception as exc:
                 LOGGER.exception(exc)
                 await asyncio.sleep(10)

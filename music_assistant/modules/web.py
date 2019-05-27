@@ -213,16 +213,14 @@ class Web():
         ''' websockets handler '''
         ws = web.WebSocketResponse()
         await ws.prepare(request)
+        cb_id = None
         # register callback for internal events
         async def send_event(msg, msg_details):
             ws_msg = {"message": msg, "message_details": msg_details }
             try:
                 await ws.send_json(ws_msg, dumps=json_serializer)
-            except Exception as exc:
-                if 'the handler is closed' in str(exc):
-                    await self.mass.remove_event_listener(cb_id)
-                else:
-                    LOGGER.exception(exc)
+            except ConnectionResetError:
+                await self.mass.remove_event_listener(cb_id)
 
         cb_id = await self.mass.add_event_listener(send_event)
         # process incoming messages
@@ -244,9 +242,6 @@ class Web():
                         cmd = msg_data_parts[3]
                         cmd_args = msg_data_parts[4] if len(msg_data_parts) == 5 else None
                         await self.mass.player.player_command(player_id, cmd, cmd_args)
-            elif msg.type == aiohttp.WSMsgType.ERROR:
-                LOGGER.error('ws connection closed with exception %s' %
-                    ws.exception())
         LOGGER.info('websocket connection closed')
         return ws
 
