@@ -70,6 +70,7 @@ class Main():
         ''' add callback to our event listeners '''
         cb_id = str(uuid.uuid4())
         self.event_listeners[cb_id] = cb
+        return cb_id
 
     async def remove_event_listener(self, cb_id):
         ''' remove callback from our event listeners '''
