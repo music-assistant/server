@@ -11,7 +11,7 @@ from typing import List
 import random
 import sys
 import socket
-from utils import run_periodic, LOGGER, parse_track_title, try_parse_int, get_ip
+from utils import run_periodic, LOGGER, parse_track_title, try_parse_int, get_ip, get_hostname
 from models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from constants import CONF_ENABLED
 
@@ -29,6 +29,7 @@ def config_entries():
     return [
         (CONF_ENABLED, True, CONF_ENABLED)
         ]
+
 
 class PyLMSServer(PlayerProvider):
     ''' Python implementation of SlimProto server '''
@@ -49,13 +50,19 @@ class PyLMSServer(PlayerProvider):
         # start slimproto server
         mass.event_loop.create_task(asyncio.start_server(self.__handle_socket_client, '0.0.0.0', 3483))
         # setup discovery
-        listen = mass.event_loop.create_datagram_endpoint(
-                DiscoveryProtocol, local_addr=('0.0.0.0', 3483), 
-                family=socket.AF_INET, reuse_address=True, reuse_port=True,
-            allow_broadcast=True)
-        mass.event_loop.create_task(listen)
+        mass.event_loop.create_task(self.start_discovery())
 
      ### Provider specific implementation #####
+
+    async def start_discovery(self):
+        transport, protocol = await self.mass.event_loop.create_datagram_endpoint(
+            lambda: DiscoveryProtocol(self.mass.web._http_port),
+        local_addr=('0.0.0.0', 3483))
+        try:
+            while True:
+                await asyncio.sleep(60)  # serve forever
+        finally:
+            transport.close()
 
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
@@ -112,9 +119,11 @@ class PyLMSServer(PlayerProvider):
 
     async def __queue_play(self, player_id, index, send_flush=False):
         ''' send play command to player '''
+        if not player_id in self._player_queue:
+            return
         if index == None:
             index = self._player_queue_index[player_id]
-        if len(self._player_queue[player_id]) >= index-1:
+        if len(self._player_queue[player_id]) >= index:
             track = self._player_queue[player_id][index]
             if send_flush:
                 self._lmsplayers[player_id].flush()
@@ -173,7 +182,7 @@ class PyLMSServer(PlayerProvider):
         player.volume_level = lms_player.volume_level
         player.cur_item_time = lms_player._elapsed_seconds
         if event == "disconnected":
-            player.enabled = False
+            return await self.mass.player.remove_player(player_id)
         elif event == "power":
             player.powered = event_data
         elif event == "state":
@@ -220,8 +229,9 @@ class PyLMSServer(PlayerProvider):
                     lms_player.dataReceived(data)
                 else:
                     break
-        except RuntimeError:
-            LOGGER.warning("connection lost")
+        except Exception as exc:
+            # connection lost ?
+            LOGGER.warning(exc)
         # disconnect
         heartbeat_task.cancel()
         asyncio.create_task(self.__handle_player_event(lms_player.player_id, 'disconnected'))
@@ -292,7 +302,7 @@ class PyLMSPlayer(object):
         self.send_frame(b"strm", data)
 
     def flush(self):
-        data = self.pack_stream(b"f", autostart=b"1", flags=0)
+        data = self.pack_stream(b"f", autostart=b"0", flags=0)
         self.send_frame(b"strm", data)
 
     def pause(self):
@@ -546,156 +556,6 @@ class PyLMSPlayer(object):
         LOGGER.info("UREQ received")
 
 
-class Datagram(object):
-
-    @classmethod
-    def decode(self, data):
-        if data[0] == 'e':
-            return TLVDiscoveryRequestDatagram(data)
-        elif data[0] == 'E':
-            return TLVDiscoveryResponseDatagram(data)
-        elif data[0] == 'd':
-            return ClientDiscoveryDatagram(data)
-        elif data[0] == 'h':
-            pass # Hello!
-        elif data[0] == 'i':
-            pass # IR
-        elif data[0] == '2':
-            pass # i2c?
-        elif data[0] == 'a':
-            pass # ack!
-
-class ClientDiscoveryDatagram(Datagram):
-
-    device = None
-    firmware = None
-    client = None
-
-    def __init__(self, data):
-        s = struct.unpack('!cxBB8x6B', data)
-        assert  s[0] == 'd'
-        self.device = s[1]
-        self.firmware = hex(s[2])
-        self.client = ":".join(["%02x" % (x,) for x in s[3:]])
-
-    def __repr__(self):
-        return "<%s device=%r firmware=%r client=%r>" % (self.__class__.__name__, self.device, self.firmware, self.client)
-
-class DiscoveryResponseDatagram(Datagram):
-
-    def __init__(self, hostname, port):
-        hostname = hostname[:16].encode("UTF-8")
-        hostname += (16 - len(hostname)) * '\x00'
-        self.packet = struct.pack('!c16s', 'D', hostname)
-
-class TLVDiscoveryRequestDatagram(Datagram):
-    
-    def __init__(self, data):
-        requestdata = OrderedDict()
-        assert data[0] == 'e'
-        idx = 1
-        length = len(data)-5
-        while idx <= length:
-            typ, l = struct.unpack_from("4sB", data, idx)
-            if l:
-                val = data[idx+5:idx+5+l]
-                idx += 5+l
-            else:
-                val = None
-                idx += 5
-            requestdata[typ] = val
-        self.data = requestdata
-            
-    def __repr__(self):
-        return "<%s data=%r>" % (self.__class__.__name__, self.data.items())
-
-class TLVDiscoveryResponseDatagram(Datagram):
-
-    def __init__(self, responsedata):
-        parts = ['E'] # new discovery format
-        for typ, value in responsedata.items():
-            if value is None:
-                value = ''
-            elif len(value) > 255:
-                LOGGER.warning("Response %s too long, truncating to 255 bytes" % typ)
-                value = value[:255]
-            parts.extend((typ, chr(len(value)), value))
-        self.packet = ''.join(parts)
-
-class DiscoveryProtocol():
-
-    def connection_made(self, transport):
-        self.transport = transport
-        # Allow receiving multicast broadcasts
-        sock = self.transport.get_extra_info('socket')
-        group = socket.inet_aton('239.255.255.250')
-        mreq = struct.pack('4sL', group, socket.INADDR_ANY)
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    
-    def build_TLV_response(self, requestdata):
-        responsedata = OrderedDict()
-        for typ, value in requestdata.items():
-            if typ == 'NAME':
-                # send full host name - no truncation
-                value = 'macbook-marcel' # TODO
-            elif typ == 'IPAD':
-                # send ipaddress as a string only if it is set
-                value = '192.168.1.145' # TODO
-                # :todo: IPv6
-                if value == '0.0.0.0':
-                    # do not send back an ip address
-                    typ = None
-            elif typ == 'JSON':
-                # send port as a string
-                json_port = 9000 # todo: web.service.port
-                value = str(json_port)
-            elif typ == 'VERS':
-                # send server version
-                 value = '7.9'
-            elif typ == 'UUID':
-                # send server uuid
-                value = 'test'
-            # elif typ == 'JVID':
-            #     # not handle, just log the information
-            #     typ = None
-            #     log.msg("Jive: %x:%x:%x:%x:%x:%x:" % struct.unpack('>6B', value),
-            #             logLevel=logging.INFO)
-            else:
-                LOGGER.error('Unexpected information request: %r', typ)
-                typ = None
-            if typ:
-                responsedata[typ] = value
-        return responsedata
-
-    def datagram_received(self, data, addr):
-        try:
-            data = data.decode()
-            LOGGER.info('Received %r from %s' % (data, addr))
-            dgram = Datagram.decode(data)
-            LOGGER.info("Data received from %s: %s" % (addr, dgram))
-            if isinstance(dgram, ClientDiscoveryDatagram):
-                self.sendDiscoveryResponse(addr)
-            elif isinstance(dgram, TLVDiscoveryRequestDatagram):
-                resonsedata = self.build_TLV_response(dgram.data)
-                self.sendTLVDiscoveryResponse(resonsedata, addr)
-        except Exception as exc:
-            LOGGER.exception(exc)
-
-    def sendDiscoveryResponse(self, addr):
-        dgram = DiscoveryResponseDatagram('macbook-marcel', 3483)
-        LOGGER.info("Sending discovery response %r" % (dgram.packet,))
-        self.transport.sendto(dgram.packet.encode(), addr)
-
-    def sendTLVDiscoveryResponse(self, resonsedata, addr):
-        dgram = TLVDiscoveryResponseDatagram(resonsedata)
-        LOGGER.info("Sending discovery response %r" % (dgram.packet,))
-        self.transport.sendto(dgram.packet.encode(), addr)
-
-
-
-
-
-
 
 # from http://wiki.slimdevices.com/index.php/SlimProtoTCPProtocol#HELO
 devices = {
@@ -793,3 +653,150 @@ class PyLMSVolume(object):
             return int(floatmult * (1 << 8) + 0.5) * (1<<8)
         else:
             return int((floatmult * (1<<16)) + 0.5)
+
+
+##### UDP DISCOVERY STUFF #############
+
+class Datagram(object):
+
+    @classmethod
+    def decode(self, data):
+        if data[0] == 'e':
+            return TLVDiscoveryRequestDatagram(data)
+        elif data[0] == 'E':
+            return TLVDiscoveryResponseDatagram(data)
+        elif data[0] == 'd':
+            return ClientDiscoveryDatagram(data)
+        elif data[0] == 'h':
+            pass # Hello!
+        elif data[0] == 'i':
+            pass # IR
+        elif data[0] == '2':
+            pass # i2c?
+        elif data[0] == 'a':
+            pass # ack!
+
+class ClientDiscoveryDatagram(Datagram):
+
+    device = None
+    firmware = None
+    client = None
+
+    def __init__(self, data):
+        s = struct.unpack('!cxBB8x6B', data.encode())
+        assert  s[0] == 'd'
+        self.device = s[1]
+        self.firmware = hex(s[2])
+        self.client = ":".join(["%02x" % (x,) for x in s[3:]])
+
+    def __repr__(self):
+        return "<%s device=%r firmware=%r client=%r>" % (self.__class__.__name__, self.device, self.firmware, self.client)
+
+class DiscoveryResponseDatagram(Datagram):
+
+    def __init__(self, hostname, port):
+        hostname = hostname[:16].encode("UTF-8")
+        hostname += (16 - len(hostname)) * '\x00'
+        self.packet = struct.pack('!c16s', 'D', hostname).decode()
+
+class TLVDiscoveryRequestDatagram(Datagram):
+    
+    def __init__(self, data):
+        requestdata = OrderedDict()
+        assert data[0] == 'e'
+        idx = 1
+        length = len(data)-5
+        while idx <= length:
+            typ, l = struct.unpack_from("4sB", data.encode(), idx)
+            if l:
+                val = data[idx+5:idx+5+l]
+                idx += 5+l
+            else:
+                val = None
+                idx += 5
+            typ = typ.decode()
+            requestdata[typ] = val
+        self.data = requestdata
+            
+    def __repr__(self):
+        return "<%s data=%r>" % (self.__class__.__name__, self.data.items())
+
+class TLVDiscoveryResponseDatagram(Datagram):
+
+    def __init__(self, responsedata):
+        parts = ['E'] # new discovery format
+        for typ, value in responsedata.items():
+            if value is None:
+                value = ''
+            elif len(value) > 255:
+                LOGGER.warning("Response %s too long, truncating to 255 bytes" % typ)
+                value = value[:255]
+            parts.extend((typ, chr(len(value)), value))
+        self.packet = ''.join(parts)
+
+class DiscoveryProtocol():
+
+    def __init__(self, web_port):
+        self.web_port = web_port
+    
+    def connection_made(self, transport):
+        self.transport = transport
+        # Allow receiving multicast broadcasts
+        sock = self.transport.get_extra_info('socket')
+        group = socket.inet_aton('239.255.255.250')
+        mreq = struct.pack('4sL', group, socket.INADDR_ANY)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    
+    def build_TLV_response(self, requestdata):
+        responsedata = OrderedDict()
+        for typ, value in requestdata.items():
+            if typ == 'NAME':
+                # send full host name - no truncation
+                value = get_hostname()
+            elif typ == 'IPAD':
+                # send ipaddress as a string only if it is set
+                value = get_ip()
+                # :todo: IPv6
+                if value == '0.0.0.0':
+                    # do not send back an ip address
+                    typ = None
+            elif typ == 'JSON':
+                # send port as a string
+                json_port = self.web_port
+                value = str(json_port)
+            elif typ == 'VERS':
+                # send server version
+                 value = '7.9'
+            elif typ == 'UUID':
+                # send server uuid
+                value = 'musicassistant'
+            else:
+                LOGGER.debug('Unexpected information request: %r', typ)
+                typ = None
+            if typ:
+                responsedata[typ] = value
+        return responsedata
+
+    def datagram_received(self, data, addr):
+        try:
+            data = data.decode()
+            dgram = Datagram.decode(data)
+            LOGGER.debug("Data received from %s: %s" % (addr, dgram))
+            if isinstance(dgram, ClientDiscoveryDatagram):
+                self.sendDiscoveryResponse(addr)
+            elif isinstance(dgram, TLVDiscoveryRequestDatagram):
+                resonsedata = self.build_TLV_response(dgram.data)
+                self.sendTLVDiscoveryResponse(resonsedata, addr)
+        except Exception as exc:
+            LOGGER.exception(exc)
+
+    def sendDiscoveryResponse(self, addr):
+        dgram = DiscoveryResponseDatagram(get_hostname(), 3483)
+        LOGGER.debug("Sending discovery response %r" % (dgram.packet,))
+        self.transport.sendto(dgram.packet.encode(), addr)
+
+    def sendTLVDiscoveryResponse(self, resonsedata, addr):
+        dgram = TLVDiscoveryResponseDatagram(resonsedata)
+        LOGGER.debug("Sending discovery response %r" % (dgram.packet,))
+        self.transport.sendto(dgram.packet.encode(), addr)
+

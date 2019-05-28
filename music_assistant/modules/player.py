@@ -49,13 +49,25 @@ class Player():
             cmd = 'pause' if player.state == PlayerState.Playing else 'play'
         if cmd == 'power' and (cmd_args == 'toggle' or not cmd_args):
             cmd_args = 'off' if player.powered else 'on'
+        if cmd == 'volume' and cmd_args == 'up':
+            cmd_args = player.volume_level + 2
+        elif cmd == 'volume' and cmd_args == 'down':
+            cmd_args = player.volume_level - 2
+        elif cmd == 'volume' and '+' in str(cmd_args):
+            cmd_args = player.volume_level + try_parse_int(cmd_args.replace('+',''))
+        elif cmd == 'volume' and '-' in str(cmd_args):
+            cmd_args = player.volume_level - try_parse_int(cmd_args.replace('-',''))
+        if cmd == 'mute' and (cmd_args == 'toggle' or not cmd_args):
+            cmd_args = 'off' if player.muted else 'on'
+        if cmd == 'volume' and cmd_args:
+            if try_parse_int(cmd_args) > 100:
+                cmd_args = 100
+            elif try_parse_int(cmd_args) < 0:
+                cmd_args = 0
         if cmd == 'volume' and player.is_group and player.settings['apply_group_volume']:
             # group volume
             return await self.__player_command_group_volume(player, cmd, cmd_args)
-        if cmd == 'volume' and (cmd_args == 'up' or '+' in str(cmd_args)):
-            cmd_args = player.volume_level + 2
-        elif cmd == 'volume' and (cmd_args == 'down' or '-' in str(cmd_args)):
-            cmd_args = player.volume_level - 2
+        
         # redirect playlist related commands to parent player
         if player.group_parent and cmd not in ['power', 'volume', 'mute']:
             return await self.player_command(player.group_parent, cmd, cmd_args)
@@ -74,7 +86,6 @@ class Player():
             cmd_args = 'on' if cmd_args == 'off' else 'off' # invert logic (power ON is mute OFF)
         # normal execution of command on player
         await prov.player_command(player_id, cmd, cmd_args)
-        
         
     async def __player_command_hass_integration(self, player, cmd, cmd_args):
         ''' handle hass integration in player command '''
@@ -99,19 +110,12 @@ class Player():
             await self.mass.hass.call_service('media_player', 'volume_set', service_data)
             cmd_args = 100 # just force full volume on actual player if volume is outsourced to hass
             
-    async def __player_command_group_volume(self, player, cmd, cmd_args):
+    async def __player_command_group_volume(self, player, new_volume):
         ''' handle group volume '''
-        if cmd_args == 'up':
-            volume_dif = 2
-            volume_dif_percent = 1.02
-        elif cmd_args == 'up':
-            volume_dif = -2
-            volume_dif_percent = 0.98
-        else:
-            cur_volume = player.volume_level
-            new_volume = try_parse_int(cmd_args)
-            volume_dif = new_volume - cur_volume
-            volume_dif_percent = volume_dif/cur_volume
+        cur_volume = player.volume_level
+        new_volume = try_parse_int(new_volume)
+        volume_dif = new_volume - cur_volume
+        volume_dif_percent = volume_dif/cur_volume
         player_childs = [item for item in self._players.values() if item.group_parent == player.player_id]
         for child_player in player_childs:
             if child_player.enabled and child_player.powered:

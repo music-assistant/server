@@ -124,7 +124,7 @@ class ChromecastProvider(PlayerProvider):
             await self.__queue_load(player_id, self._player_queue[player_id], cur_queue_index)
         elif queue_opt == 'next':
             # insert new items at current index +1
-            if len(self._player_queue[player_id]) > cur_queue_index:
+            if len(self._player_queue[player_id]) > cur_queue_index+1:
                 old_next_uri = self._player_queue[player_id][cur_queue_index+1].uri
             else:
                 old_next_uri = None

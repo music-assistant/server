@@ -251,6 +251,8 @@ Vue.component("player", {
         var players = [];
         if (msg.message == 'player updated')
           players = [msg.message_details];
+        else if (msg.message == 'player removed')
+          this.players[msg.message_details].enabled = false;
         else if (msg.message == 'players')
           players = msg.message_details;
         
@@ -262,14 +264,14 @@ Vue.component("player", {
 
         // select new active player
         // TODO: store previous player in local storage
-        if (!this.active_player_id)
+        if (!this.active_player_id || !this.players[this.active_player_id].enabled)
           for (var player_id in this.players)
             if (this.players[player_id].state == 'playing' && this.players[player_id].enabled && !this.players[player_id].group_parent) {
               // prefer the first playing player
               this.active_player_id = player_id;
               break; 
             }
-        if (!this.active_player_id)
+            if (!this.active_player_id || !this.players[this.active_player_id].enabled)
           for (var player_id in this.players) {
             // fallback to just the first player
             if (this.players[player_id].enabled && !this.players[player_id].group_parent)

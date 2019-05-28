@@ -9,7 +9,6 @@ import shutil
 import xml.etree.ElementTree as ET
 import random
 
-
 AUDIO_TEMP_DIR = "/tmp/audio_tmp"
 AUDIO_CACHE_DIR = "/tmp/audio_cache"
 
@@ -42,23 +41,7 @@ class HTTPStreamer():
             if not key in self.mass.config['base']['http_streamer']:
                 self.mass.config['base']['http_streamer'][key] = def_value
     
-    async def get_audio_stream(self, track_id, provider, player_id=None):
-        ''' get audio stream for a track '''
-        queue = asyncio.Queue()
-        run_async_background_task(
-            self.mass.bg_executor, self.__get_audio_stream, queue, track_id, provider, player_id)
-        while True:
-            chunk = await queue.get()
-            if not chunk:
-                queue.task_done()
-                break
-            yield chunk
-            queue.task_done()
-        await queue.join()
-        # TODO: handle disconnects ?
-        LOGGER.info("Finished streaming %s" % track_id)
-
-    async def __get_audio_stream(self, audioqueue, track_id, provider, player_id=None):
+    async def get_audio_stream(self, audioqueue, track_id, provider, player_id=None):
         ''' get audio stream from provider and apply additional effects/processing where/if needed'''
         input_content_type = await self.mass.music.providers[provider].get_stream_content_type(track_id)
         cachefile = self.__get_track_cache_filename(track_id, provider)
@@ -86,11 +69,12 @@ class HTTPStreamer():
                      self.__fill_audio_buffer(process.stdin, track_id, provider, input_content_type))
         # put chunks from stdout into queue
         while not process.stdout.at_eof():
-            chunk = await process.stdout.read(10240000)
+            chunk = await process.stdout.read(256000)
             if not chunk:
                 break
             await audioqueue.put(chunk)
-            # TODO: cooldown if the queue can't catch up to prevent memory being filled up with entire track
+            if audioqueue.qsize() > 10:
+                await asyncio.sleep(0.1) # cooldown a bit
         await process.wait()
         await audioqueue.put('') # indicate EOF
         LOGGER.info("streaming of track_id %s completed" % track_id)

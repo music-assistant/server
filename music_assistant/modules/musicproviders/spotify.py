@@ -253,7 +253,7 @@ class SpotifyProvider(MusicProvider):
         args = ['-n', 'temp', '-u', self._username, '-p', self._password, '--pass-through', '--single-track', track_id]
         process = await asyncio.create_subprocess_exec(spotty, *args, stdout=asyncio.subprocess.PIPE)
         while not process.stdout.at_eof():
-            chunk = await process.stdout.read(128000)
+            chunk = await process.stdout.read(32000)
             if not chunk:
                 break
             yield chunk

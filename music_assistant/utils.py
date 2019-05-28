@@ -30,12 +30,12 @@ def run_background_task(executor, corofn, *args):
 def run_async_background_task(executor, corofn, *args):
     ''' run async task in background '''
     def run_task(corofn, *args):
-        LOGGER.info('running %s in background task' % corofn.__name__)
+        LOGGER.debug('running %s in background task' % corofn.__name__)
         new_loop = asyncio.new_event_loop()
         coro = corofn(*args)
         res = new_loop.run_until_complete(coro)
         new_loop.close()
-        LOGGER.info('completed %s in background task' % corofn.__name__)
+        LOGGER.debug('completed %s in background task' % corofn.__name__)
         return res
     return asyncio.get_event_loop().run_in_executor(executor, run_task, corofn, *args)
 
@@ -104,3 +104,6 @@ def get_ip():
     finally:
         s.close()
     return IP
+
+def get_hostname():
+    return socket.gethostname()

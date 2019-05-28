@@ -3,7 +3,7 @@
 
 import asyncio
 import os
-from utils import run_periodic, LOGGER
+from utils import run_periodic, LOGGER, run_async_background_task
 import json
 import aiohttp
 from aiohttp import web
@@ -219,7 +219,8 @@ class Web():
             ws_msg = {"message": msg, "message_details": msg_details }
             try:
                 await ws.send_json(ws_msg, dumps=json_serializer)
-            except ConnectionResetError:
+            except Exception as exc:
+                LOGGER.error(exc)
                 await self.mass.remove_event_listener(cb_id)
 
         cb_id = await self.mass.add_event_listener(send_event)
@@ -273,17 +274,28 @@ class Web():
                                  headers={'Content-Type': 'audio/flac'})
         await resp.prepare(request)
         if request.method.upper() != 'HEAD':
-            async for chunk in self.mass.http_streamer.get_audio_stream(track_id, provider, player_id):
+            # stream audio
+            queue = asyncio.Queue()
+            run_async_background_task(
+                self.mass.bg_executor, self.mass.http_streamer.get_audio_stream, queue, track_id, provider, player_id)
+            while True:
+                chunk = await queue.get()
+                if not chunk:
+                    queue.task_done()
+                    break
                 await resp.write(chunk)
+                queue.task_done()
+            LOGGER.info("Finished streaming %s" % track_id)
         return resp
 
     async def json_rpc(self, request):
         ''' 
-            implement fake LMS jsonrpc interface 
+            implement LMS jsonrpc interface 
             for some compatability with tools that talk to lms
             only support for basic commands
         '''
         data = await request.json()
+        LOGGER.info("jsonrpc: %s" % data)
         params = data['params']
         player_id = params[0]
         cmds = params[1]
@@ -291,13 +303,14 @@ class Web():
         if cmd_str in ['play', 'pause', 'stop']:
             await self.mass.player.player_command(player_id, cmd_str)
         elif 'power' in cmd_str:
-            await self.mass.player.player_command(player_id, cmd_str, cmd_str[1])
+            args = cmds[1] if len(cmds) > 1 else None
+            await self.mass.player.player_command(player_id, cmd_str, args)
         elif cmd_str == 'playlist index +1':
             await self.mass.player.player_command(player_id, 'next')
         elif cmd_str == 'playlist index -1':
             await self.mass.player.player_command(player_id, 'previous')
         elif 'mixer volume' in cmd_str:
-            await self.mass.player.player_command(player_id, 'volume', cmd_str[2])
+            await self.mass.player.player_command(player_id, 'volume', cmds[2])
         elif cmd_str == 'mixer muting 1':
             await self.mass.player.player_command(player_id, 'mute', 'on')
         elif cmd_str == 'mixer muting 0':
