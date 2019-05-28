@@ -180,9 +180,10 @@ class HTTPStreamer():
         await buf.drain()
         buf.write_eof()
         fd.close()
-        # successfull completion, send tmpfile to be processed in the background in main loop
-        self.mass.event_loop.create_task(self.__analyze_audio(tmpfile, track_id, provider, content_type))
-        LOGGER.info("fill_audio_buffer complete for track %s" % track_id)
+        LOGGER.debug("fill_audio_buffer complete for track %s" % track_id)
+        # successfull completion, process temp file for analysis
+        self.mass.event_loop.create_task(
+                self.__analyze_audio(tmpfile, track_id, provider, content_type))
         return
 
     def __get_track_cache_filename(self, track_id, provider):
@@ -194,27 +195,28 @@ class HTTPStreamer():
     @run_periodic(3600)
     async def __cache_cleanup(self):
         ''' calculate size of cache folder and cleanup if needed '''
-        size_limit = self.mass.config['base']['http_streamer']['audio_cache_max_size_gb']
-        total_size_gb = get_folder_size(self._audio_cache_dir)
-        LOGGER.info("current size of cache folder is %s GB" % total_size_gb)
-        if size_limit and total_size_gb > size_limit:
-            LOGGER.info("Cache folder size exceeds threshold, start cleanup...")
-            from pathlib import Path
-            import time
-            days = 14
-            while total_size_gb > size_limit:
-                time_in_secs = time.time() - (days * 24 * 60 * 60)
-                for i in Path(self._audio_cache_dir).iterdir():
-                    if i.is_file():
-                        if i.stat().st_atime <= time_in_secs:
-                            total_size_gb -= i.stat().st_size/float(1<<30)
-                            i.unlink()
-                    if total_size_gb < size_limit:
-                        break
-                days -= 1
-            LOGGER.info("Cache folder size cleanup completed")
+        def cleanup():
+            size_limit = self.mass.config['base']['http_streamer']['audio_cache_max_size_gb']
+            total_size_gb = get_folder_size(self._audio_cache_dir)
+            LOGGER.info("current size of cache folder is %s GB" % total_size_gb)
+            if size_limit and total_size_gb > size_limit:
+                LOGGER.info("Cache folder size exceeds threshold, start cleanup...")
+                from pathlib import Path
+                import time
+                days = 14
+                while total_size_gb > size_limit:
+                    time_in_secs = time.time() - (days * 24 * 60 * 60)
+                    for i in Path(self._audio_cache_dir).iterdir():
+                        if i.is_file():
+                            if i.stat().st_atime <= time_in_secs:
+                                total_size_gb -= i.stat().st_size/float(1<<30)
+                                i.unlink()
+                        if total_size_gb < size_limit:
+                            break
+                    days -= 1
+                LOGGER.info("Cache folder size cleanup completed")
+        await self.mass.event_loop.run_in_executor(None, cleanup)
 
-    
     @staticmethod
     def __get_bs1770_binary():
         ''' get the path to the bs1770 binary for the current OS '''

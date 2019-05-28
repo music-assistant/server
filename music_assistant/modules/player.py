@@ -66,7 +66,7 @@ class Player():
                 cmd_args = 0
         if cmd == 'volume' and player.is_group and player.settings['apply_group_volume']:
             # group volume
-            return await self.__player_command_group_volume(player, cmd, cmd_args)
+            return await self.__player_command_group_volume(player, cmd_args)
         
         # redirect playlist related commands to parent player
         if player.group_parent and cmd not in ['power', 'volume', 'mute']:
@@ -115,7 +115,10 @@ class Player():
         cur_volume = player.volume_level
         new_volume = try_parse_int(new_volume)
         volume_dif = new_volume - cur_volume
-        volume_dif_percent = volume_dif/cur_volume
+        if cur_volume == 0:
+            volume_dif_percent = 1+(new_volume/100)
+        else:
+            volume_dif_percent = volume_dif/cur_volume
         player_childs = [item for item in self._players.values() if item.group_parent == player.player_id]
         for child_player in player_childs:
             if child_player.enabled and child_player.powered:

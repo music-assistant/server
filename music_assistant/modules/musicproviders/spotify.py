@@ -258,7 +258,6 @@ class SpotifyProvider(MusicProvider):
                 break
             yield chunk
         await process.wait()
-        LOGGER.info("end of stream for track_id %s" % track_id)
         
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''

@@ -33,6 +33,7 @@ def run_async_background_task(executor, corofn, *args):
     def run_task(corofn, *args):
         LOGGER.debug('running %s in background task' % corofn.__name__)
         new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
         coro = corofn(*args)
         res = new_loop.run_until_complete(coro)
         new_loop.close()

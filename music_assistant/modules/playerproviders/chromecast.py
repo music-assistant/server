@@ -106,11 +106,6 @@ class ChromecastProvider(PlayerProvider):
         ''' 
             play media on a player
         '''
-        count = 0
-        while self._chromecasts[player_id].is_busy and count < 10:
-            await asyncio.sleep(0.1)
-            count += 1
-        self._chromecasts[player_id].is_busy = True
         castplayer = self._chromecasts[player_id]
         cur_queue_index = await self.__get_cur_queue_index(player_id)
 
@@ -140,7 +135,6 @@ class ChromecastProvider(PlayerProvider):
             # add new items at end of queue
             self._player_queue[player_id] = self._player_queue[player_id] + media_items
             await self.__queue_insert(player_id, media_items)
-        self._chromecasts[player_id].is_busy = False
 
     ### Provider specific (helper) methods #####
 
@@ -246,13 +240,16 @@ class ChromecastProvider(PlayerProvider):
         '''send new data to the CC queue'''
         media_controller = castplayer.media_controller
         receiver_ctrl = media_controller._socket_client.receiver_controller
-        def app_launched_callback():
+        def send_queue():
                 """Plays media after chromecast has switched to requested app."""
                 queuedata['mediaSessionId'] = media_controller.status.media_session_id
                 media_controller.send_message(queuedata, inc_session_id=False)
                 castplayer.wait()
-        receiver_ctrl.launch_app(media_controller.app_id,
-                                callback_function=app_launched_callback)
+        if not media_controller.status.media_session_id:
+            receiver_ctrl.launch_app(media_controller.app_id, callback_function=send_queue)
+        else:
+            send_queue()
+        await asyncio.sleep(0.2)
 
     async def __handle_player_state(self, chromecast, caststatus=None, mediastatus=None):
         ''' handle a player state message from the socket '''

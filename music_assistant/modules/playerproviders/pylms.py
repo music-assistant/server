@@ -119,7 +119,9 @@ class PyLMSServer(PlayerProvider):
 
     async def __queue_play(self, player_id, index, send_flush=False):
         ''' send play command to player '''
-        if not player_id in self._player_queue:
+        if not player_id in self._player_queue or not player_id in self._player_queue_index:
+            return
+        if not self._player_queue[player_id]:
             return
         if index == None:
             index = self._player_queue_index[player_id]

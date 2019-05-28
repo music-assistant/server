@@ -211,10 +211,11 @@ class Web():
 
     async def websocket_handler(self, request):
         ''' websockets handler '''
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
         cb_id = None
+        ws = None
         try:
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
             # register callback for internal events
             async def send_event(msg, msg_details):
                 ws_msg = {"message": msg, "message_details": msg_details }
