@@ -214,35 +214,30 @@ class Web():
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         cb_id = None
-        # register callback for internal events
-        async def send_event(msg, msg_details):
-            ws_msg = {"message": msg, "message_details": msg_details }
-            try:
+        try:
+            # register callback for internal events
+            async def send_event(msg, msg_details):
+                ws_msg = {"message": msg, "message_details": msg_details }
                 await ws.send_json(ws_msg, dumps=json_serializer)
-            except Exception as exc:
-                LOGGER.error(exc)
-                await self.mass.remove_event_listener(cb_id)
-
-        cb_id = await self.mass.add_event_listener(send_event)
-        # process incoming messages
-        async for msg in ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                if msg.data == 'close':
-                    await self.mass.remove_event_listener(cb_id)
-                    await ws.close()
-                else:
-                    # for now we only use WS for (simple) player commands
-                    if msg.data == 'players':
-                        players = await self.mass.player.players()
-                        ws_msg = {'message': 'players', 'message_details': players}
-                        await ws.send_json(ws_msg, dumps=json_serializer)
-                    elif msg.data.startswith('players') and '/cmd/' in msg.data:
-                        # players/{player_id}/cmd/{cmd} or players/{player_id}/cmd/{cmd}/{cmd_args}
-                        msg_data_parts = msg.data.split('/')
-                        player_id = msg_data_parts[1]
-                        cmd = msg_data_parts[3]
-                        cmd_args = msg_data_parts[4] if len(msg_data_parts) == 5 else None
-                        await self.mass.player.player_command(player_id, cmd, cmd_args)
+            cb_id = await self.mass.add_event_listener(send_event)
+            # process incoming messages
+            async for msg in ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    continue
+                # for now we only use WS for (simple) player commands
+                if msg.data == 'players':
+                    players = await self.mass.player.players()
+                    ws_msg = {'message': 'players', 'message_details': players}
+                    await ws.send_json(ws_msg, dumps=json_serializer)
+                elif msg.data.startswith('players') and '/cmd/' in msg.data:
+                    # players/{player_id}/cmd/{cmd} or players/{player_id}/cmd/{cmd}/{cmd_args}
+                    msg_data_parts = msg.data.split('/')
+                    player_id = msg_data_parts[1]
+                    cmd = msg_data_parts[3]
+                    cmd_args = msg_data_parts[4] if len(msg_data_parts) == 5 else None
+                    await self.mass.player.player_command(player_id, cmd, cmd_args)
+        finally:
+            await self.mass.remove_event_listener(cb_id)
         LOGGER.info('websocket connection closed')
         return ws
 

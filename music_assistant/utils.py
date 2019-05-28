@@ -5,6 +5,7 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import socket
+import os
 logformat = logging.Formatter('%(asctime)-15s %(levelname)-5s %(name)s.%(module)s -- %(message)s')
 consolehandler = logging.StreamHandler()
 consolehandler.setFormatter(logformat)
@@ -107,3 +108,13 @@ def get_ip():
 
 def get_hostname():
     return socket.gethostname()
+
+def get_folder_size(folderpath):
+    ''' get folder size in gb'''
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(folderpath):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            total_size += os.path.getsize(fp)
+    total_size_gb = total_size/float(1<<30)
+    return total_size_gb
