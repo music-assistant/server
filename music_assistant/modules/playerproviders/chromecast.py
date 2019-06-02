@@ -230,7 +230,7 @@ class ChromecastProvider(PlayerProvider):
                 'streamType': 'BUFFERED',
                 'metadata': {
                     'title': track.name,
-                    'artist': track.artists[0].name,
+                    'artist': track.artists[0].name if track.artists else "",
                 },
                 'duration': int(track.duration)
             }

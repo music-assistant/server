@@ -24,6 +24,15 @@ def run_periodic(period):
         return wrapper
     return scheduler
 
+async def try_supported(task):
+    ''' try to execute a task and pass NotImplementedError Exception '''
+    ret = None
+    try:
+        ret = await task
+    except NotImplementedError:
+        pass
+    return ret
+
 def run_background_task(executor, corofn, *args):
     ''' run non-async task in background '''
     return asyncio.get_event_loop().run_in_executor(executor, corofn, *args)

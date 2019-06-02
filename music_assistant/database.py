@@ -4,7 +4,7 @@
 import asyncio
 import os
 from utils import run_periodic, LOGGER, get_sort_name, try_parse_int
-from models import MediaType, Artist, Album, Track, Playlist
+from models import MediaType, Artist, Album, Track, Playlist, Radio
 from typing import List
 import aiosqlite
 import operator
@@ -41,6 +41,8 @@ class Database():
             
             await db.execute('CREATE TABLE IF NOT EXISTS playlists(playlist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, owner TEXT NOT NULL, is_editable BOOLEAN NOT NULL, UNIQUE(name, owner));')
             await db.execute('CREATE TABLE IF NOT EXISTS playlist_tracks(playlist_id INTEGER NOT NULL, track_id INTEGER NOT NULL, position INTEGER, UNIQUE(playlist_id, track_id));')
+            
+            await db.execute('CREATE TABLE IF NOT EXISTS radios(radio_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);')
             
             await db.commit()
             await db.execute('VACUUM;')
@@ -127,6 +129,30 @@ class Database():
                 playlists.append(playlist)
         return playlists
 
+    async def radios(self, filter_query=None, provider=None, limit=100000, offset=0, orderby='name') -> List[Radio]:
+        ''' fetch all radio records from table'''
+        items = []
+        sql_query = 'SELECT * FROM radios'
+        if filter_query:
+            sql_query += filter_query
+        elif provider != None:
+            sql_query += ' WHERE radio_id in (SELECT item_id FROM provider_mappings WHERE provider = "%s" AND media_type = %d)' % (provider,MediaType.Radio)
+        sql_query += ' ORDER BY %s' % orderby
+        if limit:
+            sql_query += ' LIMIT %d OFFSET %d' %(limit, offset)
+        async with aiosqlite.connect(self.dbfile) as db:
+            async with db.execute(sql_query) as cursor:
+                db_rows = await cursor.fetchall()
+            for db_row in db_rows:
+                radio = Radio()
+                radio.item_id = db_row[0]
+                radio.name = db_row[1]
+                radio.metadata = await self.__get_metadata(radio.item_id, MediaType.Radio, db)
+                radio.provider_ids = await self.__get_prov_ids(radio.item_id, MediaType.Radio, db)
+                radio.in_library = await self.__get_library_providers(radio.item_id, MediaType.Radio, db)
+                items.append(radio)
+        return items
+
     async def playlist(self, playlist_id:int) -> Playlist:
         ''' get playlist record by id '''
         playlist_id = try_parse_int(playlist_id)
@@ -134,6 +160,14 @@ class Database():
         if not playlists:
             return None
         return playlists[0]
+
+    async def radio(self, radio_id:int) -> Playlist:
+        ''' get radio record by id '''
+        radio_id = try_parse_int(radio_id)
+        radios = await self.radios(' WHERE radio_id = %s' % radio_id)
+        if not radios:
+            return None
+        return radios[0]
 
     async def add_playlist(self, playlist:Playlist):
         ''' add a new playlist record into table'''
@@ -161,6 +195,30 @@ class Database():
             # save
             await db.commit()
         return playlist_id
+
+    async def add_radio(self, radio:Radio):
+        ''' add a new radio record into table'''
+        assert(radio.name)
+        async with aiosqlite.connect(self.dbfile, timeout=20) as db:
+            async with db.execute('SELECT (radio_id) FROM radios WHERE name=?;', (radio.name,)) as cursor:
+                result = await cursor.fetchone()
+                if result:
+                    radio_id = result[0]
+                else:
+                    # insert radio
+                    sql_query = 'INSERT OR REPLACE INTO radios (name) VALUES(?);'
+                    await db.execute(sql_query, (radio.name,))
+                    # get id from newly created item (the safe way)
+                    async with db.execute('SELECT (radio_id) FROM radios WHERE name=?;', (radio.name,)) as cursor:
+                        radio_id = await cursor.fetchone()
+                        radio_id = radio_id[0]
+                    LOGGER.info('added radio station %s to database: %s' %(radio.name, radio_id))
+            # add/update metadata
+            await self.__add_prov_ids(radio_id, MediaType.Radio, radio.provider_ids, db)
+            await self.__add_metadata(radio_id, MediaType.Radio, radio.metadata, db)
+            # save
+            await db.commit()
+        return radio_id
 
     async def add_to_library(self, item_id:int, media_type:MediaType, provider:str):
         ''' add an item to the library (item must already be present in the db!) '''

@@ -12,6 +12,7 @@ from functools import partial
 json_serializer = partial(json.dumps, default=lambda x: x.__dict__)
 import ssl
 import concurrent
+import threading
 
 def setup(mass):
     ''' setup the module and read/apply config'''
@@ -68,7 +69,8 @@ class Web():
         app.add_routes([web.get('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.get('/ws', self.websocket_handler)])
-        app.add_routes([web.get('/stream', self.stream)])
+        app.add_routes([web.get('/stream_track', self.mass.http_streamer.stream_track)])
+        app.add_routes([web.get('/stream_radio', self.mass.http_streamer.stream_radio)])
         app.add_routes([web.get('/api/search', self.search)])
         app.add_routes([web.get('/api/config', self.get_config)])
         app.add_routes([web.post('/api/config', self.save_config)])
@@ -169,6 +171,8 @@ class Web():
             media_types.append(MediaType.Track)
         if not media_types_query or "playlists" in media_types_query:
             media_types.append(MediaType.Playlist)
+        if not media_types_query or "radios" in media_types_query:
+            media_types.append(MediaType.Radio)
         # get results from database
         result = await self.mass.music.search(searchquery, media_types, limit=limit, online=online)
         return web.json_response(result, dumps=json_serializer)
@@ -259,30 +263,6 @@ class Web():
                 self.mass.config[key] = new_config[key]
         self.mass.save_config()
         return web.Response(text='success')
-
-    async def stream(self, request):
-        ''' start streaming audio from provider '''
-        player_id = request.query.get('player_id')
-        track_id = request.query.get('track_id')
-        provider = request.query.get('provider')
-        resp = web.StreamResponse(status=200,
-                                 reason='OK',
-                                 headers={'Content-Type': 'audio/flac'})
-        await resp.prepare(request)
-        if request.method.upper() != 'HEAD':
-            # stream audio
-            queue = asyncio.Queue()
-            run_async_background_task(
-                self.mass.bg_executor, self.mass.http_streamer.get_audio_stream, queue, track_id, provider, player_id)
-            while True:
-                chunk = await queue.get()
-                if not chunk:
-                    queue.task_done()
-                    break
-                await resp.write(chunk)
-                queue.task_done()
-            LOGGER.info("Finished streaming %s" % track_id)
-        return resp
 
     async def json_rpc(self, request):
         ''' 

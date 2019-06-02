@@ -9,6 +9,7 @@ const messages = {
         albums: "Albums",
         tracks: "Tracks",
         playlists: "Playlists",
+        radios: "Radio",
         search: "Search",
         settings: "Settings",
         queue: "Queue",
@@ -27,6 +28,7 @@ const messages = {
             http_streamer: "Built-in (sox based) streamer",
             qobuz: "Qobuz",
             spotify: "Spotify",
+            tunein: "TuneIn",
             file: "Filesystem",
             chromecast: "Chromecast",
             lms: "Logitech Media Server",
@@ -64,7 +66,10 @@ const messages = {
             http_streamer_sox_effects: "Custom sox effects to apply to audio (built-in streamer only!) See http://sox.sourceforge.net/sox.html#EFFECTS",
             max_sample_rate: "Maximum sample rate this player supports, higher will be downsampled",
             force_http_streamer: "Force use of built-in streamer, even if the player can handle the music provider directly",
-            not_grouped: "Not grouped"
+            not_grouped: "Not grouped",
+            conf_saved: "Configuration saved, restart app to make effective",
+            audio_cache_folder: "Directory to use for cache files",
+            audio_cache_max_size_gb: "Maximum size of the cache folder (GB)"
         },
         // player strings
         players: "Players",
@@ -90,6 +95,7 @@ const messages = {
         albums: "Albums",
         tracks: "Nummers",
         playlists: "Afspeellijsten",
+        radios: "Radio",
         search: "Zoeken",
         settings: "Instellingen",
         queue: "Wachtrij",
@@ -108,6 +114,7 @@ const messages = {
             http_streamer: "Ingebouwde (sox gebaseerde) streamer",
             qobuz: "Qobuz",
             spotify: "Spotify",
+            tunein: "TuneIn",
             file: "Bestandssysteem",
             chromecast: "Chromecast",
             lms: "Logitech Media Server",
@@ -146,7 +153,9 @@ const messages = {
             max_sample_rate: "Maximale sample rate welke deze speler ondersteund, hoger wordt gedownsampled.",
             force_http_streamer: "Forceer het gebruik van de ingebouwde streamer, ook al heeft de speler directe ondersteuning voor de muziek provider",
             not_grouped: "Niet gegroepeerd",
-            conf_saved: "Configutaion saved, restart app to make effective"
+            conf_saved: "Configuratie is opgeslagen, herstart om actief te maken",
+            audio_cache_folder: "Map om te gebruiken voor cache bestanden",
+            audio_cache_max_size_gb: "Maximale grootte van de cache map in GB."
         },
         // player strings
         players: "Spelers",

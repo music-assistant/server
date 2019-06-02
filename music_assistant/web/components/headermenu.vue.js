@@ -62,6 +62,7 @@ Vue.component("headermenu", {
         { title: this.$t('albums'), icon: "album", path: "/albums" },
         { title: this.$t('tracks'), icon: "audiotrack", path: "/tracks" },
         { title: this.$t('playlists'), icon: "playlist_play", path: "/playlists" },
+        { title: this.$t('radios'), icon: "radio", path: "/radios" },
         { title: this.$t('search'), icon: "search", path: "/search" },
         { title: this.$t('settings'), icon: "settings", path: "/config" }
       ]

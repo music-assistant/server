@@ -4,11 +4,14 @@
 import asyncio
 import os
 from utils import LOGGER, try_parse_int, get_ip, run_async_background_task, run_periodic, get_folder_size
-from models import TrackQuality
+from models import TrackQuality, MediaType
 import shutil
 import xml.etree.ElementTree as ET
 import random
 import base64
+import operator
+from aiohttp import web
+import threading
 
 AUDIO_TEMP_DIR = "/tmp/audio_tmp"
 AUDIO_CACHE_DIR = "/tmp/audio_cache"
@@ -47,17 +50,83 @@ class HTTPStreamer():
             if not key in self.mass.config['base']['http_streamer']:
                 self.mass.config['base']['http_streamer'][key] = def_value
     
-    async def get_audio_stream(self, audioqueue, track_id, provider, player_id=None):
+    async def stream_track(self, http_request):
+        ''' start streaming track from provider '''
+        player_id = http_request.query.get('player_id')
+        track_id = http_request.query.get('track_id')
+        provider = http_request.query.get('provider')
+        resp = web.StreamResponse(status=200,
+                                 reason='OK',
+                                 headers={'Content-Type': 'audio/flac'})
+        await resp.prepare(http_request)
+        if http_request.method.upper() != 'HEAD':
+            # stream audio
+            queue = asyncio.Queue()
+            cancelled = threading.Event()
+            task = run_async_background_task(
+                self.mass.bg_executor, 
+                self.__get_audio_stream, queue, track_id, provider, player_id, cancelled)
+            try:
+                while True:
+                    chunk = await queue.get()
+                    if not chunk:
+                        queue.task_done()
+                        break
+                    await resp.write(chunk)
+                    queue.task_done()
+                LOGGER.info("Finished streaming %s" % track_id)
+            except asyncio.CancelledError:
+                cancelled.set()
+                LOGGER.info("Streaming interrupted for %s" % track_id)
+                raise asyncio.CancelledError()
+        return resp
+
+    async def stream_radio(self, http_request):
+        ''' start streaming radio from provider '''
+        player_id = http_request.query.get('player_id')
+        radio_id = http_request.query.get('radio_id')
+        provider = http_request.query.get('provider')
+        resp = web.StreamResponse(status=200,
+                                 reason='OK',
+                                 headers={'Content-Type': 'audio/flac'})
+        await resp.prepare(http_request)
+        if http_request.method.upper() != 'HEAD':
+            # stream audio with sox
+            sox_effects = await self.__get_player_sox_options(radio_id, provider, player_id, True)
+            media_item = await self.mass.music.item(radio_id, MediaType.Radio, provider)
+            stream = sorted(media_item.provider_ids, key=operator.itemgetter('quality'), reverse=True)[0]
+            stream_url = stream["details"]
+            if stream["quality"] == TrackQuality.LOSSY_AAC:
+                input_content_type = "aac"
+            elif stream["quality"] == TrackQuality.LOSSY_OGG:
+                input_content_type = "ogg"
+            else:
+                input_content_type = "mp3"
+            if input_content_type == "aac":
+                args = 'ffmpeg -i "%s" -f flac - | sox -t flac -t flac -C 0 - %s' % (stream_url, sox_effects)
+            else:
+                args = 'sox -t %s "%s" -t flac -C 0 - %s' % (input_content_type, stream_url, sox_effects)
+            LOGGER.info("Running sox with args: %s" % args)
+            process = await asyncio.create_subprocess_shell(args, stdout=asyncio.subprocess.PIPE)
+            try:
+                while not process.stdout.at_eof():
+                    chunk = await process.stdout.read(128000)
+                    if not chunk:
+                        break
+                    await resp.write(chunk)
+                await process.wait()
+                LOGGER.info("streaming of radio_id %s completed" % radio_id)
+            except asyncio.CancelledError:
+                process.terminate()
+                await process.wait()
+                LOGGER.info("streaming of radio_id %s interrupted" % radio_id)
+                raise asyncio.CancelledError()
+        return resp
+    
+    async def __get_audio_stream(self, audioqueue, track_id, provider, player_id=None, cancelled=None):
         ''' get audio stream from provider and apply additional effects/processing where/if needed'''
-        input_content_type = await self.mass.music.providers[provider].get_stream_content_type(track_id)
         cachefile = self.__get_track_cache_filename(track_id, provider)
-        sox_effects = ''
-         # sox settings
-        if self.mass.config['base']['http_streamer']['volume_normalisation']:
-            gain_correct = await self.__get_track_gain_correct(track_id, provider)
-            LOGGER.info("apply gain correction of %s" % gain_correct)
-            sox_effects += ' vol %s dB ' % gain_correct
-        sox_effects += await self.__get_player_sox_options(track_id, provider, player_id)
+        sox_effects = await self.__get_player_sox_options(track_id, provider, player_id, False)
         if os.path.isfile(cachefile):
             # we have a cache file for this track which we can use
             args = 'sox -t flac %s -t flac -C 0 - %s' % (cachefile, sox_effects)
@@ -67,6 +136,8 @@ class HTTPStreamer():
             buffer_task = None
         else:
             # stream from provider
+            input_content_type = await self.mass.music.providers[provider].get_stream_content_type(track_id)
+            assert(input_content_type)
             args = 'sox -t %s - -t flac -C 0 - %s' % (input_content_type, sox_effects)
             LOGGER.info("Running sox with args: %s" % args)
             process = await asyncio.create_subprocess_shell(args,
@@ -78,19 +149,21 @@ class HTTPStreamer():
             chunk = await process.stdout.read(256000)
             if not chunk:
                 break
-            await audioqueue.put(chunk)
-            if audioqueue.qsize() > 10:
-                await asyncio.sleep(0.1) # cooldown a bit
+            if not cancelled.is_set():
+                await audioqueue.put(chunk)
+                if audioqueue.qsize() > 10:
+                    await asyncio.sleep(0.1) # cooldown a bit
         await process.wait()
         await audioqueue.put('') # indicate EOF
-        LOGGER.info("streaming of track_id %s completed" % track_id)
+        if cancelled.is_set():
+            LOGGER.info("streaming of track_id %s interrupted" % track_id)
+        else:
+            LOGGER.info("streaming of track_id %s completed" % track_id)
 
-    async def __get_player_sox_options(self, track_id, provider, player_id):
+    async def __get_player_sox_options(self, track_id, provider, player_id, is_radio):
         ''' get player specific sox options '''
-        sox_effects = ' '
-        if not player_id:
-            return ''
-        if self.mass.config['player_settings'][player_id]['max_sample_rate']:
+        sox_effects = ''
+        if player_id and not is_radio and self.mass.config['player_settings'][player_id]['max_sample_rate']:
             # downsample if needed
             max_sample_rate = try_parse_int(self.mass.config['player_settings'][player_id]['max_sample_rate'])
             if max_sample_rate:
@@ -110,9 +183,12 @@ class HTTPStreamer():
                     sox_effects += 'rate -v 96000'
                 elif quality > TrackQuality.FLAC_LOSSLESS_HI_RES_1 and max_sample_rate == 48000:
                     sox_effects += 'rate -v 48000'
-        if self.mass.config['player_settings'][player_id]['sox_effects']:
-            sox_effects += self.mass.config['player_settings'][player_id]['sox_effects']
-        return sox_effects + ' '
+        if player_id and self.mass.config['player_settings'][player_id]['sox_effects']:
+            sox_effects += ' ' + self.mass.config['player_settings'][player_id]['sox_effects']
+        if self.mass.config['base']['http_streamer']['volume_normalisation']:
+            gain_correct = await self.__get_track_gain_correct(track_id, provider)
+            sox_effects += ' vol %s dB ' % gain_correct
+        return sox_effects
         
     async def __analyze_audio(self, tmpfile, track_id, provider, content_type):
         ''' analyze track audio, for now we only calculate EBU R128 loudness '''

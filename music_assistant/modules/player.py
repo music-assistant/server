@@ -280,8 +280,7 @@ class Player():
             ("disable_volume", False, "player_disable_vol"),
             ("sox_effects", '', "http_streamer_sox_effects"),
             ("max_sample_rate", '96000', "max_sample_rate"),
-            ("force_http_streamer", False, "force_http_streamer"),
-            ("group_parent", '<player>', "group_parent")
+            ("force_http_streamer", False, "force_http_streamer")
         ]
         if player_details.is_group:
             config_entries += [ # group player settings
@@ -312,7 +311,7 @@ class Player():
         ''' 
             play media on a player 
             player_id: id of the player
-            media_item: media item(s) that should be played (Track, Album, Artist, Playlist)
+            media_item: media item(s) that should be played (Track, Album, Artist, Playlist, Radio)
             queue_opt: play, replace, next or add
         '''
         if not player_id in self._players:
@@ -336,18 +335,19 @@ class Player():
             for track in tracks:
                 # sort by quality
                 match_found = False
+                is_radio = track.media_type == MediaType.Radio
                 for prov_media in sorted(track.provider_ids, key=operator.itemgetter('quality'), reverse=True):
                     media_provider = prov_media['provider']
                     media_item_id = prov_media['item_id']
                     player_supported_provs = player_prov.supported_musicproviders
                     if media_provider in player_supported_provs and not self.mass.config['player_settings'][player_id]['force_http_streamer']:
                         # the provider can handle this media_type directly !
-                        track.uri = await self.get_track_uri(media_item_id, media_provider, player_id)
+                        track.uri = await self.get_track_uri(media_item_id, media_provider, player_id, is_radio=is_radio)
                         playable_tracks.append(track)
                         match_found = True
                     elif 'http' in player_prov.supported_musicproviders:
                         # fallback to http streaming if supported
-                        track.uri = await self.get_track_uri(media_item_id, media_provider, player_id, True)
+                        track.uri = await self.get_track_uri(media_item_id, media_provider, player_id, True, is_radio=is_radio)
                         playable_tracks.append(track)
                         match_found = True
                     if match_found:
@@ -361,19 +361,26 @@ class Player():
         else:
             raise Exception("Musicprovider and/or media not supported by player %s !" % (player_id) )
     
-    async def get_track_uri(self, item_id, provider, player_id, http_stream=False):
+    async def get_track_uri(self, item_id, provider, player_id, http_stream=False, is_radio=False):
         ''' generate the URL/URI for a media item '''
         uri = ""
         if http_stream:
-            params = {"provider": provider, "track_id": str(item_id), "player_id": str(player_id)}
-            params_str = urllib.parse.urlencode(params)
-            uri = 'http://%s:%s/stream?%s'% (self.local_ip, self.mass.config['base']['web']['http_port'], params_str)
+            if is_radio:
+                params = {"provider": provider, "radio_id": str(item_id), "player_id": str(player_id)}
+                params_str = urllib.parse.urlencode(params)
+                uri = 'http://%s:%s/stream_radio?%s'% (self.local_ip, self.mass.config['base']['web']['http_port'], params_str)
+            else:
+                params = {"provider": provider, "track_id": str(item_id), "player_id": str(player_id)}
+                params_str = urllib.parse.urlencode(params)
+                uri = 'http://%s:%s/stream_track?%s'% (self.local_ip, self.mass.config['base']['web']['http_port'], params_str)
         elif provider == "spotify":
             uri = 'spotify://spotify:track:%s' % item_id
         elif provider == "qobuz":
             uri = 'qobuz://%s.flac' % item_id
         elif provider == "file":
             uri = item_id
+        else:
+            uri = "%s://%s" %(provider, item_id)
         return uri
 
     async def player_queue(self, player_id, offset=0, limit=50):

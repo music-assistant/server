@@ -3,10 +3,10 @@
 
 import asyncio
 import os
-from utils import run_periodic, run_async_background_task, LOGGER, try_parse_int
+from utils import run_periodic, run_async_background_task, LOGGER, try_parse_int, try_supported
 import aiohttp
 from difflib import SequenceMatcher as Matcher
-from models import MediaType, Track, Artist, Album, Playlist
+from models import MediaType, Track, Artist, Album, Playlist, Radio
 from typing import List
 import toolz
 import operator
@@ -37,6 +37,8 @@ class Music():
             return await self.track(item_id, provider, lazy=lazy)
         elif media_type == MediaType.Playlist:
             return await self.playlist(item_id, provider)
+        elif media_type == MediaType.Radio:
+            return await self.radio(item_id, provider)
         else:
             return None
 
@@ -56,6 +58,10 @@ class Music():
         ''' return all library playlists, optionally filtered by provider '''
         return await self.mass.db.playlists(provider=provider_filter, limit=limit, offset=offset, orderby=orderby)
 
+    async def radios(self, limit=0, offset=0, orderby='name', provider_filter=None) -> List[Playlist]:
+        ''' return all library radios, optionally filtered by provider '''
+        return await self.mass.db.radios(provider=provider_filter, limit=limit, offset=offset, orderby=orderby)
+
     async def library_items(self, media_type:MediaType, limit=0, offset=0, orderby='name', provider_filter=None) -> List[object]:
         ''' get multiple music items in library'''
         if media_type == MediaType.Artist:
@@ -66,6 +72,8 @@ class Music():
             return await self.library_tracks(limit=limit, offset=offset, orderby=orderby, provider_filter=provider_filter)
         elif media_type == MediaType.Playlist:
             return await self.playlists(limit=limit, offset=offset, orderby=orderby, provider_filter=provider_filter)
+        elif media_type == MediaType.Radio:
+            return await self.radios(limit=limit, offset=offset, orderby=orderby, provider_filter=provider_filter)
 
     async def artist(self, item_id, provider='database', lazy=True) -> Artist:
         ''' get artist by id '''
@@ -91,11 +99,24 @@ class Music():
             return await self.mass.db.playlist(item_id)
         return await self.providers[provider].playlist(item_id)
 
+    async def radio(self, item_id, provider='database') -> Radio:
+        ''' get radio by id '''
+        if not provider or provider == 'database':
+            return await self.mass.db.radio(item_id)
+        return await self.providers[provider].radio(item_id)
+
     async def playlist_by_name(self, name) -> Playlist:
         ''' get playlist by name '''
         for playlist in await self.playlists():
             if playlist.name == name:
                 return playlist
+        return None
+
+    async def radio_by_name(self, name) -> Radio:
+        ''' get radio by name '''
+        for radio in await self.radios():
+            if radio.name == name:
+                return radio
         return None
     
     async def artist_toptracks(self, artist_id, provider='database') -> List[Track]:
@@ -238,10 +259,11 @@ class Music():
         self.sync_running = True
         for prov_id in self.providers.keys():
             # sync library artists
-            await self.sync_library_artists(prov_id)
-            await self.sync_library_albums(prov_id)
-            await self.sync_library_tracks(prov_id)
-            await self.sync_playlists(prov_id)
+            await try_supported(self.sync_library_artists(prov_id))
+            await try_supported(self.sync_library_albums(prov_id))
+            await try_supported(self.sync_library_tracks(prov_id))
+            await try_supported(self.sync_playlists(prov_id))
+            await try_supported(self.sync_radios(prov_id))
         self.sync_running = False
         
     async def sync_library_artists(self, prov_id):
@@ -346,6 +368,26 @@ class Music():
             if db_id not in cur_db_ids:
                 await self.mass.db.remove_playlist_track(db_playlist_id, db_id)
         LOGGER.info("Finished syncing Playlist %s tracks for provider %s" % (prov_playlist_id, prov_id))
+
+    async def sync_radios(self, prov_id):
+        ''' sync library radios for given provider'''
+        music_provider = self.providers[prov_id]
+        prev_items = await self.radios(provider_filter=prov_id)
+        prev_db_ids = [item.item_id for item in prev_items]
+        cur_items = await music_provider.get_radios()
+        cur_db_ids = []
+        for item in cur_items:
+            db_id = await self.mass.db.get_database_id(prov_id, item.item_id, MediaType.Radio)
+            if not db_id:
+                db_id = await self.mass.db.add_radio(item)
+            cur_db_ids.append(db_id)
+            if not db_id in prev_db_ids:
+                await self.mass.db.add_to_library(db_id, MediaType.Radio, prov_id)
+        # process deletions
+        for db_id in prev_db_ids:
+            if db_id not in cur_db_ids:
+                await self.mass.db.remove_from_library(db_id, MediaType.Radio, prov_id)
+        LOGGER.info("Finished syncing Radios for provider %s" % prov_id)
 
     def load_music_providers(self):
         ''' dynamically load musicproviders '''

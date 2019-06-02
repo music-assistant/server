@@ -16,6 +16,7 @@ class MediaType(IntEnum):
     Album = 2
     Track = 3
     Playlist = 4
+    Radio = 5
 
 def media_type_from_string(media_type_str):
     media_type_str = media_type_str.lower()
@@ -27,6 +28,8 @@ def media_type_from_string(media_type_str):
         return MediaType.Track
     elif 'playlist' in media_type_str or media_type_str == '4':
         return MediaType.Playlist
+    elif 'radio' in media_type_str or media_type_str == '5':
+        return MediaType.Radio
     else:
         return None
 
@@ -126,6 +129,20 @@ class Playlist(object):
         self.media_type = MediaType.Playlist
         self.in_library = []
         self.is_editable = False
+
+class Radio(Track):
+    ''' representation of a radio station '''
+    def __init__(self):
+        super().__init__()
+        self.item_id = None
+        self.provider = 'database'
+        self.name = ''
+        self.provider_ids = []
+        self.metadata = {}
+        self.media_type = MediaType.Radio
+        self.in_library = []
+        self.is_editable = False
+        self.duration = 0
 
 class MusicProvider():
     ''' 
@@ -291,6 +308,15 @@ class MusicProvider():
         else:
             return await self.get_playlist(prov_playlist_id)
 
+    async def radio(self, prov_radio_id) -> Radio:
+        ''' return radio details for the given provider playlist id '''
+        db_id = await self.mass.db.get_database_id(self.prov_id, prov_radio_id, MediaType.Radio)
+        if db_id:
+            # synced radio, return database details
+            return await self.mass.db.radio(db_id)
+        else:
+            return await self.get_radio(prov_radio_id)
+
     async def album_tracks(self, prov_album_id) -> List[Track]:
         ''' return album tracks for the given provider album id'''
         items = []
@@ -397,6 +423,10 @@ class MusicProvider():
         ''' retrieve library/subscribed playlists from the provider '''
         raise NotImplementedError
 
+    async def get_radios(self) -> List[Radio]:
+        ''' retrieve library/subscribed radio stations from the provider '''
+        raise NotImplementedError
+
     async def get_artist(self, prov_item_id) -> Artist:
         ''' get full artist details by id '''
         raise NotImplementedError
@@ -419,6 +449,10 @@ class MusicProvider():
 
     async def get_playlist(self, prov_item_id) -> Playlist:
         ''' get full playlist details by id '''
+        raise NotImplementedError
+
+    async def get_radio(self, prov_item_id) -> Radio:
+        ''' get full radio details by id '''
         raise NotImplementedError
 
     async def get_album_tracks(self, prov_item_id, limit=100, offset=0) -> List[Track]:
