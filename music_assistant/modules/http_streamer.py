@@ -103,7 +103,7 @@ class HTTPStreamer():
             else:
                 input_content_type = "mp3"
             if input_content_type == "aac":
-                args = 'ffmpeg -i "%s" -f flac - | sox -t flac -t flac -C 0 - %s' % (stream_url, sox_effects)
+                args = 'ffmpeg -i "%s" -f flac - | sox -t flac - -t flac -C 0 - %s' % (stream_url, sox_effects)
             else:
                 args = 'sox -t %s "%s" -t flac -C 0 - %s' % (input_content_type, stream_url, sox_effects)
             LOGGER.info("Running sox with args: %s" % args)
