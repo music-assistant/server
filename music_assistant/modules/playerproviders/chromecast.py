@@ -85,8 +85,10 @@ class ChromecastProvider(PlayerProvider):
         elif cmd == 'stop':
             self._chromecasts[player_id].media_controller.stop()
         elif cmd == 'next':
+            self.mass.player._players[player_id].cur_queue_index +=1
             self._chromecasts[player_id].media_controller.queue_next()
         elif cmd == 'previous':
+            self.mass.player._players[player_id].cur_queue_index -=1
             self._chromecasts[player_id].media_controller.queue_prev()
         elif cmd == 'power' and cmd_args == 'off':
             self._players[player_id].powered = False
@@ -146,6 +148,9 @@ class ChromecastProvider(PlayerProvider):
 
     async def __get_cur_queue_index(self, player_id):
         ''' retrieve index of current item in the player queue '''
+        enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
+        if enable_crossfade and player_id in self.mass.player._players:
+            return self.mass.player._players[player_id].cur_queue_index
         cur_index = 0
         for index, track in enumerate(self._player_queue[player_id]):
             if track.uri == self._chromecasts[player_id].media_controller.status.content_id:
@@ -158,6 +163,7 @@ class ChromecastProvider(PlayerProvider):
         castplayer = self._chromecasts[player_id]
         player = self._players[player_id]
         queue_items = await self.__create_queue_items(new_tracks[:50], player_id=player_id)
+        self.mass.player._players[player_id].cur_queue_index = 0
         queuedata = { 
                 "type": 'QUEUE_LOAD',
                 "repeatMode":  "REPEAT_ALL" if player.repeat_enabled else "REPEAT_OFF",
@@ -313,8 +319,10 @@ class ChromecastProvider(PlayerProvider):
             provider = params['provider'][0]
             track = await self.mass.music.providers[provider].track(track_id)
         elif uri.startswith('http') and '/stream_queue' in uri:
-            track = Track()
-            track.name = "Crossfade Queue streaming"
+            params = urllib.parse.parse_qs(uri.split('?')[1])
+            player_id = params['player_id'][0]
+            queue_index = await self.__get_cur_queue_index(player_id)
+            track = self._player_queue[player_id][queue_index]
         return track
 
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):

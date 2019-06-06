@@ -504,6 +504,7 @@ class MusicPlayer():
         self.powered = False
         self.cur_item = None
         self.cur_item_time = 0
+        self.cur_queue_index = 0
         self.volume_level = 0
         self.shuffle_enabled = True
         self.repeat_enabled = False
