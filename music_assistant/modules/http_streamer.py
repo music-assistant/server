@@ -252,14 +252,14 @@ class HTTPStreamer():
         if os.path.isfile(cachefile):
             # we have a cache file for this track which we can use
             # always convert to 64 bit floating point to do any processing/effects
-            args = 'sox -t flac "%s" -t wav -c 2 -e floating-point -b 64 - | sox -t wav - -t raw %s vol %s dB rate -v %s' % (cachefile, temp_audiofile.name, gain_correct, sample_rate)
+            args = 'sox -V3 -t flac "%s" -t wav -c 2 -e floating-point -b 64 - | sox -V3 -t wav - -t raw %s vol %s dB rate -v %s' % (cachefile, temp_audiofile.name, gain_correct, sample_rate)
             process = await asyncio.create_subprocess_shell(args)
         else:
             # stream from provider
             # always convert to 64 bit floating point to do any processing/effects
             input_content_type = await self.mass.music.providers[provider].get_stream_content_type(track_id)
             assert(input_content_type)
-            args = 'sox -t %s - -t wav -c 2 -e floating-point -b 64 - | sox -t wav - -t raw %s vol %s dB rate -v %s' % (input_content_type, temp_audiofile.name, gain_correct, sample_rate)
+            args = 'sox -V3 -t %s - -t wav -c 2 -e floating-point -b 64 - | sox -V3 -t wav - -t raw %s vol %s dB rate -v %s' % (input_content_type, temp_audiofile.name, gain_correct, sample_rate)
             process = await asyncio.create_subprocess_shell(args,
                     stdin=asyncio.subprocess.PIPE)
             asyncio.get_event_loop().create_task(
@@ -278,11 +278,10 @@ class HTTPStreamer():
         if os.path.isfile(cachefile):
             # we have a cache file for this track which we can use
             if sox_effects.strip():
-                # always convert to 64 bit floating point to do any processing/effects
-                args = 'sox -t flac "%s" -t wav -b 64 -e floating-point - | sox -t wav - -t flac -C 2 - %s' % (cachefile, sox_effects)
+                args = 'sox -V3 -t flac "%s" -t flac -C 0 - %s' % (cachefile, sox_effects)
             else:
-                args = 'sox -t flac "%s" -t flac -C 2 - %s' % cachefile
-            LOGGER.info("Running sox with args: %s" % args)
+                args = 'sox -t flac "%s" -t flac -C 0 - %s' % cachefile
+            LOGGER.debug("Running sox with args: %s" % args)
             process = await asyncio.create_subprocess_shell(args, 
                     stdout=asyncio.subprocess.PIPE)
             buffer_task = None
@@ -291,11 +290,10 @@ class HTTPStreamer():
             input_content_type = await self.mass.music.providers[provider].get_stream_content_type(track_id)
             assert(input_content_type)
             if sox_effects.strip():
-                # always convert to 64 bit floating point to do any processing/effects
-                args = 'sox -t %s - -t wav -b 64 -e floating-point - | sox -t wav - -t flac -C 2 - %s' % (input_content_type, sox_effects)
+                args = 'sox -V3 -t %s - -t flac -C 0 - %s' % (input_content_type, sox_effects)
             else:
                 args = 'sox -t %s - -t flac -C 0 -' % (input_content_type)
-            LOGGER.info("Running sox with args: %s" % args)
+            LOGGER.debug("Running sox with args: %s" % args)
             process = await asyncio.create_subprocess_shell(args,
                     stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE)
             buffer_task = asyncio.get_event_loop().create_task(
@@ -312,9 +310,9 @@ class HTTPStreamer():
         await process.wait()
         await audioqueue.put('') # indicate EOF
         if cancelled.is_set():
-            LOGGER.info("__get_audio_stream for track_id %s interrupted" % track_id)
+            LOGGER.warning("__get_audio_stream for track_id %s interrupted" % track_id)
         else:
-            LOGGER.info("__get_audio_stream for track_id %s completed" % track_id)
+            LOGGER.debug("__get_audio_stream for track_id %s completed" % track_id)
 
     async def __get_player_sox_options(self, track_id, provider, player_id, is_radio):
         ''' get player specific sox options '''

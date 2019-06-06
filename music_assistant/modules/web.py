@@ -90,7 +90,7 @@ class Web():
         app.add_routes([web.get('/api/{media_type}/{media_id}', self.get_item)])
         app.add_routes([web.get('/', self.index)])
         app.router.add_static("/", "./web")  
-        self.runner = web.AppRunner(app)
+        self.runner = web.AppRunner(app, access_log=None)
         await self.runner.setup()
         http_site = web.TCPSite(self.runner, '0.0.0.0', self._http_port)
         await http_site.start()
