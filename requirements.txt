@@ -10,3 +10,4 @@ aiosqlite
 pytaglib
 python-slugify
 netaddr
+memory-tempfile
