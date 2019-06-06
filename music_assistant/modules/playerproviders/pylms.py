@@ -54,6 +54,7 @@ class PyLMSServer(PlayerProvider):
 
      ### Provider specific implementation #####
 
+    
     async def start_discovery(self):
         transport, protocol = await self.mass.event_loop.create_datagram_endpoint(
             lambda: DiscoveryProtocol(self.mass.web._http_port),
@@ -63,6 +64,12 @@ class PyLMSServer(PlayerProvider):
                 await asyncio.sleep(60)  # serve forever
         finally:
             transport.close()
+
+    async def player_config_entries(self):
+        ''' get the player config entries for this provider (list with key/value pairs)'''
+        return [
+            ("crossfade_duration", 0, "crossfade_duration"),
+            ]
 
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
@@ -211,6 +218,7 @@ class PyLMSServer(PlayerProvider):
             ''' handle events from player'''
             if event == "connected":
                 self._lmsplayers[lms_player.player_id] = lms_player
+                lms_player.player_settings = self.mass.config['player_settings'][lms_player.player_id]
             asyncio.create_task(self.__handle_player_event(lms_player.player_id, event, event_data))
 
         try:
@@ -249,6 +257,7 @@ class PyLMSPlayer(object):
         self.send_event = None
         self.stream_host = stream_host
         self.stream_port = stream_port
+        self.player_settings = {}
         self.playback_millis = 0
         self._volume = PyLMSVolume()
         self._device_type = None
@@ -356,12 +365,12 @@ class PyLMSPlayer(object):
         self._volume.volume = new_vol
         self.send_volume()
     
-    def play(self, uri, crossfade=True):
-        # TODO: attach crossfade to a config setting
+    def play(self, uri):
+        enable_crossfade = self.player_settings["crossfade_duration"] > 0
         command = b's'
         autostart = b'3' # we use direct stream for now so let the player do the messy work with buffers
-        transType= b'1' if crossfade else b'0'
-        transDuration = 10 if crossfade else 0
+        transType= b'1' if enable_crossfade else b'0'
+        transDuration = self.player_settings["crossfade_duration"]
         formatbyte = b'f' # fixed to flac
         uri = '/stream' + uri.split('/stream')[1]
         data = self.pack_stream(command, autostart=autostart, flags=0x00, formatbyte=formatbyte, transType=transType, transDuration=transDuration)

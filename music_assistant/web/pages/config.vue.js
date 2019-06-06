@@ -54,6 +54,8 @@ var Config = Vue.component('Config', {
                                           item-text="name"
                                           item-value="id" box>
                                         </v-select>
+                                        <v-select v-else-if="conf_item_key[0] == 'max_sample_rate'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" :items="sample_rates" box></v-select>
+                                        <v-slider v-else-if="conf_item_key[0] == 'crossfade_duration'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" min=0 max=10 box thumb-label></v-slider>
                                         <v-text-field v-else v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box></v-text-field>
                                   </v-list-tile>
                                   <v-list-tile v-if="!conf.player_settings[key].enabled">
@@ -80,7 +82,8 @@ var Config = Vue.component('Config', {
     return {
       conf: {},
       players: {},
-      active: 0
+      active: 0,
+      sample_rates: [44100, 48000, 88200, 96000, 192000, 384000]
     }
   },
   computed: {

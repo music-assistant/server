@@ -71,6 +71,7 @@ class Web():
         app.add_routes([web.get('/ws', self.websocket_handler)])
         app.add_routes([web.get('/stream_track', self.mass.http_streamer.stream_track)])
         app.add_routes([web.get('/stream_radio', self.mass.http_streamer.stream_radio)])
+        app.add_routes([web.get('/stream_queue', self.mass.http_streamer.stream_queue)])
         app.add_routes([web.get('/api/search', self.search)])
         app.add_routes([web.get('/api/config', self.get_config)])
         app.add_routes([web.post('/api/config', self.save_config)])

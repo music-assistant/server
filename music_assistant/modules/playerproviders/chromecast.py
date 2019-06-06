@@ -58,6 +58,12 @@ class ChromecastProvider(PlayerProvider):
 
     ### Provider specific implementation #####
 
+    async def player_config_entries(self):
+        ''' get the player config entries for this provider (list with key/value pairs)'''
+        return [
+            ("crossfade_duration", 0, "crossfade_duration"),
+            ]
+
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
         count = 0
@@ -151,7 +157,7 @@ class ChromecastProvider(PlayerProvider):
         ''' load queue on player with given queue items '''
         castplayer = self._chromecasts[player_id]
         player = self._players[player_id]
-        queue_items = await self.__create_queue_items(new_tracks[:50])
+        queue_items = await self.__create_queue_items(new_tracks[:50], player_id=player_id)
         queuedata = { 
                 "type": 'QUEUE_LOAD',
                 "repeatMode":  "REPEAT_ALL" if player.repeat_enabled else "REPEAT_OFF",
@@ -169,7 +175,7 @@ class ChromecastProvider(PlayerProvider):
     async def __queue_insert(self, player_id, new_tracks, insert_before=None):
         ''' insert item into the player queue '''
         castplayer = self._chromecasts[player_id]
-        queue_items = await self.__create_queue_items(new_tracks)
+        queue_items = await self.__create_queue_items(new_tracks, player_id=player_id)
         for chunk in chunks(queue_items, 50):
             queuedata = { 
                         "type": 'QUEUE_INSERT',
@@ -203,16 +209,21 @@ class ChromecastProvider(PlayerProvider):
         tracks = self._player_queue[player_id]
         await self.__queue_load(player_id, tracks, queue_index)
 
-    async def __create_queue_items(self, tracks):
+    async def __create_queue_items(self, tracks, player_id):
         ''' create list of CC queue items from tracks '''
         queue_items = []
         for track in tracks:
-            queue_item = await self.__create_queue_item(track)
+            queue_item = await self.__create_queue_item(track, player_id)
             queue_items.append(queue_item)
         return queue_items
 
-    async def __create_queue_item(self, track):
+    async def __create_queue_item(self, track, player_id):
         '''create queue item from track info '''
+        enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
+        if enable_crossfade:
+            uri = 'http://%s:%s/stream_queue?player_id=%s'% (self.mass.player.local_ip, self.mass.config['base']['web']['http_port'], player_id)
+        else:
+            uri = track.uri
         return {
             'autoplay' : True,
             'preloadTime' : 10,
@@ -220,7 +231,7 @@ class ChromecastProvider(PlayerProvider):
             'startTime' : 0,
             'activeTrackIds' : [],
             'media': {
-                'contentId':  track.uri,
+                'contentId':  uri,
                 'customData': {
                     'provider': track.provider, 
                     'uri': track.uri, 
@@ -296,11 +307,14 @@ class ChromecastProvider(PlayerProvider):
         elif uri.startswith('qobuz://') and 'qobuz' in self.mass.music.providers:
             track_id = uri.replace('qobuz://','').replace('.flac','')
             track = await self.mass.music.providers['qobuz'].track(track_id)
-        elif uri.startswith('http') and '/stream' in uri:
+        elif uri.startswith('http') and '/stream_track' in uri:
             params = urllib.parse.parse_qs(uri.split('?')[1])
             track_id = params['track_id'][0]
             provider = params['provider'][0]
             track = await self.mass.music.providers[provider].track(track_id)
+        elif uri.startswith('http') and '/stream_queue' in uri:
+            track = Track()
+            track.name = "Crossfade Queue streaming"
         return track
 
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):

@@ -182,8 +182,6 @@ class Player():
         # handle basic player settings
         player_details.enabled = player.settings['enabled']
         player_details.name = player.settings['name'] if player.settings['name'] else player_details.name
-        if player.settings['group_parent']:
-            player_details.group_parent = player.settings['group_parent']
         # handle hass integration
         await self.__update_player_hass_settings(player_details, player.settings)
         # handle mute as power setting
@@ -279,9 +277,11 @@ class Player():
             ("mute_as_power", False, "player_mute_power"),
             ("disable_volume", False, "player_disable_vol"),
             ("sox_effects", '', "http_streamer_sox_effects"),
-            ("max_sample_rate", '96000', "max_sample_rate"),
+            ("max_sample_rate", 96000, "max_sample_rate"),
             ("force_http_streamer", False, "force_http_streamer")
         ]
+        # append provider specific player settings
+        config_entries += await self.mass.player.providers[player_details.player_provider].player_config_entries()
         if player_details.is_group:
             config_entries += [ # group player settings
                 ("apply_group_volume", False, "player_group_vol"),

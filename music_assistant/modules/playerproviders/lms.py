@@ -59,6 +59,10 @@ class LMSProvider(PlayerProvider):
 
     ### Provider specific implementation #####
 
+    async def player_config_entries(self):
+        ''' get the player config entries for this provider (list with key/value pairs)'''
+        return []
+
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
         lms_commands = []

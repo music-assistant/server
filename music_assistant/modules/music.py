@@ -186,7 +186,10 @@ class Music():
             for prov in self.providers.values():
                 prov_results = await prov.search(searchquery, media_types, limit)
                 for item_type, items in prov_results.items():
-                    result[item_type] += items
+                    if not item_type in result:
+                        result[item_type] = items
+                    else:
+                        result[item_type] += items
             # filter out duplicates
             for item_type, items in result.items():
                 items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
