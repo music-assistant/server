@@ -128,7 +128,11 @@ class HTTPStreamer():
         return resp
     
     async def stream_queue(self, http_request):
-        ''' start streaming radio from provider '''
+        ''' 
+            streamm all tracks in queue from player with http
+            loads audiodata in memory so only recommended for high performance servers
+            use case is enable crossfade support for chromecast devices 
+        '''
         player_id = http_request.query.get('player_id')
         cancelled = threading.Event()
         resp = web.StreamResponse(status=200,
@@ -139,7 +143,7 @@ class HTTPStreamer():
             # stream audio
             queue = asyncio.Queue()
             cancelled = threading.Event()
-            task = run_async_background_task(
+            run_async_background_task(
                 self.mass.bg_executor, 
                 self.__stream_queue, player_id, queue, cancelled)
             try:
@@ -179,7 +183,7 @@ class HTTPStreamer():
         while True:
             # get current track in queue
             queue_tracks = await self.mass.player.player_queue(player_id, 0, 10000)
-            player = await self.mass.player.player(player_id)
+            player = self.mass.player._players[player_id]
             queue_index = player.cur_queue_index
             try:
                 queue_track = queue_tracks[queue_index]

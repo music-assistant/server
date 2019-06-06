@@ -287,6 +287,7 @@ class ChromecastProvider(PlayerProvider):
                 player.state = PlayerState.Stopped
             player.cur_item = await self.__parse_track(mediastatus)
             player.cur_item_time =  chromecast.media_controller.status.adjusted_current_time
+            player.cur_queue_index = await self.__get_cur_queue_index(player_id)
         await self.mass.player.update_player(player)
 
     async def __parse_track(self, mediastatus):
