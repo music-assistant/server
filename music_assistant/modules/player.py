@@ -193,6 +193,7 @@ class Player():
             player_details.cur_item_time = parent_player.cur_item_time
             player_details.cur_item = parent_player.cur_item
             player_details.state = parent_player.state
+        
         # handle group volume/power setting
         if player_details.is_group:
             player_childs = [item for item in self._players.values() if item.group_parent == player_id]
@@ -388,6 +389,16 @@ class Player():
         player = self._players[player_id]
         player_prov = self.providers[player.player_provider]
         return await player_prov.player_queue(player_id, offset=offset, limit=limit)
+
+    async def player_queue_index(self, player_id):
+        ''' get current index of the player's queue '''
+        return self._players[player_id].cur_queue_index
+
+    async def player_queue_stream_move(self, player_id, new_index):
+        ''' called by our queue streamer when it's loading a new track '''
+        new_index = int(new_index)
+        player = self._players[player_id]
+        return await self.providers[player.player_provider].player_queue_stream_move(player_id, new_index)
 
     def load_providers(self):
         ''' dynamically load providers '''

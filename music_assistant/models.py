@@ -107,6 +107,7 @@ class Track(object):
         self.media_type = MediaType.Track
         self.in_library = []
         self.is_lazy = False
+        self.uri = ""
     def __eq__(self, other): 
         if not isinstance(other, self.__class__):
             return NotImplemented
@@ -505,12 +506,13 @@ class MusicPlayer():
         self.cur_item = None
         self.cur_item_time = 0
         self.cur_queue_index = 0
+        self.next_queue_index = 0
         self.volume_level = 0
         self.shuffle_enabled = True
         self.repeat_enabled = False
         self.muted = False
-        self.group_parent = None # set to id of REAL group/parent player
-        self.is_group = False # is this player a group player ?
+        self.group_parent = None
+        self.is_group = False
         self.settings = {}
         self.enabled = True
 
