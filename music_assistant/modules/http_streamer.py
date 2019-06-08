@@ -258,15 +258,15 @@ class HTTPStreamer():
                 # and it helps a bit in the quest to follow where we are in the queue
                 while buffer.qsize() > 1 and not cancelled.is_set():
                     await asyncio.sleep(1)
-                # break out the loop if the http session is cancelled
-                if cancelled.is_set():
-                    break
                 if cur_chunk == 1:
                     # report start stream of current queue index
                     self.mass.event_loop.create_task(self.mass.player.player_queue_stream_move(player_id, queue_index))
             # end of the track reached
             LOGGER.info("Finished Streaming queue track: %s - %s" % (track_id, queue_track.name))
             queue_index += 1
+            # break out the loop if the http session is cancelled
+            if cancelled.is_set():
+                break
         
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data:
