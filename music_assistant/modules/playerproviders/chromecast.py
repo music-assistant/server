@@ -318,7 +318,7 @@ class ChromecastProvider(PlayerProvider):
                 cur_queue_index = player.cur_queue_index
                 player.cur_item = self._player_queue[player_id][cur_queue_index]
                 cur_time = mediastatus.adjusted_current_time
-                while cur_time > player.cur_item.duration:
+                while cur_time > player.cur_item.duration-10:
                     cur_queue_index -=1
                     prev_track = self._player_queue[player_id][cur_queue_index]
                     cur_time -= prev_track.duration
