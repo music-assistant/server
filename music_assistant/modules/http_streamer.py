@@ -327,21 +327,21 @@ class HTTPStreamer():
             if os.path.isfile(cachefile):
                 # get track length from cachefile
                 args = 'soxi -d "%s"' % cachefile
-                process = await asyncio.create_subprocess_shell(args,
-                            stderr=asyncio.subprocess.PIPE)
+                process = await asyncio.create_subprocess_shell(args, stdout=asyncio.subprocess.PIPE)
                 stdout, stderr = await process.communicate()
-                hours = stderr.split(":")[0]
-                minutes = stderr.split(":")[1]
-                seconds = stderr.split(":")[2]
+                timestr = stdout.split()[0].decode()
+                hours = int(timestr.split(":")[0])
+                minutes = int(timestr.split(":")[1])
+                seconds = int(float(timestr.split(":")[2]))
                 total_chunks = hours*60*60 + minutes*60 + seconds
             else:
                 total_chunks = int(queue_track.duration)
-                cur_chunk = 0
-
+            
             # report start stream of current queue index
             self.mass.event_loop.create_task(self.mass.player.player_queue_stream_move(player_id, queue_index))
             queue_index += 1
             fade_in_part = b''
+            cur_chunk = 0
             
             async for chunk in self.__get_raw_audio(track_id, provider, sample_rate):
                 cur_chunk += 1
