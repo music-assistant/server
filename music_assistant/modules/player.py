@@ -394,11 +394,11 @@ class Player():
         ''' get current index of the player's queue '''
         return self._players[player_id].cur_queue_index
 
-    async def player_queue_stream_move(self, player_id, new_index):
+    async def player_queue_stream_move(self, player_id, new_index, is_start):
         ''' called by our queue streamer when it's loading a new track '''
         new_index = int(new_index)
         player = self._players[player_id]
-        return await self.providers[player.player_provider].player_queue_stream_move(player_id, new_index)
+        return await self.providers[player.player_provider].player_queue_stream_move(player_id, new_index, is_start)
 
     def load_providers(self):
         ''' dynamically load providers '''

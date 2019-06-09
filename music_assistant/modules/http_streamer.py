@@ -79,7 +79,7 @@ class HTTPStreamer():
                     await resp.write(chunk)
                     queue.task_done()
                 LOGGER.info("stream_track fininished for %s" % track_id)
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 cancelled.set()
                 LOGGER.info("stream_track interrupted for %s" % track_id)
                 raise asyncio.CancelledError()
@@ -129,8 +129,8 @@ class HTTPStreamer():
     
     async def stream_queue(self, http_request):
         ''' 
-            streamm all tracks in queue from player with http
-            loads audiodata in memory so only recommended for high performance servers
+            stream all tracks in queue from player with http
+            loads large part of audiodata in memory so only recommended for high performance servers
             use case is enable crossfade support for chromecast devices 
         '''
         player_id = http_request.query.get('player_id')
@@ -181,6 +181,7 @@ class HTTPStreamer():
 
         queue_index = startindex
         last_fadeout_data = b''
+        self.mass.event_loop.create_task(self.mass.player.player_queue_stream_move(player_id, queue_index, True))
         while True:
             # get the (next) track in queue
             try:
@@ -260,7 +261,7 @@ class HTTPStreamer():
                     await asyncio.sleep(1)
                 if cur_chunk == 1:
                     # report start stream of current queue index
-                    self.mass.event_loop.create_task(self.mass.player.player_queue_stream_move(player_id, queue_index))
+                    self.mass.event_loop.create_task(self.mass.player.player_queue_stream_move(player_id, queue_index, False))
             # end of the track reached
             LOGGER.info("Finished Streaming queue track: %s - %s" % (track_id, queue_track.name))
             queue_index += 1
@@ -409,6 +410,19 @@ class HTTPStreamer():
                 cmd = 'sox -t %s %s -t flac -C5 %s silence 1 0.1 1%% reverse silence 1 0.1 1%% reverse' %(content_type, tmpfile, cachefile)
                 process = await asyncio.create_subprocess_shell(cmd)
                 await process.wait()
+            # retrieve accurate track duration
+            cmd = 'soxi -d "%s"' %(cachefile)
+            process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.PIPE)
+            stdout, stderr = await process.communicate()
+            durationstr = stdout.decode().split()[0]
+            hours = int(durationstr.split(":")[0])
+            minutes = int(durationstr.split(":")[1])
+            seconds = float(durationstr.split(":")[0])
+            total_duration = (hours*60*60) + (minutes*60) + seconds
+            LOGGER.info("track duration for track %s is %s" %(track_id, total_duration))
+            item_id = await self.mass.db.get_database_id(provider, track_id, MediaType.Track)
+            await self.mass.db.update_track(item_id, "duration", total_duration)
+
         # always clean up temp file
         while os.path.isfile(tmpfile):
             os.remove(tmpfile)

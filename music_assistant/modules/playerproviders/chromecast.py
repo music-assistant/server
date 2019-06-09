@@ -52,6 +52,7 @@ class ChromecastProvider(PlayerProvider):
         self._players = {}
         self._chromecasts = {}
         self._player_queue = {}
+        self._player_queue_startindex = {}
         self.supported_musicproviders = ['http']
         asyncio.ensure_future(self.__discover_chromecasts())
         
@@ -96,7 +97,7 @@ class ChromecastProvider(PlayerProvider):
                 self._chromecasts[player_id].media_controller.queue_prev()
         elif cmd == 'power' and cmd_args == 'off':
             self._players[player_id].powered = False
-            self._chromecasts[player_id].media_controller.stop() # power is not supported so send stop instead
+            self._chromecasts[player_id].quit_app() # power is not supported so send quit_app instead
             await self.mass.player.update_player(self._players[player_id])
         elif cmd == 'power':
             self._players[player_id].powered = True
@@ -157,14 +158,18 @@ class ChromecastProvider(PlayerProvider):
             if not enable_crossfade:
                 await self.__queue_insert(player_id, media_items)
 
-    async def player_queue_stream_move(self, player_id, new_index):
+    async def player_queue_stream_move(self, player_id, new_index, is_start):
         ''' called by the queue streamer when it's loading a new track '''
         self._players[player_id].cur_queue_index = new_index
         # trigger update
+        if is_start:
+            self._player_queue_startindex[player_id] = new_index
         chromecast = self._chromecasts[player_id]
-        mediastatus = chromecast.media_controller.status
-        await self.__handle_player_state(chromecast, mediastatus=mediastatus)
-        LOGGER.info("player_queue_stream_move")
+        # fire update a few times as we can't predict the precaching exactly
+        for i in range(0, 5):
+            mediastatus = chromecast.media_controller.status
+            await self.__handle_player_state(chromecast, mediastatus=mediastatus)
+            await asyncio.sleep(5)
 
     ### Provider specific (helper) methods #####
 
@@ -315,14 +320,21 @@ class ChromecastProvider(PlayerProvider):
             else:
                 # try to work out the current time
                 # player is playing a constant stream of the queue so we need to do this the hard way
-                cur_queue_index = player.cur_queue_index
-                player.cur_item = self._player_queue[player_id][cur_queue_index]
-                cur_time = mediastatus.adjusted_current_time
-                while cur_time > player.cur_item.duration-10:
-                    cur_queue_index -=1
-                    prev_track = self._player_queue[player_id][cur_queue_index]
-                    cur_time -= prev_track.duration
-                player.cur_item_time = cur_time
+                cur_time_queue = mediastatus.adjusted_current_time
+                total_time = 0
+                track_time = 0
+                queue_index = self._player_queue_startindex[player_id]
+                queue_track = None
+                while True:
+                    queue_track = self._player_queue[player_id][queue_index]
+                    if cur_time_queue > (queue_track.duration + total_time):
+                        total_time += queue_track.duration
+                        queue_index += 1
+                    else:
+                        track_time = cur_time_queue - total_time
+                        break
+                player.cur_item = queue_track
+                player.cur_item_time = track_time
         await self.mass.player.update_player(player)
 
     async def __parse_track(self, mediastatus):
@@ -407,7 +419,7 @@ class ChromecastProvider(PlayerProvider):
                 self._player_queue[player_id] = []
             chromecast.wait()
 
-    @run_periodic(3600)
+    @run_periodic(600)
     async def __discover_chromecasts(self):
         ''' discover chromecasts on the network '''
         LOGGER.info('Running Chromecast discovery...')

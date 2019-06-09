@@ -491,6 +491,13 @@ class Database():
         LOGGER.info('added track %s (%s) to database: %s' %(track.name, track.provider_ids, track_id))
         return track_id
 
+    async def update_track(self, track_id, column_key, column_value):
+        ''' update column of existing track '''
+        async with aiosqlite.connect(self.dbfile, timeout=20) as db:
+            sql_query = 'UPDATE tracks SET %s=%s WHERE track_id=%s;' %(column_key, column_value, track_id)
+            await db.execute(sql_query)
+            await db.commit()
+
     async def artist_tracks(self, artist_id, limit=1000000, offset=0, orderby='name') -> List[Track]:
         ''' get all library tracks for the given artist '''
         artist_id = try_parse_int(artist_id)
