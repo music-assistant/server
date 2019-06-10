@@ -455,20 +455,24 @@ class HTTPStreamer():
         ''' get audio data from provider and write to buffer'''
         # fill the buffer with audio data
         # a tempfile is created so we can do audio analysis
-        tmpfile = os.path.join(AUDIO_TEMP_DIR, '%s%s%s.tmp' % (random.randint(0, 999), track_id, random.randint(0, 999)))
-        fd = open(tmpfile, 'wb')
-        async for chunk in self.mass.music.providers[provider].get_audio_stream(track_id):
-            buf.write(chunk)
+        try:
+            tmpfile = os.path.join(AUDIO_TEMP_DIR, '%s%s%s.tmp' % (random.randint(0, 999), track_id, random.randint(0, 999)))
+            fd = open(tmpfile, 'wb')
+            async for chunk in self.mass.music.providers[provider].get_audio_stream(track_id):
+                buf.write(chunk)
+                await buf.drain()
+                fd.write(chunk)
             await buf.drain()
-            fd.write(chunk)
-        await buf.drain()
-        buf.write_eof()
-        fd.close()
-        LOGGER.info("fill_audio_buffer complete for track %s" % track_id)
-        # successfull completion, process temp file for analysis
-        self.mass.event_loop.create_task(
-                self.__analyze_audio(tmpfile, track_id, provider, content_type))
-        return
+            LOGGER.info("fill_audio_buffer complete for track %s" % track_id)
+            # successfull completion, process temp file for analysis
+            self.mass.event_loop.create_task(
+                    self.__analyze_audio(tmpfile, track_id, provider, content_type))
+        except Exception as exc:
+            LOGGER.exception("fill_audio_buffer failed for track %s" % track_id)
+        finally:
+            buf.write_eof()
+            await buf.drain()
+            fd.close()
 
     def __get_track_cache_filename(self, track_id, provider):
         ''' get filename for a track to use as cache file '''

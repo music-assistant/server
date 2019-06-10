@@ -265,13 +265,16 @@ class QobuzProvider(MusicProvider):
             self.mass.event_loop
         )
         streamdetails = streamdetails_future.result()
-        async with aiohttp.ClientSession(loop=asyncio.get_event_loop(), connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
-            async with session.get(streamdetails['url']) as resp:
-                while True:
-                    chunk = await resp.content.read(64000)
-                    if not chunk:
-                        break
-                    yield chunk
+        try:
+            async with aiohttp.ClientSession(loop=asyncio.get_event_loop(), connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
+                async with session.get(streamdetails['url']) as resp:
+                    while True:
+                        chunk = await resp.content.read(64000)
+                        yield chunk
+                        if not chunk:
+                            break
+        except Exception as exc:
+            LOGGER.exception(exc)
     
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''
