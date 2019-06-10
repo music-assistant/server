@@ -392,7 +392,9 @@ class Player():
 
     async def player_queue_index(self, player_id):
         ''' get current index of the player's queue '''
-        return self._players[player_id].cur_queue_index
+        player = self._players[player_id]
+        player_prov = self.providers[player.player_provider]
+        return await player_prov.player_queue_index(player_id)
 
     async def player_queue_stream_update(self, player_id, cur_index, is_start=False):
         ''' called by our queue streamer when it started playing the queue from position x '''

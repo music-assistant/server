@@ -134,7 +134,7 @@ class HTTPStreamer():
             use case is enable crossfade support for chromecast devices 
         '''
         player_id = http_request.query.get('player_id')
-        startindex = int(http_request.query.get('startindex', 0))
+        startindex = int(http_request.query.get('startindex'))
         cancelled = threading.Event()
         resp = web.StreamResponse(status=200,
                                  reason='OK',
@@ -180,8 +180,13 @@ class HTTPStreamer():
         asyncio.create_task(fill_buffer())
 
         player = await self.mass.player.player(player_id)
+
+        # retrieve player object
+        player = await self.mass.player.player(player_id)
         queue_index = startindex
+        LOGGER.info("Start Queue Stream for player %s at index %s" %(player_id, queue_index))
         last_fadeout_data = b''
+        # report start of queue playback so we can calculate current track/duration etc.
         self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, True))
         while True:
             # get the (next) track in queue
@@ -265,14 +270,14 @@ class HTTPStreamer():
                 while buffer.qsize() > 1 and not cancelled.is_set():
                     await asyncio.sleep(1)
             # end of the track reached
-            LOGGER.info("Finished Streaming queue track: %s - %s" % (track_id, queue_track.name))
-            # update actual duration to the queue for more accurate now playing info
+            # WIP: update actual duration to the queue for more accurate now playing info
             accurate_duration = bytes_written / int(sample_rate * 4 * 2)
             queue_track.duration = accurate_duration
             self.mass.player.providers[player.player_provider]._player_queue[player_id][queue_index] = queue_track
             # move to next queue index
             queue_index += 1
             self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, False))
+            LOGGER.info("Finished Streaming queue track: %s - %s" % (track_id, queue_track.name))
             # break out the loop if the http session is cancelled
             if cancelled.is_set():
                 break

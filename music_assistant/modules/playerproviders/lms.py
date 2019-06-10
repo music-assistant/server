@@ -49,7 +49,6 @@ class LMSProvider(PlayerProvider):
         self._players = {}
         self._host = hostname
         self._port = port
-        self._players = {}
         self.last_msg_received = 0
         self.supported_musicproviders = ['qobuz', 'file', 'spotify', 'http']
         self.http_session = aiohttp.ClientSession(loop=mass.event_loop)
@@ -126,6 +125,10 @@ class LMSProvider(PlayerProvider):
                 track = await self.__parse_track(item)
                 items.append(track)
         return items
+
+    async def player_queue_index(self, player_id):
+        ''' get current index of the player's queue '''
+        raise NotImplementedError()
 
     ### Provider specific (helper) methods #####
     

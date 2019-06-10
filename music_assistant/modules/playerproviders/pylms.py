@@ -101,6 +101,10 @@ class PyLMSServer(PlayerProvider):
         ''' return the current items in the player's queue '''
         return self._player_queue[player_id][offset:limit]
     
+    async def player_queue_index(self, player_id):
+        ''' get current index of the player's queue '''
+        return self._player_queue_index.get(player_id, 0)
+    
     async def play_media(self, player_id, media_items, queue_opt='play'):
         ''' 
             play media on a player
