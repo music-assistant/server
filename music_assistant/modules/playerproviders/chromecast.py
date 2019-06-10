@@ -87,12 +87,14 @@ class ChromecastProvider(PlayerProvider):
         elif cmd == 'next':
             enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
             if enable_crossfade:
-                await self.__play_stream_queue(player_id, self._players[player_id].cur_queue_index+1)
+                self._players[player_id].cur_queue_index+=1
+                await self.__play_stream_queue(player_id, self._players[player_id].cur_queue_index)
             else:
                 self._chromecasts[player_id].media_controller.queue_next()
         elif cmd == 'previous':
             if enable_crossfade:
-                await self.__play_stream_queue(player_id, self._players[player_id].cur_queue_index-1)
+                self._players[player_id].cur_queue_index-=1
+                await self.__play_stream_queue(player_id, self._players[player_id].cur_queue_index)
             else:
                 self._chromecasts[player_id].media_controller.queue_prev()
         elif cmd == 'power' and cmd_args == 'off':
@@ -120,7 +122,7 @@ class ChromecastProvider(PlayerProvider):
             play media on a player
         '''
         castplayer = self._chromecasts[player_id]
-        cur_queue_index = await self.__get_cur_queue_index(player_id)
+        cur_queue_index = self._players[player_id].cur_queue_index
         enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
 
         if queue_opt == 'replace' or not self._player_queue[player_id]:
@@ -158,29 +160,24 @@ class ChromecastProvider(PlayerProvider):
             if not enable_crossfade:
                 await self.__queue_insert(player_id, media_items)
 
-    async def player_queue_stream_move(self, player_id, new_index, is_start):
-        ''' called by the queue streamer when it's loading a new track '''
-        self._players[player_id].cur_queue_index = new_index
-        # trigger update
+    async def player_queue_stream_update(self, player_id, cur_index, is_start=False):
+        ''' called by our queue streamer when it started playing a track in the queue at index X '''
         if is_start:
-            self._player_queue_startindex[player_id] = new_index
-        chromecast = self._chromecasts[player_id]
-        # fire update a few times as we can't predict the precaching exactly
-        for i in range(0, 5):
-            mediastatus = chromecast.media_controller.status
-            await self.__handle_player_state(chromecast, mediastatus=mediastatus)
-            await asyncio.sleep(5)
-
+            self._player_queue_startindex[player_id] = cur_index
+        # schedule update a few times as we don't know how much time is prebuffered
+        for i in range(0, 20):
+            castplayer = self._chromecasts[player_id]
+            status = castplayer.media_controller.status
+            await self.__handle_player_state(castplayer, mediastatus=status)
+            await asyncio.sleep(2)
+    
     ### Provider specific (helper) methods #####
 
-    async def __get_cur_queue_index(self, player_id):
+    async def __get_cur_queue_index(self, player_id, current_uri):
         ''' retrieve index of current item in the player queue '''
-        enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
-        if enable_crossfade:
-            return self._players[player_id].cur_queue_index
         cur_index = 0
         for index, track in enumerate(self._player_queue[player_id]):
-            if track.uri == self._chromecasts[player_id].media_controller.status.content_id:
+            if track.uri == current_uri:
                 cur_index = index
                 break
         return cur_index
@@ -316,7 +313,7 @@ class ChromecastProvider(PlayerProvider):
             if not 'stream_queue' in mediastatus.content_id:
                 player.cur_item = await self.__parse_track(mediastatus)
                 player.cur_item_time =  mediastatus.adjusted_current_time
-                player.cur_queue_index = await self.__get_cur_queue_index(player_id)
+                player.cur_queue_index = await self.__get_cur_queue_index(player_id, mediastatus.content_id)
             else:
                 # try to work out the current time
                 # player is playing a constant stream of the queue so we need to do this the hard way
@@ -335,6 +332,7 @@ class ChromecastProvider(PlayerProvider):
                         break
                 player.cur_item = queue_track
                 player.cur_item_time = track_time
+                player.cur_queue_index = queue_index
         await self.mass.player.update_player(player)
 
     async def __parse_track(self, mediastatus):

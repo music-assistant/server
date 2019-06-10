@@ -134,7 +134,6 @@ class HTTPStreamer():
             use case is enable crossfade support for chromecast devices 
         '''
         player_id = http_request.query.get('player_id')
-        startindex = int(http_request.query.get('startindex',0))
         cancelled = threading.Event()
         resp = web.StreamResponse(status=200,
                                  reason='OK',
@@ -146,7 +145,7 @@ class HTTPStreamer():
             cancelled = threading.Event()
             run_async_background_task(
                 self.mass.bg_executor, 
-                self.__stream_queue, player_id, startindex, queue, cancelled)
+                self.__stream_queue, player_id, queue, cancelled)
             try:
                 while True:
                     chunk = await queue.get()
@@ -161,7 +160,7 @@ class HTTPStreamer():
                 raise asyncio.CancelledError()
         return resp
 
-    async def __stream_queue(self, player_id, startindex, buffer, cancelled):
+    async def __stream_queue(self, player_id, buffer, cancelled):
         ''' start streaming all queue tracks '''
         sample_rate = self.mass.config['player_settings'][player_id]['max_sample_rate']
         fade_length = self.mass.config['player_settings'][player_id]["crossfade_duration"]
@@ -179,9 +178,10 @@ class HTTPStreamer():
             await buffer.put(b'') # indicate EOF
         asyncio.create_task(fill_buffer())
 
-        queue_index = startindex
+        player = await self.mass.player.player(player_id)
+        queue_index = player.cur_queue_index
         last_fadeout_data = b''
-        self.mass.event_loop.create_task(self.mass.player.player_queue_stream_move(player_id, queue_index, True))
+        self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, True))
         while True:
             # get the (next) track in queue
             try:
@@ -199,13 +199,14 @@ class HTTPStreamer():
             fade_in_part = b''
             cur_chunk = 0
             prev_chunk = None
-            
+            bytes_written = 0
             async for is_last_chunk, chunk in self.__get_raw_audio(track_id, provider, sample_rate, fade_bytes):
                 cur_chunk += 1
                 if cur_chunk == 1 and not last_fadeout_data:
                     # fade-in part but this is the first track so just pass it to the final file
                     sox_proc.stdin.write(chunk)
                     await sox_proc.stdin.drain()
+                    bytes_written += len(chunk)
                 elif cur_chunk == 1 and last_fadeout_data:
                     # create fade-out part
                     args = 'sox --ignore-length -t %s - -t %s - reverse fade t %s reverse' % (pcm_args, pcm_args, fade_length)
@@ -233,6 +234,7 @@ class HTTPStreamer():
                     # write the crossfade part to the sox player
                     sox_proc.stdin.write(crossfade_part)
                     await sox_proc.stdin.drain()
+                    bytes_written += len(crossfade_part)
                     fadeinfile.close()
                     fadeoutfile.close()
                     del crossfade_part
@@ -244,6 +246,7 @@ class HTTPStreamer():
                     last_fadeout_data = last_part[-fade_bytes:]
                     bytes_remaining = last_part[:-fade_bytes]
                     sox_proc.stdin.write(bytes_remaining)
+                    bytes_written += len(bytes_remaining)
                     await sox_proc.stdin.drain()
                 else:
                     # middle part of the track
@@ -251,6 +254,7 @@ class HTTPStreamer():
                     if prev_chunk:
                         sox_proc.stdin.write(prev_chunk)
                         await sox_proc.stdin.drain()
+                        bytes_written += len(prev_chunk)
                         prev_chunk = chunk
                     else:
                         prev_chunk = chunk
@@ -259,12 +263,15 @@ class HTTPStreamer():
                 # and it helps a bit in the quest to follow where we are in the queue
                 while buffer.qsize() > 1 and not cancelled.is_set():
                     await asyncio.sleep(1)
-                if cur_chunk == 1:
-                    # report start stream of current queue index
-                    self.mass.event_loop.create_task(self.mass.player.player_queue_stream_move(player_id, queue_index, False))
             # end of the track reached
             LOGGER.info("Finished Streaming queue track: %s - %s" % (track_id, queue_track.name))
+            # update actual duration to the queue for more accurate now playing info
+            accurate_duration = bytes_written / int(sample_rate * 4 * 2)
+            queue_track.duration = accurate_duration
+            self.mass.player.providers[player.player_provider]._player_queue[player_id][queue_index] = queue_track
+            # move to next queue index
             queue_index += 1
+            self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, False))
             # break out the loop if the http session is cancelled
             if cancelled.is_set():
                 break
@@ -410,23 +417,10 @@ class HTTPStreamer():
                 cmd = 'sox -t %s %s -t flac -C5 %s silence 1 0.1 1%% reverse silence 1 0.1 1%% reverse' %(content_type, tmpfile, cachefile)
                 process = await asyncio.create_subprocess_shell(cmd)
                 await process.wait()
-            # retrieve accurate track duration
-            cmd = 'soxi -d "%s"' %(cachefile)
-            process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.PIPE)
-            stdout, stderr = await process.communicate()
-            durationstr = stdout.decode().split()[0]
-            hours = int(durationstr.split(":")[0])
-            minutes = int(durationstr.split(":")[1])
-            seconds = float(durationstr.split(":")[0])
-            total_duration = (hours*60*60) + (minutes*60) + seconds
-            LOGGER.info("track duration for track %s is %s" %(track_id, total_duration))
-            item_id = await self.mass.db.get_database_id(provider, track_id, MediaType.Track)
-            await self.mass.db.update_track(item_id, "duration", total_duration)
 
         # always clean up temp file
-        while os.path.isfile(tmpfile):
+        if os.path.isfile(tmpfile):
             os.remove(tmpfile)
-            await asyncio.sleep(0.5)
         LOGGER.info('Fininished analyzing file %s' % tmpfile)
     
     async def __get_track_gain_correct(self, track_id, provider):
