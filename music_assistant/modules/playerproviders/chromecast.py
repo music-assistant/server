@@ -87,14 +87,12 @@ class ChromecastProvider(PlayerProvider):
         elif cmd == 'next':
             enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
             if enable_crossfade:
-                self._players[player_id].cur_queue_index+=1
-                await self.__play_stream_queue(player_id, self._players[player_id].cur_queue_index)
+                await self.__play_stream_queue(player_id, self._players[player_id].cur_queue_index+1)
             else:
                 self._chromecasts[player_id].media_controller.queue_next()
         elif cmd == 'previous':
             if enable_crossfade:
-                self._players[player_id].cur_queue_index-=1
-                await self.__play_stream_queue(player_id, self._players[player_id].cur_queue_index)
+                await self.__play_stream_queue(player_id, self._players[player_id].cur_queue_index-1)
             else:
                 self._chromecasts[player_id].media_controller.queue_prev()
         elif cmd == 'power' and cmd_args == 'off':

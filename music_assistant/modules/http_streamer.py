@@ -134,6 +134,7 @@ class HTTPStreamer():
             use case is enable crossfade support for chromecast devices 
         '''
         player_id = http_request.query.get('player_id')
+        startindex = int(http_request.query.get('startindex', 0))
         cancelled = threading.Event()
         resp = web.StreamResponse(status=200,
                                  reason='OK',
@@ -145,7 +146,7 @@ class HTTPStreamer():
             cancelled = threading.Event()
             run_async_background_task(
                 self.mass.bg_executor, 
-                self.__stream_queue, player_id, queue, cancelled)
+                self.__stream_queue, player_id, startindex, queue, cancelled)
             try:
                 while True:
                     chunk = await queue.get()
@@ -160,7 +161,7 @@ class HTTPStreamer():
                 raise asyncio.CancelledError()
         return resp
 
-    async def __stream_queue(self, player_id, buffer, cancelled):
+    async def __stream_queue(self, player_id, startindex, buffer, cancelled):
         ''' start streaming all queue tracks '''
         sample_rate = self.mass.config['player_settings'][player_id]['max_sample_rate']
         fade_length = self.mass.config['player_settings'][player_id]["crossfade_duration"]
@@ -179,7 +180,7 @@ class HTTPStreamer():
         asyncio.create_task(fill_buffer())
 
         player = await self.mass.player.player(player_id)
-        queue_index = player.cur_queue_index
+        queue_index = startindex
         last_fadeout_data = b''
         self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, True))
         while True:
