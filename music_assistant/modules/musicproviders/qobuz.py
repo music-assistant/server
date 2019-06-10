@@ -268,11 +268,8 @@ class QobuzProvider(MusicProvider):
         try:
             async with aiohttp.ClientSession(loop=asyncio.get_event_loop(), connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
                 async with session.get(streamdetails['url']) as resp:
-                    while True:
-                        chunk = await resp.content.read(64000)
-                        yield chunk
-                        if not chunk:
-                            break
+                    async for data, end_of_http_chunk in resp.content.iter_chunks():
+                        yield data
         except Exception as exc:
             LOGGER.exception(exc)
     
