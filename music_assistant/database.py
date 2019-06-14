@@ -44,6 +44,8 @@ class Database():
             
             await db.execute('CREATE TABLE IF NOT EXISTS radios(radio_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);')
             
+            await db.execute('CREATE TABLE IF NOT EXISTS track_loudness(provider_track_id INTEGER NOT NULL, provider TEXT NOT NULL, loudness REAL, UNIQUE(provider_track_id, provider));')
+            
             await db.commit()
             await db.execute('VACUUM;')
             self.db_ready = True
@@ -542,6 +544,24 @@ class Database():
             await db.execute(sql_query, (playlist_id, track_id))
             await db.commit()
             
+    async def set_track_loudness(self, provider_track_id, provider, loudness):
+        ''' set integrated loudness for a track in db '''
+        async with aiosqlite.connect(self.dbfile) as db:
+            sql_query = 'INSERT or REPLACE INTO track_loudness (provider_track_id, provider, loudness) VALUES(?,?,?);'
+            await db.execute(sql_query, (provider_track_id, provider, loudness))
+            await db.commit()
+
+    async def get_track_loudness(self, provider_track_id, provider):
+        ''' get integrated loudness for a track in db '''
+        async with aiosqlite.connect(self.dbfile) as db:
+            sql_query = 'SELECT loudness FROM track_loudness WHERE provider_track_id = ? AND provider = ?'
+            async with db.execute(sql_query, (provider_track_id, provider)) as cursor:
+                result = await cursor.fetchone()
+            if result:
+                return result[0]
+            else:
+                return None
+
     async def __add_metadata(self, item_id, media_type, metadata, db):
         ''' add or update metadata'''
         for key, value in metadata.items():

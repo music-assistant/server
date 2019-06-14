@@ -256,6 +256,25 @@ class QobuzProvider(MusicProvider):
         ''' return the content type for the given track when it will be streamed'''
         return 'flac' #TODO handle other file formats on qobuz?
 
+    async def get_stream_details(self, track_id):
+        ''' return the content details for the given track when it will be streamed'''
+        params = {'format_id': 27, 'track_id': track_id, 'intent': 'stream'}
+        streamdetails = await self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True)
+        if not streamdetails:
+            # simply retry this request
+            await asyncio.sleep(2)
+            streamdetails = await self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True)
+        if not streamdetails or not streamdetails.get('url'):
+            LOGGER.error("Unable to retrieve stream url for track %s" % track_id)
+            return None
+        return {
+            "type": "url",
+            "path": streamdetails['url'],
+            "content_type": streamdetails['mime_type'].split('/')[1],
+            "sample_rate": int(streamdetails['sampling_rate']*1000),
+            "bit_depth": streamdetails['bit_depth']
+        }
+
     async def get_audio_stream(self, track_id):
         ''' get audio stream for a track '''
         params = {'format_id': 27, 'track_id': track_id, 'intent': 'stream'}
@@ -265,6 +284,7 @@ class QobuzProvider(MusicProvider):
             self.mass.event_loop
         )
         streamdetails = streamdetails_future.result()
+        print(streamdetails)
         if not streamdetails:
             # simply retry this request
             await asyncio.sleep(1)

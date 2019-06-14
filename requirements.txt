@@ -11,3 +11,5 @@ pytaglib
 python-slugify
 netaddr
 memory-tempfile
+soundfile
+pyloudnorm

@@ -246,6 +246,18 @@ class SpotifyProvider(MusicProvider):
         ''' return the content type for the given track when it will be streamed'''
         return 'ogg'
 
+    async def get_stream_details(self, track_id):
+        ''' return the content details for the given track when it will be streamed'''
+        spotty = self.get_spotty_binary()
+        spotty_exec = "%s -n temp -u %s -p %s --pass-through --single-track %s" %(spotty, self._username, self._password, track_id)
+        return {
+            "type": "executable",
+            "path": spotty_exec,
+            "content_type": "ogg",
+            "sample_rate": 44100,
+            "bit_depth": 16
+        }
+
     async def get_audio_stream(self, track_id):
         ''' get audio stream for a track '''
         import subprocess

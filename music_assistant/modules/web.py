@@ -26,10 +26,10 @@ def setup(mass):
         ssl_key = conf['ssl_key']
     else:
         ssl_key = ''
-    hostname = conf['hostname']
+    cert_fqdn_host = conf['cert_fqdn_host']
     http_port = conf['http_port']
     https_port = conf['https_port']
-    return Web(mass, http_port, https_port, ssl_cert, ssl_key, hostname)
+    return Web(mass, http_port, https_port, ssl_cert, ssl_key, cert_fqdn_host)
 
 def create_config_entries(config):
     ''' get the config entries for this module (list with key/value pairs)'''
