@@ -94,6 +94,11 @@ class HTTPStreamer():
         if http_request.method.upper() != 'HEAD':
             # stream audio with sox
             sox_effects = await self.__get_player_sox_options(radio_id, provider, player_id, True)
+            if self.mass.config['base']['http_streamer']['volume_normalisation']:
+                gain_correct = await self.__get_track_gain_correct(radio_id, provider)
+                gain_correct = 'vol %s dB ' % gain_correct
+            else:
+                gain_correct = ''
             media_item = await self.mass.music.item(radio_id, MediaType.Radio, provider)
             stream = sorted(media_item.provider_ids, key=operator.itemgetter('quality'), reverse=True)[0]
             stream_url = stream["details"]
@@ -104,9 +109,9 @@ class HTTPStreamer():
             else:
                 input_content_type = "mp3"
             if input_content_type == "aac":
-                args = 'ffmpeg -i "%s" -f flac - | sox -t flac - -t flac -C 0 - %s' % (stream_url, sox_effects)
+                args = 'ffmpeg -i "%s" -f flac - | sox -t flac - -t flac -C 0 - %s %s' % (stream_url, gain_correct, sox_effects)
             else:
-                args = 'sox -t %s "%s" -t flac -C 0 - %s' % (input_content_type, stream_url, sox_effects)
+                args = 'sox -t %s "%s" -t flac -C 0 - %s %s' % (input_content_type, stream_url, gain_correct, sox_effects)
             LOGGER.info("Running sox with args: %s" % args)
             process = await asyncio.create_subprocess_shell(args, stdout=asyncio.subprocess.PIPE)
             try:
@@ -314,6 +319,7 @@ class HTTPStreamer():
         if not streamdetails:
             yield b''
             return
+        # TODO: add support for AAC streams (which sox doesn't natively support)
         if streamdetails['type'] == 'url':
             args = 'sox -t %s "%s" -t %s - %s %s' % (streamdetails["content_type"], streamdetails["path"], outputfmt, gain_correct, sox_effects)
         elif streamdetails['type'] == 'executable':
@@ -449,5 +455,5 @@ class HTTPStreamer():
         process = await asyncio.create_subprocess_shell(args,
                 stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE)
         crossfade_part, stderr = await process.communicate()
-        LOGGER.info("Got %s bytes in memory for crossfade_part after sox" % len(crossfade_part))
+        LOGGER.debug("Got %s bytes in memory for crossfade_part after sox" % len(crossfade_part))
         return crossfade_part

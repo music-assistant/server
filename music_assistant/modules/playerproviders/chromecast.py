@@ -128,18 +128,19 @@ class ChromecastProvider(PlayerProvider):
         castplayer = self._chromecasts[player_id]
         cur_queue_index = self._player_queue_index.get(player_id, 0)
         enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
+        is_radio = media_items[0].media_type == MediaType.Radio
 
         if queue_opt == 'replace' or not self._player_queue[player_id]:
             # overwrite queue with new items
             self._player_queue[player_id] = media_items
-            if enable_crossfade:
+            if enable_crossfade and not is_radio:
                 await self.__play_stream_queue(player_id, cur_queue_index)
             else:
                 await self.__queue_load(player_id, self._player_queue[player_id], 0)
         elif queue_opt == 'play':
             # replace current item with new item(s)
             self._player_queue[player_id] = self._player_queue[player_id][:cur_queue_index] + media_items + self._player_queue[player_id][cur_queue_index+1:]
-            if enable_crossfade:
+            if enable_crossfade and not is_radio:
                 await self.__play_stream_queue(player_id, cur_queue_index)
             else:
                 await self.__queue_load(player_id, self._player_queue[player_id], cur_queue_index)
@@ -150,7 +151,7 @@ class ChromecastProvider(PlayerProvider):
             else:
                 old_next_uri = None
             self._player_queue[player_id] = self._player_queue[player_id][:cur_queue_index+1] + media_items + self._player_queue[player_id][cur_queue_index+1:]
-            if not enable_crossfade:
+            if not enable_crossfade or is_radio:
                 # find out the itemID of the next item in CC queue
                 insert_at_item_id = None
                 if old_next_uri:
@@ -161,7 +162,7 @@ class ChromecastProvider(PlayerProvider):
         elif queue_opt == 'add':
             # add new items at end of queue
             self._player_queue[player_id] = self._player_queue[player_id] + media_items
-            if not enable_crossfade:
+            if not enable_crossfade or is_radio:
                 await self.__queue_insert(player_id, media_items)
 
     async def player_queue_stream_update(self, player_id, cur_index, is_start=False):
@@ -192,7 +193,7 @@ class ChromecastProvider(PlayerProvider):
         castplayer = self._chromecasts[player_id]
         player = self._players[player_id]
         queue_items = await self.__create_queue_items(new_tracks[:50])
-        self.mass.player._players[player_id].cur_queue_index = 0
+        self._player_queue_index[player_id] = 0
         queuedata = { 
                 "type": 'QUEUE_LOAD',
                 "repeatMode":  "REPEAT_ALL" if player.repeat_enabled else "REPEAT_OFF",

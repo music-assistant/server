@@ -275,6 +275,7 @@ class QobuzProvider(MusicProvider):
 
     async def mass_event(self, msg, msg_details):
         ''' received event from mass '''
+        # TODO: need to figure out if the streamed track is purchased
         if msg == "streaming_started" and msg_details['provider'] == self.prov_id:
             # report streaming started to qobuz
             LOGGER.debug("streaming_started %s" % msg_details["track_id"])
