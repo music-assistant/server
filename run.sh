@@ -7,7 +7,6 @@ if [ "$autoupdate" == "true" ]; then
     cd /tmp
     curl -LOks "https://github.com/marcelveldt/musicassistant/archive/master.zip"
     unzip -q master.zip
-    pip install -q --upgrade -r musicassistant-master/requirements.txt
     cp -rf musicassistant-master/music_assistant/. /usr/src/app
     rm -R /tmp/musicassistant-master
 fi

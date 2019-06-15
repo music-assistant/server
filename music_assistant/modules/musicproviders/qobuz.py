@@ -47,8 +47,8 @@ class QobuzProvider(MusicProvider):
         self.__username = username
         self.__password = password
         self.__user_auth_token = None
-        self.__app_id = "285473059"
-        self.__app_secret = "47249d0eaefa6bf43a959c09aacdbce8"
+        self.__app_id = "285473059" # TEMP! Own key requested
+        self.__app_secret = "47249d0eaefa6bf43a959c09aacdbce8" # TEMP! Own key requested
         self.__logged_in = False
         self.throttler = Throttler(rate_limit=1, period=1)
 
@@ -252,12 +252,9 @@ class QobuzProvider(MusicProvider):
         params = {'playlist_id': prov_playlist_id, 'track_ids': ",".join(playlist_track_ids)}
         return await self.__get_data('playlist/deleteTracks', params)
     
-    async def get_stream_content_type(self, track_id):
-        ''' return the content type for the given track when it will be streamed'''
-        return 'flac' #TODO handle other file formats on qobuz?
-
     async def get_stream_details(self, track_id):
         ''' return the content details for the given track when it will be streamed'''
+        # TODO: Report streaming start and streaming end !!
         params = {'format_id': 27, 'track_id': track_id, 'intent': 'stream'}
         streamdetails = await self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True)
         if not streamdetails:
@@ -275,31 +272,6 @@ class QobuzProvider(MusicProvider):
             "bit_depth": streamdetails['bit_depth']
         }
 
-    async def get_audio_stream(self, track_id):
-        ''' get audio stream for a track '''
-        params = {'format_id': 27, 'track_id': track_id, 'intent': 'stream'}
-        # we are called from other thread
-        streamdetails_future = asyncio.run_coroutine_threadsafe(
-            self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True),
-            self.mass.event_loop
-        )
-        streamdetails = streamdetails_future.result()
-        print(streamdetails)
-        if not streamdetails:
-            # simply retry this request
-            await asyncio.sleep(1)
-            streamdetails_future = asyncio.run_coroutine_threadsafe(
-                self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True),
-                self.mass.event_loop
-            )
-            streamdetails = streamdetails_future.result()
-        if not streamdetails:
-            raise Exception("Unable to retrieve stream url for track %s" % track_id)
-        async with aiohttp.ClientSession(loop=asyncio.get_event_loop(), connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
-            async with session.get(streamdetails['url']) as resp:
-                async for data, end_of_http_chunk in resp.content.iter_chunks():
-                    yield data
-    
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''
         artist = Artist()

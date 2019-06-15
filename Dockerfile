@@ -1,9 +1,13 @@
-FROM python:3.7.3-alpine
+FROM alpine:latest
 
 # install deps
-RUN apk add build-base python-dev flac sox taglib-dev zip curl ffmpeg ffmpeg-dev sox-dev py-numpy
+RUN apk add flac sox zip curl wget ffmpeg
+RUN apk add --no-cache -X http://dl-cdn.alpinelinux.org/alpine/edge/testing python3 py3-numpy py3-scipy py3-matplotlib py3-aiohttp py3-cairocffi
 COPY requirements.txt requirements.txt
-RUN pip install --upgrade -r requirements.txt
+RUN apk --no-cache add --virtual .builddeps build-base python3-dev taglib-dev && \
+    pip3 install -r requirements.txt && \
+    apk del .builddeps && \
+    rm -rf /root/.cache
 
 # copy files
 RUN mkdir -p /usr/src/app
