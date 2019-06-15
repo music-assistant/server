@@ -128,7 +128,7 @@ class ChromecastProvider(PlayerProvider):
         castplayer = self._chromecasts[player_id]
         cur_queue_index = self._player_queue_index.get(player_id, 0)
         enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
-        is_radio = media_items[0].media_type == MediaType.Radio
+        is_radio = media_items and media_items[0].media_type == MediaType.Radio
 
         if queue_opt == 'replace' or not self._player_queue[player_id]:
             # overwrite queue with new items
