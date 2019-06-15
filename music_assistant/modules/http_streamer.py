@@ -55,10 +55,14 @@ class HTTPStreamer():
 
             async def fill_buffer():
                 ''' fill buffer runs in background process to prevent deadlocks of the sox executable '''
-                audio_stream = self.__get_audio_stream(track_id, provider, player_id)
+                audio_stream = self.__get_audio_stream(track_id, provider, player_id, cancelled)
                 async for is_last_chunk, audio_chunk in audio_stream:
                     if not cancelled.is_set():
                         await queue.put(audio_chunk)
+                    # wait for the queue to consume the data
+                    # this prevents that the entire track is sitting in memory
+                    while queue.qsize() > 1 and not cancelled.is_set():
+                        await asyncio.sleep(1)
                 await queue.put(b'') # EOF
             run_async_background_task(self.mass.bg_executor, fill_buffer)
                
@@ -199,11 +203,10 @@ class HTTPStreamer():
             prev_chunk = None
             bytes_written = 0
             async for is_last_chunk, chunk in self.__get_audio_stream(
-                    track_id, provider, player_id, chunksize=fade_bytes, outputfmt=pcm_args, 
-                    sox_effects='rate -v %s' % sample_rate ):
+                    track_id, provider, player_id, cancelled, chunksize=fade_bytes, resample=sample_rate):
                 cur_chunk += 1
                 if cur_chunk <= 2 and not last_fadeout_data:
-                    # fade-in part but this is the first track so just pass it to the final file
+                    # fade-in part but no fadeout_part available so just pass it to the output directly
                     sox_proc.stdin.write(chunk)
                     await sox_proc.stdin.drain()
                     bytes_written += len(chunk)
@@ -231,6 +234,7 @@ class HTTPStreamer():
                     await sox_proc.stdin.drain()
                     bytes_written += len(remaining_bytes)
                     del remaining_bytes
+                    prev_chunk = None # needed to prevent this chunk being sent again
                 elif prev_chunk and is_last_chunk:
                     # last chunk received so create the fadeout_part with the previous chunk and this chunk
                     # and strip off silence
@@ -238,14 +242,23 @@ class HTTPStreamer():
                     process = await asyncio.create_subprocess_shell(args,
                             stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE)
                     last_part, stderr = await process.communicate(prev_chunk + chunk)
-                    last_fadeout_data = last_part[-fade_bytes:]
-                    remaining_bytes = last_part[:-fade_bytes]
-                    # write remaining bytes
-                    sox_proc.stdin.write(remaining_bytes)
-                    bytes_written += len(remaining_bytes)
-                    await sox_proc.stdin.drain()
-                    del last_part
-                    del remaining_bytes
+                    if len(last_part) < fade_bytes:
+                        # not enough data for crossfade duration
+                        LOGGER.warning("not enough data for fadeout so skip crossfade... %s" % len(last_part))
+                        sox_proc.stdin.write(last_part)
+                        bytes_written += len(last_part)
+                        await sox_proc.stdin.drain()
+                        del last_part
+                    else:
+                        # store fade section to be picked up for next track
+                        last_fadeout_data = last_part[-fade_bytes:]
+                        remaining_bytes = last_part[:-fade_bytes]
+                        # write remaining bytes
+                        sox_proc.stdin.write(remaining_bytes)
+                        bytes_written += len(remaining_bytes)
+                        await sox_proc.stdin.drain()
+                        del last_part
+                        del remaining_bytes
                 else:
                     # middle part of the track
                     # keep previous chunk in memory so we have enough samples to perform the crossfade
@@ -259,7 +272,7 @@ class HTTPStreamer():
                 # wait for the queue to consume the data
                 # this prevents that the entire track is sitting in memory
                 # and it helps a bit in the quest to follow where we are in the queue
-                while buffer.qsize() > 2 and not cancelled.is_set():
+                while buffer.qsize() > 1 and not cancelled.is_set():
                     await asyncio.sleep(1)
             # end of the track reached
             # WIP: update actual duration to the queue for more accurate now playing info
@@ -282,15 +295,19 @@ class HTTPStreamer():
         await sox_proc.wait()
         LOGGER.info("streaming of queue for player %s completed" % player_id)
 
-    async def __get_audio_stream(self, track_id, provider, player_id,
-                chunksize=512000, outputfmt='flac -C 0', sox_effects=''):
+    async def __get_audio_stream(self, track_id, provider, player_id, cancelled,
+                chunksize=512000, resample=None):
         ''' get audio stream from provider and apply additional effects/processing where/if needed'''
         if self.mass.config['base']['http_streamer']['volume_normalisation']:
             gain_correct = await self.__get_track_gain_correct(track_id, provider)
             gain_correct = 'vol %s dB ' % gain_correct
         else:
             gain_correct = ''
-        sox_effects += await self.__get_player_sox_options(track_id, provider, player_id, False)
+        sox_effects = await self.__get_player_sox_options(track_id, provider, player_id, False)
+        outputfmt = 'flac -C 0'
+        if resample:
+            outputfmt = 'raw -b 32 -c 2 -e signed-integer'
+            sox_effects += ' rate -v %s' % resample
         # stream audio from provider
         streamdetails = asyncio.run_coroutine_threadsafe(
                 self.mass.music.providers[provider].get_stream_details(track_id), self.mass.event_loop).result()
@@ -304,21 +321,43 @@ class HTTPStreamer():
         LOGGER.debug("Running sox with args: %s" % args)
         process = await asyncio.create_subprocess_shell(args,
                 stdout=asyncio.subprocess.PIPE)
+        # fire event that streaming has started for this track (needed by some streaming providers)
+        streamdetails["provider"] = provider
+        streamdetails["track_id"] = track_id
+        streamdetails["player_id"] = player_id
+        self.mass.event_loop.create_task(self.mass.event('streaming_started', streamdetails))
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
         prev_chunk = b''
+        bytes_sent = 0
         while not process.stdout.at_eof():
             try:
                 chunk = await process.stdout.readexactly(chunksize)
             except asyncio.streams.IncompleteReadError:
                 chunk = await process.stdout.read(chunksize)
-            if prev_chunk:
+            if not chunk:
+                break
+            if prev_chunk and not cancelled.is_set():
                 yield (False, prev_chunk)
+                bytes_sent += len(prev_chunk)
             prev_chunk = chunk
         # yield last chunk
-        yield (True, prev_chunk)
+        if not cancelled.is_set():
+            yield (True, prev_chunk)
+            bytes_sent += len(prev_chunk)
         await process.wait()
-        LOGGER.info("__get_audio_stream for track_id %s completed" % track_id)
+        if cancelled.is_set():
+            LOGGER.warning("__get_audio_stream for track_id %s interrupted" % track_id)
+        else:
+            LOGGER.info("__get_audio_stream for track_id %s completed" % track_id)
+        # fire event that streaming has ended for this track (needed by some streaming providers)
+        if resample:
+            bytes_per_second = resample * (32/8) * 2
+        else:
+            bytes_per_second = streamdetails["sample_rate"] * (streamdetails["bit_depth"]/8) * 2
+        seconds_streamed = int(bytes_sent/bytes_per_second)
+        streamdetails["seconds"] = seconds_streamed
+        self.mass.event_loop.create_task(self.mass.event('streaming_ended', streamdetails))
         # send task to background to analyse the audio
         self.mass.event_loop.create_task(self.__analyze_audio(track_id, provider))
 
@@ -353,7 +392,7 @@ class HTTPStreamer():
         ''' analyze track audio, for now we only calculate EBU R128 loudness '''
         track_key = '%s%s' %(track_id, provider)
         if track_key in self.analyze_jobs:
-            return # prevent multiple analyze jobs for same tracks
+            return # prevent multiple analyze jobs for same track
         self.analyze_jobs[track_key] = True
         streamdetails = await self.mass.music.providers[provider].get_stream_details(track_id)
         track_loudness = await self.mass.db.get_track_loudness(track_id, provider)

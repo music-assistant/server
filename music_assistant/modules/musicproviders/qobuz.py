@@ -40,17 +40,17 @@ class QobuzProvider(MusicProvider):
     def __init__(self, mass, username, password):
         self.name = 'Qobuz'
         self.prov_id = 'qobuz'
-        self._cur_user = None
         self.mass = mass
         self.cache = mass.cache
         self.http_session = aiohttp.ClientSession(loop=mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
         self.__username = username
         self.__password = password
-        self.__user_auth_token = None
+        self.__user_auth_info = None
         self.__app_id = "285473059" # TEMP! Own key requested
         self.__app_secret = "47249d0eaefa6bf43a959c09aacdbce8" # TEMP! Own key requested
         self.__logged_in = False
         self.throttler = Throttler(rate_limit=1, period=1)
+        mass.event_loop.create_task(mass.add_event_listener(self.mass_event))
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''
@@ -269,9 +269,37 @@ class QobuzProvider(MusicProvider):
             "path": streamdetails['url'],
             "content_type": streamdetails['mime_type'].split('/')[1],
             "sample_rate": int(streamdetails['sampling_rate']*1000),
-            "bit_depth": streamdetails['bit_depth']
+            "bit_depth": streamdetails['bit_depth'],
+            "details": streamdetails # we need these details for reporting playback
         }
 
+    async def mass_event(self, msg, msg_details):
+        ''' received event from mass '''
+        if msg == "streaming_started" and msg_details['provider'] == self.prov_id:
+            # report streaming started to qobuz
+            LOGGER.debug("streaming_started %s" % msg_details["track_id"])
+            device_id = self.__user_auth_info["user"]["device"]["id"]
+            credential_id = self.__user_auth_info["user"]["credential"]["id"]
+            user_id = self.__user_auth_info["user"]["id"]
+            format_id = msg_details["details"]["format_id"]
+            timestamp = int(time.time())
+            events=[{"online": True, "sample": False, "intent": "stream", "device_id": device_id, 
+                "track_id": msg_details["track_id"], "purchase": False, "date": timestamp,
+                "credential_id": credential_id, "user_id": user_id, "local": False, "format_id":format_id}]
+            await self.__post_data("track/reportStreamingStart", data=events)
+        elif msg == "streaming_ended" and msg_details['provider'] == self.prov_id:
+            # report streaming ended to qobuz
+            LOGGER.debug("streaming_ended %s - seconds played: %s" %(msg_details["track_id"], msg_details["seconds"]) )
+            device_id = self.__user_auth_info["user"]["device"]["id"]
+            credential_id = self.__user_auth_info["user"]["credential"]["id"]
+            user_id = self.__user_auth_info["user"]["id"]
+            format_id = msg_details["details"]["format_id"]
+            timestamp = int(time.time())
+            events=[{"online": True, "sample": False, "intent": "stream", "device_id": device_id, 
+                "track_id": msg_details["track_id"], "purchase": False, "date": timestamp, "duration": msg_details["seconds"],
+                "credential_id": credential_id, "user_id": user_id, "local": False, "format_id":format_id}]
+            await self.__post_data("track/reportStreamingStart", data=events)
+    
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''
         artist = Artist()
@@ -430,7 +458,7 @@ class QobuzProvider(MusicProvider):
         })
         playlist.name = playlist_obj['name']
         playlist.owner = playlist_obj['owner']['name']
-        playlist.is_editable = playlist_obj['owner']['id'] == self._cur_user["id"] or playlist_obj['is_collaborative']
+        playlist.is_editable = playlist_obj['owner']['id'] == self.__user_auth_info["user"]["id"] or playlist_obj['is_collaborative']
         if playlist_obj.get('images300'):
             playlist.metadata["image"] = playlist_obj['images300'][0]
         if playlist_obj.get('url'):
@@ -439,13 +467,12 @@ class QobuzProvider(MusicProvider):
 
     async def __auth_token(self):
         ''' login to qobuz and store the token'''
-        if self.__user_auth_token:
-            return self.__user_auth_token
-        params = { "username": self.__username, "password": self.__password}
+        if self.__user_auth_info:
+            return self.__user_auth_info["user_auth_token"]
+        params = { "username": self.__username, "password": self.__password, "device_manufacturer_id": "music_assistant"}
         details = await self.__get_data("user/login", params, ignore_cache=True)
-        self._cur_user = details["user"]
-        self.__user_auth_token = details["user_auth_token"]
-        LOGGER.info("Succesfully logged in to Qobuz as %s" % (self._cur_user["display_name"]))
+        self.__user_auth_info = details
+        LOGGER.info("Succesfully logged in to Qobuz as %s" % (details["user"]["display_name"]))
         return details["user_auth_token"]
 
     async def __get_all_items(self, endpoint, params={}, key="playlists", limit=0, offset=0, cache_checksum=None):
@@ -500,7 +527,7 @@ class QobuzProvider(MusicProvider):
             params["request_ts"] = request_ts
             params["request_sig"] = request_sig
             params["app_id"] = self.__app_id
-            params["user_auth_token"] = self.__user_auth_token
+            params["user_auth_token"] = await self.__auth_token()
         async with self.throttler:
             async with self.http_session.get(url, headers=headers, params=params) as response:
                 result = await response.json()
@@ -511,3 +538,16 @@ class QobuzProvider(MusicProvider):
                     result = None
                 return result
 
+    async def __post_data(self, endpoint, params={}, data={}):
+        ''' post data to api'''
+        url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
+        params["app_id"] = self.__app_id
+        params["user_auth_token"] = await self.__auth_token()
+        async with self.http_session.post(url, params=params, json=data) as response:
+            result = await response.json()
+            if not result or 'error' in result:
+                LOGGER.error(url)
+                LOGGER.error(params)
+                LOGGER.error(result)
+                result = None
+            return result
