@@ -317,7 +317,7 @@ class HTTPStreamer():
         streamdetails = asyncio.run_coroutine_threadsafe(
                 self.mass.music.providers[provider].get_stream_details(track_id), self.mass.event_loop).result()
         if not streamdetails:
-            yield b''
+            yield (True, b'')
             return
         # TODO: add support for AAC streams (which sox doesn't natively support)
         if streamdetails['type'] == 'url':
