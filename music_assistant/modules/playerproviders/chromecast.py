@@ -98,7 +98,8 @@ class ChromecastProvider(PlayerProvider):
                 self._chromecasts[player_id].media_controller.queue_prev()
         elif cmd == 'power' and cmd_args == 'off':
             self._players[player_id].powered = False
-            self._chromecasts[player_id].quit_app() # power is not supported so send quit_app instead
+            if not self._players[player_id].group_parent:
+                self._chromecasts[player_id].quit_app() # power is not supported so send quit_app instead
             await self.mass.player.update_player(self._players[player_id])
         elif cmd == 'power':
             self._players[player_id].powered = True
