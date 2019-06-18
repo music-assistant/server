@@ -55,7 +55,11 @@ class ChromecastProvider(PlayerProvider):
         self._player_queue_index = {}
         self._player_queue_stream_startindex = {}
         self.supported_musicproviders = ['http']
-        asyncio.ensure_future(self.__discover_chromecasts())
+        #asyncio.ensure_future(self.__discover_chromecasts())
+        # start discovery
+        def callback(chromecast):
+            self.mass.event_loop.create_task(self.__chromecast_discovered(chromecast))
+        stop_discovery = pychromecast.get_chromecasts(blocking=False, callback=callback)
         
     ### Provider specific implementation #####
 
@@ -67,11 +71,6 @@ class ChromecastProvider(PlayerProvider):
 
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
-        count = 0
-        while self._chromecasts[player_id].is_busy and count < 10:
-            await asyncio.sleep(0.1)
-            count += 1
-        self._chromecasts[player_id].is_busy = True
         if cmd == 'play':
             self._players[player_id].powered = True
             if self._chromecasts[player_id].media_controller.status.player_is_playing:
@@ -110,8 +109,6 @@ class ChromecastProvider(PlayerProvider):
             self._chromecasts[player_id].set_volume_muted(False)
         elif cmd == 'mute':
             self._chromecasts[player_id].set_volume_muted(True)
-        self._chromecasts[player_id].wait()
-        self._chromecasts[player_id].is_busy = False
 
     async def player_queue(self, player_id, offset=0, limit=50):
         ''' return the current items in the player's queue '''
@@ -292,7 +289,6 @@ class ChromecastProvider(PlayerProvider):
                 """Plays media after chromecast has switched to requested app."""
                 queuedata['mediaSessionId'] = media_controller.status.media_session_id
                 media_controller.send_message(queuedata, inc_session_id=False)
-                castplayer.wait()
         if not media_controller.status.media_session_id:
             receiver_ctrl.launch_app(media_controller.app_id, callback_function=send_queue)
         else:
@@ -381,10 +377,12 @@ class ChromecastProvider(PlayerProvider):
         if added_player:
             if added_player in self._players:
                 self._players[added_player].group_parent = str(mz._uuid)
+                LOGGER.info("player %s added to group %s" %(self._players[added_player].name, self._players[str(mz._uuid)].name))
                 self.mass.event_loop.create_task(self.mass.player.update_player(self._players[added_player]))
         elif removed_player:
             if removed_player in self._players:
                 self._players[removed_player].group_parent = None
+                LOGGER.info("player %s removed from group %s" %(self._players[removed_player].name, self._players[str(mz._uuid)].name))
                 self.mass.event_loop.create_task(self.mass.player.update_player(self._players[removed_player]))
         else:
             for member in mz.members:
@@ -393,7 +391,7 @@ class ChromecastProvider(PlayerProvider):
                     self.mass.event_loop.create_task(self.mass.player.update_player(self._players[member]))
 
     async def __chromecast_discovered(self, chromecast):
-        LOGGER.debug("discovered chromecast: %s" % chromecast)
+        LOGGER.info("discovered chromecast: %s" % chromecast)
         player_id = str(chromecast.uuid)
         ip_change = False
         if player_id in self._chromecasts and chromecast.uri != self._chromecasts[player_id].uri:
@@ -426,7 +424,7 @@ class ChromecastProvider(PlayerProvider):
                 # TODO: persistant storage of player queue ?
                 self._player_queue[player_id] = []
                 self._player_queue_index[player_id] = 0
-            chromecast.wait()
+            chromecast.start()
 
     @run_periodic(600)
     async def __discover_chromecasts(self):
@@ -434,7 +432,6 @@ class ChromecastProvider(PlayerProvider):
         LOGGER.info('Running Chromecast discovery...')
         def callback(chromecast):
             self.mass.event_loop.create_task(self.__chromecast_discovered(chromecast))
-        
         stop_discovery = pychromecast.get_chromecasts(blocking=False, callback=callback)
         await asyncio.sleep(10)
         stop_discovery()

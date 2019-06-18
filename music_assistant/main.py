@@ -13,6 +13,7 @@ import slugify as unicode_slug
 import uuid
 import json
 import time
+# import stackimpact
 
 from database import Database
 from utils import run_periodic, LOGGER
@@ -49,6 +50,11 @@ class Main():
         self.music = Music(self)
         self.player = Player(self)
         self.http_streamer = HTTPStreamer(self)
+
+        # agent = stackimpact.start(
+        #     agent_key = '4a00b6f2c7da20f692807d204ab3760318978ba3',
+        #     app_name = 'MusicAssistant')
+        # print("profiler started...")
 
         # start the event loop
         try:
