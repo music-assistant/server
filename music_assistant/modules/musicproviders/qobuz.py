@@ -254,6 +254,7 @@ class QobuzProvider(MusicProvider):
     
     async def get_stream_details(self, track_id):
         ''' return the content details for the given track when it will be streamed'''
+        streamdetails = None
         for format_id in [27, 7, 6, 5]:
             # it seems that simply requesting for highest available quality does not work
             # from time to time the api response is empty for this request ?!
@@ -538,7 +539,7 @@ class QobuzProvider(MusicProvider):
                     LOGGER.error(url)
                     LOGGER.error(params)
                     LOGGER.error(result)
-                    result = None
+                    return None
                 return result
 
     async def __post_data(self, endpoint, params={}, data={}):
