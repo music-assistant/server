@@ -55,11 +55,7 @@ class ChromecastProvider(PlayerProvider):
         self._player_queue_index = {}
         self._player_queue_stream_startindex = {}
         self.supported_musicproviders = ['http']
-        #asyncio.ensure_future(self.__discover_chromecasts())
-        # start discovery
-        def callback(chromecast):
-            self.mass.event_loop.create_task(self.__chromecast_discovered(chromecast))
-        stop_discovery = pychromecast.get_chromecasts(blocking=False, callback=callback)
+        self.mass.event_loop.create_task(self.__chromecast_discovery())
         
     ### Provider specific implementation #####
 
@@ -378,12 +374,12 @@ class ChromecastProvider(PlayerProvider):
         if added_player:
             if added_player in self._players:
                 self._players[added_player].group_parent = str(mz._uuid)
-                LOGGER.info("player %s added to group %s" %(self._players[added_player].name, self._players[str(mz._uuid)].name))
+                LOGGER.debug("player %s added to group %s" %(self._players[added_player].name, self._players[str(mz._uuid)].name))
                 self.mass.event_loop.create_task(self.mass.player.update_player(self._players[added_player]))
         elif removed_player:
             if removed_player in self._players:
                 self._players[removed_player].group_parent = None
-                LOGGER.info("player %s removed from group %s" %(self._players[removed_player].name, self._players[str(mz._uuid)].name))
+                LOGGER.debug("player %s removed from group %s" %(self._players[removed_player].name, self._players[str(mz._uuid)].name))
                 self.mass.event_loop.create_task(self.mass.player.update_player(self._players[removed_player]))
         else:
             for member in mz.members:
@@ -391,52 +387,48 @@ class ChromecastProvider(PlayerProvider):
                     self._players[member].group_parent = str(mz._uuid)
                     self.mass.event_loop.create_task(self.mass.player.update_player(self._players[member]))
 
-    async def __chromecast_discovered(self, chromecast):
-        LOGGER.info("discovered chromecast: %s" % chromecast)
+    async def __chromecast_discovery(self):
+        ''' background non-blocking chromecast discovery and handler '''
+        stop_discovery = pychromecast.get_chromecasts(blocking=False, callback=self.__chromecast_discovered)
+        while True:
+            for cast in list(self._chromecasts.values()):
+                polltime = 0.1
+                can_read, _, _ = select.select([cast.socket_client.get_socket()], [], [], polltime)
+                if can_read:
+                    #received something on the socket, handle it with run_once()
+                    cast.socket_client.run_once()
+            await asyncio.sleep(1)
+    
+    def __chromecast_discovered(self, chromecast):
+        ''' callback when a new chromecast device is discovered '''
+        LOGGER.info("discovered chromecast: %s" % chromecast.name)
+        chromecast.connect()
         player_id = str(chromecast.uuid)
-        ip_change = False
-        if player_id in self._chromecasts and chromecast.uri != self._chromecasts[player_id].uri:
-            LOGGER.warning('Chromecast uri changed ?! - old: %s - new: %s' %(self._chromecasts[player_id].uri, chromecast.uri))
-            ip_change = True
-        if not player_id in self._players or ip_change:
-            player = MusicPlayer()
-            player.player_id = player_id
-            player.name = chromecast.name
-            player.player_provider = self.prov_id
-            chromecast.is_busy = False
-            # patch the receive message method for handling queue status updates
-            chromecast.queue = []
-            chromecast.media_controller.queue_items = []
-            chromecast.media_controller.queue_cur_id = None
-            chromecast.media_controller.receive_message = types.MethodType(receive_message, chromecast.media_controller)
-            listenerCast = StatusListener(chromecast, self.__handle_player_state, self.mass.event_loop)
-            chromecast.register_status_listener(listenerCast)
-            listenerMedia = StatusMediaListener(chromecast, self.__handle_player_state, self.mass.event_loop)
-            chromecast.media_controller.register_status_listener(listenerMedia)
-            if chromecast.cast_type == 'group':
-                player.is_group = True
-                mz = MultizoneController(chromecast.uuid)
-                mz.register_listener(MZListener(mz, self.__handle_group_members_update, self.mass.event_loop))
-                chromecast.register_handler(mz)
-                chromecast.register_connection_listener(MZConnListener(mz))
-            self._chromecasts[player_id] = chromecast
-            self._players[player_id] = player
-            if not player_id in self._player_queue:
-                # TODO: persistant storage of player queue ?
-                self._player_queue[player_id] = []
-                self._player_queue_index[player_id] = 0
-            chromecast.start()
-
-    @run_periodic(600)
-    async def __discover_chromecasts(self):
-        ''' discover chromecasts on the network '''
-        LOGGER.info('Running Chromecast discovery...')
-        def callback(chromecast):
-            self.mass.event_loop.create_task(self.__chromecast_discovered(chromecast))
-        stop_discovery = pychromecast.get_chromecasts(blocking=False, callback=callback)
-        await asyncio.sleep(10)
-        stop_discovery()
-        LOGGER.info('Finished Chromecast discovery...')
+        player = MusicPlayer()
+        player.player_id = player_id
+        player.name = chromecast.name
+        player.player_provider = self.prov_id
+        # patch the receive message method for handling queue status updates
+        chromecast.queue = []
+        chromecast.media_controller.queue_items = []
+        chromecast.media_controller.queue_cur_id = None
+        chromecast.media_controller.receive_message = types.MethodType(receive_message, chromecast.media_controller)
+        listenerCast = StatusListener(chromecast, self.__handle_player_state, self.mass.event_loop)
+        chromecast.register_status_listener(listenerCast)
+        listenerMedia = StatusMediaListener(chromecast, self.__handle_player_state, self.mass.event_loop)
+        chromecast.media_controller.register_status_listener(listenerMedia)
+        if chromecast.cast_type == 'group':
+            player.is_group = True
+            mz = MultizoneController(chromecast.uuid)
+            mz.register_listener(MZListener(mz, self.__handle_group_members_update, self.mass.event_loop))
+            chromecast.register_handler(mz)
+            chromecast.register_connection_listener(MZConnListener(mz))
+        self._chromecasts[player_id] = chromecast
+        self._players[player_id] = player
+        if not player_id in self._player_queue:
+            # TODO: persistant storage of player queue ?
+            self._player_queue[player_id] = []
+            self._player_queue_index[player_id] = 0
 
 def chunks(l, n):
     """Yield successive n-sized chunks from l."""
@@ -486,19 +478,6 @@ class MZListener:
     def multizone_status_received(self):
         asyncio.run_coroutine_threadsafe(
                 self.__handle_group_members_update(self._mz), self._loop)
-
-class SpController(SpotifyController):
-    """ Controller to interact with Spotify namespace. """
-    def receive_message(self, message, data):
-        """ handle the auth flow and active player selection """
-        if data['type'] == 'setCredentialsResponse':
-            self.send_message({'type': 'getInfo', 'payload': {}})
-        if data['type'] == 'setCredentialsError':
-            self.device = None
-        if data['type'] == 'getInfoResponse':
-            self.device = data['payload']['deviceID']
-            self.is_launched = True
-        return True
 
 def receive_message(self, message, data):
     """ Called when a media message is received. """
