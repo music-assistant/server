@@ -55,7 +55,7 @@ class ChromecastProvider(PlayerProvider):
         self._player_queue_index = {}
         self._player_queue_stream_startindex = {}
         self.supported_musicproviders = ['http']
-        self.mass.event_loop.create_task(self.__chromecast_discovery())
+        run_background_task(self.mass.bg_executor, self.__chromecast_discovery)
         
     ### Provider specific implementation #####
 
@@ -387,7 +387,7 @@ class ChromecastProvider(PlayerProvider):
                     self._players[member].group_parent = str(mz._uuid)
                     self.mass.event_loop.create_task(self.mass.player.update_player(self._players[member]))
 
-    async def __chromecast_discovery(self):
+    def __chromecast_discovery(self):
         ''' background non-blocking chromecast discovery and handler '''
         stop_discovery = pychromecast.get_chromecasts(blocking=False, callback=self.__chromecast_discovered)
         while True:
@@ -397,7 +397,7 @@ class ChromecastProvider(PlayerProvider):
                 if can_read:
                     #received something on the socket, handle it with run_once()
                     cast.socket_client.run_once()
-            await asyncio.sleep(1)
+            time.sleep(0.1)
     
     def __chromecast_discovered(self, chromecast):
         ''' callback when a new chromecast device is discovered '''
