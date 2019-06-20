@@ -49,7 +49,7 @@ class QobuzProvider(MusicProvider):
         self.__app_id = "285473059" # TEMP! Own key requested
         self.__app_secret = "47249d0eaefa6bf43a959c09aacdbce8" # TEMP! Own key requested
         self.__logged_in = False
-        self.throttler = Throttler(rate_limit=1, period=1)
+        self.throttler = Throttler(rate_limit=2, period=1)
         mass.event_loop.create_task(mass.add_event_listener(self.mass_event))
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
@@ -532,15 +532,19 @@ class QobuzProvider(MusicProvider):
             params["request_sig"] = request_sig
             params["app_id"] = self.__app_id
             params["user_auth_token"] = await self.__auth_token()
-        async with self.throttler:
-            async with self.http_session.get(url, headers=headers, params=params) as response:
-                result = await response.json()
-                if not result or 'error' in result:
-                    LOGGER.error(url)
-                    LOGGER.error(params)
-                    LOGGER.error(result)
-                    return None
-                return result
+        try:
+            async with self.throttler:
+                async with self.http_session.get(url, headers=headers, params=params) as response:
+                    result = await response.json()
+                    if not result or 'error' in result:
+                        LOGGER.error(url)
+                        LOGGER.error(params)
+                        LOGGER.error(result)
+                        return None
+                    return result
+        except Exception as exc:
+            LOGGER.exception(exc)
+            return None
 
     async def __post_data(self, endpoint, params={}, data={}):
         ''' post data to api'''

@@ -186,7 +186,7 @@ class HTTPStreamer():
         # retrieve player object
         player = await self.mass.player.player(player_id)
         queue_index = startindex
-        LOGGER.info("Start Queue Stream for player %s at index %s" %(player_id, queue_index))
+        LOGGER.info("Start Queue Stream for player %s at index %s" %(player.name, queue_index))
         last_fadeout_data = b''
         # report start of queue playback so we can calculate current track/duration etc.
         self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, True))
@@ -202,7 +202,7 @@ class HTTPStreamer():
             params = urllib.parse.parse_qs(queue_track.uri.split('?')[1])
             track_id = params['track_id'][0]
             provider = params['provider'][0]
-            LOGGER.info("Start Streaming queue track: %s - %s" % (track_id, queue_track.name))
+            LOGGER.info("Start Streaming queue track: %s (%s) on player %s" % (track_id, queue_track.name, player.name))
             fade_in_part = b''
             cur_chunk = 0
             prev_chunk = None
@@ -287,18 +287,17 @@ class HTTPStreamer():
             # move to next queue index
             queue_index += 1
             self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, False))
-            LOGGER.info("Finished Streaming queue track: %s - %s" % (track_id, queue_track.name))
+            LOGGER.info("Finished Streaming queue track: %s (%s) on player %s" % (track_id, queue_track.name, player.name))
             # break out the loop if the http session is cancelled
             if cancelled.is_set():
                 break
-        
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data:
             sox_proc.stdin.write(last_fadeout_data)
             await sox_proc.stdin.drain()
         sox_proc.stdin.close()
         await sox_proc.wait()
-        LOGGER.info("streaming of queue for player %s completed" % player_id)
+        LOGGER.info("streaming of queue for player %s completed" % player.name)
 
     async def __get_audio_stream(self, track_id, provider, player_id, cancelled,
                 chunksize=512000, resample=None):
@@ -351,7 +350,7 @@ class HTTPStreamer():
         if not cancelled.is_set():
             yield (True, prev_chunk)
             bytes_sent += len(prev_chunk)
-        await process.wait()
+        #await process.wait()
         if cancelled.is_set():
             LOGGER.warning("__get_audio_stream for track_id %s interrupted" % track_id)
         else:
@@ -404,7 +403,7 @@ class HTTPStreamer():
         track_loudness = await self.mass.db.get_track_loudness(track_id, provider)
         if track_loudness == None:
             # only when needed we do the analyze stuff
-            LOGGER.info('Start analyzing track %s' % track_id)
+            LOGGER.debug('Start analyzing track %s' % track_id)
             if streamdetails['type'] == 'url':
                 async with aiohttp.ClientSession() as session:
                     async with session.get(streamdetails["path"]) as resp:
@@ -423,7 +422,7 @@ class HTTPStreamer():
                 LOGGER.debug("Integrated loudness of track %s is: %s" %(track_id, loudness))
                 await self.mass.db.set_track_loudness(track_id, provider, loudness)
             del audio_data
-            LOGGER.info('Finished analyzing track %s' % track_id)
+            LOGGER.debug('Finished analyzing track %s' % track_id)
         self.analyze_jobs.pop(track_key, None)
     
     async def __get_track_gain_correct(self, track_id, provider):
