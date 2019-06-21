@@ -391,19 +391,25 @@ class ChromecastProvider(PlayerProvider):
         ''' background non-blocking chromecast discovery and handler '''
         stop_discovery = pychromecast.get_chromecasts(blocking=False, callback=self.__chromecast_discovered)
         while True:
-            for cast in list(self._chromecasts.values()):
+            for player_id in list(self._chromecasts.keys()):
+                cast = self._chromecasts[player_id]
                 polltime = 0.1
                 can_read, _, _ = select.select([cast.socket_client.get_socket()], [], [], polltime)
                 if can_read:
-                    #received something on the socket, handle it with run_once()
                     cast.socket_client.run_once()
-            time.sleep(0.1)
+            time.sleep(0.2)
     
     def __chromecast_discovered(self, chromecast):
         ''' callback when a new chromecast device is discovered '''
         LOGGER.info("discovered chromecast: %s" % chromecast.name)
-        chromecast.connect()
         player_id = str(chromecast.uuid)
+        if player_id in self._chromecasts:
+            # cleanup old object
+            LOGGER.info("IP of %s changed" % chromecast.name)
+            self._chromecasts[player_id].socket_client.stop.set()
+            time.sleep(0.5)
+            self._chromecasts.pop(player_id, None)
+        chromecast.connect()
         player = MusicPlayer()
         player.player_id = player_id
         player.name = chromecast.name
