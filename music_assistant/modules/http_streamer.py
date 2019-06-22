@@ -280,19 +280,20 @@ class HTTPStreamer():
                 while buffer.qsize() > 1 and not cancelled.is_set():
                     await asyncio.sleep(1)
             # end of the track reached
-            # WIP: update actual duration to the queue for more accurate now playing info
-            accurate_duration = bytes_written / int(sample_rate * 4 * 2)
-            queue_track.duration = accurate_duration
-            self.mass.player.providers[player.player_provider]._player_queue[player_id][queue_index] = queue_track
-            # move to next queue index
-            queue_index += 1
-            self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, False))
-            LOGGER.info("Finished Streaming queue track: %s (%s) on player %s" % (track_id, queue_track.name, player.name))
-            # break out the loop if the http session is cancelled
             if cancelled.is_set():
+                # break out the loop if the http session is cancelled
                 break
+            else:
+                # WIP: update actual duration to the queue for more accurate now playing info
+                accurate_duration = bytes_written / int(sample_rate * 4 * 2)
+                queue_track.duration = accurate_duration
+                self.mass.player.providers[player.player_provider]._player_queue[player_id][queue_index] = queue_track
+                # move to next queue index
+                queue_index += 1
+                self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, False))
+                LOGGER.info("Finished Streaming queue track: %s (%s) on player %s" % (track_id, queue_track.name, player.name))
         # end of queue reached, pass last fadeout bits to final output
-        if last_fadeout_data:
+        if last_fadeout_data and not cancelled.is_set():
             sox_proc.stdin.write(last_fadeout_data)
             await sox_proc.stdin.drain()
         sox_proc.stdin.close()

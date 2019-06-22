@@ -101,7 +101,10 @@ class ChromecastProvider(PlayerProvider):
             self._players[player_id].powered = True
             await self.mass.player.update_player(self._players[player_id])
         elif cmd == 'volume':
-            self._chromecasts[player_id].set_volume(try_parse_int(cmd_args)/100)
+            new_volume = try_parse_int(cmd_args)
+            self._chromecasts[player_id].set_volume(new_volume/100)
+            self._players[player_id].volume_level = new_volume
+            await self.mass.player.update_player(self._players[player_id])
         elif cmd == 'mute' and cmd_args == 'off':
             self._chromecasts[player_id].set_volume_muted(False)
         elif cmd == 'mute':
