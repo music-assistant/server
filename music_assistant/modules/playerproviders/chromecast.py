@@ -389,36 +389,41 @@ class ChromecastProvider(PlayerProvider):
                 if member in self._players:
                     self._players[member].group_parent = str(mz._uuid)
                     self.mass.event_loop.create_task(self.mass.player.update_player(self._players[member]))
-
+    
     def __chromecast_discovery(self):
         ''' background non-blocking chromecast discovery and handler '''
-        stop_discovery = pychromecast.get_chromecasts(blocking=False, callback=self.__chromecast_discovered)
-        while True:
-            for player_id in list(self._chromecasts.keys()):
-                cast = self._chromecasts[player_id]
-                polltime = 0.1
-                can_read, _, _ = select.select([cast.socket_client.get_socket()], [], [], polltime)
-                if can_read:
-                    cast.socket_client.run_once()
-            time.sleep(0.2)
+        from pychromecast.discovery import start_discovery, stop_discovery
+        def internal_callback(name):
+            """Called when zeroconf has discovered a new chromecast."""
+            self.__chromecast_discovered(listener.services[name])
+        def internal_stop():
+            """Stops discovery of new chromecasts."""
+            stop_discovery(browser)
+        listener, browser = start_discovery(internal_callback)
+        return internal_stop
     
-    def __chromecast_discovered(self, chromecast):
-        ''' callback when a new chromecast device is discovered '''
-        LOGGER.info("discovered chromecast: %s" % chromecast.name)
-        player_id = str(chromecast.uuid)
+    def __chromecast_discovered(self, discovery_info):
+        ''' callback when a (new) chromecast device is discovered '''
+        ip_address, port, uuid, model_name, friendly_name = discovery_info
+        player_id = str(uuid)
         if player_id in self._chromecasts:
             # cleanup old object
-            LOGGER.info("IP of %s changed" % chromecast.name)
             self._chromecasts[player_id].socket_client.stop.set()
-            time.sleep(0.5)
             self._chromecasts.pop(player_id, None)
-        chromecast.connect()
-        player = MusicPlayer()
-        player.player_id = player_id
-        player.name = chromecast.name
-        player.player_provider = self.prov_id
+        from pychromecast import _get_chromecast_from_host, ChromecastConnectionError
+        try:
+            chromecast = _get_chromecast_from_host(discovery_info)
+        except ChromecastConnectionError:
+            LOGGER.warning("Could not connect to device")
+            return
+        LOGGER.info("discovered chromecast: %s - %s:%s" % (friendly_name, ip_address, port))
+        if not player_id in self._players:
+            player = MusicPlayer()
+            player.player_id = player_id
+            player.name = chromecast.name
+            player.player_provider = self.prov_id
+            self._players[player_id] = player
         # patch the receive message method for handling queue status updates
-        chromecast.queue = []
         chromecast.media_controller.queue_items = []
         chromecast.media_controller.queue_cur_id = None
         chromecast.media_controller.receive_message = types.MethodType(receive_message, chromecast.media_controller)
@@ -427,29 +432,40 @@ class ChromecastProvider(PlayerProvider):
         listenerMedia = StatusMediaListener(chromecast, self.__handle_player_state, self.mass.event_loop)
         chromecast.media_controller.register_status_listener(listenerMedia)
         if chromecast.cast_type == 'group':
-            player.is_group = True
+            self._players[player_id].is_group = True
             mz = MultizoneController(chromecast.uuid)
             mz.register_listener(MZListener(mz, self.__handle_group_members_update, self.mass.event_loop))
             chromecast.register_handler(mz)
             chromecast.register_connection_listener(MZConnListener(mz))
+            chromecast.mz = mz
+        chromecast.wait()
         self._chromecasts[player_id] = chromecast
-        self._players[player_id] = player
         if not player_id in self._player_queue:
             # TODO: persistant storage of player queue ?
             self._player_queue[player_id] = []
             self._player_queue_index[player_id] = 0
+        self.update_all_group_members()
+        # turn on player if it was previously turned on
+        if self._players[player_id].powered:
+            self.mass.event_loop.create_task(self.mass.player.player_command(player_id, "power", "on"))
+
+    def update_all_group_members(self):
+        ''' force member update of all cast groups '''
+        for cast in list(self._chromecasts.values()):
+            if cast.cast_type == 'group':
+                cast.mz.update_members()
 
 def chunks(l, n):
     """Yield successive n-sized chunks from l."""
     for i in range(0, len(l), n):
         yield l[i:i + n]
 
+
 class StatusListener:
     def __init__(self, chromecast, callback, loop):
         self.chromecast = chromecast
         self.__handle_player_state = callback
         self.loop = loop
-
     def new_cast_status(self, status):
         asyncio.run_coroutine_threadsafe(self.__handle_player_state(self.chromecast, caststatus=status), self.loop)
 
@@ -458,7 +474,6 @@ class StatusMediaListener:
         self.chromecast= chromecast
         self.__handle_player_state = callback
         self.loop = loop
-
     def new_media_status(self, status):
         asyncio.run_coroutine_threadsafe(self.__handle_player_state(self.chromecast, mediastatus=status), self.loop)
 
