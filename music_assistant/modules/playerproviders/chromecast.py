@@ -55,7 +55,11 @@ class ChromecastProvider(PlayerProvider):
         self._player_queue_index = {}
         self._player_queue_stream_startindex = {}
         self.supported_musicproviders = ['http']
-        run_background_task(self.mass.bg_executor, self.__chromecast_discovery)
+        abort_discovery = self.__chromecast_discovery()
+        def on_shutdown(msg, msg_details):
+            LOGGER.info('stopping Chromecast discovery...')
+            abort_discovery()
+        mass.add_event_listener(on_shutdown, 'system_shutdown')
         
     ### Provider specific implementation #####
 
@@ -395,14 +399,16 @@ class ChromecastProvider(PlayerProvider):
         from pychromecast.discovery import start_discovery, stop_discovery
         def internal_callback(name):
             """Called when zeroconf has discovered a new chromecast."""
-            self.__chromecast_discovered(listener.services[name])
+            #self.__chromecast_discovered(listener.services[name])
+            asyncio.run_coroutine_threadsafe(
+                    self.__chromecast_discovered(listener.services[name]), self.mass.event_loop)
         def internal_stop():
             """Stops discovery of new chromecasts."""
             stop_discovery(browser)
         listener, browser = start_discovery(internal_callback)
         return internal_stop
     
-    def __chromecast_discovered(self, discovery_info):
+    async def __chromecast_discovered(self, discovery_info):
         ''' callback when a (new) chromecast device is discovered '''
         ip_address, port, uuid, model_name, friendly_name = discovery_info
         player_id = str(uuid)

@@ -61,24 +61,31 @@ class Main():
             self.event_loop.run_forever()
         except (KeyboardInterrupt, SystemExit):
             LOGGER.info('Exit requested!')
+            self.signal_event("system_shutdown")
+            self.event_loop.stop()
             self.save_config()
+            time.sleep(5)
             self.event_loop.close()
             LOGGER.info('Shutdown complete.')
 
-    async def event(self, msg, msg_details=None):
-        ''' signal event '''
+    def signal_event(self, msg, msg_details=None):
+        ''' signal (systemwide) event '''
         LOGGER.debug("Event: %s - %s" %(msg, msg_details))
         listeners = list(self.event_listeners.values())
-        for listener in listeners:
-            await listener(msg, msg_details)
+        for callback, eventfilter in listeners:
+            if not eventfilter or eventfilter in msg:
+                if not asyncio.iscoroutinefunction(callback):
+                    callback(msg, msg_details)
+                else:
+                    self.event_loop.create_task(callback(msg, msg_details))
 
-    async def add_event_listener(self, cb):
+    def add_event_listener(self, cb, eventfilter=None):
         ''' add callback to our event listeners '''
         cb_id = str(uuid.uuid4())
-        self.event_listeners[cb_id] = cb
+        self.event_listeners[cb_id] = (cb, eventfilter)
         return cb_id
 
-    async def remove_event_listener(self, cb_id):
+    def remove_event_listener(self, cb_id):
         ''' remove callback from our event listeners '''
         self.event_listeners.pop(cb_id, None)
 

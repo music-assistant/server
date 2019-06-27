@@ -196,13 +196,13 @@ class HTTPStreamer():
                 queue_tracks = await self.mass.player.player_queue(player_id, queue_index, queue_index+1)
                 queue_track = queue_tracks[0]
             except IndexError:
-                LOGGER.info("queue index out of range or end reached")
+                LOGGER.warning("queue index out of range or end reached")
                 break
 
             params = urllib.parse.parse_qs(queue_track.uri.split('?')[1])
             track_id = params['track_id'][0]
             provider = params['provider'][0]
-            LOGGER.info("Start Streaming queue track: %s (%s) on player %s" % (track_id, queue_track.name, player.name))
+            LOGGER.debug("Start Streaming queue track: %s (%s) on player %s" % (track_id, queue_track.name, player.name))
             fade_in_part = b''
             cur_chunk = 0
             prev_chunk = None
@@ -248,7 +248,10 @@ class HTTPStreamer():
                             stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE)
                     last_part, stderr = await process.communicate(prev_chunk + chunk)
                     if len(last_part) < fade_bytes:
-                        # not enough data for crossfade duration
+                        # not enough data for crossfade duration after the strip action...
+                        last_part = prev_chunk + chunk
+                    if len(last_part) < fade_bytes:
+                        # still not enough data so we'll skip the crossfading
                         LOGGER.warning("not enough data for fadeout so skip crossfade... %s" % len(last_part))
                         sox_proc.stdin.write(last_part)
                         bytes_written += len(last_part)
@@ -291,7 +294,7 @@ class HTTPStreamer():
                 # move to next queue index
                 queue_index += 1
                 self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, False))
-                LOGGER.info("Finished Streaming queue track: %s (%s) on player %s" % (track_id, queue_track.name, player.name))
+                LOGGER.debug("Finished Streaming queue track: %s (%s) on player %s" % (track_id, queue_track.name, player.name))
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data and not cancelled.is_set():
             sox_proc.stdin.write(last_fadeout_data)
@@ -315,15 +318,18 @@ class HTTPStreamer():
             sox_effects += ' rate -v %s' % resample
         # stream audio from provider
         streamdetails = asyncio.run_coroutine_threadsafe(
-                self.mass.music.providers[provider].get_stream_details(track_id), self.mass.event_loop).result()
+                self.mass.music.providers[provider].get_stream_details(track_id), 
+                self.mass.event_loop).result()
         if not streamdetails:
             yield (True, b'')
             return
         # TODO: add support for AAC streams (which sox doesn't natively support)
         if streamdetails['type'] == 'url':
-            args = 'sox -t %s "%s" -t %s - %s %s' % (streamdetails["content_type"], streamdetails["path"], outputfmt, gain_correct, sox_effects)
+            args = 'sox -t %s "%s" -t %s - %s %s' % (streamdetails["content_type"], 
+                    streamdetails["path"], outputfmt, gain_correct, sox_effects)
         elif streamdetails['type'] == 'executable':
-            args = '%s | sox -t %s - -t %s - %s %s' % (streamdetails["path"], streamdetails["content_type"], outputfmt, gain_correct, sox_effects)
+            args = '%s | sox -t %s - -t %s - %s %s' % (streamdetails["path"], 
+                    streamdetails["content_type"], outputfmt, gain_correct, sox_effects)
         LOGGER.debug("Running sox with args: %s" % args)
         process = await asyncio.create_subprocess_shell(args,
                 stdout=asyncio.subprocess.PIPE)
@@ -331,7 +337,7 @@ class HTTPStreamer():
         streamdetails["provider"] = provider
         streamdetails["track_id"] = track_id
         streamdetails["player_id"] = player_id
-        self.mass.event_loop.create_task(self.mass.event('streaming_started', streamdetails))
+        self.mass.signal_event('streaming_started', streamdetails)
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
         prev_chunk = b''
@@ -355,7 +361,7 @@ class HTTPStreamer():
         if cancelled.is_set():
             LOGGER.warning("__get_audio_stream for track_id %s interrupted" % track_id)
         else:
-            LOGGER.info("__get_audio_stream for track_id %s completed" % track_id)
+            LOGGER.debug("__get_audio_stream for track_id %s completed" % track_id)
         # fire event that streaming has ended for this track (needed by some streaming providers)
         if resample:
             bytes_per_second = resample * (32/8) * 2
@@ -363,7 +369,7 @@ class HTTPStreamer():
             bytes_per_second = streamdetails["sample_rate"] * (streamdetails["bit_depth"]/8) * 2
         seconds_streamed = int(bytes_sent/bytes_per_second)
         streamdetails["seconds"] = seconds_streamed
-        self.mass.event_loop.create_task(self.mass.event('streaming_ended', streamdetails))
+        self.mass.signal_event('streaming_ended', streamdetails)
         # send task to background to analyse the audio
         self.mass.event_loop.create_task(self.__analyze_audio(track_id, provider))
 

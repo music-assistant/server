@@ -119,10 +119,11 @@ class Web():
         media_type = media_type_from_string(media_type_str)
         media_id = request.match_info.get('media_id')
         action = request.match_info.get('action','')
+        action_details = request.rel_url.query.get('action_details')
         lazy = request.rel_url.query.get('lazy', '') != 'false'
         provider = request.rel_url.query.get('provider')
         if action:
-            result = await self.mass.music.item_action(media_id, media_type, provider, action)
+            result = await self.mass.music.item_action(media_id, media_type, provider, action, action_details)
         else:
             result = await self.mass.music.item(media_id, media_type, provider, lazy=lazy)
         return web.json_response(result, dumps=json_serializer)
@@ -225,7 +226,7 @@ class Web():
             async def send_event(msg, msg_details):
                 ws_msg = {"message": msg, "message_details": msg_details }
                 await ws.send_json(ws_msg, dumps=json_serializer)
-            cb_id = await self.mass.add_event_listener(send_event)
+            cb_id = self.mass.add_event_listener(send_event)
             # process incoming messages
             async for msg in ws:
                 if msg.type != aiohttp.WSMsgType.TEXT:
@@ -243,8 +244,8 @@ class Web():
                     cmd_args = msg_data_parts[4] if len(msg_data_parts) == 5 else None
                     await self.mass.player.player_command(player_id, cmd, cmd_args)
         finally:
-            await self.mass.remove_event_listener(cb_id)
-        LOGGER.info('websocket connection closed')
+            self.mass.remove_event_listener(cb_id)
+        LOGGER.debug('websocket connection closed')
         return ws
 
     async def get_config(self, request):
@@ -252,17 +253,24 @@ class Web():
         return web.json_response(self.mass.config)
 
     async def save_config(self, request):
-        ''' save the config '''
+        ''' save (partial) config '''
         LOGGER.debug('save config called from api')
         new_config = await request.json()
+        config_changed = False
         for key, value in self.mass.config.items():
             if isinstance(value, dict):
                 for subkey, subvalue in value.items():
                     if subkey in new_config[key]:
-                        self.mass.config[key][subkey] = new_config[key][subkey]
+                        if self.mass.config[key][subkey] != new_config[key][subkey]:
+                            config_changed = True
+                            self.mass.config[key][subkey] = new_config[key][subkey]
             elif key in new_config:
-                self.mass.config[key] = new_config[key]
-        self.mass.save_config()
+                if self.mass.config[key] != new_config[key]:
+                    config_changed = True
+                    self.mass.config[key] = new_config[key]
+        if config_changed:
+            self.mass.save_config()
+            self.mass.signal_event('config_changed')
         return web.Response(text='success')
 
     async def json_rpc(self, request):
@@ -298,5 +306,7 @@ class Web():
             await self.mass.player.player_command(player_id, 'volume', 'down')
         elif cmd_str == 'button power':
             await self.mass.player.player_command(player_id, 'power', 'toggle')
+        else:
+            return web.Response(text='command not supported')
         return web.Response(text='success')
         

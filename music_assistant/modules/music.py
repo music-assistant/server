@@ -195,11 +195,11 @@ class Music():
                 items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
         return result
 
-    async def item_action(self, item_id, media_type, provider='database', action=None):
+    async def item_action(self, item_id, media_type, provider, action, action_details=None):
         ''' perform action on item (such as library add/remove) '''
         result = None
         item = await self.item(item_id, media_type, provider)
-        if item and action in ['add', 'remove']:
+        if item and action in ['library_add', 'library_remove']:
             # remove or add item to the library
             for prov_mapping in result.provider_ids:
                 prov_id = prov_mapping['provider']

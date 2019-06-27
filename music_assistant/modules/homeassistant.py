@@ -72,7 +72,7 @@ class HomeAssistant():
         self.__last_id = 10
         LOGGER.info('Homeassistant integration is enabled')
         mass.event_loop.create_task(self.__hass_websocket())
-        mass.event_loop.create_task(self.mass.add_event_listener(self.mass_event))
+        self.mass.add_event_listener(self.mass_event, "player updated")
         mass.event_loop.create_task(self.__get_sources())
 
     async def get_state(self, entity_id, attribute='state', register_listener=None):

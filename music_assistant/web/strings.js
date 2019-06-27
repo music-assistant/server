@@ -16,6 +16,8 @@ const messages = {
         type_to_search: "Type here to search...",
         add_library: "Add to library",
         remove_library: "Remove from library",
+        add_playlist: "Add to playlist...",
+        remove_playlist: "Remove from playlist",
         // settings strings
         conf: {
             enabled: "Enabled",
@@ -102,6 +104,8 @@ const messages = {
         type_to_search: "Type hier om te zoeken...",
         add_library: "Voeg toe aan bibliotheek",
         remove_library: "Verwijder uit bibliotheek",
+        add_playlist: "Aan playlist toevoegen...",
+        remove_playlist: "Verwijder uit playlist",
         // settings strings
         conf: {
             enabled: "Ingeschakeld",

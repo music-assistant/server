@@ -86,9 +86,9 @@
             function toggleLibrary (item) {
                 var endpoint = "/api/" + item.media_type + "/";
                 item_id = item.item_id.toString();
-                var action = "/remove"
+                var action = "/library_remove"
                 if (item.in_library.length == 0)
-                    action = "/add"
+                    action = "/library_add"
                 var url = endpoint + item_id + action;
                 console.log('loading ' + url);
                 axios
@@ -96,7 +96,7 @@
                     .then(result => {
                         data = result.data;
                         console.log(data);
-                        if (action == "/remove")
+                        if (action == "/library_remove")
                             item.in_library = []
                         else
                         item.in_library = [provider]

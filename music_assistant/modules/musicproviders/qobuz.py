@@ -50,7 +50,8 @@ class QobuzProvider(MusicProvider):
         self.__app_secret = "47249d0eaefa6bf43a959c09aacdbce8" # TEMP! Own key requested
         self.__logged_in = False
         self.throttler = Throttler(rate_limit=2, period=1)
-        mass.event_loop.create_task(mass.add_event_listener(self.mass_event))
+        mass.add_event_listener(self.mass_event, 'streaming_started')
+        mass.add_event_listener(self.mass_event, 'streaming_ended')
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''
@@ -262,8 +263,6 @@ class QobuzProvider(MusicProvider):
             streamdetails = await self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True)
             if streamdetails and streamdetails.get('url'):
                 break
-            else:
-                await asyncio.sleep(1)
         if not streamdetails or not streamdetails.get('url'):
             LOGGER.error("Unable to retrieve stream url for track %s" % track_id)
             return None
@@ -305,7 +304,7 @@ class QobuzProvider(MusicProvider):
             await self.__post_data("track/reportStreamingStart", data=events)
     
     async def __parse_artist(self, artist_obj):
-        ''' parse spotify artist object to generic layout '''
+        ''' parse qobuz artist object to generic layout '''
         artist = Artist()
         if not artist_obj.get('id'):
             return None
@@ -329,7 +328,7 @@ class QobuzProvider(MusicProvider):
         return artist
 
     async def __parse_album(self, album_obj):
-        ''' parse spotify album object to generic layout '''
+        ''' parse qobuz album object to generic layout '''
         album = Album()
         if not album_obj.get('id') or not album_obj["streamable"] or not album_obj["displayable"]:
             # some safety checks
@@ -375,7 +374,7 @@ class QobuzProvider(MusicProvider):
         return album
 
     async def __parse_track(self, track_obj):
-        ''' parse spotify track object to generic layout '''
+        ''' parse qobuz track object to generic layout '''
         track = Track()
         if not track_obj.get('id') or not track_obj["streamable"] or not track_obj["displayable"]:
             # some safety checks
@@ -450,7 +449,7 @@ class QobuzProvider(MusicProvider):
         return track
 
     async def __parse_playlist(self, playlist_obj):
-        ''' parse spotify playlist object to generic layout '''
+        ''' parse qobuz playlist object to generic layout '''
         playlist = Playlist()
         if not playlist_obj.get('id'):
             return None
@@ -538,8 +537,8 @@ class QobuzProvider(MusicProvider):
                     result = await response.json()
                     if not result or 'error' in result:
                         LOGGER.error(url)
-                        LOGGER.error(params)
-                        LOGGER.error(result)
+                        LOGGER.debug(params)
+                        LOGGER.debug(result)
                         return None
                     return result
         except Exception as exc:
@@ -555,7 +554,7 @@ class QobuzProvider(MusicProvider):
             result = await response.json()
             if not result or 'error' in result:
                 LOGGER.error(url)
-                LOGGER.error(params)
-                LOGGER.error(result)
+                LOGGER.debug(params)
+                LOGGER.debug(result)
                 result = None
             return result

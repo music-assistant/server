@@ -156,7 +156,7 @@ class Player():
     async def remove_player(self, player_id):
         ''' handle a player remove '''
         self._players.pop(player_id, None)
-        asyncio.ensure_future(self.mass.event('player removed', player_id))
+        self.mass.signal_event('player removed', player_id)
 
     async def trigger_update(self, player_id):
         ''' manually trigger update for a player '''
@@ -212,7 +212,7 @@ class Player():
                     LOGGER.debug('key changed: %s for player %s - new value: %s' % (key, player.name, new_value))
         if player_changed:
             # player is added or updated!
-            asyncio.ensure_future(self.mass.event('player updated', player))
+            self.mass.signal_event('player updated', player)
             if player_details.is_group:
                 # is groupplayer, trigger update of its childs
                 player_childs = [item for item in self._players.values() if item.group_parent == player_id]

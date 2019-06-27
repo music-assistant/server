@@ -3,7 +3,7 @@ Vue.component("playmenu", {
 	<v-dialog :value="value" @input="$emit('input', $event)" max-width="500px" v-if="$globals.playmenuitem">
         <v-card>
 		<v-list>
-		<v-subheader class="title">{{ !!$globals.playmenuitem ? $globals.playmenuitem.name : 'nix' }}</v-subheader>
+		<v-subheader class="title">{{ !!$globals.playmenuitem ? $globals.playmenuitem.name : '' }}</v-subheader>
 			<v-subheader>{{ $t('play_on') }} {{ active_player.name }}</v-subheader>
 			
 			<v-list-tile avatar @click="itemClick('play')">
@@ -45,6 +45,26 @@ Vue.component("playmenu", {
 				</v-list-tile-content>
 			</v-list-tile>
 			<v-divider v-if="$globals.playmenuitem.media_type == 3"/>
+
+			<v-list-tile avatar @click="itemClick('add_playlist')" v-if="$globals.playmenuitem.media_type == 3">
+				<v-list-tile-avatar>
+					<v-icon>add_circle_outline</v-icon>
+				</v-list-tile-avatar>
+				<v-list-tile-content>
+					<v-list-tile-title>{{ $t('add_playlist') }}</v-list-tile-title>
+				</v-list-tile-content>
+			</v-list-tile>
+			<v-divider v-if="$globals.playmenuitem.media_type == 3"/>
+
+			<v-list-tile avatar @click="itemClick('remove_playlist')" v-if="$globals.playmenuitem.media_type == 3 && this.$route.path.startsWith('/playlists/')">
+				<v-list-tile-avatar>
+					<v-icon>remove_circle_outline</v-icon>
+				</v-list-tile-avatar>
+				<v-list-tile-content>
+					<v-list-tile-title>{{ $t('remove_playlist') }}</v-list-tile-title>
+				</v-list-tile-content>
+			</v-list-tile>
+			<v-divider v-if="$globals.playmenuitem.media_type == 3  && this.$route.path.startsWith('/playlists/')"/>
 			
 		</v-list>
         </v-card>
@@ -62,12 +82,12 @@ Vue.component("playmenu", {
 	created() { },
 	methods: { 
 		itemClick(cmd) {
-      if (cmd == 'info')
+      		if (cmd == 'info')
 				this.$router.push({ path: '/tracks/' + this.$globals.playmenuitem.item_id, query: {provider: this.$globals.playmenuitem.provider}})
 			else
 				this.$emit('playItem', this.$globals.playmenuitem, cmd)
 			// close dialog
 			this.$globals.showplaymenu = false;
-    },
+    	},
 	}
   })
