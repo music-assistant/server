@@ -127,7 +127,7 @@ class QobuzProvider(MusicProvider):
     async def get_playlists(self) -> List[Playlist]:
         ''' retrieve playlists from the provider '''
         result = []
-        for item in await self.__get_all_items("playlist/getUserPlaylists", key='playlists'):
+        for item in await self.__get_all_items("playlist/getUserPlaylists", key='playlists', ignore_cache=True):
             playlist = await self.__parse_playlist(item)
             if playlist:
                 result.append(playlist)
