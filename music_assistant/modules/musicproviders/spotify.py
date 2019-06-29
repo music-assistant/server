@@ -123,7 +123,7 @@ class SpotifyProvider(MusicProvider):
     async def get_playlists(self) -> List[Playlist]:
         ''' retrieve playlists from the provider '''
         result = []
-        for item in await self.__get_all_items("me/playlists", ignore_cache=True):
+        for item in await self.__get_all_items("me/playlists", cache_checksum=time.time()):
             playlist = await self.__parse_playlist(item)
             if playlist:
                 result.append(playlist)
