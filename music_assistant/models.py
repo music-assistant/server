@@ -210,6 +210,8 @@ class MusicProvider():
         lookup_albums = await self.get_artist_albums(artist_details.item_id)
         for lookup_album in lookup_albums[:5]:
             lookup_album_upc = None
+            if not lookup_album:
+                continue
             for item in lookup_album.external_ids:
                 if item.get("upc"):
                     lookup_album_upc = item["upc"]
@@ -222,6 +224,8 @@ class MusicProvider():
         if not musicbrainz_id:
             lookup_tracks = await self.get_artist_toptracks(artist_details.item_id)
             for lookup_track in lookup_tracks:
+                if not lookup_track:
+                    continue
                 lookup_track_isrc = None
                 for item in lookup_track.external_ids:
                     if item.get("isrc"):

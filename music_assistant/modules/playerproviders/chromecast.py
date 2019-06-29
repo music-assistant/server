@@ -42,7 +42,7 @@ def config_entries():
         ]
 
 class ChromecastProvider(PlayerProvider):
-    ''' support for Home Assistant '''
+    ''' support for ChromeCast Audio '''
 
     def __init__(self, mass):
         self.prov_id = 'chromecast'
@@ -64,7 +64,10 @@ class ChromecastProvider(PlayerProvider):
     ### Provider specific implementation #####
 
     async def player_config_entries(self):
-        ''' get the player config entries for this provider (list with key/value pairs)'''
+        ''' 
+            get the player config entries for this provider 
+            (list with key/value pairs)
+        '''
         return [
             ("crossfade_duration", 0, "crossfade_duration"),
             ]
@@ -135,7 +138,7 @@ class ChromecastProvider(PlayerProvider):
             # overwrite queue with new items
             self._player_queue[player_id] = media_items
             if enable_crossfade and not is_radio:
-                await self.__play_stream_queue(player_id, cur_queue_index)
+                await self.__play_stream_queue(player_id, 0)
             else:
                 await self.__queue_load(player_id, self._player_queue[player_id], 0)
         elif queue_opt == 'play':
@@ -399,7 +402,6 @@ class ChromecastProvider(PlayerProvider):
         from pychromecast.discovery import start_discovery, stop_discovery
         def internal_callback(name):
             """Called when zeroconf has discovered a new chromecast."""
-            #self.__chromecast_discovered(listener.services[name])
             asyncio.run_coroutine_threadsafe(
                     self.__chromecast_discovered(listener.services[name]), self.mass.event_loop)
         def internal_stop():
@@ -473,7 +475,8 @@ class StatusListener:
         self.__handle_player_state = callback
         self.loop = loop
     def new_cast_status(self, status):
-        asyncio.run_coroutine_threadsafe(self.__handle_player_state(self.chromecast, caststatus=status), self.loop)
+        asyncio.run_coroutine_threadsafe(
+                self.__handle_player_state(self.chromecast, caststatus=status), self.loop)
 
 class StatusMediaListener:
     def __init__(self, chromecast, callback, loop):
@@ -481,7 +484,8 @@ class StatusMediaListener:
         self.__handle_player_state = callback
         self.loop = loop
     def new_media_status(self, status):
-        asyncio.run_coroutine_threadsafe(self.__handle_player_state(self.chromecast, mediastatus=status), self.loop)
+        asyncio.run_coroutine_threadsafe(
+                self.__handle_player_state(self.chromecast, mediastatus=status), self.loop)
 
 class MZConnListener:
     def __init__(self, mz):
@@ -499,11 +503,13 @@ class MZListener:
 
     def multizone_member_added(self, uuid):
         asyncio.run_coroutine_threadsafe(
-                self.__handle_group_members_update(self._mz, added_player=str(uuid)), self._loop)
+                self.__handle_group_members_update(
+                        self._mz, added_player=str(uuid)), self._loop)
 
     def multizone_member_removed(self, uuid):
         asyncio.run_coroutine_threadsafe(
-                self.__handle_group_members_update(self._mz, removed_player=str(uuid)), self._loop)
+                self.__handle_group_members_update(
+                        self._mz, removed_player=str(uuid)), self._loop)
 
     def multizone_status_received(self):
         asyncio.run_coroutine_threadsafe(
