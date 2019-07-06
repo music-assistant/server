@@ -400,7 +400,7 @@ class ChromecastProvider(PlayerProvider):
             LOGGER.info('stopping Chromecast discovery...')
             stop_discovery(browser)
         listener, browser = start_discovery(internal_callback)
-        mass.add_event_listener(internal_stop, 'system_shutdown')
+        self.mass.add_event_listener(internal_stop, 'system_shutdown')
     
     async def __chromecast_discovered(self, discovery_info):
         ''' callback when a (new) chromecast device is discovered '''
