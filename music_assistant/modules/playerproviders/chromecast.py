@@ -14,14 +14,9 @@ import aiohttp
 import time
 import datetime
 import hashlib
-from asyncio_throttle import Throttler
-from aiocometd import Client, ConnectionType, Extension
-from modules.cache import use_cache
-import copy
 import pychromecast
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.controllers import BaseController
-from pychromecast.controllers.spotify import SpotifyController
 from pychromecast.controllers.media import MediaController
 import types
 import urllib
@@ -55,11 +50,7 @@ class ChromecastProvider(PlayerProvider):
         self._player_queue_index = {}
         self._player_queue_stream_startindex = {}
         self.supported_musicproviders = ['http']
-        abort_discovery = self.__chromecast_discovery()
-        def on_shutdown(msg, msg_details):
-            LOGGER.info('stopping Chromecast discovery...')
-            abort_discovery()
-        mass.add_event_listener(on_shutdown, 'system_shutdown')
+        self.__chromecast_discovery()
         
     ### Provider specific implementation #####
 
@@ -404,11 +395,12 @@ class ChromecastProvider(PlayerProvider):
             """Called when zeroconf has discovered a new chromecast."""
             asyncio.run_coroutine_threadsafe(
                     self.__chromecast_discovered(listener.services[name]), self.mass.event_loop)
-        def internal_stop():
+        def internal_stop(msg=None, msg_details=None):
             """Stops discovery of new chromecasts."""
+            LOGGER.info('stopping Chromecast discovery...')
             stop_discovery(browser)
         listener, browser = start_discovery(internal_callback)
-        return internal_stop
+        mass.add_event_listener(internal_stop, 'system_shutdown')
     
     async def __chromecast_discovered(self, discovery_info):
         ''' callback when a (new) chromecast device is discovered '''
@@ -417,6 +409,7 @@ class ChromecastProvider(PlayerProvider):
         if player_id in self._chromecasts:
             # cleanup old object
             self._chromecasts[player_id].socket_client.stop.set()
+            await asyncio.sleep(1)
             self._chromecasts.pop(player_id, None)
         from pychromecast import _get_chromecast_from_host, ChromecastConnectionError
         try:
