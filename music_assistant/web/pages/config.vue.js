@@ -104,7 +104,7 @@ var Config = Vue.component('Config', {
             this.saveConfig();
             this.$toasted.show(this.$t('conf.conf_saved'))
           }
-        }, 1000),
+        }, 5000),
         deep: true
     }
   },

@@ -50,7 +50,7 @@ class ChromecastProvider(PlayerProvider):
         self._player_queue_index = {}
         self._player_queue_stream_startindex = {}
         self.supported_musicproviders = ['http']
-        self.__chromecast_discovery()
+        self.mass.event_loop.create_task(self.__chromecast_discovery())
         
     ### Provider specific implementation #####
 
@@ -388,36 +388,45 @@ class ChromecastProvider(PlayerProvider):
                     self._players[member].group_parent = str(mz._uuid)
                     self.mass.event_loop.create_task(self.mass.player.update_player(self._players[member]))
     
-    def __chromecast_discovery(self):
+    @run_periodic(300)
+    async def __chromecast_discovery(self):
         ''' background non-blocking chromecast discovery and handler '''
-        from pychromecast.discovery import start_discovery, stop_discovery
-        def internal_callback(name):
-            """Called when zeroconf has discovered a new chromecast."""
-            asyncio.run_coroutine_threadsafe(
-                    self.__chromecast_discovered(listener.services[name]), self.mass.event_loop)
-        def internal_stop(msg=None, msg_details=None):
-            """Stops discovery of new chromecasts."""
-            LOGGER.info('stopping Chromecast discovery...')
-            stop_discovery(browser)
-        listener, browser = start_discovery(internal_callback)
-        self.mass.add_event_listener(internal_stop, 'system_shutdown')
-    
-    async def __chromecast_discovered(self, discovery_info):
-        ''' callback when a (new) chromecast device is discovered '''
-        ip_address, port, uuid, model_name, friendly_name = discovery_info
-        player_id = str(uuid)
-        if player_id in self._chromecasts:
-            # cleanup old object
+        # remove any disconnected players...
+        removed_players = []
+        for player_id, cast in self._chromecasts.items():
+            if not cast.socket_client.is_connected:
+                LOGGER.info("%s is disconnected" % cast.name)
+                removed_players.append(player_id)
+        for player_id in removed_players:
             self._chromecasts[player_id].socket_client.stop.set()
-            await asyncio.sleep(1)
             self._chromecasts.pop(player_id, None)
+            await self.mass.player.remove_player(player_id)
+        await asyncio.sleep(5)
+        # search for available chromecasts
+        from pychromecast.discovery import start_discovery, stop_discovery
+        def discovered_callback(name):
+            """Called when zeroconf has discovered a (new) chromecast."""
+            discovery_info = listener.services[name]
+            ip_address, port, uuid, model_name, friendly_name = discovery_info
+            player_id = str(uuid)
+            if not player_id in self._chromecasts:
+                LOGGER.info("discovered chromecast: %s - %s:%s" % (friendly_name, ip_address, port))
+                asyncio.run_coroutine_threadsafe(
+                        self.__chromecast_discovered(player_id, discovery_info), self.mass.event_loop)
+        LOGGER.debug("Chromecast discovery started...")
+        listener, browser = start_discovery(discovered_callback)
+        await asyncio.sleep(15) # run discovery for 15 seconds
+        stop_discovery(browser)
+        LOGGER.debug("Chromecast discovery completed...")
+    
+    async def __chromecast_discovered(self, player_id, discovery_info):
+        ''' callback when a (new) chromecast device is discovered '''
         from pychromecast import _get_chromecast_from_host, ChromecastConnectionError
         try:
-            chromecast = _get_chromecast_from_host(discovery_info)
+            chromecast = _get_chromecast_from_host(discovery_info, tries=2, retry_wait=5)
         except ChromecastConnectionError:
-            LOGGER.warning("Could not connect to device")
+            LOGGER.warning("Could not connect to device %s" % player_id)
             return
-        LOGGER.info("discovered chromecast: %s - %s:%s" % (friendly_name, ip_address, port))
         if not player_id in self._players:
             player = MusicPlayer()
             player.player_id = player_id
