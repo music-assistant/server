@@ -28,9 +28,6 @@ Vue.component("headermenu", {
                       {{ $globals.windowtitle }}
                   </v-card-title>
             <v-spacer></v-spacer>
-            <v-btn icon v-on:click="$globals.showsearchbox = true">
-                <v-icon>search</v-icon>
-              </v-btn>
         </v-layout>
     </v-toolbar>
     <v-toolbar flat fixed dense dark scroll-off-screen color="transparent" v-if="!$globals.windowtitle" > 
@@ -43,7 +40,7 @@ Vue.component("headermenu", {
             </v-btn>
             <v-spacer></v-spacer>
             <v-spacer></v-spacer>
-            <v-btn icon v-on:click="$globals.showsearchbox = true">
+            <v-btn icon v-on:click="$router.push({path: '/search'})">
                 <v-icon>search</v-icon>
               </v-btn>
         </v-layout>

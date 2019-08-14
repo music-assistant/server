@@ -6,8 +6,8 @@ var Search = Vue.component('Search', {
         solo
         clearable
         :label="$t('type_to_search')"
-        prepend-inner-icon="search"
-        v-model="searchQuery">
+        append-icon="search"
+        v-model="searchQuery" v-on:keyup.enter="Search" @click:append="Search" style="margin-left:30px; margin-right:30px; margin-top:10px">
       </v-text-field>
 
       <v-tabs
@@ -90,7 +90,7 @@ var Search = Vue.component('Search', {
         </v-tabs>
 
       </section>`,
-  props: ['searchQuery'],
+  props: [],
   data() {
     return {
       selected: [2],
@@ -99,16 +99,14 @@ var Search = Vue.component('Search', {
       tracks: [],
       playlists: [],
       timeout: null,
+      active: 0,
+      searchQuery: ""
     }
   },
   created() {
     this.$globals.windowtitle = this.$t('search');
-    this.Search();
   },
   watch: {
-    searchQuery () {
-      this.Search();
-    }
   },
   methods: {
     toggle (index) {
