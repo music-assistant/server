@@ -6,14 +6,18 @@ Vue.component("player", {
     <v-footer app light height="auto">
       
       <v-card class="flex" tile style="background-color:#e8eaed;">
-        <v-list-tile avatar ripple style="margin-bottom:15px;">
+        <!-- divider -->
+        <v-list-tile avatar ripple style="height:1px;background-color:#cccccc;"/>
 
-              <v-list-tile-avatar v-if="!isMobile() && active_player.cur_item" style="align-items:center;padding-top:15px;">
+        <!-- now playing media -->
+        <v-list-tile avatar ripple>
+
+              <v-list-tile-avatar v-if="active_player.cur_item" style="align-items:center;padding-top:15px;">
                   <img v-if="active_player.cur_item.metadata && active_player.cur_item.metadata.image" :src="active_player.cur_item.metadata.image"/>
                   <img v-if="!active_player.cur_item.metadata.image && active_player.cur_item.album && active_player.cur_item.album.metadata && active_player.cur_item.album.metadata.image" :src="active_player.cur_item.album.metadata.image"/>
               </v-list-tile-avatar>
 
-              <v-list-tile-content v-if="!isMobile()" style="align-items:center;padding-top:15px;">
+              <v-list-tile-content style="align-items:center;padding-top:15px;">
                   <v-list-tile-title class="title">{{ active_player.cur_item ? active_player.cur_item.name : active_player.name }}</v-list-tile-title>
                   <v-list-tile-sub-title v-if="active_player.cur_item && active_player.cur_item.artists">
                       <span v-for="(artist, artistindex) in active_player.cur_item.artists">
@@ -23,34 +27,50 @@ Vue.component("player", {
                   </v-list-tile-sub-title>
               </v-list-tile-content>
 
+          </v-list-tile>
 
-              <!-- player controls -->
+          <!-- progress bar -->
+          <div style="color:rgba(0,0,0,.65); height:30px;width:100%; vertical-align: middle; left:15px; right:0; margin-bottom:5px; margin-top:5px">
+            <v-layout row style="vertical-align: middle" v-if="active_player.cur_item">
+              <span style="text-align:left; width:60px; margin-top:7px; margin-left:15px;">{{ player_time_str_cur }}</span>
+              <v-progress-linear v-model="progress"></v-progress-linear>
+              <span style="text-align:right; width:60px; margin-top:7px; margin-right: 15px;">{{ player_time_str_total }}</span>
+            </v-layout>
+        </div>
+
+        <!-- divider -->
+        <v-list-tile avatar ripple style="height:1px;background-color:#cccccc;"/>
+
+          <!-- Control buttons -->
+          <v-list-tile light avatar ripple style="margin-bottom:5px;">
+              
+          <!-- player controls -->
               <v-list-tile-content>
-                  <v-layout row style="content-align: center;vertical-align: middle; margin-top:10px;">
-                    <v-btn icon style="padding:5px;" @click="playerCommand('previous')"><v-icon color="rgba(0,0,0,.54)">skip_previous</v-icon></v-btn>
-                    <v-btn icon style="padding:5px;" v-if="active_player.state == 'playing'" @click="playerCommand('pause')"><v-icon size="45" color="rgba(0,0,0,.65)" style="margin-top:-9px;">pause</v-icon></v-btn>
-                    <v-btn icon style="padding:5px;" v-if="active_player.state != 'playing'" @click="playerCommand('play')"><v-icon size="45" color="rgba(0,0,0,.65)" style="margin-top:-9px;">play_arrow</v-icon></v-btn>
-                    <v-btn icon style="padding:5px;" @click="playerCommand('next')"><v-icon color="rgba(0,0,0,.54)">skip_next</v-icon></v-btn>
+                  <v-layout row style="content-align: left;vertical-align: middle; margin-top:10px;margin-left:-15px">
+                    <v-btn small icon style="padding:5px;" @click="playerCommand('previous')"><v-icon color="rgba(0,0,0,.54)">skip_previous</v-icon></v-btn>
+                    <v-btn small icon style="padding:5px;" v-if="active_player.state == 'playing'" @click="playerCommand('pause')"><v-icon size="45" color="rgba(0,0,0,.65)" style="margin-top:-9px;">pause</v-icon></v-btn>
+                    <v-btn small icon style="padding:5px;" v-if="active_player.state != 'playing'" @click="playerCommand('play')"><v-icon size="45" color="rgba(0,0,0,.65)" style="margin-top:-9px;">play_arrow</v-icon></v-btn>
+                    <v-btn small icon style="padding:5px;" @click="playerCommand('next')"><v-icon color="rgba(0,0,0,.54)">skip_next</v-icon></v-btn>
                   </v-layout>
               </v-list-tile-content>
 
               <!-- active player queue button -->
-              <v-list-tile-action style="padding:30px;" v-if="!isMobile() && active_player_id">
-                  <v-btn flat icon @click="$router.push('/queue/' + active_player_id)">
+              <v-list-tile-action style="padding:20px;" v-if="active_player_id">
+                  <v-btn x-small flat icon @click="$router.push('/queue/' + active_player_id)">
                       <v-flex xs12 class="vertical-btn">
-                      <v-icon large>queue_music</v-icon>
+                      <v-icon>queue_music</v-icon>
                       <span class="caption">{{ $t('queue') }}</span>
                     </v-flex>    
                   </v-btn>
               </v-list-tile-action> 
 
               <!-- active player volume -->
-              <v-list-tile-action style="padding:30px;" v-if="active_player_id">
+              <v-list-tile-action style="padding:20px;" v-if="active_player_id">
                   <v-menu :close-on-content-click="false" :nudge-width="250" offset-x top>
                     <template v-slot:activator="{ on }">
-                        <v-btn flat icon v-on="on">
+                        <v-btn x-small flat icon v-on="on">
                             <v-flex xs12 class="vertical-btn">
-                            <v-icon large>volume_up</v-icon>
+                            <v-icon>volume_up</v-icon>
                             <span class="caption">{{ Math.round(players[active_player_id].volume_level) }}</span>
                           </v-flex>    
                         </v-btn>
@@ -61,23 +81,19 @@ Vue.component("player", {
 
               <!-- active player btn -->
               <v-list-tile-action style="padding:30px;margin-right:-13px;">
-                  <v-btn flat icon @click="menu = !menu">
+                  <v-btn x-small flat icon @click="menu = !menu">
                       <v-flex xs12 class="vertical-btn">
-                      <v-icon large>speaker</v-icon>
+                      <v-icon>speaker</v-icon>
                       <span class="caption">{{ active_player_id ? players[active_player_id].name : '' }}</span>
                     </v-flex>    
                   </v-btn>
               </v-list-tile-action>
           </v-list-tile>
 
-          <!-- progress bar -->
-          <div style="color:rgba(0,0,0,.65); height:35px;width:100%; vertical-align: middle; left:15px; right:0; bottom:0" v-if="!isMobile()">
-            <v-layout row style="vertical-align: middle">
-              <span style="text-align:left; width:60px; margin-top:7px; margin-left:15px;">{{ player_time_str_cur }}</span>
-              <v-progress-linear v-model="progress"></v-progress-linear>
-              <span style="text-align:right; width:60px; margin-top:7px; margin-right: 15px;">{{ player_time_str_total }}</span>
-            </v-layout>
-        </div>
+          <!-- add some additional whitespace in standalone mode only -->
+          <v-list-tile avatar ripple style="height:14px" v-if="isInStandaloneMode()"/>
+
+          
 
       </v-card>
     </v-footer>

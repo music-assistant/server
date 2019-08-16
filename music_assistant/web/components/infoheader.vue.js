@@ -5,7 +5,7 @@ Vue.component("infoheader", {
             <v-img
               class="white--text"
               width="100%"
-              :height="isMobile() ? '300' : '370'"
+              :height="isMobile() ? '230' : '370'"
               position="center top" 
               :src="getFanartImage()"
               gradient="to bottom, rgba(0,0,0,.65), rgba(0,0,0,.35)"
@@ -59,7 +59,7 @@ Vue.component("infoheader", {
                   <!-- Description/metadata -->
                   <v-card-title class="subheading">
                       <div class="justify-left" style="text-shadow: 1px 1px #000000;">
-                          <read-more :text="getDescription()" :max-chars="isMobile() ? 200 : 350"></read-more>
+                          <read-more :text="getDescription()" :max-chars="isMobile() ? 60 : 350"></read-more>
                       </div>
                   </v-card-title>
 

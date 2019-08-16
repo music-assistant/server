@@ -43,9 +43,9 @@
 
 
         <script>
-            function isMobile() {
-                return document.body.clientWidth < 800;
-            }
+            const isMobile = () => (document.body.clientWidth < 800);
+            const isInStandaloneMode = () => ('standalone' in window.navigator) && (window.navigator.standalone);
+
             function showPlayMenu (item) {
                 this.$globals.playmenuitem = item;
                 this.$globals.showplaymenu = !this.$globals.showplaymenu;
@@ -208,6 +208,7 @@
         })
         Vue.prototype.$globals = globalStore;
         Vue.prototype.isMobile = isMobile;
+        Vue.prototype.isInStandaloneMode = isInStandaloneMode;
         Vue.prototype.toggleLibrary = toggleLibrary;
         Vue.prototype.showPlayMenu = showPlayMenu;
         Vue.prototype.clickItem= clickItem;

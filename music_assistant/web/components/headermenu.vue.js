@@ -16,18 +16,19 @@ Vue.component("headermenu", {
     
 
     <v-toolbar app flat dense dark v-if="$globals.windowtitle" > 
+        <div class="title justify-center" style="text-align:center;position:absolute;width:100%;margin-left:-16px;margin-right:0">
+          {{ $globals.windowtitle }}
+        </div>
         <v-layout align-center>
             <v-btn icon v-on:click="menu=!menu">
               <v-icon>menu</v-icon>
             </v-btn>
-            <v-btn @click="$router.go(-1)" icon>
+            <v-btn @click="$router.go(-1)" icon v-if="$route.path != '/'">
               <v-icon>arrow_back</v-icon>
             </v-btn>
-            <v-spacer></v-spacer>
-            <v-card-title class="title justify-center">
-                      {{ $globals.windowtitle }}
-                  </v-card-title>
-            <v-spacer></v-spacer>
+          
+            
+            
         </v-layout>
     </v-toolbar>
     <v-toolbar flat fixed dense dark scroll-off-screen color="transparent" v-if="!$globals.windowtitle" > 

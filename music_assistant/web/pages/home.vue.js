@@ -25,7 +25,7 @@ var home = Vue.component("Home", {
     };
   },
   created() {
-    this.$globals.windowtitle = this.$t('home');
+    this.$globals.windowtitle = this.$t('musicassistant');
     this.items= [
         { title: this.$t('artists'), icon: "person", path: "/artists" },
         { title: this.$t('albums'), icon: "album", path: "/albums" },
