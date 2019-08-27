@@ -111,6 +111,7 @@ class ChromecastProvider(PlayerProvider):
                 self._chromecasts[player_id].set_volume_muted(True)
         except pychromecast.error.NotConnected:
             # CC is not connected, trigger rescan
+            LOGGER.warning("command %s failed - %s is disconnected, rescan triggered" %(cmd, self._players[player_id].name))
             self.mass.event_loop.create_task(self.__chromecast_discovery())
 
     async def player_queue(self, player_id, offset=0, limit=50):
