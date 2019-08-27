@@ -49,8 +49,9 @@ class ChromecastProvider(PlayerProvider):
         self._player_queue = {}
         self._player_queue_index = {}
         self._player_queue_stream_startindex = {}
+        self._discovery_running = False
         self.supported_musicproviders = ['http']
-        self.mass.event_loop.create_task(self.__chromecast_discovery())
+        self.mass.event_loop.create_task(self.__periodic_chromecast_discovery())
         
     ### Provider specific implementation #####
 
@@ -65,48 +66,52 @@ class ChromecastProvider(PlayerProvider):
 
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
-        if cmd == 'play':
-            self._players[player_id].powered = True
-            if self._chromecasts[player_id].media_controller.status.player_is_playing:
-                pass
-            elif self._chromecasts[player_id].media_controller.status.player_is_paused:
-                self._chromecasts[player_id].media_controller.play()
-            else:
-                await self.__resume_queue(player_id)
-            await self.mass.player.update_player(self._players[player_id])
-        elif cmd == 'pause':
-            self._chromecasts[player_id].media_controller.pause()
-        elif cmd == 'stop':
-            self._chromecasts[player_id].media_controller.stop()
-        elif cmd == 'next':
-            enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
-            if enable_crossfade:
-                await self.__play_stream_queue(player_id, self._player_queue_index[player_id]+1)
-            else:
-                self._chromecasts[player_id].media_controller.queue_next()
-        elif cmd == 'previous':
-            enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
-            if enable_crossfade:
-                await self.__play_stream_queue(player_id, self._player_queue_index[player_id]-1)
-            else:
-                self._chromecasts[player_id].media_controller.queue_prev()
-        elif cmd == 'power' and cmd_args == 'off':
-            self._players[player_id].powered = False
-            if not self._players[player_id].group_parent:
-                self._chromecasts[player_id].quit_app() # power is not supported so send quit_app instead
-            await self.mass.player.update_player(self._players[player_id])
-        elif cmd == 'power':
-            self._players[player_id].powered = True
-            await self.mass.player.update_player(self._players[player_id])
-        elif cmd == 'volume':
-            new_volume = try_parse_int(cmd_args)
-            self._chromecasts[player_id].set_volume(new_volume/100)
-            self._players[player_id].volume_level = new_volume
-            await self.mass.player.update_player(self._players[player_id])
-        elif cmd == 'mute' and cmd_args == 'off':
-            self._chromecasts[player_id].set_volume_muted(False)
-        elif cmd == 'mute':
-            self._chromecasts[player_id].set_volume_muted(True)
+        try:
+            if cmd == 'play':
+                self._players[player_id].powered = True
+                if self._chromecasts[player_id].media_controller.status.player_is_playing:
+                    pass
+                elif self._chromecasts[player_id].media_controller.status.player_is_paused:
+                    self._chromecasts[player_id].media_controller.play()
+                else:
+                    await self.__resume_queue(player_id)
+                await self.mass.player.update_player(self._players[player_id])
+            elif cmd == 'pause':
+                self._chromecasts[player_id].media_controller.pause()
+            elif cmd == 'stop':
+                self._chromecasts[player_id].media_controller.stop()
+            elif cmd == 'next':
+                enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
+                if enable_crossfade:
+                    await self.__play_stream_queue(player_id, self._player_queue_index[player_id]+1)
+                else:
+                    self._chromecasts[player_id].media_controller.queue_next()
+            elif cmd == 'previous':
+                enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
+                if enable_crossfade:
+                    await self.__play_stream_queue(player_id, self._player_queue_index[player_id]-1)
+                else:
+                    self._chromecasts[player_id].media_controller.queue_prev()
+            elif cmd == 'power' and cmd_args == 'off':
+                self._players[player_id].powered = False
+                if not self._players[player_id].group_parent:
+                    self._chromecasts[player_id].quit_app() # power is not supported so send quit_app instead
+                await self.mass.player.update_player(self._players[player_id])
+            elif cmd == 'power':
+                self._players[player_id].powered = True
+                await self.mass.player.update_player(self._players[player_id])
+            elif cmd == 'volume':
+                new_volume = try_parse_int(cmd_args)
+                self._chromecasts[player_id].set_volume(new_volume/100)
+                self._players[player_id].volume_level = new_volume
+                await self.mass.player.update_player(self._players[player_id])
+            elif cmd == 'mute' and cmd_args == 'off':
+                self._chromecasts[player_id].set_volume_muted(False)
+            elif cmd == 'mute':
+                self._chromecasts[player_id].set_volume_muted(True)
+        except pychromecast.error.NotConnected:
+            # CC is not connected, trigger rescan
+            self.mass.event_loop.create_task(self.__chromecast_discovery())
 
     async def player_queue(self, player_id, offset=0, limit=50):
         ''' return the current items in the player's queue '''
@@ -388,9 +393,16 @@ class ChromecastProvider(PlayerProvider):
                     self._players[member].group_parent = str(mz._uuid)
                     self.mass.event_loop.create_task(self.mass.player.update_player(self._players[member]))
     
-    @run_periodic(300)
+    @run_periodic(1800)
+    async def __periodic_chromecast_discovery(self):
+        ''' run chromecast discovery on interval '''
+        await self.__chromecast_discovery()
+
     async def __chromecast_discovery(self):
         ''' background non-blocking chromecast discovery and handler '''
+        if self._discovery_running:
+            return
+        self._discovery_running = True
         # remove any disconnected players...
         removed_players = []
         for player_id, cast in self._chromecasts.items():
@@ -399,9 +411,9 @@ class ChromecastProvider(PlayerProvider):
                 removed_players.append(player_id)
         for player_id in removed_players:
             self._chromecasts[player_id].socket_client.stop.set()
+            await asyncio.sleep(1)
             self._chromecasts.pop(player_id, None)
             await self.mass.player.remove_player(player_id)
-        await asyncio.sleep(5)
         # search for available chromecasts
         from pychromecast.discovery import start_discovery, stop_discovery
         def discovered_callback(name):
@@ -418,6 +430,7 @@ class ChromecastProvider(PlayerProvider):
         await asyncio.sleep(15) # run discovery for 15 seconds
         stop_discovery(browser)
         LOGGER.debug("Chromecast discovery completed...")
+        self._discovery_running = True
     
     async def __chromecast_discovered(self, player_id, discovery_info):
         ''' callback when a (new) chromecast device is discovered '''

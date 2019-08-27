@@ -199,10 +199,24 @@ class Player():
             player_childs = [item for item in self._players.values() if item.group_parent == player_id]
             if player.settings['apply_group_volume']:
                 player_details.volume_level = await self.__get_group_volume(player_childs)
-        # compare values to detect changes
+        # detect current track changes
         if player.cur_item and player_details.cur_item and player.cur_item.name != player_details.cur_item.name:
+            # track changed
             player_changed = True
-        player.cur_item = player_details.cur_item
+            LOGGER.info("%s -- STOP PLAYING %s -- SECONDS PLAYED: %s" %(player.name, player.cur_item.name, player.cur_item_time))
+            LOGGER.info("%s -- START PLAYING %s" %(player.name, player_details.cur_item.name))
+            player.cur_item = player_details.cur_item
+        elif not player.cur_item and player_details.cur_item:
+            # player started playing
+            player_changed = True
+            LOGGER.info("%s -- START PLAYING %s" %(player.name, player_details.cur_item.name))
+            player.cur_item = player_details.cur_item
+        elif player.cur_item and not player_details.cur_item:
+            # player queue cleared
+            player_changed = True
+            LOGGER.info("%s -- STOP PLAYING %s -- SECONDS PLAYED: %s" %(player.name, player.cur_item.name, player.cur_item_time))
+            player.cur_item = player_details.cur_item
+        # compare values to detect changes
         for key, cur_value in player.__dict__.items():
             if key != 'settings':
                 new_value = getattr(player_details, key)

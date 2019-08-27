@@ -26,9 +26,6 @@ Vue.component("headermenu", {
             <v-btn @click="$router.go(-1)" icon v-if="$route.path != '/'">
               <v-icon>arrow_back</v-icon>
             </v-btn>
-          
-            
-            
         </v-layout>
     </v-toolbar>
     <v-toolbar flat fixed dense dark scroll-off-screen color="transparent" v-if="!$globals.windowtitle" > 
