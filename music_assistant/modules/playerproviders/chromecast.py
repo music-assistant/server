@@ -66,6 +66,8 @@ class ChromecastProvider(PlayerProvider):
 
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
+        if not player_id in self._players or not player_id in self._chromecasts:
+            return
         try:
             if cmd == 'play':
                 self._players[player_id].powered = True
@@ -407,13 +409,15 @@ class ChromecastProvider(PlayerProvider):
         # remove any disconnected players...
         removed_players = []
         for player_id, cast in self._chromecasts.items():
-            if not cast.socket_client.is_connected:
+            if not cast.socket_client or not cast.socket_client.is_connected:
                 LOGGER.info("%s is disconnected" % cast.name)
                 removed_players.append(player_id)
         for player_id in removed_players:
-            self._chromecasts[player_id].socket_client.stop.set()
-            await asyncio.sleep(1)
-            self._chromecasts.pop(player_id, None)
+            try:
+                self._chromecasts[player_id].disconnect()
+            except Exception:
+                pass
+            del self._chromecasts[player_id]
             await self.mass.player.remove_player(player_id)
         # search for available chromecasts
         from pychromecast.discovery import start_discovery, stop_discovery

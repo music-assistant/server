@@ -45,14 +45,14 @@ class Player():
         prov = self.providers[prov_id]
         LOGGER.info('received command %s for player %s' %(cmd, player.name))
         # handle some common workarounds
-        if cmd in ['pause', 'play'] and cmd_args == 'toggle':
+        if (cmd in ['pause', 'play'] and cmd_args == 'toggle') or cmd == 'playpause':
             cmd = 'pause' if player.state == PlayerState.Playing else 'play'
         if cmd == 'power' and (cmd_args == 'toggle' or not cmd_args):
             cmd_args = 'off' if player.powered else 'on'
         if cmd == 'volume' and cmd_args == 'up':
-            cmd_args = player.volume_level + 2
+            cmd_args = player.volume_level + 1
         elif cmd == 'volume' and cmd_args == 'down':
-            cmd_args = player.volume_level - 2
+            cmd_args = player.volume_level - 1
         elif cmd == 'volume' and '+' in str(cmd_args):
             cmd_args = player.volume_level + try_parse_int(cmd_args.replace('+',''))
         elif cmd == 'volume' and '-' in str(cmd_args):
@@ -166,7 +166,6 @@ class Player():
     async def update_player(self, player_details):
         ''' update (or add) player '''
         player_details = deepcopy(player_details)
-        LOGGER.debug('Incoming msg from %s' % player_details.name)
         player_id = player_details.player_id
         player_changed = False
         if not player_id in self._players:
@@ -203,18 +202,21 @@ class Player():
         if player.cur_item and player_details.cur_item and player.cur_item.name != player_details.cur_item.name:
             # track changed
             player_changed = True
-            LOGGER.info("%s -- STOP PLAYING %s -- SECONDS PLAYED: %s" %(player.name, player.cur_item.name, player.cur_item_time))
-            LOGGER.info("%s -- START PLAYING %s" %(player.name, player_details.cur_item.name))
+            if not player.group_parent:
+                LOGGER.info("%s -- STOP PLAYING %s -- SECONDS PLAYED: %s" %(player.name, player.cur_item.name, player.cur_item_time))
+                LOGGER.info("%s -- START PLAYING %s" %(player.name, player_details.cur_item.name))
             player.cur_item = player_details.cur_item
         elif not player.cur_item and player_details.cur_item:
             # player started playing
             player_changed = True
-            LOGGER.info("%s -- START PLAYING %s" %(player.name, player_details.cur_item.name))
+            if not player.group_parent:
+                LOGGER.info("%s -- START PLAYING %s" %(player.name, player_details.cur_item.name))
             player.cur_item = player_details.cur_item
         elif player.cur_item and not player_details.cur_item:
             # player queue cleared
             player_changed = True
-            LOGGER.info("%s -- STOP PLAYING %s -- SECONDS PLAYED: %s" %(player.name, player.cur_item.name, player.cur_item_time))
+            if not player.group_parent:
+                LOGGER.info("%s -- STOP PLAYING %s -- SECONDS PLAYED: %s" %(player.name, player.cur_item.name, player.cur_item_time))
             player.cur_item = player_details.cur_item
         # compare values to detect changes
         for key, cur_value in player.__dict__.items():
