@@ -130,10 +130,10 @@ class ChromecastProvider(PlayerProvider):
         if (not player_id in self._chromecasts or 
                 not self._chromecasts[player_id].socket_client or 
                 not self._chromecasts[player_id].socket_client.is_connected):
-            LOGGER.warning("command %s failed - %s is disconnected, rescan triggered" %(cmd, self._players[player_id].name))
+            LOGGER.warning("play_media failed - %s is disconnected, rescan triggered" %(self._players[player_id].name))
             self.mass.event_loop.create_task(self.__chromecast_discovery())
             return
-            
+
         castplayer = self._chromecasts[player_id]
         cur_queue_index = self._player_queue_index.get(player_id, 0)
         enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
@@ -412,6 +412,7 @@ class ChromecastProvider(PlayerProvider):
         if self._discovery_running:
             return
         self._discovery_running = True
+        LOGGER.info("Chromecast discovery started...")
         # remove any disconnected players...
         removed_players = []
         for player_id, cast in self._chromecasts.items():
@@ -436,12 +437,11 @@ class ChromecastProvider(PlayerProvider):
                 LOGGER.info("discovered chromecast: %s - %s:%s" % (friendly_name, ip_address, port))
                 asyncio.run_coroutine_threadsafe(
                         self.__chromecast_discovered(player_id, discovery_info), self.mass.event_loop)
-        LOGGER.debug("Chromecast discovery started...")
         listener, browser = start_discovery(discovered_callback)
         await asyncio.sleep(15) # run discovery for 15 seconds
         stop_discovery(browser)
-        LOGGER.debug("Chromecast discovery completed...")
-        self._discovery_running = True
+        LOGGER.info("Chromecast discovery completed...")
+        self._discovery_running = False
     
     async def __chromecast_discovered(self, player_id, discovery_info):
         ''' callback when a (new) chromecast device is discovered '''

@@ -43,7 +43,7 @@ class Player():
         player = self._players[player_id]
         prov_id = player.player_provider
         prov = self.providers[prov_id]
-        LOGGER.info('received command %s for player %s' %(cmd, player.name))
+        LOGGER.debug('received command %s for player %s' %(cmd, player.name))
         # handle some common workarounds
         if (cmd in ['pause', 'play'] and cmd_args == 'toggle') or cmd == 'playpause':
             cmd = 'pause' if player.state == PlayerState.Playing else 'play'
@@ -100,7 +100,7 @@ class Player():
                 service_data = { 'entity_id': player.settings['hass_power_entity'] }
                 await self.mass.hass.call_service('media_player', 'turn_off', service_data)
             else:
-                LOGGER.warning('Ignoring power command as required source is not active')
+                LOGGER.debug('Ignoring power command as required source is not active')
         elif cmd == 'power' and player.settings.get('hass_power_entity'):
             domain = player.settings['hass_power_entity'].split('.')[0]
             service_data = { 'entity_id': player.settings['hass_power_entity']}
