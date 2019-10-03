@@ -5,6 +5,7 @@ import asyncio
 import os
 from typing import List
 from utils import run_periodic, LOGGER, parse_track_title
+from secrets import QOBUZ_APP_ID, QOBUZ_APP_SECRET
 from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 import json
@@ -22,8 +23,8 @@ def setup(mass):
     username = mass.config["musicproviders"]['qobuz'].get(CONF_USERNAME)
     password = mass.config["musicproviders"]['qobuz'].get(CONF_PASSWORD)
     if enabled and username and password:
-        spotify_provider = QobuzProvider(mass, username, password)
-        return spotify_provider
+        provider = QobuzProvider(mass, username, password)
+        return provider
     return False
 
 def config_entries():
@@ -46,8 +47,6 @@ class QobuzProvider(MusicProvider):
         self.__username = username
         self.__password = password
         self.__user_auth_info = None
-        self.__app_id = "285473059" # TEMP! Own key requested
-        self.__app_secret = "47249d0eaefa6bf43a959c09aacdbce8" # TEMP! Own key requested
         self.__logged_in = False
         self.throttler = Throttler(rate_limit=2, period=1)
         mass.add_event_listener(self.mass_event, 'streaming_started')
@@ -515,7 +514,7 @@ class QobuzProvider(MusicProvider):
     async def __get_data(self, endpoint, params={}, sign_request=False, ignore_cache=False, cache_checksum=None):
         ''' get data from api'''
         url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
-        headers = {"X-App-Id": self.__app_id}
+        headers = {"X-App-Id": QOBUZ_APP_ID}
         if endpoint != 'user/login':
             headers["X-User-Auth-Token"] = await self.__auth_token()
         if sign_request:
@@ -525,11 +524,11 @@ class QobuzProvider(MusicProvider):
             for key in keys:
                 signing_data += "%s%s" %(key, params[key])
             request_ts = str(time.time())
-            request_sig = signing_data + request_ts + self.__app_secret
+            request_sig = signing_data + request_ts + QOBUZ_APP_SECRET
             request_sig = str(hashlib.md5(request_sig.encode()).hexdigest())
             params["request_ts"] = request_ts
             params["request_sig"] = request_sig
-            params["app_id"] = self.__app_id
+            params["app_id"] = QOBUZ_APP_ID
             params["user_auth_token"] = await self.__auth_token()
         try:
             async with self.throttler:
@@ -548,7 +547,7 @@ class QobuzProvider(MusicProvider):
     async def __post_data(self, endpoint, params={}, data={}):
         ''' post data to api'''
         url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
-        params["app_id"] = self.__app_id
+        params["app_id"] = QOBUZ_APP_ID
         params["user_auth_token"] = await self.__auth_token()
         async with self.http_session.post(url, params=params, json=data) as response:
             result = await response.json()
