@@ -7,7 +7,7 @@ from typing import List
 import sys
 import time
 from utils import run_periodic, LOGGER, parse_track_title
-from secrets import SPOTIFY_CLIENT_ID
+from app_var import get_app_var
 from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 from asyncio_throttle import Throttler
@@ -415,7 +415,7 @@ class SpotifyProvider(MusicProvider):
                 "user-read-birthdate",
                 "user-top-read"]
             scope = ",".join(scopes)
-            args = [self.get_spotty_binary(), "-t", "--client-id", SPOTIFY_CLIENT_ID, "--scope", scope, "-n", "temp-spotty", "-u", self._username, "-p", self._password, "--disable-discovery"]
+            args = [self.get_spotty_binary(), "-t", "--client-id", get_app_var(2), "--scope", scope, "-n", "temp-spotty", "-u", self._username, "-p", self._password, "--disable-discovery"]
             spotty = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             stdout, stderr = spotty.communicate()
             result = json.loads(stdout)

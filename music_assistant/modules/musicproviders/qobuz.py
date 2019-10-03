@@ -5,7 +5,7 @@ import asyncio
 import os
 from typing import List
 from utils import run_periodic, LOGGER, parse_track_title
-from secrets import QOBUZ_APP_ID, QOBUZ_APP_SECRET
+from app_vars import get_app_var
 from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 import json
@@ -514,7 +514,7 @@ class QobuzProvider(MusicProvider):
     async def __get_data(self, endpoint, params={}, sign_request=False, ignore_cache=False, cache_checksum=None):
         ''' get data from api'''
         url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
-        headers = {"X-App-Id": QOBUZ_APP_ID}
+        headers = {"X-App-Id": get_app_var(0)}
         if endpoint != 'user/login':
             headers["X-User-Auth-Token"] = await self.__auth_token()
         if sign_request:
@@ -524,11 +524,11 @@ class QobuzProvider(MusicProvider):
             for key in keys:
                 signing_data += "%s%s" %(key, params[key])
             request_ts = str(time.time())
-            request_sig = signing_data + request_ts + QOBUZ_APP_SECRET
+            request_sig = signing_data + request_ts + get_app_var(1)
             request_sig = str(hashlib.md5(request_sig.encode()).hexdigest())
             params["request_ts"] = request_ts
             params["request_sig"] = request_sig
-            params["app_id"] = QOBUZ_APP_ID
+            params["app_id"] = get_app_var(0)
             params["user_auth_token"] = await self.__auth_token()
         try:
             async with self.throttler:

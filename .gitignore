@@ -8,4 +8,3 @@ music_assistant/config.json
 music_assistant/testrun.sh
 build/
 dist/
-music_assistant/secrets.py
