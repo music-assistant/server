@@ -9,4 +9,3 @@ music_assistant/testrun.sh
 build/
 dist/
 music_assistant/secrets.py
-music_assistant/secrets.py
