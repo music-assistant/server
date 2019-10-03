@@ -547,7 +547,7 @@ class QobuzProvider(MusicProvider):
     async def __post_data(self, endpoint, params={}, data={}):
         ''' post data to api'''
         url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
-        params["app_id"] = QOBUZ_APP_ID
+        params["app_id"] = get_app_var(0)
         params["user_auth_token"] = await self.__auth_token()
         async with self.http_session.post(url, params=params, json=data) as response:
             result = await response.json()
