@@ -68,7 +68,13 @@ def try_parse_float(possible_float):
     try:
         return float(possible_float)
     except:
-        return 0
+        return 0.0
+
+def try_parse_bool(possible_bool):
+    if isinstance(possible_bool, bool):
+        return possible_bool
+    else:
+        return possible_bool in ['true', 'True', '1', 'on', 'ON', 1]
 
 def parse_track_title(track_title):
     ''' try to parse clean track title and version from the title '''

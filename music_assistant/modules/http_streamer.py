@@ -24,20 +24,6 @@ class HTTPStreamer():
         self.create_config_entries()
         self.local_ip = get_ip()
         self.analyze_jobs = {}
-
-    def create_config_entries(self):
-        ''' sets the config entries for this module (list with key/value pairs)'''
-        config_entries = [
-            ('volume_normalisation', True, 'enable_r128_volume_normalisation'), 
-            ('target_volume', '-23', 'target_volume_lufs'),
-            ('fallback_gain_correct', '-12', 'fallback_gain_correct')
-            ]
-        if not self.mass.config['base'].get('http_streamer'):
-            self.mass.config['base']['http_streamer'] = {}
-        self.mass.config['base']['http_streamer']['__desc__'] = config_entries
-        for key, def_value, desc in config_entries:
-            if not key in self.mass.config['base']['http_streamer']:
-                self.mass.config['base']['http_streamer'][key] = def_value
     
     async def stream_track(self, http_request):
         ''' start streaming track from provider '''
@@ -129,14 +115,12 @@ class HTTPStreamer():
                 raise asyncio.CancelledError()
         return resp
     
-    async def stream_queue(self, http_request):
+    async def stream(self, http_request):
         ''' 
-            stream all tracks in queue from player with http
-            loads large part of audiodata in memory so only recommended for high performance servers
-            use case is enable crossfade/gapless support for chromecast devices 
+            stream queue track(s) for player with http
         '''
-        player_id = http_request.query.get('player_id')
-        startindex = int(http_request.query.get('startindex'))
+        player_id = request.match_info.get('player_id','')
+        #startindex = int(http_request.query.get('startindex'))
         cancelled = threading.Event()
         resp = web.StreamResponse(status=200,
                                  reason='OK',
@@ -157,10 +141,10 @@ class HTTPStreamer():
                         break
                     await resp.write(chunk)
                     queue.task_done()
-                LOGGER.info("stream_queue fininished for %s" % player_id)
+                LOGGER.info("stream fininished for %s" % player_id)
             except asyncio.CancelledError:
                 cancelled.set()
-                LOGGER.info("stream_queue interrupted for %s" % player_id)
+                LOGGER.info("stream interrupted for %s" % player_id)
                 raise asyncio.CancelledError()
         return resp
 
@@ -189,7 +173,7 @@ class HTTPStreamer():
         LOGGER.info("Start Queue Stream for player %s at index %s" %(player.name, queue_index))
         last_fadeout_data = b''
         # report start of queue playback so we can calculate current track/duration etc.
-        self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, True))
+        # self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, True))
         while True:
             # get the (next) track in queue
             try:

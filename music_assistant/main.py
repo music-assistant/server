@@ -20,7 +20,7 @@ from utils import run_periodic, LOGGER
 from modules.metadata import MetaData
 from modules.cache import Cache
 from modules.music import Music
-from modules.player import Player
+from modules.playermanager import PlayerManager
 from modules.http_streamer import HTTPStreamer
 from modules.homeassistant import setup as hass_setup
 from modules.web import setup as web_setup
@@ -48,7 +48,7 @@ class Main():
         self.web = web_setup(self)
         self.hass = hass_setup(self)
         self.music = Music(self)
-        self.player = Player(self)
+        self.player = PlayerManager(self)
         self.http_streamer = HTTPStreamer(self)
 
         # agent = stackimpact.start(

@@ -2,25 +2,26 @@
 # -*- coding:utf-8 -*-
 
 import asyncio
-import os
-from typing import List
-import random
-import sys
-from utils import run_periodic, run_background_task, LOGGER, parse_track_title, try_parse_int
-from models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
-import json
+# import os
+# from typing import List
+# import random
+# import sys
+# import json
 import aiohttp
-import time
-import datetime
-import hashlib
+# import time
+# import datetime
+# import hashlib
 import pychromecast
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.controllers import BaseController
 from pychromecast.controllers.media import MediaController
 import types
-import urllib
-import select
+# import urllib
+# import select
+from ...utils import run_periodic, LOGGER, try_parse_int
+from ...models.playerprovider import PlayerProvider
+from ...models.player import Player, PlayerState
+from ...constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
 
 def setup(mass):
     ''' setup the provider'''
@@ -36,166 +37,52 @@ def config_entries():
         (CONF_ENABLED, True, CONF_ENABLED),
         ]
 
+class ChromecastPlayer(Player):
+    ''' Chromecast player object '''
+    cc = None
+
+    async def __stop(self):
+        ''' send stop command to player '''
+        self.cc.media_controller.stop()
+
+    async def __play(self):
+        ''' send play command to player '''
+        self.cc.media_controller.play()
+
+    async def __pause(self):
+        ''' send pause command to player '''
+        self.cc.media_controller.pause()
+
+    async def __power_on(self):
+        ''' send power ON command to player '''
+        self.powered = True
+
+    async def __power_off(self):
+        ''' send power OFF command to player '''
+        self.powered = False
+        # power is not supported so send quit_app instead
+        if not self.group_parent:
+            self.cc.quit_app()
+
+    async def __volume_set(self, volume_level):
+        ''' send new volume level command to player '''
+        self.cc.set_volume(volume_level/100)
+        self.volume_level = volume_level
+
+    async def __volume_mute(self, is_muted=False):
+        ''' send mute command to player '''
+        self.cc.set_volume_muted(is_muted)
+
+
 class ChromecastProvider(PlayerProvider):
     ''' support for ChromeCast Audio '''
-
+    
     def __init__(self, mass):
         self.prov_id = 'chromecast'
         self.name = 'Chromecast'
-        self.icon = ''
         self.mass = mass
-        self._players = {}
-        self._chromecasts = {}
-        self._player_queue = {}
-        self._player_queue_index = {}
-        self._player_queue_stream_startindex = {}
         self._discovery_running = False
-        self.supported_musicproviders = ['http']
         self.mass.event_loop.create_task(self.__periodic_chromecast_discovery())
-        
-    ### Provider specific implementation #####
-
-    async def player_config_entries(self):
-        ''' 
-            get the player config entries for this provider 
-            (list with key/value pairs)
-        '''
-        return [
-            ("crossfade_duration", 0, "crossfade_duration"),
-            ]
-
-    async def player_command(self, player_id, cmd:str, cmd_args=None):
-        ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
-        if (not player_id in self._chromecasts or 
-                not self._chromecasts[player_id].socket_client or 
-                not self._chromecasts[player_id].socket_client.is_connected):
-            LOGGER.warning("command %s failed - %s is disconnected, rescan triggered" %(cmd, self._players[player_id].name))
-            self.mass.event_loop.create_task(self.__chromecast_discovery())
-            return
-        if cmd == 'play':
-            self._players[player_id].powered = True
-            if self._chromecasts[player_id].media_controller.status.player_is_playing:
-                pass
-            elif self._chromecasts[player_id].media_controller.status.player_is_paused:
-                self._chromecasts[player_id].media_controller.play()
-            else:
-                await self.__resume_queue(player_id)
-            await self.mass.player.update_player(self._players[player_id])
-        elif cmd == 'pause':
-            self._chromecasts[player_id].media_controller.pause()
-        elif cmd == 'stop':
-            self._chromecasts[player_id].media_controller.stop()
-        elif cmd == 'next':
-            enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
-            if enable_crossfade:
-                await self.__play_stream_queue(player_id, self._player_queue_index[player_id]+1)
-            else:
-                self._chromecasts[player_id].media_controller.queue_next()
-        elif cmd == 'previous':
-            enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
-            if enable_crossfade:
-                await self.__play_stream_queue(player_id, self._player_queue_index[player_id]-1)
-            else:
-                self._chromecasts[player_id].media_controller.queue_prev()
-        elif cmd == 'power' and cmd_args == 'off':
-            self._players[player_id].powered = False
-            if not self._players[player_id].group_parent:
-                self._chromecasts[player_id].quit_app() # power is not supported so send quit_app instead
-            await self.mass.player.update_player(self._players[player_id])
-        elif cmd == 'power':
-            self._players[player_id].powered = True
-            await self.mass.player.update_player(self._players[player_id])
-        elif cmd == 'volume':
-            new_volume = try_parse_int(cmd_args)
-            self._chromecasts[player_id].set_volume(new_volume/100)
-            self._players[player_id].volume_level = new_volume
-            await self.mass.player.update_player(self._players[player_id])
-        elif cmd == 'mute' and cmd_args == 'off':
-            self._chromecasts[player_id].set_volume_muted(False)
-        elif cmd == 'mute':
-            self._chromecasts[player_id].set_volume_muted(True)
-
-    async def player_queue(self, player_id, offset=0, limit=50):
-        ''' return the current items in the player's queue '''
-        return self._player_queue[player_id][offset:limit]
-    
-    async def player_queue_index(self, player_id):
-        ''' get current index of the player's queue '''
-        return self._player_queue_index[player_id]
-    
-    async def play_media(self, player_id, media_items, queue_opt='play'):
-        ''' 
-            play media on a player
-        '''
-        if (not player_id in self._chromecasts or 
-                not self._chromecasts[player_id].socket_client or 
-                not self._chromecasts[player_id].socket_client.is_connected):
-            LOGGER.warning("play_media failed - %s is disconnected, rescan triggered" %(self._players[player_id].name))
-            self.mass.event_loop.create_task(self.__chromecast_discovery())
-            return
-
-        castplayer = self._chromecasts[player_id]
-        cur_queue_index = self._player_queue_index.get(player_id, 0)
-        enable_crossfade = self.mass.config['player_settings'][player_id]["crossfade_duration"] > 0
-        is_radio = media_items and media_items[0].media_type == MediaType.Radio
-
-        if queue_opt == 'replace' or not self._player_queue[player_id]:
-            # overwrite queue with new items
-            self._player_queue[player_id] = media_items
-            if enable_crossfade and not is_radio:
-                await self.__play_stream_queue(player_id, 0)
-            else:
-                await self.__queue_load(player_id, self._player_queue[player_id], 0)
-        elif queue_opt == 'play':
-            # replace current item with new item(s)
-            self._player_queue[player_id] = self._player_queue[player_id][:cur_queue_index] + media_items + self._player_queue[player_id][cur_queue_index+1:]
-            if enable_crossfade and not is_radio:
-                await self.__play_stream_queue(player_id, cur_queue_index)
-            else:
-                await self.__queue_load(player_id, self._player_queue[player_id], cur_queue_index)
-        elif queue_opt == 'next':
-            # insert new items at current index +1
-            if len(self._player_queue[player_id]) > cur_queue_index+1:
-                old_next_uri = self._player_queue[player_id][cur_queue_index+1].uri
-            else:
-                old_next_uri = None
-            self._player_queue[player_id] = self._player_queue[player_id][:cur_queue_index+1] + media_items + self._player_queue[player_id][cur_queue_index+1:]
-            if not enable_crossfade or is_radio:
-                # find out the itemID of the next item in CC queue
-                insert_at_item_id = None
-                if old_next_uri:
-                    for item in castplayer.media_controller.queue_items:
-                        if item['media']['contentId'] == old_next_uri:
-                            insert_at_item_id = item['itemId']
-                await self.__queue_insert(player_id, media_items, insert_at_item_id)
-        elif queue_opt == 'add':
-            # add new items at end of queue
-            self._player_queue[player_id] = self._player_queue[player_id] + media_items
-            if not enable_crossfade or is_radio:
-                await self.__queue_insert(player_id, media_items)
-
-    async def player_queue_stream_update(self, player_id, cur_index, is_start=False):
-        ''' called by our queue streamer when it started playing a track in the queue at index X '''
-        if is_start:
-            self._player_queue_stream_startindex[player_id] = cur_index
-            self._player_queue_index[player_id] = cur_index
-        # schedule update a few times as we don't know how much time is prebuffered
-        for i in range(0, 20):
-            castplayer = self._chromecasts[player_id]
-            status = castplayer.media_controller.status
-            await self.__handle_player_state(castplayer, mediastatus=status)
-            await asyncio.sleep(2)
-    
-    ### Provider specific (helper) methods #####
-
-    async def __get_cur_queue_index(self, player_id, current_uri):
-        ''' retrieve index of current item in the player queue '''
-        cur_index = 0
-        for index, track in enumerate(self._player_queue[player_id]):
-            if track.uri == current_uri:
-                cur_index = index
-                break
-        return cur_index
 
     async def __queue_load(self, player_id, new_tracks, startindex=None):
         ''' load queue on player with given queue items '''
@@ -310,7 +197,7 @@ class ChromecastProvider(PlayerProvider):
     async def __handle_player_state(self, chromecast, caststatus=None, mediastatus=None):
         ''' handle a player state message from the socket '''
         player_id = str(chromecast.uuid)
-        player = self._players[player_id]
+        player = self.get_player(player_id)
         # always update player details that may change
         player.name = chromecast.name
         if caststatus:
@@ -351,56 +238,26 @@ class ChromecastProvider(PlayerProvider):
                 player.cur_item = queue_track
                 player.cur_item_time = track_time
                 self._player_queue_index[player_id] = queue_index
-        await self.mass.player.update_player(player)
-
-    async def __parse_track(self, mediastatus):
-        ''' parse track in CC to our internal format '''
-        track = await self.__track_from_uri(mediastatus.content_id)
-        if not track:
-            # TODO: match this info manually in the DB!!
-            track = Track()
-            artist = mediastatus.artist
-            album = mediastatus.album_name
-            title = mediastatus.title
-            track.name = "%s - %s" %(artist, title)
-            track.duration = try_parse_int(mediastatus.duration)
-            if mediastatus.media_metadata and mediastatus.media_metadata.get('images'):
-                track.metadata.image = mediastatus.media_metadata['images'][-1]['url']
-        return track
-
-    async def __track_from_uri(self, uri):
-        ''' try to parse uri loaded in CC to a track we understand '''
-        track = None
-        if uri.startswith('spotify://track:') and 'spotify' in self.mass.music.providers:
-            track_id = uri.replace('spotify:track:','')
-            track = await self.mass.music.providers['spotify'].track(track_id)
-        elif uri.startswith('qobuz://') and 'qobuz' in self.mass.music.providers:
-            track_id = uri.replace('qobuz://','').replace('.flac','')
-            track = await self.mass.music.providers['qobuz'].track(track_id)
-        elif uri.startswith('http') and '/stream_track' in uri:
-            params = urllib.parse.parse_qs(uri.split('?')[1])
-            track_id = params['track_id'][0]
-            provider = params['provider'][0]
-            track = await self.mass.music.providers[provider].track(track_id)
-        return track
 
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):
         ''' callback when cast group members update '''
         if added_player:
-            if added_player in self._players:
-                self._players[added_player].group_parent = str(mz._uuid)
-                LOGGER.debug("player %s added to group %s" %(self._players[added_player].name, self._players[str(mz._uuid)].name))
-                self.mass.event_loop.create_task(self.mass.player.update_player(self._players[added_player]))
+            player = self.get_player(added_player)
+            group_player = self.get_player(str(mz._uuid))
+            if player and group_player:
+                player.group_parent = str(mz._uuid)
+                LOGGER.debug("player %s added to group %s" %(player.name, group_player.name))
         elif removed_player:
-            if removed_player in self._players:
-                self._players[removed_player].group_parent = None
-                LOGGER.debug("player %s removed from group %s" %(self._players[removed_player].name, self._players[str(mz._uuid)].name))
-                self.mass.event_loop.create_task(self.mass.player.update_player(self._players[removed_player]))
+            player = self.get_player(added_player)
+            group_player = self.get_player(str(mz._uuid))
+            if player and group_player:
+                player.group_parent = None
+                LOGGER.debug("player %s removed from group %s" %(player.name, group_player.name))
         else:
             for member in mz.members:
-                if member in self._players:
-                    self._players[member].group_parent = str(mz._uuid)
-                    self.mass.event_loop.create_task(self.mass.player.update_player(self._players[member]))
+                player = self.get_player(member)
+                if player:
+                    player.group_parent = str(mz._uuid)
     
     @run_periodic(1800)
     async def __periodic_chromecast_discovery(self):
@@ -415,17 +272,15 @@ class ChromecastProvider(PlayerProvider):
         LOGGER.info("Chromecast discovery started...")
         # remove any disconnected players...
         removed_players = []
-        for player_id, cast in self._chromecasts.items():
-            if not cast.socket_client or not cast.socket_client.is_connected:
-                LOGGER.info("%s is disconnected" % cast.name)
-                removed_players.append(player_id)
+        for player in self.players:
+            if not player.cc.socket_client or not player.cc.socket_client.is_connected:
+                LOGGER.info("%s is disconnected" % player.name)
+                # cleanup cast object
+                del player.cc
+                removed_players.append(player.player_id)
+        # signal removed players
         for player_id in removed_players:
-            try:
-                self._chromecasts[player_id].disconnect()
-            except Exception:
-                pass
-            del self._chromecasts[player_id]
-            await self.mass.player.remove_player(player_id)
+            await self.remove_player(player_id)
         # search for available chromecasts
         from pychromecast.discovery import start_discovery, stop_discovery
         def discovered_callback(name):
@@ -433,7 +288,7 @@ class ChromecastProvider(PlayerProvider):
             discovery_info = listener.services[name]
             ip_address, port, uuid, model_name, friendly_name = discovery_info
             player_id = str(uuid)
-            if not player_id in self._chromecasts:
+            if not self.get_player(player_id):
                 LOGGER.info("discovered chromecast: %s - %s:%s" % (friendly_name, ip_address, port))
                 asyncio.run_coroutine_threadsafe(
                         self.__chromecast_discovered(player_id, discovery_info), self.mass.event_loop)
@@ -451,12 +306,6 @@ class ChromecastProvider(PlayerProvider):
         except ChromecastConnectionError:
             LOGGER.warning("Could not connect to device %s" % player_id)
             return
-        if not player_id in self._players:
-            player = MusicPlayer()
-            player.player_id = player_id
-            player.name = chromecast.name
-            player.player_provider = self.prov_id
-            self._players[player_id] = player
         # patch the receive message method for handling queue status updates
         chromecast.media_controller.queue_items = []
         chromecast.media_controller.queue_cur_id = None
@@ -465,29 +314,24 @@ class ChromecastProvider(PlayerProvider):
         chromecast.register_status_listener(listenerCast)
         listenerMedia = StatusMediaListener(chromecast, self.__handle_player_state, self.mass.event_loop)
         chromecast.media_controller.register_status_listener(listenerMedia)
+        player = ChromecastPlayer(self.mass, player_id, self.prov_id)
         if chromecast.cast_type == 'group':
-            self._players[player_id].is_group = True
+            player.is_group = True
             mz = MultizoneController(chromecast.uuid)
             mz.register_listener(MZListener(mz, self.__handle_group_members_update, self.mass.event_loop))
             chromecast.register_handler(mz)
             chromecast.register_connection_listener(MZConnListener(mz))
             chromecast.mz = mz
-        chromecast.wait()
-        self._chromecasts[player_id] = chromecast
-        if not player_id in self._player_queue:
-            # TODO: persistant storage of player queue ?
-            self._player_queue[player_id] = []
-            self._player_queue_index[player_id] = 0
+        player.cc = chromecast
+        player.cc.wait()
+        self.add_player(player)
         self.update_all_group_members()
-        # turn on player if it was previously turned on
-        if self._players[player_id].powered:
-            self.mass.event_loop.create_task(self.mass.player.player_command(player_id, "power", "on"))
 
     def update_all_group_members(self):
         ''' force member update of all cast groups '''
-        for cast in list(self._chromecasts.values()):
-            if cast.cast_type == 'group':
-                cast.mz.update_members()
+        for player in self.players:
+            if player.cc.cast_type == 'group':
+                player.cc.mz.update_members()
 
 def chunks(l, n):
     """Yield successive n-sized chunks from l."""

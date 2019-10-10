@@ -1,149 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
-from enum import Enum, IntEnum
 from typing import List
-import sys
-sys.path.append("..")
-from utils import run_periodic, LOGGER, parse_track_title
-from difflib import SequenceMatcher as Matcher
+from ..utils import run_periodic, LOGGER, parse_track_title
 import asyncio
-from modules.cache import use_cache
+from ..modules.cache import use_cache
+from media_types import *
 
-
-class MediaType(IntEnum):
-    Artist = 1
-    Album = 2
-    Track = 3
-    Playlist = 4
-    Radio = 5
-
-def media_type_from_string(media_type_str):
-    media_type_str = media_type_str.lower()
-    if 'artist' in media_type_str or media_type_str == '1':
-        return MediaType.Artist
-    elif 'album' in media_type_str or media_type_str == '2':
-        return MediaType.Album
-    elif 'track' in media_type_str or media_type_str == '3':
-        return MediaType.Track
-    elif 'playlist' in media_type_str or media_type_str == '4':
-        return MediaType.Playlist
-    elif 'radio' in media_type_str or media_type_str == '5':
-        return MediaType.Radio
-    else:
-        return None
-
-class ContributorRole(IntEnum):
-    Artist = 1
-    Writer = 2
-    Producer = 3
-
-class AlbumType(IntEnum):
-    Album = 1
-    Single = 2
-    Compilation = 3
-
-class TrackQuality(IntEnum):
-    LOSSY_MP3 = 0
-    LOSSY_OGG = 1
-    LOSSY_AAC = 2
-    FLAC_LOSSLESS = 6 # 44.1/48khz 16 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_1 = 7 # 44.1/48khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_2 = 8 # 88.2/96khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_3 = 9 # 176/192khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_4 = 10 # above 192khz 24 bits HI-RES
-
-
-class Artist(object):
-    ''' representation of an artist '''
-    def __init__(self):
-        self.item_id = None
-        self.provider = 'database'
-        self.name = ''
-        self.sort_name = ''
-        self.metadata = {}
-        self.tags = []
-        self.external_ids = []
-        self.provider_ids = []
-        self.media_type = MediaType.Artist
-        self.in_library = []
-        self.is_lazy = False
-
-class Album(object):
-    ''' representation of an album '''
-    def __init__(self):
-        self.item_id = None
-        self.provider = 'database'
-        self.name = '' 
-        self.metadata = {}
-        self.version = ''
-        self.external_ids = []
-        self.tags = []
-        self.albumtype = AlbumType.Album
-        self.year = 0
-        self.artist = None
-        self.labels = []
-        self.provider_ids = []
-        self.media_type = MediaType.Album
-        self.in_library = []
-        self.is_lazy = False
-
-class Track(object):
-    ''' representation of a track '''
-    def __init__(self):
-        self.item_id = None
-        self.provider = 'database'
-        self.name = ''
-        self.duration = 0
-        self.version = ''
-        self.external_ids = []
-        self.metadata = { }
-        self.tags = []
-        self.artists = []
-        self.provider_ids = []
-        self.album = None
-        self.disc_number = 1
-        self.track_number = 1
-        self.media_type = MediaType.Track
-        self.in_library = []
-        self.is_lazy = False
-        self.uri = ""
-    def __eq__(self, other): 
-        if not isinstance(other, self.__class__):
-            return NotImplemented
-        return (self.name == other.name and 
-                self.version == other.version and
-                self.item_id == other.item_id and
-                self.provider == other.provider)
-    def __ne__(self, other):
-        return not self.__eq__(other)
-
-class Playlist(object):
-    ''' representation of a playlist '''
-    def __init__(self):
-        self.item_id = None
-        self.provider = 'database'
-        self.name = ''
-        self.owner = ''
-        self.provider_ids = []
-        self.metadata = {}
-        self.media_type = MediaType.Playlist
-        self.in_library = []
-        self.is_editable = False
-
-class Radio(Track):
-    ''' representation of a radio station '''
-    def __init__(self):
-        super().__init__()
-        self.item_id = None
-        self.provider = 'database'
-        self.name = ''
-        self.provider_ids = []
-        self.metadata = {}
-        self.media_type = MediaType.Radio
-        self.in_library = []
-        self.is_editable = False
-        self.duration = 0
 
 class MusicProvider():
     ''' 
@@ -492,31 +355,6 @@ class MusicProvider():
         ''' get audio stream for a track '''
         raise NotImplementedError
     
-    
-class PlayerState(str, Enum):
-    Off = "off"
-    Stopped = "stopped"
-    Paused = "paused"
-    Playing = "playing"
-
-class MusicPlayer():
-    ''' representation of a musicplayer '''
-    def __init__(self):
-        self.player_id = None
-        self.player_provider = None
-        self.name = ''
-        self.state = PlayerState.Stopped
-        self.powered = False
-        self.cur_item = None
-        self.cur_item_time = 0
-        self.volume_level = 0
-        self.shuffle_enabled = True
-        self.repeat_enabled = False
-        self.muted = False
-        self.group_parent = None
-        self.is_group = False
-        self.settings = {}
-        self.enabled = True
 
 class PlayerProvider():
     ''' 
@@ -527,13 +365,36 @@ class PlayerProvider():
     name = 'My great Musicplayer provider' # display name
     prov_id = 'my_provider' # used as id
     icon = ''
-    supported_musicproviders = ['qobuz', 'file', 'spotify', 'http'] # list of supported music provider uri's this playerprovider supports NATIVELY
-    
+
     def __init__(self, mass):
         self.mass = mass
 
     ### Common methods and properties ####
 
+    async def players(self):
+        ''' return all players for this provider '''
+        return self.mass.provider_players(self.prov_id)
+    
+    async def get_player(self, player_id):
+        ''' return player by id '''
+        return self.mass.get_player(player_id)
+
+    async def add_player(self, player_id, name='', is_group=False):
+        ''' register a new player '''
+        return self.mass.player.add_player(player_id, 
+                self.prov_id, name=name, is_group=is_group)
+
+    async def remove_player(self, player_id):
+        ''' remove a player '''
+        return self.mass.player.remove_player(player_id)
+
+    ### Provider specific implementation #####
+
+    async def player_config_entries(self):
+        ''' get the player config entries for this provider (list with key/value pairs)'''
+        return [
+            (CONF_ENABLED, True, CONF_ENABLED)
+            ]
 
     async def play_media(self, player_id, media_items:List[Track], queue_opt='play'):
         ''' 
@@ -549,15 +410,9 @@ class PlayerProvider():
         '''
         raise NotImplementedError
 
-
-    ### Provider specific implementation #####
-
     async def player_command(self, player_id, cmd:str, cmd_args=None):
-        ''' issue command on player (play, pause, next, previous, stop, power, volume) '''
+        ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
         raise NotImplementedError
 
-    async def player_queue(self, player_id, offset=0, limit=50):
-        ''' return the items in the player's queue '''
-        raise NotImplementedError
 
 

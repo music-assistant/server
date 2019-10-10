@@ -37,12 +37,8 @@ class PyLMSServer(PlayerProvider):
     def __init__(self, mass):
         self.prov_id = 'pylms'
         self.name = 'Logitech Media Server Emulation'
-        self.icon = ''
         self.mass = mass
-        self._players = {}
         self._lmsplayers = {}
-        self._player_queue = {}
-        self._player_queue_index = {}
         self.buffer = b''
         self.last_msg_received = 0
         self.supported_musicproviders = ['http']
@@ -96,59 +92,52 @@ class PyLMSServer(PlayerProvider):
             self._lmsplayers[player_id].unmute()
         elif cmd == 'mute':
             self._lmsplayers[player_id].mute()
-
-    async def player_queue(self, player_id, offset=0, limit=50):
-        ''' return the current items in the player's queue '''
-        return self._player_queue[player_id][offset:limit]
-    
-    async def player_queue_index(self, player_id):
-        ''' get current index of the player's queue '''
-        return self._player_queue_index.get(player_id, 0)
     
     async def play_media(self, player_id, media_items, queue_opt='play'):
         ''' 
             play media on a player
         '''
-        cur_queue_index = self._player_queue_index.get(player_id, 0)
+        player = self.get_player(player_id)
+        cur_index = player.cur_queue_index
 
-        if queue_opt == 'replace' or not self._player_queue[player_id]:
+        if queue_opt == 'replace' or not player.queue:
             # overwrite queue with new items
-            self._player_queue[player_id] = media_items
+            player.queue = media_items
             await self.__queue_play(player_id, 0, send_flush=True)
         elif queue_opt == 'play':
             # replace current item with new item(s)
-            self._player_queue[player_id] = self._player_queue[player_id][:cur_queue_index] + media_items + self._player_queue[player_id][cur_queue_index+1:]
-            await self.__queue_play(player_id, cur_queue_index, send_flush=True)
+            player.queue = player.queue[player_id][:cur_index] + media_items + player.queue[player_id][cur_index+1:]
+            await self.__queue_play(player_id, cur_index, send_flush=True)
         elif queue_opt == 'next':
             # insert new items at current index +1
-            self._player_queue[player_id] = self._player_queue[player_id][:cur_queue_index+1] + media_items + self._player_queue[player_id][cur_queue_index+1:]
+            player.queue[player_id] = player.queue[player_id][:cur_index+1] + media_items + player.queue[player_id][cur_index+1:]
         elif queue_opt == 'add':
             # add new items at end of queue
-            self._player_queue[player_id] = self._player_queue[player_id] + media_items
+            player.queue[player_id] = player.queue[player_id] + media_items
 
     ### Provider specific (helper) methods #####
 
     async def __queue_play(self, player_id, index, send_flush=False):
         ''' send play command to player '''
-        if not player_id in self._player_queue or not player_id in self._player_queue_index:
+        if not player_id in player.queue or not player_id in player.queue_index:
             return
-        if not self._player_queue[player_id]:
+        if not player.queue[player_id]:
             return
         if index == None:
-            index = self._player_queue_index[player_id]
-        if len(self._player_queue[player_id]) >= index:
-            track = self._player_queue[player_id][index]
+            index = player.queue_index[player_id]
+        if len(player.queue[player_id]) >= index:
+            track = player.queue[player_id][index]
             if send_flush:
                 self._lmsplayers[player_id].flush()
             self._lmsplayers[player_id].play(track.uri)
-            self._player_queue_index[player_id] = index
+            player.queue_index[player_id] = index
 
     async def __queue_next(self, player_id):
         ''' request next track from queue '''
-        if not player_id in self._player_queue or not player_id in self._player_queue:
+        if not player_id in player.queue or not player_id in player.queue:
             return
-        cur_queue_index = self._player_queue_index[player_id]
-        if len(self._player_queue[player_id]) > cur_queue_index:
+        cur_queue_index = player.queue_index[player_id]
+        if len(player.queue[player_id]) > cur_queue_index:
             new_queue_index = cur_queue_index + 1
         elif self._players[player_id].repeat_enabled:
             new_queue_index = 0
@@ -159,16 +148,16 @@ class PyLMSServer(PlayerProvider):
 
     async def __queue_previous(self, player_id):
         ''' request previous track from queue '''
-        if not player_id in self._player_queue:
+        if not player_id in player.queue:
             return
-        cur_queue_index = self._player_queue_index[player_id]
-        if cur_queue_index == 0 and len(self._player_queue[player_id]) > 1:
-            new_queue_index = len(self._player_queue[player_id]) -1
+        cur_queue_index = player.queue_index[player_id]
+        if cur_queue_index == 0 and len(player.queue[player_id]) > 1:
+            new_queue_index = len(player.queue[player_id]) -1
         elif cur_queue_index == 0:
             new_queue_index = cur_queue_index
         else:
             new_queue_index -= 1
-            self._player_queue_index[player_id] = new_queue_index
+            player.queue_index[player_id] = new_queue_index
         return await self.__queue_play(player_id, new_queue_index)
 
     async def __handle_player_event(self, player_id, event, event_data=None):
@@ -179,15 +168,16 @@ class PyLMSServer(PlayerProvider):
         lms_player = self._lmsplayers[player_id]
         if event == "next_track":
             return await self.__queue_next(player_id)
+        player 
         if not player_id in self._players:
             player = MusicPlayer()
             player.player_id = player_id
             player.player_provider = self.prov_id
             self._players[player_id] = player
-            if not player_id in self._player_queue:
-                self._player_queue[player_id] = []
-            if not player_id in self._player_queue_index:
-                self._player_queue_index[player_id] = 0
+            if not player_id in player.queue:
+                player.queue[player_id] = []
+            if not player_id in player.queue_index:
+                player.queue_index[player_id] = 0
         else:
             player = self._players[player_id]
         # update player properties
@@ -200,9 +190,9 @@ class PyLMSServer(PlayerProvider):
             player.powered = event_data
         elif event == "state":
             player.state = event_data
-        if self._player_queue[player_id]:
-            cur_queue_index = self._player_queue_index[player_id]
-            player.cur_item = self._player_queue[player_id][cur_queue_index]
+        if player.queue[player_id]:
+            cur_queue_index = player.queue_index[player_id]
+            player.cur_item = player.queue[player_id][cur_queue_index]
         # update player details
         await self.mass.player.update_player(player)
 

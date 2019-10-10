@@ -126,10 +126,6 @@ class LMSProvider(PlayerProvider):
                 items.append(track)
         return items
 
-    async def player_queue_index(self, player_id):
-        ''' get current index of the player's queue '''
-        raise NotImplementedError()
-
     ### Provider specific (helper) methods #####
     
     async def __get_players(self):

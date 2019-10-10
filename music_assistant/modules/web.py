@@ -69,9 +69,9 @@ class Web():
         app.add_routes([web.get('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.get('/ws', self.websocket_handler)])
-        app.add_routes([web.get('/stream_track', self.mass.http_streamer.stream_track)])
-        app.add_routes([web.get('/stream_radio', self.mass.http_streamer.stream_radio)])
-        app.add_routes([web.get('/stream_queue', self.mass.http_streamer.stream_queue)])
+        # app.add_routes([web.get('/stream_track', self.mass.http_streamer.stream_track)])
+        # app.add_routes([web.get('/stream_radio', self.mass.http_streamer.stream_radio)])
+        app.add_routes([web.get('/stream/{player_id}', self.mass.http_streamer.stream_queue)])
         app.add_routes([web.get('/api/search', self.search)])
         app.add_routes([web.get('/api/config', self.get_config)])
         app.add_routes([web.post('/api/config', self.save_config)])
@@ -186,10 +186,21 @@ class Web():
 
     async def player_command(self, request):
         ''' issue player command'''
+        result = False
         player_id = request.match_info.get('player_id')
-        cmd = request.match_info.get('cmd')
-        cmd_args = request.match_info.get('cmd_args')
-        result = await self.mass.player.player_command(player_id, cmd, cmd_args)
+        player = await self.mass.player.get_player(player_id)
+        if player:
+            cmd = request.match_info.get('cmd')
+            cmd_args = request.match_info.get('cmd_args')
+            player_cmd = getattr(player, cmd, None)
+            if player_cmd and cmd_args:
+                result = await player_cmd(player_id, cmd, cmd_args)
+            elif player_cmd and cmd_args:
+                result = await player_cmd(player_id, cmd, cmd_args)
+            else:
+                LOGGER.error("Received non-existing command %s for player %s" %(cmd, player.name))
+        else:
+            LOGGER.error("Received command dor non-existing player %s" %(player_id))
         return web.json_response(result, dumps=json_serializer) 
     
     async def play_media(self, request):
