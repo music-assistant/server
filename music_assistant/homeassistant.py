@@ -77,10 +77,28 @@ class HomeAssistant():
         ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
-        mass.event_loop.create_task(self.__hass_websocket())
+        self.mass.event_loop.create_task(self.__hass_websocket())
         await self.mass.add_event_listener(self.mass_event, "player updated")
-        mass.event_loop.create_task(self.__get_sources())
+        self.mass.event_loop.create_task(self.__get_sources())
 
+    def get_state_sync(self, entity_id, attribute='state', register_listener=None):
+        ''' get state of a hass entity'''
+        if entity_id in self._tracked_states:
+            state_obj = self._tracked_states.get(entity_id)
+            if not state_obj:
+                return None
+        else:
+            if register_listener:
+                # register state listener
+                self._state_listeners.append( (entity_id, register_listener) )
+            return None
+        if attribute == 'state':
+            return state_obj['state']
+        elif not attribute:
+            return state_obj
+        else:
+            return state_obj['attributes'].get(attribute)
+    
     async def get_state(self, entity_id, attribute='state', register_listener=None):
         ''' get state of a hass entity'''
         if entity_id in self._tracked_states:
@@ -111,7 +129,7 @@ class HomeAssistant():
                 self._tracked_states[event_data['entity_id']] = event_data['new_state']
                 for entity_id, handler in self._state_listeners:
                     if entity_id == event_data['entity_id']:
-                        asyncio.create_task(handler())
+                        self.mass.event_loop.create_task(handler())
         elif event_type == 'call_service' and event_data['domain'] == 'media_player':
             await self.__handle_player_command(event_data['service'], event_data['service_data'])
 
@@ -126,32 +144,32 @@ class HomeAssistant():
             if entity_id in self._published_players:
                 # call is for one of our players so handle it
                 player_id = self._published_players[entity_id]
+                player = await self.mass.player.get_player(player_id)
                 if service == 'turn_on':
-                    await self.mass.player.player_command(player_id, 'power', 'on')
+                    await player.power_on()
                 elif service == 'turn_off':
-                    await self.mass.player.player_command(player_id, 'power', 'off')
+                    await player.power_off()
                 elif service == 'toggle':
-                    await self.mass.player.player_command(player_id, 'power', 'toggle')
+                    await player.power_toggle()
                 elif service == 'volume_mute':
-                    args = 'on' if service_data['is_volume_muted'] else 'off'
-                    await self.mass.player.player_command(player_id, 'mute', args)
+                    await player.volume_mute(service_data['is_volume_muted'])
                 elif service == 'volume_up':
-                    await self.mass.player.player_command(player_id, 'volume', 'up')
+                    await player.volume_up()
                 elif service == 'volume_down':
-                    await self.mass.player.player_command(player_id, 'volume', 'down')
+                    await player.volume_down()
                 elif service == 'volume_set':
                     volume_level = service_data['volume_level']*100
-                    await self.mass.player.player_command(player_id, 'volume', volume_level)
+                    await player.volume_set(volume_level)
                 elif service == 'media_play':
-                    await self.mass.player.player_command(player_id, 'play')
+                    await player.play()
                 elif service == 'media_pause':
-                    await self.mass.player.player_command(player_id, 'pause')
+                    await player.pause()
                 elif service == 'media_stop':
-                    await self.mass.player.player_command(player_id, 'stop')
+                    await player.stop()
                 elif service == 'media_next_track':
-                    await self.mass.player.player_command(player_id, 'next')
+                    await player.next()
                 elif service == 'media_play_pause':
-                    await self.mass.player.player_command(player_id, 'pause', 'toggle')
+                    await player.play_pause()
                 elif service == 'play_media':
                     return await self.__handle_play_media(player_id, service_data)
 

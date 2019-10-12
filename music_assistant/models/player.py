@@ -178,18 +178,16 @@ class Player():
         ''' [PROTECTED] return power state for this player '''
         # homeassistant integration
         if self.mass.hass and self.settings.get('hass_power_entity') and self.settings.get('hass_power_entity_source'):
-            hass_state = self.mass.bg_executor.submit(asyncio.run, 
-                self.mass.hass.get_state(
+            hass_state = self.mass.hass.get_state_sync(
                     self.settings['hass_power_entity'],
                     attribute='source',
-                    register_listener=self.update())).result()
+                    register_listener=self.update)
             return hass_state == self.settings['hass_power_entity_source']
-        elif self.settings.get('hass_power_entity'):
-            hass_state = self.mass.bg_executor.submit(asyncio.run, 
-                self.mass.hass.get_state(
+        elif self.mass.hass and self.settings.get('hass_power_entity'):
+            hass_state = self.mass.hass.get_state_sync(
                     self.settings['hass_power_entity'],
                     attribute='state',
-                    register_listener=self.update())).result()
+                    register_listener=self.update)
             return hass_state != 'off'
         # mute as power
         elif self.settings.get('mute_as_power'):
@@ -254,11 +252,10 @@ class Player():
             return group_volume
         # handle hass integration
         elif self.mass.hass and self.settings.get('hass_volume_entity'):
-            hass_state = self.mass.bg_executor.submit(asyncio.run, 
-                self.mass.hass.get_state(
+            hass_state = self.mass.hass.get_state_sync(
                     self.settings['hass_volume_entity'],
                     attribute='volume_level',
-                    register_listener=self.update())).result()
+                    register_listener=self.update)
             return int(try_parse_float(hass_state)*100)
         else:
             return self._volume_level
@@ -354,6 +351,13 @@ class Player():
                 return await group_player.pause()
         else:
             return await self.cmd_pause()
+    
+    async def play_pause(self):
+        ''' toggle play/pause'''
+        if self.state == PlayerState.Playing:
+            return await self.pause()
+        else:
+            return await self.play()
     
     async def next(self):
         ''' [PROTECTED] send next command to player '''

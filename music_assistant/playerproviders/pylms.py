@@ -49,7 +49,6 @@ class PyLMSServer(PlayerProvider):
 
      ### Provider specific implementation #####
 
-    
     async def start_discovery(self):
         transport, protocol = await self.mass.event_loop.create_datagram_endpoint(
             lambda: DiscoveryProtocol(self.mass.web._http_port),
