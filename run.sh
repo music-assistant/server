@@ -1,6 +1,8 @@
 #!/bin/sh
 set -e
 
+SET autoupdate = 'true'
+
 # auto update to latest git version if update environmental variable is set
 if [ "$autoupdate" == "true" ]; then
     echo "Auto updating to latest (unstable) git version!"
