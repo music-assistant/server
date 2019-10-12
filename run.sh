@@ -10,10 +10,9 @@ if [ "$autoupdate" == "true" ]; then
     curl -LOks "https://github.com/marcelveldt/musicassistant/archive/master.zip"
     unzip -q master.zip
     cp -rf musicassistant-master/. /usr/src/app
-    ls /usr/src/app
     rm -R /tmp/musicassistant-master
 fi
 
 # run program
 cd /usr/src/app
-exec python3 /usr/src/app/main.py /data > /proc/1/fd/1 2>/proc/1/fd/2
+exec python3 main.py /data > /proc/1/fd/1 2>/proc/1/fd/2
