@@ -3,14 +3,15 @@
 
 import asyncio
 import os
-from utils import run_periodic, LOGGER
 import json
 import aiohttp
 from asyncio_throttle import Throttler
 from difflib import SequenceMatcher as Matcher
-from modules.cache import use_cache
 from yarl import URL
 import re
+
+from .utils import run_periodic, LOGGER
+from .cache import use_cache
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 

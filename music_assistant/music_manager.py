@@ -6,8 +6,10 @@ from typing import List
 import toolz
 import operator
 import os
-from ..utils import run_periodic, LOGGER, try_supported
-from ..models.media_types import MediaType, Track, Artist, Album, Playlist, Radio
+import importlib
+
+from .utils import run_periodic, LOGGER, try_supported
+from .models.media_types import MediaType, Track, Artist, Album, Playlist, Radio
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -398,7 +400,7 @@ class Music():
                 module_name = item.replace(".py","")
                 LOGGER.debug("Loading musicprovider module %s" % module_name)
                 try:
-                    mod = __import__("modules.musicproviders." + module_name, fromlist=[''])
+                    mod = importlib.import_module("." + module_name, "music_assistant.musicproviders")
                     if not self.mass.config['musicproviders'].get(module_name):
                         self.mass.config['musicproviders'][module_name] = {}
                     self.mass.config['musicproviders'][module_name]['__desc__'] = mod.config_entries()

@@ -12,7 +12,8 @@ RUN apk --no-cache add --virtual .builddeps build-base python3-dev taglib-dev &&
 # copy files
 RUN mkdir -p /usr/src/app
 WORKDIR /usr/src/app
-COPY music_assistant /usr/src/app
+COPY music_assistant /usr/src/app/music_assistant
+COPY main.py /usr/src/app/main.py
 RUN chmod a+x /usr/src/app/main.py
 
 VOLUME ["/data"]

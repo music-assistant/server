@@ -4,17 +4,18 @@
 import asyncio
 import os
 from typing import List
-from utils import run_periodic, LOGGER, parse_track_title
-from app_vars import get_app_var
-from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 import json
 import aiohttp
 import time
 import datetime
 import hashlib
 from asyncio_throttle import Throttler
-from modules.cache import use_cache
+
+from ..cache import use_cache
+from ..utils import run_periodic, LOGGER, parse_track_title
+from ..app_vars import get_app_var
+from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 
 
 def setup(mass):

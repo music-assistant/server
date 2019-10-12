@@ -6,12 +6,14 @@ import os
 from typing import List
 import sys
 import time
-from utils import run_periodic, LOGGER, parse_track_title
-from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_ENABLED
-import taglib
-from modules.cache import use_cache
 import base64
+import taglib
+
+from ..cache import use_cache
+from ..utils import run_periodic, LOGGER, parse_track_title
+from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from ..constants import CONF_ENABLED
+
 
 
 def setup(mass):

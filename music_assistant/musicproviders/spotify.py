@@ -6,15 +6,17 @@ import os
 from typing import List
 import sys
 import time
-from utils import run_periodic, LOGGER, parse_track_title
-from app_vars import get_app_var
-from models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+import concurrent
 from asyncio_throttle import Throttler
 import json
 import aiohttp
-from modules.cache import use_cache
-import concurrent
+
+from ..cache import use_cache
+from ..utils import run_periodic, LOGGER, parse_track_title
+from ..app_vars import get_app_var
+from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+
 
 def setup(mass):
     ''' setup the provider'''
@@ -394,7 +396,7 @@ class SpotifyProvider(MusicProvider):
             if data and len(data) == 2:
                 tokeninfo = {"accessToken": data[0], "expiresIn": data[1] - int(time.time()), "expiresAt":data[1] }
         except Exception as exc:
-            LOGGER.exception(exc)
+            LOGGER.debug(exc)
         if not tokeninfo:
             # fallback to spotty approach
             import subprocess

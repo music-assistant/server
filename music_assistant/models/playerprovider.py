@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
+import asyncio
 from enum import Enum
 from typing import List
 from ..utils import run_periodic, LOGGER, parse_track_title
 from ..constants import CONF_ENABLED
-from ..modules.cache import use_cache
-from player_queue import PlayerQueue
-from media_types import Track
-from player import Player
+from ..cache import use_cache
+from .player_queue import PlayerQueue
+from .media_types import Track
+from .player import Player
 
 
 class PlayerProvider():
@@ -26,22 +27,27 @@ class PlayerProvider():
 
     ### Common methods and properties ####
 
+    async def get_player_config_entries(self):
+        ''' [CAN OVERRIDE] get the player-specific config entries for this provider (list with key/value pairs)'''
+        return []
+
     @property
-    async def players(self):
+    def players(self):
         ''' return all players for this provider '''
-        return self.mass.player.get_provider_players(self.prov_id)
+        return self.mass.bg_executor.submit(asyncio.run, 
+                self.mass.player.get_provider_players(self.prov_id)).result()
     
     async def get_player(self, player_id:str):
         ''' return player by id '''
-        return self.mass.player.get_player(player_id)
+        return await self.mass.player.get_player(player_id)
 
     async def add_player(self, player:Player):
         ''' register a new player '''
-        return self.mass.player.add_player(player)
+        return await self.mass.player.add_player(player)
 
     async def remove_player(self, player_id:str):
         ''' remove a player '''
-        return self.mass.player.remove_player(player_id)
+        return await self.mass.player.remove_player(player_id)
 
     ### Provider specific implementation #####
 

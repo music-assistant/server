@@ -5,19 +5,20 @@ import asyncio
 import os
 from typing import List
 import random
-from utils import run_periodic, LOGGER, parse_track_title, try_parse_int
-from models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
-import json
 import aiohttp
 import time
 import datetime
 import hashlib
 from asyncio_throttle import Throttler
 from aiocometd import Client, ConnectionType, Extension
-from modules.cache import use_cache
 import copy
 import slugify as slug
+import json
+from .utils import run_periodic, LOGGER, parse_track_title, try_parse_int
+from .models.media_types import Track
+from .constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
+from .cache import use_cache
+
 
 '''
     Homeassistant integration
@@ -187,7 +188,7 @@ class HomeAssistant():
                 "volume_level": player.volume_level/100,
                 "is_volume_muted": player.muted,
                 "media_duration": player.cur_item.duration if player.cur_item else 0,
-                "media_position": player.cur_item_time,
+                "media_position": player.cur_time,
                 "media_title": player.cur_item.name if player.cur_item else "",
                 "media_artist": player.cur_item.artists[0].name if player.cur_item and player.cur_item.artists else "",
                 "media_album_name": player.cur_item.album.name if player.cur_item and player.cur_item.album else "",

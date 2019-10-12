@@ -168,7 +168,7 @@ Vue.component("player", {
           return {
             name: 'no player selected',
             cur_item: null,
-            cur_item_time: 0,
+            cur_time: 0,
             player_id: '',
             volume_level: 0,
             state: 'stopped'
@@ -178,14 +178,14 @@ Vue.component("player", {
       if (!this.active_player.cur_item)
         return 0;
       var total_sec = this.active_player.cur_item.duration;
-      var cur_sec = this.active_player.cur_item_time;
+      var cur_sec = this.active_player.cur_time;
       var cur_percent = cur_sec/total_sec*100;
       return cur_percent;
     },
     player_time_str_cur() {
-      if (!this.active_player.cur_item || !this.active_player.cur_item_time)
+      if (!this.active_player.cur_item || !this.active_player.cur_time)
         return "0:00";
-      var cur_sec = this.active_player.cur_item_time;
+      var cur_sec = this.active_player.cur_time;
       return cur_sec.toString().formatDuration();
     },
     player_time_str_total() {
@@ -233,7 +233,7 @@ Vue.component("player", {
     updateProgress: function(){           
       this.intervalid2 = setInterval(function(){
           if (this.active_player.state == 'playing')
-              this.active_player.cur_item_time +=1;
+              this.active_player.cur_time +=1;
       }.bind(this), 1000);
     },
     setPlayerVolume: function(player_id, new_volume) {
@@ -265,6 +265,7 @@ Vue.component("player", {
       this.ws.onmessage = function(e) {
         var msg = JSON.parse(e.data);
         var players = [];
+        console.log(msg);
         if (msg.message == 'player updated')
           players = [msg.message_details];
         else if (msg.message == 'player removed')

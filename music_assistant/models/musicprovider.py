@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
+import asyncio
 from typing import List
 from ..utils import run_periodic, LOGGER, parse_track_title
-import asyncio
-from ..modules.cache import use_cache
-from media_types import *
+from ..cache import use_cache
+from ..constants import CONF_ENABLED
+from .media_types import Album, Artist, Track, Playlist, MediaType, Radio
 
 
 class MusicProvider():
@@ -373,20 +374,20 @@ class PlayerProvider():
 
     async def players(self):
         ''' return all players for this provider '''
-        return self.mass.provider_players(self.prov_id)
+        return await self.mass.provider_players(self.prov_id)
     
     async def get_player(self, player_id):
         ''' return player by id '''
-        return self.mass.get_player(player_id)
+        return await self.mass.get_player(player_id)
 
     async def add_player(self, player_id, name='', is_group=False):
         ''' register a new player '''
-        return self.mass.player.add_player(player_id, 
+        return await self.mass.player.add_player(player_id, 
                 self.prov_id, name=name, is_group=is_group)
 
     async def remove_player(self, player_id):
         ''' remove a player '''
-        return self.mass.player.remove_player(player_id)
+        return await self.mass.player.remove_player(player_id)
 
     ### Provider specific implementation #####
 

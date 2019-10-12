@@ -6,9 +6,6 @@ import os
 from typing import List
 import random
 import sys
-from utils import run_periodic, LOGGER, parse_track_title
-from models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
 import json
 import aiohttp
 import time
@@ -16,9 +13,14 @@ import datetime
 import hashlib
 from asyncio_throttle import Throttler
 from aiocometd import Client, ConnectionType, Extension
-from modules.cache import use_cache
 import copy
 import urllib
+
+from ..cache import use_cache
+from ..utils import run_periodic, LOGGER, parse_track_title
+from ..models import PlayerProvider, Player, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from ..constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
+
 
 def setup(mass):
     ''' setup the provider'''
@@ -161,10 +163,10 @@ class LMSProvider(PlayerProvider):
         # current track
         if player_details.get('playlist_loop'):
             player.cur_item = await self.__parse_track(player_details['playlist_loop'][0])
-            player.cur_item_time = player_details.get('time',0)
+            player.cur_time = player_details.get('time',0)
         else:
             player.cur_item = None
-            player.cur_item_time = 0
+            player.cur_time = 0
         await self.mass.player.update_player(player)
 
     async def __process_serverstatus(self, server_status):

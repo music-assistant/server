@@ -11,9 +11,9 @@ from typing import List
 import random
 import sys
 import socket
-from utils import run_periodic, LOGGER, parse_track_title, try_parse_int, get_ip, get_hostname
-from models import PlayerProvider, MusicPlayer, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from constants import CONF_ENABLED
+from ..utils import run_periodic, LOGGER, parse_track_title, try_parse_int, get_ip, get_hostname
+from ..models import PlayerProvider, Player, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from ..constants import CONF_ENABLED
 
 
 def setup(mass):
@@ -41,7 +41,6 @@ class PyLMSServer(PlayerProvider):
         self._lmsplayers = {}
         self.buffer = b''
         self.last_msg_received = 0
-        self.supported_musicproviders = ['http']
         
         # start slimproto server
         mass.event_loop.create_task(asyncio.start_server(self.__handle_socket_client, '0.0.0.0', 3483))
@@ -60,12 +59,6 @@ class PyLMSServer(PlayerProvider):
                 await asyncio.sleep(60)  # serve forever
         finally:
             transport.close()
-
-    async def player_config_entries(self):
-        ''' get the player config entries for this provider (list with key/value pairs)'''
-        return [
-            ("crossfade_duration", 0, "crossfade_duration"),
-            ]
 
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
@@ -97,7 +90,7 @@ class PyLMSServer(PlayerProvider):
         ''' 
             play media on a player
         '''
-        player = self.get_player(player_id)
+        player = await self.get_player(player_id)
         cur_index = player.cur_queue_index
 
         if queue_opt == 'replace' or not player.queue:
@@ -183,7 +176,7 @@ class PyLMSServer(PlayerProvider):
         # update player properties
         player.name = lms_player.player_name
         player.volume_level = lms_player.volume_level
-        player.cur_item_time = lms_player._elapsed_seconds
+        player.cur_time = lms_player._elapsed_seconds
         if event == "disconnected":
             return await self.mass.player.remove_player(player_id)
         elif event == "power":

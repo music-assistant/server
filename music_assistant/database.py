@@ -3,11 +3,12 @@
 
 import asyncio
 import os
-from utils import run_periodic, LOGGER, get_sort_name, try_parse_int
-from models import MediaType, Artist, Album, Track, Playlist, Radio
 from typing import List
 import aiosqlite
 import operator
+
+from .utils import run_periodic, LOGGER, get_sort_name, try_parse_int
+from .models.media_types import MediaType, Artist, Album, Track, Playlist, Radio
 
 class Database():
 

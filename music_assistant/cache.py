@@ -8,10 +8,10 @@ import time
 import sqlite3
 from functools import reduce
 import os
-from utils import run_periodic, LOGGER, parse_track_title
 import functools
 import asyncio
 
+from .utils import run_periodic, LOGGER, parse_track_title
 
 class Cache(object):
     '''basic stateless caching system '''

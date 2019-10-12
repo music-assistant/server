@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
+import asyncio
 from enum import Enum
 from typing import List
+import operator
 from ..utils import run_periodic, LOGGER, parse_track_title, try_parse_int, try_parse_bool, try_parse_float
 from ..constants import CONF_ENABLED
-from ..modules.cache import use_cache
-from media_types import Track, MediaType
-from player_queue import PlayerQueue, QueueItem
+from ..cache import use_cache
+from .media_types import Track, MediaType
+from .player_queue import PlayerQueue, QueueItem
 
 
 class PlayerState(str, Enum):
@@ -21,57 +23,104 @@ class Player():
 
     #### Provider specific implementation, should be overridden ####
 
-    async def get_config_entries(self):
-        ''' [MAY OVERRIDE] get the player-specific config entries for this player (list with key/value pairs)'''
-        return []
-
-    async def __stop(self):
+    async def cmd_stop(self):
         ''' [MUST OVERRIDE] send stop command to player '''
         raise NotImplementedError
 
-    async def __play(self):
+    async def cmd_play(self):
         ''' [MUST OVERRIDE] send play (unpause) command to player '''
         raise NotImplementedError
 
-    async def __pause(self):
+    async def cmd_pause(self):
         ''' [MUST OVERRIDE] send pause command to player '''
         raise NotImplementedError
+
+    async def cmd_next(self):
+        ''' [CAN OVERRIDE] send next track command to player '''
+        return await self.queue.play_index(self.queue.cur_index+1)
+
+    async def cmd_previous(self):
+        ''' [CAN OVERRIDE] send previous track command to player '''
+        return await self.queue.play_index(self.queue.cur_index-1)
     
-    async def __power_on(self):
+    async def cmd_power_on(self):
         ''' [MUST OVERRIDE] send power ON command to player '''
         raise NotImplementedError
 
-    async def __power_off(self):
+    async def cmd_power_off(self):
         ''' [MUST OVERRIDE] send power TOGGLE command to player '''
         raise NotImplementedError
 
-    async def __volume_set(self, volume_level):
+    async def cmd_volume_set(self, volume_level):
         ''' [MUST OVERRIDE] send new volume level command to player '''
         raise NotImplementedError
 
-    async def __volume_mute(self, is_muted=False):
+    async def cmd_volume_mute(self, is_muted=False):
         ''' [MUST OVERRIDE] send mute command to player '''
         raise NotImplementedError
 
-    async def __play_queue(self):
-        ''' [MUST OVERRIDE] tell player to start playing the queue '''
+    async def cmd_queue_play_index(self, index:int):
+        '''
+            [OVERRIDE IF SUPPORTED]
+            play item at index X on player's queue
+            :attrib index: (int) index of the queue item that should start playing
+        '''
+        raise NotImplementedError
+
+    async def cmd_queue_load(self, queue_items):
+        ''' 
+            [OVERRIDE IF SUPPORTED]
+            load/overwrite given items in the player's own queue implementation
+            :param queue_items: a list of QueueItems
+        '''
+        raise NotImplementedError
+
+    async def cmd_queue_insert(self, queue_items, offset=0):
+        ''' 
+            [OVERRIDE IF SUPPORTED]
+            insert new items at position X into existing queue
+            if offset 0 or None, will start playing newly added item(s)
+                :param queue_items: a list of QueueItems
+                :param offset: offset from current queue position to insert new items
+        '''
+        raise NotImplementedError
+
+    async def cmd_queue_append(self, queue_items):
+        ''' 
+            append new items at the end of the queue
+            :param queue_items: a list of QueueItems
+        '''
+        raise NotImplementedError
+
+    async def cmd_play_uri(self, uri:str):
+        '''
+            [MUST OVERRIDE]
+            tell player to start playing a single uri
+        '''
         raise NotImplementedError
 
     #### Common implementation, should NOT be overrridden #####
 
     def __init__(self, mass, player_id, prov_id):
+        # private attributes
         self.mass = mass
-        self._player_id = player_id
-        self._prov_id = prov_id
+        self._player_id = player_id # unique id for this player
+        self._prov_id = prov_id # unique provider id for the player
         self._name = ''
-        self._is_group = False
-        self._state = PlayerState.Stopped
-        self._powered = False
+        self._is_group = False 
+        self._state = PlayerState.Stopped 
+        self._powered = False 
         self._cur_time = 0
+        self._cur_uri = ''
         self._volume_level = 0
         self._muted = False
         self._group_parent = None
         self._queue = PlayerQueue(mass, self)
+        # public attributes
+        self.supports_queue = True # has native support for a queue
+        self.supports_gapless = True # has native gapless support
+        self.supports_crossfade = False # has native crossfading support
+        self.supports_replay_gain = False # has native support for replaygain volume leveling
 
     @property
     def player_id(self):
@@ -116,8 +165,8 @@ class Player():
         if not self.powered:
             return PlayerState.Off
         if self.group_parent:
-            group_player = self.mass.event_loop.run_until_complete(
-                    self.mass.player.get_player(self.group_parent))
+            group_player = self.mass.bg_executor.submit(asyncio.run, 
+                self.mass.player.get_player(self.group_parent)).result()
             if group_player:
                 return group_player.state
         return self._state
@@ -125,7 +174,7 @@ class Player():
     @state.setter
     def state(self, state:PlayerState):
         ''' [PROTECTED] set state property of this player '''
-        if state != self.state:
+        if state != self._state:
             self._state = state
             self.mass.event_loop.create_task(self.update())
 
@@ -134,18 +183,18 @@ class Player():
         ''' [PROTECTED] return power state for this player '''
         # homeassistant integration
         if self.mass.hass and self.settings.get('hass_power_entity') and self.settings.get('hass_power_entity_source'):
-            hass_state = self.mass.event_loop.run_until_complete(
+            hass_state = self.mass.bg_executor.submit(asyncio.run, 
                 self.mass.hass.get_state(
                     self.settings['hass_power_entity'],
                     attribute='source',
-                    register_listener=self.update()))
+                    register_listener=self.update())).result()
             return hass_state == self.settings['hass_power_entity_source']
         elif self.settings.get('hass_power_entity'):
-            hass_state = self.mass.event_loop.run_until_complete(
+            hass_state = self.mass.bg_executor.submit(asyncio.run, 
                 self.mass.hass.get_state(
                     self.settings['hass_power_entity'],
                     attribute='state',
-                    register_listener=self.update()))
+                    register_listener=self.update())).result()
             return hass_state != 'off'
         # mute as power
         elif self.settings.get('mute_as_power'):
@@ -156,15 +205,17 @@ class Player():
     @powered.setter
     def powered(self, powered):
         ''' [PROTECTED] set (real) power state for this player '''
-        self._powered = powered
+        if powered != self._powered:
+            self._powered = powered
+        self.mass.event_loop.create_task(self.update())
 
     @property
     def cur_time(self):
         ''' [PROTECTED] cur_time (player's elapsed time) property of this player '''
         # handle group player
         if self.group_parent:
-            group_player = self.mass.event_loop.run_until_complete(
-                    self.mass.player.get_player(self.group_parent))
+            group_player = self.mass.bg_executor.submit(asyncio.run, 
+                self.mass.player.get_player(self.group_parent)).result()
             if group_player:
                 return group_player.cur_time
         return self._cur_time
@@ -174,6 +225,24 @@ class Player():
         ''' [PROTECTED] set cur_time (player's elapsed time) property of this player '''
         if cur_time != self._cur_time:
             self._cur_time = cur_time
+            self.mass.event_loop.create_task(self.update())
+
+    @property
+    def cur_uri(self):
+        ''' [PROTECTED] cur_uri (uri loaded in player) property of this player '''
+        # handle group player
+        if self.group_parent:
+            group_player = self.mass.bg_executor.submit(asyncio.run, 
+                self.mass.player.get_player(self.group_parent)).result()
+            if group_player:
+                return group_player.cur_uri
+        return self._cur_uri
+
+    @cur_uri.setter
+    def cur_uri(self, cur_uri:str):
+        ''' [PROTECTED] set cur_uri (uri loaded in player) property of this player '''
+        if cur_uri != self._cur_uri:
+            self._cur_uri = cur_uri
             self.mass.event_loop.create_task(self.update())
 
     @property
@@ -192,11 +261,11 @@ class Player():
             return group_volume
         # handle hass integration
         elif self.mass.hass and self.settings.get('hass_volume_entity'):
-            hass_state = self.mass.event_loop.run_until_complete(
+            hass_state = self.mass.bg_executor.submit(asyncio.run, 
                 self.mass.hass.get_state(
-                    self.settings['hass_volume_entity'], 
+                    self.settings['hass_volume_entity'],
                     attribute='volume_level',
-                    register_listener=self.update()))
+                    register_listener=self.update())).result()
             return int(try_parse_float(hass_state)*100)
         else:
             return self._volume_level
@@ -246,7 +315,9 @@ class Player():
         ''' [PROTECTED] get the player config settings '''
         player_settings = self.mass.config['player_settings'].get(self.player_id)
         if not player_settings:
-            return self.mass.event_loop.run_until_complete(self.__update_player_settings())
+            player_settings = self.mass.bg_executor.submit(asyncio.run, 
+                self.__update_player_settings()).result()
+        return player_settings
 
     @property
     def enabled(self):
@@ -258,11 +329,16 @@ class Player():
         ''' [PROTECTED] player's queue '''
         # handle group player
         if self.group_parent:
-            group_player = self.mass.event_loop.run_until_complete(
-                    self.mass.player.get_player(self.group_parent))
+            group_player = self.mass.bg_executor.submit(asyncio.run, 
+                self.mass.player.get_player(self.group_parent)).result()
             if group_player:
                 return group_player.queue
         return self._queue
+
+    @property
+    def cur_item(self):
+        ''' current item in the player's queue '''
+        return self.queue.cur_item
 
     async def stop(self):
         ''' [PROTECTED] send stop command to player '''
@@ -272,7 +348,7 @@ class Player():
             if group_player:
                 return await group_player.stop()
         else:
-            return await self.__stop()
+            return await self.cmd_stop()
 
     async def play(self):
         ''' [PROTECTED] send play (unpause) command to player '''
@@ -282,9 +358,9 @@ class Player():
             if group_player:
                 return await group_player.play()
         elif self.state == PlayerState.Paused:
-            return await self.__play()
+            return await self.cmd_play()
         elif self.state != PlayerState.Playing:
-            return await self.play_queue()
+            return await self.queue.resume()
 
     async def pause(self):
         ''' [PROTECTED] send pause command to player '''
@@ -294,14 +370,42 @@ class Player():
             if group_player:
                 return await group_player.pause()
         else:
-            return await self.__pause()
+            return await self.cmd_pause()
     
+    async def next(self):
+        ''' [PROTECTED] send next command to player '''
+        if self.group_parent:
+            # redirect playback related commands to parent player
+            group_player = await self.mass.player.get_player(self.group_parent)
+            if group_player:
+                return await group_player.next()
+        else:
+            return await self.queue.next()
+
+    async def previous(self):
+        ''' [PROTECTED] send previous command to player '''
+        if self.group_parent:
+            # redirect playback related commands to parent player
+            group_player = await self.mass.player.get_player(self.group_parent)
+            if group_player:
+                return await group_player.previous()
+        else:
+            return await self.queue.previous()
+    
+    async def power(self, power):
+        ''' [PROTECTED] send power ON command to player '''
+        power = try_parse_bool(power)
+        if power:
+            return await self.power_on()
+        else:
+            return await self.power_off()
+
     async def power_on(self):
         ''' [PROTECTED] send power ON command to player '''
-        self.__power_on()
+        await self.cmd_power_on()
         # handle mute as power
         if self.settings['mute_as_power']:
-            self.volume_mute(False)
+            await self.volume_mute(False)
         # handle hass integration
         if self.mass.hass and self.settings.get('hass_power_entity') and self.settings.get('hass_power_entity_source'):
             cur_source = await self.mass.hass.get_state(self.settings['hass_power_entity'], attribute='source')
@@ -317,7 +421,7 @@ class Player():
             await self.mass.hass.call_service(domain, 'turn_on', service_data)
         # handle play on power on
         if self.settings['play_power_on']:
-            self.play()
+            await self.play()
         # handle group power
         if self.group_parent:
             # player has a group parent, check if it should be turned on
@@ -327,10 +431,10 @@ class Player():
 
     async def power_off(self):
         ''' [PROTECTED] send power TOGGLE command to player '''
-        self.__power_off()
+        await self.cmd_power_off()
         # handle mute as power
         if self.settings['mute_as_power']:
-            self.volume_mute(True)
+            await self.volume_mute(True)
         # handle hass integration
         if self.mass.hass and self.settings.get('hass_power_entity') and self.settings.get('hass_power_entity_source'):
             cur_source = await self.mass.hass.get_state(self.settings['hass_power_entity'], attribute='source')
@@ -390,119 +494,46 @@ class Player():
                 'volume_level': volume_level/100
             }
             await self.mass.hass.call_service('media_player', 'volume_set', service_data)
-            await self.__volume_set(100) # just force full volume on actual player if volume is outsourced to hass
+            await self.cmd_volume_set(100) # just force full volume on actual player if volume is outsourced to hass
         else:
-            await self.__volume_set(volume_level)
+            await self.cmd_volume_set(volume_level)
 
     async def volume_up(self):
-        ''' [MAY OVERRIDE] send volume up command to player '''
+        ''' [PROTECTED] send volume up command to player '''
         new_level = self.volume_level + 1
         return await self.volume_set(new_level)
 
     async def volume_down(self):
-        ''' [MAY OVERRIDE] send volume down command to player '''
+        ''' [PROTECTED] send volume down command to player '''
         new_level = self.volume_level - 1
         if new_level < 0:
             new_level = 0
         return await self.volume_set(new_level)
 
     async def volume_mute(self, is_muted=False):
-        ''' [MUST OVERRIDE] send mute command to player '''
-        return await self.__volume_mute(is_muted)
+        ''' [PROTECTED] send mute command to player '''
+        return await self.cmd_volume_mute(is_muted)
 
-    async def play_queue(self):
-        ''' [PROTECTED] send play_queue (start stream) command to player '''
-        if self.group_parent:
-            # redirect playback related commands to parent player
-            group_player = await self.mass.player.get_player(self.group_parent)
-            if group_player:
-                return await group_player.play_queue()
-        elif self.queue.items:
-            return await self.__play_queue()
-
-    async def play_media(self, media_item, queue_opt='play'):
-        ''' 
-            play media item(s) on this player 
-            media_item: media item(s) that should be played (Track, Album, Artist, Playlist, Radio)
-                        single item or list of items
-            queue_opt: 
-                play -> insert new items in queue and start playing at the inserted position
-                replace -> replace queue contents with these items
-                next -> play item(s) after current playing item
-                add -> append new items at end of the queue
-        '''
-        # a single item or list of items may be provided
-        media_items = media_item if isinstance(media_item, list) else [media_item]
-        queue_tracks = []
-        for media_item in media_items:
-            # collect tracks to play
-            if media_item.media_type == MediaType.Artist:
-                tracks = await self.mass.music.artist_toptracks(media_item.item_id, 
-                        provider=media_item.provider)
-            elif media_item.media_type == MediaType.Album:
-                tracks = await self.mass.music.album_tracks(media_item.item_id, 
-                        provider=media_item.provider)
-            elif media_item.media_type == MediaType.Playlist:
-                tracks = await self.mass.music.playlist_tracks(media_item.item_id, 
-                        provider=media_item.provider, offset=0, limit=0) 
-            else:
-                tracks = [media_item] # single track
-            for track in tracks:
-                queue_item = QueueItem()
-                queue_item.name = track.name
-                queue_item.artists = track.artists
-                queue_item.album = track.album
-                queue_item.duration = track.duration
-                queue_item.version = track.version
-                queue_item.metadata = track.metadata
-                queue_item.media_type = track.media_type
-                queue_item.uri = 'http://%s:%s/stream_queue?player_id=%s'% (
-                        self.local_ip, self.mass.config['base']['web']['http_port'], player_id)
-                # sort by quality and check track availability
-                for prov_media in sorted(track.provider_ids, key=operator.itemgetter('quality'), reverse=True):
-                    media_provider = prov_media['provider']
-                    media_item_id = prov_media['item_id']
-                    player_supported_provs = player_prov.supported_musicproviders
-                    if media_provider in player_supported_provs and not self.mass.config['player_settings'][player_id]['force_http_streamer']:
-                        # the provider can handle this media_type directly !
-                        track.uri = await self.get_track_uri(media_item_id, media_provider, player_id, is_radio=is_radio)
-                        playable_tracks.append(track)
-                        match_found = True
-                    elif 'http' in player_prov.supported_musicproviders:
-                        # fallback to http streaming if supported
-                        track.uri = await self.get_track_uri(media_item_id, media_provider, player_id, True, is_radio=is_radio)
-                        queue_tracks.append(track)
-                        match_found = True
-                    if match_found:
-                        break
-        if queue_tracks:
-            if self._players[player_id].shuffle_enabled:
-                random.shuffle(playable_tracks)
-            if queue_opt in ['next', 'play'] and len(playable_tracks) > 1:
-                queue_opt = 'replace' # always assume playback of multiple items as new queue
-            return await player_prov.play_media(player_id, playable_tracks, queue_opt)
-        else:
-            raise Exception("Musicprovider and/or media not supported by player %s !" % (player_id) )
-    
     async def update(self):
         ''' [PROTECTED] signal player updated '''
-        self.__update_player_settings()
+        await self.__update_player_settings()
         LOGGER.info("player updated: %s" % self.name)
         self.mass.signal_event('player changed', self)
     
     async def __update_player_settings(self):
         ''' [PROTECTED] get (or create) player config settings '''
         config_entries = [ # default config entries for a player
-            ("enabled", False, "player_enabled"),
+            ("enabled", True, "player_enabled"),
             ("name", "", "player_name"),
             ("mute_as_power", False, "player_mute_power"),
             ("max_sample_rate", 96000, "max_sample_rate"),
             ('volume_normalisation', True, 'enable_r128_volume_normalisation'), 
             ('target_volume', '-23', 'target_volume_lufs'),
-            ('fallback_gain_correct', '-12', 'fallback_gain_correct')
+            ('fallback_gain_correct', '-12', 'fallback_gain_correct'),
+            ("crossfade_duration", 0, "crossfade_duration"),
         ]
         # append player specific settings
-        config_entries += await self.get_config_entries()
+        config_entries += await self.mass.player.providers[self._prov_id].get_player_config_entries()
         if self.is_group or not self.group_parent:
             config_entries += [ # play on power on setting
                 ("play_power_on", False, "player_power_play"),
@@ -523,3 +554,21 @@ class Player():
         self.mass.config['player_settings'][self.player_id]['__desc__'] = config_entries
         return player_settings
     
+    @property
+    def __dict__(self):
+        ''' instance attributes as dict so it can be serialized to json '''
+        return {
+            "player_id": self.player_id,
+            "player_provider": self.player_provider,
+            "name": self.name,
+            "is_group": self.is_group,
+            "state": self.state,
+            "powered": self.powered,
+            "cur_time": self.cur_time,
+            "cur_uri": self.cur_uri,
+            "volume_level": self.volume_level,
+            "muted": self.muted,
+            "group_parent": self.group_parent,
+            "enabled": self.enabled,
+            "cur_item": self.cur_item.__dict__ if self.cur_item else None
+        }

@@ -3,16 +3,28 @@
 
 import asyncio
 import os
-from utils import run_periodic, LOGGER, run_async_background_task
 import json
 import aiohttp
 from aiohttp import web
-from models import MediaType, media_type_from_string
 from functools import partial
-json_serializer = partial(json.dumps, default=lambda x: x.__dict__)
 import ssl
 import concurrent
 import threading
+from .models.media_types import MediaItem, MediaType, media_type_from_string
+from .models.player import Player
+from .utils import run_periodic, LOGGER, run_async_background_task, get_ip
+
+#json_serializer = partial(json.dumps, default=lambda x: x.__dict__)
+
+def json_serializer(obj):
+    # if isinstance(obj, list):
+    #     lst = []
+    #     for item in obj:
+    #         json_obj = json.dumps(item, skipkeys=True, default=lambda x: x.__dict__)
+    #         lst.append(json_obj)
+    #     return '[' + ','.join(lst) + ']'
+    return json.dumps(obj, skipkeys=True, default=lambda x: x.__dict__)
+
 
 def setup(mass):
     ''' setup the module and read/apply config'''
@@ -34,7 +46,7 @@ def setup(mass):
 def create_config_entries(config):
     ''' get the config entries for this module (list with key/value pairs)'''
     config_entries = [
-        ('http_port', 8095, 'web_http_port'),
+        ('http_port', 8095, 'webhttp_port'),
         ('https_port', 8096, 'web_https_port'),
         ('ssl_certificate', '', 'web_ssl_cert'), 
         ('ssl_key', '', 'web_ssl_key'),
@@ -52,7 +64,8 @@ class Web():
     
     def __init__(self, mass, http_port, https_port, ssl_cert, ssl_key, cert_fqdn_host):
         self.mass = mass
-        self._http_port = http_port
+        self.local_ip = get_ip()
+        self.http_port = http_port
         self._https_port = https_port
         self._ssl_cert = ssl_cert
         self._ssl_key = ssl_key
@@ -71,7 +84,7 @@ class Web():
         app.add_routes([web.get('/ws', self.websocket_handler)])
         # app.add_routes([web.get('/stream_track', self.mass.http_streamer.stream_track)])
         # app.add_routes([web.get('/stream_radio', self.mass.http_streamer.stream_radio)])
-        app.add_routes([web.get('/stream/{player_id}', self.mass.http_streamer.stream_queue)])
+        app.add_routes([web.get('/stream/{player_id}', self.mass.http_streamer.stream)])
         app.add_routes([web.get('/api/search', self.search)])
         app.add_routes([web.get('/api/config', self.get_config)])
         app.add_routes([web.post('/api/config', self.save_config)])
@@ -89,10 +102,10 @@ class Web():
         app.add_routes([web.get('/api/{media_type}/{media_id}/{action}', self.get_item)])
         app.add_routes([web.get('/api/{media_type}/{media_id}', self.get_item)])
         app.add_routes([web.get('/', self.index)])
-        app.router.add_static("/", "./web")  
+        app.router.add_static("/", "./web/")  
         self.runner = web.AppRunner(app, access_log=None)
         await self.runner.setup()
-        http_site = web.TCPSite(self.runner, '0.0.0.0', self._http_port)
+        http_site = web.TCPSite(self.runner, '0.0.0.0', self.http_port)
         await http_site.start()
         if self._ssl_cert and self._ssl_key:
             ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -181,8 +194,7 @@ class Web():
 
     async def players(self, request):
         ''' get all players '''
-        players = await self.mass.player.players()
-        return web.json_response(players, dumps=json_serializer)
+        return web.json_response(self.mass.player.players, dumps=json_serializer)
 
     async def player_command(self, request):
         ''' issue player command'''
@@ -194,13 +206,13 @@ class Web():
             cmd_args = request.match_info.get('cmd_args')
             player_cmd = getattr(player, cmd, None)
             if player_cmd and cmd_args:
-                result = await player_cmd(player_id, cmd, cmd_args)
-            elif player_cmd and cmd_args:
-                result = await player_cmd(player_id, cmd, cmd_args)
+                result = await player_cmd(cmd_args)
+            elif player_cmd:
+                result = await player_cmd()
             else:
                 LOGGER.error("Received non-existing command %s for player %s" %(cmd, player.name))
         else:
-            LOGGER.error("Received command dor non-existing player %s" %(player_id))
+            LOGGER.error("Received command for non-existing player %s" %(player_id))
         return web.json_response(result, dumps=json_serializer) 
     
     async def play_media(self, request):
@@ -220,8 +232,12 @@ class Web():
         player_id = request.match_info.get('player_id')
         limit = int(request.query.get('limit', 50))
         offset = int(request.query.get('offset', 0))
-        result = await self.mass.player.player_queue(player_id, offset, limit)
-        return web.json_response(result, dumps=json_serializer) 
+        player = await self.mass.player.get_player(player_id)
+        # queue_items = player.queue.items
+        # queue_items = [item.__dict__ for item in queue_items]
+        # print(queue_items)
+        # result = queue_items[offset:limit]
+        return web.json_response(player.queue.items, dumps=json_serializer) 
     
     async def index(self, request):  
         return web.FileResponse("./web/index.html")
@@ -244,8 +260,7 @@ class Web():
                     continue
                 # for now we only use WS for (simple) player commands
                 if msg.data == 'players':
-                    players = await self.mass.player.players()
-                    ws_msg = {'message': 'players', 'message_details': players}
+                    ws_msg = {'message': 'players', 'message_details': self.mass.player.players}
                     await ws.send_json(ws_msg, dumps=json_serializer)
                 elif msg.data.startswith('players') and '/cmd/' in msg.data:
                     # players/{player_id}/cmd/{cmd} or players/{player_id}/cmd/{cmd}/{cmd_args}
@@ -253,7 +268,14 @@ class Web():
                     player_id = msg_data_parts[1]
                     cmd = msg_data_parts[3]
                     cmd_args = msg_data_parts[4] if len(msg_data_parts) == 5 else None
-                    await self.mass.player.player_command(player_id, cmd, cmd_args)
+                    player = await self.mass.player.get_player(player_id)
+                    player_cmd = getattr(player, cmd, None)
+                    if player_cmd and cmd_args:
+                        result = await player_cmd(cmd_args)
+                    elif player_cmd:
+                        result = await player_cmd()
+        except Exception as exc:
+            LOGGER.exception(exc)
         finally:
             self.mass.remove_event_listener(cb_id)
         LOGGER.debug('websocket connection closed')

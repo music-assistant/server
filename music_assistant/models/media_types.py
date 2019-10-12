@@ -45,96 +45,70 @@ class TrackQuality(IntEnum):
     FLAC_LOSSLESS_HI_RES_3 = 9 # 176/192khz 24 bits HI-RES
     FLAC_LOSSLESS_HI_RES_4 = 10 # above 192khz 24 bits HI-RES
 
-
-class Artist(object):
-    ''' representation of an artist '''
+class MediaItem(object):
+    ''' representation of a media item '''
     def __init__(self):
         self.item_id = None
         self.provider = 'database'
         self.name = ''
-        self.sort_name = ''
         self.metadata = {}
         self.tags = []
         self.external_ids = []
         self.provider_ids = []
-        self.media_type = MediaType.Artist
         self.in_library = []
         self.is_lazy = False
-
-class Album(object):
-    ''' representation of an album '''
-    def __init__(self):
-        self.item_id = None
-        self.provider = 'database'
-        self.name = '' 
-        self.metadata = {}
-        self.version = ''
-        self.external_ids = []
-        self.tags = []
-        self.albumtype = AlbumType.Album
-        self.year = 0
-        self.artist = None
-        self.labels = []
-        self.provider_ids = []
-        self.media_type = MediaType.Album
-        self.in_library = []
-        self.is_lazy = False
-
-class Track(object):
-    ''' representation of a track '''
-    def __init__(self):
-        self.item_id = None
-        self.provider = 'database'
-        self.name = ''
-        self.duration = 0
-        self.version = ''
-        self.external_ids = []
-        self.metadata = { }
-        self.tags = []
-        self.artists = []
-        self.provider_ids = []
-        self.album = None
-        self.disc_number = 1
-        self.track_number = 1
-        self.media_type = MediaType.Track
-        self.in_library = []
-        self.is_lazy = False
-        self.uri = ""
     def __eq__(self, other): 
         if not isinstance(other, self.__class__):
             return NotImplemented
         return (self.name == other.name and 
-                self.version == other.version and
                 self.item_id == other.item_id and
                 self.provider == other.provider)
     def __ne__(self, other):
         return not self.__eq__(other)
 
-class Playlist(object):
+class Artist(MediaItem):
+    ''' representation of an artist '''
+    def __init__(self):
+        super().__init__()
+        self.sort_name = ''
+        self.media_type = MediaType.Artist
+
+class Album(MediaItem):
+    ''' representation of an album '''
+    def __init__(self):
+        super().__init__()
+        self.version = ''
+        self.albumtype = AlbumType.Album
+        self.year = 0
+        self.artist = None
+        self.labels = []
+        self.media_type = MediaType.Album
+
+class Track(MediaItem):
+    ''' representation of a track '''
+    def __init__(self):
+        super().__init__()
+        self.duration = 0
+        self.version = ''
+        self.artists = []
+        self.album = None
+        self.disc_number = 1
+        self.track_number = 1
+        self.media_type = MediaType.Track
+
+class Playlist(MediaItem):
     ''' representation of a playlist '''
     def __init__(self):
-        self.item_id = None
-        self.provider = 'database'
-        self.name = ''
+        super().__init__()
         self.owner = ''
-        self.provider_ids = []
-        self.metadata = {}
         self.media_type = MediaType.Playlist
-        self.in_library = []
         self.is_editable = False
 
-class Radio(Track):
+class Radio(MediaItem):
     ''' representation of a radio station '''
     def __init__(self):
         super().__init__()
-        self.item_id = None
-        self.provider = 'database'
-        self.name = ''
-        self.provider_ids = []
-        self.metadata = {}
         self.media_type = MediaType.Radio
-        self.in_library = []
-        self.is_editable = False
         self.duration = 0
 
 

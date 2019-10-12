@@ -6,14 +6,15 @@ import os
 from typing import List
 import sys
 import time
-from utils import run_periodic, LOGGER, parse_track_title
-from models import MusicProvider, MediaType, TrackQuality, Radio
-from constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
 from asyncio_throttle import Throttler
 import json
 import aiohttp
-from modules.cache import use_cache
-import concurrent
+
+from ..cache import use_cache
+from ..utils import run_periodic, LOGGER, parse_track_title
+from ..models import MusicProvider, MediaType, TrackQuality, Radio
+from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+
 
 def setup(mass):
     ''' setup the provider'''
@@ -105,7 +106,7 @@ class TuneInProvider(MusicProvider):
                 quality = TrackQuality.LOSSY_MP3
             radio.provider_ids.append({
                 "provider": self.prov_id,
-                "item_id": details['preset_id'],
+                "item_id": "%s--%s" % (details['preset_id'], stream["media_type"]),
                 "quality": quality,
                 "details": stream['url']
             })
@@ -122,17 +123,20 @@ class TuneInProvider(MusicProvider):
         res = await self.__get_data("Tune.ashx", params)
         return res
 
-    # async def get_stream_content_type(self, radio_id):
-    #     ''' return the content type for the given radio when it will be streamed'''
-    #     return 'flac' #TODO handle other file formats on qobuz?
-
-    # async def get_audio_stream(self, track_id):
-    #     ''' get audio stream for a track '''
-    #     params = {'format_id': 27, 'track_id': track_id, 'intent': 'stream'}
-    #     # we are called from other thread
-    #     streamdetails_future = asyncio.run_coroutine_threadsafe(
-    #         self.__get_data('track/getFileUrl', params, sign_request=True, ignore_cache=True),
-    #         self.mass.event_loop
+    async def get_stream_details(self, stream_id):
+        ''' return the content details for the given track when it will be streamed'''
+        radio_id, media_type = stream_id.split('--')
+        stream_info = await self.__get_stream_urls(radio_id)
+        for stream in stream_info["body"]:
+            if stream['media_type'] == media_type:
+                return {
+                    "type": "url",
+                    "path": stream['url'],
+                    "content_type": media_type,
+                    "sample_rate": 44100,
+                    "bit_depth": 16
+                }
+        return {}
         
     @use_cache(7)
     async def __get_data(self, endpoint, params={}, ignore_cache=False, cache_checksum=None):
