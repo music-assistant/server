@@ -10,6 +10,7 @@ import uuid
 from ..utils import LOGGER
 from ..constants import CONF_ENABLED
 from .media_types import Track, TrackQuality
+from .playerstate import PlayerState
 
 
 class QueueItem(Track):
@@ -21,8 +22,8 @@ class QueueItem(Track):
         self.queue_item_id = str(uuid.uuid4())
         # if existing media_item given, load those values
         if media_item:
-            for attribute, value in media_item.__dict__.items():
-                setattr(self, attribute, value)
+            for key, value in media_item.__dict__.items():
+                setattr(self, key, value)
 
 class PlayerQueue():
     ''' 
@@ -37,7 +38,9 @@ class PlayerQueue():
         self._items = []
         self._shuffle_enabled = True
         self._repeat_enabled = False
-        self._cur_index = None
+        self._cur_index = 0
+        self._cur_item_time = 0
+        self._last_index = 0 
 
     @property
     def shuffle_enabled(self):
@@ -49,7 +52,7 @@ class PlayerQueue():
 
     @property
     def crossfade_enabled(self):
-        return self._player.settings['crossfade_duration']
+        return self._player.settings.get('crossfade_duration', 0) > 0
 
     @property
     def gapless_enabled(self):
@@ -58,17 +61,21 @@ class PlayerQueue():
     @property
     def cur_index(self):
         ''' match current uri with queue items to determine queue index '''
-        for index, queue_item in enumerate(self.items):
-            if queue_item.uri == self._player.cur_uri:
-                return index
         return self._cur_index
 
     @property
     def cur_item(self):
-        if self.cur_index == None:
+        if self.cur_index == None or not self.items or len(self.items) < self.cur_index:
             return None
-        return self.mass.bg_executor.submit(asyncio.run,self.get_item(self.cur_index)).result()
+        return self.items[self.cur_index]
 
+    @property
+    def cur_item_time(self):
+        if self.use_queue_stream:
+            return self._cur_item_time
+        else:
+            return self._player._cur_time
+    
     @property
     def next_index(self):
         ''' 
@@ -94,8 +101,9 @@ class PlayerQueue():
         ''' 
             return the next item in the queue
         '''
-        return self.mass.bg_executor.submit(
-                asyncio.run, self.get_item(self.next_index)).result()
+        if self.next_index != None:
+            return self.items[self.next_index]
+        return None
     
     @property
     def items(self):
@@ -170,7 +178,7 @@ class PlayerQueue():
         if not len(self.items) > index:
             return
         if self.use_queue_stream:
-            self._cur_index = index -1
+            self._cur_index = index
             queue_stream_uri = 'http://%s:%s/stream/%s'% (
                         self.mass.web.local_ip, self.mass.web.http_port, self._player.player_id)
             return await self._player.cmd_play_uri(queue_stream_uri)
@@ -184,7 +192,7 @@ class PlayerQueue():
         if self._shuffle_enabled:
             queue_items = await self.__shuffle_items(queue_items)
         self._items = queue_items
-        self._cur_index = None
+        self._cur_index = 0
         if self.use_queue_stream or not self._player.supports_queue:
             return await self.play_index(0)
         else:
@@ -222,6 +230,41 @@ class PlayerQueue():
         self._items = self._items + queue_items
         if self._player.supports_queue:
             return await self._player.cmd_queue_append(queue_items)
+
+    async def update(self):
+        ''' update queue details, called when player updates '''
+        if self.use_queue_stream and self._player.state == PlayerState.Playing:
+            # determine queue index and cur_time for queue stream
+            # player is playing a constant stream of the queue so we need to do this the hard way
+            cur_time_queue = self._player._cur_time
+            total_time = 0
+            track_time = 0
+            if self.items:
+                queue_index = self._last_index # holds the last starting position
+                queue_track = None
+                while True:
+                    queue_track = self.items[queue_index]
+                    if cur_time_queue > (queue_track.duration + total_time):
+                        total_time += queue_track.duration
+                        queue_index += 1
+                    else:
+                        track_time = cur_time_queue - total_time
+                        break
+                self._cur_index = queue_index
+                self._cur_item_time = track_time
+        elif not self.use_queue_stream:
+            # normal queue based approach
+            cur_index = 0
+            for index, queue_item in enumerate(self.items):
+                if queue_item.uri == self._player.cur_uri:
+                    cur_index = index
+                    break
+            self._cur_index = cur_index
+
+    async def start_queue_stream(self):
+        ''' called by the queue streamer when it starts playing the queue stream '''
+        self._last_index = self.cur_index
+        return await self.get_item(self.cur_index)
 
     async def __shuffle_items(self, queue_items):
         ''' shuffle a list of tracks '''

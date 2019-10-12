@@ -17,14 +17,30 @@ from .utils import run_periodic, LOGGER, run_async_background_task, get_ip
 #json_serializer = partial(json.dumps, default=lambda x: x.__dict__)
 
 def json_serializer(obj):
-    # if isinstance(obj, list):
-    #     lst = []
-    #     for item in obj:
-    #         json_obj = json.dumps(item, skipkeys=True, default=lambda x: x.__dict__)
-    #         lst.append(json_obj)
-    #     return '[' + ','.join(lst) + ']'
-    return json.dumps(obj, skipkeys=True, default=lambda x: x.__dict__)
 
+    def get_val(val):
+        if isinstance(val, (int, str, bool, float)):
+            return val
+        elif isinstance(val, list):
+            new_list = []
+            for item in val:
+                new_list.append( get_val(item))
+            return new_list
+        elif hasattr(val, 'to_dict'):
+            return get_val(val.to_dict())
+        elif isinstance(val, dict):
+            new_dict = {}
+            for key, value in val.items():
+                new_dict[key] = get_val(value)
+            return new_dict
+        elif hasattr(val, '__dict__'):
+            new_dict = {}
+            for key, value in val.__dict__.items():
+                new_dict[key] = get_val(value)
+            return new_dict
+        
+    obj = get_val(obj)
+    return json.dumps(obj, skipkeys=True)
 
 def setup(mass):
     ''' setup the module and read/apply config'''
@@ -70,14 +86,15 @@ class Web():
         self._ssl_cert = ssl_cert
         self._ssl_key = ssl_key
         self._cert_fqdn_host = cert_fqdn_host
-        self.http_session = aiohttp.ClientSession()
-        mass.event_loop.create_task(self.setup_web())
+        self.mass.event_loop.create_task(self.setup())
 
     def stop(self):
         asyncio.create_task(self.runner.cleanup())
         asyncio.create_task(self.http_session.close())
 
-    async def setup_web(self):
+    async def setup(self):
+        ''' perform async setup '''
+        self.http_session = aiohttp.ClientSession()
         app = web.Application()
         app.add_routes([web.get('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])
@@ -89,6 +106,7 @@ class Web():
         app.add_routes([web.get('/api/config', self.get_config)])
         app.add_routes([web.post('/api/config', self.save_config)])
         app.add_routes([web.get('/api/players', self.players)])
+        app.add_routes([web.get('/api/players/{player_id}', self.player)])
         app.add_routes([web.get('/api/players/{player_id}/queue', self.player_queue)])
         app.add_routes([web.get('/api/players/{player_id}/cmd/{cmd}', self.player_command)])
         app.add_routes([web.get('/api/players/{player_id}/cmd/{cmd}/{cmd_args}', self.player_command)])
@@ -194,7 +212,15 @@ class Web():
 
     async def players(self, request):
         ''' get all players '''
-        return web.json_response(self.mass.player.players, dumps=json_serializer)
+        players = list(self.mass.player.players)
+        players.sort(key=lambda x: x.name, reverse=False)
+        return web.json_response(players, dumps=json_serializer)
+
+    async def player(self, request):
+        ''' get single player '''
+        player_id = request.match_info.get('player_id')
+        player = await self.mass.player.get_player(player_id)
+        return web.json_response(player, dumps=json_serializer)
 
     async def player_command(self, request):
         ''' issue player command'''
@@ -237,7 +263,7 @@ class Web():
         # queue_items = [item.__dict__ for item in queue_items]
         # print(queue_items)
         # result = queue_items[offset:limit]
-        return web.json_response(player.queue.items, dumps=json_serializer) 
+        return web.json_response(player.queue.items[offset:limit], dumps=json_serializer) 
     
     async def index(self, request):  
         return web.FileResponse("./web/index.html")
@@ -253,14 +279,16 @@ class Web():
             async def send_event(msg, msg_details):
                 ws_msg = {"message": msg, "message_details": msg_details }
                 await ws.send_json(ws_msg, dumps=json_serializer)
-            cb_id = self.mass.add_event_listener(send_event)
+            cb_id = await self.mass.add_event_listener(send_event)
             # process incoming messages
             async for msg in ws:
                 if msg.type != aiohttp.WSMsgType.TEXT:
                     continue
                 # for now we only use WS for (simple) player commands
                 if msg.data == 'players':
-                    ws_msg = {'message': 'players', 'message_details': self.mass.player.players}
+                    players = list(self.mass.player.players)
+                    players.sort(key=lambda x: x.name, reverse=False)
+                    ws_msg = {'message': 'players', 'message_details': players}
                     await ws.send_json(ws_msg, dumps=json_serializer)
                 elif msg.data.startswith('players') and '/cmd/' in msg.data:
                     # players/{player_id}/cmd/{cmd} or players/{player_id}/cmd/{cmd}/{cmd_args}
@@ -277,7 +305,7 @@ class Web():
         except Exception as exc:
             LOGGER.exception(exc)
         finally:
-            self.mass.remove_event_listener(cb_id)
+            await self.mass.remove_event_listener(cb_id)
         LOGGER.debug('websocket connection closed')
         return ws
 
@@ -303,7 +331,7 @@ class Web():
                     self.mass.config[key] = new_config[key]
         if config_changed:
             self.mass.save_config()
-            self.mass.signal_event('config_changed')
+            await self.mass.signal_event('config_changed')
         return web.Response(text='success')
 
     async def json_rpc(self, request):

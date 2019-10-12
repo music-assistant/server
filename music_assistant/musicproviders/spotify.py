@@ -45,11 +45,16 @@ class SpotifyProvider(MusicProvider):
         self._cur_user = None
         self.mass = mass
         self.cache = mass.cache
-        self.http_session = aiohttp.ClientSession(loop=mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
-        self.throttler = Throttler(rate_limit=1, period=1)
         self._username = username
         self._password = password
         self.__auth_token = {}
+        self.mass.event_loop.create_task(self.setup())
+
+    async def setup(self):
+        ''' perform async setup '''
+        self.http_session = aiohttp.ClientSession(
+                loop=self.mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
+        self.throttler = Throttler(rate_limit=1, period=1)
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''

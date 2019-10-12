@@ -14,7 +14,7 @@ import pyloudnorm as pyln
 import aiohttp
 from .utils import LOGGER, try_parse_int, get_ip, run_async_background_task, run_periodic, get_folder_size
 from .models.media_types import TrackQuality, MediaType
-from .models.player import PlayerState
+from .models.playerstate import PlayerState
 
 
 class HTTPStreamer():
@@ -55,7 +55,6 @@ class HTTPStreamer():
                 run_async_background_task(
                     self.mass.bg_executor, 
                     self.__stream_queue, player, queue, cancelled)
-                await asyncio.sleep(2)
             try:
                 while True:
                     chunk = await queue.get()
@@ -104,21 +103,33 @@ class HTTPStreamer():
                 chunk = await sox_proc.stdout.read(256000)
                 if not chunk:
                     break
-                await buffer.put(chunk)
-            await buffer.put(b'') # indicate EOF
+                asyncio.run_coroutine_threadsafe(
+                    buffer.put(chunk), 
+                    self.mass.event_loop)
+            # indicate EOF if no more data
+            asyncio.run_coroutine_threadsafe(
+                    buffer.put(b''), 
+                    self.mass.event_loop)
         asyncio.create_task(fill_buffer())
 
-        LOGGER.info("Start Queue Stream for player %s" %(player.name))
+        LOGGER.info("Start Queue Stream for player %s " %(player.name))
+        is_start = True
         last_fadeout_data = b''
-        # report start of queue playback so we can calculate current track/duration etc.
-        # self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, True))
         while True:
             # get the (next) track in queue
-            queue_track = player.queue.next_item
-            LOGGER.info("got queue track %s" % queue_track.name)
+            if is_start:
+                # report start of queue playback so we can calculate current track/duration etc.
+                queue_track = asyncio.run_coroutine_threadsafe(
+                    player.queue.start_queue_stream(), 
+                    self.mass.event_loop).result()
+                is_start = False
+            else:
+                queue_track = player.queue.next_item
             if not queue_track:
+                LOGGER.warning("no (more) tracks left in queue")
                 break
-            LOGGER.debug("Start Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
+            LOGGER.info("Start Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
+            LOGGER.info(player.state)
             fade_in_part = b''
             cur_chunk = 0
             prev_chunk = None
@@ -196,7 +207,7 @@ class HTTPStreamer():
                 # wait for the queue to consume the data
                 # this prevents that the entire track is sitting in memory
                 # and it helps a bit in the quest to follow where we are in the queue
-                while buffer.qsize() > 1 and not cancelled.is_set():
+                while buffer.qsize() > 2 and not cancelled.is_set():
                     await asyncio.sleep(1)
             # end of the track reached
             if cancelled.is_set():
@@ -207,13 +218,8 @@ class HTTPStreamer():
                 # WIP: update actual duration to the queue for more accurate now playing info
                 accurate_duration = bytes_written / int(sample_rate * 4 * 2)
                 queue_track.duration = accurate_duration
-                #self.mass.player.providers[player.player_provider]._player_queue[player_id][queue_index] = queue_track
-                # move to next queue index
-                #queue_index += 1
-                #self.mass.event_loop.create_task(self.mass.player.player_queue_stream_update(player_id, queue_index, False))
                 LOGGER.info("Finished Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
                 LOGGER.info("bytes written: %s - duration: %s" % (bytes_written, accurate_duration))
-            break
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data and not cancelled.is_set():
             sox_proc.stdin.write(last_fadeout_data)
@@ -255,14 +261,13 @@ class HTTPStreamer():
         streamdetails["provider"] = queue_item.provider
         streamdetails["track_id"] = queue_item.item_id
         streamdetails["player_id"] = player.player_id
-        self.mass.signal_event('streaming_started', streamdetails)
+        asyncio.run_coroutine_threadsafe(
+                self.mass.signal_event('streaming_started', streamdetails), self.mass.event_loop)
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
         prev_chunk = b''
         bytes_sent = 0
         while not process.stdout.at_eof():
-            if cancelled.is_set():
-                process.terminate()
             try:
                 chunk = await process.stdout.readexactly(chunksize)
             except asyncio.streams.IncompleteReadError:
@@ -279,6 +284,10 @@ class HTTPStreamer():
             bytes_sent += len(prev_chunk)
         await process.wait()
         if cancelled.is_set():
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
             LOGGER.warning("__get_audio_stream for track_id %s interrupted - bytes_sent: %s" % (queue_item.item_id, bytes_sent))
         else:
             LOGGER.info("__get_audio_stream for track_id %s completed- bytes_sent: %s" % (queue_item.item_id, bytes_sent))
@@ -289,9 +298,13 @@ class HTTPStreamer():
             bytes_per_second = streamdetails["sample_rate"] * (streamdetails["bit_depth"]/8) * 2
         seconds_streamed = int(bytes_sent/bytes_per_second)
         streamdetails["seconds"] = seconds_streamed
-        self.mass.signal_event('streaming_ended', streamdetails)
+        asyncio.run_coroutine_threadsafe(
+                self.mass.signal_event('streaming_ended', streamdetails), 
+                self.mass.event_loop)
         # send task to background to analyse the audio
-        self.mass.event_loop.create_task(self.__analyze_audio(queue_item.item_id, queue_item.provider))
+        asyncio.run_coroutine_threadsafe(
+            self.__analyze_audio(queue_item.item_id, queue_item.provider), 
+            self.mass.event_loop)
 
     async def __get_player_sox_options(self, player, queue_item):
         ''' get player specific sox effect options '''

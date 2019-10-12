@@ -13,6 +13,7 @@ import types
 from ..utils import run_periodic, LOGGER, try_parse_int
 from ..models.playerprovider import PlayerProvider
 from ..models.player import Player, PlayerState
+from ..models.playerstate import PlayerState
 from ..models.player_queue import QueueItem, PlayerQueue
 from ..constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
 
@@ -180,13 +181,8 @@ class ChromecastProvider(PlayerProvider):
         self.prov_id = 'chromecast'
         self.name = 'Chromecast'
         self._discovery_running = False
+        self.player_config_entries = [("gapless_enabled", False, "gapless_enabled")]
         self.mass.event_loop.create_task(self.__periodic_chromecast_discovery())
-
-    async def get_player_config_entries(self):
-        ''' get the player config entries for this provider (list with key/value pairs)'''
-        return [
-            ("gapless_enabled", False, "gapless_enabled")
-            ]
 
     async def __handle_player_state(self, chromecast, caststatus=None, mediastatus=None):
         ''' handle a player state message from the socket '''
@@ -198,15 +194,25 @@ class ChromecastProvider(PlayerProvider):
             player.muted = caststatus.volume_muted
             player.volume_level = caststatus.volume_level * 100
         if mediastatus:
-            # chromecast does not support power on/of so we only set state
             if mediastatus.player_state in ['PLAYING', 'BUFFERING']:
                 player.state = PlayerState.Playing
+                player.powered = True
             elif mediastatus.player_state == 'PAUSED':
                 player.state = PlayerState.Paused
             else:
                 player.state = PlayerState.Stopped
             player.cur_uri = mediastatus.content_id
             player.cur_time = mediastatus.adjusted_current_time
+            # create update/poll task for the current time
+            async def poll_task():
+                player.poll_task = True
+                while player.state == PlayerState.Playing:
+                    player.cur_time = mediastatus.adjusted_current_time
+                    await asyncio.sleep(5)
+                player.poll_task = False
+            if not player.poll_task and player.state == PlayerState.Playing:
+                self.mass.event_loop.create_task(poll_task())
+            asyncio.run_coroutine_threadsafe(player.update(), self.mass.event_loop)
 
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):
         ''' callback when cast group members update '''
@@ -286,6 +292,7 @@ class ChromecastProvider(PlayerProvider):
         listenerMedia = StatusMediaListener(chromecast, self.__handle_player_state, self.mass.event_loop)
         chromecast.media_controller.register_status_listener(listenerMedia)
         player = ChromecastPlayer(self.mass, player_id, self.prov_id)
+        player.poll_task = False
         if chromecast.cast_type == 'group':
             player.is_group = True
             mz = MultizoneController(chromecast.uuid)

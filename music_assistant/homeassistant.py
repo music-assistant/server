@@ -68,12 +68,17 @@ class HomeAssistant():
         else:
             self._use_ssl = False
             self._host = url.replace('http://','').split('/')[0]
-        self.http_session = aiohttp.ClientSession(loop=mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
         self.__send_ws = None
         self.__last_id = 10
         LOGGER.info('Homeassistant integration is enabled')
+        self.mass.event_loop.create_task(self.setup())
+
+    async def setup(self):
+        ''' perform async setup '''
+        self.http_session = aiohttp.ClientSession(
+                loop=self.mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
         mass.event_loop.create_task(self.__hass_websocket())
-        self.mass.add_event_listener(self.mass_event, "player updated")
+        await self.mass.add_event_listener(self.mass_event, "player updated")
         mass.event_loop.create_task(self.__get_sources())
 
     async def get_state(self, entity_id, attribute='state', register_listener=None):

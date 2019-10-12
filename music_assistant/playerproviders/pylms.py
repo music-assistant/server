@@ -35,9 +35,9 @@ class PyLMSServer(PlayerProvider):
     ''' Python implementation of SlimProto server '''
 
     def __init__(self, mass):
+        super().__init__(mass)
         self.prov_id = 'pylms'
         self.name = 'Logitech Media Server Emulation'
-        self.mass = mass
         self._lmsplayers = {}
         self.buffer = b''
         self.last_msg_received = 0

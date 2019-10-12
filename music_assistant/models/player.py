@@ -10,13 +10,8 @@ from ..constants import CONF_ENABLED
 from ..cache import use_cache
 from .media_types import Track, MediaType
 from .player_queue import PlayerQueue, QueueItem
+from .playerstate import PlayerState
 
-
-class PlayerState(str, Enum):
-    Off = "off"
-    Stopped = "stopped"
-    Paused = "paused"
-    Playing = "playing"
 
 class Player():
     ''' representation of a player '''
@@ -198,7 +193,7 @@ class Player():
             return hass_state != 'off'
         # mute as power
         elif self.settings.get('mute_as_power'):
-            return self.muted
+            return not self.muted
         else:
             return self._powered
 
@@ -214,11 +209,10 @@ class Player():
         ''' [PROTECTED] cur_time (player's elapsed time) property of this player '''
         # handle group player
         if self.group_parent:
-            group_player = self.mass.bg_executor.submit(asyncio.run, 
-                self.mass.player.get_player(self.group_parent)).result()
+            group_player = self.mass.player.get_player_sync(self.group_parent)
             if group_player:
                 return group_player.cur_time
-        return self._cur_time
+        return self.queue.cur_item_time
 
     @cur_time.setter
     def cur_time(self, cur_time:int):
@@ -232,8 +226,7 @@ class Player():
         ''' [PROTECTED] cur_uri (uri loaded in player) property of this player '''
         # handle group player
         if self.group_parent:
-            group_player = self.mass.bg_executor.submit(asyncio.run, 
-                self.mass.player.get_player(self.group_parent)).result()
+            group_player = self.mass.player.get_player_sync(self.group_parent)
             if group_player:
                 return group_player.cur_uri
         return self._cur_uri
@@ -311,15 +304,6 @@ class Player():
         return [item for item in self.mass.player.players if item.group_parent == self.player_id]
 
     @property
-    def settings(self):
-        ''' [PROTECTED] get the player config settings '''
-        player_settings = self.mass.config['player_settings'].get(self.player_id)
-        if not player_settings:
-            player_settings = self.mass.bg_executor.submit(asyncio.run, 
-                self.__update_player_settings()).result()
-        return player_settings
-
-    @property
     def enabled(self):
         ''' [PROTECTED] player enabled config setting '''
         return self.settings.get('enabled')
@@ -329,8 +313,7 @@ class Player():
         ''' [PROTECTED] player's queue '''
         # handle group player
         if self.group_parent:
-            group_player = self.mass.bg_executor.submit(asyncio.run, 
-                self.mass.player.get_player(self.group_parent)).result()
+            group_player = self.mass.player.get_player_sync(self.group_parent)
             if group_player:
                 return group_player.queue
         return self._queue
@@ -344,7 +327,7 @@ class Player():
         ''' [PROTECTED] send stop command to player '''
         if self.group_parent:
             # redirect playback related commands to parent player
-            group_player = await self.mass.player.get(self.group_parent)
+            group_player = await self.mass.player.get_player(self.group_parent)
             if group_player:
                 return await group_player.stop()
         else:
@@ -501,6 +484,8 @@ class Player():
     async def volume_up(self):
         ''' [PROTECTED] send volume up command to player '''
         new_level = self.volume_level + 1
+        if new_level > 100:
+            new_level = 100
         return await self.volume_set(new_level)
 
     async def volume_down(self):
@@ -516,12 +501,17 @@ class Player():
 
     async def update(self):
         ''' [PROTECTED] signal player updated '''
-        await self.__update_player_settings()
-        LOGGER.info("player updated: %s" % self.name)
-        self.mass.signal_event('player changed', self)
+        await self.queue.update()
+        LOGGER.debug("player updated: %s" % self.name)
+        await self.mass.signal_event('player changed', self)
     
-    async def __update_player_settings(self):
+    @property
+    def settings(self):
         ''' [PROTECTED] get (or create) player config settings '''
+        player_settings = self.mass.config['player_settings'].get(self.player_id,{})
+        if player_settings:
+            return player_settings
+        # generate config for the player
         config_entries = [ # default config entries for a player
             ("enabled", True, "player_enabled"),
             ("name", "", "player_name"),
@@ -533,7 +523,7 @@ class Player():
             ("crossfade_duration", 0, "crossfade_duration"),
         ]
         # append player specific settings
-        config_entries += await self.mass.player.providers[self._prov_id].get_player_config_entries()
+        config_entries += self.mass.player.providers[self._prov_id].player_config_entries
         if self.is_group or not self.group_parent:
             config_entries += [ # play on power on setting
                 ("play_power_on", False, "player_power_play"),
@@ -543,7 +533,6 @@ class Player():
             config_entries += [("hass_power_entity", "", "hass_player_power"),
                             ("hass_power_entity_source", "", "hass_player_source"),
                             ("hass_volume_entity", "", "hass_player_volume")]
-        player_settings = self.mass.config['player_settings'].get(self.player_id,{})
         for key, def_value, desc in config_entries:
             if not key in player_settings:
                 if (isinstance(def_value, str) and def_value.startswith('<')):
@@ -554,8 +543,7 @@ class Player():
         self.mass.config['player_settings'][self.player_id]['__desc__'] = config_entries
         return player_settings
     
-    @property
-    def __dict__(self):
+    def to_dict(self):
         ''' instance attributes as dict so it can be serialized to json '''
         return {
             "player_id": self.player_id,

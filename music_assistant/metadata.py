@@ -61,7 +61,12 @@ class MusicBrainz():
     def __init__(self, event_loop, cache):
         self.event_loop = event_loop
         self.cache = cache
-        self.http_session = aiohttp.ClientSession(loop=event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
+        self.event_loop.create_task(self.setup())
+
+    async def setup(self):
+        ''' perform async setup '''
+        self.http_session = aiohttp.ClientSession(
+                loop=self.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
         self.throttler = Throttler(rate_limit=1, period=1)
 
     async def search_artist_by_album(self, artistname, albumname=None, album_upc=None):
@@ -131,13 +136,17 @@ class MusicBrainz():
                     result = None
                 return result
 
-
 class FanartTv():
 
     def __init__(self, event_loop, cache):
         self.event_loop = event_loop
         self.cache = cache
-        self.http_session = aiohttp.ClientSession(loop=event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
+        self.event_loop.create_task(self.setup())
+
+    async def setup(self):
+        ''' perform async setup '''
+        self.http_session = aiohttp.ClientSession(
+                loop=self.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
         self.throttler = Throttler(rate_limit=1, period=1)
 
     async def artist_images(self, mb_artist_id):

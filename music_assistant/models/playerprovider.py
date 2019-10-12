@@ -24,19 +24,16 @@ class PlayerProvider():
         self.mass = mass
         self.name = 'My great Musicplayer provider' # display name
         self.prov_id = 'my_provider' # used as id
+        self.player_config_entries = [] # player specific config entries
 
     ### Common methods and properties ####
 
-    async def get_player_config_entries(self):
-        ''' [CAN OVERRIDE] get the player-specific config entries for this provider (list with key/value pairs)'''
-        return []
 
     @property
     def players(self):
         ''' return all players for this provider '''
-        return self.mass.bg_executor.submit(asyncio.run, 
-                self.mass.player.get_provider_players(self.prov_id)).result()
-    
+        return [item for item in self.mass.player.players if item.player_provider == self.prov_id]
+
     async def get_player(self, player_id:str):
         ''' return player by id '''
         return await self.mass.player.get_player(player_id)

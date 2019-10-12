@@ -44,15 +44,12 @@ class LMSProvider(PlayerProvider):
     ''' support for Logitech Media Server '''
 
     def __init__(self, mass, hostname, port):
+        super().__init__(mass)
         self.prov_id = 'lms'
         self.name = 'Logitech Media Server'
-        self.icon = ''
-        self.mass = mass
-        self._players = {}
         self._host = hostname
         self._port = port
         self.last_msg_received = 0
-        self.supported_musicproviders = ['qobuz', 'file', 'spotify', 'http']
         self.http_session = aiohttp.ClientSession(loop=mass.event_loop)
         # we use a combi of active polling and subscriptions because the cometd implementation of LMS is somewhat unreliable
         asyncio.ensure_future(self.__lms_events())
@@ -60,9 +57,6 @@ class LMSProvider(PlayerProvider):
 
     ### Provider specific implementation #####
 
-    async def player_config_entries(self):
-        ''' get the player config entries for this provider (list with key/value pairs)'''
-        return []
 
     async def player_command(self, player_id, cmd:str, cmd_args=None):
         ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''

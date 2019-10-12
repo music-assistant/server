@@ -44,15 +44,20 @@ class QobuzProvider(MusicProvider):
         self.prov_id = 'qobuz'
         self.mass = mass
         self.cache = mass.cache
-        self.http_session = aiohttp.ClientSession(loop=mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
         self.__username = username
         self.__password = password
         self.__user_auth_info = None
         self.__logged_in = False
-        self.throttler = Throttler(rate_limit=2, period=1)
-        mass.add_event_listener(self.mass_event, 'streaming_started')
-        mass.add_event_listener(self.mass_event, 'streaming_ended')
+        self.mass.event_loop.create_task(self.setup())
 
+    async def setup(self):
+        ''' perform async setup '''
+        self.http_session = aiohttp.ClientSession(
+                loop=self.mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
+        self.throttler = Throttler(rate_limit=2, period=1)
+        await self.mass.add_event_listener(self.mass_event, 'streaming_started')
+        await self.mass.add_event_listener(self.mass_event, 'streaming_ended')
+    
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''
         result = {

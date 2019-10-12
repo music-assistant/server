@@ -13,7 +13,7 @@ import importlib
 from .utils import run_periodic, LOGGER, try_parse_int, try_parse_float, get_ip, run_async_background_task
 from .models.media_types import MediaType, TrackQuality
 from .models.player_queue import QueueItem
-from .models.player import PlayerState
+from .models.playerstate import PlayerState
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODULES_PATH = os.path.join(BASE_DIR, "playerproviders" )
@@ -29,38 +29,31 @@ class PlayerManager():
         self._players = {}
         # dynamically load provider modules
         self.load_providers()
-
+    
     @property
     def players(self):
-        ''' all players as property '''
-        return self.mass.bg_executor.submit(asyncio.run, 
-                self.get_players()).result()
-    
-    async def get_players(self):
-        ''' return all players as a list '''
-        items = list(self._players.values())
-        items.sort(key=lambda x: x.name, reverse=False)
-        return items
+        ''' return list of all players '''
+        return self._players.values()
 
     async def get_player(self, player_id):
         ''' return player by id '''
         return self._players.get(player_id, None)
 
-    async def get_provider_players(self, player_provider):
-        ''' return all players for given provider_id '''
-        return [item for item in self._players.values() if item.player_provider == player_provider] 
+    def get_player_sync(self, player_id):
+        ''' return player by id (non async) '''
+        return self._players.get(player_id, None)
 
     async def add_player(self, player):
         ''' register a new player '''
         self._players[player.player_id] = player
-        self.mass.signal_event('player added', player)
+        await self.mass.signal_event('player added', player)
         # TODO: turn on player if it was previously turned on ?
         return player
 
     async def remove_player(self, player_id):
         ''' handle a player remove '''
         self._players.pop(player_id, None)
-        self.mass.signal_event('player removed', player_id)
+        await self.mass.signal_event('player removed', player_id)
 
     async def trigger_update(self, player_id):
         ''' manually trigger update for a player '''
