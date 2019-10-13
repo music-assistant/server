@@ -7,6 +7,8 @@ if [ "$autoupdate" == "true" ]; then
     cd /tmp
     curl -LOks "https://github.com/marcelveldt/musicassistant/archive/master.zip"
     unzip -q master.zip
+    rm -R /usr/src/app/
+    mkdir /usr/src/app/
     cp -rf musicassistant-master/. /usr/src/app/
     rm -R /tmp/musicassistant-master
 fi
