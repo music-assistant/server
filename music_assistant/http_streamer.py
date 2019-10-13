@@ -133,7 +133,7 @@ class HTTPStreamer():
             if not queue_track:
                 LOGGER.warning("no (more) tracks left in queue")
                 break
-            LOGGER.debug("Start Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
+            LOGGER.info("Start Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
             fade_in_part = b''
             cur_chunk = 0
             prev_chunk = None
