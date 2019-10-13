@@ -15,7 +15,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         debug = sys.argv[2]
     else:
-        debug = False
+        debug = True
 
     MusicAssistant(datapath, debug)
     
