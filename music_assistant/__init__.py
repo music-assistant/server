@@ -15,7 +15,7 @@ import json
 import time
 
 from .database import Database
-from .utils import run_periodic, LOGGER
+from .utils import run_periodic, LOGGER, try_parse_bool
 from .metadata import MetaData
 from .cache import Cache
 from .music_manager import Music
@@ -31,12 +31,13 @@ def handle_exception(loop, context):
 
 class MusicAssistant():
 
-    def __init__(self, datapath):
+    def __init__(self, datapath, debug=False):
+        debug = try_parse_bool(debug)
         uvloop.install()
         self.datapath = datapath
         self.parse_config()
         self.event_loop = asyncio.get_event_loop()
-        self.event_loop.set_debug(True)
+        self.event_loop.set_debug(debug)
         self.bg_executor = ThreadPoolExecutor()
         self.event_loop.set_default_executor(self.bg_executor)
         #self.event_loop.set_exception_handler(handle_exception)

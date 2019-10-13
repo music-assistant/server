@@ -7,8 +7,15 @@ import os
 from music_assistant import MusicAssistant
 
 if __name__ == "__main__":
-    datapath = sys.argv[1]
-    if not datapath:
-        datapath = os.path.dirname(os.path.abspath(__file__))
-    MusicAssistant(datapath)
+
+    if len(sys.argv) > 0:
+        datapath = sys.argv[1]
+    else:
+         datapath = os.path.dirname(os.path.abspath(__file__))
+    if len(sys.argv) > 1:
+        debug = sys.argv[2]
+    else:
+        debug = False
+
+    MusicAssistant(datapath, debug)
     
