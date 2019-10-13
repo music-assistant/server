@@ -146,6 +146,7 @@ class HTTPStreamer():
                     sox_proc.stdin.write(chunk)
                     await sox_proc.stdin.drain()
                     bytes_written += len(chunk)
+                    print(chunk)
                 elif cur_chunk == 1 and last_fadeout_data:
                     prev_chunk = chunk
                 elif cur_chunk == 2 and last_fadeout_data:
@@ -251,6 +252,7 @@ class HTTPStreamer():
             LOGGER.warning("no stream details!")
             yield (True, b'')
             return
+        print(streamdetails)
         # get sox effects and resample options
         sox_effects = await self.__get_player_sox_options(player, queue_item)
         outputfmt = 'flac -C 0'
@@ -262,10 +264,10 @@ class HTTPStreamer():
             # support for AAC created with ffmpeg in between
             args = 'ffmpeg -i "%s" -f flac - | sox -t flac - -t %s - %s' % (streamdetails["path"], outputfmt, sox_effects)
         elif streamdetails['type'] == 'url':
-            args = 'sox -t %s "%s" -t %s - %s' % (streamdetails["content_type"], 
+            args = 'sox -V3 -t %s "%s" -t %s - %s' % (streamdetails["content_type"], 
                     streamdetails["path"], outputfmt, sox_effects)
         elif streamdetails['type'] == 'executable':
-            args = '%s | sox -t %s - -t %s - %s' % (streamdetails["path"], 
+            args = '%s | sox -V3 -t %s - -t %s - %s' % (streamdetails["path"], 
                     streamdetails["content_type"], outputfmt, sox_effects)
         # start sox process
         process = await asyncio.create_subprocess_shell(args,
@@ -280,11 +282,14 @@ class HTTPStreamer():
         # we keep 1 chunk behind to detect end of stream properly
         prev_chunk = b''
         bytes_sent = 0
+        first_chunk = False
         while not process.stdout.at_eof():
             try:
                 chunk = await process.stdout.readexactly(chunksize)
             except asyncio.streams.IncompleteReadError:
                 chunk = await process.stdout.read(chunksize)
+            if first_chunk:
+                print(len(chunk))
             if not chunk:
                 break
             if prev_chunk:
