@@ -4,6 +4,7 @@
 import asyncio
 import aiohttp
 from typing import List
+import logging
 import pychromecast
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.controllers import BaseController
@@ -181,6 +182,7 @@ class ChromecastProvider(PlayerProvider):
         self.prov_id = 'chromecast'
         self.name = 'Chromecast'
         self._discovery_running = False
+        logging.getLogger('pychromecast').setLevel(logging.WARNING)
         self.player_config_entries = [("gapless_enabled", False, "gapless_enabled")]
         self.mass.event_loop.create_task(self.__periodic_chromecast_discovery())
 
@@ -293,6 +295,10 @@ class ChromecastProvider(PlayerProvider):
         chromecast.media_controller.register_status_listener(listenerMedia)
         player = ChromecastPlayer(self.mass, player_id, self.prov_id)
         player.poll_task = False
+        self.supports_queue = True
+        self.supports_gapless = False
+        self.supports_crossfade = False
+        self.supports_replay_gain = False
         if chromecast.cast_type == 'group':
             player.is_group = True
             mz = MultizoneController(chromecast.uuid)

@@ -6,13 +6,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 import socket
 import os
-logformat = logging.Formatter('%(asctime)-15s %(levelname)-5s %(name)s.%(module)s -- %(message)s')
-consolehandler = logging.StreamHandler()
-consolehandler.setFormatter(logformat)
-LOGGER = logging.getLogger(__package__)
-LOGGER.setLevel(logging.INFO)
-LOGGER.addHandler(consolehandler)
-
+LOGGER = logging.getLogger()
 
 
 def run_periodic(period):

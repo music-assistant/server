@@ -114,7 +114,7 @@ class Player():
         self._player_settings = None
         # public attributes
         self.supports_queue = True # has native support for a queue
-        self.supports_gapless = True # has native gapless support
+        self.supports_gapless = False # has native gapless support
         self.supports_crossfade = False # has native crossfading support
         self.supports_replay_gain = False # has native support for replaygain volume leveling
         # if home assistant support is enabled, register state listener

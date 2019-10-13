@@ -13,6 +13,7 @@ import slugify as unicode_slug
 import uuid
 import json
 import time
+import logging
 
 from .database import Database
 from .utils import run_periodic, LOGGER, try_parse_bool
@@ -33,12 +34,22 @@ class MusicAssistant():
 
     def __init__(self, datapath, debug=False):
         debug = try_parse_bool(debug)
+        logformat = logging.Formatter('%(asctime)-15s %(levelname)-5s %(name)s.%(module)s -- %(message)s')
+        consolehandler = logging.StreamHandler()
+        consolehandler.setFormatter(logformat)
+        LOGGER.addHandler(consolehandler)
+        if debug:
+            LOGGER.setLevel(logging.DEBUG)
+            logging.getLogger('aiosqlite').setLevel(logging.INFO)
+            logging.getLogger('asyncio').setLevel(logging.INFO)
+        else:
+            LOGGER.setLevel(logging.INFO)
         uvloop.install()
         self.datapath = datapath
         self.parse_config()
         self.event_loop = asyncio.get_event_loop()
         self.event_loop.set_debug(debug)
-        self.bg_executor = ThreadPoolExecutor()
+        self.bg_executor = ThreadPoolExecutor() 
         self.event_loop.set_default_executor(self.bg_executor)
         #self.event_loop.set_exception_handler(handle_exception)
         self.event_listeners = {}

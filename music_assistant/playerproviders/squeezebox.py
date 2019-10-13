@@ -18,9 +18,9 @@ from ..constants import CONF_ENABLED
 
 def setup(mass):
     ''' setup the provider'''
-    enabled = mass.config["playerproviders"]['pylms'].get(CONF_ENABLED)
+    enabled = mass.config["playerproviders"]['squeezebox'].get(CONF_ENABLED)
     if enabled:
-        provider = PyLMSServer(mass)
+        provider = PySqueezeServer(mass)
         return provider
     return False
 
@@ -31,14 +31,14 @@ def config_entries():
         ]
 
 
-class PyLMSServer(PlayerProvider):
+class PySqueezeServer(PlayerProvider):
     ''' Python implementation of SlimProto server '''
 
     def __init__(self, mass):
         super().__init__(mass)
-        self.prov_id = 'pylms'
-        self.name = 'Logitech Media Server Emulation'
-        self._lmsplayers = {}
+        self.prov_id = 'squeezebox'
+        self.name = 'Squeezebox'
+        self._squeeze_players = {}
         self.buffer = b''
         self.last_msg_received = 0
         
@@ -65,25 +65,25 @@ class PyLMSServer(PlayerProvider):
             if self._players[player_id].state == PlayerState.Stopped:
                 await self.__queue_play(player_id, None)
             else:
-                self._lmsplayers[player_id].unpause()
+                self._squeeze_players[player_id].unpause()
         elif cmd == 'pause':
-            self._lmsplayers[player_id].pause()
+            self._squeeze_players[player_id].pause()
         elif cmd == 'stop':
-            self._lmsplayers[player_id].stop()
+            self._squeeze_players[player_id].stop()
         elif cmd == 'next':
-            self._lmsplayers[player_id].next()
+            self._squeeze_players[player_id].next()
         elif cmd == 'previous':
              await self.__queue_previous(player_id)
         elif cmd == 'power' and cmd_args == 'off':
-            self._lmsplayers[player_id].power_off()
+            self._squeeze_players[player_id].power_off()
         elif cmd == 'power':
-            self._lmsplayers[player_id].power_on()
+            self._squeeze_players[player_id].power_on()
         elif cmd == 'volume':
-            self._lmsplayers[player_id].volume_set(try_parse_int(cmd_args))
+            self._squeeze_players[player_id].volume_set(try_parse_int(cmd_args))
         elif cmd == 'mute' and cmd_args == 'off':
-            self._lmsplayers[player_id].unmute()
+            self._squeeze_players[player_id].unmute()
         elif cmd == 'mute':
-            self._lmsplayers[player_id].mute()
+            self._squeeze_players[player_id].mute()
     
     async def play_media(self, player_id, media_items, queue_opt='play'):
         ''' 
@@ -120,8 +120,8 @@ class PyLMSServer(PlayerProvider):
         if len(player.queue[player_id]) >= index:
             track = player.queue[player_id][index]
             if send_flush:
-                self._lmsplayers[player_id].flush()
-            self._lmsplayers[player_id].play(track.uri)
+                self._squeeze_players[player_id].flush()
+            self._squeeze_players[player_id].play(track.uri)
             player.queue_index[player_id] = index
 
     async def __queue_next(self, player_id):
@@ -157,7 +157,7 @@ class PyLMSServer(PlayerProvider):
         if not player_id:
             return
         LOGGER.debug("Event from player %s: %s - event_data: %s" %(player_id, event, str(event_data)))
-        lms_player = self._lmsplayers[player_id]
+        Squeeze_player = self._squeeze_players[player_id]
         if event == "next_track":
             return await self.__queue_next(player_id)
         player 
@@ -173,9 +173,9 @@ class PyLMSServer(PlayerProvider):
         else:
             player = self._players[player_id]
         # update player properties
-        player.name = lms_player.player_name
-        player.volume_level = lms_player.volume_level
-        player.cur_time = lms_player._elapsed_seconds
+        player.name = Squeeze_player.player_name
+        player.volume_level = Squeeze_player.volume_level
+        player.cur_time = Squeeze_player._elapsed_seconds
         if event == "disconnected":
             return await self.mass.player.remove_player(player_id)
         elif event == "power":
@@ -191,38 +191,36 @@ class PyLMSServer(PlayerProvider):
     async def __handle_socket_client(self, reader, writer):
         ''' handle a client connection on the socket'''
         LOGGER.debug("new socket client connected")
-        stream_host = get_ip()
-        stream_port = self.mass.config['base']['web']['http_port']
-        lms_player = PyLMSPlayer(stream_host, stream_port)
+        Squeeze_player = PySqueezePlayer(stream_host, stream_port)
 
         def send_frame(command, data):
-            ''' send command to lms player'''
+            ''' send command to Squeeze player'''
             packet = struct.pack('!H', len(data) + 4) + command + data
             writer.write(packet)
         
         def handle_event(event, event_data=None):
             ''' handle events from player'''
             if event == "connected":
-                self._lmsplayers[lms_player.player_id] = lms_player
-                lms_player.player_settings = self.mass.config['player_settings'][lms_player.player_id]
-            asyncio.create_task(self.__handle_player_event(lms_player.player_id, event, event_data))
+                self._squeeze_players[Squeeze_player.player_id] = Squeeze_player
+                Squeeze_player.player_settings = self.mass.config['player_settings'][Squeeze_player.player_id]
+            asyncio.create_task(self.__handle_player_event(Squeeze_player.player_id, event, event_data))
 
         try:
             @run_periodic(5)
             async def send_heartbeat():
                 timestamp = int(time.time())
-                data = lms_player.pack_stream(b"t", replayGain=timestamp, flags=0)
-                lms_player.send_frame(b"strm", data)
+                data = Squeeze_player.pack_stream(b"t", replayGain=timestamp, flags=0)
+                Squeeze_player.send_frame(b"strm", data)
 
-            lms_player.send_frame = send_frame
-            lms_player.send_event = handle_event
+            Squeeze_player.send_frame = send_frame
+            Squeeze_player.send_event = handle_event
             heartbeat_task = asyncio.create_task(send_heartbeat())
             
             # keep reading bytes from the socket
             while True:
                 data = await reader.read(64)
                 if data:
-                    lms_player.dataReceived(data)
+                    Squeeze_player.dataReceived(data)
                 else:
                     break
         except Exception as exc:
@@ -230,11 +228,11 @@ class PyLMSServer(PlayerProvider):
             LOGGER.warning(exc)
         # disconnect
         heartbeat_task.cancel()
-        asyncio.create_task(self.__handle_player_event(lms_player.player_id, 'disconnected'))
+        asyncio.create_task(self.__handle_player_event(Squeeze_player.player_id, 'disconnected'))
 
 
-class PyLMSPlayer(object):
-    ''' very basic Python implementation of SlimProto '''
+class PySqueezePlayer(Player):
+    ''' Squeezebox socket client '''
 
     def __init__(self, stream_host, stream_port):
         self.buffer = b''
@@ -245,7 +243,7 @@ class PyLMSPlayer(object):
         self.stream_port = stream_port
         self.player_settings = {}
         self.playback_millis = 0
-        self._volume = PyLMSVolume()
+        self._volume = PySqueezeVolume()
         self._device_type = None
         self._mac_address = None
         self._player_name = None
@@ -570,7 +568,7 @@ devices = {
     }
 
 
-class PyLMSVolume(object):
+class PySqueezeVolume(object):
 
     """ Represents a sound volume. This is an awful lot more complex than it
     sounds. """

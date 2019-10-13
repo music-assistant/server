@@ -13,9 +13,9 @@ if __name__ == "__main__":
     else:
          datapath = os.path.dirname(os.path.abspath(__file__))
     if len(sys.argv) > 2:
-        debug = sys.argv[2]
+        debug = sys.argv[2] == "debug"
     else:
-        debug = True
+        debug = False
 
     MusicAssistant(datapath, debug)
     

@@ -207,7 +207,7 @@ class PlayerQueue():
             :param offset: offset from current queue position
         '''
         insert_at_index = self.cur_index + offset
-        if not self.items or insert_at_index >= len(self.items):
+        if not self.items or insert_at_index > len(self.items):
             return await self.load(queue_items)
         if self.shuffle_enabled:
             queue_items = await self.__shuffle_items(queue_items)
@@ -239,7 +239,7 @@ class PlayerQueue():
             if self.items and len(self.items) > self._last_index:
                 queue_index = self._last_index # holds the last starting position
                 queue_track = None
-                while True:
+                while len(self.items) > queue_index:
                     queue_track = self.items[queue_index]
                     if cur_time_queue > (queue_track.duration + total_time):
                         total_time += queue_track.duration
