@@ -9,7 +9,6 @@ import threading
 import urllib
 from memory_tempfile import MemoryTempfile
 import io
-import soundfile as sf
 import pyloudnorm as pyln
 import aiohttp
 from .utils import LOGGER, try_parse_int, get_ip, run_async_background_task, run_periodic, get_folder_size
@@ -396,6 +395,11 @@ class HTTPStreamer():
                     stdout=asyncio.subprocess.PIPE)
                 audio_data, stderr = await process.communicate()
             # calculate BS.1770 R128 integrated loudness
+            try:
+                import soundfile as sf
+            except Exception as exc:
+                LOGGER.exception("Could not import soundfile, skip analyze job")
+                return
             if track_loudness == None:
                 with io.BytesIO(audio_data) as tmpfile:
                     data, rate = sf.read(tmpfile)
