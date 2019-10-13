@@ -130,14 +130,18 @@ class TuneInProvider(MusicProvider):
 
     async def get_stream_details(self, stream_id):
         ''' return the content details for the given track when it will be streamed'''
-        radio_id, media_type = stream_id.split('--')
+        radio_id = stream_id.split('--')[0]
+        if len(stream_id.split('--')) > 1:
+            media_type = stream_id.split('--')[1]
+        else:
+            media_type = ''
         stream_info = await self.__get_stream_urls(radio_id)
         for stream in stream_info["body"]:
-            if stream['media_type'] == media_type:
+            if stream['media_type'] == media_type or not media_type:
                 return {
                     "type": "url",
                     "path": stream['url'],
-                    "content_type": media_type,
+                    "content_type": stream['media_type'],
                     "sample_rate": 44100,
                     "bit_depth": 16
                 }

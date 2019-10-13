@@ -128,8 +128,7 @@ class HTTPStreamer():
             if not queue_track:
                 LOGGER.warning("no (more) tracks left in queue")
                 break
-            LOGGER.info("Start Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
-            LOGGER.info(player.state)
+            LOGGER.debug("Start Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
             fade_in_part = b''
             cur_chunk = 0
             prev_chunk = None
@@ -212,14 +211,14 @@ class HTTPStreamer():
             # end of the track reached
             if cancelled.is_set():
                 # break out the loop if the http session is cancelled
-                LOGGER.warning("session cancelled")
+                LOGGER.debug("session cancelled")
                 break
             else:
                 # WIP: update actual duration to the queue for more accurate now playing info
                 accurate_duration = bytes_written / int(sample_rate * 4 * 2)
                 queue_track.duration = accurate_duration
                 LOGGER.info("Finished Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
-                LOGGER.info("bytes written: %s - duration: %s" % (bytes_written, accurate_duration))
+                LOGGER.debug("bytes written: %s - duration: %s" % (bytes_written, accurate_duration))
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data and not cancelled.is_set():
             sox_proc.stdin.write(last_fadeout_data)
@@ -231,19 +230,29 @@ class HTTPStreamer():
     async def __get_audio_stream(self, player, queue_item, cancelled,
                 chunksize=512000, resample=None):
         ''' get audio stream from provider and apply additional effects/processing where/if needed'''
+        # get stream details from provider
+        # sort by quality and check track availability
+        for prov_media in sorted(queue_item.provider_ids, key=operator.itemgetter('quality'), reverse=True):
+            streamdetails = asyncio.run_coroutine_threadsafe(
+                    self.mass.music.providers[prov_media['provider']].get_stream_details(prov_media['item_id']), 
+                    self.mass.event_loop).result()
+            if streamdetails:
+                queue_item.streamdetails = streamdetails
+                queue_item.item_id = prov_media['item_id']
+                queue_item.provider = prov_media['provider']
+                queue_item.quality = prov_media['quality']
+                break
+        if not streamdetails:
+            LOGGER.warning("no stream details!")
+            yield (True, b'')
+            return
+        # get sox effects and resample options
         sox_effects = await self.__get_player_sox_options(player, queue_item)
         outputfmt = 'flac -C 0'
         if resample:
             outputfmt = 'raw -b 32 -c 2 -e signed-integer'
             sox_effects += ' rate -v %s' % resample
-        # stream audio from provider
-        streamdetails = asyncio.run_coroutine_threadsafe(
-                self.mass.music.providers[queue_item.provider].get_stream_details(queue_item.item_id), 
-                self.mass.event_loop).result()
-        if not streamdetails:
-            LOGGER.warning("no stream details!")
-            yield (True, b'')
-            return
+        # determine how to proceed based on input file ype
         if streamdetails["content_type"] == 'aac':
             # support for AAC created with ffmpeg in between
             args = 'ffmpeg -i "%s" -f flac - | sox -t flac - -t %s - %s' % (streamdetails["path"], outputfmt, sox_effects)
@@ -253,8 +262,7 @@ class HTTPStreamer():
         elif streamdetails['type'] == 'executable':
             args = '%s | sox -t %s - -t %s - %s' % (streamdetails["path"], 
                     streamdetails["content_type"], outputfmt, sox_effects)
-        
-        LOGGER.info("Running sox with args: %s" % args)
+        # start sox process
         process = await asyncio.create_subprocess_shell(args,
                 stdout=asyncio.subprocess.PIPE)
         # fire event that streaming has started for this track (needed by some streaming providers)
@@ -288,9 +296,9 @@ class HTTPStreamer():
                 process.terminate()
             except ProcessLookupError:
                 pass
-            LOGGER.warning("__get_audio_stream for track_id %s interrupted - bytes_sent: %s" % (queue_item.item_id, bytes_sent))
+            LOGGER.debug("__get_audio_stream for track_id %s interrupted - bytes_sent: %s" % (queue_item.item_id, bytes_sent))
         else:
-            LOGGER.info("__get_audio_stream for track_id %s completed- bytes_sent: %s" % (queue_item.item_id, bytes_sent))
+            LOGGER.debug("__get_audio_stream for track_id %s completed- bytes_sent: %s" % (queue_item.item_id, bytes_sent))
         # fire event that streaming has ended for this track (needed by some streaming providers)
         if resample:
             bytes_per_second = resample * (32/8) * 2
@@ -302,9 +310,11 @@ class HTTPStreamer():
                 self.mass.signal_event('streaming_ended', streamdetails), 
                 self.mass.event_loop)
         # send task to background to analyse the audio
-        asyncio.run_coroutine_threadsafe(
-            self.__analyze_audio(queue_item.item_id, queue_item.provider), 
-            self.mass.event_loop)
+        # TODO: send audio data completely
+        if not queue_item.media_type == MediaType.Radio:
+            asyncio.run_coroutine_threadsafe(
+                self.__analyze_audio(queue_item.item_id, queue_item.provider), 
+                self.mass.event_loop)
 
     async def __get_player_sox_options(self, player, queue_item):
         ''' get player specific sox effect options '''

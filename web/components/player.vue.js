@@ -238,13 +238,18 @@ Vue.component("player", {
     },
     setPlayerVolume: function(player_id, new_volume) {
       this.players[player_id].volume_level = new_volume;
-      this.playerCommand('volume', new_volume, player_id);
+      if (new_volume == 'up')
+        this.playerCommand('volume_up', null, player_id);
+      else if (new_volume == 'down')
+        this.playerCommand('volume_down', null, player_id);
+      else
+        this.playerCommand('volume_set', new_volume, player_id);
     },
     togglePlayerPower: function(player_id) {
       if (this.players[player_id].powered)
-        this.playerCommand('power', 'off', player_id);
+        this.playerCommand('power_off', null, player_id);
       else
-        this.playerCommand('power', 'on', player_id);
+        this.playerCommand('power_on', null, player_id);
     },
     connectWS() {
       var loc = window.location, new_uri;
@@ -264,20 +269,21 @@ Vue.component("player", {
     
       this.ws.onmessage = function(e) {
         var msg = JSON.parse(e.data);
-        var players = [];
-        console.log(msg);
-        if (msg.message == 'player updated')
-          players = [msg.message_details];
-        else if (msg.message == 'player removed')
-          this.players[msg.message_details].enabled = false;
-        else if (msg.message == 'players')
-          players = msg.message_details;
-        
-        for (var item of players)
-          if (item.player_id in this.players)
-              this.players[item.player_id] = Object.assign({}, this.players[item.player_id], item);
-          else
-            this.$set(this.players, item.player_id, item)
+        if (msg.message == 'player changed')
+          {
+            Vue.set(this.players, msg.message_details.player_id, msg.message_details);
+        }
+        else if (msg.message == 'player removed') {
+          this.players[msg.message_details.player_id].enabled = false;
+        }
+        else if (msg.message == 'players') {
+          for (var item of msg.message_details) {
+              console.log("new player: " + item.player_id);
+              Vue.set(this.players, item.player_id, item);
+          }
+        }
+        else
+          console.log(msg);
 
         // select new active player
         // TODO: store previous player in local storage

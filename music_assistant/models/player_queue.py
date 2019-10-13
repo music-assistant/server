@@ -17,7 +17,7 @@ class QueueItem(Track):
     ''' representation of a queue item, simplified version of track '''
     def __init__(self, media_item=None):
         super().__init__()
-        self.quality = TrackQuality.FLAC_LOSSLESS
+        self.streamdetails = {}
         self.uri = ""
         self.queue_item_id = str(uuid.uuid4())
         # if existing media_item given, load those values
@@ -206,10 +206,7 @@ class PlayerQueue():
             :param queue_items: a list of QueueItem
             :param offset: offset from current queue position
         '''
-        if self.cur_index:
-            insert_at_index = self.cur_index + offset
-        else:
-            insert_at_index = 0
+        insert_at_index = self.cur_index + offset
         if not self.items or insert_at_index >= len(self.items):
             return await self.load(queue_items)
         if self.shuffle_enabled:
@@ -217,7 +214,7 @@ class PlayerQueue():
         self._items = self._items[:insert_at_index] + queue_items + self._items[insert_at_index:]
         if self.use_queue_stream or not self._player.supports_queue:
             if offset == 0:
-                return await self.play_index(0)
+                return await self.play_index(insert_at_index)
         else:
             return await self._player.cmd_queue_insert(queue_items, offset)
 

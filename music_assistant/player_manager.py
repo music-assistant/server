@@ -95,15 +95,8 @@ class PlayerManager():
                 # generate uri for this queue item
                 queue_item.uri = 'http://%s:%s/stream/%s?queue_item_id=%s'% (
                         self.mass.web.local_ip, self.mass.web.http_port, player_id, queue_item.queue_item_id)
-                # sort by quality and check track availability
-                for prov_media in sorted(track.provider_ids, key=operator.itemgetter('quality'), reverse=True):
-                    queue_item.provider = prov_media['provider']
-                    queue_item.item_id = prov_media['item_id']
-                    queue_item.quality = prov_media['quality']
-                    # TODO: check track availability
-                    # TODO: handle direct stream capability
-                    queue_items.append(queue_item)
-                    break
+                queue_items.append(queue_item)
+                    
         # load items into the queue
         if queue_opt == 'replace' or (queue_opt in ['next', 'play'] and len(queue_items) > 50):
             return await player.queue.load(queue_items)

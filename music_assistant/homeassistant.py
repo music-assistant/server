@@ -58,8 +58,8 @@ class HomeAssistant():
     def __init__(self, mass, url, token):
         self.mass = mass
         self._published_players = {}
-        self._tracked_states = {}
-        self._state_listeners = []
+        self._tracked_entities = {}
+        self._state_listeners = {}
         self._sources = []
         self._token = token
         if url.startswith('https://'):
@@ -81,41 +81,34 @@ class HomeAssistant():
         await self.mass.add_event_listener(self.mass_event, "player updated")
         self.mass.event_loop.create_task(self.__get_sources())
 
-    def get_state_sync(self, entity_id, attribute='state', register_listener=None):
+    async def get_state_async(self, entity_id, attribute='state'):
+        ''' get state of a hass entity (async)'''
+        state = self.get_state(entity_id, attribute)
+        if not state:
+            await self.__request_state(entity_id)
+        state = self.get_state(entity_id, attribute)
+        return state
+
+    def get_state(self, entity_id, attribute='state'):
         ''' get state of a hass entity'''
-        if entity_id in self._tracked_states:
-            state_obj = self._tracked_states.get(entity_id)
-            if not state_obj:
-                return None
+        state_obj = self._tracked_entities.get(entity_id)
+        if state_obj:
+            if attribute == 'state':
+                return state_obj['state']
+            elif attribute:
+                return state_obj['attributes'].get(attribute)
+            else:
+                return state_obj
         else:
-            if register_listener:
-                # register state listener
-                self._state_listeners.append( (entity_id, register_listener) )
+            self.mass.event_loop.create_task(self.__request_state(entity_id))
             return None
-        if attribute == 'state':
-            return state_obj['state']
-        elif not attribute:
-            return state_obj
-        else:
-            return state_obj['attributes'].get(attribute)
-    
-    async def get_state(self, entity_id, attribute='state', register_listener=None):
+
+    async def __request_state(self, entity_id):
         ''' get state of a hass entity'''
-        if entity_id in self._tracked_states:
-            state_obj = self._tracked_states[entity_id]
-        else:
-            # first request
-            state_obj = await self.__get_data('states/%s' % entity_id)
-            if register_listener:
-                # register state listener
-                self._state_listeners.append( (entity_id, register_listener) )
-            self._tracked_states[entity_id] = state_obj
-        if attribute == 'state':
-            return state_obj['state']
-        elif not attribute:
-            return state_obj
-        else:
-            return state_obj['attributes'].get(attribute)
+        state_obj = await self.__get_data('states/%s' % entity_id)
+        self._tracked_entities[entity_id] = state_obj
+        self.mass.event_loop.create_task(
+            self.mass.signal_event("hass entity changed", entity_id))
     
     async def mass_event(self, msg, msg_details):
         ''' received event from mass '''
@@ -125,11 +118,10 @@ class HomeAssistant():
     async def hass_event(self, event_type, event_data):
         ''' received event from hass '''
         if event_type == 'state_changed':
-            if event_data['entity_id'] in self._tracked_states:
-                self._tracked_states[event_data['entity_id']] = event_data['new_state']
-                for entity_id, handler in self._state_listeners:
-                    if entity_id == event_data['entity_id']:
-                        self.mass.event_loop.create_task(handler())
+            if event_data['entity_id'] in self._tracked_entities:
+                self._tracked_entities[event_data['entity_id']] = event_data['new_state']
+                self.mass.event_loop.create_task(
+                    self.mass.signal_event("hass entity changed", event_data['entity_id']))
         elif event_type == 'call_service' and event_data['domain'] == 'media_player':
             await self.__handle_player_command(event_data['service'], event_data['service_data'])
 
@@ -286,8 +278,8 @@ class HomeAssistant():
                                 elif data['type'] == 'result' and data.get('result'):
                                     # reply to our get_states request
                                     asyncio.create_task(self.hass_event('all_states', data['result']))
-                                else:
-                                    LOGGER.info(data)
+                                # else:
+                                #     LOGGER.info(data)
                         elif msg.type == aiohttp.WSMsgType.ERROR:
                             raise Exception("error in websocket")
             except Exception as exc:
