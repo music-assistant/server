@@ -48,11 +48,11 @@ class ChromecastPlayer(Player):
 
     async def cmd_next(self):
         ''' send next track command to player '''
-        return await self.cc.media_controller.queue_next()
+        self.cc.media_controller.queue_next()
 
     async def cmd_previous(self):
         ''' [CAN OVERRIDE] send previous track command to player '''
-        return await self.cc.media_controller.queue_prev()
+        self.cc.media_controller.queue_prev()
     
     async def cmd_power_on(self):
         ''' send power ON command to player '''
