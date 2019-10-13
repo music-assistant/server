@@ -61,15 +61,6 @@ class PySqueezeServer(PlayerProvider):
         buffer = b''
         player = None
 
-        def client_connected(data):
-            ''' client connected '''
-            (dev_id, rev, mac) = struct.unpack('BB6s', data[:8])
-            device_mac = ':'.join("%02x" % x for x in mac)
-            player_id = str(device_mac).lower()
-            device_type = devices.get(dev_id, 'unknown device')
-            player = PySqueezePlayer(self.mass, player_id, self.prov_id, device_type, writer)
-            self.mass.event_loop.create_task(self.mass.player.add_player(player))
-
         try:            
             # keep reading bytes from the socket
             while True:
@@ -83,11 +74,15 @@ class PySqueezeServer(PlayerProvider):
                         packet, buffer = buffer[8:plen], buffer[plen:]
                         operation = operation.strip(b"!").strip().decode()
                         if operation == 'HELO':
-                            client_connected(packet)
-                        elif player:
-                            _handler = getattr(player, "process_%s" % operation, None)
-                            if _handler:
-                                _handler(packet)
+                            # player connected
+                            (dev_id, rev, mac) = struct.unpack('BB6s', packet[:8])
+                            device_mac = ':'.join("%02x" % x for x in mac)
+                            player_id = str(device_mac).lower()
+                            device_type = devices.get(dev_id, 'unknown device')
+                            player = PySqueezePlayer(self.mass, player_id, self.prov_id, device_type, writer)
+                            self.mass.event_loop.create_task(self.mass.player.add_player(player))
+                        elif player != None:
+                            player.process_msg(operation, packet)
                     
         except Exception as exc:
             # connection lost ?
@@ -103,7 +98,7 @@ class PySqueezePlayer(Player):
         self.supports_queue = True
         self.supports_gapless = True
         self.supports_crossfade = True
-        self.supports_replay_gain = True
+        self.supports_replay_gain = False
         self._writer = writer
         self.buffer = b''
         self.name = "%s - %s" %(dev_type, player_id)
@@ -172,7 +167,6 @@ class PySqueezePlayer(Player):
             :attrib index: (int) index of the queue item that should start playing
         '''
         new_track = await self.queue.get_item(index)
-        self.flush()
         self.play(new_track.uri)
 
     async def cmd_queue_load(self, queue_items):
@@ -180,7 +174,6 @@ class PySqueezePlayer(Player):
             load/overwrite given items in the player's own queue implementation
             :param queue_items: a list of QueueItems
         '''
-        self.flush()
         self.play(queue_items[0].uri)
 
     async def cmd_queue_insert(self, queue_items, offset=0):
@@ -196,7 +189,6 @@ class PySqueezePlayer(Player):
             [MUST OVERRIDE]
             tell player to start playing a single uri
         '''
-        self.flush()
         self.play(uri)
 
     def flush(self):
@@ -216,6 +208,7 @@ class PySqueezePlayer(Player):
         request = "GET %s HTTP/1.0\r\n%s\r\n" % (uri, headers)
         data = data + request.encode("utf-8")
         self.send_frame(b'strm', data)
+        self.cur_uri = uri
         LOGGER.info("Requesting play from squeezebox" )
 
     def __delete__(self, instance):
@@ -246,7 +239,6 @@ class PySqueezePlayer(Player):
                            command, autostart, formatbyte, *pcmargs,
                            threshold, spdif, transDuration, transType,
                            flags, outputThreshold, 0, replayGain, serverPort, serverIp)
-
     
     def displayTrack(self, track):
         self.render("%s by %s" % (track.title, track.artist))
@@ -268,6 +260,13 @@ class PySqueezePlayer(Player):
         frame = struct.pack("!Hcb", offset, transition, param) + bitmap
         self.send_frame(b"grfe", frame)
 
+    def process_msg(self, operation, packet):
+        handler = getattr(self, "process_%s" % operation, None)
+        if handler is None:
+            LOGGER.error("No handler for %s" % operation)
+        else:
+            handler(packet)
+
     def process_STAT(self, data):
         ev = data[:4]
         if ev == b'\x00\x00\x00\x00':
@@ -286,7 +285,7 @@ class PySqueezePlayer(Player):
         LOGGER.debug("ACK aude - Received player power: %s" % powered)
 
     def stat_audg(self, data):
-        LOGGER.debug("Received volume_level from player %s" % data)
+        LOGGER.info("Received volume_level from player %s" % data)
         self.volume_level = self._volume.volume
 
     def stat_strm(self, data):
@@ -297,19 +296,21 @@ class PySqueezePlayer(Player):
         LOGGER.debug("Status Message: Connect")
 
     def stat_STMd(self, data):
-        LOGGER.debug("Decoder Ready for next track")
+        LOGGER.info("Decoder Ready for next track")
         next_item = self.queue.next_item
+        print("next item: %s" % next_item.name)
+        self.flush()
         self.play(next_item.uri)
 
     def stat_STMe(self, data):
-        LOGGER.info("Connection established")
+        LOGGER.idebugnfo("Connection established")
 
     def stat_STMf(self, data):
-        LOGGER.info("Status Message: Connection closed")
+        LOGGER.debug("Status Message: Connection closed")
         self.state = PlayerState.Stopped
 
     def stat_STMh(self, data):
-        LOGGER.info("Status Message: End of headers")
+        LOGGER.debug("Status Message: End of headers")
 
     def stat_STMn(self, data):
         LOGGER.error("Decoder does not support file format")
@@ -345,27 +346,27 @@ class PySqueezePlayer(Player):
 
     def stat_STMu(self, data):
         '''Normal end of playback'''
-        LOGGER.info("End of playback - Underrun")
+        LOGGER.debug("End of playback - Underrun")
         self.state = PlayerState.Stopped
 
     def process_BYE(self, data):
-        LOGGER.info("BYE received")
+        LOGGER.debug("BYE received")
 
     def process_RESP(self, data):
-        LOGGER.info("RESP received")
+        LOGGER.debug("RESP received")
         self.send_frame(b"cont", b"0")
 
     def process_BODY(self, data):
-        LOGGER.info("BODY received")
+        LOGGER.debug("BODY received")
 
     def process_META(self, data):
-        LOGGER.info("META received")
+        LOGGER.debug("META received")
 
     def process_DSCO(self, data):
         LOGGER.info("Data Stream Disconnected")
 
     def process_DBUG(self, data):
-        LOGGER.info("DBUG received")
+        LOGGER.debug("DBUG received")
 
     def process_IR(self, data):
         """ Slightly involved codepath here. This raises an event, which may
@@ -382,21 +383,21 @@ class PySqueezePlayer(Player):
         #     LOGGER.info("Unknown IR received: %r, %r" % (time, code))
 
     def process_RAWI(self, data):
-        LOGGER.info("RAWI received")
+        LOGGER.debug("RAWI received")
 
     def process_ANIC(self, data):
-        LOGGER.info("ANIC received")
+        LOGGER.debug("ANIC received")
 
     def process_BUTN(self, data):
-        LOGGER.info("BUTN received")
+        LOGGER.debug("BUTN received")
 
     def process_KNOB(self, data):
         ''' Transporter only, knob-related '''
-        LOGGER.info("KNOB received")
+        LOGGER.debug("KNOB received")
 
     def process_SETD(self, data):
         ''' Get/set player firmware settings '''
-        LOGGER.info("SETD received %s" % data)
+        LOGGER.debug("SETD received %s" % data)
         cmd_id = data[0]
         if cmd_id == 0:
             # received player name
@@ -404,7 +405,7 @@ class PySqueezePlayer(Player):
             self.name = data
 
     def process_UREQ(self, data):
-        LOGGER.info("UREQ received")
+        LOGGER.debug("UREQ received")
 
 
 
