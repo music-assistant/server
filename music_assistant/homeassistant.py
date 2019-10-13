@@ -76,7 +76,7 @@ class HomeAssistant():
     async def setup(self):
         ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
-                loop=self.mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
+                loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.mass.event_loop.create_task(self.__hass_websocket())
         await self.mass.add_event_listener(self.mass_event, "player changed")
         self.mass.event_loop.create_task(self.__get_sources())

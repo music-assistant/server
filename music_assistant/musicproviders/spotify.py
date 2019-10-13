@@ -53,7 +53,7 @@ class SpotifyProvider(MusicProvider):
     async def setup(self):
         ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
-                loop=self.mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
+                loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=1, period=1)
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):

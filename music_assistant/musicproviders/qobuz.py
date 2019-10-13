@@ -53,7 +53,7 @@ class QobuzProvider(MusicProvider):
     async def setup(self):
         ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
-                loop=self.mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
+                loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=2, period=1)
         await self.mass.add_event_listener(self.mass_event, 'streaming_started')
         await self.mass.add_event_listener(self.mass_event, 'streaming_ended')
