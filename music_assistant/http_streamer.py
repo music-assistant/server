@@ -387,7 +387,7 @@ class HTTPStreamer():
             LOGGER.debug('Start analyzing track %s' % item_key)
             if streamdetails['type'] == 'url':
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(streamdetails["path"]) as resp:
+                    async with session.get(streamdetails["path"], verify_ssl=False) as resp:
                         audio_data = await resp.read()
             elif streamdetails['type'] == 'executable':
                 process = await asyncio.create_subprocess_shell(streamdetails["path"],

@@ -341,13 +341,22 @@ class Web():
             only support for basic commands
         '''
         data = await request.json()
-        LOGGER.info("jsonrpc: %s" % data)
+        LOGGER.debug("jsonrpc: %s" % data)
         params = data['params']
         player_id = params[0]
         cmds = params[1]
         cmd_str = " ".join(cmds)
-        if cmd_str in ['play', 'pause', 'stop']:
-            await self.mass.player.player_command(player_id, cmd_str)
+        player = await self.mass.player.get_player(player_id)
+        if cmd_str == 'play':
+            await player.play()
+        elif cmd_str == 'pause':
+            await player.pause()
+        elif cmd_str == 'stop':
+            await player.stop()
+        elif cmd_str == 'next':
+            await player.next()
+        elif cmd_str == 'previous':
+            await player.previous()
         elif 'power' in cmd_str:
             args = cmds[1] if len(cmds) > 1 else None
             await self.mass.player.player_command(player_id, cmd_str, args)

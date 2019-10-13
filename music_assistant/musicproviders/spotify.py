@@ -477,7 +477,7 @@ class SpotifyProvider(MusicProvider):
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
         async with self.throttler:
-            async with self.http_session.get(url, headers=headers, params=params) as response:
+            async with self.http_session.get(url, headers=headers, params=params, verify_ssl=False) as response:
                 result = await response.json()
                 if not result or 'error' in result:
                     LOGGER.error(url)

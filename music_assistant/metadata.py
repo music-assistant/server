@@ -127,7 +127,7 @@ class MusicBrainz():
         headers = {'User-Agent': 'Music Assistant/1.0.0 https://github.com/marcelveldt'}
         params['fmt'] = 'json'
         async with self.throttler:
-            async with self.http_session.get(url, headers=headers, params=params) as response:
+            async with self.http_session.get(url, headers=headers, params=params, verify_ssl=False) as response:
                 try:
                     result = await response.json()
                 except Exception as exc:
@@ -177,7 +177,7 @@ class FanartTv():
         url = 'http://webservice.fanart.tv/v3/%s' % endpoint
         params['api_key'] = '639191cb0774661597f28a47e7e2bad5'
         async with self.throttler:
-            async with self.http_session.get(url, params=params) as response:
+            async with self.http_session.get(url, params=params, verify_ssl=False) as response:
                 result = await response.json()
                 if 'error' in result and 'limit' in result['error']:
                     raise Exception(result['error'])

@@ -292,7 +292,7 @@ class HomeAssistant():
         if self._use_ssl:
             url = "https://%s/api/%s" % (self._host, endpoint)
         headers = {"Authorization": "Bearer %s" % self._token, "Content-Type": "application/json"}
-        async with self.http_session.get(url, headers=headers) as response:
+        async with self.http_session.get(url, headers=headers, verify_ssl=False) as response:
             return await response.json()
 
     async def __post_data(self, endpoint, data):
@@ -301,5 +301,5 @@ class HomeAssistant():
         if self._use_ssl:
             url = "https://%s/api/%s" % (self._host, endpoint)
         headers = {"Authorization": "Bearer %s" % self._token, "Content-Type": "application/json"}
-        async with self.http_session.post(url, headers=headers, json=data) as response:
+        async with self.http_session.post(url, headers=headers, json=data, verify_ssl=False) as response:
             return await response.json()
