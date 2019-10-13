@@ -9,7 +9,6 @@ import threading
 import urllib
 from memory_tempfile import MemoryTempfile
 import io
-import pyloudnorm as pyln
 import aiohttp
 from .utils import LOGGER, try_parse_int, get_ip, run_async_background_task, run_periodic, get_folder_size
 from .models.media_types import TrackQuality, MediaType
@@ -397,8 +396,9 @@ class HTTPStreamer():
             # calculate BS.1770 R128 integrated loudness
             try:
                 import soundfile as sf
+                import pyloudnorm as pyln
             except Exception as exc:
-                LOGGER.exception("Could not import soundfile, skip analyze job")
+                LOGGER.exception("Could not import soundfile or pyloudnorm, skip analyze job - %s" % str(exc))
                 return
             if track_loudness == None:
                 with io.BytesIO(audio_data) as tmpfile:
