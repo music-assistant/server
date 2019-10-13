@@ -75,12 +75,17 @@ class HTTPStreamer():
         try:
             audio_stream = self.__get_audio_stream(player, queue_item, cancelled)
             async for is_last_chunk, audio_chunk in audio_stream:
-                await buffer.put(audio_chunk)
+                asyncio.run_coroutine_threadsafe(
+                        buffer.put(audio_chunk), 
+                        self.mass.event_loop)
                 # wait for the queue to consume the data
                 # this prevents that the entire track is sitting in memory
-                # while buffer.qsize() > 1 and not cancelled.is_set():
-                #     await asyncio.sleep(1)
-            await buffer.put(b'') # EOF
+                while buffer.qsize() > 2 and not cancelled.is_set():
+                    await asyncio.sleep(1)
+            # indicate EOF if no more data
+            asyncio.run_coroutine_threadsafe(
+                    buffer.put(b''), 
+                    self.mass.event_loop)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             cancelled.set()
             LOGGER.info("stream_track interrupted for %s" % queue_item.name)
