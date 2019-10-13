@@ -514,7 +514,7 @@ class Player():
     async def update(self):
         ''' [PROTECTED] signal player updated '''
         await self.queue.update()
-        LOGGER.debug("player updated: %s" % self.name)
+        LOGGER.debug("player changed: %s" % self.name)
         await self.mass.signal_event('player changed', self)
         self.get_player_settings()
     

@@ -78,7 +78,7 @@ class HomeAssistant():
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector(verify_ssl=False))
         self.mass.event_loop.create_task(self.__hass_websocket())
-        await self.mass.add_event_listener(self.mass_event, "player updated")
+        await self.mass.add_event_listener(self.mass_event, "player changed")
         self.mass.event_loop.create_task(self.__get_sources())
 
     async def get_state_async(self, entity_id, attribute='state'):
@@ -112,7 +112,7 @@ class HomeAssistant():
     
     async def mass_event(self, msg, msg_details):
         ''' received event from mass '''
-        if msg == "player updated":
+        if msg == "player changed":
             await self.publish_player(msg_details)
 
     async def hass_event(self, event_type, event_data):
