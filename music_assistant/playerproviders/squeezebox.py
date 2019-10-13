@@ -167,6 +167,7 @@ class PySqueezePlayer(Player):
             :attrib index: (int) index of the queue item that should start playing
         '''
         new_track = await self.queue.get_item(index)
+        self.flush()
         self.play(new_track.uri)
 
     async def cmd_queue_load(self, queue_items):
@@ -174,6 +175,7 @@ class PySqueezePlayer(Player):
             load/overwrite given items in the player's own queue implementation
             :param queue_items: a list of QueueItems
         '''
+        self.flush()
         self.play(queue_items[0].uri)
 
     async def cmd_queue_insert(self, queue_items, offset=0):
@@ -189,6 +191,7 @@ class PySqueezePlayer(Player):
             [MUST OVERRIDE]
             tell player to start playing a single uri
         '''
+        self.flush()
         self.play(uri)
 
     def flush(self):
@@ -196,6 +199,8 @@ class PySqueezePlayer(Player):
         self.send_frame(b"strm", data)
     
     def play(self, uri):
+        self.cur_uri = uri
+        self.powered = True
         enable_crossfade = self.settings["crossfade_duration"] > 0
         command = b's'
         autostart = b'3' # we use direct stream for now so let the player do the messy work with buffers
@@ -208,7 +213,6 @@ class PySqueezePlayer(Player):
         request = "GET %s HTTP/1.0\r\n%s\r\n" % (uri, headers)
         data = data + request.encode("utf-8")
         self.send_frame(b'strm', data)
-        self.cur_uri = uri
         LOGGER.info("Requesting play from squeezebox" )
 
     def __delete__(self, instance):
@@ -298,8 +302,6 @@ class PySqueezePlayer(Player):
     def stat_STMd(self, data):
         LOGGER.info("Decoder Ready for next track")
         next_item = self.queue.next_item
-        print("next item: %s" % next_item.name)
-        self.flush()
         self.play(next_item.uri)
 
     def stat_STMe(self, data):
