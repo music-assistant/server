@@ -359,23 +359,23 @@ class Web():
             await player.previous()
         elif 'power' in cmd_str:
             args = cmds[1] if len(cmds) > 1 else None
-            await self.mass.player.player_command(player_id, cmd_str, args)
+            await player.power(args)
         elif cmd_str == 'playlist index +1':
-            await self.mass.player.player_command(player_id, 'next')
+            await player.next()
         elif cmd_str == 'playlist index -1':
-            await self.mass.player.player_command(player_id, 'previous')
+            await player.previous()
         elif 'mixer volume' in cmd_str:
-            await self.mass.player.player_command(player_id, 'volume', cmds[2])
+            await player.volume_set(cmds[2])
         elif cmd_str == 'mixer muting 1':
-            await self.mass.player.player_command(player_id, 'mute', 'on')
+            await player.volume_mute(True)
         elif cmd_str == 'mixer muting 0':
-            await self.mass.player.player_command(player_id, 'mute', 'off')
+            await player.volume_mute(False)
         elif cmd_str == 'button volup':
-            await self.mass.player.player_command(player_id, 'volume', 'up')
+            await player.volume_up()
         elif cmd_str == 'button voldown':
-            await self.mass.player.player_command(player_id, 'volume', 'down')
+            await player.volume_down()
         elif cmd_str == 'button power':
-            await self.mass.player.player_command(player_id, 'power', 'toggle')
+            await player.power_toggle()
         else:
             return web.Response(text='command not supported')
         return web.Response(text='success')
