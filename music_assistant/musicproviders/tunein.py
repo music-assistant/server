@@ -156,7 +156,7 @@ class TuneInProvider(MusicProvider):
         params['username'] = self._username
         params['partnerId'] = '1'
         async with self.throttler:
-            async with self.http_session.get(url, params=params) as response:
+            async with self.http_session.get(url, params=params, verify_ssl=False) as response:
                 result = await response.json()
                 if not result or 'error' in result:
                     LOGGER.error(url)
