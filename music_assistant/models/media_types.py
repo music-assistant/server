@@ -109,6 +109,6 @@ class Radio(MediaItem):
     def __init__(self):
         super().__init__()
         self.media_type = MediaType.Radio
-        self.duration = 0
+        self.duration = 86400
 
 

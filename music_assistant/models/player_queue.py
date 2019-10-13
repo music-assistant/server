@@ -236,7 +236,7 @@ class PlayerQueue():
             cur_time_queue = self._player._cur_time
             total_time = 0
             track_time = 0
-            if self.items:
+            if self.items and len(self.items) > self._last_index:
                 queue_index = self._last_index # holds the last starting position
                 queue_track = None
                 while True:
