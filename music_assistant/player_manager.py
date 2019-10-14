@@ -93,7 +93,7 @@ class PlayerManager():
             for track in tracks:
                 queue_item = QueueItem(track)
                 # generate uri for this queue item
-                queue_item.uri = 'http://%s:%s/stream/%s?queue_item_id=%s'% (
+                queue_item.uri = 'http://%s:%s/stream/%s/%s'% (
                         self.mass.web.local_ip, self.mass.web.http_port, player_id, queue_item.queue_item_id)
                 queue_items.append(queue_item)
                     
