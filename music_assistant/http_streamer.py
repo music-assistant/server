@@ -8,6 +8,8 @@ from aiohttp import web
 import threading
 import urllib
 from memory_tempfile import MemoryTempfile
+import soundfile
+import pyloudnorm
 import io
 import aiohttp
 from .utils import LOGGER, try_parse_int, get_ip, run_async_background_task, run_periodic, get_folder_size
@@ -394,16 +396,10 @@ class HTTPStreamer():
                     stdout=asyncio.subprocess.PIPE)
                 audio_data, stderr = await process.communicate()
             # calculate BS.1770 R128 integrated loudness
-            try:
-                import soundfile as sf
-                import pyloudnorm as pyln
-            except Exception as exc:
-                LOGGER.exception("Could not import soundfile or pyloudnorm, skip analyze job - %s" % str(exc))
-                return
             if track_loudness == None:
                 with io.BytesIO(audio_data) as tmpfile:
-                    data, rate = sf.read(tmpfile)
-                meter = pyln.Meter(rate) # create BS.1770 meter
+                    data, rate = soundfile.read(tmpfile)
+                meter = pyloudnorm.Meter(rate) # create BS.1770 meter
                 loudness = meter.integrated_loudness(data) # measure loudness
                 del data
                 LOGGER.debug("Integrated loudness of track %s is: %s" %(item_key, loudness))
