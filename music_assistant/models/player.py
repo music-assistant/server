@@ -393,7 +393,7 @@ class Player():
         ''' [PROTECTED] send power ON command to player '''
         await self.cmd_power_on()
         # handle mute as power
-        if self.settings['mute_as_power']:
+        if self.settings.get('mute_as_power'):
             await self.volume_mute(False)
         # handle hass integration
         if (self.mass.hass and 
@@ -412,7 +412,7 @@ class Player():
             service_data = { 'entity_id': self.settings['hass_power_entity']}
             await self.mass.hass.call_service(domain, 'turn_on', service_data)
         # handle play on power on
-        if self.settings['play_power_on']:
+        if self.settings.get('play_power_on'):
             await self.play()
         # handle group power
         if self.group_parent:
@@ -425,7 +425,7 @@ class Player():
         ''' [PROTECTED] send power TOGGLE command to player '''
         await self.cmd_power_off()
         # handle mute as power
-        if self.settings['mute_as_power']:
+        if self.settings.get('mute_as_power'):
             await self.volume_mute(True)
         # handle hass integration
         if (self.mass.hass and 
@@ -545,13 +545,11 @@ class Player():
             ('target_volume', '-23', 'target_volume_lufs'),
             ('fallback_gain_correct', '-12', 'fallback_gain_correct'),
             ("crossfade_duration", 0, "crossfade_duration"),
+            ("play_power_on", False, "player_power_play"),
         ]
         # append player specific settings
         config_entries += self.mass.player.providers[self._prov_id].player_config_entries
-        if self.is_group or not self.group_parent:
-            config_entries += [ # play on power on setting
-                ("play_power_on", False, "player_power_play"),
-            ]
+        # hass integration
         if self.mass.config['base'].get('homeassistant',{}).get("enabled"):
             # append hass specific config entries
             config_entries += [("hass_power_entity", "", "hass_player_power"),

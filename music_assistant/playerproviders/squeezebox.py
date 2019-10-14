@@ -168,7 +168,7 @@ class PySqueezePlayer(Player):
         '''
         new_track = await self.queue.get_item(index)
         self.flush()
-        self.play(new_track.uri)
+        self.__play_uri(new_track.uri)
 
     async def cmd_queue_load(self, queue_items):
         ''' 
@@ -176,7 +176,7 @@ class PySqueezePlayer(Player):
             :param queue_items: a list of QueueItems
         '''
         self.flush()
-        self.play(queue_items[0].uri)
+        self.__play_uri(queue_items[0].uri)
 
     async def cmd_queue_insert(self, queue_items, offset=0):
         ''' nothing to do, handled by built-in queue '''
@@ -192,13 +192,14 @@ class PySqueezePlayer(Player):
             tell player to start playing a single uri
         '''
         self.flush()
-        self.play(uri)
+        self.__play_uri(uri)
 
     def flush(self):
         data = self.pack_stream(b"f", autostart=b"0", flags=0)
         self.send_frame(b"strm", data)
     
-    def play(self, uri):
+    def __play_uri(self, uri):
+        # TODO: replaygain
         self.cur_uri = uri
         self.powered = True
         enable_crossfade = self.settings["crossfade_duration"] > 0
@@ -302,7 +303,7 @@ class PySqueezePlayer(Player):
     def stat_STMd(self, data):
         LOGGER.info("Decoder Ready for next track")
         next_item = self.queue.next_item
-        self.play(next_item.uri)
+        self.__play_uri(next_item.uri)
 
     def stat_STMe(self, data):
         LOGGER.idebugnfo("Connection established")
