@@ -64,28 +64,25 @@ class HTTPStreamer():
                         break
                     await resp.write(chunk)
                     buf_queue.task_done()
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 cancelled.set()
-                raise asyncio.CancelledError()
-        return resp
+        if not cancelled.is_set():
+            return resp
     
     async def __stream_single(self, player, queue_item, buffer, cancelled):
         ''' start streaming single track from provider '''
         LOGGER.debug("stream single track started for track %s on player %s" % (queue_item.name, player.name))
-        try:
-            audio_stream = self.__get_audio_stream(player, queue_item, cancelled)
-            async for is_last_chunk, audio_chunk in audio_stream:
-                asyncio.run_coroutine_threadsafe(
-                        buffer.put(audio_chunk), 
-                        self.mass.event_loop)
-            # indicate EOF if no more data
+        audio_stream = self.__get_audio_stream(player, queue_item, cancelled)
+        async for is_last_chunk, audio_chunk in audio_stream:
             asyncio.run_coroutine_threadsafe(
-                    buffer.put(b''), 
+                    buffer.put(audio_chunk), 
                     self.mass.event_loop)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            cancelled.set()
+        # indicate EOF if no more data
+        asyncio.run_coroutine_threadsafe(
+                buffer.put(b''), 
+                self.mass.event_loop)
+        if cancelled.is_set():
             LOGGER.debug("stream single track interrupted for track %s on player %s" % (queue_item.name, player.name))
-            raise asyncio.CancelledError()
         else:
             LOGGER.debug("stream single track finished for track %s on player %s" % (queue_item.name, player.name))
 
@@ -113,13 +110,15 @@ class HTTPStreamer():
                 if not chunk:
                     # no more data
                     break
-                asyncio.run_coroutine_threadsafe(
-                    buffer.put(chunk), 
-                    self.mass.event_loop)
+                if not cancelled.is_set():
+                    asyncio.run_coroutine_threadsafe(
+                        buffer.put(chunk), 
+                        self.mass.event_loop)
             # indicate EOF if no more data
-            asyncio.run_coroutine_threadsafe(
-                    buffer.put(b''), 
-                    self.mass.event_loop)
+            if not cancelled.is_set():
+                asyncio.run_coroutine_threadsafe(
+                        buffer.put(b''), 
+                        self.mass.event_loop)
         threading.Thread(target=fill_buffer).start()
         
 
@@ -127,6 +126,8 @@ class HTTPStreamer():
         is_start = True
         last_fadeout_data = b''
         while True:
+            if cancelled.is_set():
+                break
             # get the (next) track in queue
             if is_start:
                 # report start of queue playback so we can calculate current track/duration etc.
@@ -302,10 +303,12 @@ class HTTPStreamer():
             if not chunk:
                 # no more data
                 break
-            if prev_chunk:
+            if prev_chunk and not cancelled.is_set():
                 yield (False, prev_chunk)
                 bytes_sent += len(prev_chunk)
             prev_chunk = chunk
+        if cancelled.is_set():
+            return
         # yield last chunk
         yield (True, prev_chunk)
         bytes_sent += len(prev_chunk)
