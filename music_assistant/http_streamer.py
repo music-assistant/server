@@ -101,8 +101,11 @@ class HTTPStreamer():
             fade_bytes = int(sample_rate * 4 * 2 * fade_length)
         else:
             fade_bytes = int(sample_rate * 4 * 2)
+        print("sample rate: %s" % sample_rate)
+        print("fade_bytes: %s" % fade_bytes)
         pcm_args = 'raw -b 32 -c 2 -e signed-integer -r %s' % sample_rate
-        args = 'sox -V3 -t %s - -t flac -C 0 -' % pcm_args
+        args = 'sox -t %s - -t flac -C 0 -' % pcm_args
+        print(args)
         sox_proc = await asyncio.create_subprocess_shell(args, 
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
 
