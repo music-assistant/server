@@ -66,8 +66,7 @@ class HTTPStreamer():
                     buf_queue.task_done()
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 cancelled.set()
-                # wait for result
-                bg_task.result()
+                # wait for bg_task
                 await asyncio.sleep(1)
                 del buf_queue
                 raise asyncio.CancelledError()
