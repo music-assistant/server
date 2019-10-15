@@ -68,7 +68,7 @@ class HTTPStreamer():
                 cancelled.set()
                 # wait for result
                 bg_task.result()
-                LOGGER.info("stream bg task completed")
+                await asyncio.sleep(1)
                 del buf_queue
                 raise asyncio.CancelledError()
         if not cancelled.is_set():
