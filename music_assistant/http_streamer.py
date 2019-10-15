@@ -48,12 +48,12 @@ class HTTPStreamer():
             cancelled = threading.Event()
             if queue_item:
                 # single stream requested, run stream in executor
-                run_async_background_task(
+                bg_task = run_async_background_task(
                     self.mass.bg_executor, 
                     self.__stream_single, player, queue_item, buf_queue, cancelled)
             else:
                 # no item is given, start queue stream, run stream in executor
-                run_async_background_task(
+                bg_task = run_async_background_task(
                     self.mass.bg_executor, 
                     self.__stream_queue, player, buf_queue, cancelled)
             try:
@@ -66,6 +66,11 @@ class HTTPStreamer():
                     buf_queue.task_done()
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 cancelled.set()
+                # wait for result
+                bg_task.result()
+                LOGGER.info("stream bg task completed")
+                del buf_queue
+                raise asyncio.CancelledError()
         if not cancelled.is_set():
             return resp
     
@@ -235,7 +240,7 @@ class HTTPStreamer():
                 LOGGER.debug("Finished Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
                 LOGGER.debug("bytes written: %s - duration: %s" % (bytes_written, accurate_duration))
             # wait for the queue to consume the data
-            while buffer.qsize() > 2 and not cancelled.is_set():
+            while buffer.qsize() > 10 and not cancelled.is_set():
                 await asyncio.sleep(1)
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data and not cancelled.is_set():
