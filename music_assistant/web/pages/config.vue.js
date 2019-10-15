@@ -21,10 +21,10 @@ var Config = Vue.component('Config', {
                               </template>
                               <div v-for="conf_item_key in conf[conf_key][conf_subkey].__desc__">
                                     <v-list-tile>
-                                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])"></v-switch>
-                                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box type="password"></v-text-field>
-                                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box type="password"></v-select>
-                                          <v-text-field v-else v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box></v-text-field>
+                                          <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" @change="confChanged(conf_key, conf_subkey, conf[conf_key][conf_subkey])"></v-switch>
+                                          <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box type="password" @change="confChanged(conf_key, conf_subkey, conf[conf_key][conf_subkey])"></v-text-field>
+                                          <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box type="password" @change="confChanged(conf_key, conf_subkey, conf[conf_key][conf_subkey])"></v-select>
+                                          <v-text-field v-else v-model="conf[conf_key][conf_subkey][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" @change="confChanged(conf_key, conf_subkey, conf[conf_key][conf_subkey])" box></v-text-field>
                                     </v-list-tile>
                                 </div>
                                 <v-divider></v-divider>
@@ -97,16 +97,16 @@ var Config = Vue.component('Config', {
     }
   },
   watch: {
-    'conf': {
-        handler: _.debounce(function (val, oldVal) {
-          if (oldVal.base) {
-            console.log("save config needed!");
-            this.saveConfig();
-            this.$toasted.show(this.$t('conf.conf_saved'))
-          }
-        }, 5000),
-        deep: true
-    }
+    // 'conf': {
+    //     handler: _.debounce(function (val, oldVal) {
+    //       if (oldVal.base) {
+    //         console.log("save config needed!");
+    //         this.saveConfig();
+    //         this.$toasted.show(this.$t('conf.conf_saved'))
+    //       }
+    //     }, 5000),
+    //     deep: true
+    // }
   },
   created() {
     this.$globals.windowtitle = this.$t('settings');
@@ -134,6 +134,11 @@ var Config = Vue.component('Config', {
         .catch(error => {
           console.log("error", error);
         });
+    },
+    confChanged(key, subkey, newvalue) {
+      console.log(key + "/" + subkey + " changed!");
+      console.log(newvalue);
+
     },
     getPlayers () {
       const api_url = '/api/players';

@@ -12,7 +12,7 @@ RUN pip install -r requirements.txt
 RUN mkdir -p /usr/src/app
 WORKDIR /usr/src/app
 COPY music_assistant /usr/src/app/music_assistant
-COPY mass.py /usr/src/app/main.py
+COPY mass.py /usr/src/app/mass.py
 RUN chmod a+x /usr/src/app/mass.py
 
 VOLUME ["/data"]

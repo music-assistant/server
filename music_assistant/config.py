@@ -57,11 +57,14 @@ class MassConfig(dict):
 
     def __setitem__(self, key, new_value):
         # optional processing here
-        if self[key] != new_value:
+        if key not in self:
+            super().__setitem__(key, new_value)
+        elif self[key] != new_value:
             # value changed
+            super().__setitem__(key, new_value)
             self[key] = new_value
             self.mass.event_loop.create_task(
-                    self.mass.signal_event(EVENT_CONFIG_CHANGED, self.__dict__))
+                    self.mass.signal_event(EVENT_CONFIG_CHANGED, self))
             self.__save()
 
     def __save(self):
