@@ -16,35 +16,35 @@ from ..models import PlayerProvider, Player, PlayerState, MediaType, TrackQualit
 from ..constants import CONF_ENABLED
 
 
-def setup(mass):
-    ''' setup the provider'''
-    enabled = mass.config["playerproviders"]['squeezebox'].get(CONF_ENABLED)
-    if enabled:
-        provider = PySqueezeServer(mass)
-        return provider
-    return False
+PROV_ID = 'squeezebox'
+PROV_NAME = 'Squeezebox'
+PROV_CLASS = 'PySqueezeProvider'
 
-def config_entries():
-    ''' get the config entries for this provider (list with key/value pairs)'''
-    return [
-        (CONF_ENABLED, True, CONF_ENABLED)
-        ]
+CONFIG_ENTRIES = [
+    (CONF_ENABLED, True, CONF_ENABLED),
+    ]
+
+PLAYER_CONFIG_ENTRIES = []
 
 
-class PySqueezeServer(PlayerProvider):
+class PySqueezeProvider(PlayerProvider):
     ''' Python implementation of SlimProto server '''
 
-    def __init__(self, mass):
-        super().__init__(mass)
-        self.prov_id = 'squeezebox'
-        self.name = 'Squeezebox'
-        # start slimproto server
-        mass.event_loop.create_task(
-                asyncio.start_server(self.__handle_socket_client, '0.0.0.0', 3483))
-        # setup discovery
-        mass.event_loop.create_task(self.start_discovery())
+    def __init__(self, mass, conf):
+        super().__init__(mass, conf)
+        self.prov_id = PROV_ID
+        self.name = PROV_NAME
+        self.player_config_entries = PLAYER_CONFIG_ENTRIES
 
      ### Provider specific implementation #####
+
+    async def setup(self):
+        ''' async initialize of module '''
+        # start slimproto server
+        self.mass.event_loop.create_task(
+                asyncio.start_server(self.__handle_socket_client, '0.0.0.0', 3483))
+        # setup discovery
+        self.mass.event_loop.create_task(self.start_discovery())
 
     async def start_discovery(self):
         transport, protocol = await self.mass.event_loop.create_datagram_endpoint(
@@ -80,7 +80,7 @@ class PySqueezeServer(PlayerProvider):
                             player_id = str(device_mac).lower()
                             device_type = devices.get(dev_id, 'unknown device')
                             player = PySqueezePlayer(self.mass, player_id, self.prov_id, device_type, writer)
-                            self.mass.event_loop.create_task(self.mass.player.add_player(player))
+                            self.mass.event_loop.create_task(self.mass.players.add_player(player))
                         elif player != None:
                             player.process_msg(operation, packet)
                     
@@ -88,7 +88,7 @@ class PySqueezeServer(PlayerProvider):
             # connection lost ?
             LOGGER.warning(exc)
         # disconnect
-        await self.mass.player.remove_player(player)
+        await self.mass.players.remove_player(player)
 
 class PySqueezePlayer(Player):
     ''' Squeezebox socket client '''

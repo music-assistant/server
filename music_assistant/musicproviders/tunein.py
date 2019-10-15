@@ -13,38 +13,32 @@ import aiohttp
 from ..cache import use_cache
 from ..utils import run_periodic, LOGGER, parse_track_title
 from ..models import MusicProvider, MediaType, TrackQuality, Radio
-from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, CONF_TYPE_PASSWORD
 
 
-def setup(mass):
-    ''' setup the provider'''
-    enabled = mass.config["musicproviders"]['tunein'].get(CONF_ENABLED)
-    username = mass.config["musicproviders"]['tunein'].get(CONF_USERNAME)
-    password = mass.config["musicproviders"]['tunein'].get(CONF_PASSWORD)
-    if enabled and username and password:
-        provider = TuneInProvider(mass, username, password)
-        return provider
-    return False
+PROV_ID = 'tunein'
+PROV_NAME = 'TuneIn Radio'
+PROV_CLASS = 'TuneInProvider'
 
-def config_entries():
-    ''' get the config entries for this provider (list with key/value pairs)'''
-    return [
-        (CONF_ENABLED, False, CONF_ENABLED),
-        (CONF_USERNAME, "", CONF_USERNAME), 
-        (CONF_PASSWORD, "<password>", CONF_PASSWORD)
-        ]
+CONFIG_ENTRIES = [
+    (CONF_ENABLED, False, CONF_ENABLED),
+    (CONF_USERNAME, "", CONF_USERNAME), 
+    (CONF_PASSWORD, CONF_TYPE_PASSWORD, CONF_PASSWORD)
+    ]
 
 class TuneInProvider(MusicProvider):
     
 
-    def __init__(self, mass, username, password):
-        self.name = 'TuneIn Radio'
-        self.prov_id = 'tunein'
+    def __init__(self, mass, conf):
+        ''' Support for streaming radio provider TuneIn '''
+        self.name = PROV_NAME
+        self.prov_id = PROV_ID
         self.mass = mass
         self.cache = mass.cache
-        self._username = username
-        self._password = password
-        self.mass.event_loop.create_task(self.setup())
+        if not conf[CONF_USERNAME] or not conf[CONF_PASSWORD]:
+            raise Exception("Username and password must not be empty")
+        self._username = conf[CONF_USERNAME]
+        self._password = conf[CONF_PASSWORD]
 
     async def setup(self):
         ''' perform async setup '''

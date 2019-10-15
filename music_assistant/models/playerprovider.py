@@ -20,7 +20,7 @@ class PlayerProvider():
     '''
     
 
-    def __init__(self, mass):
+    def __init__(self, mass, conf):
         self.mass = mass
         self.name = 'My great Musicplayer provider' # display name
         self.prov_id = 'my_provider' # used as id
@@ -32,19 +32,19 @@ class PlayerProvider():
     @property
     def players(self):
         ''' return all players for this provider '''
-        return [item for item in self.mass.player.players if item.player_provider == self.prov_id]
+        return [item for item in self.mass.players.players if item.player_provider == self.prov_id]
 
     async def get_player(self, player_id:str):
         ''' return player by id '''
-        return await self.mass.player.get_player(player_id)
+        return await self.mass.players.get_player(player_id)
 
     async def add_player(self, player:Player):
         ''' register a new player '''
-        return await self.mass.player.add_player(player)
+        return await self.mass.players.add_player(player)
 
     async def remove_player(self, player_id:str):
         ''' remove a player '''
-        return await self.mass.player.remove_player(player_id)
+        return await self.mass.players.remove_player(player_id)
 
     ### Provider specific implementation #####
 

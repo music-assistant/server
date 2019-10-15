@@ -8,9 +8,10 @@ import operator
 import random
 import functools
 import urllib
-import importlib
 
-from .utils import run_periodic, LOGGER, try_parse_int, try_parse_float, get_ip, run_async_background_task
+from .constants import CONF_KEY_PLAYERPROVIDERS
+from .utils import run_periodic, LOGGER, try_parse_int, try_parse_float, \
+    get_ip, run_async_background_task, load_provider_modules
 from .models.media_types import MediaType, TrackQuality
 from .models.player_queue import QueueItem
 from .models.playerstate import PlayerState
@@ -19,16 +20,20 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODULES_PATH = os.path.join(BASE_DIR, "playerproviders" )
 
 
-
 class PlayerManager():
     ''' several helpers to handle playback through player providers '''
     
     def __init__(self, mass):
         self.mass = mass
-        self.providers = {}
         self._players = {}
-        # dynamically load provider modules
-        self.load_providers()
+        # dynamically load musicprovider modules
+        self.providers = load_provider_modules(mass, CONF_KEY_PLAYERPROVIDERS)
+        
+    async def setup(self):
+        ''' async initialize of module '''
+        # start providers
+        for prov in self.providers.values():
+            await prov.setup()
     
     @property
     def players(self):
@@ -107,25 +112,3 @@ class PlayerManager():
         elif queue_opt == 'add':
             return await player.queue.append(queue_items)
     
-    def load_providers(self):
-        ''' dynamically load providers '''
-        for item in os.listdir(MODULES_PATH):
-            if (os.path.isfile(os.path.join(MODULES_PATH, item)) and not item.startswith("_") and 
-                    item.endswith('.py') and not item.startswith('.')):
-                module_name = item.replace(".py","")
-                LOGGER.debug("Loading playerprovider module %s" % module_name)
-                try:
-                    mod = importlib.import_module("." + module_name, "music_assistant.playerproviders")
-                    if not self.mass.config['playerproviders'].get(module_name):
-                        self.mass.config['playerproviders'][module_name] = {}
-                    self.mass.config['playerproviders'][module_name]['__desc__'] = mod.config_entries()
-                    for key, def_value, desc in mod.config_entries():
-                        if not key in self.mass.config['playerproviders'][module_name]:
-                            self.mass.config['playerproviders'][module_name][key] = def_value
-                    mod = mod.setup(self.mass)
-                    if mod:
-                        self.providers[mod.prov_id] = mod
-                        cls_name = mod.__class__.__name__
-                        LOGGER.info("Successfully initialized module %s" % cls_name)
-                except Exception as exc:
-                    LOGGER.exception("Error loading module %s: %s" %(module_name, exc))

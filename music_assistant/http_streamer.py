@@ -25,6 +25,11 @@ class HTTPStreamer():
         self.mass = mass
         self.local_ip = get_ip()
         self.analyze_jobs = {}
+
+    async def setup(self):
+        ''' async initialize of module '''
+        # TODO: cleanup of cache files etc.
+        pass
     
     async def stream(self, http_request):
         ''' 
@@ -32,7 +37,7 @@ class HTTPStreamer():
         '''
         # make sure we have a valid player
         player_id = http_request.match_info.get('player_id','')
-        player = await self.mass.player.get_player(player_id)
+        player = await self.mass.players.get_player(player_id)
         if not player:
             LOGGER.error("Received stream request for non-existing player %s" %(player_id))
             return
@@ -49,12 +54,12 @@ class HTTPStreamer():
             if queue_item:
                 # single stream requested, run stream in executor
                 bg_task = run_async_background_task(
-                    self.mass.bg_executor, 
+                    None, 
                     self.__stream_single, player, queue_item, buf_queue, cancelled)
             else:
                 # no item is given, start queue stream, run stream in executor
                 bg_task = run_async_background_task(
-                    self.mass.bg_executor, 
+                    None, 
                     self.__stream_queue, player, buf_queue, cancelled)
             try:
                 while True:
@@ -70,8 +75,7 @@ class HTTPStreamer():
                 await asyncio.sleep(1)
                 del buf_queue
                 raise asyncio.CancelledError()
-        if not cancelled.is_set():
-            return resp
+        return resp
     
     async def __stream_single(self, player, queue_item, buffer, cancelled):
         ''' start streaming single track from provider '''
@@ -424,9 +428,3 @@ class HTTPStreamer():
         crossfade_part, stderr = process.communicate()
         LOGGER.debug("Got %s bytes in memory for crossfade_part after sox" % len(crossfade_part))
         return crossfade_part
-
-    # def readexactly(streamobj, chunksize):
-    #     ''' read exactly n bytes from the stream object '''
-    #     buf = b''
-    #     while len(buf) < chunksize:
-    #         new_data = streamobj.read(chunksize)

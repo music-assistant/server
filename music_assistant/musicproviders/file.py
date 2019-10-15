@@ -14,25 +14,16 @@ from ..utils import run_periodic, LOGGER, parse_track_title
 from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from ..constants import CONF_ENABLED
 
+PROV_ID = 'file'
+PROV_NAME = 'Local files and playlists'
+PROV_CLASS = 'FileProvider'
 
+CONFIG_ENTRIES = [
+    (CONF_ENABLED, False, CONF_ENABLED),
+    ("music_dir", "", "file_prov_music_path"), 
+    ("playlists_dir", "", "file_prov_playlists_path")
+    ]
 
-def setup(mass):
-    ''' setup the provider'''
-    enabled = mass.config["musicproviders"]['file'].get(CONF_ENABLED)
-    music_dir = mass.config["musicproviders"]['file'].get('music_dir')
-    playlists_dir = mass.config["musicproviders"]['file'].get('playlists_dir')
-    if enabled and (music_dir or playlists_dir):
-        file_provider = FileProvider(mass, music_dir, playlists_dir)
-        return file_provider
-    return False
-
-def config_entries():
-    ''' get the config entries for this provider (list with key/value pairs)'''
-    return [
-        (CONF_ENABLED, False, CONF_ENABLED),
-        ("music_dir", "", "file_prov_music_path"), 
-        ("playlists_dir", "", "file_prov_playlists_path")
-        ]
 
 class FileProvider(MusicProvider):
     ''' 
@@ -45,13 +36,17 @@ class FileProvider(MusicProvider):
     '''
     
 
-    def __init__(self, mass, music_dir, playlists_dir):
-        self.name = 'Local files and playlists'
-        self.prov_id = 'file'
+    def __init__(self, mass, conf):
+        self.name = PROV_NAME
+        self.prov_id = PROV_ID
         self.mass = mass
         self.cache = mass.cache
-        self._music_dir = music_dir
-        self._playlists_dir = playlists_dir
+        self._music_dir = conf["music_dir"]
+        self._playlists_dir = conf["playlists_dir"]
+        if not os.path.isdir(conf["music_dir"]):
+            raise FileNotFoundError(f"Directory {conf['music_dir']} does not exist")
+        if not os.path.isdir(conf["playlists_dir"]):
+            raise FileNotFoundError(f"Directory {conf['playlists_dir']} does not exist")
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''

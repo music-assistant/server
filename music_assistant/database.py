@@ -6,20 +6,21 @@ import os
 from typing import List
 import aiosqlite
 import operator
+import logging
 
 from .utils import run_periodic, LOGGER, get_sort_name, try_parse_int
 from .models.media_types import MediaType, Artist, Album, Track, Playlist, Radio
 
 class Database():
 
-    def __init__(self, datapath, event_loop):
-        self.event_loop = event_loop
+    def __init__(self, datapath):
+        if not os.path.isdir(datapath):
+            raise FileNotFoundError(f"data directory {datapath} does not exist!")
         self.dbfile = os.path.join(datapath, "database.db")
-        self.db_ready = False
-        event_loop.run_until_complete(self.__init_database())
+        logging.getLogger('aiosqlite').setLevel(logging.INFO)
 
-    async def __init_database(self):
-        ''' init database tables'''
+    async def setup(self):
+        ''' init database '''
         async with aiosqlite.connect(self.dbfile) as db:
 
             await db.execute('CREATE TABLE IF NOT EXISTS library_items(item_id INTEGER NOT NULL, provider TEXT NOT NULL, media_type INTEGER NOT NULL, UNIQUE(item_id, provider, media_type));')
@@ -49,7 +50,6 @@ class Database():
             
             await db.commit()
             await db.execute('VACUUM;')
-            self.db_ready = True
 
     async def get_database_id(self, provider:str, prov_item_id:str, media_type:MediaType):
         ''' get the database id for the given prov_id '''

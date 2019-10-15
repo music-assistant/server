@@ -22,9 +22,13 @@ class Cache(object):
 
     def __init__(self, datapath):
         '''Initialize our caching class'''
+        if not os.path.isdir(datapath):
+            raise FileNotFoundError(f"data directory {datapath} does not exist!")
         self._datapath = datapath
-        asyncio.ensure_future(self._do_cleanup())
-        LOGGER.debug("Initialized")
+
+    async def setup(self):
+        ''' async initialize of cache module '''
+        asyncio.create_task(self._do_cleanup())
 
     async def get(self, endpoint, checksum=""):
         '''

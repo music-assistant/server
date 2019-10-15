@@ -21,9 +21,13 @@ class MusicProvider():
     prov_id = 'my_provider' # used as id
     icon = ''
 
-    def __init__(self, mass):
+    def __init__(self, mass, conf):
         self.mass = mass
         self.cache = mass.cache
+
+    async def setup(self):
+        ''' async initialize of module '''
+        pass
 
     ### Common methods and properties ####
 
@@ -382,12 +386,12 @@ class PlayerProvider():
 
     async def add_player(self, player_id, name='', is_group=False):
         ''' register a new player '''
-        return await self.mass.player.add_player(player_id, 
+        return await self.mass.players.add_player(player_id, 
                 self.prov_id, name=name, is_group=is_group)
 
     async def remove_player(self, player_id):
         ''' remove a player '''
-        return await self.mass.player.remove_player(player_id)
+        return await self.mass.players.remove_player(player_id)
 
     ### Provider specific implementation #####
 

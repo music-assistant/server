@@ -16,69 +16,57 @@ import slugify as slug
 import json
 from .utils import run_periodic, LOGGER, parse_track_title, try_parse_int
 from .models.media_types import Track
-from .constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
+from .constants import CONF_ENABLED, CONF_URL, CONF_TOKEN, EVENT_PLAYER_CHANGED
 from .cache import use_cache
 
-
-'''
-    Homeassistant integration
-    allows publishing of our players to hass
-    allows using hass entities (like switches, media_players or gui inputs) to be triggered
-'''
-
-def setup(mass):
-    ''' setup the module and read/apply config'''
-    create_config_entries(mass.config)
-    conf = mass.config['base']['homeassistant']
-    enabled = conf.get(CONF_ENABLED)
-    token = conf.get('token')
-    url = conf.get('url')
-    if enabled and url and token:
-        return HomeAssistant(mass, url, token)
-    return None
-
-def create_config_entries(config):
-    ''' get the config entries for this module (list with key/value pairs)'''
-    config_entries = [
-        (CONF_ENABLED, False, 'enabled'),
-        ('url', 'localhost', 'hass_url'), 
-        ('token', '<password>', 'hass_token'),
-        ('publish_players', True, 'hass_publish')
+CONF_KEY = 'homeassistant'
+CONF_PUBLISH_PLAYERS = "publish_players"
+EVENT_HASS_CHANGED = "hass entity changed"
+CONFIG_ENTRIES = [
+        (CONF_ENABLED, False, CONF_ENABLED),
+        (CONF_URL, 'localhost', 'hass_url'), 
+        (CONF_TOKEN, '<password>', 'hass_token'),
+        (CONF_PUBLISH_PLAYERS, True, 'hass_publish')
         ]
-    if not config['base'].get('homeassistant'):
-        config['base']['homeassistant'] = {}
-    config['base']['homeassistant']['__desc__'] = config_entries
-    for key, def_value, desc in config_entries:
-        if not key in config['base']['homeassistant']:
-            config['base']['homeassistant'][key] = def_value
 
 class HomeAssistant():
-    ''' HomeAssistant integration '''
+    '''
+        Homeassistant integration
+        allows publishing of our players to hass
+        allows using hass entities (like switches, media_players or gui inputs) to be triggered
+    '''
 
-    def __init__(self, mass, url, token):
+    def __init__(self, mass):
         self.mass = mass
         self._published_players = {}
         self._tracked_entities = {}
         self._state_listeners = {}
         self._sources = []
-        self._token = token
+        self.__send_ws = None
+        self.__last_id = 10
+        # load/create/update config
+        config = self.mass.config.create_module_config(CONF_KEY, CONFIG_ENTRIES)
+        self.enabled = config[CONF_ENABLED]
+        if self.enabled and (not config[CONF_URL] or 
+                not config[CONF_TOKEN]):
+            LOGGER.warning("Invalid configuration for Home Assistant")
+            self.enabled = False
+        self._token = config[CONF_TOKEN]
+        url = config[CONF_URL]
         if url.startswith('https://'):
             self._use_ssl = True
             self._host = url.replace('https://','').split('/')[0]
         else:
             self._use_ssl = False
             self._host = url.replace('http://','').split('/')[0]
-        self.__send_ws = None
-        self.__last_id = 10
         LOGGER.info('Homeassistant integration is enabled')
-        self.mass.event_loop.create_task(self.setup())
 
     async def setup(self):
         ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.mass.event_loop.create_task(self.__hass_websocket())
-        await self.mass.add_event_listener(self.mass_event, "player changed")
+        await self.mass.add_event_listener(self.mass_event, EVENT_PLAYER_CHANGED)
         self.mass.event_loop.create_task(self.__get_sources())
 
     async def get_state_async(self, entity_id, attribute='state'):
@@ -108,11 +96,11 @@ class HomeAssistant():
         state_obj = await self.__get_data('states/%s' % entity_id)
         self._tracked_entities[entity_id] = state_obj
         self.mass.event_loop.create_task(
-            self.mass.signal_event("hass entity changed", entity_id))
+            self.mass.signal_event(EVENT_HASS_CHANGED, entity_id))
     
     async def mass_event(self, msg, msg_details):
         ''' received event from mass '''
-        if msg == "player changed":
+        if msg == EVENT_PLAYER_CHANGED:
             await self.publish_player(msg_details)
 
     async def hass_event(self, event_type, event_data):
@@ -121,7 +109,7 @@ class HomeAssistant():
             if event_data['entity_id'] in self._tracked_entities:
                 self._tracked_entities[event_data['entity_id']] = event_data['new_state']
                 self.mass.event_loop.create_task(
-                    self.mass.signal_event("hass entity changed", event_data['entity_id']))
+                    self.mass.signal_event(EVENT_HASS_CHANGED, event_data['entity_id']))
         elif event_type == 'call_service' and event_data['domain'] == 'media_player':
             await self.__handle_player_command(event_data['service'], event_data['service_data'])
 
@@ -136,7 +124,7 @@ class HomeAssistant():
             if entity_id in self._published_players:
                 # call is for one of our players so handle it
                 player_id = self._published_players[entity_id]
-                player = await self.mass.player.get_player(player_id)
+                player = await self.mass.players.get_player(player_id)
                 if service == 'turn_on':
                     await player.power_on()
                 elif service == 'turn_off':
@@ -177,16 +165,16 @@ class HomeAssistant():
                 playlist = await self.mass.music.playlist_by_name(playlist_str)
                 if playlist:
                     media_items.append(playlist)
-            return await self.mass.player.play_media(player_id, media_items, queue_opt)
+            return await self.mass.players.play_media(player_id, media_items, queue_opt)
         elif media_content_type == 'playlist' and 'spotify://playlist' in media_content_id:
             # TODO: handle parsing of other uri's here
             playlist = self.mass.music.providers['spotify'].playlist(media_content_id.split(':')[-1])
-            return await self.mass.player.play_media(player_id, playlist, queue_opt)
+            return await self.mass.players.play_media(player_id, playlist, queue_opt)
         elif media_content_id.startswith('http'):
             track = Track()
             track.uri = media_content_id
             track.provider = 'http'
-            return await self.mass.player.play_media(player_id, track, queue_opt)
+            return await self.mass.players.play_media(player_id, track, queue_opt)
     
     async def publish_player(self, player):
         ''' publish player details to hass'''

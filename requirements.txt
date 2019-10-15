@@ -1,6 +1,7 @@
 cytoolz
 aiohttp
 spotify_token
+protobuf
 pychromecast
 uvloop
 asyncio_throttle
@@ -10,5 +11,7 @@ pytaglib
 python-slugify
 netaddr
 memory-tempfile
-soundfile
+aiohttp
 pyloudnorm
+SoundFile
+aiorun

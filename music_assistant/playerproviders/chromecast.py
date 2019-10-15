@@ -18,19 +18,17 @@ from ..models.playerstate import PlayerState
 from ..models.player_queue import QueueItem, PlayerQueue
 from ..constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
 
-def setup(mass):
-    ''' setup the provider'''
-    enabled = mass.config["playerproviders"]['chromecast'].get(CONF_ENABLED)
-    if enabled:
-        provider = ChromecastProvider(mass)
-        return provider
-    return False
+PROV_ID = 'chromecast'
+PROV_NAME = 'Chromecast'
+PROV_CLASS = 'ChromecastProvider'
 
-def config_entries():
-    ''' get the config entries for this provider (list with key/value pairs)'''
-    return [
-        (CONF_ENABLED, True, CONF_ENABLED),
-        ]
+CONFIG_ENTRIES = [
+    (CONF_ENABLED, False, CONF_ENABLED),
+    ]
+
+PLAYER_CONFIG_ENTRIES = [
+   ("gapless_enabled", False, "gapless_enabled"),
+    ]
 
 class ChromecastPlayer(Player):
     ''' Chromecast player object '''
@@ -177,14 +175,18 @@ class ChromecastPlayer(Player):
 class ChromecastProvider(PlayerProvider):
     ''' support for ChromeCast Audio '''
     
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.prov_id = 'chromecast'
-        self.name = 'Chromecast'
+    def __init__(self, mass, conf):
+        super().__init__(mass, conf)
+        self.prov_id = PROV_ID
+        self.name = PROV_NAME
         self._discovery_running = False
         logging.getLogger('pychromecast').setLevel(logging.WARNING)
-        self.player_config_entries = [("gapless_enabled", False, "gapless_enabled")]
-        self.mass.event_loop.create_task(self.__periodic_chromecast_discovery())
+        self.player_config_entries = PLAYER_CONFIG_ENTRIES
+
+    async def setup(self):
+        ''' perform async setup '''
+        self.mass.event_loop.create_task(
+                self.__periodic_chromecast_discovery())
 
     async def __handle_player_state(self, chromecast, caststatus=None, mediastatus=None):
         ''' handle a player state message from the socket '''
@@ -265,8 +267,9 @@ class ChromecastProvider(PlayerProvider):
             discovery_info = listener.services[name]
             ip_address, port, uuid, model_name, friendly_name = discovery_info
             player_id = str(uuid)
-            player = self.mass.bg_executor.submit(asyncio.run, 
-                self.get_player(player_id)).result()
+            player = asyncio.run_coroutine_threadsafe(
+                    self.get_player(player_id), 
+                    self.mass.event_loop).result()
             if not player:
                 LOGGER.info("discovered chromecast: %s - %s:%s" % (friendly_name, ip_address, port))
                 asyncio.run_coroutine_threadsafe(

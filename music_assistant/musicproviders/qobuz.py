@@ -14,49 +14,44 @@ from asyncio_throttle import Throttler
 from ..cache import use_cache
 from ..utils import run_periodic, LOGGER, parse_track_title
 from ..app_vars import get_app_var
-from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+from ..models import MusicProvider, MediaType, TrackQuality, \
+        AlbumType, Artist, Album, Track, Playlist
+from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, \
+        CONF_TYPE_PASSWORD, EVENT_STREAM_STARTED, EVENT_STREAM_ENDED
 
+PROV_ID = 'qobuz'
+PROV_NAME = 'Qobuz'
+PROV_CLASS = 'QobuzProvider'
 
-def setup(mass):
-    ''' setup the provider'''
-    enabled = mass.config["musicproviders"]['qobuz'].get(CONF_ENABLED)
-    username = mass.config["musicproviders"]['qobuz'].get(CONF_USERNAME)
-    password = mass.config["musicproviders"]['qobuz'].get(CONF_PASSWORD)
-    if enabled and username and password:
-        provider = QobuzProvider(mass, username, password)
-        return provider
-    return False
+CONFIG_ENTRIES = [
+    (CONF_ENABLED, False, CONF_ENABLED),
+    (CONF_USERNAME, "", CONF_USERNAME), 
+    (CONF_PASSWORD, CONF_TYPE_PASSWORD, CONF_PASSWORD)
+    ]
 
-def config_entries():
-    ''' get the config entries for this provider (list with key/value pairs)'''
-    return [
-        (CONF_ENABLED, False, CONF_ENABLED),
-        (CONF_USERNAME, "", CONF_USERNAME), 
-        (CONF_PASSWORD, "<password>", CONF_PASSWORD)
-        ]
 
 class QobuzProvider(MusicProvider):
     
-
-    def __init__(self, mass, username, password):
-        self.name = 'Qobuz'
-        self.prov_id = 'qobuz'
+    def __init__(self, mass, conf):
+        ''' Support for streaming music provider Qobuz '''
+        self.name = PROV_NAME
+        self.prov_id = PROV_ID
         self.mass = mass
         self.cache = mass.cache
-        self.__username = username
-        self.__password = password
+        self.__username = conf[CONF_USERNAME]
+        self.__password = conf[CONF_PASSWORD]
+        if not conf[CONF_USERNAME] or not conf[CONF_PASSWORD]:
+            raise Exception("Username and password must not be empty")
         self.__user_auth_info = None
         self.__logged_in = False
-        self.mass.event_loop.create_task(self.setup())
 
     async def setup(self):
         ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=2, period=1)
-        await self.mass.add_event_listener(self.mass_event, 'streaming_started')
-        await self.mass.add_event_listener(self.mass_event, 'streaming_ended')
+        await self.mass.add_event_listener(self.mass_event, EVENT_STREAM_STARTED)
+        await self.mass.add_event_listener(self.mass_event, EVENT_STREAM_ENDED)
     
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''

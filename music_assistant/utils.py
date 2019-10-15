@@ -5,8 +5,15 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import socket
+import importlib
 import os
-LOGGER = logging.getLogger()
+try:
+    import simplejson as json
+except ImportError:
+    import json
+LOGGER = logging.getLogger('music_assistant')
+
+from .constants import CONF_KEY_MUSICPROVIDERS, CONF_ENABLED
 
 
 def run_periodic(period):
@@ -128,3 +135,75 @@ def get_folder_size(folderpath):
             total_size += os.path.getsize(fp)
     total_size_gb = total_size/float(1<<30)
     return total_size_gb
+
+
+def json_serializer(obj):
+    ''' json serializer to recursively create serializable values for custom data types '''
+    def get_val(val):
+        if isinstance(val, (int, str, bool, float)):
+            return val
+        elif isinstance(val, list):
+            new_list = []
+            for item in val:
+                new_list.append( get_val(item))
+            return new_list
+        elif hasattr(val, 'to_dict'):
+            return get_val(val.to_dict())
+        elif isinstance(val, dict):
+            new_dict = {}
+            for key, value in val.items():
+                new_dict[key] = get_val(value)
+            return new_dict
+        elif hasattr(val, '__dict__'):
+            new_dict = {}
+            for key, value in val.__dict__.items():
+                new_dict[key] = get_val(value)
+            return new_dict
+    obj = get_val(obj)
+    return json.dumps(obj, skipkeys=True)
+
+
+def try_load_json_file(jsonfile):
+    ''' try to load json from file '''
+    try:
+        with open(jsonfile) as f:
+            return json.loads(f.read())
+    except Exception as exc:
+        LOGGER.debug("Could not load json from file %s - %s" % (jsonfile, str(exc)))
+        return None
+
+def load_provider_modules(mass, prov_type=CONF_KEY_MUSICPROVIDERS):
+    ''' dynamically load music/player providers '''
+    provider_modules = {}
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    modules_path = os.path.join(base_dir, prov_type )
+    for item in os.listdir(modules_path):
+        if (os.path.isfile(os.path.join(modules_path, item)) and not item.startswith("_") and 
+                item.endswith('.py') and not item.startswith('.')):
+            module_name = item.replace(".py","")
+            prov_mod = load_provider_module(mass, module_name, prov_type)
+            if prov_mod:
+                provider_modules[prov_mod.prov_id] = prov_mod
+    return provider_modules
+
+
+def load_provider_module(mass, module_name, prov_type):
+    ''' dynamically load music/player provider '''
+    LOGGER.debug("Loading provider module %s" % module_name)
+    try:
+        prov_mod = importlib.import_module(f".{module_name}", 
+                f"music_assistant.{prov_type}")
+        prov_conf_entries = prov_mod.CONFIG_ENTRIES
+        prov_id = prov_mod.PROV_ID
+        # get/create config for the module
+        prov_config = mass.config.create_module_config(
+                prov_id, prov_conf_entries, prov_type)
+        if prov_config[CONF_ENABLED]:
+            prov_mod_cls = getattr(prov_mod, prov_mod.PROV_CLASS)
+            provider = prov_mod_cls(mass, prov_config)
+            LOGGER.info("Successfully initialized module %s" % provider.name)
+            return provider
+        else:
+            return None
+    except Exception as exc:
+        LOGGER.exception("Error loading module %s: %s" %(module_name, exc))

@@ -6,26 +6,28 @@ from typing import List
 import toolz
 import operator
 import os
-import importlib
 
-from .utils import run_periodic, LOGGER, try_supported
+from .utils import run_periodic, LOGGER, try_supported, load_provider_modules
 from .models.media_types import MediaType, Track, Artist, Album, Playlist, Radio
+from .constants import CONF_KEY_MUSICPROVIDERS
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODULES_PATH = os.path.join(BASE_DIR, "musicproviders" )
-
-class Music():
+class MusicManager():
     ''' several helpers around the musicproviders '''
     
     def __init__(self, mass):
         self.sync_running = False
         self.mass = mass
-        self.providers = {}
         # dynamically load musicprovider modules
-        self.load_music_providers()
+        self.providers = load_provider_modules(mass, CONF_KEY_MUSICPROVIDERS)
+
+    async def setup(self):
+        ''' async initialize of module '''
+        # start providers
+        for prov in self.providers.values():
+            await prov.setup()
         # schedule sync task
-        mass.event_loop.create_task(self.sync_music_providers())
+        self.mass.event_loop.create_task(self.sync_music_providers())
 
     async def item(self, item_id, media_type:MediaType, provider='database', lazy=True):
         ''' get single music item by id and media type'''
@@ -392,25 +394,3 @@ class Music():
                 await self.mass.db.remove_from_library(db_id, MediaType.Radio, prov_id)
         LOGGER.info("Finished syncing Radios for provider %s" % prov_id)
 
-    def load_music_providers(self):
-        ''' dynamically load musicproviders '''
-        for item in os.listdir(MODULES_PATH):
-            if (os.path.isfile(os.path.join(MODULES_PATH, item)) and not item.startswith("_") and 
-                    item.endswith('.py') and not item.startswith('.')):
-                module_name = item.replace(".py","")
-                LOGGER.debug("Loading musicprovider module %s" % module_name)
-                try:
-                    mod = importlib.import_module("." + module_name, "music_assistant.musicproviders")
-                    if not self.mass.config['musicproviders'].get(module_name):
-                        self.mass.config['musicproviders'][module_name] = {}
-                    self.mass.config['musicproviders'][module_name]['__desc__'] = mod.config_entries()
-                    for key, def_value, desc in mod.config_entries():
-                        if not key in self.mass.config['musicproviders'][module_name]:
-                            self.mass.config['musicproviders'][module_name][key] = def_value
-                    mod = mod.setup(self.mass)
-                    if mod:
-                        self.providers[mod.prov_id] = mod
-                        cls_name = mod.__class__.__name__
-                        LOGGER.info("Successfully initialized module %s" % cls_name)
-                except Exception as exc:
-                    LOGGER.exception("Error loading module %s: %s" %(module_name, exc))

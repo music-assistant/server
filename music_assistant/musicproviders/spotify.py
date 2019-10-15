@@ -15,47 +15,40 @@ from ..cache import use_cache
 from ..utils import run_periodic, LOGGER, parse_track_title
 from ..app_vars import get_app_var
 from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED
+from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, CONF_TYPE_PASSWORD
 
 
-def setup(mass):
-    ''' setup the provider'''
-    enabled = mass.config["musicproviders"]['spotify'].get(CONF_ENABLED)
-    username = mass.config["musicproviders"]['spotify'].get(CONF_USERNAME)
-    password = mass.config["musicproviders"]['spotify'].get(CONF_PASSWORD)
-    if enabled and username and password:
-        spotify_provider = SpotifyProvider(mass, username, password)
-        return spotify_provider
-    return False
+PROV_ID = 'spotify'
+PROV_NAME = 'Spotify'
+PROV_CLASS = 'SpotifyProvider'
 
-def config_entries():
-    ''' get the config entries for this provider (list with key/value pairs)'''
-    return [
-        (CONF_ENABLED, False, CONF_ENABLED),
-        (CONF_USERNAME, "", CONF_USERNAME), 
-        (CONF_PASSWORD, "<password>", CONF_PASSWORD)
-        ]
+CONFIG_ENTRIES = [
+    (CONF_ENABLED, False, CONF_ENABLED),
+    (CONF_USERNAME, "", CONF_USERNAME), 
+    (CONF_PASSWORD, CONF_TYPE_PASSWORD, CONF_PASSWORD)
+    ]
 
 class SpotifyProvider(MusicProvider):
     
-
-    def __init__(self, mass, username, password):
-        self.name = 'Spotify'
-        self.prov_id = 'spotify'
-        self._cur_user = None
+    def __init__(self, mass, conf):
+        ''' Support for streaming provider Spotify '''
         self.mass = mass
         self.cache = mass.cache
-        self._username = username
-        self._password = password
+        self.name = PROV_NAME
+        self.prov_id = PROV_ID
+        self._cur_user = None
+        if not conf[CONF_USERNAME] or not conf[CONF_PASSWORD]:
+            raise Exception("Username and password must not be empty")
+        self._username = conf[CONF_USERNAME]
+        self._password = conf[CONF_PASSWORD]
         self.__auth_token = {}
-        self.mass.event_loop.create_task(self.setup())
+
 
     async def setup(self):
         ''' perform async setup '''
         self.throttler = Throttler(rate_limit=1, period=1)
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
-        
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''

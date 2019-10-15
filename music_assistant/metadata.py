@@ -18,12 +18,15 @@ LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 class MetaData():
     ''' several helpers to search and store mediadata for mediaitems '''
     
-    def __init__(self, event_loop, db, cache):
-        self.event_loop = event_loop
-        self.db = db
-        self.cache = cache
-        self.musicbrainz = MusicBrainz(event_loop, cache)
-        self.fanarttv = FanartTv(event_loop, cache)
+    def __init__(self, mass):
+        self.mass = mass
+        self.musicbrainz = MusicBrainz(mass)
+        self.fanarttv = FanartTv(mass)
+
+    async def setup(self):
+        ''' async initialize of metadata module '''
+        await self.musicbrainz.setup()
+        await self.fanarttv.setup()
 
     async def get_artist_metadata(self, mb_artist_id, cur_metadata):
         ''' get/update rich metadata for an artist by providing the musicbrainz artist id '''
@@ -58,15 +61,13 @@ class MetaData():
 
 class MusicBrainz():
 
-    def __init__(self, event_loop, cache):
-        self.event_loop = event_loop
-        self.cache = cache
-        self.event_loop.create_task(self.setup())
+    def __init__(self, mass):
+        self.mass = mass
 
     async def setup(self):
         ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
-                loop=self.event_loop, connector=aiohttp.TCPConnector())
+                loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=1, period=1)
 
     async def search_artist_by_album(self, artistname, albumname=None, album_upc=None):
@@ -138,15 +139,13 @@ class MusicBrainz():
 
 class FanartTv():
 
-    def __init__(self, event_loop, cache):
-        self.event_loop = event_loop
-        self.cache = cache
-        self.event_loop.create_task(self.setup())
+    def __init__(self, mass):
+        self.mass = mass
 
     async def setup(self):
         ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
-                loop=self.event_loop, connector=aiohttp.TCPConnector())
+                loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=1, period=1)
 
     async def artist_images(self, mb_artist_id):
