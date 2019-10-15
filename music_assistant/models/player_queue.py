@@ -65,7 +65,7 @@ class PlayerQueue():
 
     @property
     def cur_item(self):
-        if self.cur_index == None or not self.items or len(self.items) < self.cur_index:
+        if self.cur_index == None or not len(self.items) > self.cur_index:
             return None
         return self.items[self.cur_index]
 

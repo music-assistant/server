@@ -105,8 +105,9 @@ class HTTPStreamer():
             stdout=subprocess.PIPE, stdin=subprocess.PIPE)
 
         def fill_buffer():
-            while True:
-                chunk = sox_proc.stdout.read(256000)
+            sample_size = int(sample_rate * 4 * 2 * 2)
+            while sox_proc.returncode == None:
+                chunk = sox_proc.stdout.read(sample_size)
                 if not chunk:
                     # no more data
                     break
@@ -168,9 +169,8 @@ class HTTPStreamer():
                     remaining_bytes = first_part[fade_bytes:]
                     del first_part
                     # do crossfade
-                    crossfade_part = asyncio.run_coroutine_threadsafe(
-                        self.__crossfade_pcm_parts(fade_in_part, 
-                            last_fadeout_data, pcm_args, fade_length), self.mass.event_loop).result() 
+                    crossfade_part = self.__crossfade_pcm_parts(fade_in_part, 
+                            last_fadeout_data, pcm_args, fade_length)
                     sox_proc.stdin.write(crossfade_part)
                     bytes_written += len(crossfade_part)
                     del crossfade_part
@@ -294,24 +294,28 @@ class HTTPStreamer():
                 streamdetails), self.mass.event_loop)
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
-        prev_chunk = b''
         bytes_sent = 0
+        buf = b''
         while True:
+            # read exactly buffersize of data
             if cancelled.is_set():
                 process.terminate()
-            chunk = process.stdout.read(chunksize)
-            if not chunk:
-                # no more data
+            data = process.stdout.read(chunksize)
+            if not data:
+                # last bytes received
+                yield (True, buf)
+                bytes_sent += len(buf)
                 break
-            if prev_chunk and not cancelled.is_set():
-                yield (False, prev_chunk)
-                bytes_sent += len(prev_chunk)
-            prev_chunk = chunk
+            elif len(buf) + len(data) >= chunksize:
+                new_data = buf + data
+                chunk = new_data[:chunksize]
+                yield (False, chunk)
+                bytes_sent += len(chunk)
+                buf = new_data[chunksize:]
+            else:
+                buf += data
         if cancelled.is_set():
             return
-        # yield last chunk
-        yield (True, prev_chunk)
-        bytes_sent += len(prev_chunk)
         # fire event that streaming has ended for this track (needed by some streaming providers)
         if resample:
             bytes_per_second = resample * (32/8) * 2
@@ -395,24 +399,30 @@ class HTTPStreamer():
             LOGGER.debug('Finished analyzing track %s' % item_key)
         self.analyze_jobs.pop(item_key, None)
     
-    async def __crossfade_pcm_parts(self, fade_in_part, fade_out_part, pcm_args, fade_length):
+    def __crossfade_pcm_parts(self, fade_in_part, fade_out_part, pcm_args, fade_length):
         ''' crossfade two chunks of audio using sox '''
         # create fade-in part
         fadeinfile = MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
         args = 'sox --ignore-length -t %s - -t %s %s fade t %s' % (pcm_args, pcm_args, fadeinfile.name, fade_length)
-        process = await asyncio.create_subprocess_shell(args, stdin=asyncio.subprocess.PIPE)
-        await process.communicate(fade_in_part)
+        process = subprocess.Popen(args, shell=True, stdin=subprocess.PIPE)
+        process.communicate(fade_in_part)
         # create fade-out part
         fadeoutfile = MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
         args = 'sox --ignore-length -t %s - -t %s %s reverse fade t %s reverse' % (pcm_args, pcm_args, fadeoutfile.name, fade_length)
-        process = await asyncio.create_subprocess_shell(args,
-                stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE)
-        await process.communicate(fade_out_part)
+        process = subprocess.Popen(args, shell=True,
+                stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+        process.communicate(fade_out_part)
         # create crossfade using sox and some temp files
         # TODO: figure out how to make this less complex and without the tempfiles
         args = 'sox -m -v 1.0 -t %s %s -v 1.0 -t %s %s -t %s -' % (pcm_args, fadeoutfile.name, pcm_args, fadeinfile.name, pcm_args)
-        process = await asyncio.create_subprocess_shell(args,
-                stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE)
-        crossfade_part, stderr = await process.communicate()
+        process = subprocess.Popen(args, shell=True,
+                stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+        crossfade_part, stderr = process.communicate()
         LOGGER.debug("Got %s bytes in memory for crossfade_part after sox" % len(crossfade_part))
         return crossfade_part
+
+    # def readexactly(streamobj, chunksize):
+    #     ''' read exactly n bytes from the stream object '''
+    #     buf = b''
+    #     while len(buf) < chunksize:
+    #         new_data = streamobj.read(chunksize)
