@@ -138,6 +138,14 @@ var Config = Vue.component('Config', {
     confChanged(key, subkey, newvalue) {
       console.log(key + "/" + subkey + " changed!");
       console.log(newvalue);
+      axios
+        .post('/api/config/'+key+'/'+subkey, newvalue)
+        .then(result => {
+          console.log(result);
+        })
+        .catch(error => {
+          console.log("error", error);
+        });
 
     },
     getPlayers () {

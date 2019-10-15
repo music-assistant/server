@@ -53,7 +53,7 @@ class Web():
         app.add_routes([web.get('/stream/{player_id}/{queue_item_id}', self.mass.http_streamer.stream)])
         app.add_routes([web.get('/api/search', self.search)])
         app.add_routes([web.get('/api/config', self.get_config)])
-        app.add_routes([web.post('/api/config', self.save_config)])
+        app.add_routes([web.post('/api/config/{key}/{subkey}', self.save_config)])
         app.add_routes([web.get('/api/players', self.players)])
         app.add_routes([web.get('/api/players/{player_id}', self.player)])
         app.add_routes([web.get('/api/players/{player_id}/queue', self.player_queue)])
@@ -265,24 +265,19 @@ class Web():
 
     async def save_config(self, request):
         ''' save (partial) config '''
-        LOGGER.debug('save config called from api')
-        new_config = await request.json()
-        config_changed = False
-        for key, value in self.mass.config.items():
-            if isinstance(value, dict):
-                for subkey, subvalue in value.items():
-                    if subkey in new_config[key]:
-                        if self.mass.config[key][subkey] != new_config[key][subkey]:
-                            config_changed = True
-                            self.mass.config[key][subkey] = new_config[key][subkey]
-            elif key in new_config:
-                if self.mass.config[key] != new_config[key]:
-                    config_changed = True
-                    self.mass.config[key] = new_config[key]
-        if config_changed:
-            self.mass.save_config()
-            await self.mass.signal_event('config_changed')
-        return web.Response(text='success')
+        conf_key = request.match_info.get('key')
+        conf_subkey = request.match_info.get('subkey')
+        new_values = await request.json()
+        LOGGER.debug(f'save config called for {conf_key}/{conf_subkey} - new value: {new_values}')
+        cur_values = self.mass.config[conf_key][conf_subkey]
+        result = {"success": True, "restart_required": False, "settings_changed": False}
+        if cur_values != new_values:
+            # config changed
+            result["settings_changed"] = True
+            self.mass.config[conf_key][conf_subkey] = new_values
+            if conf_key != "player_settings":
+                result["restart_required"] = True
+        return web.json_response(result)
 
     async def json_rpc(self, request):
         ''' 

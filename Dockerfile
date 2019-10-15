@@ -17,9 +17,6 @@ RUN chmod a+x /usr/src/app/mass.py
 
 VOLUME ["/data"]
 
-COPY run.sh /run.sh
-RUN chmod +x /run.sh
-
 ENV mass_debug false
 ENV mass_datadir /data
 ENV mass_update false
