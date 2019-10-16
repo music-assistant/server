@@ -30,7 +30,7 @@ class Web():
         # load/create/update config
         config = self.mass.config.create_module_config(CONF_KEY, CONFIG_ENTRIES)
         if config['ssl_certificate'] and not os.path.isfile(
-                self.mass.config['ssl_certificate']):
+                config['ssl_certificate']):
             raise FileNotFoundError(
                 "SSL certificate file not found: %s" % config['ssl_certificate'])
         if config['ssl_key'] and not os.path.isfile(config['ssl_key']):
