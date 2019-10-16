@@ -72,7 +72,7 @@ class HTTPStreamer():
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 cancelled.set()
                 # wait for bg_task
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
                 del buf_queue
                 raise asyncio.CancelledError()
         return resp
@@ -232,6 +232,7 @@ class HTTPStreamer():
                         prev_chunk = chunk
                     else:
                         prev_chunk = chunk
+                    del chunk
             # end of the track reached
             if cancelled.is_set():
                 # break out the loop if the http session is cancelled
@@ -243,11 +244,12 @@ class HTTPStreamer():
                 LOGGER.debug("Finished Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
                 LOGGER.debug("bytes written: %s - duration: %s" % (bytes_written, accurate_duration))
             # wait for the queue to consume the data
-            while buffer.qsize() > 10 and not cancelled.is_set():
-                await asyncio.sleep(1)
+            while not cancelled.is_set() and buffer.qsize() > 4:
+                await asyncio.sleep(0.5)
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data and not cancelled.is_set():
             sox_proc.stdin.write(last_fadeout_data)
+            del last_fadeout_data
         sox_proc.stdin.close()
         sox_proc.terminate()
         LOGGER.info("streaming of queue for player %s completed" % player.name)
@@ -320,8 +322,10 @@ class HTTPStreamer():
                 yield (False, chunk)
                 bytes_sent += len(chunk)
                 buf = new_data[chunksize:]
+                del chunk
             else:
                 buf += data
+        del buf
         if cancelled.is_set():
             return
         # fire event that streaming has ended for this track (needed by some streaming providers)

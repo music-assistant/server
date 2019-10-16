@@ -212,7 +212,7 @@ class ChromecastProvider(PlayerProvider):
                 player.poll_task = True
                 while player.state == PlayerState.Playing:
                     player.cur_time = mediastatus.adjusted_current_time
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(1)
                 player.poll_task = False
             if not player.poll_task and player.state == PlayerState.Playing:
                 self.mass.event_loop.create_task(poll_task())
