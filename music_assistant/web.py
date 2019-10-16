@@ -15,7 +15,7 @@ from .utils import run_periodic, LOGGER, run_async_background_task, get_ip, json
 
 CONF_KEY = 'web'
 CONFIG_ENTRIES = [
-        ('http_port', 8095, 'webhttp_port'),
+        ('http_port', 8095, 'web_http_port'),
         ('https_port', 8096, 'web_https_port'),
         ('ssl_certificate', '', 'web_ssl_cert'), 
         ('ssl_key', '', 'web_ssl_key'),

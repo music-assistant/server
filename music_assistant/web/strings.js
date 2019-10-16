@@ -33,8 +33,7 @@ const messages = {
             tunein: "TuneIn",
             file: "Filesystem",
             chromecast: "Chromecast",
-            lms: "Logitech Media Server",
-            pylms: "Emulated (built-in) Squeezebox support",
+            squeezebox: "Squeezebox support",
             username: "Username",
             password: "Password",
             hostname: "Hostname (or IP)",
@@ -71,7 +70,9 @@ const messages = {
             not_grouped: "Not grouped",
             conf_saved: "Configuration saved, restart app to make effective",
             audio_cache_folder: "Directory to use for cache files",
-            audio_cache_max_size_gb: "Maximum size of the cache folder (GB)"
+            audio_cache_max_size_gb: "Maximum size of the cache folder (GB)",
+            gapless_enabled: "Enable gapless support",
+            crossfade_duration: "Crossfade duration (in seconds, 0 to disable)"
         },
         // player strings
         players: "Players",
@@ -121,8 +122,7 @@ const messages = {
             tunein: "TuneIn",
             file: "Bestandssysteem",
             chromecast: "Chromecast",
-            lms: "Logitech Media Server",
-            pylms: "Geemuleerde (ingebouwde) Squeezebox ondersteuning",
+            squeezebox: "Squeezebox ondersteuning",
             username: "Gebruikersnaam",
             password: "Wachtwoord",
             hostname: "Hostnaam (of IP)",
@@ -159,7 +159,9 @@ const messages = {
             not_grouped: "Niet gegroepeerd",
             conf_saved: "Configuratie is opgeslagen, herstart om actief te maken",
             audio_cache_folder: "Map om te gebruiken voor cache bestanden",
-            audio_cache_max_size_gb: "Maximale grootte van de cache map in GB."
+            audio_cache_max_size_gb: "Maximale grootte van de cache map in GB.",
+            gapless_enabled: "Schakel ondersteuning voor gapless in.",
+            crossfade_duration: "Crossfade in (seconden, 0 om uit te schakelen)."
         },
         // player strings
         players: "Spelers",

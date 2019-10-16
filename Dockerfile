@@ -1,12 +1,17 @@
 FROM python:3.7-buster
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-		flac sox zip curl wget ffmpeg libsndfile1 libtag1-dev build-essential \
-        python3-numpy python3-scipy python3-matplotlib python3-taglib \
-	&& rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt requirements.txt
-RUN pip install -r requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends \
+		# required packages
+		flac sox libsox-fmt-mp3 zip curl wget ffmpeg libsndfile1 \
+		python3-numpy python3-scipy python3-matplotlib python3-taglib \
+		# build packages
+		libtag1-dev build-essential && \
+	# install required python packages with pip
+	pip install -r requirements.txt && \
+	# cleanup build packages
+	apt-get remove --purge -y build-essential libtag1-dev $(apt-mark showauto) && \
+	rm -rf /var/lib/apt/lists/*
 
 # copy app files
 RUN mkdir -p /usr/src/app
