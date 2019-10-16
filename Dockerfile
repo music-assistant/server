@@ -21,4 +21,4 @@ ENV mass_debug false
 ENV mass_datadir /data
 ENV mass_update false
 
-CMD ["python3 /usr/src/app/mass.py"]
+CMD ["/usr/src/app/mass.py"]
