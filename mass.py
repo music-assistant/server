@@ -75,7 +75,7 @@ if __name__ == "__main__":
     # get config
     data_dir, debug, update_latest = get_config()
     if update_latest:
-        update_latest()
+        do_update()
     # create event_loop with uvloop
     event_loop = asyncio.get_event_loop()
     uvloop.install()
@@ -88,8 +88,6 @@ if __name__ == "__main__":
     else:
         logger.setLevel(logging.INFO)
     # start music assistant!
-    if debug:
-        do_update()
     from music_assistant import MusicAssistant
     mass = MusicAssistant(data_dir, event_loop)
     run(mass.start(), loop=event_loop)
