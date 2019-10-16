@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	# install required python packages with pip
 	pip install -r requirements.txt && \
 	# cleanup build packages
-	apt-get remove --purge -y build-essential libtag1-dev $(apt-mark showauto) && \
+	apt-get remove --purge -y build-essential libtag1-dev && \
+	apt-get autoremove -y && \
 	rm -rf /var/lib/apt/lists/*
 
 # copy app files
