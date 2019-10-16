@@ -277,6 +277,7 @@ class Web():
             self.mass.config[conf_key][conf_subkey] = new_values
             if conf_key != "player_settings":
                 result["restart_required"] = True
+            self.mass.config.save()
         return web.json_response(result)
 
     async def json_rpc(self, request):
