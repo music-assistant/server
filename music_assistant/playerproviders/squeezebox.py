@@ -233,6 +233,7 @@ class PySqueezePlayer(Player):
         ''' send command to Squeeze player'''
         packet = struct.pack('!H', len(data) + 4) + command + data
         self._writer.write(packet)
+        self.mass.event_loop.create_task(self._writer.drain())
 
     def send_version(self):
         self.send_frame(b'vers', b'7.8')

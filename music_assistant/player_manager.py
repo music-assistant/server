@@ -127,5 +127,5 @@ class PlayerManager():
         else:
             gain_correct = target_gain - track_loudness
         gain_correct = round(gain_correct,2)
-        LOGGER.info(f"Loudness level for track {provider_id}/{item_id} is {track_loudness} - calculated replayGain is {gain_correct}")
+        LOGGER.debug(f"Loudness level for track {provider_id}/{item_id} is {track_loudness} - calculated replayGain is {gain_correct}")
         return gain_correct
