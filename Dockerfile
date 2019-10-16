@@ -3,7 +3,7 @@ FROM python:3.7-slim
 COPY requirements.txt requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		# required packages
-		flac sox libsox-fmt-mp3 zip curl wget ffmpeg libsndfile1 libtag1v5 \
+		flac sox libsox-fmt-mp3 zip curl wget unzip ffmpeg libsndfile1 libtag1v5 \
 		# build packages
 		libtag1-dev build-essential && \
 	# install required python packages with pip
