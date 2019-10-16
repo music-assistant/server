@@ -31,39 +31,41 @@ def get_config():
     if os.environ.get('mass_datadir'):
         data_dir = os.environ['mass_datadir']
     if os.environ.get('mass_debug'):
-        debug = os.environ['mass_datadir'].lower() != 'false'
+        debug = os.environ['mass_debug'].lower() != 'false'
     if os.environ.get('mass_update'):
         update_latest = os.environ['mass_update'].lower() != 'false'
     # config file found
-    if os.path.isfile('options.json'):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    conf_file = os.path.join(base_dir, 'options.json')
+    if os.path.isfile(conf_file):
         try:
             import json
-            with open('options.json') as f:
+            with open(conf_file) as f:
                 conf = json.loads(f.read())
                 data_dir = conf['data_dir']
                 debug = conf['debug_messages']
-                update_latest = conf['auto_update']
+                update_latest = conf['use_nightly']
         except:
             logger.exception('could not load options.json')
     return data_dir, debug, update_latest
 
 def do_update():
     ''' auto update to latest git version '''
-    if os.path.isdir(".git"):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    if os.path.isdir(".git") or os.path.isdir("%s/.git" % base_dir):
         # dev environment
         return
     logger.info("Updating to latest Git version!")
     import subprocess
     # TODO: handle this properly
     args = """
-        cd /tmp
+        cd %s
         curl -LOks "https://github.com/marcelveldt/musicassistant/archive/master.zip"
         unzip -q master.zip
-        rm -R music_assistant
         cp -rf musicassistant-master/music_assistant .
         cp -rf musicassistant-master/mass.py .
-        rm -R /tmp/musicassistant-master
-    """
+        rm -R musicassistant-master
+    """ % (base_dir, )
     if subprocess.call(args, shell=True) == 0:
         logger.info("Update succesfull")
     else:
