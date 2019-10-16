@@ -404,6 +404,7 @@ class HTTPStreamer():
         args = 'sox --ignore-length -t %s - -t %s %s fade t %s' % (pcm_args, pcm_args, fadeinfile.name, fade_length)
         process = subprocess.Popen(args, shell=True, stdin=subprocess.PIPE)
         process.communicate(fade_in_part)
+        fadeinfile.close()
         # create fade-out part
         fadeoutfile = MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
         args = 'sox --ignore-length -t %s - -t %s %s reverse fade t %s reverse' % (pcm_args, pcm_args, fadeoutfile.name, fade_length)
@@ -417,4 +418,6 @@ class HTTPStreamer():
                 stdout=subprocess.PIPE, stdin=subprocess.PIPE)
         crossfade_part, stderr = process.communicate()
         LOGGER.debug("Got %s bytes in memory for crossfade_part after sox" % len(crossfade_part))
+        fadeinfile.close()
+        fadeoutfile.close()
         return crossfade_part
