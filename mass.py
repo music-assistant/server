@@ -34,9 +34,8 @@ def get_config():
         debug = os.environ['mass_debug'].lower() != 'false'
     if os.environ.get('mass_update'):
         update_latest = os.environ['mass_update'].lower() != 'false'
-    # config file found
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    conf_file = os.path.join(base_dir, 'options.json')
+    # hassio config file found
+    conf_file = '/data/options.json'
     if os.path.isfile(conf_file):
         try:
             import json
