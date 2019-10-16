@@ -165,7 +165,7 @@ Vue.component("player", {
           return this.players[this.active_player_id];
       else
           return {
-            name: $t('no_player'),
+            name: this.$t('no_player'),
             cur_item: null,
             cur_time: 0,
             player_id: '',

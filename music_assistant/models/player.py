@@ -70,7 +70,8 @@ class Player():
             load/overwrite given items in the player's own queue implementation
             :param queue_items: a list of QueueItems
         '''
-        pass
+        item = queue_items[0]
+        return await self.cmd_play_uri(item.uri)
 
     async def cmd_queue_insert(self, queue_items, offset=0):
         ''' 
@@ -80,7 +81,10 @@ class Player():
                 :param queue_items: a list of QueueItems
                 :param offset: offset from current queue position to insert new items
         '''
-        pass
+        if offset == 0:
+            item = await self.queue.get_item(0)
+            if item:
+                return await self.cmd_play_uri(item.uri)
 
     async def cmd_queue_append(self, queue_items):
         ''' 
