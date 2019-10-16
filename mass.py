@@ -89,7 +89,8 @@ if __name__ == "__main__":
     else:
         logger.setLevel(logging.INFO)
     # start music assistant!
-    do_update()
+    if debug:
+        do_update()
     from music_assistant import MusicAssistant
     mass = MusicAssistant(data_dir, event_loop)
     run(mass.start(), loop=event_loop)
