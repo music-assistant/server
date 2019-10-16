@@ -52,6 +52,7 @@ class MusicAssistant():
         await self.db.setup()
         await self.cache.setup()
         await self.metadata.setup()
+        await self.hass.setup()
         await self.music.setup()
         await self.players.setup()
         await self.web.setup()
