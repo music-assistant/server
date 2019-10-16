@@ -63,6 +63,7 @@ class MusicBrainz():
 
     def __init__(self, mass):
         self.mass = mass
+        self.cache = mass.cache
 
     async def setup(self):
         ''' perform async setup '''
@@ -141,6 +142,7 @@ class FanartTv():
 
     def __init__(self, mass):
         self.mass = mass
+        self.cache = mass.cache
 
     async def setup(self):
         ''' perform async setup '''

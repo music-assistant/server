@@ -60,7 +60,9 @@ class Player():
             play item at index X on player's queue
             :attrib index: (int) index of the queue item that should start playing
         '''
-        raise NotImplementedError
+        item = await self.queue.get_item(index)
+        if item:
+            return await self.cmd_play_uri(item.uri)
 
     async def cmd_queue_load(self, queue_items):
         ''' 
@@ -68,7 +70,7 @@ class Player():
             load/overwrite given items in the player's own queue implementation
             :param queue_items: a list of QueueItems
         '''
-        raise NotImplementedError
+        pass
 
     async def cmd_queue_insert(self, queue_items, offset=0):
         ''' 
@@ -78,14 +80,15 @@ class Player():
                 :param queue_items: a list of QueueItems
                 :param offset: offset from current queue position to insert new items
         '''
-        raise NotImplementedError
+        pass
 
     async def cmd_queue_append(self, queue_items):
         ''' 
+            [OVERRIDE IF SUPPORTED]
             append new items at the end of the queue
             :param queue_items: a list of QueueItems
         '''
-        raise NotImplementedError
+        pass
 
     async def cmd_play_uri(self, uri:str):
         '''
@@ -116,7 +119,6 @@ class Player():
         self.supports_queue = True # has native support for a queue
         self.supports_gapless = False # has native gapless support
         self.supports_crossfade = False # has native crossfading support
-        self.supports_replay_gain = False # has native support for replaygain volume leveling
         # if home assistant support is enabled, register state listener
         if self.mass.hass.enabled:
             self.mass.event_loop.create_task(

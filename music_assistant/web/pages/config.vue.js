@@ -96,18 +96,7 @@ var Config = Vue.component('Config', {
       return playersLst;
     }
   },
-  watch: {
-    // 'conf': {
-    //     handler: _.debounce(function (val, oldVal) {
-    //       if (oldVal.base) {
-    //         console.log("save config needed!");
-    //         this.saveConfig();
-    //         this.$toasted.show(this.$t('conf.conf_saved'))
-    //       }
-    //     }, 5000),
-    //     deep: true
-    // }
-  },
+  watch: {},
   created() {
     this.$globals.windowtitle = this.$t('settings');
     this.getPlayers();

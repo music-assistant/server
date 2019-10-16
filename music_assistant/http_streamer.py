@@ -13,6 +13,8 @@ import pyloudnorm
 import io
 import aiohttp
 import subprocess
+
+from .constants import EVENT_STREAM_STARTED, EVENT_STREAM_ENDED
 from .utils import LOGGER, try_parse_int, get_ip, run_async_background_task, run_periodic, get_folder_size
 from .models.media_types import TrackQuality, MediaType
 from .models.playerstate import PlayerState
@@ -70,9 +72,10 @@ class HTTPStreamer():
                     await resp.write(chunk)
                     buf_queue.task_done()
             except (asyncio.CancelledError, asyncio.TimeoutError):
+                LOGGER.debug("stream interrupted")
                 cancelled.set()
                 # wait for bg_task
-                await asyncio.sleep(2)
+                await asyncio.gather(bg_task)
                 del buf_queue
                 raise asyncio.CancelledError()
         return resp
@@ -265,6 +268,7 @@ class HTTPStreamer():
                     self.mass.music.providers[prov_media['provider']].get_stream_details(prov_media['item_id']), 
                     self.mass.event_loop).result()
             if streamdetails:
+                streamdetails['player_id'] = player.player_id
                 queue_item.streamdetails = streamdetails
                 queue_item.item_id = prov_media['item_id']
                 queue_item.provider = prov_media['provider']
@@ -283,7 +287,7 @@ class HTTPStreamer():
         # determine how to proceed based on input file ype
         if streamdetails["content_type"] == 'aac':
             # support for AAC created with ffmpeg in between
-            args = 'ffmpeg -i "%s" -f flac - | sox -t flac - -t %s - %s' % (streamdetails["path"], outputfmt, sox_effects)
+            args = 'ffmpeg -v quiet -i "%s" -f flac - | sox -t flac - -t %s - %s' % (streamdetails["path"], outputfmt, sox_effects)
         elif streamdetails['type'] == 'url':
             args = 'sox -t %s "%s" -t %s - %s' % (streamdetails["content_type"], 
                     streamdetails["path"], outputfmt, sox_effects)
@@ -294,13 +298,9 @@ class HTTPStreamer():
         # we use normal subprocess instead of asyncio because of bug with executor
         # this should be fixed with python 3.8
         process = subprocess.Popen(args, shell=True, stdout=subprocess.PIPE)
-        
         # fire event that streaming has started for this track (needed by some streaming providers)
-        streamdetails["provider"] = queue_item.provider
-        streamdetails["track_id"] = queue_item.item_id
-        streamdetails["player_id"] = player.player_id
         asyncio.run_coroutine_threadsafe(
-                self.mass.signal_event('streaming_started', 
+                self.mass.signal_event(EVENT_STREAM_STARTED, 
                 streamdetails), self.mass.event_loop)
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
@@ -309,7 +309,7 @@ class HTTPStreamer():
         while True:
             # read exactly buffersize of data
             if cancelled.is_set():
-                process.terminate()
+                process.kill()
             data = process.stdout.read(chunksize)
             if not data:
                 # last bytes received
@@ -326,8 +326,6 @@ class HTTPStreamer():
             else:
                 buf += data
         del buf
-        if cancelled.is_set():
-            return
         # fire event that streaming has ended for this track (needed by some streaming providers)
         if resample:
             bytes_per_second = resample * (32/8) * 2
@@ -337,29 +335,20 @@ class HTTPStreamer():
             seconds_streamed = queue_item.duration
         streamdetails["seconds"] = seconds_streamed
         asyncio.run_coroutine_threadsafe(
-                self.mass.signal_event('streaming_ended', streamdetails), self.mass.event_loop)
+                self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails), self.mass.event_loop)
         # send task to background to analyse the audio
-        asyncio.run_coroutine_threadsafe(
-            self.__analyze_audio(queue_item), self.mass.event_loop)
+        asyncio.ensure_future(self.__analyze_audio(queue_item), loop=self.mass.event_loop)
 
     async def __get_player_sox_options(self, player, queue_item):
         ''' get player specific sox effect options '''
         sox_effects = []
-        # volume normalisation enabled but not natively handled by player so handle with sox
-        if not player.supports_replay_gain and player.settings['volume_normalisation']:
-            target_gain = int(player.settings['target_volume'])
-            fallback_gain = int(player.settings['fallback_gain_correct'])
-            track_loudness = asyncio.run_coroutine_threadsafe(
-                    self.mass.db.get_track_loudness(queue_item.item_id, queue_item.provider), 
-                    self.mass.event_loop).result()
-            if track_loudness == None:
-                gain_correct = fallback_gain
-            else:
-                gain_correct = target_gain - track_loudness
-            gain_correct = round(gain_correct,2)
+        # volume normalisation
+        gain_correct = asyncio.run_coroutine_threadsafe(
+                self.mass.players.get_gain_correct(
+                    player.player_id, queue_item.item_id, queue_item.provider), 
+                self.mass.event_loop).result()
+        if gain_correct != 0:
             sox_effects.append('vol %s dB ' % gain_correct)
-        else:
-            gain_correct = ''
         # downsample if needed
         if player.settings['max_sample_rate']:
             max_sample_rate = try_parse_int(player.settings['max_sample_rate'])
@@ -379,12 +368,13 @@ class HTTPStreamer():
         ''' analyze track audio, for now we only calculate EBU R128 loudness '''
         if queue_item.media_type != MediaType.Track:
             # TODO: calculate loudness average for web radio ?
+            LOGGER.debug("analyze is only supported for tracks")
             return
         item_key = '%s%s' %(queue_item.item_id, queue_item.provider)
         if item_key in self.analyze_jobs:
             return # prevent multiple analyze jobs for same track
         self.analyze_jobs[item_key] = True
-        streamdetails = queue_item.stream_details
+        streamdetails = queue_item.streamdetails
         track_loudness = await self.mass.db.get_track_loudness(
                 queue_item.item_id, queue_item.provider)
         if track_loudness == None:
@@ -395,20 +385,16 @@ class HTTPStreamer():
                     async with session.get(streamdetails["path"], verify_ssl=False) as resp:
                         audio_data = await resp.read()
             elif streamdetails['type'] == 'executable':
-                process = await asyncio.create_subprocess_shell(streamdetails["path"],
-                    stdout=asyncio.subprocess.PIPE)
-                audio_data, stderr = await process.communicate()
+                audio_data = subprocess.check_output(streamdetails["path"], shell=True)
             # calculate BS.1770 R128 integrated loudness
-            if track_loudness == None:
-                with io.BytesIO(audio_data) as tmpfile:
-                    data, rate = soundfile.read(tmpfile)
-                meter = pyloudnorm.Meter(rate) # create BS.1770 meter
-                loudness = meter.integrated_loudness(data) # measure loudness
-                del data
-                LOGGER.debug("Integrated loudness of track %s is: %s" %(item_key, loudness))
-                await self.mass.db.set_track_loudness(queue_item.item_id, queue_item.provider, loudness)
+            with io.BytesIO(audio_data) as tmpfile:
+                data, rate = soundfile.read(tmpfile)
+            meter = pyloudnorm.Meter(rate) # create BS.1770 meter
+            loudness = meter.integrated_loudness(data) # measure loudness
+            del data
+            await self.mass.db.set_track_loudness(queue_item.item_id, queue_item.provider, loudness)
             del audio_data
-            LOGGER.debug('Finished analyzing track %s' % item_key)
+            LOGGER.debug("Integrated loudness of track %s is: %s" %(item_key, loudness))
         self.analyze_jobs.pop(item_key, None)
     
     def __crossfade_pcm_parts(self, fade_in_part, fade_out_part, pcm_args, fade_length):

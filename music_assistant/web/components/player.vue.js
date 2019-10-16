@@ -157,7 +157,6 @@ Vue.component("player", {
   mounted() { },
   created() {
     this.connectWS();
-    this.updateProgress();
   },
   computed: {
 
@@ -166,7 +165,7 @@ Vue.component("player", {
           return this.players[this.active_player_id];
       else
           return {
-            name: 'no player selected',
+            name: $t('no_player'),
             cur_item: null,
             cur_time: 0,
             player_id: '',
@@ -229,12 +228,6 @@ Vue.component("player", {
 				if (this.players[item].group_parent == player_id && this.players[item].enabled)
 					return true;
 			return false;
-    },
-    updateProgress: function(){           
-      this.intervalid2 = setInterval(function(){
-          if (this.active_player.state == 'playing')
-              this.active_player.cur_time +=1;
-      }.bind(this), 1000);
     },
     setPlayerVolume: function(player_id, new_volume) {
       this.players[player_id].volume_level = new_volume;

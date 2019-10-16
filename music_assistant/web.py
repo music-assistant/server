@@ -181,7 +181,7 @@ class Web():
             cmd = request.match_info.get('cmd')
             cmd_args = request.match_info.get('cmd_args')
             player_cmd = getattr(player, cmd, None)
-            if player_cmd and cmd_args:
+            if player_cmd and cmd_args != None:
                 result = await player_cmd(cmd_args)
             elif player_cmd:
                 result = await player_cmd()

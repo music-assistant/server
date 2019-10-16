@@ -53,12 +53,14 @@ class PlayerManager():
         self._players[player.player_id] = player
         await self.mass.signal_event('player added', player)
         # TODO: turn on player if it was previously turned on ?
+        LOGGER.info(f"New player added: {player.player_provider}/{player.player_id}")
         return player
 
     async def remove_player(self, player_id):
         ''' handle a player remove '''
         self._players.pop(player_id, None)
         await self.mass.signal_event('player removed', player_id)
+        LOGGER.info(f"Player removed: {player_id}")
 
     async def trigger_update(self, player_id):
         ''' manually trigger update for a player '''
@@ -112,3 +114,18 @@ class PlayerManager():
         elif queue_opt == 'add':
             return await player.queue.append(queue_items)
     
+    async def get_gain_correct(self, player_id, item_id, provider_id, replaygain=False):
+        ''' get gain correction for given player / track combination '''
+        player = self._players[player_id]
+        if not player.settings['volume_normalisation']:
+            return 0
+        target_gain = int(player.settings['target_volume'])
+        fallback_gain = int(player.settings['fallback_gain_correct'])
+        track_loudness = await self.mass.db.get_track_loudness(item_id, provider_id)
+        if track_loudness == None:
+            gain_correct = fallback_gain
+        else:
+            gain_correct = target_gain - track_loudness
+        gain_correct = round(gain_correct,2)
+        LOGGER.info(f"Loudness level for track {provider_id}/{item_id} is {track_loudness} - calculated replayGain is {gain_correct}")
+        return gain_correct

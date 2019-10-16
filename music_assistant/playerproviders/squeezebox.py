@@ -65,6 +65,9 @@ class PySqueezeProvider(PlayerProvider):
             # keep reading bytes from the socket
             while True:
                 data = await reader.read(64)
+                if not data:
+                    # connection lost with client
+                    break
                 # handle incoming data from socket
                 buffer = buffer + data
                 if len(buffer) > 8:
@@ -87,8 +90,12 @@ class PySqueezeProvider(PlayerProvider):
         except Exception as exc:
             # connection lost ?
             LOGGER.warning(exc)
-        # disconnect
-        await self.mass.players.remove_player(player)
+        finally:
+            # disconnect and cleanup
+            if player:
+                if player._heartbeat_task:
+                    player._heartbeat_task.cancel()
+                await self.mass.players.remove_player(player)
 
 class PySqueezePlayer(Player):
     ''' Squeezebox socket client '''
@@ -98,7 +105,6 @@ class PySqueezePlayer(Player):
         self.supports_queue = True
         self.supports_gapless = True
         self.supports_crossfade = True
-        self.supports_replay_gain = False
         self._writer = writer
         self.buffer = b''
         self.name = "%s - %s" %(dev_type, player_id)
@@ -167,39 +173,32 @@ class PySqueezePlayer(Player):
             :attrib index: (int) index of the queue item that should start playing
         '''
         new_track = await self.queue.get_item(index)
-        self.flush()
-        self.__play_uri(new_track.uri)
+        if new_track:
+            self.__send_flush()
+            await self.__send_play(new_track.uri)
 
     async def cmd_queue_load(self, queue_items):
         ''' 
             load/overwrite given items in the player's own queue implementation
             :param queue_items: a list of QueueItems
         '''
-        self.flush()
-        self.__play_uri(queue_items[0].uri)
-
-    async def cmd_queue_insert(self, queue_items, offset=0):
-        ''' nothing to do, handled by built-in queue '''
-        pass
-
-    async def cmd_queue_append(self, queue_items):
-        ''' nothing to do, handled by built-in queue '''
-        pass
+        self.__send_flush()
+        await self.__send_play(queue_items[0].uri)
 
     async def cmd_play_uri(self, uri:str):
         '''
             [MUST OVERRIDE]
             tell player to start playing a single uri
         '''
-        self.flush()
-        self.__play_uri(uri)
+        self.__send_flush()
+        await self.__send_play(uri)
 
-    def flush(self):
+    def __send_flush(self):
         data = self.pack_stream(b"f", autostart=b"0", flags=0)
         self.send_frame(b"strm", data)
     
-    def __play_uri(self, uri):
-        # TODO: replaygain
+    async def __send_play(self, uri):
+        ''' play uri '''
         self.cur_uri = uri
         self.powered = True
         enable_crossfade = self.settings["crossfade_duration"] > 0
@@ -209,7 +208,9 @@ class PySqueezePlayer(Player):
         transDuration = self.settings["crossfade_duration"]
         formatbyte = b'f' # fixed to flac
         uri = '/stream' + uri.split('/stream')[1]
-        data = self.pack_stream(command, autostart=autostart, flags=0x00, formatbyte=formatbyte, transType=transType, transDuration=transDuration)
+        data = self.pack_stream(command, autostart=autostart, flags=0x00, 
+            formatbyte=formatbyte, transType=transType, 
+            transDuration=transDuration)
         headers = "Connection: close\r\nAccept: */*\r\nHost: %s:%s\r\n" %(self.mass.web.local_ip, self.mass.web.http_port)
         request = "GET %s HTTP/1.0\r\n%s\r\n" % (uri, headers)
         data = data + request.encode("utf-8")
@@ -218,7 +219,8 @@ class PySqueezePlayer(Player):
 
     def __delete__(self, instance):
         ''' make sure the heartbeat task is deleted '''
-        self._heartbeat_task.cancel()
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
 
     @run_periodic(5)
     async def __send_heartbeat(self):
@@ -290,6 +292,7 @@ class PySqueezePlayer(Player):
         LOGGER.debug("ACK aude - Received player power: %s" % powered)
 
     def stat_audg(self, data):
+        # TODO: process volume level
         LOGGER.info("Received volume_level from player %s" % data)
         self.volume_level = self._volume.volume
 
@@ -301,12 +304,14 @@ class PySqueezePlayer(Player):
         LOGGER.debug("Status Message: Connect")
 
     def stat_STMd(self, data):
-        LOGGER.info("Decoder Ready for next track")
+        LOGGER.debug("Decoder Ready for next track")
         next_item = self.queue.next_item
-        self.__play_uri(next_item.uri)
+        if next_item:
+            self.mass.event_loop.create_task(
+                self.__send_play(next_item.uri))
 
     def stat_STMe(self, data):
-        LOGGER.idebugnfo("Connection established")
+        LOGGER.debug("Connection established")
 
     def stat_STMf(self, data):
         LOGGER.debug("Status Message: Connection closed")
@@ -343,7 +348,7 @@ class PySqueezePlayer(Player):
             jiffies, output_buffer_size, output_buffer_fullness, 
             elapsed_seconds, voltage, cur_time_milliseconds, 
             server_timestamp, error_code) = struct.unpack("!BBBLLLLHLLLLHLLH", data)
-        if elapsed_seconds != self.cur_time:
+        if self.state == PlayerState.Playing and elapsed_seconds != self.cur_time:
             self.cur_time = elapsed_seconds
         self._cur_time_milliseconds = cur_time_milliseconds
 
@@ -366,7 +371,7 @@ class PySqueezePlayer(Player):
         LOGGER.debug("META received")
 
     def process_DSCO(self, data):
-        LOGGER.info("Data Stream Disconnected")
+        LOGGER.debug("Data Stream Disconnected")
 
     def process_DBUG(self, data):
         LOGGER.debug("DBUG received")
@@ -601,6 +606,9 @@ class DiscoveryProtocol():
         group = socket.inet_aton('239.255.255.250')
         mreq = struct.pack('4sL', group, socket.INADDR_ANY)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+
+    def connection_lost(self, *args, **kwargs):
+        LOGGER.warning("Connection lost to discovery")
     
     def build_TLV_response(self, requestdata):
         responsedata = OrderedDict()

@@ -18,6 +18,7 @@ const messages = {
         remove_library: "Remove from library",
         add_playlist: "Add to playlist...",
         remove_playlist: "Remove from playlist",
+        no_player: "No player selected",
         // settings strings
         conf: {
             enabled: "Enabled",
@@ -107,6 +108,7 @@ const messages = {
         remove_library: "Verwijder uit bibliotheek",
         add_playlist: "Aan playlist toevoegen...",
         remove_playlist: "Verwijder uit playlist",
+        no_player: "Geen speler geselecteerd",
         // settings strings
         conf: {
             enabled: "Ingeschakeld",
@@ -161,7 +163,7 @@ const messages = {
             audio_cache_folder: "Map om te gebruiken voor cache bestanden",
             audio_cache_max_size_gb: "Maximale grootte van de cache map in GB.",
             gapless_enabled: "Schakel ondersteuning voor gapless in.",
-            crossfade_duration: "Crossfade in (seconden, 0 om uit te schakelen)."
+            crossfade_duration: "Crossfade (in seconden, 0 om uit te schakelen)."
         },
         // player strings
         players: "Spelers",

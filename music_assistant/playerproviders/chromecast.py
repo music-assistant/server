@@ -248,12 +248,12 @@ class ChromecastProvider(PlayerProvider):
         if self._discovery_running:
             return
         self._discovery_running = True
-        LOGGER.info("Chromecast discovery started...")
+        LOGGER.debug("Chromecast discovery started...")
         # remove any disconnected players...
         removed_players = []
         for player in self.players:
             if not player.cc.socket_client or not player.cc.socket_client.is_connected:
-                LOGGER.info("%s is disconnected" % player.name)
+                LOGGER.warning("%s is disconnected" % player.name)
                 # cleanup cast object
                 del player.cc
                 removed_players.append(player.player_id)
@@ -271,13 +271,12 @@ class ChromecastProvider(PlayerProvider):
                     self.get_player(player_id), 
                     self.mass.event_loop).result()
             if not player:
-                LOGGER.info("discovered chromecast: %s - %s:%s" % (friendly_name, ip_address, port))
                 asyncio.run_coroutine_threadsafe(
                         self.__chromecast_discovered(player_id, discovery_info), self.mass.event_loop)
         listener, browser = start_discovery(discovered_callback)
         await asyncio.sleep(15) # run discovery for 15 seconds
         stop_discovery(browser)
-        LOGGER.info("Chromecast discovery completed...")
+        LOGGER.debug("Chromecast discovery completed...")
         self._discovery_running = False
     
     async def __chromecast_discovered(self, player_id, discovery_info):
@@ -301,7 +300,6 @@ class ChromecastProvider(PlayerProvider):
         self.supports_queue = True
         self.supports_gapless = False
         self.supports_crossfade = False
-        self.supports_replay_gain = False
         if chromecast.cast_type == 'group':
             player.is_group = True
             mz = MultizoneController(chromecast.uuid)

@@ -64,6 +64,8 @@ class HomeAssistant():
 
     async def setup(self):
         ''' perform async setup '''
+        if not self.enabled:
+            return
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.mass.event_loop.create_task(self.__hass_websocket())

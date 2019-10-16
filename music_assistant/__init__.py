@@ -61,7 +61,7 @@ class MusicAssistant():
     def handle_exception(self, loop, context):
         ''' global exception handler '''
         loop.default_exception_handler(context)
-        LOGGER.exception(f"Caught exception: {context}")
+        #LOGGER.exception(f"Caught exception: {context}")
 
     async def signal_event(self, msg, msg_details=None):
         ''' signal (systemwide) event '''
