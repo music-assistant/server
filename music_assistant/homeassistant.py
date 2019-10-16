@@ -59,7 +59,8 @@ class HomeAssistant():
         else:
             self._use_ssl = False
             self._host = url.replace('http://','').split('/')[0]
-        LOGGER.info('Homeassistant integration is enabled')
+        if self.enabled:
+            LOGGER.info('Homeassistant integration is enabled')
 
     async def setup(self):
         ''' perform async setup '''

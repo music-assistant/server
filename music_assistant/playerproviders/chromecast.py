@@ -23,7 +23,7 @@ PROV_NAME = 'Chromecast'
 PROV_CLASS = 'ChromecastProvider'
 
 CONFIG_ENTRIES = [
-    (CONF_ENABLED, False, CONF_ENABLED),
+    (CONF_ENABLED, True, CONF_ENABLED),
     ]
 
 PLAYER_CONFIG_ENTRIES = [

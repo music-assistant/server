@@ -47,24 +47,24 @@ var Config = Vue.component('Config', {
                               </template>
                               <div v-for="conf_item_key in conf.player_settings[key].__desc__" v-if="conf.player_settings[key].enabled">
                                   <v-list-tile>
-                                        <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])"></v-switch>
-                                        <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box type="password"></v-text-field>
-                                        <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" 
+                                        <v-switch v-if="typeof(conf_item_key[1]) == 'boolean'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" @change="confChanged('player_settings', key, conf.player_settings[key])"></v-switch>
+                                        <v-text-field v-else-if="conf_item_key[1] == '<password>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box type="password" @change="confChanged('player_settings', key, conf.player_settings[key])"></v-text-field>
+                                        <v-select v-else-if="conf_item_key[1] == '<player>'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" @change="confChanged('player_settings', key, conf.player_settings[key])"
                                           :items="playersLst"
                                           item-text="name"
                                           item-value="id" box>
                                         </v-select>
-                                        <v-select v-else-if="conf_item_key[0] == 'max_sample_rate'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" :items="sample_rates" box></v-select>
-                                        <v-slider v-else-if="conf_item_key[0] == 'crossfade_duration'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" min=0 max=10 box thumb-label></v-slider>
-                                        <v-text-field v-else v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" box></v-text-field>
+                                        <v-select v-else-if="conf_item_key[0] == 'max_sample_rate'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" :items="sample_rates" @change="confChanged('player_settings', key, conf.player_settings[key])" box></v-select>
+                                        <v-slider v-else-if="conf_item_key[0] == 'crossfade_duration'" v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" @change="confChanged('player_settings', key, conf.player_settings[key])" min=0 max=10 box thumb-label></v-slider>
+                                        <v-text-field v-else v-model="conf.player_settings[key][conf_item_key[0]]" :label="$t('conf.'+conf_item_key[2])" @change="confChanged('player_settings', key, conf.player_settings[key])" box></v-text-field>
                                   </v-list-tile>
                                   <v-list-tile v-if="!conf.player_settings[key].enabled">
-                                        <v-switch v-model="conf.player_settings[key].enabled" :label="$t('conf.'+'enabled')"></v-switch>
+                                        <v-switch v-model="conf.player_settings[key].enabled" :label="$t('conf.'+'enabled')" @change="confChanged('player_settings', key, conf.player_settings[key])"></v-switch>
                                   </v-list-tile>
                               </div>
                               <div v-if="!conf.player_settings[key].enabled">
                                   <v-list-tile>
-                                      <v-switch v-model="conf.player_settings[key].enabled" :label="$t('conf.'+'enabled')"></v-switch>
+                                      <v-switch v-model="conf.player_settings[key].enabled" :label="$t('conf.'+'enabled')" @change="confChanged('player_settings', key, conf.player_settings[key])"></v-switch>
                                   </v-list-tile>
                               </div>
                                 <v-divider></v-divider>
@@ -125,16 +125,6 @@ var Config = Vue.component('Config', {
           console.log("error", error);
         });
     },
-    saveConfig () {
-      axios
-        .post('/api/config', this.conf)
-        .then(result => {
-          console.log(result);
-        })
-        .catch(error => {
-          console.log("error", error);
-        });
-    },
     confChanged(key, subkey, newvalue) {
       console.log(key + "/" + subkey + " changed!");
       console.log(newvalue);
@@ -142,11 +132,12 @@ var Config = Vue.component('Config', {
         .post('/api/config/'+key+'/'+subkey, newvalue)
         .then(result => {
           console.log(result);
+          if (result.data.restart_required)
+            this.$toasted.show(this.$t('conf.conf_saved'));
         })
         .catch(error => {
           console.log("error", error);
         });
-
     },
     getPlayers () {
       const api_url = '/api/players';
