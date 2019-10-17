@@ -296,29 +296,29 @@ class HTTPStreamer():
             yield (True, b'')
             return
         # get sox effects and resample options
-        sox_effects = await self.__get_player_sox_options(player, queue_item)
+        sox_options = await self.__get_player_sox_options(player, queue_item)
         outputfmt = 'flac -C 0'
         if resample:
             outputfmt = 'raw -b 32 -c 2 -e signed-integer'
-            sox_effects += ' rate -v %s' % resample
+            sox_options += ' rate -v %s' % resample
+        streamdetails['sox_options'] = sox_options
         # determine how to proceed based on input file ype
         if streamdetails["content_type"] == 'aac':
             # support for AAC created with ffmpeg in between
-            args = 'ffmpeg -v quiet -i "%s" -f flac - | sox -t flac - -t %s - %s' % (streamdetails["path"], outputfmt, sox_effects)
+            args = 'ffmpeg -v quiet -i "%s" -f flac - | sox -t flac - -t %s - %s' % (streamdetails["path"], outputfmt, sox_options)
         elif streamdetails['type'] == 'url':
             args = 'sox -t %s "%s" -t %s - %s' % (streamdetails["content_type"], 
-                    streamdetails["path"], outputfmt, sox_effects)
+                    streamdetails["path"], outputfmt, sox_options)
         elif streamdetails['type'] == 'executable':
             args = '%s | sox -t %s - -t %s - %s' % (streamdetails["path"], 
-                    streamdetails["content_type"], outputfmt, sox_effects)
+                    streamdetails["content_type"], outputfmt, sox_options)
         # start sox process
         # we use normal subprocess instead of asyncio because of bug with executor
         # this should be fixed with python 3.8
         process = subprocess.Popen(args, shell=True, stdout=subprocess.PIPE)
-        # fire event that streaming has started for this track (needed by some streaming providers)
+        # fire event that streaming has started for this track
         asyncio.run_coroutine_threadsafe(
-                self.mass.signal_event(EVENT_STREAM_STARTED, 
-                streamdetails), self.mass.event_loop)
+                self.mass.signal_event(EVENT_STREAM_STARTED, queue_item), self.mass.event_loop)
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
         bytes_sent = 0
@@ -343,44 +343,37 @@ class HTTPStreamer():
             else:
                 buf += data
         del buf
-        # fire event that streaming has ended for this track (needed by some streaming providers)
-        if resample:
-            bytes_per_second = resample * (32/8) * 2
-            bytes_per_second = (resample * 32 * 2) / 8
-            seconds_streamed = int(bytes_sent/bytes_per_second)
-        else:
-            seconds_streamed = queue_item.duration
-        streamdetails["seconds"] = seconds_streamed
+        # fire event that streaming has ended
         asyncio.run_coroutine_threadsafe(
-                self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails), self.mass.event_loop)
+                self.mass.signal_event(EVENT_STREAM_ENDED, queue_item), self.mass.event_loop)
         # send task to background to analyse the audio
         self.mass.event_loop.call_soon_threadsafe(
                 asyncio.ensure_future, self.__analyze_audio(queue_item))
 
     async def __get_player_sox_options(self, player, queue_item):
         ''' get player specific sox effect options '''
-        sox_effects = []
+        sox_options = []
         # volume normalisation
         gain_correct = asyncio.run_coroutine_threadsafe(
                 self.mass.players.get_gain_correct(
                     player.player_id, queue_item.item_id, queue_item.provider), 
                 self.mass.event_loop).result()
         if gain_correct != 0:
-            sox_effects.append('vol %s dB ' % gain_correct)
+            sox_options.append('vol %s dB ' % gain_correct)
         # downsample if needed
         if player.settings['max_sample_rate']:
             max_sample_rate = try_parse_int(player.settings['max_sample_rate'])
             if max_sample_rate:
                 quality = queue_item.quality
                 if quality > TrackQuality.FLAC_LOSSLESS_HI_RES_3 and max_sample_rate == 192000:
-                    sox_effects.append('rate -v 192000')
+                    sox_options.append('rate -v 192000')
                 elif quality > TrackQuality.FLAC_LOSSLESS_HI_RES_2 and max_sample_rate == 96000:
-                    sox_effects.append('rate -v 96000')
+                    sox_options.append('rate -v 96000')
                 elif quality > TrackQuality.FLAC_LOSSLESS_HI_RES_1 and max_sample_rate == 48000:
-                    sox_effects.append('rate -v 48000')
-        if player.settings.get('sox_effects'):
-            sox_effects.append(player.settings['sox_effects'])
-        return " ".join(sox_effects)
+                    sox_options.append('rate -v 48000')
+        if player.settings.get('sox_options'):
+            sox_options.append(player.settings['sox_options'])
+        return " ".join(sox_options)
         
     async def __analyze_audio(self, queue_item):
         ''' analyze track audio, for now we only calculate EBU R128 loudness '''
@@ -422,7 +415,6 @@ class HTTPStreamer():
         args = 'sox --ignore-length -t %s - -t %s %s fade t %s' % (pcm_args, pcm_args, fadeinfile.name, fade_length)
         process = subprocess.Popen(args, shell=True, stdin=subprocess.PIPE)
         process.communicate(fade_in_part)
-        fadeinfile.close()
         # create fade-out part
         fadeoutfile = MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
         args = 'sox --ignore-length -t %s - -t %s %s reverse fade t %s reverse' % (pcm_args, pcm_args, fadeoutfile.name, fade_length)

@@ -34,12 +34,15 @@ class ChromecastPlayer(Player):
 
     async def try_chromecast_command(self, cmd:types.MethodType, *args, **kwargs):
         ''' guard for disconnected socket client '''
-        try:
-            cmd(*args, **kwargs)
-        except (pychromecast.error.NotConnected, AttributeError):
-            LOGGER.warning("Chromecast %s is not connected!" % self.name)
-        except Exception as exc:
-            LOGGER.warning(exc)
+        def _try_chromecast_command(_cmd:types.MethodType, *_args, **_kwargs):
+            try:
+                _cmd(*_args, **_kwargs)
+            except (pychromecast.error.NotConnected, AttributeError):
+                LOGGER.warning("Chromecast %s is not connected!" % self.name)
+            except Exception as exc:
+                LOGGER.warning(exc)
+        return self.mass.event_loop.call_soon_threadsafe(
+            _try_chromecast_command, cmd, *args, **kwargs)
     
     async def cmd_stop(self):
         ''' send stop command to player '''
@@ -175,22 +178,31 @@ class ChromecastPlayer(Player):
         else:
             send_queue()
 
+    def __update_group_members(self):
+        ''' update group members '''
+        if not self.mz:
+            return
+        try:
+            self.mz.update_members()
+        except Exception as exc:
+            LOGGER.exception(exc)
+
     async def handle_player_state(self, caststatus=None, 
             mediastatus=None, connection_status=None):
         ''' handle a player state message from the socket '''
         # handle connection status
         if connection_status:
             if self.mz and connection_status.status == CONNECTION_STATUS_CONNECTED:
-                return self.mz.update_members()
+                self.mass.event_loop.call_soon_threadsafe(self.__update_group_members)
             elif connection_status.status == CONNECTION_STATUS_DISCONNECTED:
                 # schedule a new scan which will handle group parent changes
-                return self.mass.event_loop.create_task(
+                self.mass.event_loop.create_task(
                     self.mass.players.providers[self.player_provider].start_chromecast_discovery())
         # handle generic cast status
         if caststatus:
-            self.name = self.cc.name
             self.muted = caststatus.volume_muted
             self.volume_level = caststatus.volume_level * 100
+        self.name = self.cc.name
         # handle media status
         if mediastatus:
             if mediastatus.player_state in ['PLAYING', 'BUFFERING']:
@@ -211,8 +223,6 @@ class ChromecastPlayer(Player):
                 self.poll_task = False
             if not self.poll_task and self.state == PlayerState.Playing:
                 self.mass.event_loop.create_task(poll_task())
-            # we are called from socket client thread so do this threadsafe!
-            #asyncio.run_coroutine_threadsafe(self.update(), self.mass.event_loop)
 
 class ChromecastProvider(PlayerProvider):
     ''' support for ChromeCast Audio '''
@@ -236,7 +246,7 @@ class ChromecastProvider(PlayerProvider):
             player = await self.get_player(added_player)
             group_player = await self.get_player(str(mz._uuid))
             if player and group_player:
-                player.group_parent = str(mz._uuid)
+                player.group_parent = group_player.player_id
                 LOGGER.debug("player %s added to group %s" %(player.name, group_player.name))
         elif removed_player:
             player = await self.get_player(added_player)
@@ -248,6 +258,7 @@ class ChromecastProvider(PlayerProvider):
             for member in mz.members:
                 player = await self.get_player(member)
                 if player:
+                    LOGGER.debug("player %s added to group %s" %(player.name, str(mz._uuid)))
                     player.group_parent = str(mz._uuid)
     
     @run_periodic(1800)

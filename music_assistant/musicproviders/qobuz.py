@@ -17,7 +17,7 @@ from ..app_vars import get_app_var
 from ..models import MusicProvider, MediaType, TrackQuality, \
         AlbumType, Artist, Album, Track, Playlist
 from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, \
-        CONF_TYPE_PASSWORD, EVENT_STREAM_STARTED, EVENT_STREAM_ENDED
+        CONF_TYPE_PASSWORD, EVENT_PLAYBACK_STARTED, EVENT_PLAYBACK_STOPPED
 
 PROV_ID = 'qobuz'
 PROV_NAME = 'Qobuz'
@@ -50,8 +50,8 @@ class QobuzProvider(MusicProvider):
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=2, period=1)
-        await self.mass.add_event_listener(self.mass_event, EVENT_STREAM_STARTED)
-        await self.mass.add_event_listener(self.mass_event, EVENT_STREAM_ENDED)
+        await self.mass.add_event_listener(self.mass_event, EVENT_PLAYBACK_STARTED)
+        await self.mass.add_event_listener(self.mass_event, EVENT_PLAYBACK_STOPPED)
     
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''
@@ -278,30 +278,28 @@ class QobuzProvider(MusicProvider):
     async def mass_event(self, msg, msg_details):
         ''' received event from mass '''
         # TODO: need to figure out if the streamed track is purchased
-        if msg == "streaming_started" and msg_details['provider'] == self.prov_id:
+        if msg == EVENT_PLAYBACK_STARTED and msg_details.provider == self.prov_id:
             # report streaming started to qobuz
-            LOGGER.debug("streaming_started %s" % msg_details["track_id"])
             device_id = self.__user_auth_info["user"]["device"]["id"]
             credential_id = self.__user_auth_info["user"]["credential"]["id"]
             user_id = self.__user_auth_info["user"]["id"]
-            format_id = msg_details["details"]["format_id"]
+            format_id = msg_details.streamdetails["details"]["format_id"]
             timestamp = int(time.time())
             events=[{"online": True, "sample": False, "intent": "stream", "device_id": device_id, 
-                "track_id": msg_details["track_id"], "purchase": False, "date": timestamp,
+                "track_id": msg_details.item_id, "purchase": False, "date": timestamp,
                 "credential_id": credential_id, "user_id": user_id, "local": False, "format_id":format_id}]
             await self.__post_data("track/reportStreamingStart", data=events)
-        elif msg == "streaming_ended" and msg_details['provider'] == self.prov_id:
+        elif msg == EVENT_PLAYBACK_STOPPED and msg_details.provider == self.prov_id:
             # report streaming ended to qobuz
-            LOGGER.debug("streaming_ended %s - seconds played: %s" %(msg_details["track_id"], msg_details["seconds"]) )
             device_id = self.__user_auth_info["user"]["device"]["id"]
             credential_id = self.__user_auth_info["user"]["credential"]["id"]
             user_id = self.__user_auth_info["user"]["id"]
-            format_id = msg_details["details"]["format_id"]
+            format_id = msg_details.streamdetails["details"]["format_id"]
             timestamp = int(time.time())
             events=[{"online": True, "sample": False, "intent": "stream", "device_id": device_id, 
-                "track_id": msg_details["track_id"], "purchase": False, "date": timestamp, "duration": msg_details["seconds"],
+                "track_id": msg_details.item_id, "purchase": False, "date": timestamp, "duration": int(msg_details.seconds_played),
                 "credential_id": credential_id, "user_id": user_id, "local": False, "format_id":format_id}]
-            await self.__post_data("track/reportStreamingStart", data=events)
+            await self.__post_data("track/reportStreamingEnd", data=events)
     
     async def __parse_artist(self, artist_obj):
         ''' parse qobuz artist object to generic layout '''

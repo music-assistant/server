@@ -255,6 +255,8 @@ class Web():
                         result = await player_cmd(cmd_args)
                     elif player_cmd:
                         result = await player_cmd()
+        except (Exception, AssertionError) as exc:
+            LOGGER.warning("Websocket disconnected - %s" % str(exc))
         finally:
             await self.mass.remove_event_listener(cb_id)
         LOGGER.debug('websocket connection closed')
