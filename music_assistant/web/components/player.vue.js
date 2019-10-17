@@ -267,7 +267,7 @@ Vue.component("player", {
             Vue.set(this.players, msg.message_details.player_id, msg.message_details);
         }
         else if (msg.message == 'player removed') {
-          this.players[msg.message_details.player_id].enabled = false;
+          Vue.delete(this.players, msg.message_details.player_id)
         }
         else if (msg.message == 'players') {
           for (var item of msg.message_details) {

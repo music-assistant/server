@@ -73,18 +73,15 @@ class Player():
         item = queue_items[0]
         return await self.cmd_play_uri(item.uri)
 
-    async def cmd_queue_insert(self, queue_items, offset=0):
+    async def cmd_queue_insert(self, queue_items, insert_at_index):
         ''' 
             [OVERRIDE IF SUPPORTED]
             insert new items at position X into existing queue
             if offset 0 or None, will start playing newly added item(s)
                 :param queue_items: a list of QueueItems
-                :param offset: offset from current queue position to insert new items
+                :param insert_at_index: queue position to insert new items
         '''
-        if offset == 0:
-            item = await self.queue.get_item(0)
-            if item:
-                return await self.cmd_play_uri(item.uri)
+        raise NotImplementedError
 
     async def cmd_queue_append(self, queue_items):
         ''' 
@@ -92,7 +89,7 @@ class Player():
             append new items at the end of the queue
             :param queue_items: a list of QueueItems
         '''
-        pass
+        raise NotImplementedError
 
     async def cmd_play_uri(self, uri:str):
         '''
@@ -298,7 +295,7 @@ class Player():
         ''' [PROTECTED] set muted property of this player '''
         if group_parent != self._group_parent:
             self._group_parent = group_parent
-            self.mass.create_task(self.update())
+            self.mass.event_loop.create_task(self.update())
 
     @property
     def group_childs(self):

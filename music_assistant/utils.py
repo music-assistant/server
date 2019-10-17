@@ -34,6 +34,11 @@ async def try_supported(task):
         pass
     return ret
 
+def filename_from_string(string):
+    ''' create filename from unsafe string '''
+    keepcharacters = (' ','.','_')
+    return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
+
 def run_background_task(executor, corofn, *args):
     ''' run non-async task in background '''
     return asyncio.get_event_loop().run_in_executor(executor, corofn, *args)

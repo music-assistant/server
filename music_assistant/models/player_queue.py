@@ -6,8 +6,10 @@ from typing import List
 import operator
 import random
 import uuid
+import os
+import pickle
 
-from ..utils import LOGGER
+from ..utils import LOGGER, json, filename_from_string
 from ..constants import CONF_ENABLED
 from .media_types import Track, TrackQuality
 from .playerstate import PlayerState
@@ -40,7 +42,12 @@ class PlayerQueue():
         self._repeat_enabled = False
         self._cur_index = 0
         self._cur_item_time = 0
-        self._last_index = 0 
+        self._last_cur_item_time = 0
+        self._last_index = 0
+        self._last_player_state = PlayerState.Stopped
+        self._save_busy_ = False
+        # load previous queue settings from disk
+        self.__load_from_file()
 
     @property
     def shuffle_enabled(self):
@@ -202,7 +209,7 @@ class PlayerQueue():
         ''' 
             insert new items at offset x from current position
             keeps remaining items in queue
-            if offset 0 or None, will start playing newly added item(s)
+            if offset 0, will start playing newly added item(s)
             :param queue_items: a list of QueueItem
             :param offset: offset from current queue position
         '''
@@ -216,7 +223,12 @@ class PlayerQueue():
             if offset == 0:
                 return await self.play_index(insert_at_index)
         else:
-            return await self._player.cmd_queue_insert(queue_items, offset)
+            try:
+                await self._player.cmd_queue_insert(queue_items, insert_at_index)
+            except NotImplementedError:
+                # not supported by player, use load queue instead
+                LOGGER.debug("cmd_queue_insert not supported by player, fallback to cmd_queue_load ")
+                await self._player.cmd_queue_load(self._items[insert_at_index:])
 
     async def append(self, queue_items:List[QueueItem]):
         ''' 
@@ -226,13 +238,19 @@ class PlayerQueue():
             queue_items = await self.__shuffle_items(queue_items)
         self._items = self._items + queue_items
         if self._player.supports_queue:
-            return await self._player.cmd_queue_append(queue_items)
+            try:
+                return await self._player.cmd_queue_append(queue_items)
+            except NotImplementedError:
+                # not supported by player, use load queue instead
+                LOGGER.debug("cmd_queue_append not supported by player, fallback to cmd_queue_load ")
+                await self._player.cmd_queue_load(self._items[self.cur_index:])
 
     async def update(self):
         ''' update queue details, called when player updates '''
+        # determine queue index and cur_time for queue stream
         if self.use_queue_stream and self._player.state == PlayerState.Playing:
-            # determine queue index and cur_time for queue stream
             # player is playing a constant stream of the queue so we need to do this the hard way
+            cur_index = self._cur_index
             cur_time_queue = self._player._cur_time
             total_time = 0
             track_time = 0
@@ -247,24 +265,82 @@ class PlayerQueue():
                     else:
                         track_time = cur_time_queue - total_time
                         break
-                self._cur_index = queue_index
+                cur_index = queue_index
                 self._cur_item_time = track_time
+        # normal queue based approach
         elif not self.use_queue_stream:
-            # normal queue based approach
-            cur_index = 0
+            if 'queue_item_id' in self._player.cur_uri:
+                queue_item_id = self._player.cur_uri.split('queue_item_id=')[1]
             for index, queue_item in enumerate(self.items):
                 if queue_item.uri == self._player.cur_uri:
                     cur_index = index
                     break
-            self._cur_index = cur_index
+        # process new index
+        await self.__update_index(cur_index)
 
     async def start_queue_stream(self):
         ''' called by the queue streamer when it starts playing the queue stream '''
         self._last_index = self.cur_index
         return await self.get_item(self.cur_index)
 
+    async def __update_index(self, new_index):
+        ''' compare the queue index to determine if playback changed '''
+        if new_index != self._last_index:
+            LOGGER.info("new track loaded in queue")
+            self._cur_index = new_index
+        elif (self._last_player_state == PlayerState.Stopped and 
+                self._player.state == PlayerState.Playing and
+                self.cur_item):
+            LOGGER.info("Player %s started playing %s" % self.cur_item.name)
+        elif (self._last_player_state == PlayerState.Playing and 
+                self._player.state == PlayerState.Stopped and
+                self.cur_item):
+            LOGGER.info("Player %s stopped playing %s" % self.cur_item.name)
+        # always update timestamp
+        self._last_cur_item_time = self.cur_item_time
+
     async def __shuffle_items(self, queue_items):
         ''' shuffle a list of tracks '''
         # for now we use default python random function
         # can be extended with some more magic last last_played and stuff
         return random.sample(queue_items, len(queue_items))
+
+    def __load_from_file(self):
+        ''' try to load the saved queue for this player from file '''
+        player_safe_str = filename_from_string(self._player.player_id)
+        settings_dir = os.path.join(self.mass.datapath, 'queue')
+        player_file = os.path.join(settings_dir, player_safe_str)
+        if os.path.isfile(player_file):
+            try:
+                with open(player_file) as f:
+                    data = pickle.load(f)
+                    self._shuffle_enabled = data["shuffle_enabled"]
+                    self._repeat_enabled = data["repeat_enabled"]
+                    self._items = data["items"]
+                    self._cur_index = data["cur_item"]
+                    self._last_index = data["last_index"]
+            except Exception as exc:
+                LOGGER.debug("Could not load queue from disk - %s" % str(exc))
+
+    def __save_to_file(self):
+        ''' save current queue settings to file '''
+        if self._save_busy_:
+            return
+        self._save_busy_ = True
+        player_safe_str = filename_from_string(self._player.player_id)
+        settings_dir = os.path.join(self.mass.datapath, 'queue')
+        player_file = os.path.join(settings_dir, player_safe_str)
+        data = {
+            "shuffle_enabled": self._shuffle_enabled,
+            "repeat_enabled": self._repeat_enabled,
+            "items": self._items,
+            "cur_item": self._cur_index,
+            "last_index": self._last_index
+        }
+        if not os.path.isdir(settings_dir):
+            os.mkdir(settings_dir)
+        with open(player_file, 'w+') as f:
+            pickle.dump(data, f)
+        self._save_busy_ = False
+
+

@@ -50,6 +50,7 @@ class Web():
         app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.get('/ws', self.websocket_handler)])
         app.add_routes([web.get('/stream/{player_id}', self.mass.http_streamer.stream)])
+        app.add_routes([web.get('/stream/web/{player_id}', self.mass.http_streamer.webplayer)])
         app.add_routes([web.get('/stream/{player_id}/{queue_item_id}', self.mass.http_streamer.stream)])
         app.add_routes([web.get('/api/search', self.search)])
         app.add_routes([web.get('/api/config', self.get_config)])

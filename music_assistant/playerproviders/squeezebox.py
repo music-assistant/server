@@ -89,7 +89,7 @@ class PySqueezeProvider(PlayerProvider):
                     
         except Exception as exc:
             # connection lost ?
-            LOGGER.warning(exc)
+            LOGGER.debug(exc)
         finally:
             # disconnect and cleanup
             if player:
@@ -141,18 +141,18 @@ class PySqueezePlayer(Player):
         self.send_frame(b"strm", data)
     
     async def cmd_power_on(self):
-        ''' [MUST OVERRIDE] send power ON command to player '''
+        ''' send power ON command to player '''
         self.send_frame(b"aude", struct.pack("2B", 1, 1))
         self.powered = True
 
     async def cmd_power_off(self):
-        ''' [MUST OVERRIDE] send power TOGGLE command to player '''
+        ''' send power TOGGLE command to player '''
         await self.cmd_stop()
         self.send_frame(b"aude", struct.pack("2B", 0, 0))
         self.powered = False
 
     async def cmd_volume_set(self, volume_level):
-        ''' [MUST OVERRIDE] send new volume level command to player '''
+        ''' send new volume level command to player '''
         self._volume.volume = volume_level
         og = self._volume.old_gain()
         ng = self._volume.new_gain()
@@ -160,7 +160,7 @@ class PySqueezePlayer(Player):
         self.volume_level = volume_level
     
     async def cmd_volume_mute(self, is_muted=False):
-        ''' [MUST OVERRIDE] send mute command to player '''
+        ''' send mute command to player '''
         if is_muted:
             self.send_frame(b"aude", struct.pack("2B", 0, 0))
         else:
@@ -170,7 +170,7 @@ class PySqueezePlayer(Player):
     async def cmd_queue_play_index(self, index:int):
         '''
             play item at index X on player's queue
-            :attrib index: (int) index of the queue item that should start playing
+            :param index: (int) index of the queue item that should start playing
         '''
         new_track = await self.queue.get_item(index)
         if new_track:
@@ -184,6 +184,15 @@ class PySqueezePlayer(Player):
         '''
         self.__send_flush()
         await self.__send_play(queue_items[0].uri)
+
+    async def cmd_queue_insert(self, queue_items, insert_at_index):
+        # queue handled by built-in queue controller
+        # we only check the start index
+        if insert_at_index == 0:
+            return await self.cmd_queue_play_index(insert_at_index)
+
+    async def cmd_queue_append(self, queue_items):
+        pass # automagically handled by built-in queue controller
 
     async def cmd_play_uri(self, uri:str):
         '''
