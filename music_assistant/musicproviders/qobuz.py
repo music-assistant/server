@@ -558,4 +558,5 @@ class QobuzProvider(MusicProvider):
                 LOGGER.error(exc)
                 LOGGER.debug(url)
                 LOGGER.debug(params)
-                LOGGER.debug(result)
+                result = response
+                LOGGER.debug(await response.text())
