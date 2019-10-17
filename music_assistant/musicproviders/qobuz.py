@@ -277,6 +277,8 @@ class QobuzProvider(MusicProvider):
 
     async def mass_event(self, msg, msg_details):
         ''' received event from mass '''
+        if not self.__user_auth_info:
+            return
         # TODO: need to figure out if the streamed track is purchased
         if msg == EVENT_PLAYBACK_STARTED and msg_details.provider == self.prov_id:
             # report streaming started to qobuz
@@ -549,10 +551,11 @@ class QobuzProvider(MusicProvider):
         params["app_id"] = get_app_var(0)
         params["user_auth_token"] = await self.__auth_token()
         async with self.http_session.post(url, params=params, json=data) as response:
-            result = await response.json()
-            if not result or 'error' in result:
-                LOGGER.error(url)
+            try:
+                result = await response.json()
+                return result
+            except Exception as exc:
+                LOGGER.error(exc)
+                LOGGER.debug(url)
                 LOGGER.debug(params)
                 LOGGER.debug(result)
-                result = None
-            return result

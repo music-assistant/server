@@ -178,23 +178,12 @@ class ChromecastPlayer(Player):
         else:
             send_queue()
 
-    def __update_group_members(self):
-        ''' update group members '''
-        if not self.mz:
-            return
-        try:
-            self.mz.update_members()
-        except Exception as exc:
-            LOGGER.exception(exc)
-
     async def handle_player_state(self, caststatus=None, 
             mediastatus=None, connection_status=None):
         ''' handle a player state message from the socket '''
         # handle connection status
         if connection_status:
-            if self.mz and connection_status.status == CONNECTION_STATUS_CONNECTED:
-                self.mass.event_loop.call_soon_threadsafe(self.__update_group_members)
-            elif connection_status.status == CONNECTION_STATUS_DISCONNECTED:
+            if connection_status.status == CONNECTION_STATUS_DISCONNECTED:
                 # schedule a new scan which will handle group parent changes
                 self.mass.event_loop.create_task(
                     self.mass.players.providers[self.player_provider].start_chromecast_discovery())
@@ -325,7 +314,8 @@ class ChromecastProvider(PlayerProvider):
         if chromecast.cast_type == 'group':
             player.is_group = True
             mz = MultizoneController(chromecast.uuid)
-            mz.register_listener(MZListener(mz, self.__handle_group_members_update, self.mass.event_loop))
+            mz.register_listener(MZListener(mz, 
+                    self.__handle_group_members_update, self.mass.event_loop))
             chromecast.register_handler(mz)
             player.mz = mz
         chromecast.register_connection_listener(status_listener)
@@ -333,6 +323,8 @@ class ChromecastProvider(PlayerProvider):
         chromecast.media_controller.register_status_listener(status_listener)
         player.cc.wait()
         await self.add_player(player)
+        if player.is_group:
+            player.mz.update_members()
 
 
 def chunks(l, n):
