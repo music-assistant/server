@@ -247,10 +247,10 @@ class PlayerQueue():
 
     async def update(self):
         ''' update queue details, called when player updates '''
+        cur_index = self._cur_index
         # determine queue index and cur_time for queue stream
         if self.use_queue_stream and self._player.state == PlayerState.Playing:
             # player is playing a constant stream of the queue so we need to do this the hard way
-            cur_index = self._cur_index
             cur_time_queue = self._player._cur_time
             total_time = 0
             track_time = 0
