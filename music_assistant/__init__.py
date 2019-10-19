@@ -57,10 +57,6 @@ class MusicAssistant():
         await self.players.setup()
         await self.web.setup()
         await self.http_streamer.setup()
-        # temp code to chase memory leak
-        import subprocess
-        subprocess.call("pip install mem_top", shell=True)
-        self.event_loop.create_task(self.print_memory())
 
     def handle_exception(self, loop, context):
         ''' global exception handler '''
@@ -84,9 +80,3 @@ class MusicAssistant():
     async def remove_event_listener(self, cb_id):
         ''' remove callback from our event listeners '''
         self.event_listeners.pop(cb_id, None)
-
-    @run_periodic(60)
-    # TEMP: Check for any memory leaks
-    async def print_memory(self):
-        from mem_top import mem_top
-        print(mem_top())

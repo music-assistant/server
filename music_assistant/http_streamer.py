@@ -135,8 +135,10 @@ class HTTPStreamer():
 
         def fill_buffer():
             chunk_size = int(sample_rate * 4 * 2)
-            while sox_proc.returncode == None:
+            while True:
                 chunk = sox_proc.stdout.read(chunk_size)
+                if not chunk:
+                    break
                 if chunk and not cancelled.is_set():
                     asyncio.run_coroutine_threadsafe(
                         buffer.put(chunk), self.mass.event_loop)
@@ -337,7 +339,7 @@ class HTTPStreamer():
             data = process.stdout.read(chunksize)
             if not data:
                 # no more data
-                # yield (empty) chunk as lust chunk
+                # yield leftover data in buffer as last chunk
                 yield (True, buf)
                 bytes_sent += len(buf)
                 del buf

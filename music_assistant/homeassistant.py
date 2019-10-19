@@ -249,7 +249,7 @@ class HomeAssistant():
         while self.mass.event_loop.is_running():
             try:
                 protocol = 'wss' if self._use_ssl else 'ws'
-                async with self.http_session.ws_connect('%s://%s/api/websocket' % (protocol, self._host)) as ws:
+                async with self.http_session.ws_connect('%s://%s/api/websocket' % (protocol, self._host), verify_ssl=False) as ws:
                     
                     async def send_msg(msg):
                         ''' callback to send message to the websockets client'''
