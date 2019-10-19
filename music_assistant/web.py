@@ -229,7 +229,10 @@ class Web():
             # register callback for internal events
             async def send_event(msg, msg_details):
                 ws_msg = {"message": msg, "message_details": msg_details }
-                await ws.send_json(ws_msg, dumps=json_serializer)
+                try:
+                    await ws.send_json(ws_msg, dumps=json_serializer)
+                except (AssertionError, asyncio.CancelledError):
+                    await self.mass.remove_event_listener(cb_id)
             cb_id = await self.mass.add_event_listener(send_event)
             # process incoming messages
             async for msg in ws:

@@ -22,12 +22,20 @@ from .cache import use_cache
 CONF_KEY = 'homeassistant'
 CONF_PUBLISH_PLAYERS = "publish_players"
 EVENT_HASS_CHANGED = "hass entity changed"
-CONFIG_ENTRIES = [
+
+### auto detect hassio for auto config ####
+if os.path.isfile('/data/options.json'):
+    IS_HASSIO = True
+    CONFIG_ENTRIES = [
+        (CONF_ENABLED, False, CONF_ENABLED)]
+else:
+    IS_HASSIO = False
+    CONFIG_ENTRIES = [
         (CONF_ENABLED, False, CONF_ENABLED),
         (CONF_URL, 'localhost', 'hass_url'), 
         (CONF_TOKEN, '<password>', 'hass_token'),
-        (CONF_PUBLISH_PLAYERS, True, 'hass_publish')
-        ]
+        (CONF_PUBLISH_PLAYERS, True, 'hass_publish')]
+    
 
 class HomeAssistant():
     '''
@@ -47,18 +55,22 @@ class HomeAssistant():
         # load/create/update config
         config = self.mass.config.create_module_config(CONF_KEY, CONFIG_ENTRIES)
         self.enabled = config[CONF_ENABLED]
-        if self.enabled and (not config[CONF_URL] or 
-                not config[CONF_TOKEN]):
+        if (self.enabled and not IS_HASSIO and not 
+                (config[CONF_URL] or config[CONF_TOKEN])):
             LOGGER.warning("Invalid configuration for Home Assistant")
             self.enabled = False
         self._token = config[CONF_TOKEN]
-        url = config[CONF_URL]
-        if url.startswith('https://'):
-            self._use_ssl = True
-            self._host = url.replace('https://','').split('/')[0]
-        else:
+        if IS_HASSIO:
             self._use_ssl = False
-            self._host = url.replace('http://','').split('/')[0]
+            self._host = 'hassio/homeassistant'
+        else:
+            url = config[CONF_URL]
+            if url.startswith('https://'):
+                self._use_ssl = True
+                self._host = url.replace('https://','').split('/')[0]
+            else:
+                self._use_ssl = False
+                self._host = url.replace('http://','').split('/')[0]
         if self.enabled:
             LOGGER.info('Homeassistant integration is enabled')
 

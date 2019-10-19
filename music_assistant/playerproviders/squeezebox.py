@@ -70,6 +70,7 @@ class PySqueezeProvider(PlayerProvider):
                     break
                 # handle incoming data from socket
                 buffer = buffer + data
+                del data
                 if len(buffer) > 8:
                     operation, length = buffer[:4], buffer[4:8]
                     plen = struct.unpack('!I', length)[0] + 8

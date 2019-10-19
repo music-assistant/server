@@ -279,6 +279,8 @@ Vue.component("player", {
         }
     },
     createAudioPlayer(data) {
+      if (navigator.userAgent.includes("WebKit"))
+        return // streaming flac not supported on webkit ?!
       if (localStorage.getItem('audio_player_id'))
         // get player id from local storage
         this.audioPlayerId = localStorage.getItem('audio_player_id');
@@ -306,20 +308,7 @@ Vue.component("player", {
       // add event handlers
       this.audioPlayer.addEventListener("canplaythrough", event => {
         /* the audio is now playable; play it if permissions allow */
-        console.log("canplaythrough")
         this.audioPlayer.play();
-      });
-      this.audioPlayer.addEventListener("canplay", event => {
-        /* the audio is now playable; play it if permissions allow */
-        console.log("canplay");
-        //this.audioPlayer.play();
-        //msg_details['cur_uri'] = this.audioPlayer.src;
-        //this.ws.send(JSON.stringify({message:'webplayer state', message_details: msg_details}));
-      });
-      this.audioPlayer.addEventListener("emptied", event => {
-        /* the audio is now playable; play it if permissions allow */
-        console.log("emptied");
-        //this.audioPlayer.play();
       });
       const timeupdateHandler = (event) => {
         // currenTime of player updated, sent state (throttled at 1 sec)
