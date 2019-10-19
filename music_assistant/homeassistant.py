@@ -59,11 +59,12 @@ class HomeAssistant():
                 (config[CONF_URL] or config[CONF_TOKEN])):
             LOGGER.warning("Invalid configuration for Home Assistant")
             self.enabled = False
-        self._token = config[CONF_TOKEN]
         if IS_HASSIO:
+            self._token = os.environ['HASSIO_TOKEN']
             self._use_ssl = False
             self._host = 'hassio/homeassistant'
         else:
+            self._token = config[CONF_TOKEN]
             url = config[CONF_URL]
             if url.startswith('https://'):
                 self._use_ssl = True
