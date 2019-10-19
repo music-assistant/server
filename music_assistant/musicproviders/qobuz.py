@@ -276,10 +276,13 @@ class QobuzProvider(MusicProvider):
         }
 
     async def mass_event(self, msg, msg_details):
-        ''' received event from mass '''
+        ''' 
+            received event from mass 
+            we use this to report playback start/stop to qobuz
+        '''
         if not self.__user_auth_info:
             return
-        # TODO: need to figure out if the streamed track is purchased
+        # TODO: need to figure out if the streamed track is purchased by user
         if msg == EVENT_PLAYBACK_STARTED and msg_details.provider == self.prov_id:
             # report streaming started to qobuz
             device_id = self.__user_auth_info["user"]["device"]["id"]
@@ -293,15 +296,13 @@ class QobuzProvider(MusicProvider):
             await self.__post_data("track/reportStreamingStart", data=events)
         elif msg == EVENT_PLAYBACK_STOPPED and msg_details.provider == self.prov_id:
             # report streaming ended to qobuz
-            device_id = self.__user_auth_info["user"]["device"]["id"]
-            credential_id = self.__user_auth_info["user"]["credential"]["id"]
             user_id = self.__user_auth_info["user"]["id"]
-            format_id = msg_details.streamdetails["details"]["format_id"]
-            timestamp = int(time.time())
-            events=[{"online": True, "sample": False, "intent": "stream", "device_id": device_id, 
-                "track_id": msg_details.item_id, "purchase": False, "date": timestamp, "duration": int(msg_details.seconds_played),
-                "credential_id": credential_id, "user_id": user_id, "local": False, "format_id":format_id}]
-            await self.__post_data("track/reportStreamingEnd", data=events)
+            params = {
+                'user_id': user_id,
+                'track_id': msg_details.item_id,
+                'duration': int(msg_details.seconds_played)
+                }
+            await self.__get_data('/track/reportStreamingEnd', params)
     
     async def __parse_artist(self, artist_obj):
         ''' parse qobuz artist object to generic layout '''
@@ -550,7 +551,7 @@ class QobuzProvider(MusicProvider):
         url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
         params["app_id"] = get_app_var(0)
         params["user_auth_token"] = await self.__auth_token()
-        async with self.http_session.post(url, params=params, json=data) as response:
+        async with self.http_session.post(url, params=params, json=data, verify_ssl=False) as response:
             try:
                 result = await response.json()
                 return result
