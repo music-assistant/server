@@ -57,6 +57,10 @@ class MusicAssistant():
         await self.players.setup()
         await self.web.setup()
         await self.http_streamer.setup()
+        # temp code to chase memory leak
+        import subprocess
+        subprocess.call("pip install pympler", shell=True)
+        self.event_loop.create_task(self.print_memory())
 
     def handle_exception(self, loop, context):
         ''' global exception handler '''
@@ -80,3 +84,18 @@ class MusicAssistant():
     async def remove_event_listener(self, cb_id):
         ''' remove callback from our event listeners '''
         self.event_listeners.pop(cb_id, None)
+
+    @run_periodic(30)
+    async def print_memory(self):
+        
+        from pympler import muppy, summary
+        
+        all_objects = muppy.get_objects()
+        sum1 = summary.summarize(all_objects)
+        # Prints out a summary of the large objects
+        summary.print_(sum1)
+        # Get references to certain types of objects such as dataframe
+        # dataframes = [ao for ao in all_objects if isinstance(ao, pd.DataFrame)]
+        # for d in dataframes:
+        #     print(d.columns.values)
+        #     print(len(d))

@@ -33,21 +33,7 @@ class HTTPStreamer():
         pass
         # self.mass.event_loop.create_task(
         #         asyncio.start_server(self.sockets_streamer, '0.0.0.0', 8093))
-    
-    async def webplayer(self, http_request):
-        ''' 
-            start stream for a player
-        '''
-        from .models import Player
-        player_id = http_request.match_info.get('player_id')
-        player = Player(self.mass, player_id, 'web')
-        player.name = player_id
-        await self.mass.players.add_player(player)
-        # wait for queue
-        while not player.queue.items:
-            await asyncio.sleep(0.2)
-        return await self.stream(http_request)    
-    
+        
     async def stream(self, http_request):
         ''' 
             start stream for a player
@@ -58,7 +44,10 @@ class HTTPStreamer():
         assert(player)
         # prepare headers as audio/flac content
         resp = web.StreamResponse(status=200, reason='OK', 
-                headers={'Content-Type': 'audio/flac'})
+                headers={
+                    'Content-Type': 'audio/mp3' if player.player_provider else 'audio/flac',
+                    'Accept-Ranges': 'None'
+                    })
         await resp.prepare(http_request)
         # send content only on GET request
         if http_request.method.upper() != 'GET':
@@ -120,12 +109,17 @@ class HTTPStreamer():
         fade_length = try_parse_int(player.settings["crossfade_duration"])
         if not sample_rate or sample_rate < 44100 or sample_rate > 384000:
             sample_rate = 96000
+        elif player.player_provider == 'web':
+            sample_rate = 41100
         if fade_length:
             fade_bytes = int(sample_rate * 4 * 2 * fade_length)
         else:
             fade_bytes = int(sample_rate * 4 * 2)
         pcm_args = 'raw -b 32 -c 2 -e signed-integer -r %s' % sample_rate
-        args = 'sox -t %s - -t flac -C 0 -' % pcm_args
+        if player.player_provider == 'web':
+            args = 'sox -t %s - -t flac -C 0 -' % pcm_args
+        else:
+             args = 'sox -t %s - -t mp3 -' % pcm_args
         # start sox process
         # we use normal subprocess instead of asyncio because of bug with executor
         # this should be fixed with python 3.8
@@ -133,7 +127,7 @@ class HTTPStreamer():
             stdout=subprocess.PIPE, stdin=subprocess.PIPE)
 
         def fill_buffer():
-            sample_size = int(sample_rate * 4 * 2 * 2)
+            sample_size = int(sample_rate * 4 * 2)
             while sox_proc.returncode == None:
                 chunk = sox_proc.stdout.read(sample_size)
                 if not chunk:

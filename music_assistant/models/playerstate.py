@@ -8,3 +8,13 @@ class PlayerState(str, Enum):
     Stopped = "stopped"
     Paused = "paused"
     Playing = "playing"
+
+    # def from_string(self, string):
+    #     if string == "off":
+    #         return self.Off
+    #     elif string == "stopped":
+    #         return self.Stopped
+    #     elif string == "paused":
+    #         return self.Paused
+    #     elif string == "playing":
+    #         return self.Playing

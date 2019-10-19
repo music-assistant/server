@@ -40,75 +40,11 @@
         <script src="https://unpkg.com/vee-validate@2.0.0-rc.25/dist/vee-validate.js"></script>
         <script src="./lib/vue-loading-overlay.js"></script>
         <script src="https://unpkg.com/vue-toasted"></script>
-
-
-        <script>
-            const isMobile = () => (document.body.clientWidth < 800);
-            const isInStandaloneMode = () => ('standalone' in window.navigator) && (window.navigator.standalone);
-
-            function showPlayMenu (item) {
-                this.$globals.playmenuitem = item;
-                this.$globals.showplaymenu = !this.$globals.showplaymenu;
-                }
-
-            function clickItem (item) {
-                var endpoint = "";
-                if (item.media_type == 1)
-                    endpoint = "/artists/"
-                else if (item.media_type == 2)
-                    endpoint = "/albums/"
-                else if (item.media_type == 3 || item.media_type == 5)
-                    {
-                    this.showPlayMenu(item);
-                    return;
-                    }
-                else if (item.media_type == 4)
-                    endpoint = "/playlists/"
-                item_id = item.item_id.toString();
-                var url = endpoint + item_id;
-                router.push({ path: url, query: {provider: item.provider}});
-            }
-
-            String.prototype.formatDuration = function () {
-                var sec_num = parseInt(this, 10); // don't forget the second param
-                var hours   = Math.floor(sec_num / 3600);
-                var minutes = Math.floor((sec_num - (hours * 3600)) / 60);
-                var seconds = sec_num - (hours * 3600) - (minutes * 60);
-
-                if (hours   < 10) {hours   = "0"+hours;}
-                if (minutes < 10) {minutes = "0"+minutes;}
-                if (seconds < 10) {seconds = "0"+seconds;}
-                if (hours == '00')
-                    return minutes+':'+seconds;
-                else
-                    return hours+':'+minutes+':'+seconds;
-            }
-            function toggleLibrary (item) {
-                var endpoint = "/api/" + item.media_type + "/";
-                item_id = item.item_id.toString();
-                var action = "/library_remove"
-                if (item.in_library.length == 0)
-                    action = "/library_add"
-                var url = endpoint + item_id + action;
-                console.log('loading ' + url);
-                axios
-                    .get(url, { params: { provider: item.provider }})
-                    .then(result => {
-                        data = result.data;
-                        console.log(data);
-                        if (action == "/library_remove")
-                            item.in_library = []
-                        else
-                        item.in_library = [provider]
-                        })
-                    .catch(error => {
-                        console.log("error", error);
-                    });
-
-            };
-        </script>
+        <script src="https://requirejs.org/docs/release/2.3.5/minified/require.js"></script>
+        <script src="./lib/utils.js"></script>
 
         <!-- Vue Pages and Components here -->
+        
         <script src='./pages/home.vue.js'></script>
         <script src='./pages/browse.vue.js'></script>
 
@@ -132,118 +68,7 @@
         <script src='./components/searchbox.vue.js'></script>
         
         <script src='./strings.js'></script>
-        
-        <script>
-        Vue.use(VueRouter);
-        Vue.use(VeeValidate);
-        Vue.use(Vuetify);
-        Vue.use(VueI18n);
-        Vue.use(VueLoading);
-        Vue.use(Toasted, {duration: 5000, fullWidth: true});
-
-
-        const routes = [
-            {
-            path: '/',
-            component: home
-            },
-            {
-                path: '/config',
-                component: Config,
-            },
-            {
-                path: '/queue/:player_id',
-                component: Queue,
-                props: route => ({ ...route.params, ...route.query })
-            },
-            {
-                path: '/artists/:media_id',
-                component: ArtistDetails,
-                props: route => ({ ...route.params, ...route.query })
-            },
-            {
-                path: '/albums/:media_id',
-                component: AlbumDetails,
-                props: route => ({ ...route.params, ...route.query })
-            },
-            {
-                path: '/tracks/:media_id',
-                component: TrackDetails,
-                props: route => ({ ...route.params, ...route.query })
-            },
-            {
-                path: '/playlists/:media_id',
-                component: PlaylistDetails,
-                props: route => ({ ...route.params, ...route.query })
-            },
-            {
-                path: '/search',
-                component: Search,
-                props: route => ({ ...route.params, ...route.query })
-            },
-            {
-                path: '/:mediatype',
-                component: Browse,
-                props: route => ({ ...route.params, ...route.query })
-            },
-        ]
-
-        let router = new VueRouter({
-            //mode: 'history',
-            routes // short for `routes: routes`
-        })
-
-        router.beforeEach((to, from, next) => {
-            next()
-        })
-
-        const globalStore = new Vue({
-            data: {
-                windowtitle: 'Home',
-                loading: false,
-                showplaymenu: false,
-                showsearchbox: false,
-                playmenuitem: null
-            }
-        })
-        Vue.prototype.$globals = globalStore;
-        Vue.prototype.isMobile = isMobile;
-        Vue.prototype.isInStandaloneMode = isInStandaloneMode;
-        Vue.prototype.toggleLibrary = toggleLibrary;
-        Vue.prototype.showPlayMenu = showPlayMenu;
-        Vue.prototype.clickItem= clickItem;
-        
-        const i18n = new VueI18n({
-            locale: navigator.language.split('-')[0],
-            fallbackLocale: 'en',
-            enableInSFC: true,
-            messages
-            })
-
-        var app = new Vue({
-            i18n,
-            el: '#app',
-            watch: {},
-            mounted() {
-            },
-            components: {
-                Loading: VueLoading
-            },
-            created() {
-                // little hack to force refresh PWA on iOS by simple reloading it every hour
-                var d = new Date();
-                var cur_update = d.getDay() + d.getHours();
-                if (localStorage.getItem('last_update') != cur_update)
-                {
-                    localStorage.setItem('last_update', cur_update);
-                    window.location.reload(true);
-                }
-            },
-            data: { },
-            methods: {},
-            router
-        })
-    </script>
+        <script src='./app.js'></script>
     </body>
 
 </html>

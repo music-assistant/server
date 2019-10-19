@@ -81,7 +81,7 @@ Vue.component("player", {
 
               <!-- active player btn -->
               <v-list-tile-action style="padding:30px;margin-right:-13px;">
-                  <v-btn x-small flat icon @click="menu = !menu">
+                  <v-btn x-small flat icon @click="menu = !menu;createAudioPlayer();">
                       <v-flex xs12 class="vertical-btn">
                       <v-icon>speaker</v-icon>
                       <span class="caption">{{ active_player_id ? players[active_player_id].name : '' }}</span>
@@ -92,8 +92,6 @@ Vue.component("player", {
 
           <!-- add some additional whitespace in standalone mode only -->
           <v-list-tile avatar ripple style="height:14px" v-if="isInStandaloneMode()"/>
-
-          
 
       </v-card>
     </v-footer>
@@ -151,11 +149,18 @@ Vue.component("player", {
       menu: false,
       players: {},
       active_player_id: "",
-      ws: null
+      ws: null,
+      file: "",
+      audioPlayer: null,
+      audioPlayerId: '',
+      audioPlayerName: ''
     }
   },
-  mounted() { },
+  mounted() { 
+    
+  },
   created() {
+    // connect the websocket
     this.connectWS();
   },
   computed: {
@@ -196,10 +201,12 @@ Vue.component("player", {
   },
   methods: { 
     playerCommand (cmd, cmd_opt=null, player_id=this.active_player_id) {
-      if (cmd_opt)
-        cmd = cmd + '/' + cmd_opt
-      cmd = 'players/' + player_id + '/cmd/' + cmd;
-      this.ws.send(cmd);
+      let msg_details = {
+        player_id: player_id,
+        cmd: cmd,
+        cmd_args: cmd_opt
+      }
+      this.ws.send(JSON.stringify({message:'player command', message_details: msg_details}));
     },
     playItem(item, queueopt) {
       console.log('playItem: ' + item);
@@ -244,6 +251,110 @@ Vue.component("player", {
       else
         this.playerCommand('power_on', null, player_id);
     },
+    handleAudioPlayerCommand(data) {
+      /// we received a command for our built-in audio player
+      if (data.cmd == 'play')
+        this.audioPlayer.play();
+      else if (data.cmd == 'pause')
+        this.audioPlayer.pause();
+      else if (data.cmd == 'stop')
+        {
+          console.log('stop called');
+          this.audioPlayer.pause();
+          this.audioPlayer = new Audio();
+          let msg_details = {
+            player_id: this.audioPlayerId,
+            state: 'stopped'
+          }
+          this.ws.send(JSON.stringify({message:'webplayer state', message_details: msg_details}));
+        }
+      else if (data.cmd == 'volume_set')
+        this.audioPlayer.volume = data.volume_level/100;
+      else if (data.cmd == 'volume_mute')
+        this.audioPlayer.mute = data.is_muted;
+      else if (data.cmd == 'play_uri')
+        {
+          this.audioPlayer.src = data.uri;
+          this.audioPlayer.load();
+        }
+    },
+    createAudioPlayer(data) {
+      if (localStorage.getItem('audio_player_id'))
+        // get player id from local storage
+        this.audioPlayerId = localStorage.getItem('audio_player_id');
+      else
+      {
+        // generate a new (randomized) player id
+        this.audioPlayerId = (Date.now().toString(36) + Math.random().toString(36).substr(2, 5)).toUpperCase();
+        localStorage.setItem('audio_player_id', this.audioPlayerId);
+      }
+      this.audioPlayerName = 'Webplayer ' + this.audioPlayerId.substring(1, 4);
+      this.audioPlayer = new Audio();
+      this.audioPlayer.autoplay = false;
+      this.audioPlayer.preload = 'none';
+      let msg_details = {
+        player_id: this.audioPlayerId,
+        name: this.audioPlayerName,
+        state: 'stopped',
+        powered: true,
+        volume_level: this.audioPlayer.volume * 100,
+        muted: this.audioPlayer.muted,
+        cur_uri: this.audioPlayer.src
+      }
+      // register the player on the server
+      this.ws.send(JSON.stringify({message:'webplayer register', message_details: msg_details}));
+      // add event handlers
+      this.audioPlayer.addEventListener("canplaythrough", event => {
+        /* the audio is now playable; play it if permissions allow */
+        console.log("canplaythrough")
+        this.audioPlayer.play();
+      });
+      this.audioPlayer.addEventListener("canplay", event => {
+        /* the audio is now playable; play it if permissions allow */
+        console.log("canplay");
+        //this.audioPlayer.play();
+        //msg_details['cur_uri'] = this.audioPlayer.src;
+        //this.ws.send(JSON.stringify({message:'webplayer state', message_details: msg_details}));
+      });
+      this.audioPlayer.addEventListener("emptied", event => {
+        /* the audio is now playable; play it if permissions allow */
+        console.log("emptied");
+        //this.audioPlayer.play();
+      });
+      const timeupdateHandler = (event) => {
+        // currenTime of player updated, sent state (throttled at 1 sec)
+        msg_details['cur_time'] = Math.round(this.audioPlayer.currentTime);
+        this.ws.send(JSON.stringify({message:'webplayer state', message_details: msg_details}));
+      }
+      const throttledTimeUpdateHandler = this.throttle(timeupdateHandler, 1000);
+      this.audioPlayer.addEventListener("timeupdate",throttledTimeUpdateHandler);
+
+      this.audioPlayer.addEventListener("volumechange", event => {
+        /* the audio is now playable; play it if permissions allow */
+        console.log('volume: ' + this.audioPlayer.volume);
+        msg_details['volume_level'] = this.audioPlayer.volume*100;
+        msg_details['muted'] = this.audioPlayer.muted;
+        this.ws.send(JSON.stringify({message:'webplayer state', message_details: msg_details}));
+      });
+      this.audioPlayer.addEventListener("playing", event => {
+        msg_details['state'] = 'playing';
+        this.ws.send(JSON.stringify({message:'webplayer state', message_details: msg_details}));
+      });
+      this.audioPlayer.addEventListener("pause", event => {
+        msg_details['state'] = 'paused';
+        this.ws.send(JSON.stringify({message:'webplayer state', message_details: msg_details}));
+      });
+      this.audioPlayer.addEventListener("ended", event => {
+        msg_details['state'] = 'stopped';
+        this.ws.send(JSON.stringify({message:'webplayer state', message_details: msg_details}));
+      });
+      const heartbeatMessage = (event) => {
+        // heartbeat message
+        this.ws.send(JSON.stringify({message:'webplayer state', message_details: msg_details}));
+      }
+      setInterval(heartbeatMessage, 5000);
+
+    },
     connectWS() {
       var loc = window.location, new_uri;
       if (loc.protocol === "https:") {
@@ -257,12 +368,14 @@ Vue.component("player", {
 
       this.ws.onopen = function() {
         console.log('websocket connected!');
-        this.ws.send('players');
+        this.createAudioPlayer();
+        data = JSON.stringify({message:'players', message_details: null});
+        this.ws.send(data);
       }.bind(this);
     
       this.ws.onmessage = function(e) {
         var msg = JSON.parse(e.data);
-        if (msg.message == 'player changed')
+        if (msg.message == 'player changed' || msg.message == 'player added')
           {
             Vue.set(this.players, msg.message_details.player_id, msg.message_details);
         }
@@ -271,12 +384,13 @@ Vue.component("player", {
         }
         else if (msg.message == 'players') {
           for (var item of msg.message_details) {
-              console.log("new player: " + item.player_id);
               Vue.set(this.players, item.player_id, item);
           }
         }
-        else
-          console.log(msg);
+        else if (msg.message == 'webplayer command' && msg.message_details.player_id == this.audioPlayerId) {
+          // message for our audio player
+          this.handleAudioPlayerCommand(msg.message_details);
+        }
 
         // select new active player
         // TODO: store previous player in local storage
@@ -309,6 +423,18 @@ Vue.component("player", {
         console.error('Socket encountered error: ', err.message, 'Closing socket');
         this.ws.close();
       }.bind(this);
-    }
+    },
+    throttle (callback, limit) {
+      var wait = false;
+      return function () {
+          if (!wait) {
+          callback.apply(null, arguments);
+          wait = true;
+          setTimeout(function () {
+              wait = false;
+          }, limit);
+          }
+      }
+  }
   }
 })

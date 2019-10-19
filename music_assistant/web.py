@@ -10,7 +10,6 @@ import ssl
 import concurrent
 import threading
 from .models.media_types import MediaItem, MediaType, media_type_from_string
-from .models.player import Player
 from .utils import run_periodic, LOGGER, run_async_background_task, get_ip, json_serializer
 
 CONF_KEY = 'web'
@@ -50,7 +49,6 @@ class Web():
         app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.get('/ws', self.websocket_handler)])
         app.add_routes([web.get('/stream/{player_id}', self.mass.http_streamer.stream)])
-        app.add_routes([web.get('/stream/web/{player_id}', self.mass.http_streamer.webplayer)])
         app.add_routes([web.get('/stream/{player_id}/{queue_item_id}', self.mass.http_streamer.stream)])
         app.add_routes([web.get('/api/search', self.search)])
         app.add_routes([web.get('/api/config', self.get_config)])
@@ -235,27 +233,34 @@ class Web():
             cb_id = await self.mass.add_event_listener(send_event)
             # process incoming messages
             async for msg in ws:
-                if msg.type != aiohttp.WSMsgType.TEXT:
-                    continue
-                # for now we only use WS for (simple) player commands
-                if msg.data == 'players':
-                    players = list(self.mass.players.players)
-                    players.sort(key=lambda x: x.name, reverse=False)
-                    ws_msg = {'message': 'players', 'message_details': players}
-                    await ws.send_json(ws_msg, dumps=json_serializer)
-                elif msg.data.startswith('players') and '/cmd/' in msg.data:
-                    # players/{player_id}/cmd/{cmd} or players/{player_id}/cmd/{cmd}/{cmd_args}
-                    msg_data_parts = msg.data.split('/')
-                    player_id = msg_data_parts[1]
-                    cmd = msg_data_parts[3]
-                    cmd_args = msg_data_parts[4] if len(msg_data_parts) == 5 else None
-                    player = await self.mass.players.get_player(player_id)
-                    player_cmd = getattr(player, cmd, None)
-                    if player_cmd and cmd_args:
-                        result = await player_cmd(cmd_args)
-                    elif player_cmd:
-                        result = await player_cmd()
-        except (Exception, AssertionError) as exc:
+                if msg.type == aiohttp.WSMsgType.ERROR:
+                    LOGGER.debug('ws connection closed with exception %s' %
+                        ws.exception())
+                elif msg.type != aiohttp.WSMsgType.TEXT:
+                    LOGGER.warning(msg.data)
+                else:
+                    data = msg.json()
+                    # for now we only use WS for (simple) player commands
+                    if data['message'] == 'players':
+                        players = list(self.mass.players.players)
+                        players.sort(key=lambda x: x.name, reverse=False)
+                        ws_msg = {'message': 'players', 'message_details': players}
+                        await ws.send_json(ws_msg, dumps=json_serializer)
+                    elif data['message'] == 'player command':
+                        player_id = data['message_details']['player_id']
+                        cmd = data['message_details']['cmd']
+                        cmd_args = data['message_details']['cmd_args']
+                        player = await self.mass.players.get_player(player_id)
+                        player_cmd = getattr(player, cmd, None)
+                        if player_cmd and cmd_args:
+                            result = await player_cmd(cmd_args)
+                        elif player_cmd:
+                            result = await player_cmd()
+                    else:
+                        # echo the websocket message on event bus
+                        # can be picked up by other modules, e.g. the webplayer
+                        await self.mass.signal_event(data['message'], data['message_details'])
+        except (Exception, AssertionError, asyncio.CancelledError) as exc:
             LOGGER.warning("Websocket disconnected - %s" % str(exc))
         finally:
             await self.mass.remove_event_listener(cb_id)
