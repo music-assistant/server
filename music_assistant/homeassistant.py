@@ -27,7 +27,8 @@ EVENT_HASS_CHANGED = "hass entity changed"
 if os.path.isfile('/data/options.json'):
     IS_HASSIO = True
     CONFIG_ENTRIES = [
-        (CONF_ENABLED, False, CONF_ENABLED)]
+        (CONF_ENABLED, False, CONF_ENABLED),
+        (CONF_PUBLISH_PLAYERS, True, 'hass_publish')]
 else:
     IS_HASSIO = False
     CONFIG_ENTRIES = [
