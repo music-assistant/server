@@ -45,8 +45,7 @@ class HTTPStreamer():
         # prepare headers as audio/flac content
         resp = web.StreamResponse(status=200, reason='OK', 
                 headers={
-                    'Content-Type': 'audio/mp3' if player.player_provider else 'audio/flac',
-                    'Accept-Ranges': 'None'
+                    'Content-Type': 'audio/flac'
                     })
         await resp.prepare(http_request)
         # send content only on GET request
@@ -116,10 +115,7 @@ class HTTPStreamer():
         else:
             fade_bytes = int(sample_rate * 4 * 2)
         pcm_args = 'raw -b 32 -c 2 -e signed-integer -r %s' % sample_rate
-        if player.player_provider == 'web':
-            args = 'sox -t %s - -t flac -C 0 -' % pcm_args
-        else:
-             args = 'sox -t %s - -t mp3 -' % pcm_args
+        args = 'sox -t %s - -t flac -C 0 -' % pcm_args
         # start sox process
         # we use normal subprocess instead of asyncio because of bug with executor
         # this should be fixed with python 3.8
