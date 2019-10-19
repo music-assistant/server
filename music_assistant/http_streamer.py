@@ -148,7 +148,8 @@ class HTTPStreamer():
                 asyncio.run_coroutine_threadsafe(
                         buffer.put(b''),  self.mass.event_loop)
         # start fill buffer task in background
-        threading.Thread(target=fill_buffer).start()
+        fill_buffer_thread = threading.Thread(target=fill_buffer)
+        fill_buffer_thread.start()
         
         LOGGER.info("Start Queue Stream for player %s " %(player.name))
         is_start = True
@@ -278,6 +279,8 @@ class HTTPStreamer():
         ### END OF QUEUE STREAM
         sox_proc.stdin.close()
         sox_proc.terminate()
+        fill_buffer_thread.join()
+        del sox_proc
         LOGGER.info("streaming of queue for player %s completed" % player.name)
 
     async def __get_audio_stream(self, player, queue_item, cancelled,
