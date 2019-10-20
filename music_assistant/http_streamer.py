@@ -68,8 +68,7 @@ class HTTPStreamer():
                 self.__stream_single, player, queue_item, resp, cancelled)
         # let the streaming begin!
         try:
-            while not cancelled.is_set():
-                await asyncio.sleep(0.1)
+            await asyncio.gather(bg_task)
         except (asyncio.CancelledError):
             LOGGER.warning("stream cancelled")
             cancelled.set()
