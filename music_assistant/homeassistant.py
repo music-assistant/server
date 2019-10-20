@@ -111,9 +111,10 @@ class HomeAssistant():
     async def __request_state(self, entity_id):
         ''' get state of a hass entity'''
         state_obj = await self.__get_data('states/%s' % entity_id)
-        self._tracked_entities[entity_id] = state_obj
-        self.mass.event_loop.create_task(
-            self.mass.signal_event(EVENT_HASS_CHANGED, entity_id))
+        if 'state' in state_obj:
+            self._tracked_entities[entity_id] = state_obj
+            self.mass.event_loop.create_task(
+                self.mass.signal_event(EVENT_HASS_CHANGED, entity_id))
     
     async def mass_event(self, msg, msg_details):
         ''' received event from mass '''
