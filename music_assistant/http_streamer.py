@@ -71,7 +71,7 @@ class HTTPStreamer():
             while not cancelled.is_set():
                 await asyncio.sleep(0.1)
         except (asyncio.CancelledError, asyncio.TimeoutError):
-            LOGGER.debug("stream interrupted")
+            LOGGER.warning("stream interrupted")
             cancelled.set()
             # wait for bg_task to finish
             await asyncio.gather(bg_task)
@@ -136,6 +136,7 @@ class HTTPStreamer():
                         buffer.write(chunk), self.mass.event_loop)
                 del chunk
             # indicate EOF if no more data
+            LOGGER.info("EOF")
             if not cancelled.is_set():
                 asyncio.run_coroutine_threadsafe(
                         buffer.write_eof(),  self.mass.event_loop)
@@ -159,9 +160,9 @@ class HTTPStreamer():
             else:
                 queue_track = player.queue.next_item
             if not queue_track:
-                LOGGER.debug("no (more) tracks left in queue")
+                LOGGER.info("no (more) tracks left in queue")
                 break
-            LOGGER.debug("Start Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
+            LOGGER.info("Start Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
             fade_in_part = b''
             cur_chunk = 0
             prev_chunk = None
@@ -257,12 +258,13 @@ class HTTPStreamer():
             # end of the track reached
             if cancelled.is_set():
                 # break out the loop if the http session is cancelled
+                LOGGER.info("loop cancelled")
                 break
             else:
                 # update actual duration to the queue for more accurate now playing info
                 accurate_duration = bytes_written / int(sample_rate * 4 * 2)
                 queue_track.duration = accurate_duration
-                LOGGER.debug("Finished Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
+                LOGGER.info("Finished Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
                 LOGGER.debug("bytes written: %s - duration: %s" % (bytes_written, accurate_duration))
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data and not cancelled.is_set():
@@ -323,7 +325,6 @@ class HTTPStreamer():
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
         bytes_sent = 0
-        buf = b''
         while True:
             if cancelled.is_set():
                 # http session ended
