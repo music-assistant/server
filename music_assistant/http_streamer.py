@@ -69,18 +69,12 @@ class HTTPStreamer():
         # let the streaming begin!
         try:
             await asyncio.gather(bg_task)
-        except (asyncio.CancelledError):
-            LOGGER.warning("stream cancelled")
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            LOGGER.debug("stream request cancelled")
             cancelled.set()
             # wait for bg_task to finish
             await asyncio.gather(bg_task)
             raise asyncio.CancelledError()
-        except (asyncio.TimeoutError):
-            LOGGER.warning("stream time-out")
-            cancelled.set()
-            # wait for bg_task to finish
-            await asyncio.gather(bg_task)
-            raise asyncio.TimeoutError()
         return resp
     
     async def __stream_single(self, player, queue_item, buffer, cancelled):
@@ -141,10 +135,10 @@ class HTTPStreamer():
                         buffer.write(chunk), self.mass.event_loop)
                 del chunk
             # indicate EOF if no more data
-            LOGGER.info("EOF")
             if not cancelled.is_set():
                 asyncio.run_coroutine_threadsafe(
                         buffer.write_eof(),  self.mass.event_loop)
+            LOGGER.debug("stream queue player %s: fill buffer completed" % player.name)
         # start fill buffer task in background
         fill_buffer_thread = threading.Thread(target=fill_buffer)
         fill_buffer_thread.start()
@@ -165,9 +159,9 @@ class HTTPStreamer():
             else:
                 queue_track = player.queue.next_item
             if not queue_track:
-                LOGGER.info("no (more) tracks left in queue")
+                LOGGER.debug("no (more) tracks left in queue")
                 break
-            LOGGER.info("Start Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
+            LOGGER.debug("Start Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
             fade_in_part = b''
             cur_chunk = 0
             prev_chunk = None
@@ -232,7 +226,7 @@ class HTTPStreamer():
                             last_part = prev_chunk + chunk
                         if len(last_part) < fade_bytes:
                             # still not enough data so we'll skip the crossfading
-                            LOGGER.info("not enough data for fadeout so skip crossfade... %s" % len(last_part))
+                            LOGGER.debug("not enough data for fadeout so skip crossfade... %s" % len(last_part))
                             sox_proc.stdin.write(last_part)
                             bytes_written += len(last_part)
                             del last_part
@@ -263,13 +257,12 @@ class HTTPStreamer():
             # end of the track reached
             if cancelled.is_set():
                 # break out the loop if the http session is cancelled
-                LOGGER.info("loop cancelled")
                 break
             else:
                 # update actual duration to the queue for more accurate now playing info
                 accurate_duration = bytes_written / int(sample_rate * 4 * 2)
                 queue_track.duration = accurate_duration
-                LOGGER.info("Finished Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
+                LOGGER.debug("Finished Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
                 LOGGER.debug("bytes written: %s - duration: %s" % (bytes_written, accurate_duration))
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data and not cancelled.is_set():
@@ -339,7 +332,7 @@ class HTTPStreamer():
             chunk = process.stdout.read(chunksize)
             if len(chunk) < chunksize:
                 # last chunk
-                LOGGER.info("last chunk")
+                LOGGER.debug("last chunk received")
                 bytes_sent += len(chunk)
                 yield (True, chunk)
                 break
@@ -434,6 +427,8 @@ class HTTPStreamer():
         LOGGER.debug("Got %s bytes in memory for crossfade_part after sox" % len(crossfade_part))
         fadeinfile.close()
         fadeoutfile.close()
+        del fadeinfile
+        del fadeoutfile
         return crossfade_part
 
     async def start_stream(self, clients_needed):
