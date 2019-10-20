@@ -70,12 +70,18 @@ class HTTPStreamer():
         try:
             while not cancelled.is_set():
                 await asyncio.sleep(0.1)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            LOGGER.warning("stream interrupted")
+        except (asyncio.CancelledError):
+            LOGGER.warning("stream cancelled")
             cancelled.set()
             # wait for bg_task to finish
             await asyncio.gather(bg_task)
             raise asyncio.CancelledError()
+        except (asyncio.TimeoutError):
+            LOGGER.warning("stream time-out")
+            cancelled.set()
+            # wait for bg_task to finish
+            await asyncio.gather(bg_task)
+            raise asyncio.TimeoutError()
         return resp
     
     async def __stream_single(self, player, queue_item, buffer, cancelled):
