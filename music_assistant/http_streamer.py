@@ -13,6 +13,7 @@ import pyloudnorm
 import io
 import aiohttp
 import subprocess
+import gc
 
 from .constants import EVENT_STREAM_STARTED, EVENT_STREAM_ENDED
 from .utils import LOGGER, try_parse_int, get_ip, run_async_background_task, run_periodic, get_folder_size
@@ -90,12 +91,11 @@ class HTTPStreamer():
             asyncio.run_coroutine_threadsafe(
                     buffer.write(audio_chunk), 
                     self.mass.event_loop)
-            # this should be garbage collected but just in case...
-            del audio_chunk
             # wait for the queue to consume the data
             if not cancelled.is_set():
                 await asyncio.sleep(0.5)
         # all chunks received: streaming finished
+        gc.collect()
         if cancelled.is_set():
             LOGGER.debug("stream single track interrupted for track %s on player %s" % (queue_item.name, player.name))
         else:
@@ -264,6 +264,8 @@ class HTTPStreamer():
                 queue_track.duration = accurate_duration
                 LOGGER.debug("Finished Streaming queue track: %s (%s) on player %s" % (queue_track.item_id, queue_track.name, player.name))
                 LOGGER.debug("bytes written: %s - duration: %s" % (bytes_written, accurate_duration))
+                # run garbage collect manually to avoid too much memory fragmentation 
+                gc.collect()
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data and not cancelled.is_set():
             sox_proc.stdin.write(last_fadeout_data)
@@ -346,6 +348,8 @@ class HTTPStreamer():
         # send task to main event loop to analyse the audio
         self.mass.event_loop.call_soon_threadsafe(
                 asyncio.ensure_future, self.__analyze_audio(queue_item))
+        # run garbage collect manually to avoid too much memory fragmentation 
+        gc.collect()
 
     async def __get_player_sox_options(self, player, queue_item):
         ''' get player specific sox effect options '''
