@@ -34,6 +34,7 @@ class Cache(object):
             checkum: optional argument to check if the checksum in the cacheobject matches the checkum provided
         '''
         result = None
+        cur_time = self._get_timestamp(datetime.datetime.now())
         query = "SELECT expires, data, checksum FROM simplecache WHERE id = ?"
         cache_data = self._execute_sql(query, (endpoint,))
         if cache_data:
@@ -41,8 +42,6 @@ class Cache(object):
             if cache_data and cache_data[0] > cur_time:
                 if checksum == None or cache_data[2] == checksum:
                     result = eval(cache_data[1])
-                    # also set result in memory cache for further access
-                    await self._set_mem_cache(endpoint, checksum, cache_data[0], result)
         return result
 
     async def set(self, endpoint, data, checksum="", expiration=datetime.timedelta(days=14)):
@@ -103,8 +102,6 @@ class Cache(object):
         # always use new db object because we need to be sure that data is available for other simplecache instances
         with self._get_database() as _database:
             while not retries == 10:
-                if self._exit:
-                    return None
                 try:
                     if isinstance(data, list):
                         result = _database.executemany(query, data)
