@@ -15,9 +15,6 @@ from .utils import run_periodic, LOGGER, parse_track_title
 
 class Cache(object):
     '''basic stateless caching system '''
-    _exit = False
-    _mem_cache = {}
-    _busy_tasks = []
     _database = None
 
     def __init__(self, datapath):
@@ -36,57 +33,6 @@ class Cache(object):
             endpoint: the (unique) name of the cache object as reference
             checkum: optional argument to check if the checksum in the cacheobject matches the checkum provided
         '''
-        checksum = self._get_checksum(checksum)
-        cur_time = self._get_timestamp(datetime.datetime.now())
-        result = None
-        # 1: try memory cache first
-        result = await self._get_mem_cache(endpoint, checksum, cur_time)
-        # 2: fallback to _database cache
-        if result is None:
-            result = await self._get_db_cache(endpoint, checksum, cur_time)
-        return result
-
-    async def set(self, endpoint, data, checksum="", expiration=datetime.timedelta(days=14)):
-        '''
-            set data in cache
-        '''
-        task_name = "set.%s" % endpoint
-        self._busy_tasks.append(task_name)
-        checksum = self._get_checksum(checksum)
-        expires = self._get_timestamp(datetime.datetime.now() + expiration)
-
-        # memory cache
-        await self._set_mem_cache(endpoint, checksum, expires, data)
-
-        # db cache
-        if not self._exit:
-            await self._set_db_cache(endpoint, checksum, expires, data)
-
-        # remove this task from list
-        self._busy_tasks.remove(task_name)
-
-    async def _get_mem_cache(self, endpoint, checksum, cur_time):
-        '''
-            get cache data from memory cache
-        '''
-        result = None
-        cachedata = self._mem_cache.get(endpoint)
-        if cachedata:
-            cachedata = cachedata
-            if cachedata[0] > cur_time:
-                if checksum == None or checksum == cachedata[2]:
-                    result = cachedata[1]
-        return result
-
-    async def _set_mem_cache(self, endpoint, checksum, expires, data):
-        '''
-            put data in memory cache
-        '''
-        cachedata = (expires, data, checksum)
-        self._mem_cache[endpoint] = cachedata
-
-    async def _get_db_cache(self, endpoint, checksum, cur_time):
-        '''get cache data from sqllite database'''
         result = None
         query = "SELECT expires, data, checksum FROM simplecache WHERE id = ?"
         cache_data = self._execute_sql(query, (endpoint,))
@@ -99,8 +45,12 @@ class Cache(object):
                     await self._set_mem_cache(endpoint, checksum, cache_data[0], result)
         return result
 
-    async def _set_db_cache(self, endpoint, checksum, expires, data):
-        ''' store cache data in _database '''
+    async def set(self, endpoint, data, checksum="", expiration=datetime.timedelta(days=14)):
+        '''
+            set data in cache
+        '''
+        checksum = self._get_checksum(checksum)
+        expires = self._get_timestamp(datetime.datetime.now() + expiration)
         query = "INSERT OR REPLACE INTO simplecache( id, expires, data, checksum) VALUES (?, ?, ?, ?)"
         data = repr(data)
         self._execute_sql(query, (endpoint, expires, data, checksum))
@@ -108,9 +58,6 @@ class Cache(object):
     @run_periodic(3600)
     async def _do_cleanup(self):
         '''perform cleanup task'''
-        if self._exit:
-            return
-        self._busy_tasks.append(__name__)
         cur_time = datetime.datetime.now()
         cur_timestamp = self._get_timestamp(cur_time)
         LOGGER.debug("Running cleanup...")
@@ -118,21 +65,13 @@ class Cache(object):
         for cache_data in self._execute_sql(query).fetchall():
             cache_id = cache_data[0]
             cache_expires = cache_data[1]
-            if self._exit:
-                return
-            # always cleanup all memory objects on each interval
-            self._mem_cache.pop(cache_id, None)
             # clean up db cache object only if expired
             if cache_expires < cur_timestamp:
                 query = 'DELETE FROM simplecache WHERE id = ?'
                 self._execute_sql(query, (cache_id,))
                 LOGGER.debug("delete from db %s" % cache_id)
-
         # compact db
         self._execute_sql("VACUUM")
-
-        # remove task from list
-        self._busy_tasks.remove(__name__)
         LOGGER.debug("Auto cleanup done")
 
     def _get_database(self):
