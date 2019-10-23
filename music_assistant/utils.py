@@ -141,9 +141,8 @@ def get_folder_size(folderpath):
     total_size_gb = total_size/float(1<<30)
     return total_size_gb
 
-
-def json_serializer(obj):
-    ''' json serializer to recursively create serializable values for custom data types '''
+def serialize_values(obj):
+    ''' recursively create serializable values for custom data types '''
     def get_val(val):
         if isinstance(val, (int, str, bool, float)):
             return val
@@ -164,8 +163,12 @@ def json_serializer(obj):
             for key, value in val.__dict__.items():
                 new_dict[key] = get_val(value)
             return new_dict
-    obj = get_val(obj)
-    return json.dumps(obj, skipkeys=True)
+    return get_val(obj)
+
+
+def json_serializer(obj):
+    ''' json serializer to recursively create serializable values for custom data types '''
+    return json.dumps(serialize_values(obj), skipkeys=True)
 
 
 def try_load_json_file(jsonfile):

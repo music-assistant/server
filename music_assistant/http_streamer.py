@@ -275,6 +275,8 @@ class HTTPStreamer():
         sox_proc.terminate()
         fill_buffer_thread.join()
         del sox_proc
+        # run garbage collect manually to avoid too much memory fragmentation 
+        gc.collect()
         LOGGER.info("streaming of queue for player %s completed" % player.name)
 
     async def __get_audio_stream(self, player, queue_item, cancelled,
@@ -289,17 +291,20 @@ class HTTPStreamer():
                     self.mass.event_loop).result()
             if streamdetails:
                 streamdetails['player_id'] = player.player_id
+                if not 'item_id' in streamdetails:
+                    streamdetails['item_id'] = prov_media['item_id']
+                if not 'provider' in streamdetails:
+                    streamdetails['provider'] = prov_media['provider']
+                if not 'quality' in streamdetails:
+                    streamdetails['quality'] = prov_media['quality']
                 queue_item.streamdetails = streamdetails
-                queue_item.item_id = prov_media['item_id']
-                queue_item.provider = prov_media['provider']
-                queue_item.quality = prov_media['quality']
                 break
         if not streamdetails:
             LOGGER.warning(f"no stream details for {queue_item.name}")
             yield (True, b'')
             return
         # get sox effects and resample options
-        sox_options = await self.__get_player_sox_options(player, queue_item)
+        sox_options = await self.__get_player_sox_options(player, streamdetails)
         outputfmt = 'flac -C 0'
         if resample:
             outputfmt = 'raw -b 32 -c 2 -e signed-integer'
@@ -321,7 +326,7 @@ class HTTPStreamer():
         process = subprocess.Popen(args, shell=True, stdout=subprocess.PIPE)
         # fire event that streaming has started for this track
         asyncio.run_coroutine_threadsafe(
-                self.mass.signal_event(EVENT_STREAM_STARTED, queue_item), self.mass.event_loop)
+                self.mass.signal_event(EVENT_STREAM_STARTED, streamdetails), self.mass.event_loop)
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
         bytes_sent = 0
@@ -344,20 +349,21 @@ class HTTPStreamer():
 
         # fire event that streaming has ended
         asyncio.run_coroutine_threadsafe(
-                self.mass.signal_event(EVENT_STREAM_ENDED, queue_item), self.mass.event_loop)
+                self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails), self.mass.event_loop)
         # send task to main event loop to analyse the audio
-        self.mass.event_loop.call_soon_threadsafe(
-                asyncio.ensure_future, self.__analyze_audio(queue_item))
+        if queue_item.media_type == MediaType.Track:
+            self.mass.event_loop.call_soon_threadsafe(
+                asyncio.ensure_future, self.__analyze_audio(streamdetails))
         # run garbage collect manually to avoid too much memory fragmentation 
         gc.collect()
 
-    async def __get_player_sox_options(self, player, queue_item):
+    async def __get_player_sox_options(self, player, streamdetails):
         ''' get player specific sox effect options '''
         sox_options = []
         # volume normalisation
         gain_correct = asyncio.run_coroutine_threadsafe(
                 self.mass.players.get_gain_correct(
-                    player.player_id, queue_item.item_id, queue_item.provider), 
+                    player.player_id, streamdetails["item_id"], streamdetails["provider"]), 
                 self.mass.event_loop).result()
         if gain_correct != 0:
             sox_options.append('vol %s dB ' % gain_correct)
@@ -365,7 +371,7 @@ class HTTPStreamer():
         if player.settings['max_sample_rate']:
             max_sample_rate = try_parse_int(player.settings['max_sample_rate'])
             if max_sample_rate:
-                quality = queue_item.quality
+                quality = streamdetails["quality"]
                 if quality > TrackQuality.FLAC_LOSSLESS_HI_RES_3 and max_sample_rate == 192000:
                     sox_options.append('rate -v 192000')
                 elif quality > TrackQuality.FLAC_LOSSLESS_HI_RES_2 and max_sample_rate == 96000:
@@ -376,19 +382,14 @@ class HTTPStreamer():
             sox_options.append(player.settings['sox_options'])
         return " ".join(sox_options)
         
-    async def __analyze_audio(self, queue_item):
+    async def __analyze_audio(self, streamdetails):
         ''' analyze track audio, for now we only calculate EBU R128 loudness '''
-        if queue_item.media_type != MediaType.Track:
-            # TODO: calculate loudness average for web radio ?
-            LOGGER.debug("analyze is only supported for tracks")
-            return
-        item_key = '%s%s' %(queue_item.item_id, queue_item.provider)
+        item_key = '%s%s' %(streamdetails["item_id"], streamdetails["provider"])
         if item_key in self.analyze_jobs:
             return # prevent multiple analyze jobs for same track
         self.analyze_jobs[item_key] = True
-        streamdetails = queue_item.streamdetails
         track_loudness = await self.mass.db.get_track_loudness(
-                queue_item.item_id, queue_item.provider)
+                streamdetails["item_id"], streamdetails["provider"])
         if track_loudness == None:
             # only when needed we do the analyze stuff
             LOGGER.debug('Start analyzing track %s' % item_key)
@@ -404,7 +405,7 @@ class HTTPStreamer():
             meter = pyloudnorm.Meter(rate) # create BS.1770 meter
             loudness = meter.integrated_loudness(data) # measure loudness
             del data
-            await self.mass.db.set_track_loudness(queue_item.item_id, queue_item.provider, loudness)
+            await self.mass.db.set_track_loudness(streamdetails["item_id"], streamdetails["provider"], loudness)
             del audio_data
             LOGGER.debug("Integrated loudness of track %s is: %s" %(item_key, loudness))
         self.analyze_jobs.pop(item_key, None)

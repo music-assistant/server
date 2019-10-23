@@ -9,7 +9,7 @@ import random
 import functools
 import urllib
 
-from .constants import CONF_KEY_PLAYERPROVIDERS
+from .constants import CONF_KEY_PLAYERPROVIDERS, EVENT_PLAYER_ADDED, EVENT_PLAYER_REMOVED, EVENT_HASS_ENTITY_CHANGED
 from .utils import run_periodic, LOGGER, try_parse_int, try_parse_float, \
     get_ip, run_async_background_task, load_provider_modules
 from .models.media_types import MediaType, TrackQuality
@@ -34,6 +34,8 @@ class PlayerManager():
         # start providers
         for prov in self.providers.values():
             await prov.setup()
+        # register state listener
+        await self.mass.add_event_listener(self.handle_mass_events, EVENT_HASS_ENTITY_CHANGED)
     
     @property
     def players(self):
@@ -50,8 +52,9 @@ class PlayerManager():
 
     async def add_player(self, player):
         ''' register a new player '''
+        player._initialized = True
         self._players[player.player_id] = player
-        await self.mass.signal_event('player added', player)
+        await self.mass.signal_event(EVENT_PLAYER_ADDED, player.to_dict())
         # TODO: turn on player if it was previously turned on ?
         LOGGER.info(f"New player added: {player.player_provider}/{player.player_id}")
         return player
@@ -59,7 +62,7 @@ class PlayerManager():
     async def remove_player(self, player_id):
         ''' handle a player remove '''
         self._players.pop(player_id, None)
-        await self.mass.signal_event('player removed', player_id)
+        await self.mass.signal_event(EVENT_PLAYER_REMOVED, {"player_id": player_id})
         LOGGER.info(f"Player removed: {player_id}")
 
     async def trigger_update(self, player_id):
@@ -113,6 +116,17 @@ class PlayerManager():
             return await player.queue.insert(queue_items, 0)
         elif queue_opt == 'add':
             return await player.queue.append(queue_items)
+    
+    async def handle_mass_events(self, msg, msg_details=None):
+        ''' listen to some events on event bus '''
+        if msg == EVENT_HASS_ENTITY_CHANGED:
+            # handle players with hass integration enabled
+            player_ids = list(self._players.keys())
+            for player_id in player_ids:
+                player = self._players[player_id]
+                if (msg_details['entity_id'] == player.settings.get('hass_power_entity') or 
+                        msg_details['entity_id'] == player.settings.get('hass_volume_entity')):
+                    await player.update()
     
     async def get_gain_correct(self, player_id, item_id, provider_id, replaygain=False):
         ''' get gain correction for given player / track combination '''

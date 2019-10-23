@@ -283,24 +283,24 @@ class QobuzProvider(MusicProvider):
         if not self.__user_auth_info:
             return
         # TODO: need to figure out if the streamed track is purchased by user
-        if msg == EVENT_PLAYBACK_STARTED and msg_details.provider == self.prov_id:
+        if msg == EVENT_PLAYBACK_STARTED and msg_details["provider"] == self.prov_id:
             # report streaming started to qobuz
             device_id = self.__user_auth_info["user"]["device"]["id"]
             credential_id = self.__user_auth_info["user"]["credential"]["id"]
             user_id = self.__user_auth_info["user"]["id"]
-            format_id = msg_details.streamdetails["details"]["format_id"]
+            format_id = msg_details["details"]["format_id"]
             timestamp = int(time.time())
             events=[{"online": True, "sample": False, "intent": "stream", "device_id": device_id, 
-                "track_id": msg_details.item_id, "purchase": False, "date": timestamp,
+                "track_id": msg_details["item_id"], "purchase": False, "date": timestamp,
                 "credential_id": credential_id, "user_id": user_id, "local": False, "format_id":format_id}]
             await self.__post_data("track/reportStreamingStart", data=events)
-        elif msg == EVENT_PLAYBACK_STOPPED and msg_details.provider == self.prov_id:
+        elif msg == EVENT_PLAYBACK_STOPPED and msg_details["provider"] == self.prov_id:
             # report streaming ended to qobuz
             user_id = self.__user_auth_info["user"]["id"]
             params = {
                 'user_id': user_id,
-                'track_id': msg_details.item_id,
-                'duration': int(msg_details.seconds_played)
+                'track_id': msg_details["item_id"],
+                'duration': int(msg_details["seconds_played"])
                 }
             await self.__get_data('/track/reportStreamingEnd', params)
     

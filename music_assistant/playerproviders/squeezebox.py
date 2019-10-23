@@ -96,7 +96,7 @@ class PySqueezeProvider(PlayerProvider):
             if player:
                 if player._heartbeat_task:
                     player._heartbeat_task.cancel()
-                await self.mass.players.remove_player(player)
+                await self.mass.players.remove_player(player.player_id)
 
 class PySqueezePlayer(Player):
     ''' Squeezebox socket client '''

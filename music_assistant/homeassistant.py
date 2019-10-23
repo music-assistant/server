@@ -16,12 +16,11 @@ import slugify as slug
 import json
 from .utils import run_periodic, LOGGER, parse_track_title, try_parse_int
 from .models.media_types import Track
-from .constants import CONF_ENABLED, CONF_URL, CONF_TOKEN, EVENT_PLAYER_CHANGED
+from .constants import CONF_ENABLED, CONF_URL, CONF_TOKEN, EVENT_PLAYER_CHANGED, EVENT_PLAYER_ADDED, EVENT_HASS_ENTITY_CHANGED
 from .cache import use_cache
 
 CONF_KEY = 'homeassistant'
 CONF_PUBLISH_PLAYERS = "publish_players"
-EVENT_HASS_CHANGED = "hass entity changed"
 
 ### auto detect hassio for auto config ####
 if os.path.isfile('/data/options.json'):
@@ -84,6 +83,7 @@ class HomeAssistant():
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.mass.event_loop.create_task(self.__hass_websocket())
         await self.mass.add_event_listener(self.mass_event, EVENT_PLAYER_CHANGED)
+        await self.mass.add_event_listener(self.mass_event, EVENT_PLAYER_ADDED)
         self.mass.event_loop.create_task(self.__get_sources())
 
     async def get_state_async(self, entity_id, attribute='state'):
@@ -114,11 +114,11 @@ class HomeAssistant():
         if 'state' in state_obj:
             self._tracked_entities[entity_id] = state_obj
             self.mass.event_loop.create_task(
-                self.mass.signal_event(EVENT_HASS_CHANGED, entity_id))
+                self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, state_obj))
     
     async def mass_event(self, msg, msg_details):
         ''' received event from mass '''
-        if msg == EVENT_PLAYER_CHANGED:
+        if msg in [EVENT_PLAYER_CHANGED, EVENT_PLAYER_ADDED]:
             await self.publish_player(msg_details)
 
     async def hass_event(self, event_type, event_data):
@@ -127,7 +127,7 @@ class HomeAssistant():
             if event_data['entity_id'] in self._tracked_entities:
                 self._tracked_entities[event_data['entity_id']] = event_data['new_state']
                 self.mass.event_loop.create_task(
-                    self.mass.signal_event(EVENT_HASS_CHANGED, event_data['entity_id']))
+                    self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, event_data))
         elif event_type == 'call_service' and event_data['domain'] == 'media_player':
             await self.__handle_player_command(event_data['service'], event_data['service_data'])
 
@@ -194,27 +194,40 @@ class HomeAssistant():
             track.provider = 'http'
             return await self.mass.players.play_media(player_id, track, queue_opt)
     
-    async def publish_player(self, player):
+    async def publish_player(self, player_info):
         ''' publish player details to hass'''
         if not self.mass.config['base']['homeassistant']['publish_players']:
             return False
-        player_id = player.player_id
-        entity_id = 'media_player.mass_' + slug.slugify(player.name, separator='_').lower()
-        state = player.state if player.powered else 'off'
+        if not player_info["name"]:
+            return
+        # TODO: throttle updates to home assistant ?
+        player_id = player_info["player_id"]
+        entity_id = 'media_player.mass_' + slug.slugify(player_info["name"], separator='_').lower()
+        state = player_info["state"]
         state_attributes = {
                 "supported_features": 65471, 
-                "friendly_name": player.name,
+                "friendly_name": player_info["name"],
                 "source_list": self._sources,
                 "source": 'unknown',
-                "volume_level": player.volume_level/100,
-                "is_volume_muted": player.muted,
-                "media_duration": player.cur_item.duration if player.cur_item else 0,
-                "media_position": player.cur_time,
-                "media_title": player.cur_item.name if player.cur_item else "",
-                "media_artist": player.cur_item.artists[0].name if player.cur_item and player.cur_item.artists else "",
-                "media_album_name": player.cur_item.album.name if player.cur_item and player.cur_item.album else "",
-                "entity_picture": player.cur_item.album.metadata.get('image') if player.cur_item and player.cur_item.album else ""
+                "volume_level": player_info["volume_level"]/100,
+                "is_volume_muted": player_info["muted"],
+                "media_position_updated_at": player_info["media_position_updated_at"],
+                "media_duration": None,
+                "media_position": player_info["cur_time"],
+                "media_title": None,
+                "media_artist": None,
+                "media_album_name": None,
+                "entity_picture": None
                 }
+        if state != "off":
+            player = await self.mass.players.get_player(player_id)
+            if player.queue.cur_item:
+                queue_item = await player.queue.by_item_id(player.queue.cur_item)
+                state_attributes["media_duration"] = queue_item.duration
+                state_attributes["media_title"] = queue_item.name
+                state_attributes["media_artist"] = queue_item.artists[0].name
+                state_attributes["media_album_name"] = queue_item.album.name
+                state_attributes["entity_picture"] = queue_item.album.metadata.get("image")
         self._published_players[entity_id] = player_id
         await self.__set_state(entity_id, state, state_attributes)
 

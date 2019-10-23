@@ -12,17 +12,17 @@ Vue.component("player", {
         <!-- now playing media -->
         <v-list-tile avatar ripple>
 
-              <v-list-tile-avatar v-if="active_player.cur_item" style="align-items:center;padding-top:15px;">
-                  <img v-if="active_player.cur_item.metadata && active_player.cur_item.metadata.image" :src="active_player.cur_item.metadata.image"/>
-                  <img v-if="!active_player.cur_item.metadata.image && active_player.cur_item.album && active_player.cur_item.album.metadata && active_player.cur_item.album.metadata.image" :src="active_player.cur_item.album.metadata.image"/>
+              <v-list-tile-avatar v-if="cur_player_item" style="align-items:center;padding-top:15px;">
+                  <img v-if="cur_player_item && cur_player_item.metadata && cur_player_item.metadata.image" :src="cur_player_item.metadata.image"/>
+                  <img v-if="cur_player_item && !cur_player_item.metadata.image && cur_player_item.album && cur_player_item.album.metadata && cur_player_item.album.metadata.image" :src="cur_player_item.album.metadata.image"/>
               </v-list-tile-avatar>
 
               <v-list-tile-content style="align-items:center;padding-top:15px;">
-                  <v-list-tile-title class="title">{{ active_player.cur_item ? active_player.cur_item.name : active_player.name }}</v-list-tile-title>
-                  <v-list-tile-sub-title v-if="active_player.cur_item && active_player.cur_item.artists">
-                      <span v-for="(artist, artistindex) in active_player.cur_item.artists">
+                  <v-list-tile-title class="title">{{ cur_player_item ? cur_player_item.name : active_player.name }}</v-list-tile-title>
+                  <v-list-tile-sub-title v-if="cur_player_item && cur_player_item.artists">
+                      <span v-for="(artist, artistindex) in cur_player_item.artists">
                           <a v-on:click="clickItem(artist)" @click.stop="">{{ artist.name }}</a>
-                          <label v-if="artistindex + 1 < active_player.cur_item.artists.length" :key="artistindex"> / </label>
+                          <label v-if="artistindex + 1 < cur_player_item.artists.length" :key="artistindex"> / </label>
                       </span>
                   </v-list-tile-sub-title>
               </v-list-tile-content>
@@ -31,7 +31,7 @@ Vue.component("player", {
 
           <!-- progress bar -->
           <div style="color:rgba(0,0,0,.65); height:30px;width:100%; vertical-align: middle; left:15px; right:0; margin-bottom:5px; margin-top:5px">
-            <v-layout row style="vertical-align: middle" v-if="active_player.cur_item">
+            <v-layout row style="vertical-align: middle" v-if="cur_player_item">
               <span style="text-align:left; width:60px; margin-top:7px; margin-left:15px;">{{ player_time_str_cur }}</span>
               <v-progress-linear v-model="progress"></v-progress-linear>
               <span style="text-align:right; width:60px; margin-top:7px; margin-right: 15px;">{{ player_time_str_total }}</span>
@@ -103,15 +103,15 @@ Vue.component("player", {
         </v-card-title>
         <v-list two-line>
             <v-divider></v-divider>
-            <div v-for="(player, player_id, index) in players" :key="player_id" v-if="player.enabled && !player.group_parent">
+            <div v-for="(player, player_id, index) in players" :key="player_id" v-if="player.enabled && player.group_parents.length == 0">
               <v-list-tile avatar ripple style="margin-left: -5px; margin-right: -15px" @click="switchPlayer(player.player_id)" :style="active_player_id == player.player_id ? 'background-color: rgba(50, 115, 220, 0.3);' : ''">
                   <v-list-tile-avatar>
-                      <v-icon size="45">{{ isGroup(player.player_id) ? 'speaker_group' : 'speaker' }}</v-icon>
+                      <v-icon size="45">{{ player.is_group ? 'speaker_group' : 'speaker' }}</v-icon>
                   </v-list-tile-avatar>
                   <v-list-tile-content>
                       <v-list-tile-title class="title">{{ player.name }}</v-list-tile-title>
 
-                      <v-list-tile-sub-title v-if="player.cur_item" class="body-1" :key="player.state">
+                      <v-list-tile-sub-title v-if="cur_player_item" class="body-1" :key="player.state">
                           {{ $t('state.' + player.state) }}
                       </v-list-tile-sub-title>
 
@@ -143,7 +143,25 @@ Vue.component("player", {
   $_veeValidate: {
     validator: "new"
   },
-  watch: {},
+  watch: {
+    cur_queue_item: function (val) {
+      // get info for current track
+      if (!val)
+        this.cur_player_item = null;
+      else {
+        const api_url = '/api/players/' + this.active_player_id + '/queue/' + val;
+        axios
+          .get(api_url)
+          .then(result => {
+            if (result.data)
+              this.cur_player_item = result.data;
+          })
+          .catch(error => {
+            console.log("error", error);
+          });
+      }
+    }
+  },
   data() {
     return {
       menu: false,
@@ -153,7 +171,8 @@ Vue.component("player", {
       file: "",
       audioPlayer: null,
       audioPlayerId: '',
-      audioPlayerName: ''
+      audioPlayerName: '',
+      cur_player_item: null
     }
   },
   mounted() { 
@@ -164,7 +183,12 @@ Vue.component("player", {
     this.connectWS();
   },
   computed: {
-
+    cur_queue_item() {
+      if (this.active_player)
+        return this.active_player.cur_queue_item;
+      else
+        return null;
+    },
     active_player() {
       if (this.players && this.active_player_id && this.active_player_id in this.players)
           return this.players[this.active_player_id];
@@ -179,23 +203,23 @@ Vue.component("player", {
           };
     },
     progress() {
-      if (!this.active_player.cur_item)
+      if (!this.cur_player_item)
         return 0;
-      var total_sec = this.active_player.cur_item.duration;
+      var total_sec = this.cur_player_item.duration;
       var cur_sec = this.active_player.cur_time;
       var cur_percent = cur_sec/total_sec*100;
       return cur_percent;
     },
     player_time_str_cur() {
-      if (!this.active_player.cur_item || !this.active_player.cur_time)
+      if (!this.cur_player_item || !this.active_player.cur_time)
         return "0:00";
       var cur_sec = this.active_player.cur_time;
       return cur_sec.toString().formatDuration();
     },
     player_time_str_total() {
-      if (!this.active_player.cur_item)
+      if (!this.cur_player_item)
         return "0:00";
-      var total_sec = this.active_player.cur_item.duration;
+      var total_sec = this.cur_player_item.duration;
       return total_sec.toString().formatDuration();
     }
   },
@@ -229,12 +253,6 @@ Vue.component("player", {
     },
     switchPlayer (new_player_id) {
       this.active_player_id = new_player_id;
-    },
-    isGroup(player_id) {
-			for (var item in this.players)
-				if (this.players[item].group_parent == player_id && this.players[item].enabled)
-					return true;
-			return false;
     },
     setPlayerVolume: function(player_id, new_volume) {
       this.players[player_id].volume_level = new_volume;
@@ -385,7 +403,7 @@ Vue.component("player", {
         // TODO: store previous player in local storage
         if (!this.active_player_id || !this.players[this.active_player_id].enabled)
           for (var player_id in this.players)
-            if (this.players[player_id].state == 'playing' && this.players[player_id].enabled && !this.players[player_id].group_parent) {
+            if (this.players[player_id].state == 'playing' && this.players[player_id].enabled) {
               // prefer the first playing player
               this.active_player_id = player_id;
               break; 
@@ -393,7 +411,7 @@ Vue.component("player", {
             if (!this.active_player_id || !this.players[this.active_player_id].enabled)
           for (var player_id in this.players) {
             // fallback to just the first player
-            if (this.players[player_id].enabled && !this.players[player_id].group_parent)
+            if (this.players[player_id].enabled)
             {
               this.active_player_id = player_id;
               break; 

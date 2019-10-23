@@ -69,13 +69,16 @@ class PlayerQueue():
     @property
     def cur_index(self):
         ''' match current uri with queue items to determine queue index '''
+        if not self._items:
+            return None
         return self._cur_index
 
     @property
     def cur_item(self):
+        ''' return the queue item id of the current item in the queue '''
         if self.cur_index == None or not len(self.items) > self.cur_index:
             return None
-        return self.items[self.cur_index]
+        return self.items[self.cur_index].queue_item_id
 
     @property
     def cur_item_time(self):
@@ -156,6 +159,8 @@ class PlayerQueue():
     
     async def next(self):
         ''' request next track in queue '''
+        if self.cur_index == None:
+            return
         if self.use_queue_stream:
             return await self.play_index(self.cur_index+1)
         else:
@@ -163,6 +168,8 @@ class PlayerQueue():
 
     async def previous(self):
         ''' request previous track in queue '''
+        if self.cur_index == None:
+            return
         if self.use_queue_stream:
             return await self.play_index(self.cur_index-1)
         else:
@@ -291,13 +298,13 @@ class PlayerQueue():
         if (not self._last_track and new_track) or self._last_track != new_track:
             # queue track updated
             # account for track changing state so trigger track change after 1 second
-            if self._last_track:
-                self._last_track.seconds_played = self._last_item_time
+            if self._last_track and self._last_track.streamdetails:
+                self._last_track.streamdetails["seconds_played"] = self._last_item_time
                 self.mass.event_loop.create_task(
-                    self.mass.signal_event(EVENT_PLAYBACK_STOPPED, self._last_track))
+                    self.mass.signal_event(EVENT_PLAYBACK_STOPPED, self._last_track.streamdetails))
             if new_track:
                 self.mass.event_loop.create_task(
-                    self.mass.signal_event(EVENT_PLAYBACK_STARTED, new_track))
+                    self.mass.signal_event(EVENT_PLAYBACK_STARTED, new_track.streamdetails))
             self._last_track = new_track
             await self.__save_to_file()
         if self._last_player_state != self._player.state:

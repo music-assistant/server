@@ -56,6 +56,7 @@ class Web():
         app.add_routes([web.get('/api/players', self.players)])
         app.add_routes([web.get('/api/players/{player_id}', self.player)])
         app.add_routes([web.get('/api/players/{player_id}/queue', self.player_queue)])
+        app.add_routes([web.get('/api/players/{player_id}/queue/{item_id}', self.player_queue_item)])
         app.add_routes([web.get('/api/players/{player_id}/cmd/{cmd}', self.player_command)])
         app.add_routes([web.get('/api/players/{player_id}/cmd/{cmd}/{cmd_args}', self.player_command)])
         app.add_routes([web.get('/api/players/{player_id}/play_media/{media_type}/{media_id}', self.play_media)])
@@ -208,11 +209,19 @@ class Web():
         limit = int(request.query.get('limit', 50))
         offset = int(request.query.get('offset', 0))
         player = await self.mass.players.get_player(player_id)
-        # queue_items = player.queue.items
-        # queue_items = [item.__dict__ for item in queue_items]
-        # print(queue_items)
-        # result = queue_items[offset:limit]
         return web.json_response(player.queue.items[offset:limit], dumps=json_serializer) 
+
+    async def player_queue_item(self, request):
+        ''' return item (by index or queue item id) from the player's queue '''
+        player_id = request.match_info.get('player_id')
+        item_id = request.match_info.get('item_id')
+        player = await self.mass.players.get_player(player_id)
+        try:
+            item_id = int(item_id)
+            queue_item = await player.queue.get_item(item_id)
+        except:
+            queue_item = await player.queue.by_item_id(item_id)
+        return web.json_response(queue_item, dumps=json_serializer)
     
     async def index(self, request):
         index_file = os.path.join(
@@ -230,7 +239,7 @@ class Web():
             async def send_event(msg, msg_details):
                 ws_msg = {"message": msg, "message_details": msg_details }
                 try:
-                    await ws.send_json(ws_msg, dumps=json_serializer)
+                    await ws.send_json(ws_msg)
                 except (AssertionError, asyncio.CancelledError):
                     await self.mass.remove_event_listener(cb_id)
             cb_id = await self.mass.add_event_listener(send_event)

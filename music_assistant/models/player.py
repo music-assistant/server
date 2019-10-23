@@ -5,7 +5,9 @@ import asyncio
 from enum import Enum
 from typing import List
 import operator
-from ..utils import run_periodic, LOGGER, parse_track_title, try_parse_int, try_parse_bool, try_parse_float
+import time
+from ..utils import run_periodic, LOGGER, parse_track_title, try_parse_int, \
+       try_parse_bool, try_parse_float
 from ..constants import EVENT_PLAYER_CHANGED
 from ..cache import use_cache
 from .media_types import Track, MediaType
@@ -100,30 +102,35 @@ class Player():
 
     #### Common implementation, should NOT be overrridden #####
 
-    def __init__(self, mass, player_id, prov_id):
+    def __init__(self, mass, player_id, prov_id, is_group=False):
         # private attributes
         self.mass = mass
         self._player_id = player_id # unique id for this player
         self._prov_id = prov_id # unique provider id for the player
         self._name = ''
-        self._is_group = False 
-        self._state = PlayerState.Stopped 
+        self._state = PlayerState.Stopped
+        self._group_childs = []
+        self._last_group_parent = None
         self._powered = False 
         self._cur_time = 0
+        self._media_position_updated_at = 0
         self._cur_uri = ''
         self._volume_level = 0
         self._muted = False
-        self._group_parent = None
         self._queue = PlayerQueue(mass, self)
         self._player_settings = None
+        self._initialized = False
+        self._last_event = 0
+        self._update_cur_time_task = None
         # public attributes
         self.supports_queue = True # has native support for a queue
         self.supports_gapless = False # has native gapless support
         self.supports_crossfade = False # has native crossfading support
-        # if home assistant support is enabled, register state listener
-        if self.mass.hass.enabled:
-            self.mass.event_loop.create_task(
-                self.mass.add_event_listener(self.hass_state_listener, "hass entity changed"))
+        
+
+    def __del__(self):
+        if self._update_cur_time_task:
+            self._update_cur_time_task.cancel()
 
     @property
     def player_id(self):
@@ -153,23 +160,62 @@ class Player():
     @property
     def is_group(self):
         ''' [PROTECTED] is_group property of this player '''
-        return self._is_group
+        return len(self._group_childs) > 0
 
-    @is_group.setter
-    def is_group(self, is_group:bool):
-        ''' [PROTECTED] set is_group property of this player '''
-        if is_group != self._is_group:
-            self._is_group = is_group
+    @property
+    def group_parents(self):
+        ''' [PROTECTED] player ids of all groups this player belongs to '''
+        player_ids = []
+        for item in self.mass.players._players.values():
+            if self.player_id in item.group_childs:
+                player_ids.append(item.player_id)
+        return player_ids
+
+    @property
+    def group_childs(self)->list:
+        ''' 
+            [PROTECTED]
+            return all child player ids for this group player as list
+            empty list if this player is not a group player
+        '''
+        return self._group_childs
+
+    @group_childs.setter
+    def group_childs(self, group_childs:list):
+        ''' [PROTECTED] set group_childs property of this player '''
+        if group_childs != self._group_childs:
+            self._group_childs = group_childs
             self.mass.event_loop.create_task(self.update())
+            for child_player_id in group_childs:
+                self.mass.event_loop.create_task(
+                    self.mass.players.trigger_update(child_player_id))
+
+    def add_group_child(self, child_player_id):
+        ''' add player as child to this group player '''
+        if not child_player_id in self._group_childs:
+            self._group_childs.append(child_player_id)
+            self.mass.event_loop.create_task(self.update())
+            self.mass.event_loop.create_task(
+                    self.mass.players.trigger_update(child_player_id))
+
+    def remove_group_child(self, child_player_id):
+        ''' remove player as child from this group player '''
+        if child_player_id in self._group_childs:
+            self._group_childs.remove(child_player_id)
+            self.mass.event_loop.create_task(self.update())
+            self.mass.event_loop.create_task(
+                self.mass.players.trigger_update(child_player_id))
 
     @property
     def state(self):
         ''' [PROTECTED] state property of this player '''
         if not self.powered:
             return PlayerState.Off
-        if self.group_parent:
-            group_player = self.mass.players._players.get(self.group_parent)
-            if group_player:
+        # prefer group player state
+        for group_parent_id in self.group_parents:
+            group_player = self.mass.players.get_player_sync(group_parent_id)
+            if group_player and group_player.state != PlayerState.Off:
+                self._last_group_parent = group_parent_id
                 return group_player.state
         return self._state
 
@@ -178,7 +224,7 @@ class Player():
         ''' [PROTECTED] set state property of this player '''
         if state != self._state:
             self._state = state
-            self.mass.event_loop.create_task(self.update())
+            self.mass.event_loop.create_task(self.update(update_queue=True))
 
     @property
     def powered(self):
@@ -205,32 +251,40 @@ class Player():
         ''' [PROTECTED] set (real) power state for this player '''
         if powered != self._powered:
             self._powered = powered
-        self.mass.event_loop.create_task(self.update())
+            self.mass.event_loop.create_task(self.update())
 
     @property
     def cur_time(self):
         ''' [PROTECTED] cur_time (player's elapsed time) property of this player '''
-        # handle group player
-        if self.group_parent:
-            group_player = self.mass.players.get_player_sync(self.group_parent)
-            if group_player:
+        # prefer group player state
+        for group_id in self.group_parents:
+            group_player = self.mass.players.get_player_sync(group_id)
+            if group_player.state != PlayerState.Off:
                 return group_player.cur_time
         return self.queue.cur_item_time
 
     @cur_time.setter
     def cur_time(self, cur_time:int):
         ''' [PROTECTED] set cur_time (player's elapsed time) property of this player '''
+        if cur_time == None:
+            cur_time = 0
         if cur_time != self._cur_time:
             self._cur_time = cur_time
-            self.mass.event_loop.create_task(self.update())
+            self._media_position_updated_at = time.time()
+            self.mass.event_loop.create_task(self.update(update_queue=True))
+
+    @property
+    def media_position_updated_at(self):
+        ''' [PROTECTED] When was the position of the current playing media valid. '''
+        return self._media_position_updated_at
 
     @property
     def cur_uri(self):
         ''' [PROTECTED] cur_uri (uri loaded in player) property of this player '''
-        # handle group player
-        if self.group_parent:
-            group_player = self.mass.players.get_player_sync(self.group_parent)
-            if group_player:
+        # prefer group player's state
+        for group_id in self.group_parents:
+            group_player = self.mass.players.get_player_sync(group_id)
+            if group_player.state != PlayerState.Off:
                 return group_player.cur_uri
         return self._cur_uri
 
@@ -239,7 +293,7 @@ class Player():
         ''' [PROTECTED] set cur_uri (uri loaded in player) property of this player '''
         if cur_uri != self._cur_uri:
             self._cur_uri = cur_uri
-            self.mass.event_loop.create_task(self.update())
+            self.mass.event_loop.create_task(self.update(update_queue=True))
 
     @property
     def volume_level(self):
@@ -248,8 +302,9 @@ class Player():
         if self.is_group:
             group_volume = 0
             active_players = 0
-            for child_player in self.group_childs:
-                if child_player.enabled and child_player.powered:
+            for child_player_id in self.group_childs:
+                child_player = self.mass.players._players.get(child_player_id)
+                if child_player and child_player.enabled and child_player.powered:
                     group_volume += child_player.volume_level
                     active_players += 1
             if active_players:
@@ -271,6 +326,10 @@ class Player():
         if volume_level != self._volume_level:
             self._volume_level = volume_level
             self.mass.event_loop.create_task(self.update())
+            # trigger update on group player
+            for group_parent_id in self.group_parents:
+                self.mass.event_loop.create_task(
+                        self.mass.players.trigger_update(group_parent_id))
 
     @property
     def muted(self):
@@ -286,25 +345,6 @@ class Player():
             self.mass.event_loop.create_task(self.update())
 
     @property
-    def group_parent(self):
-        ''' [PROTECTED] group_parent property of this player '''
-        return self._group_parent
-
-    @group_parent.setter
-    def group_parent(self, group_parent:str):
-        ''' [PROTECTED] set muted property of this player '''
-        if group_parent != self._group_parent:
-            self._group_parent = group_parent
-            self.mass.event_loop.create_task(self.update())
-
-    @property
-    def group_childs(self):
-        ''' [PROTECTED] return group childs '''
-        if not self.is_group:
-            return []
-        return [item for item in self.mass.players.players if item.group_parent == self.player_id]
-
-    @property
     def enabled(self):
         ''' [PROTECTED] player enabled config setting '''
         return self.settings.get('enabled')
@@ -312,49 +352,42 @@ class Player():
     @property
     def queue(self):
         ''' [PROTECTED] player's queue '''
-        # handle group player
-        if self.group_parent:
-            group_player = self.mass.players.get_player_sync(self.group_parent)
-            if group_player:
+        # prefer group player's state
+        for group_id in self.group_parents:
+            group_player = self.mass.players.get_player_sync(group_id)
+            if group_player.state != PlayerState.Off:
                 return group_player.queue
         return self._queue
 
-    @property
-    def cur_item(self):
-        ''' current item in the player's queue '''
-        return self.queue.cur_item
-
     async def stop(self):
         ''' [PROTECTED] send stop command to player '''
-        if self.group_parent:
-            # redirect playback related commands to parent player
-            group_player = await self.mass.players.get_player(self.group_parent)
-            if group_player:
+        # redirect playback related commands to parent player
+        for group_id in self.group_parents:
+            group_player = self.mass.players.get_player_sync(group_id)
+            if group_player.state != PlayerState.Off:
                 return await group_player.stop()
-        else:
-            return await self.cmd_stop()
+        return await self.cmd_stop()
 
     async def play(self):
         ''' [PROTECTED] send play (unpause) command to player '''
-        if self.group_parent:
-            # redirect playback related commands to parent player
-            group_player = await self.mass.players.get_player(self.group_parent)
-            if group_player:
+        # redirect playback related commands to parent player
+        for group_id in self.group_parents:
+            group_player = self.mass.players.get_player_sync(group_id)
+            if group_player.state != PlayerState.Off:
                 return await group_player.play()
-        elif self.state == PlayerState.Paused:
+        if self.state == PlayerState.Paused:
             return await self.cmd_play()
         elif self.state != PlayerState.Playing:
             return await self.queue.resume()
 
     async def pause(self):
         ''' [PROTECTED] send pause command to player '''
-        if self.group_parent:
-            # redirect playback related commands to parent player
-            group_player = await self.mass.players.get_player(self.group_parent)
-            if group_player:
+        # redirect playback related commands to parent player
+        for group_id in self.group_parents:
+            group_player = self.mass.players.get_player_sync(group_id)
+            if group_player.state != PlayerState.Off:
                 return await group_player.pause()
-        else:
-            return await self.cmd_pause()
+        return await self.cmd_pause()
     
     async def play_pause(self):
         ''' toggle play/pause'''
@@ -365,23 +398,21 @@ class Player():
     
     async def next(self):
         ''' [PROTECTED] send next command to player '''
-        if self.group_parent:
-            # redirect playback related commands to parent player
-            group_player = await self.mass.players.get_player(self.group_parent)
-            if group_player:
+        # redirect playback related commands to parent player
+        for group_id in self.group_parents:
+            group_player = self.mass.players.get_player_sync(group_id)
+            if group_player.state != PlayerState.Off:
                 return await group_player.next()
-        else:
-            return await self.queue.next()
+        return await self.queue.next()
 
     async def previous(self):
         ''' [PROTECTED] send previous command to player '''
-        if self.group_parent:
-            # redirect playback related commands to parent player
-            group_player = await self.mass.players.get_player(self.group_parent)
-            if group_player:
+        # redirect playback related commands to parent player
+        for group_id in self.group_parents:
+            group_player = self.mass.players.get_player_sync(group_id)
+            if group_player.state != PlayerState.Off:
                 return await group_player.previous()
-        else:
-            return await self.queue.previous()
+        return await self.queue.previous()
     
     async def power(self, power):
         ''' [PROTECTED] send power ON command to player '''
@@ -413,18 +444,18 @@ class Player():
             domain = self.settings['hass_power_entity'].split('.')[0]
             service_data = { 'entity_id': self.settings['hass_power_entity']}
             await self.mass.hass.call_service(domain, 'turn_on', service_data)
+        # power on group parent if needed
+        last_group_player = await self.mass.players.get_player(self._last_group_parent)
+        if last_group_player:
+            await last_group_player.power_on()
         # handle play on power on
-        if self.settings.get('play_power_on'):
+        elif self.settings.get('play_power_on'):
             await self.play()
-        # handle group power
-        if self.group_parent:
-            # player has a group parent, check if it should be turned on
-            group_player = await self.mass.players.get_player(self.group_parent)
-            if group_player and not group_player.powered:
-                return await group_player.power_on()
 
     async def power_off(self):
-        ''' [PROTECTED] send power TOGGLE command to player '''
+        ''' [PROTECTED] send power OFF command to player '''
+        if self._state in [PlayerState.Playing, PlayerState.Paused]:
+            await self.stop()
         await self.cmd_power_off()
         # handle mute as power
         if self.settings.get('mute_as_power'):
@@ -445,16 +476,20 @@ class Player():
         # handle group power
         if self.is_group:
             # player is group, turn off all childs
-            for item in self.group_childs:
-                if item.powered:
-                    await item.power_off()
-        elif self.group_parent:
-            # player has a group parent, check if it should be turned off
-            group_player = await self.mass.players.get_player(self.group_parent)
-            if group_player.powered:
+            for child_player_id in self.group_childs:
+                child_player = self.mass.players._players.get(child_player_id)
+                if child_player and child_player.powered:
+                    await child_player.power_off()
+        # if player has group parent(s), check if it should be turned off
+        for group_parent_id in self.group_parents:
+            group_player = await self.mass.players.get_player(group_parent_id)
+            if group_player.state != PlayerState.Off:
                 needs_power = False
-                for child_player in group_player.group_childs:
-                    if child_player.player_id != self.player_id and child_player.powered:
+                for child_player_id in group_player.group_childs:
+                    if child_player_id == self.player_id:
+                        continue
+                    child_player = self.mass.players._players.get(child_player_id)
+                    if child_player and child_player.powered:
                         needs_power = True
                         break
                 if not needs_power:
@@ -479,8 +514,9 @@ class Player():
                 volume_dif_percent = 1+(new_volume/100)
             else:
                 volume_dif_percent = volume_dif/cur_volume
-            for child_player in self.group_childs:
-                if child_player.enabled and child_player.powered:
+            for child_player_id in self.group_childs:
+                child_player = self.mass.players._players.get(child_player_id)
+                if child_player and child_player.enabled and child_player.powered:
                     cur_child_volume = child_player.volume_level
                     new_child_volume = cur_child_volume + (cur_child_volume * volume_dif_percent)
                     await child_player.volume_set(new_child_volume)
@@ -513,17 +549,25 @@ class Player():
         ''' [PROTECTED] send mute command to player '''
         return await self.cmd_volume_mute(is_muted)
 
-    async def update(self):
+    async def update(self, update_queue=False):
         ''' [PROTECTED] signal player updated '''
-        await self.queue.update()
-        await self.mass.signal_event(EVENT_PLAYER_CHANGED, self)
         self.get_player_settings()
-    
-    async def hass_state_listener(self, msg, msg_details=None):
-        ''' called when tracked entities in hass change state '''
-        if (msg_details == self.settings.get('hass_power_entity') or 
-                msg_details == self.settings.get('hass_volume_entity')):
-            await self.update()
+        if not self._initialized:
+            return
+        # update queue state if player state changes
+        if update_queue:
+            await self.queue.update()
+        await self.mass.signal_event(EVENT_PLAYER_CHANGED, self.to_dict())
+        if self._state == PlayerState.Playing and not self._update_cur_time_task and (time.time() - self._media_position_updated_at > 2):
+            self._update_cur_time_task = self.mass.event_loop.create_task(self.__update_cur_time())
+        
+    async def __update_cur_time(self):
+        ''' background task that keeps updating the current time '''
+        while self._state == PlayerState.Playing:
+            calc_time = self._cur_time + (time.time() - self._media_position_updated_at)
+            self.cur_time = calc_time
+            await asyncio.sleep(1)
+        self._update_cur_time_task = None
 
     @property
     def settings(self):
@@ -577,10 +621,13 @@ class Player():
             "state": self.state,
             "powered": self.powered,
             "cur_time": self.cur_time,
+            "media_position_updated_at": self.media_position_updated_at,
             "cur_uri": self.cur_uri,
             "volume_level": self.volume_level,
             "muted": self.muted,
-            "group_parent": self.group_parent,
+            "group_parents": self.group_parents,
+            "group_childs": self.group_childs,
             "enabled": self.enabled,
-            "cur_item": self.cur_item.__dict__ if self.cur_item else None
+            "cur_queue_index": self.queue.cur_index,
+            "cur_queue_item": self.queue.cur_item
         }

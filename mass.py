@@ -61,6 +61,7 @@ def do_update():
         cd %s
         curl -LOks "https://github.com/marcelveldt/musicassistant/archive/master.zip"
         unzip -q master.zip
+        pip install -r musicassistant-master/requirements.txt
         cp -rf musicassistant-master/music_assistant .
         cp -rf musicassistant-master/mass.py .
         rm -R musicassistant-master

@@ -14,7 +14,7 @@ import logging
 
 from .database import Database
 from .config import MassConfig
-from .utils import run_periodic, LOGGER, try_parse_bool
+from .utils import run_periodic, LOGGER, try_parse_bool, serialize_values
 from .metadata import MetaData
 from .cache import Cache
 from .music_manager import MusicManager
@@ -63,9 +63,11 @@ class MusicAssistant():
         loop.default_exception_handler(context)
         #LOGGER.exception(f"Caught exception: {context}")
 
-    async def signal_event(self, msg, msg_details=None):
+    async def signal_event(self, msg, msg_details:dict):
         ''' signal (systemwide) event '''
-        LOGGER.debug("Event: %s - %s" %(msg, msg_details))
+        if not (msg_details == None or isinstance(msg_details, (str, int, dict))):
+            msg_details = serialize_values(msg_details)
+        LOGGER.debug("Event: %s" %(msg))
         listeners = list(self.event_listeners.values())
         for callback, eventfilter in listeners:
             if not eventfilter or eventfilter in msg:

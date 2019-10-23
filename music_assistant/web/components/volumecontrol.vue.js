@@ -4,7 +4,7 @@ Vue.component("volumecontrol", {
 				<v-list>
 					<v-list-tile avatar>
 						<v-list-tile-avatar>
-								<v-icon large>{{ isGroup ? 'speaker_group' : 'speaker' }}</v-icon>
+								<v-icon large>{{ players[player_id].is_group ? 'speaker_group' : 'speaker' }}</v-icon>
 						</v-list-tile-avatar>
 						<v-list-tile-content>
 							<v-list-tile-title>{{ players[player_id].name }}</v-list-tile-title>
@@ -60,14 +60,9 @@ Vue.component("volumecontrol", {
 	},
 	computed: {
 			volumePlayerIds() {
-			var volume_ids = [this.player_id];
-			for (var player_id in this.players)
-				if (this.players[player_id].group_parent == this.player_id && this.players[player_id].enabled)
-					volume_ids.push(player_id);
-			return volume_ids;
-		},
-		isGroup() {
-			return this.volumePlayerIds.length > 1;
+				var all_ids = [this.player_id];
+				all_ids.push(...this.players[this.player_id].group_childs);
+				return all_ids;
 		}
   },
 	mounted() { },

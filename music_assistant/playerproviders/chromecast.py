@@ -32,6 +32,14 @@ PLAYER_CONFIG_ENTRIES = [
 class ChromecastPlayer(Player):
     ''' Chromecast player object '''
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._poll_task = self.mass.event_loop.create_task(self.__poll_status())
+
+    def __del__(self):
+        if self._poll_task:
+            self._poll_task.cancel()
+
     async def try_chromecast_command(self, cmd:types.MethodType, *args, **kwargs):
         ''' guard for disconnected socket client '''
         def _try_chromecast_command(_cmd:types.MethodType, *_args, **_kwargs):
@@ -71,9 +79,6 @@ class ChromecastPlayer(Player):
     async def cmd_power_off(self):
         ''' send power OFF command to player '''
         self.powered = False
-        # power is not supported so send quit_app instead
-        if not self.group_parent:
-            await self.try_chromecast_command(self.cc.quit_app)
 
     async def cmd_volume_set(self, volume_level):
         ''' send new volume level command to player '''
@@ -178,6 +183,13 @@ class ChromecastPlayer(Player):
         else:
             send_queue()
 
+    @run_periodic(10)
+    async def __poll_status(self):
+        ''' request actual status from CC '''
+        # this is needed to get some accurate media progress info
+        if self._state == PlayerState.Playing:
+            await self.try_chromecast_command(self.cc.media_controller.update_status)
+    
     async def handle_player_state(self, caststatus=None, 
             mediastatus=None, connection_status=None):
         ''' handle a player state message from the socket '''
@@ -203,15 +215,6 @@ class ChromecastPlayer(Player):
                 self.state = PlayerState.Stopped
             self.cur_uri = mediastatus.content_id
             self.cur_time = mediastatus.adjusted_current_time
-            # create update/poll task for the current time
-            async def poll_task():
-                self.poll_task = True
-                while self.state == PlayerState.Playing:
-                    self.cur_time = mediastatus.adjusted_current_time
-                    await asyncio.sleep(1)
-                self.poll_task = False
-            if not self.poll_task and self.state == PlayerState.Playing:
-                self.mass.event_loop.create_task(poll_task())
 
 class ChromecastProvider(PlayerProvider):
     ''' support for ChromeCast Audio '''
@@ -232,23 +235,14 @@ class ChromecastProvider(PlayerProvider):
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):
         ''' handle callback from multizone manager '''
         if added_player:
-            player = await self.get_player(added_player)
             group_player = await self.get_player(str(mz._uuid))
-            if player and group_player:
-                player.group_parent = group_player.player_id
-                LOGGER.debug("player %s added to group %s" %(player.name, group_player.name))
+            group_player.add_group_child(added_player)
         elif removed_player:
-            player = await self.get_player(added_player)
             group_player = await self.get_player(str(mz._uuid))
-            if player and group_player:
-                player.group_parent = None
-                LOGGER.debug("player %s removed from group %s" %(player.name, group_player.name))
+            group_player.remove_group_child(added_player)
         else:
-            for member in mz.members:
-                player = await self.get_player(member)
-                if player:
-                    LOGGER.debug("player %s added to group %s" %(player.name, str(mz._uuid)))
-                    player.group_parent = str(mz._uuid)
+            group_player = await self.get_player(str(mz._uuid))
+            group_player.group_childs = mz.members
     
     @run_periodic(1800)
     async def __periodic_chromecast_discovery(self):
@@ -266,9 +260,6 @@ class ChromecastProvider(PlayerProvider):
         for player in self.players:
             if not player.cc.socket_client or not player.cc.socket_client.is_connected:
                 removed_players.append(player.player_id)
-                for child_player in player.group_childs:
-                    # update childs
-                    child_player.group_parent = None
                 # cleanup cast object
                 del player.cc
         # signal removed players
@@ -304,7 +295,6 @@ class ChromecastProvider(PlayerProvider):
         player = ChromecastPlayer(self.mass, player_id, self.prov_id)
         player.cc = chromecast
         player.mz = None
-        player.poll_task = False
         self.supports_queue = True
         self.supports_gapless = False
         self.supports_crossfade = False
@@ -312,7 +302,6 @@ class ChromecastProvider(PlayerProvider):
         status_listener = StatusListener(player_id, 
                 player.handle_player_state, self.mass.event_loop)
         if chromecast.cast_type == 'group':
-            player.is_group = True
             mz = MultizoneController(chromecast.uuid)
             mz.register_listener(MZListener(mz, 
                     self.__handle_group_members_update, self.mass.event_loop))
@@ -323,7 +312,7 @@ class ChromecastProvider(PlayerProvider):
         chromecast.media_controller.register_status_listener(status_listener)
         player.cc.wait()
         await self.add_player(player)
-        if player.is_group:
+        if player.mz:
             player.mz.update_members()
 
 
