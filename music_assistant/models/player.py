@@ -102,7 +102,7 @@ class Player():
 
     #### Common implementation, should NOT be overrridden #####
 
-    def __init__(self, mass, player_id, prov_id, is_group=False):
+    def __init__(self, mass, player_id, prov_id):
         # private attributes
         self.mass = mass
         self._player_id = player_id # unique id for this player
@@ -110,7 +110,6 @@ class Player():
         self._name = ''
         self._state = PlayerState.Stopped
         self._group_childs = []
-        self._last_group_parent = None
         self._powered = False 
         self._cur_time = 0
         self._media_position_updated_at = 0
@@ -118,20 +117,13 @@ class Player():
         self._volume_level = 0
         self._muted = False
         self._queue = PlayerQueue(mass, self)
-        self._player_settings = None
+        self.__update_player_settings()
         self._initialized = False
-        self._last_event = 0
-        self._update_cur_time_task = None
         # public attributes
         self.supports_queue = True # has native support for a queue
         self.supports_gapless = False # has native gapless support
         self.supports_crossfade = False # has native crossfading support
         
-
-    def __del__(self):
-        if self._update_cur_time_task:
-            self._update_cur_time_task.cancel()
-
     @property
     def player_id(self):
         ''' [PROTECTED] player_id of this player '''
@@ -155,7 +147,7 @@ class Player():
         ''' [PROTECTED] set (real) name of this player '''
         if name != self._name:
             self._name = name
-            self.mass.event_loop.create_task(self.update())
+            self.mass.create_task(self.update())
 
     @property
     def is_group(self):
@@ -185,25 +177,25 @@ class Player():
         ''' [PROTECTED] set group_childs property of this player '''
         if group_childs != self._group_childs:
             self._group_childs = group_childs
-            self.mass.event_loop.create_task(self.update())
+            self.mass.create_task(self.update())
             for child_player_id in group_childs:
-                self.mass.event_loop.create_task(
+                self.mass.create_task(
                     self.mass.players.trigger_update(child_player_id))
 
     def add_group_child(self, child_player_id):
         ''' add player as child to this group player '''
         if not child_player_id in self._group_childs:
             self._group_childs.append(child_player_id)
-            self.mass.event_loop.create_task(self.update())
-            self.mass.event_loop.create_task(
+            self.mass.create_task(self.update())
+            self.mass.create_task(
                     self.mass.players.trigger_update(child_player_id))
 
     def remove_group_child(self, child_player_id):
         ''' remove player as child from this group player '''
         if child_player_id in self._group_childs:
             self._group_childs.remove(child_player_id)
-            self.mass.event_loop.create_task(self.update())
-            self.mass.event_loop.create_task(
+            self.mass.create_task(self.update())
+            self.mass.create_task(
                 self.mass.players.trigger_update(child_player_id))
 
     @property
@@ -215,7 +207,6 @@ class Player():
         for group_parent_id in self.group_parents:
             group_player = self.mass.players.get_player_sync(group_parent_id)
             if group_player and group_player.state != PlayerState.Off:
-                self._last_group_parent = group_parent_id
                 return group_player.state
         return self._state
 
@@ -224,7 +215,7 @@ class Player():
         ''' [PROTECTED] set state property of this player '''
         if state != self._state:
             self._state = state
-            self.mass.event_loop.create_task(self.update(update_queue=True))
+            self.mass.create_task(self.update(update_queue=True))
 
     @property
     def powered(self):
@@ -251,7 +242,7 @@ class Player():
         ''' [PROTECTED] set (real) power state for this player '''
         if powered != self._powered:
             self._powered = powered
-            self.mass.event_loop.create_task(self.update())
+            self.mass.create_task(self.update())
 
     @property
     def cur_time(self):
@@ -271,7 +262,7 @@ class Player():
         if cur_time != self._cur_time:
             self._cur_time = cur_time
             self._media_position_updated_at = time.time()
-            self.mass.event_loop.create_task(self.update(update_queue=True))
+            self.mass.create_task(self.update(update_queue=True))
 
     @property
     def media_position_updated_at(self):
@@ -293,7 +284,7 @@ class Player():
         ''' [PROTECTED] set cur_uri (uri loaded in player) property of this player '''
         if cur_uri != self._cur_uri:
             self._cur_uri = cur_uri
-            self.mass.event_loop.create_task(self.update(update_queue=True))
+            self.mass.create_task(self.update(update_queue=True))
 
     @property
     def volume_level(self):
@@ -325,10 +316,10 @@ class Player():
         volume_level = try_parse_int(volume_level)
         if volume_level != self._volume_level:
             self._volume_level = volume_level
-            self.mass.event_loop.create_task(self.update())
+            self.mass.create_task(self.update())
             # trigger update on group player
             for group_parent_id in self.group_parents:
-                self.mass.event_loop.create_task(
+                self.mass.create_task(
                         self.mass.players.trigger_update(group_parent_id))
 
     @property
@@ -342,7 +333,7 @@ class Player():
         is_muted = try_parse_bool(is_muted)
         if is_muted != self._muted:
             self._muted = is_muted
-            self.mass.event_loop.create_task(self.update())
+            self.mass.create_task(self.update())
 
     @property
     def enabled(self):
@@ -444,13 +435,18 @@ class Player():
             domain = self.settings['hass_power_entity'].split('.')[0]
             service_data = { 'entity_id': self.settings['hass_power_entity']}
             await self.mass.hass.call_service(domain, 'turn_on', service_data)
-        # power on group parent if needed
-        last_group_player = await self.mass.players.get_player(self._last_group_parent)
-        if last_group_player:
-            await last_group_player.power_on()
         # handle play on power on
-        elif self.settings.get('play_power_on'):
-            await self.play()
+        if self.settings.get('play_power_on'):
+            # play player's own queue if it has items
+            if self._queue.items:
+                await self.play()
+            # fallback to the first group parent with items
+            else:
+                for group_parent_id in self.group_parents:
+                    group_player = await self.mass.players.get_player(group_parent_id)
+                    if group_player and group_player.queue.items:
+                        await group_player.play()
+                        break
 
     async def power_off(self):
         ''' [PROTECTED] send power OFF command to player '''
@@ -551,34 +547,24 @@ class Player():
 
     async def update(self, update_queue=False):
         ''' [PROTECTED] signal player updated '''
-        self.get_player_settings()
         if not self._initialized:
             return
         # update queue state if player state changes
         if update_queue:
             await self.queue.update()
         await self.mass.signal_event(EVENT_PLAYER_CHANGED, self.to_dict())
-        if self._state == PlayerState.Playing and not self._update_cur_time_task and (time.time() - self._media_position_updated_at > 2):
-            self._update_cur_time_task = self.mass.event_loop.create_task(self.__update_cur_time())
-        
-    async def __update_cur_time(self):
-        ''' background task that keeps updating the current time '''
-        while self._state == PlayerState.Playing:
-            calc_time = self._cur_time + (time.time() - self._media_position_updated_at)
-            self.cur_time = calc_time
-            await asyncio.sleep(1)
-        self._update_cur_time_task = None
 
     @property
     def settings(self):
-        ''' [PROTECTED] get (or create) player config settings '''
-        if self._player_settings:
-            return self._player_settings
+        ''' [PROTECTED] get player config settings '''
+        if self.player_id in self.mass.config['player_settings']:
+            return self.mass.config['player_settings'][self.player_id]
         else:
-            return self.get_player_settings()
+            self.__update_player_settings()
+            return self.mass.config['player_settings'][self.player_id]
 
-    def get_player_settings(self):
-        ''' [PROTECTED] get (or create) player config settings '''
+    def __update_player_settings(self):
+        ''' [PROTECTED] update player config settings '''
         player_settings = self.mass.config['player_settings'].get(self.player_id,{})
         # generate config for the player
         config_entries = [ # default config entries for a player
@@ -608,8 +594,6 @@ class Player():
                     player_settings[key] = def_value
         self.mass.config['player_settings'][self.player_id] = player_settings
         self.mass.config['player_settings'][self.player_id]['__desc__'] = config_entries
-        self._player_settings = self.mass.config['player_settings'][self.player_id]
-        return player_settings 
     
     def to_dict(self):
         ''' instance attributes as dict so it can be serialized to json '''

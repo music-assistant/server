@@ -6,6 +6,7 @@ import aiohttp
 from typing import List
 import logging
 import types
+import time
 
 from ..utils import run_periodic, LOGGER, try_parse_int
 from ..models.playerprovider import PlayerProvider
@@ -19,14 +20,22 @@ PROV_NAME = 'Sonos'
 PROV_CLASS = 'SonosProvider'
 
 CONFIG_ENTRIES = [
-    (CONF_ENABLED, False, CONF_ENABLED),
+    (CONF_ENABLED, True, CONF_ENABLED),
     ]
 
 PLAYER_CONFIG_ENTRIES = []
 
 class SonosPlayer(Player):
     ''' Sonos player object '''
-    
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.__sonos_report_progress_task = None
+
+    def __del__(self):
+        if self.__sonos_report_progress_task:
+            self.__sonos_report_progress_task.cancel()
+
     async def cmd_stop(self):
         ''' send stop command to player '''
         self.soco.stop()
@@ -94,6 +103,17 @@ class SonosPlayer(Player):
         for pos, item in enumerate(queue_items):
             self.soco.add_uri_to_queue(item.uri, last_index+pos)
 
+    async def __report_progress(self):
+        ''' report current progress while playing '''
+        # sonos does not send instant updates of the player's progress (cur_time)
+        # so we need to send it in periodically
+        while self._state == PlayerState.Playing:
+            time_diff = time.time() - self.media_position_updated_at
+            adjusted_current_time = self._cur_time + time_diff
+            self.cur_time = adjusted_current_time
+            await asyncio.sleep(1)
+        self.__sonos_report_progress_task = None
+    
     def _update_state(self, event=None):
         ''' update state, triggerer by event '''
         if event:
@@ -111,15 +131,17 @@ class SonosPlayer(Player):
             return
         if self.soco.is_playing_tv or self.soco.is_playing_line_in:
             self.powered = False
-        else:
-            new_state = self.__convert_state(current_transport_state)
-            self.state = new_state
-            track_info = self.soco.get_current_track_info()
-            self.cur_uri = track_info["uri"]
-            position_info = self.soco.avTransport.GetPositionInfo(
-                    [("InstanceID", 0), ("Channel", "Master")])
-            rel_time = self.__timespan_secs(position_info.get("RelTime"))
-            self.cur_time = rel_time
+            return
+        new_state = self.__convert_state(current_transport_state)
+        self.state = new_state
+        track_info = self.soco.get_current_track_info()
+        self.cur_uri = track_info["uri"]
+        position_info = self.soco.avTransport.GetPositionInfo(
+                [("InstanceID", 0), ("Channel", "Master")])
+        rel_time = self.__timespan_secs(position_info.get("RelTime"))
+        self.cur_time = rel_time
+        if self._state == PlayerState.Playing and self.__sonos_report_progress_task == None:
+            self.__sonos_report_progress_task = self.mass.create_task(self.__report_progress())
 
     @staticmethod
     def __convert_state(sonos_state):
@@ -151,15 +173,15 @@ class SonosProvider(PlayerProvider):
 
     async def setup(self):
         ''' perform async setup '''
-        self.mass.event_loop.create_task(
+        self.mass.create_task(
                 self.__periodic_discovery())
 
     @run_periodic(1800)
     async def __periodic_discovery(self):
         ''' run sonos discovery on interval '''
-        await self.run_discovery()
+        self.mass.event_loop.run_in_executor(None, self.run_discovery)
 
-    async def run_discovery(self):
+    def run_discovery(self):
         ''' background sonos discovery and handler '''
         if self._discovery_running:
             return
@@ -167,24 +189,26 @@ class SonosProvider(PlayerProvider):
         LOGGER.debug("Sonos discovery started...")
         import soco
         discovered_devices = soco.discover()
+        if discovered_devices == None:
+            discovered_devices = []
         new_device_ids = [item.uid for item in discovered_devices]
         cur_player_ids = [item.player_id for item in self.players]
         # remove any disconnected players...
         for player in self.players:
             if not player.is_group and not player.soco.uid in new_device_ids:
-                await self.remove_player(player.player_id)
+                self.mass.create_task(self.remove_player(player.player_id))
         # process new players
         for device in discovered_devices:
             if device.uid not in cur_player_ids and device.is_visible:
-                await self.__device_discovered(device)
+                self.__device_discovered(device)
         # handle groups
         if len(discovered_devices) > 0:
-            await self.__process_groups(discovered_devices[0].all_groups)
+            self.__process_groups(discovered_devices[0].all_groups)
         else:
-            await self.__process_groups([])
+            self.__process_groups([])
 
-    async def __device_discovered(self, soco_device):
-        '''handle new player '''
+    def __device_discovered(self, soco_device):
+        '''handle new sonos player '''
         player = SonosPlayer(self.mass, soco_device.uid, self.prov_id)
         player.soco = soco_device
         player.name = soco_device.player_name
@@ -201,18 +225,19 @@ class SonosProvider(PlayerProvider):
         subscribe(soco_device.avTransport, player._update_state)
         subscribe(soco_device.renderingControl, player._update_state)
         subscribe(soco_device.zoneGroupTopology, self.__topology_changed)
-        return await self.add_player(player)
+        self.mass.create_task(self.add_player(player))
+        return player
 
-    async def __process_groups(self, sonos_groups):
+    def __process_groups(self, sonos_groups):
         ''' process all sonos groups '''
         all_group_ids = []
         for group in sonos_groups:
             all_group_ids.append(group.uid)
             if group.uid not in self.mass.players._players:
                 # new group player
-                group_player = await self.__device_discovered(group.coordinator)
+                group_player = self.__device_discovered(group.coordinator)
             else:
-                group_player = await self.get_player(group.uid)
+                group_player = self.mass.players.get_player_sync(group.uid)
             # check members
             group_player.name = group.label
             group_player.group_childs = [item.uid for item in group.members]
@@ -223,7 +248,7 @@ class SonosProvider(PlayerProvider):
             from one of the sonos players
             schedule discovery to work out the changes
         '''
-        self.mass.event_loop.create_task(self.run_discovery())
+        self.mass.event_loop.run_in_executor(None, self.run_discovery)
 
 class _ProcessSonosEventQueue:
     """Queue like object for dispatching sonos events."""

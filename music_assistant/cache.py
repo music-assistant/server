@@ -15,6 +15,7 @@ from .utils import run_periodic, LOGGER, parse_track_title
 
 class Cache(object):
     '''basic stateless caching system '''
+    # TODO: convert to aiosql
     _database = None
 
     def __init__(self, datapath):
@@ -27,7 +28,13 @@ class Cache(object):
         ''' async initialize of cache module '''
         asyncio.create_task(self._do_cleanup())
 
-    async def get(self, endpoint, checksum=""):
+    async def get_async(self, endpoint, checksum=""):
+        return await asyncio.get_running_loop().run_in_executor(None, self.get, endpoint, checksum)
+    
+    async def set_async(self, endpoint, data, checksum="", expiration=datetime.timedelta(days=14)):
+        return await asyncio.get_running_loop().run_in_executor(None, self.set, endpoint, data, checksum, expiration)
+    
+    def get(self, endpoint, checksum=""):
         '''
             get object from cache and return the results
             endpoint: the (unique) name of the cache object as reference
@@ -44,7 +51,7 @@ class Cache(object):
                     result = eval(cache_data[1])
         return result
 
-    async def set(self, endpoint, data, checksum="", expiration=datetime.timedelta(days=14)):
+    def set(self, endpoint, data, checksum="", expiration=datetime.timedelta(days=14)):
         '''
             set data in cache
         '''
@@ -55,6 +62,10 @@ class Cache(object):
         self._execute_sql(query, (endpoint, expires, data, checksum))
 
     @run_periodic(3600)
+    async def auto_cleanup(self):
+        ''' scheduled auto cleanup task '''
+        asyncio.get_running_loop().run_in_executor(None, self._do_cleanup)
+
     async def _do_cleanup(self):
         '''perform cleanup task'''
         cur_time = datetime.datetime.now()
@@ -166,12 +177,12 @@ def use_cache(cache_days=14, cache_hours=8):
                 else:
                     cache_str += ".%s%s" %(key,value)
             cache_str = cache_str.lower()
-            cachedata = await method_class.cache.get(cache_str, checksum=cache_checksum)
+            cachedata = await method_class.cache.get_async(cache_str, checksum=cache_checksum)
             if cachedata is not None:
                 return cachedata
             else:
                 result = await func(*args, **kwargs)
-                await method_class.cache.set(cache_str, result, checksum=cache_checksum, expiration=datetime.timedelta(days=cache_days, hours=cache_hours))
+                await method_class.cache.set_async(cache_str, result, checksum=cache_checksum, expiration=datetime.timedelta(days=cache_days, hours=cache_hours))
                 return result
         return wrapped
     return wrapper

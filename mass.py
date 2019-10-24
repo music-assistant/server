@@ -85,7 +85,7 @@ if __name__ == "__main__":
         event_loop.set_debug(True)
         logger.setLevel(logging.DEBUG)
         logging.getLogger('aiosqlite').setLevel(logging.INFO)
-        logging.getLogger('asyncio').setLevel(logging.INFO)
+        logging.getLogger('asyncio').setLevel(logging.WARNING)
     else:
         logger.setLevel(logging.INFO)
     # start music assistant!

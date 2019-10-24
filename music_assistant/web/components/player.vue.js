@@ -253,6 +253,7 @@ Vue.component("player", {
     },
     switchPlayer (new_player_id) {
       this.active_player_id = new_player_id;
+      localStorage.setItem('active_player_id', new_player_id);
     },
     setPlayerVolume: function(player_id, new_volume) {
       this.players[player_id].volume_level = new_volume;
@@ -297,8 +298,8 @@ Vue.component("player", {
         }
     },
     createAudioPlayer(data) {
-      if (navigator.userAgent.includes("WebKit"))
-        return // streaming flac not supported on webkit ?!
+      if (!navigator.userAgent.includes("Chrome"))
+        return // streaming flac only supported on chrome browser
       if (localStorage.getItem('audio_player_id'))
         // get player id from local storage
         this.audioPlayerId = localStorage.getItem('audio_player_id');
@@ -400,23 +401,30 @@ Vue.component("player", {
         }
 
         // select new active player
-        // TODO: store previous player in local storage
-        if (!this.active_player_id || !this.players[this.active_player_id].enabled)
-          for (var player_id in this.players)
-            if (this.players[player_id].state == 'playing' && this.players[player_id].enabled) {
-              // prefer the first playing player
-              this.active_player_id = player_id;
-              break; 
-            }
-            if (!this.active_player_id || !this.players[this.active_player_id].enabled)
-          for (var player_id in this.players) {
-            // fallback to just the first player
-            if (this.players[player_id].enabled)
-            {
-              this.active_player_id = player_id;
-              break; 
-            }
+        if (!this.active_player_id || !this.players[this.active_player_id].enabled) {
+          // prefer last selected player
+          last_player = localStorage.getItem('active_player_id')
+          if (last_player && this.players[last_player] && this.players[last_player].enabled)
+            this.active_player_id = last_player;
+          else
+          {
+            // prefer the first playing player
+            for (var player_id in this.players)
+              if (this.players[player_id].state == 'playing' && this.players[player_id].enabled && this.players[player_id].group_parents.length == 0) {
+                this.active_player_id = player_id;
+                break; 
+              }
+              // fallback to just the first player
+              if (!this.active_player_id || !this.players[this.active_player_id].enabled)
+                for (var player_id in this.players) {
+                  if (this.players[player_id].enabled && this.players[player_id].group_parents.length == 0)
+                  {
+                    this.active_player_id = player_id;
+                    break; 
+                  }
+                }
           }
+        }
       }.bind(this);
     
       this.ws.onclose = function(e) {

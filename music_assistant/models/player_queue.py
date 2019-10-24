@@ -48,7 +48,7 @@ class PlayerQueue():
         self._save_busy_ = False
         self._last_track = None
         # load previous queue settings from disk
-        self.mass.event_loop.create_task(self.__load_from_file())
+        self.mass.event_loop.run_in_executor(None, self.__load_from_file)
         
     @property
     def shuffle_enabled(self):
@@ -151,11 +151,11 @@ class PlayerQueue():
             # shuffle requested
             self._shuffle_enabled = True
             await self.load(self._items)
-            self.mass.event_loop.create_task(self._player.update())
+            self.mass.create_task(self._player.update())
         elif self._shuffle_enabled and not enable_shuffle:
             self._shuffle_enabled = False
             # TODO: Unshuffle the list ?
-            self.mass.event_loop.create_task(self._player.update())
+            self.mass.create_task(self._player.update())
     
     async def next(self):
         ''' request next track in queue '''
@@ -220,9 +220,10 @@ class PlayerQueue():
             :param queue_items: a list of QueueItem
             :param offset: offset from current queue position
         '''
-        insert_at_index = self.cur_index + offset
-        if not self.items or insert_at_index > len(self.items):
+        
+        if not self.items or self.cur_index == None or self.cur_index + offset > len(self.items):
             return await self.load(queue_items)
+        insert_at_index = self.cur_index + offset
         if self.shuffle_enabled:
             queue_items = await self.__shuffle_items(queue_items)
         self._items = self._items[:insert_at_index] + queue_items + self._items[insert_at_index:]
@@ -300,13 +301,13 @@ class PlayerQueue():
             # account for track changing state so trigger track change after 1 second
             if self._last_track and self._last_track.streamdetails:
                 self._last_track.streamdetails["seconds_played"] = self._last_item_time
-                self.mass.event_loop.create_task(
+                self.mass.create_task(
                     self.mass.signal_event(EVENT_PLAYBACK_STOPPED, self._last_track.streamdetails))
-            if new_track:
-                self.mass.event_loop.create_task(
+            if new_track and new_track.streamdetails:
+                self.mass.create_task(
                     self.mass.signal_event(EVENT_PLAYBACK_STARTED, new_track.streamdetails))
-            self._last_track = new_track
-            await self.__save_to_file()
+                self._last_track = new_track
+            self.mass.event_loop.run_in_executor(None, self.__save_to_file)
         if self._last_player_state != self._player.state:
             self._last_player_state = self._player.state
             if (self._player.cur_time == 0 and 
@@ -326,7 +327,7 @@ class PlayerQueue():
         # can be extended with some more magic last last_played and stuff
         return random.sample(queue_items, len(queue_items))
 
-    async def __load_from_file(self):
+    def __load_from_file(self):
         ''' try to load the saved queue for this player from file '''
         player_safe_str = filename_from_string(self._player.player_id)
         settings_dir = os.path.join(self.mass.datapath, 'queue')
@@ -343,7 +344,7 @@ class PlayerQueue():
             except Exception as exc:
                 LOGGER.debug("Could not load queue from disk - %s" % str(exc))
 
-    async def __save_to_file(self):
+    def __save_to_file(self):
         ''' save current queue settings to file '''
         if self._save_busy_:
             return

@@ -248,23 +248,18 @@ class FileProvider(MusicProvider):
             tracks += await self.get_album_tracks(album.item_id)
         return tracks[:10]
 
-    async def get_stream_content_type(self, track_id):
-        ''' return the content type for the given track when it will be streamed'''
+    async def get_stream_details(self, track_id):
+        ''' return the content details for the given track when it will be streamed'''
         if not os.sep in track_id:
             track_id = base64.b64decode(track_id).decode('utf-8')
-        return track_id.split('.')[-1]
-    
-    async def get_audio_stream(self, track_id):
-        ''' get audio stream for a track '''
-        if not os.sep in track_id:
-            track_id = base64.b64decode(track_id).decode('utf-8')
-        with open(track_id) as f:
-            while True:
-                line = f.readline()
-                if line:
-                    yield line
-                else:
-                    break
+        # TODO: retrieve sanple rate and bitdepth
+        return {
+            "type": "file",
+            "path": track_id,
+            "content_type": track_id.split('.')[-1],
+            "sample_rate": 44100,
+            "bit_depth": 16
+        }
     
     async def __parse_track(self, filename):
         ''' try to parse a track from a filename with taglib '''

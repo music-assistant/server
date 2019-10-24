@@ -9,6 +9,7 @@ import pychromecast
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 import types
+import time
 
 from ..utils import run_periodic, LOGGER, try_parse_int
 from ..models.playerprovider import PlayerProvider
@@ -31,14 +32,14 @@ PLAYER_CONFIG_ENTRIES = [
 
 class ChromecastPlayer(Player):
     ''' Chromecast player object '''
-
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._poll_task = self.mass.event_loop.create_task(self.__poll_status())
+        self.__cc_report_progress_task = None
 
     def __del__(self):
-        if self._poll_task:
-            self._poll_task.cancel()
+        if self.__cc_report_progress_task:
+            self.__cc_report_progress_task.cancel()
 
     async def try_chromecast_command(self, cmd:types.MethodType, *args, **kwargs):
         ''' guard for disconnected socket client '''
@@ -183,22 +184,18 @@ class ChromecastPlayer(Player):
         else:
             send_queue()
 
-    @run_periodic(10)
-    async def __poll_status(self):
-        ''' request actual status from CC '''
-        # this is needed to get some accurate media progress info
-        if self._state == PlayerState.Playing:
-            await self.try_chromecast_command(self.cc.media_controller.update_status)
+    async def __report_progress(self):
+        ''' report current progress while playing '''
+        # chromecast does not send updates of the player's progress (cur_time)
+        # so we need to send it in periodically
+        while self._state == PlayerState.Playing:
+            self.cur_time = self.cc.media_controller.status.adjusted_current_time
+            await asyncio.sleep(1)
+        self.__cc_report_progress_task = None
     
     async def handle_player_state(self, caststatus=None, 
-            mediastatus=None, connection_status=None):
+            mediastatus=None):
         ''' handle a player state message from the socket '''
-        # handle connection status
-        if connection_status:
-            if connection_status.status == CONNECTION_STATUS_DISCONNECTED:
-                # schedule a new scan which will handle group parent changes
-                self.mass.event_loop.create_task(
-                    self.mass.players.providers[self.player_provider].start_chromecast_discovery())
         # handle generic cast status
         if caststatus:
             self.muted = caststatus.volume_muted
@@ -215,6 +212,8 @@ class ChromecastPlayer(Player):
                 self.state = PlayerState.Stopped
             self.cur_uri = mediastatus.content_id
             self.cur_time = mediastatus.adjusted_current_time
+        if self._state == PlayerState.Playing and self.__cc_report_progress_task == None:
+            self.__cc_report_progress_task = self.mass.create_task(self.__report_progress())
 
 class ChromecastProvider(PlayerProvider):
     ''' support for ChromeCast Audio '''
@@ -229,7 +228,7 @@ class ChromecastProvider(PlayerProvider):
 
     async def setup(self):
         ''' perform async setup '''
-        self.mass.event_loop.create_task(
+        self.mass.create_task(
                 self.__periodic_chromecast_discovery())
 
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):
@@ -247,24 +246,20 @@ class ChromecastProvider(PlayerProvider):
     @run_periodic(1800)
     async def __periodic_chromecast_discovery(self):
         ''' run chromecast discovery on interval '''
-        await self.start_chromecast_discovery()
+        self.mass.event_loop.run_in_executor(None, self.run_chromecast_discovery)
 
-    async def start_chromecast_discovery(self):
+    def run_chromecast_discovery(self):
         ''' background non-blocking chromecast discovery and handler '''
         if self._discovery_running:
             return
         self._discovery_running = True
         LOGGER.debug("Chromecast discovery started...")
         # remove any disconnected players...
-        removed_players = []
         for player in self.players:
             if not player.cc.socket_client or not player.cc.socket_client.is_connected:
-                removed_players.append(player.player_id)
                 # cleanup cast object
                 del player.cc
-        # signal removed players
-        for player_id in removed_players:
-            await self.remove_player(player_id)
+                self.mass.create_task(self.remove_player(player.player_id))
         # search for available chromecasts
         from pychromecast.discovery import start_discovery, stop_discovery
         def discovered_callback(name):
@@ -272,19 +267,15 @@ class ChromecastProvider(PlayerProvider):
             discovery_info = listener.services[name]
             ip_address, port, uuid, model_name, friendly_name = discovery_info
             player_id = str(uuid)
-            player = asyncio.run_coroutine_threadsafe(
-                    self.get_player(player_id), 
-                    self.mass.event_loop).result()
-            if not player:
-                asyncio.run_coroutine_threadsafe(
-                        self.__chromecast_discovered(player_id, discovery_info), self.mass.event_loop)
+            if not player_id in self.mass.players._players:
+                self.__chromecast_discovered(player_id, discovery_info)
         listener, browser = start_discovery(discovered_callback)
-        await asyncio.sleep(15) # run discovery for 15 seconds
+        time.sleep(15) # run discovery for 15 seconds
         stop_discovery(browser)
         LOGGER.debug("Chromecast discovery completed...")
         self._discovery_running = False
     
-    async def __chromecast_discovered(self, player_id, discovery_info):
+    def __chromecast_discovered(self, player_id, discovery_info):
         ''' callback when a (new) chromecast device is discovered '''
         from pychromecast import _get_chromecast_from_host, ChromecastConnectionError
         try:
@@ -300,7 +291,7 @@ class ChromecastProvider(PlayerProvider):
         self.supports_crossfade = False
         # register status listeners
         status_listener = StatusListener(player_id, 
-                player.handle_player_state, self.mass.event_loop)
+                player.handle_player_state, self.mass)
         if chromecast.cast_type == 'group':
             mz = MultizoneController(chromecast.uuid)
             mz.register_listener(MZListener(mz, 
@@ -311,10 +302,9 @@ class ChromecastProvider(PlayerProvider):
         chromecast.register_status_listener(status_listener)
         chromecast.media_controller.register_status_listener(status_listener)
         player.cc.wait()
-        await self.add_player(player)
+        self.mass.create_task(self.add_player(player))
         if player.mz:
             player.mz.update_members()
-
 
 def chunks(l, n):
     """Yield successive n-sized chunks from l."""
@@ -323,22 +313,24 @@ def chunks(l, n):
 
 
 class StatusListener:
-    def __init__(self, player_id, status_callback, loop):
+    def __init__(self, player_id, status_callback, mass):
         self.__handle_callback = status_callback
-        self.loop = loop
+        self.mass = mass
         self.player_id = player_id
     def new_cast_status(self, status):
         ''' chromecast status changed (like volume etc.)'''
-        asyncio.run_coroutine_threadsafe(
-                self.__handle_callback(caststatus=status), self.loop)
+        self.mass.create_task(
+                self.__handle_callback(caststatus=status))
     def new_media_status(self, status):
         ''' mediacontroller has new state '''
-        asyncio.run_coroutine_threadsafe(
-                self.__handle_callback(mediastatus=status), self.loop)
+        self.mass.create_task(
+                self.__handle_callback(mediastatus=status))
     def new_connection_status(self, status):
         ''' will be called when the connection changes '''
-        asyncio.run_coroutine_threadsafe(
-                self.__handle_callback(connection_status=status), self.loop)
+        if status.status == CONNECTION_STATUS_DISCONNECTED:
+            # schedule a new scan which will handle reconnects and group parent changes
+            self.mass.event_loop.run_in_executor(None,
+                    self.mass.players.providers[PROV_ID].run_chromecast_discovery)
 
 class MZListener:
     def __init__(self, mz, callback, loop):

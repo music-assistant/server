@@ -11,6 +11,7 @@ import uuid
 import json
 import time
 import logging
+import threading
 
 from .database import Database
 from .config import MassConfig
@@ -60,14 +61,13 @@ class MusicAssistant():
 
     def handle_exception(self, loop, context):
         ''' global exception handler '''
+        LOGGER.debug(f"Caught exception: {context}")
         loop.default_exception_handler(context)
-        #LOGGER.exception(f"Caught exception: {context}")
 
     async def signal_event(self, msg, msg_details:dict):
         ''' signal (systemwide) event '''
-        if not (msg_details == None or isinstance(msg_details, (str, int, dict))):
+        if not (msg_details == None or isinstance(msg_details, (str, dict))):
             msg_details = serialize_values(msg_details)
-        LOGGER.debug("Event: %s" %(msg))
         listeners = list(self.event_listeners.values())
         for callback, eventfilter in listeners:
             if not eventfilter or eventfilter in msg:
@@ -82,3 +82,21 @@ class MusicAssistant():
     async def remove_event_listener(self, cb_id):
         ''' remove callback from our event listeners '''
         self.event_listeners.pop(cb_id, None)
+
+    def create_task(self, corofcn, wait_for_result=False, ignore_exception=None):
+        ''' helper to create a new task on the main event loop '''
+        if threading.current_thread() is threading.main_thread():
+            if wait_for_result:
+                raise Exception("can not wait for result in main event loop!")
+            return self.event_loop.create_task(corofcn)
+        else:
+            # threadsafe
+            future = asyncio.run_coroutine_threadsafe(corofcn, self.event_loop)
+            if wait_for_result:
+                try:
+                    return future.result()
+                except Exception as exc:
+                    if ignore_exception and isinstance(exc, ignore_exception):
+                        return None
+                    raise exc
+            return future

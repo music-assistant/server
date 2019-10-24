@@ -81,10 +81,10 @@ class HomeAssistant():
             return
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
-        self.mass.event_loop.create_task(self.__hass_websocket())
+        self.mass.create_task(self.__hass_websocket())
         await self.mass.add_event_listener(self.mass_event, EVENT_PLAYER_CHANGED)
         await self.mass.add_event_listener(self.mass_event, EVENT_PLAYER_ADDED)
-        self.mass.event_loop.create_task(self.__get_sources())
+        self.mass.create_task(self.__get_sources())
 
     async def get_state_async(self, entity_id, attribute='state'):
         ''' get state of a hass entity (async)'''
@@ -105,7 +105,7 @@ class HomeAssistant():
             else:
                 return state_obj
         else:
-            self.mass.event_loop.create_task(self.__request_state(entity_id))
+            self.mass.create_task(self.__request_state(entity_id))
             return None
 
     async def __request_state(self, entity_id):
@@ -113,7 +113,7 @@ class HomeAssistant():
         state_obj = await self.__get_data('states/%s' % entity_id)
         if 'state' in state_obj:
             self._tracked_entities[entity_id] = state_obj
-            self.mass.event_loop.create_task(
+            self.mass.create_task(
                 self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, state_obj))
     
     async def mass_event(self, msg, msg_details):
@@ -126,7 +126,7 @@ class HomeAssistant():
         if event_type == 'state_changed':
             if event_data['entity_id'] in self._tracked_entities:
                 self._tracked_entities[event_data['entity_id']] = event_data['new_state']
-                self.mass.event_loop.create_task(
+                self.mass.create_task(
                     self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, event_data))
         elif event_type == 'call_service' and event_data['domain'] == 'media_player':
             await self.__handle_player_command(event_data['service'], event_data['service_data'])
@@ -301,6 +301,8 @@ class HomeAssistant():
                                 #     LOGGER.info(data)
                         elif msg.type == aiohttp.WSMsgType.ERROR:
                             raise Exception("error in websocket")
+            except asyncio.CancelledError:
+                raise asyncio.CancelledError()
             except Exception as exc:
                 LOGGER.exception(exc)
                 await asyncio.sleep(10)

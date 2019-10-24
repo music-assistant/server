@@ -43,7 +43,6 @@ class Web():
 
     async def setup(self):
         ''' perform async setup '''
-        self.http_session = aiohttp.ClientSession()
         app = web.Application()
         app.add_routes([web.get('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])

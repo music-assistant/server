@@ -535,13 +535,17 @@ class QobuzProvider(MusicProvider):
         try:
             async with self.throttler:
                 async with self.http_session.get(url, headers=headers, params=params, verify_ssl=False) as response:
-                    result = await response.json()
-                    if not result or 'error' in result:
-                        LOGGER.error(url)
+                    try:
+                        result = await response.json()
+                        if "error" in result:
+                            return None
+                        return result
+                    except Exception as exc:
+                        LOGGER.error(exc)
+                        LOGGER.debug(url)
                         LOGGER.debug(params)
-                        LOGGER.debug(result)
-                        return None
-                    return result
+                        result = response
+                        LOGGER.debug(await response.text())
         except Exception as exc:
             LOGGER.exception(exc)
             return None
@@ -554,6 +558,8 @@ class QobuzProvider(MusicProvider):
         async with self.http_session.post(url, params=params, json=data, verify_ssl=False) as response:
             try:
                 result = await response.json()
+                if "error" in result:
+                    return None
                 return result
             except Exception as exc:
                 LOGGER.error(exc)

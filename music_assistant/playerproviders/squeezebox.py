@@ -41,10 +41,10 @@ class PySqueezeProvider(PlayerProvider):
     async def setup(self):
         ''' async initialize of module '''
         # start slimproto server
-        self.mass.event_loop.create_task(
+        self.mass.create_task(
                 asyncio.start_server(self.__handle_socket_client, '0.0.0.0', 3483))
         # setup discovery
-        self.mass.event_loop.create_task(self.start_discovery())
+        self.mass.create_task(self.start_discovery())
 
     async def start_discovery(self):
         transport, protocol = await self.mass.event_loop.create_datagram_endpoint(
@@ -84,7 +84,7 @@ class PySqueezeProvider(PlayerProvider):
                             player_id = str(device_mac).lower()
                             device_type = devices.get(dev_id, 'unknown device')
                             player = PySqueezePlayer(self.mass, player_id, self.prov_id, device_type, writer)
-                            self.mass.event_loop.create_task(self.mass.players.add_player(player))
+                            self.mass.create_task(self.mass.players.add_player(player))
                         elif player != None:
                             player.process_msg(operation, packet)
                     
@@ -122,8 +122,8 @@ class PySqueezePlayer(Player):
         self.send_frame(b"setd", struct.pack("B", 4))
 
         # TODO: remember last volume and power state
-        self.mass.event_loop.create_task(self.volume_set(40))
-        self.mass.event_loop.create_task(self.power_off())
+        self.mass.create_task(self.volume_set(40))
+        self.mass.create_task(self.power_off())
         self._heartbeat_task = asyncio.create_task(self.__send_heartbeat())
 
     async def cmd_stop(self):
@@ -243,7 +243,7 @@ class PySqueezePlayer(Player):
         ''' send command to Squeeze player'''
         packet = struct.pack('!H', len(data) + 4) + command + data
         self._writer.write(packet)
-        self.mass.event_loop.create_task(self._writer.drain())
+        self.mass.create_task(self._writer.drain())
 
     def send_version(self):
         self.send_frame(b'vers', b'7.8')
@@ -318,7 +318,7 @@ class PySqueezePlayer(Player):
         LOGGER.debug("Decoder Ready for next track")
         next_item = self.queue.next_item
         if next_item:
-            self.mass.event_loop.create_task(
+            self.mass.create_task(
                 self.__send_play(next_item.uri))
 
     def stat_STMe(self, data):
@@ -600,7 +600,7 @@ class TLVDiscoveryResponseDatagram(Datagram):
             if value is None:
                 value = ''
             elif len(value) > 255:
-                LOGGER.warning("Response %s too long, truncating to 255 bytes" % typ)
+                # Response too long, truncating to 255 bytes
                 value = value[:255]
             parts.extend((typ, chr(len(value)), value))
         self.packet = ''.join(parts)
@@ -619,7 +619,7 @@ class DiscoveryProtocol():
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
     def connection_lost(self, *args, **kwargs):
-        LOGGER.warning("Connection lost to discovery")
+        LOGGER.debug("Connection lost to discovery")
     
     def build_TLV_response(self, requestdata):
         responsedata = OrderedDict()
@@ -655,7 +655,6 @@ class DiscoveryProtocol():
         try:
             data = data.decode()
             dgram = Datagram.decode(data)
-            LOGGER.debug("Data received from %s: %s" % (addr, dgram))
             if isinstance(dgram, ClientDiscoveryDatagram):
                 self.sendDiscoveryResponse(addr)
             elif isinstance(dgram, TLVDiscoveryRequestDatagram):
@@ -666,11 +665,9 @@ class DiscoveryProtocol():
 
     def sendDiscoveryResponse(self, addr):
         dgram = DiscoveryResponseDatagram(get_hostname(), 3483)
-        LOGGER.debug("Sending discovery response %r" % (dgram.packet,))
         self.transport.sendto(dgram.packet.encode(), addr)
 
     def sendTLVDiscoveryResponse(self, resonsedata, addr):
         dgram = TLVDiscoveryResponseDatagram(resonsedata)
-        LOGGER.debug("Sending discovery response %r" % (dgram.packet,))
         self.transport.sendto(dgram.packet.encode(), addr)
 
