@@ -80,7 +80,7 @@ class HTTPStreamer():
             # put chunk in buffer
             self.mass.create_task(
                     buffer.write(audio_chunk), wait_for_result=True, 
-                        ignore_exception=BrokenPipeError)
+                        ignore_exception=(BrokenPipeError,ConnectionResetError))
         # all chunks received: streaming finished
         if cancelled.is_set():
             LOGGER.debug("stream single track interrupted for track %s on player %s" % (queue_item.name, player.name))
@@ -88,7 +88,7 @@ class HTTPStreamer():
             # indicate EOF if no more data
             self.mass.create_task(
                     buffer.write_eof(), wait_for_result=True, 
-                        ignore_exception=BrokenPipeError)
+                        ignore_exception=(BrokenPipeError,ConnectionResetError))
             LOGGER.debug("stream single track finished for track %s on player %s" % (queue_item.name, player.name))
 
     def __get_queue_stream(self, player, buffer, cancelled):
@@ -116,12 +116,12 @@ class HTTPStreamer():
                     break
                 if chunk and not cancelled.is_set():
                     self.mass.create_task(buffer.write(chunk), 
-                        wait_for_result=True, ignore_exception=BrokenPipeError)
+                        wait_for_result=True, ignore_exception=(BrokenPipeError,ConnectionResetError))
                 del chunk
             # indicate EOF if no more data
             if not cancelled.is_set():
                 self.mass.create_task(buffer.write_eof(), 
-                    wait_for_result=True, ignore_exception=BrokenPipeError)
+                    wait_for_result=True, ignore_exception=(BrokenPipeError,ConnectionResetError))
         # start fill buffer task in background
         fill_buffer_thread = threading.Thread(target=fill_buffer)
         fill_buffer_thread.start()

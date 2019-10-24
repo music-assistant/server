@@ -17,7 +17,7 @@ from ..app_vars import get_app_var
 from ..models import MusicProvider, MediaType, TrackQuality, \
         AlbumType, Artist, Album, Track, Playlist
 from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, \
-        CONF_TYPE_PASSWORD, EVENT_PLAYBACK_STARTED, EVENT_PLAYBACK_STOPPED
+        CONF_TYPE_PASSWORD, EVENT_STREAM_STARTED, EVENT_PLAYBACK_STOPPED
 
 PROV_ID = 'qobuz'
 PROV_NAME = 'Qobuz'
@@ -50,7 +50,7 @@ class QobuzProvider(MusicProvider):
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=2, period=1)
-        await self.mass.add_event_listener(self.mass_event, EVENT_PLAYBACK_STARTED)
+        await self.mass.add_event_listener(self.mass_event, EVENT_STREAM_STARTED)
         await self.mass.add_event_listener(self.mass_event, EVENT_PLAYBACK_STOPPED)
     
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
@@ -283,7 +283,7 @@ class QobuzProvider(MusicProvider):
         if not self.__user_auth_info:
             return
         # TODO: need to figure out if the streamed track is purchased by user
-        if msg == EVENT_PLAYBACK_STARTED and msg_details["provider"] == self.prov_id:
+        if msg == EVENT_STREAM_STARTED and msg_details["provider"] == self.prov_id:
             # report streaming started to qobuz
             device_id = self.__user_auth_info["user"]["device"]["id"]
             credential_id = self.__user_auth_info["user"]["credential"]["id"]
