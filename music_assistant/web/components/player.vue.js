@@ -375,7 +375,7 @@ Vue.component("player", {
       this.ws = new WebSocket(new_uri);
 
       this.ws.onopen = function() {
-        console.log('websocket connected!');
+        console.log('websocket connected! ' + new_uri);
         this.createAudioPlayer();
         data = JSON.stringify({message:'players', message_details: null});
         this.ws.send(data);

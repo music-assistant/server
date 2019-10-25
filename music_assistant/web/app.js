@@ -67,7 +67,8 @@ const globalStore = new Vue({
         loading: false,
         showplaymenu: false,
         showsearchbox: false,
-        playmenuitem: null
+        playmenuitem: null,
+        server: null
     }
 })
 Vue.prototype.$globals = globalStore;
@@ -102,6 +103,9 @@ var app = new Vue({
             localStorage.setItem('last_update', cur_update);
             window.location.reload(true);
         }
+        var loc = window.location;
+        console.log(loc);
+        this.$globals.server = loc;
     },
     data: { },
     methods: {},
