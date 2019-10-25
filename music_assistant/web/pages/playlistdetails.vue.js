@@ -44,7 +44,7 @@ var PlaylistDetails = Vue.component('PlaylistDetails', {
   },
   methods: {
     getInfo () {
-      const api_url = '/api/playlists/' + this.media_id
+      const api_url = this.$globals.apiAddress + 'playlists/' + this.media_id
       axios
       .get(api_url, { params: { provider: this.provider }})
         .then(result => {
@@ -57,7 +57,7 @@ var PlaylistDetails = Vue.component('PlaylistDetails', {
     },
     getPlaylistTracks () {
       this.$globals.loading = true
-      const api_url = '/api/playlists/' + this.media_id + '/tracks'
+      const api_url = this.$globals.apiAddress + 'playlists/' + this.media_id + '/tracks'
       axios
         .get(api_url, { params: { offset: this.offset, limit: 25, provider: this.provider}})
         .then(result => {

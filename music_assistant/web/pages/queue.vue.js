@@ -29,7 +29,7 @@ var Queue = Vue.component('Queue', {
   methods: {
 
     getQueueTracks (offset, limit) {
-      const api_url = '/api/players/' + this.player_id + '/queue'
+      const api_url = this.$globals.apiAddress + 'players/' + this.player_id + '/queue'
       return axios.get(api_url, { params: { offset: offset, limit: limit}})
         .then(response => {
             if (response.data.length < 1 )

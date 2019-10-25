@@ -106,7 +106,7 @@ var Config = Vue.component('Config', {
   methods: {
     getConfig () {
       axios
-        .get('/api/config')
+        .get(this.$globals.apiAddress + 'config')
         .then(result => {
           this.conf = result.data;
         })
@@ -118,7 +118,7 @@ var Config = Vue.component('Config', {
       console.log(key + "/" + subkey + " changed!");
       console.log(newvalue);
       axios
-        .post('/api/config/'+key+'/'+subkey, newvalue)
+        .post(this.$globals.apiAddress + 'config/'+key+'/'+subkey, newvalue)
         .then(result => {
           console.log(result);
           if (result.data.restart_required)
@@ -129,7 +129,7 @@ var Config = Vue.component('Config', {
         });
     },
     getPlayers () {
-      const api_url = '/api/players';
+      const api_url = this.$globals.apiAddress + 'players';
       axios
         .get(api_url)
         .then(result => {

@@ -34,7 +34,7 @@ var Browse = Vue.component('Browse', {
   methods: {
     getItems () {
       this.$globals.loading = true
-      const api_url = '/api/' + this.mediatype;
+      const api_url = this.$globals.apiAddress + this.mediatype;
       axios
         .get(api_url, { params: { offset: this.offset, limit: 50, provider: this.provider }})
         .then(result => {

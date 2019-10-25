@@ -149,7 +149,7 @@ Vue.component("player", {
       if (!val)
         this.cur_player_item = null;
       else {
-        const api_url = '/api/players/' + this.active_player_id + '/queue/' + val;
+        const api_url = this.$globals.server + 'api/players/' + this.active_player_id + '/queue/' + val;
         axios
           .get(api_url)
           .then(result => {
@@ -364,18 +364,10 @@ Vue.component("player", {
 
     },
     connectWS() {
-      var loc = window.location, new_uri;
-      if (loc.protocol === "https:") {
-          new_uri = "wss:";
-      } else {
-          new_uri = "ws:";
-      }
-      new_uri += "/" + loc.host;
-      new_uri += loc.pathname + "ws";
-      this.ws = new WebSocket(new_uri);
+      this.ws = new WebSocket(this.$globals.wsAddress);
 
       this.ws.onopen = function() {
-        console.log('websocket connected! ' + new_uri);
+        console.log('websocket connected! ' + this.$globals.wsAddress);
         this.createAudioPlayer();
         data = JSON.stringify({message:'players', message_details: null});
         this.ws.send(data);

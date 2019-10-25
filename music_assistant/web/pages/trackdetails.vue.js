@@ -46,7 +46,7 @@ var TrackDetails = Vue.component('TrackDetails', {
   methods: {
     getInfo () {
       this.$globals.loading = true;
-      const api_url = '/api/tracks/' + this.media_id
+      const api_url = this.$globals.apiAddress + 'tracks/' + this.media_id
       axios
         .get(api_url, { params: { provider: this.provider }})
         .then(result => {
@@ -60,7 +60,7 @@ var TrackDetails = Vue.component('TrackDetails', {
         });
     },
     getTrackVersions () {
-      const api_url = '/api/search';
+      const api_url = this.$globals.apiAddress + 'search';
       var searchstr = this.info.artists[0].name + " - " + this.info.name
       axios
         .get(api_url, { params: { query: searchstr, limit: 50, media_types: 'tracks', online: true}})

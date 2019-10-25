@@ -39,7 +39,7 @@ String.prototype.formatDuration = function () {
         return hours+':'+minutes+':'+seconds;
 }
 function toggleLibrary (item) {
-    var endpoint = "/api/" + item.media_type + "/";
+    var endpoint = this.$globals.server + "api/" + item.media_type + "/";
     item_id = item.item_id.toString();
     var action = "/library_remove"
     if (item.in_library.length == 0)

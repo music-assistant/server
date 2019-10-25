@@ -126,7 +126,7 @@ var Search = Vue.component('Search', {
       if (this.searchQuery) {
         this.$globals.loading = true;
         console.log(this.searchQuery);
-        const api_url = '/api/search'
+        const api_url = this.$globals.apiAddress + 'search'
         console.log('loading ' + api_url);
           axios
             .get(api_url, {

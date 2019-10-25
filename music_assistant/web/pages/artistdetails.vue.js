@@ -73,7 +73,7 @@ var ArtistDetails = Vue.component('ArtistDetails', {
     },
     getInfo (lazy=true) {
       this.$globals.loading = true;
-      const api_url = '/api/artists/' + this.media_id;
+      const api_url = this.$globals.apiAddress + 'artists/' + this.media_id;
       console.log(api_url + ' - ' + this.provider);
       axios
         .get(api_url, { params: { lazy: lazy, provider: this.provider }})
@@ -98,7 +98,7 @@ var ArtistDetails = Vue.component('ArtistDetails', {
     },
     getArtistTopTracks () {
       
-      const api_url = '/api/artists/' + this.media_id + '/toptracks'
+      const api_url = this.$globals.apiAddress + 'artists/' + this.media_id + '/toptracks'
       axios
       .get(api_url, { params: { provider: this.provider }})
         .then(result => {
@@ -111,7 +111,7 @@ var ArtistDetails = Vue.component('ArtistDetails', {
         
     },
     getArtistAlbums () {
-      const api_url = '/api/artists/' + this.media_id + '/albums'
+      const api_url = this.$globals.apiAddress + 'artists/' + this.media_id + '/albums'
       console.log('loading ' + api_url);
       axios
       .get(api_url, { params: { provider: this.provider }})

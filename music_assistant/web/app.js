@@ -68,7 +68,9 @@ const globalStore = new Vue({
         showplaymenu: false,
         showsearchbox: false,
         playmenuitem: null,
-        server: null
+        server: null,
+        apiAddress: null,
+        wsAddress: null
     }
 })
 Vue.prototype.$globals = globalStore;
@@ -103,9 +105,15 @@ var app = new Vue({
             localStorage.setItem('last_update', cur_update);
             window.location.reload(true);
         }
-        var loc = window.location;
-        console.log(loc);
-        this.$globals.server = loc;
+        // TODO: retrieve serveraddress through discovery and/or user settings
+        let loc = window.location;
+        this.$globals.server = loc.origin + loc.pathname;
+        this.$globals.apiAddress = this.$globals.server + 'api/';
+        if (loc.protocol === "https:") {
+            this.$globals.wsAddress = "wss://"+ loc.host + loc.pathname + 'ws';
+        } else {
+            this.$globals.wsAddress = "ws://"+ loc.host + loc.pathname + 'ws';
+        }
     },
     data: { },
     methods: {},
