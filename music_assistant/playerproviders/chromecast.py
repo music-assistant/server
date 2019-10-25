@@ -213,7 +213,7 @@ class ChromecastPlayer(Player):
             self.cur_uri = mediastatus.content_id
             self.cur_time = mediastatus.adjusted_current_time
         if self._state == PlayerState.Playing and self.__cc_report_progress_task == None:
-            self.__cc_report_progress_task = self.mass.create_task(self.__report_progress())
+            self.__cc_report_progress_task = self.mass.event_loop.create_task(self.__report_progress())
 
 class ChromecastProvider(PlayerProvider):
     ''' support for ChromeCast Audio '''
@@ -228,7 +228,7 @@ class ChromecastProvider(PlayerProvider):
 
     async def setup(self):
         ''' perform async setup '''
-        self.mass.create_task(
+        self.mass.event_loop.create_task(
                 self.__periodic_chromecast_discovery())
 
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):
@@ -259,7 +259,7 @@ class ChromecastProvider(PlayerProvider):
             if not player.cc.socket_client or not player.cc.socket_client.is_connected:
                 # cleanup cast object
                 del player.cc
-                self.mass.create_task(self.remove_player(player.player_id))
+                self.mass.run_task(self.remove_player(player.player_id))
         # search for available chromecasts
         from pychromecast.discovery import start_discovery, stop_discovery
         def discovered_callback(name):
@@ -302,7 +302,7 @@ class ChromecastProvider(PlayerProvider):
         chromecast.register_status_listener(status_listener)
         chromecast.media_controller.register_status_listener(status_listener)
         player.cc.wait()
-        self.mass.create_task(self.add_player(player))
+        self.mass.run_task(self.add_player(player))
         if player.mz:
             player.mz.update_members()
 
@@ -319,11 +319,11 @@ class StatusListener:
         self.player_id = player_id
     def new_cast_status(self, status):
         ''' chromecast status changed (like volume etc.)'''
-        self.mass.create_task(
+        self.mass.run_task(
                 self.__handle_callback(caststatus=status))
     def new_media_status(self, status):
         ''' mediacontroller has new state '''
-        self.mass.create_task(
+        self.mass.run_task(
                 self.__handle_callback(mediastatus=status))
     def new_connection_status(self, status):
         ''' will be called when the connection changes '''

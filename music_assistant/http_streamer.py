@@ -14,6 +14,7 @@ import io
 import aiohttp
 import subprocess
 import gc
+import shlex
 
 from .constants import EVENT_STREAM_STARTED, EVENT_STREAM_ENDED
 from .utils import LOGGER, try_parse_int, get_ip, run_async_background_task, run_periodic, get_folder_size
@@ -31,9 +32,7 @@ class HTTPStreamer():
 
     async def setup(self):
         ''' async initialize of module '''
-        pass
-        # self.mass.create_task(
-        #         asyncio.start_server(self.sockets_streamer, '0.0.0.0', 8093))
+        pass # we have nothing to initialize
         
     async def stream(self, http_request):
         ''' 
@@ -78,7 +77,7 @@ class HTTPStreamer():
                 # we must consume the data to prevent hanging subprocess instances
                 continue
             # put chunk in buffer
-            self.mass.create_task(
+            self.mass.run_task(
                     buffer.write(audio_chunk), wait_for_result=True, 
                         ignore_exception=(BrokenPipeError,ConnectionResetError))
         # all chunks received: streaming finished
@@ -86,7 +85,7 @@ class HTTPStreamer():
             LOGGER.debug("stream single track interrupted for track %s on player %s" % (queue_item.name, player.name))
         else:
             # indicate EOF if no more data
-            self.mass.create_task(
+            self.mass.run_task(
                     buffer.write_eof(), wait_for_result=True, 
                         ignore_exception=(BrokenPipeError,ConnectionResetError))
             LOGGER.debug("stream single track finished for track %s on player %s" % (queue_item.name, player.name))
@@ -105,7 +104,8 @@ class HTTPStreamer():
         pcm_args = 'raw -b 32 -c 2 -e signed-integer -r %s' % sample_rate
         args = 'sox -t %s - -t flac -C 0 -' % pcm_args
         # start sox process
-        sox_proc = subprocess.Popen(args, shell=True, 
+        args = shlex.split(args)
+        sox_proc = subprocess.Popen(args, shell=False, 
             stdout=subprocess.PIPE, stdin=subprocess.PIPE)
 
         def fill_buffer():
@@ -115,12 +115,12 @@ class HTTPStreamer():
                 if not chunk:
                     break
                 if chunk and not cancelled.is_set():
-                    self.mass.create_task(buffer.write(chunk), 
+                    self.mass.run_task(buffer.write(chunk), 
                         wait_for_result=True, ignore_exception=(BrokenPipeError,ConnectionResetError))
                 del chunk
             # indicate EOF if no more data
             if not cancelled.is_set():
-                self.mass.create_task(buffer.write_eof(), 
+                self.mass.run_task(buffer.write_eof(), 
                     wait_for_result=True, ignore_exception=(BrokenPipeError,ConnectionResetError))
         # start fill buffer task in background
         fill_buffer_thread = threading.Thread(target=fill_buffer)
@@ -270,7 +270,7 @@ class HTTPStreamer():
         # sort by quality and check track availability
         for prov_media in sorted(queue_item.provider_ids, 
                 key=operator.itemgetter('quality'), reverse=True):
-            streamdetails = self.mass.create_task(
+            streamdetails = self.mass.run_task(
                     self.mass.music.providers[prov_media['provider']].get_stream_details(prov_media['item_id']), 
                     wait_for_result=True)
             if streamdetails:
@@ -298,16 +298,22 @@ class HTTPStreamer():
         if streamdetails["content_type"] == 'aac':
             # support for AAC created with ffmpeg in between
             args = 'ffmpeg -v quiet -i "%s" -f flac - | sox -t flac - -t %s - %s' % (streamdetails["path"], outputfmt, sox_options)
-        elif streamdetails['type'] == 'url':
+            process = subprocess.Popen(args, shell=True, stdout=subprocess.PIPE)
+        elif streamdetails['type'] in ['url', 'file']:
             args = 'sox -t %s "%s" -t %s - %s' % (streamdetails["content_type"], 
                     streamdetails["path"], outputfmt, sox_options)
+            args = shlex.split(args)
+            process = subprocess.Popen(args, shell=False, stdout=subprocess.PIPE)
         elif streamdetails['type'] == 'executable':
             args = '%s | sox -t %s - -t %s - %s' % (streamdetails["path"], 
                     streamdetails["content_type"], outputfmt, sox_options)
-        # start sox process
-        process = subprocess.Popen(args, shell=True, stdout=subprocess.PIPE)
+            process = subprocess.Popen(args, shell=True, stdout=subprocess.PIPE)
+        else:
+            LOGGER.warning(f"no streaming options for {queue_item.name}")
+            yield (True, b'')
+            return
         # fire event that streaming has started for this track
-        self.mass.create_task(
+        self.mass.run_task(
                 self.mass.signal_event(EVENT_STREAM_STARTED, streamdetails))
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
@@ -328,7 +334,7 @@ class HTTPStreamer():
                 bytes_sent += len(chunk)
                 yield (False, chunk)
         # fire event that streaming has ended
-        self.mass.create_task(self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails))
+        self.mass.run_task(self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails))
         # send task to background to analyse the audio
         if queue_item.media_type == MediaType.Track:
             self.mass.event_loop.run_in_executor(None, self.__analyze_audio, streamdetails)
@@ -337,7 +343,7 @@ class HTTPStreamer():
         ''' get player specific sox effect options '''
         sox_options = []
         # volume normalisation
-        gain_correct = self.mass.create_task(
+        gain_correct = self.mass.run_task(
                 self.mass.players.get_gain_correct(
                     player.player_id, streamdetails["item_id"], streamdetails["provider"]), 
                 wait_for_result=True)
@@ -364,7 +370,7 @@ class HTTPStreamer():
         if item_key in self.analyze_jobs:
             return # prevent multiple analyze jobs for same track
         self.analyze_jobs[item_key] = True
-        track_loudness = self.mass.create_task(self.mass.db.get_track_loudness(
+        track_loudness = self.mass.run_task(self.mass.db.get_track_loudness(
                 streamdetails["item_id"], streamdetails["provider"]), wait_for_result=True)
         if track_loudness == None:
             # only when needed we do the analyze stuff
@@ -380,7 +386,7 @@ class HTTPStreamer():
             meter = pyloudnorm.Meter(rate) # create BS.1770 meter
             loudness = meter.integrated_loudness(data) # measure loudness
             del data
-            self.mass.create_task(
+            self.mass.run_task(
                 self.mass.db.set_track_loudness(streamdetails["item_id"], streamdetails["provider"], loudness))
             del audio_data
             LOGGER.debug("Integrated loudness of track %s is: %s" %(item_key, loudness))
@@ -391,18 +397,21 @@ class HTTPStreamer():
         # create fade-in part
         fadeinfile = MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
         args = 'sox --ignore-length -t %s - -t %s %s fade t %s' % (pcm_args, pcm_args, fadeinfile.name, fade_length)
-        process = subprocess.Popen(args, shell=True, stdin=subprocess.PIPE)
+        args = shlex.split(args)
+        process = subprocess.Popen(args, shell=False, stdin=subprocess.PIPE)
         process.communicate(fade_in_part)
         # create fade-out part
         fadeoutfile = MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
         args = 'sox --ignore-length -t %s - -t %s %s reverse fade t %s reverse' % (pcm_args, pcm_args, fadeoutfile.name, fade_length)
-        process = subprocess.Popen(args, shell=True,
+        args = shlex.split(args)
+        process = subprocess.Popen(args, shell=False,
                 stdout=subprocess.PIPE, stdin=subprocess.PIPE)
         process.communicate(fade_out_part)
         # create crossfade using sox and some temp files
         # TODO: figure out how to make this less complex and without the tempfiles
         args = 'sox -m -v 1.0 -t %s %s -v 1.0 -t %s %s -t %s -' % (pcm_args, fadeoutfile.name, pcm_args, fadeinfile.name, pcm_args)
-        process = subprocess.Popen(args, shell=True,
+        args = shlex.split(args)
+        process = subprocess.Popen(args, shell=False,
                 stdout=subprocess.PIPE, stdin=subprocess.PIPE)
         crossfade_part, stderr = process.communicate()
         fadeinfile.close()

@@ -147,7 +147,7 @@ class Player():
         ''' [PROTECTED] set (real) name of this player '''
         if name != self._name:
             self._name = name
-            self.mass.create_task(self.update())
+            self.mass.event_loop.create_task(self.update())
 
     @property
     def is_group(self):
@@ -177,25 +177,25 @@ class Player():
         ''' [PROTECTED] set group_childs property of this player '''
         if group_childs != self._group_childs:
             self._group_childs = group_childs
-            self.mass.create_task(self.update())
+            self.mass.event_loop.create_task(self.update())
             for child_player_id in group_childs:
-                self.mass.create_task(
+                self.mass.event_loop.create_task(
                     self.mass.players.trigger_update(child_player_id))
 
     def add_group_child(self, child_player_id):
         ''' add player as child to this group player '''
         if not child_player_id in self._group_childs:
             self._group_childs.append(child_player_id)
-            self.mass.create_task(self.update())
-            self.mass.create_task(
+            self.mass.event_loop.create_task(self.update())
+            self.mass.event_loop.create_task(
                     self.mass.players.trigger_update(child_player_id))
 
     def remove_group_child(self, child_player_id):
         ''' remove player as child from this group player '''
         if child_player_id in self._group_childs:
             self._group_childs.remove(child_player_id)
-            self.mass.create_task(self.update())
-            self.mass.create_task(
+            self.mass.event_loop.create_task(self.update())
+            self.mass.event_loop.create_task(
                 self.mass.players.trigger_update(child_player_id))
 
     @property
@@ -215,7 +215,7 @@ class Player():
         ''' [PROTECTED] set state property of this player '''
         if state != self._state:
             self._state = state
-            self.mass.create_task(self.update(update_queue=True))
+            self.mass.event_loop.create_task(self.update(update_queue=True))
 
     @property
     def powered(self):
@@ -242,7 +242,7 @@ class Player():
         ''' [PROTECTED] set (real) power state for this player '''
         if powered != self._powered:
             self._powered = powered
-            self.mass.create_task(self.update())
+            self.mass.event_loop.create_task(self.update())
 
     @property
     def cur_time(self):
@@ -262,7 +262,7 @@ class Player():
         if cur_time != self._cur_time:
             self._cur_time = cur_time
             self._media_position_updated_at = time.time()
-            self.mass.create_task(self.update(update_queue=True))
+            self.mass.event_loop.create_task(self.update(update_queue=True))
 
     @property
     def media_position_updated_at(self):
@@ -284,7 +284,7 @@ class Player():
         ''' [PROTECTED] set cur_uri (uri loaded in player) property of this player '''
         if cur_uri != self._cur_uri:
             self._cur_uri = cur_uri
-            self.mass.create_task(self.update(update_queue=True))
+            self.mass.event_loop.create_task(self.update(update_queue=True))
 
     @property
     def volume_level(self):
@@ -316,10 +316,10 @@ class Player():
         volume_level = try_parse_int(volume_level)
         if volume_level != self._volume_level:
             self._volume_level = volume_level
-            self.mass.create_task(self.update())
+            self.mass.event_loop.create_task(self.update())
             # trigger update on group player
             for group_parent_id in self.group_parents:
-                self.mass.create_task(
+                self.mass.event_loop.create_task(
                         self.mass.players.trigger_update(group_parent_id))
 
     @property
@@ -333,7 +333,7 @@ class Player():
         is_muted = try_parse_bool(is_muted)
         if is_muted != self._muted:
             self._muted = is_muted
-            self.mass.create_task(self.update())
+            self.mass.event_loop.create_task(self.update())
 
     @property
     def enabled(self):

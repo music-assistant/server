@@ -332,8 +332,7 @@ class QobuzProvider(MusicProvider):
         ''' parse qobuz album object to generic layout '''
         album = Album()
         if not album_obj.get('id') or not album_obj["streamable"] or not album_obj["displayable"]:
-            # some safety checks
-            LOGGER.warning("invalid/unavailable album found: %s" % album_obj.get('id'))
+            # do not return unavailable items
             return None
         album.item_id = album_obj['id']
         album.provider = self.prov_id
@@ -378,8 +377,7 @@ class QobuzProvider(MusicProvider):
         ''' parse qobuz track object to generic layout '''
         track = Track()
         if not track_obj.get('id') or not track_obj["streamable"] or not track_obj["displayable"]:
-            # some safety checks
-            LOGGER.warning("invalid/unavailable track found: %s - %s" % (track_obj.get('id'), track_obj.get('name')))
+            # do not return unavailable items
             return None
         track.item_id = track_obj['id']
         track.provider = self.prov_id

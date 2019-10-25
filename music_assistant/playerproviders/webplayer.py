@@ -50,7 +50,7 @@ class WebPlayerProvider(PlayerProvider):
         ''' async initialize of module '''
         await self.mass.add_event_listener(self.handle_mass_event, EVENT_WEBPLAYER_STATE)
         await self.mass.add_event_listener(self.handle_mass_event, EVENT_WEBPLAYER_REGISTER)
-        self.mass.create_task(self.check_players())
+        self.mass.event_loop.create_task(self.check_players())
 
     async def handle_mass_event(self, msg, msg_details):
         ''' received event for the webplayer component '''

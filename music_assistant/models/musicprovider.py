@@ -278,27 +278,32 @@ class MusicProvider():
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''
-        raise NotImplementedError
+        return {
+            "artists": [],
+            "albums": [],
+            "tracks": [],
+            "playlists": []
+        }
     
     async def get_library_artists(self) -> List[Artist]:
         ''' retrieve library artists from the provider '''
-        raise NotImplementedError
+        return []
     
     async def get_library_albums(self) -> List[Album]:
         ''' retrieve library albums from the provider '''
-        raise NotImplementedError
+        return []
 
     async def get_library_tracks(self) -> List[Track]:
         ''' retrieve library tracks from the provider '''
-        raise NotImplementedError
+        return []
 
     async def get_playlists(self) -> List[Playlist]:
         ''' retrieve library/subscribed playlists from the provider '''
-        raise NotImplementedError
+        return []
 
     async def get_radios(self) -> List[Radio]:
         ''' retrieve library/subscribed radio stations from the provider '''
-        raise NotImplementedError
+        return []
 
     async def get_artist(self, prov_item_id) -> Artist:
         ''' get full artist details by id '''
@@ -356,68 +361,7 @@ class MusicProvider():
         ''' return the content type for the given track when it will be streamed'''
         raise NotImplementedError
     
-    async def get_stream(self, track_id):
-        ''' get audio stream for a track '''
+    async def get_stream_details(self, track_id):
+        ''' get streamdetails for a track '''
         raise NotImplementedError
     
-
-class PlayerProvider():
-    ''' 
-        Model for a Playerprovider
-        Common methods usable for every provider
-        Provider specific __get methods shoud be overriden in the provider specific implementation
-    '''
-    name = 'My great Musicplayer provider' # display name
-    prov_id = 'my_provider' # used as id
-    icon = ''
-
-    def __init__(self, mass):
-        self.mass = mass
-
-    ### Common methods and properties ####
-
-    async def players(self):
-        ''' return all players for this provider '''
-        return await self.mass.provider_players(self.prov_id)
-    
-    async def get_player(self, player_id):
-        ''' return player by id '''
-        return await self.mass.get_player(player_id)
-
-    async def add_player(self, player_id, name='', is_group=False):
-        ''' register a new player '''
-        return await self.mass.players.add_player(player_id, 
-                self.prov_id, name=name, is_group=is_group)
-
-    async def remove_player(self, player_id):
-        ''' remove a player '''
-        return await self.mass.players.remove_player(player_id)
-
-    ### Provider specific implementation #####
-
-    async def player_config_entries(self):
-        ''' get the player config entries for this provider (list with key/value pairs)'''
-        return [
-            (CONF_ENABLED, True, CONF_ENABLED)
-            ]
-
-    async def play_media(self, player_id, media_items:List[Track], queue_opt='play'):
-        ''' 
-            play media on a player
-            params:
-            - player_id: id of the player
-            - media_items: List of Tracks to play, each Track will contain uri attribute (e.g. spotify:track:1234 or http://pathtostream)
-            - queue_opt: 
-                replace: replace whatever is currently playing with this media
-                next: the given media will be played after the currently playing track
-                add: add to the end of the queue
-                play: keep existing queue but play the given item(s) now first
-        '''
-        raise NotImplementedError
-
-    async def player_command(self, player_id, cmd:str, cmd_args=None):
-        ''' issue command on player (play, pause, next, previous, stop, power, volume, mute) '''
-        raise NotImplementedError
-
-
-

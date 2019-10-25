@@ -151,11 +151,11 @@ class PlayerQueue():
             # shuffle requested
             self._shuffle_enabled = True
             await self.load(self._items)
-            self.mass.create_task(self._player.update())
+            self.mass.event_loop.create_task(self._player.update())
         elif self._shuffle_enabled and not enable_shuffle:
             self._shuffle_enabled = False
             # TODO: Unshuffle the list ?
-            self.mass.create_task(self._player.update())
+            self.mass.event_loop.create_task(self._player.update())
     
     async def next(self):
         ''' request next track in queue '''
@@ -301,11 +301,9 @@ class PlayerQueue():
             # account for track changing state so trigger track change after 1 second
             if self._last_track and self._last_track.streamdetails:
                 self._last_track.streamdetails["seconds_played"] = self._last_item_time
-                self.mass.create_task(
-                    self.mass.signal_event(EVENT_PLAYBACK_STOPPED, self._last_track.streamdetails))
+                await self.mass.signal_event(EVENT_PLAYBACK_STOPPED, self._last_track.streamdetails)
             if new_track and new_track.streamdetails:
-                self.mass.create_task(
-                    self.mass.signal_event(EVENT_PLAYBACK_STARTED, new_track.streamdetails))
+                await self.mass.signal_event(EVENT_PLAYBACK_STARTED, new_track.streamdetails)
                 self._last_track = new_track
             self.mass.event_loop.run_in_executor(None, self.__save_to_file)
         if self._last_player_state != self._player.state:

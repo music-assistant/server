@@ -7,9 +7,9 @@ import toolz
 import operator
 import os
 
-from .utils import run_periodic, LOGGER, try_supported, load_provider_modules
+from .utils import run_periodic, LOGGER, load_provider_modules
 from .models.media_types import MediaType, Track, Artist, Album, Playlist, Radio
-from .constants import CONF_KEY_MUSICPROVIDERS
+from .constants import CONF_KEY_MUSICPROVIDERS, EVENT_MUSIC_SYNC_STARTED, EVENT_MUSIC_SYNC_COMPLETED
 
 
 class MusicManager():
@@ -27,7 +27,7 @@ class MusicManager():
         for prov in self.providers.values():
             await prov.setup()
         # schedule sync task
-        self.mass.create_task(self.sync_music_providers())
+        self.mass.event_loop.create_task(self.sync_music_providers())
 
     async def item(self, item_id, media_type:MediaType, provider='database', lazy=True):
         ''' get single music item by id and media type'''
@@ -254,21 +254,25 @@ class MusicManager():
         # actually add the tracks to the playlist on the provider
         await self.providers[playlist_prov['provider']].add_playlist_tracks(playlist_prov['item_id'], track_ids_to_add)
         # schedule sync
-        self.mass.create_task(self.sync_playlist_tracks(playlist.item_id, playlist_prov['provider'], playlist_prov['item_id']))
+        self.mass.event_loop.create_task(self.sync_playlist_tracks(playlist.item_id, playlist_prov['provider'], playlist_prov['item_id']))
 
     @run_periodic(3600)
     async def sync_music_providers(self):
         ''' periodic sync of all music providers '''
         if self.sync_running:
             return
+        LOGGER.info("Music provider sync started")
         for prov_id in self.providers.keys():
             self.sync_running = prov_id
+            await self.mass.signal_event(EVENT_MUSIC_SYNC_STARTED, prov_id)
             # sync library items for each provider (if supported)
-            await try_supported(self.sync_library_artists(prov_id))
-            await try_supported(self.sync_library_albums(prov_id))
-            await try_supported(self.sync_library_tracks(prov_id))
-            await try_supported(self.sync_playlists(prov_id))
-            await try_supported(self.sync_radios(prov_id))
+            await self.sync_library_artists(prov_id)
+            await self.sync_library_albums(prov_id)
+            await self.sync_library_tracks(prov_id)
+            await self.sync_playlists(prov_id)
+            await self.sync_radios(prov_id)
+        LOGGER.info("Music provider sync completed")
+        await self.mass.signal_event(EVENT_MUSIC_SYNC_COMPLETED, None)
         self.sync_running = None
         
     async def sync_library_artists(self, prov_id):

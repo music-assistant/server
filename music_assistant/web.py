@@ -10,9 +10,10 @@ import ssl
 import concurrent
 import threading
 from .models.media_types import MediaItem, MediaType, media_type_from_string
-from .utils import run_periodic, LOGGER, run_async_background_task, get_ip, json_serializer
+from .utils import run_periodic, LOGGER, IS_HASSIO, run_async_background_task, get_ip, json_serializer
 
 CONF_KEY = 'web'
+
 CONFIG_ENTRIES = [
         ('http_port', 8095, 'web_http_port'),
         ('https_port', 8096, 'web_https_port'),
@@ -28,17 +29,18 @@ class Web():
         self.mass = mass
         # load/create/update config
         config = self.mass.config.create_module_config(CONF_KEY, CONFIG_ENTRIES)
+        enable_ssl = config['ssl_certificate'] and config['ssl_key']
         if config['ssl_certificate'] and not os.path.isfile(
                 config['ssl_certificate']):
-            raise FileNotFoundError(
-                "SSL certificate file not found: %s" % config['ssl_certificate'])
+            enable_ssl = False
+            LOGGER.warning("SSL certificate file not found: %s" % config['ssl_certificate'])
         if config['ssl_key'] and not os.path.isfile(config['ssl_key']):
-            raise FileNotFoundError(
-                "SSL certificate key file not found: %s" % config['ssl_key'])
-        self.local_ip = get_ip()
+            enable_ssl = False
+            LOGGER.warning( "SSL certificate key file not found: %s" % config['ssl_key'])
         self.http_port = config['http_port']
         self.https_port = config['https_port']
-        self._enable_ssl = config['ssl_certificate'] and config['ssl_key']
+        self._enable_ssl = enable_ssl
+        self.local_ip = get_ip()
         self.config = config
 
     async def setup(self):
@@ -74,11 +76,25 @@ class Web():
         await self.runner.setup()
         http_site = web.TCPSite(self.runner, '0.0.0.0', self.http_port)
         await http_site.start()
+        LOGGER.info("Started HTTP webserver on port %s" % self.http_port)
         if self._enable_ssl:
             ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ssl_context.load_cert_chain(self.config['ssl_certificate'], self.config['ssl_key'])
-            https_site = web.TCPSite(self.runner, '0.0.0.0', self.https_port, ssl_context=ssl_context)
+            https_site = web.TCPSite(self.runner, '0.0.0.0', self.config['https_port'], ssl_context=ssl_context)
             await https_site.start()
+            LOGGER.info("Started HTTPS webserver on port %s" % self.config['https_port'])
+        if IS_HASSIO:
+            # host additional http port for hassio ingress
+            headers = {"X-HASSIO-KEY": os.environ["HASSIO_TOKEN"]}
+            url = "http://hassio/addons/self/info"
+            async with aiohttp.ClientSession().get(url, headers=headers, verify_ssl=False) as response:
+                result = await response.json()
+                ingress_port = int(result["ingress_port"])
+                ingress_site = web.TCPSite(self.runner, '0.0.0.0', ingress_port)
+                await ingress_site.start()
+                LOGGER.info("Started INGRESS webserver on port %s" % ingress_port)
+
+
 
     async def get_items(self, request):
         ''' get multiple library items'''

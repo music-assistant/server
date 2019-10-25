@@ -83,20 +83,16 @@ class MusicAssistant():
         ''' remove callback from our event listeners '''
         self.event_listeners.pop(cb_id, None)
 
-    def create_task(self, corofcn, wait_for_result=False, ignore_exception=None):
-        ''' helper to create a new task on the main event loop '''
+    def run_task(self, corofcn, wait_for_result=False, ignore_exception=None):
+        ''' helper to run a task on the main event loop from another thread '''
         if threading.current_thread() is threading.main_thread():
-            if wait_for_result:
-                raise Exception("can not wait for result in main event loop!")
-            return self.event_loop.create_task(corofcn)
-        else:
-            # threadsafe
-            future = asyncio.run_coroutine_threadsafe(corofcn, self.event_loop)
-            if wait_for_result:
-                try:
-                    return future.result()
-                except Exception as exc:
-                    if ignore_exception and isinstance(exc, ignore_exception):
-                        return None
-                    raise exc
-            return future
+            raise Exception("Can not be called from main event loop!")
+        future = asyncio.run_coroutine_threadsafe(corofcn, self.event_loop)
+        if wait_for_result:
+            try:
+                return future.result()
+            except Exception as exc:
+                if ignore_exception and isinstance(exc, ignore_exception):
+                    return None
+                raise exc
+        return future

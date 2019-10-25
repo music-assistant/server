@@ -15,6 +15,7 @@ LOGGER = logging.getLogger('music_assistant')
 
 from .constants import CONF_KEY_MUSICPROVIDERS, CONF_ENABLED
 
+IS_HASSIO = os.path.isfile('/data/options.json')
 
 def run_periodic(period):
     def scheduler(fcn):
@@ -24,15 +25,6 @@ def run_periodic(period):
                 await asyncio.sleep(period)
         return wrapper
     return scheduler
-
-async def try_supported(task):
-    ''' try to execute a task and pass NotImplementedError Exception '''
-    ret = None
-    try:
-        ret = await task
-    except NotImplementedError:
-        pass
-    return ret
 
 def filename_from_string(string):
     ''' create filename from unsafe string '''

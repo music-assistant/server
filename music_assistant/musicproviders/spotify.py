@@ -8,11 +8,10 @@ import sys
 import time
 import concurrent
 from asyncio_throttle import Throttler
-import json
 import aiohttp
 
 from ..cache import use_cache
-from ..utils import run_periodic, LOGGER, parse_track_title
+from ..utils import run_periodic, LOGGER, parse_track_title, json
 from ..app_vars import get_app_var
 from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, CONF_TYPE_PASSWORD
@@ -246,8 +245,10 @@ class SpotifyProvider(MusicProvider):
 
     async def get_stream_details(self, track_id):
         ''' return the content details for the given track when it will be streamed'''
+        # make sure there is a valid token in cache
+        await self.get_token()
         spotty = self.get_spotty_binary()
-        spotty_exec = "%s -n temp -u %s -p %s --pass-through --single-track %s" %(spotty, self._username, self._password, track_id)
+        spotty_exec = '%s -n temp -c "%s" --pass-through --single-track %s' %(spotty, self.mass.datapath, track_id)
         return {
             "type": "executable",
             "path": spotty_exec,
@@ -328,7 +329,7 @@ class SpotifyProvider(MusicProvider):
         if 'track' in track_obj:
             track_obj = track_obj['track']
         if track_obj['is_local'] or not track_obj['id'] or not track_obj['is_playable']:
-            LOGGER.warning("invalid/unavailable track found: %s - %s" % (track_obj.get('id'), track_obj.get('name')))
+            # do not return unavailable items
             return None
         track = Track()
         track.item_id = track_obj['id']
@@ -388,42 +389,8 @@ class SpotifyProvider(MusicProvider):
         tokeninfo = {}
         if not self._username or not self._password:
             return tokeninfo
-        # try with spotipy-token module first, fallback to spotty
-        try:
-            import spotify_token as st
-            data = st.start_session(self._username, self._password)
-            if data and len(data) == 2:
-                tokeninfo = {"accessToken": data[0], "expiresIn": data[1] - int(time.time()), "expiresAt":data[1] }
-        except Exception as exc:
-            LOGGER.debug(exc)
-        if not tokeninfo:
-            # fallback to spotty approach
-            import subprocess
-            scopes = [
-                "user-read-playback-state",
-                "user-read-currently-playing",
-                "user-modify-playback-state",
-                "playlist-read-private",
-                "playlist-read-collaborative",
-                "playlist-modify-public",
-                "playlist-modify-private",
-                "user-follow-modify",
-                "user-follow-read",
-                "user-library-read",
-                "user-library-modify",
-                "user-read-private",
-                "user-read-email",
-                "user-read-birthdate",
-                "user-top-read"]
-            scope = ",".join(scopes)
-            args = [self.get_spotty_binary(), "-t", "--client-id", get_app_var(2), "--scope", scope, "-n", "temp-spotty", "-u", self._username, "-p", self._password, "--disable-discovery"]
-            spotty = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            stdout, stderr = spotty.communicate()
-            result = json.loads(stdout)
-            # transform token info to spotipy compatible format
-            if result and "accessToken" in result:
-                tokeninfo = result
-                tokeninfo['expiresAt'] = tokeninfo['expiresIn'] + int(time.time())
+        # retrieve token with spotty
+        tokeninfo = await self.mass.event_loop.run_in_executor(None, self.__get_token)
         if tokeninfo:
             self.__auth_token = tokeninfo
             self.sp_user = await self.__get_data("me")
@@ -431,6 +398,44 @@ class SpotifyProvider(MusicProvider):
             self.__auth_token = tokeninfo
         else:
             raise Exception("Can't get Spotify token for user %s" % self._username)
+        return tokeninfo
+
+    def __get_token(self):
+        ''' get spotify auth token with spotty bin '''
+        # get token with spotty
+        scopes = [
+            "user-read-playback-state",
+            "user-read-currently-playing",
+            "user-modify-playback-state",
+            "playlist-read-private",
+            "playlist-read-collaborative",
+            "playlist-modify-public",
+            "playlist-modify-private",
+            "user-follow-modify",
+            "user-follow-read",
+            "user-library-read",
+            "user-library-modify",
+            "user-read-private",
+            "user-read-email",
+            "user-read-birthdate",
+            "user-top-read"]
+        scope = ",".join(scopes)
+        args = [self.get_spotty_binary(), "-t",
+            "--client-id", get_app_var(2), 
+            "--scope", scope, 
+            "-n", "temp-spotty", 
+            "-u", self._username, 
+            "-p", self._password,
+            "-c", self.mass.datapath,
+            "--disable-discovery"]
+        import subprocess
+        spotty = subprocess.Popen(args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        stdout, stderr = spotty.communicate()
+        result = json.loads(stdout)
+        # transform token info to spotipy compatible format
+        if result and "accessToken" in result:
+            tokeninfo = result
+            tokeninfo['expiresAt'] = tokeninfo['expiresIn'] + int(time.time())
         return tokeninfo
 
     async def __get_all_items(self, endpoint, params={}, limit=0, offset=0, cache_checksum=None):

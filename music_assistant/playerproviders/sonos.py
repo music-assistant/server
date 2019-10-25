@@ -114,7 +114,7 @@ class SonosPlayer(Player):
             await asyncio.sleep(1)
         self.__sonos_report_progress_task = None
     
-    def _update_state(self, event=None):
+    async def update_state(self, event=None):
         ''' update state, triggerer by event '''
         if event:
             variables = event.variables
@@ -141,7 +141,7 @@ class SonosPlayer(Player):
         rel_time = self.__timespan_secs(position_info.get("RelTime"))
         self.cur_time = rel_time
         if self._state == PlayerState.Playing and self.__sonos_report_progress_task == None:
-            self.__sonos_report_progress_task = self.mass.create_task(self.__report_progress())
+            self.__sonos_report_progress_task = self.mass.event_loop.create_task(self.__report_progress())
 
     @staticmethod
     def __convert_state(sonos_state):
@@ -173,7 +173,7 @@ class SonosProvider(PlayerProvider):
 
     async def setup(self):
         ''' perform async setup '''
-        self.mass.create_task(
+        self.mass.event_loop.create_task(
                 self.__periodic_discovery())
 
     @run_periodic(1800)
@@ -196,7 +196,7 @@ class SonosProvider(PlayerProvider):
         # remove any disconnected players...
         for player in self.players:
             if not player.is_group and not player.soco.uid in new_device_ids:
-                self.mass.create_task(self.remove_player(player.player_id))
+                self.mass.run_task(self.remove_player(player.player_id))
         # process new players
         for device in discovered_devices:
             if device.uid not in cur_player_ids and device.is_visible:
@@ -219,13 +219,13 @@ class SonosProvider(PlayerProvider):
         player._media_position_updated_at = None
         # handle subscriptions to events
         def subscribe(service, action):
-            queue = _ProcessSonosEventQueue(action)
+            queue = _ProcessSonosEventQueue(self.mass, action)
             sub = service.subscribe(auto_renew=True, event_queue=queue)
             player._subscriptions.append(sub)
-        subscribe(soco_device.avTransport, player._update_state)
-        subscribe(soco_device.renderingControl, player._update_state)
+        subscribe(soco_device.avTransport, player.update_state)
+        subscribe(soco_device.renderingControl, player.update_state)
         subscribe(soco_device.zoneGroupTopology, self.__topology_changed)
-        self.mass.create_task(self.add_player(player))
+        self.mass.run_task(self.add_player(player))
         return player
 
     def __process_groups(self, sonos_groups):
@@ -242,7 +242,7 @@ class SonosProvider(PlayerProvider):
             group_player.name = group.label
             group_player.group_childs = [item.uid for item in group.members]
             
-    def __topology_changed(self, event=None):
+    async def __topology_changed(self, event=None):
         ''' 
             received topology changed event 
             from one of the sonos players
@@ -253,13 +253,14 @@ class SonosProvider(PlayerProvider):
 class _ProcessSonosEventQueue:
     """Queue like object for dispatching sonos events."""
 
-    def __init__(self, handler):
+    def __init__(self, mass, handler):
         """Initialize Sonos event queue."""
         self._handler = handler
+        self.mass = mass
 
     def put(self, item, block=True, timeout=None):
         """Process event."""
         try:
-            self._handler(item)
+            self.mass.run_task(self._handler(item), wait_for_result=True)
         except Exception as ex:
             LOGGER.warning("Error calling %s: %s", self._handler, ex)

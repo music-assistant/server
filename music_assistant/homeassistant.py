@@ -14,7 +14,7 @@ from aiocometd import Client, ConnectionType, Extension
 import copy
 import slugify as slug
 import json
-from .utils import run_periodic, LOGGER, parse_track_title, try_parse_int
+from .utils import run_periodic, LOGGER, IS_HASSIO, parse_track_title, try_parse_int
 from .models.media_types import Track
 from .constants import CONF_ENABLED, CONF_URL, CONF_TOKEN, EVENT_PLAYER_CHANGED, EVENT_PLAYER_ADDED, EVENT_HASS_ENTITY_CHANGED
 from .cache import use_cache
@@ -23,13 +23,11 @@ CONF_KEY = 'homeassistant'
 CONF_PUBLISH_PLAYERS = "publish_players"
 
 ### auto detect hassio for auto config ####
-if os.path.isfile('/data/options.json'):
-    IS_HASSIO = True
+if IS_HASSIO:
     CONFIG_ENTRIES = [
         (CONF_ENABLED, False, CONF_ENABLED),
         (CONF_PUBLISH_PLAYERS, True, 'hass_publish')]
 else:
-    IS_HASSIO = False
     CONFIG_ENTRIES = [
         (CONF_ENABLED, False, CONF_ENABLED),
         (CONF_URL, 'localhost', 'hass_url'), 
@@ -81,10 +79,10 @@ class HomeAssistant():
             return
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
-        self.mass.create_task(self.__hass_websocket())
+        self.mass.event_loop.create_task(self.__hass_websocket())
         await self.mass.add_event_listener(self.mass_event, EVENT_PLAYER_CHANGED)
         await self.mass.add_event_listener(self.mass_event, EVENT_PLAYER_ADDED)
-        self.mass.create_task(self.__get_sources())
+        self.mass.event_loop.create_task(self.__get_sources())
 
     async def get_state_async(self, entity_id, attribute='state'):
         ''' get state of a hass entity (async)'''
@@ -105,7 +103,7 @@ class HomeAssistant():
             else:
                 return state_obj
         else:
-            self.mass.create_task(self.__request_state(entity_id))
+            self.mass.event_loop.create_task(self.__request_state(entity_id))
             return None
 
     async def __request_state(self, entity_id):
@@ -113,8 +111,7 @@ class HomeAssistant():
         state_obj = await self.__get_data('states/%s' % entity_id)
         if 'state' in state_obj:
             self._tracked_entities[entity_id] = state_obj
-            self.mass.create_task(
-                self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, state_obj))
+            await self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, state_obj)
     
     async def mass_event(self, msg, msg_details):
         ''' received event from mass '''
@@ -126,7 +123,7 @@ class HomeAssistant():
         if event_type == 'state_changed':
             if event_data['entity_id'] in self._tracked_entities:
                 self._tracked_entities[event_data['entity_id']] = event_data['new_state']
-                self.mass.create_task(
+                self.mass.event_loop.create_task(
                     self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, event_data))
         elif event_type == 'call_service' and event_data['domain'] == 'media_player':
             await self.__handle_player_command(event_data['service'], event_data['service_data'])

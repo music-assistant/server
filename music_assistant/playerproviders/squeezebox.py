@@ -41,10 +41,10 @@ class PySqueezeProvider(PlayerProvider):
     async def setup(self):
         ''' async initialize of module '''
         # start slimproto server
-        self.mass.create_task(
+        self.mass.event_loop.create_task(
                 asyncio.start_server(self.__handle_socket_client, '0.0.0.0', 3483))
         # setup discovery
-        self.mass.create_task(self.start_discovery())
+        self.mass.event_loop.create_task(self.start_discovery())
 
     async def start_discovery(self):
         transport, protocol = await self.mass.event_loop.create_datagram_endpoint(
@@ -84,7 +84,7 @@ class PySqueezeProvider(PlayerProvider):
                             player_id = str(device_mac).lower()
                             device_type = devices.get(dev_id, 'unknown device')
                             player = PySqueezePlayer(self.mass, player_id, self.prov_id, device_type, writer)
-                            self.mass.create_task(self.mass.players.add_player(player))
+                            self.mass.event_loop.create_task(self.mass.players.add_player(player))
                         elif player != None:
                             player.process_msg(operation, packet)
                     
@@ -122,8 +122,8 @@ class PySqueezePlayer(Player):
         self.send_frame(b"setd", struct.pack("B", 4))
 
         # TODO: remember last volume and power state
-        self.mass.create_task(self.volume_set(40))
-        self.mass.create_task(self.power_off())
+        self.mass.event_loop.create_task(self.volume_set(40))
+        self.mass.event_loop.create_task(self.power_off())
         self._heartbeat_task = asyncio.create_task(self.__send_heartbeat())
 
     async def cmd_stop(self):
@@ -243,7 +243,7 @@ class PySqueezePlayer(Player):
         ''' send command to Squeeze player'''
         packet = struct.pack('!H', len(data) + 4) + command + data
         self._writer.write(packet)
-        self.mass.create_task(self._writer.drain())
+        self.mass.event_loop.create_task(self._writer.drain())
 
     def send_version(self):
         self.send_frame(b'vers', b'7.8')
@@ -318,7 +318,7 @@ class PySqueezePlayer(Player):
         LOGGER.debug("Decoder Ready for next track")
         next_item = self.queue.next_item
         if next_item:
-            self.mass.create_task(
+            self.mass.event_loop.create_task(
                 self.__send_play(next_item.uri))
 
     def stat_STMe(self, data):
