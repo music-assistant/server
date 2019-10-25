@@ -63,7 +63,7 @@ var AlbumDetails = Vue.component('AlbumDetails', {
   methods: {
     getInfo () {
       this.$globals.loading = true;
-      const api_url = '/api/albums/' + this.media_id
+      const api_url = this.$globals.server + 'api/albums/' + this.media_id
       axios
         .get(api_url, { params: { provider: this.provider }})
         .then(result => {
@@ -77,7 +77,7 @@ var AlbumDetails = Vue.component('AlbumDetails', {
         });
     },
     getAlbumTracks () {
-      const api_url = '/api/albums/' + this.media_id + '/tracks'
+      const api_url = this.$globals.server + 'api/albums/' + this.media_id + '/tracks'
       axios
         .get(api_url, { params: { offset: this.offset, limit: 50, provider: this.provider}})
         .then(result => {
@@ -90,7 +90,7 @@ var AlbumDetails = Vue.component('AlbumDetails', {
         });
     },
     getAlbumVersions () {
-      const api_url = '/api/search';
+      const api_url = this.$globals.server + 'api/search';
       var searchstr = this.info.artist.name + " - " + this.info.name
       axios
         .get(api_url, { params: { query: searchstr, limit: 50, media_types: 'albums', online: true}})

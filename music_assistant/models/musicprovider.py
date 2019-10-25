@@ -257,7 +257,7 @@ class MusicProvider():
         searchstr = "%s - %s %s" %(searchalbum.artist.name, searchalbum.name, searchalbum.version)
         search_results = await self.search(searchstr, [MediaType.Album], limit=5)
         for item in search_results["albums"]:
-            if item.name == searchalbum.name and item.version == searchalbum.version and item.artist.name == searchalbum.artist.name:
+            if item and item.name == searchalbum.name and item.version == searchalbum.version and item.artist.name == searchalbum.artist.name:
                 # just load this item in the database, it will be matched automagically ;-)
                 await self.album(item.item_id, lazy=False)
 
@@ -267,7 +267,7 @@ class MusicProvider():
         searchartists = [item.name for item in searchtrack.artists]
         search_results = await self.search(searchstr, [MediaType.Track], limit=5)
         for item in search_results["tracks"]:
-            if item.name == searchtrack.name and item.version == searchtrack.version and item.album.name == searchtrack.album.name:
+            if item and item.name == searchtrack.name and item.version == searchtrack.version and item.album.name == searchtrack.album.name:
                 # double safety check - artist must match exactly !
                 for artist in item.artists:
                     if artist.name in searchartists:

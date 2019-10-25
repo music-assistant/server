@@ -168,7 +168,7 @@ class MusicManager():
         playlist = None
         if not provider or provider == 'database':
             playlist = await self.mass.db.playlist(playlist_id)
-        if playlist and playlist.is_editable:
+        if playlist:
             # database synced playlist, return tracks from db...
             return await self.mass.db.playlist_tracks(
                     playlist.item_id, offset=offset, limit=limit)
@@ -345,9 +345,8 @@ class MusicManager():
             cur_db_ids.append(db_id)
             if not db_id in prev_db_ids:
                 await self.mass.db.add_to_library(db_id, MediaType.Playlist, prov_id)
-            if item.is_editable:
-                # precache/sync playlist tracks (user owned playlists only)
-                asyncio.create_task( self.sync_playlist_tracks(db_id, prov_id, item.item_id) )
+            # sync playlist tracks
+            await self.sync_playlist_tracks(db_id, prov_id, item.item_id)
         # process playlist deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:

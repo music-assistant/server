@@ -99,8 +99,7 @@ class HTTPStreamer():
         if fade_length:
             fade_bytes = int(sample_rate * 4 * 2 * fade_length)
         else:
-            fade_length = 1
-            fade_bytes = int(sample_rate * 4 * 2)
+            fade_bytes = int(sample_rate * 4 * 2 * 6)
         pcm_args = 'raw -b 32 -c 2 -e signed-integer -r %s' % sample_rate
         args = 'sox -t %s - -t flac -C 0 -' % pcm_args
         # start sox process
@@ -109,9 +108,8 @@ class HTTPStreamer():
             stdout=subprocess.PIPE, stdin=subprocess.PIPE)
 
         def fill_buffer():
-            chunk_size = int(sample_rate * 4 * 2)
             while True:
-                chunk = sox_proc.stdout.read(chunk_size)
+                chunk = sox_proc.stdout.read(128000)
                 if not chunk:
                     break
                 if chunk and not cancelled.is_set():
@@ -268,8 +266,11 @@ class HTTPStreamer():
         ''' get audio stream from provider and apply additional effects/processing where/if needed'''
         # get stream details from provider
         # sort by quality and check track availability
+        streamdetails = None
         for prov_media in sorted(queue_item.provider_ids, 
                 key=operator.itemgetter('quality'), reverse=True):
+            if not prov_media['provider'] in self.mass.music.providers:
+                continue
             streamdetails = self.mass.run_task(
                     self.mass.music.providers[prov_media['provider']].get_stream_details(prov_media['item_id']), 
                     wait_for_result=True)

@@ -191,7 +191,7 @@ class Database():
                     async with db.execute('SELECT (playlist_id) FROM playlists WHERE name=? AND owner=?;', (playlist.name,playlist.owner)) as cursor:
                         playlist_id = await cursor.fetchone()
                         playlist_id = playlist_id[0]
-                    LOGGER.info('added playlist %s to database: %s' %(playlist.name, playlist_id))
+                    LOGGER.debug('added playlist %s to database: %s' %(playlist.name, playlist_id))
             # add/update metadata
             await self.__add_prov_ids(playlist_id, MediaType.Playlist, playlist.provider_ids, db)
             await self.__add_metadata(playlist_id, MediaType.Playlist, playlist.metadata, db)
@@ -215,7 +215,7 @@ class Database():
                     async with db.execute('SELECT (radio_id) FROM radios WHERE name=?;', (radio.name,)) as cursor:
                         radio_id = await cursor.fetchone()
                         radio_id = radio_id[0]
-                    LOGGER.info('added radio station %s to database: %s' %(radio.name, radio_id))
+                    LOGGER.debug('added radio station %s to database: %s' %(radio.name, radio_id))
             # add/update metadata
             await self.__add_prov_ids(radio_id, MediaType.Radio, radio.provider_ids, db)
             await self.__add_metadata(radio_id, MediaType.Radio, radio.metadata, db)
@@ -320,7 +320,7 @@ class Database():
             await self.__add_external_ids(artist_id, MediaType.Artist, artist.external_ids, db)
             # save
             await db.commit()
-        LOGGER.info('added artist %s (%s) to database: %s' %(artist.name, artist.provider_ids, artist_id))
+        LOGGER.debug('added artist %s (%s) to database: %s' %(artist.name, artist.provider_ids, artist_id))
         return artist_id
     
     async def albums(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=False, db=None) -> List[Album]:
@@ -404,7 +404,7 @@ class Database():
             await self.__add_external_ids(album_id, MediaType.Album, album.external_ids, db)
             # save
             await db.commit()
-        LOGGER.info('added album %s (%s) to database: %s' %(album.name, album.provider_ids, album_id))
+        LOGGER.debug('added album %s (%s) to database: %s' %(album.name, album.provider_ids, album_id))
         return album_id
 
     async def tracks(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=False, db=None) -> List[Track]:
@@ -491,7 +491,7 @@ class Database():
             await self.__add_external_ids(track_id, MediaType.Track, track.external_ids, db)
             # save to db
             await db.commit()
-        LOGGER.info('added track %s (%s) to database: %s' %(track.name, track.provider_ids, track_id))
+        LOGGER.debug('added track %s (%s) to database: %s' %(track.name, track.provider_ids, track_id))
         return track_id
 
     async def update_track(self, track_id, column_key, column_value):
