@@ -245,7 +245,7 @@ class MusicProvider():
             searchstr = "%s - %s" %(searchartist.name, searchtrack.name)
             search_results = await self.search(searchstr, [MediaType.Track], limit=5)
             for item in search_results["tracks"]:
-                if item.name == searchtrack.name and item.version == searchtrack.version and item.album.name == searchtrack.album.name:
+                if item and item.name == searchtrack.name and item.version == searchtrack.version and item.album.name == searchtrack.album.name:
                     # double safety check - artist must match exactly !
                     for artist in item.artists:
                         if artist.name == searchartist.name:

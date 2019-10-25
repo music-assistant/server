@@ -252,6 +252,8 @@ class FileProvider(MusicProvider):
         ''' return the content details for the given track when it will be streamed'''
         if not os.sep in track_id:
             track_id = base64.b64decode(track_id).decode('utf-8')
+        if not os.path.isfile(track_id):
+            return None
         # TODO: retrieve sanple rate and bitdepth
         return {
             "type": "file",

@@ -223,6 +223,22 @@ class SpotifyProvider(MusicProvider):
         await self.mass.db.remove_from_library(item.item_id, media_type, self.prov_id)
         LOGGER.debug("deleted item %s from %s - %s" %(prov_item_id, self.prov_id, result))
 
+    async def add_playlist_tracks(self, prov_playlist_id, prov_track_ids):
+        ''' add track(s) to playlist '''
+        track_uris = []
+        for track_id in prov_track_ids:
+            track_uris.append("spotify:track:%s" % track_id)
+        data = {"uris": track_uris}
+        return await self.__post_data(f'playlists/{prov_playlist_id}/tracks', data=data)
+
+    async def remove_playlist_tracks(self, prov_playlist_id, prov_track_ids):
+        ''' remove track(s) from playlist '''
+        track_uris = []
+        for track_id in prov_track_ids:
+            track_uris.append("spotify:track:%s" % track_id)
+        data = {"tracks": track_uris}
+        return await self.__delete_data(f'playlists/{prov_playlist_id}/tracks', data=data)
+
     async def devices(self):
         ''' list all available devices '''
         items = await self.__get_data('me/player/devices')
@@ -245,16 +261,22 @@ class SpotifyProvider(MusicProvider):
 
     async def get_stream_details(self, track_id):
         ''' return the content details for the given track when it will be streamed'''
-        # make sure there is a valid token in cache
+        # make sure a valid track is requested
+        track = await self.get_track(track_id)
+        if not track:
+            return None
+        # make sure that the token is still valid by just requesting it
         await self.get_token()
         spotty = self.get_spotty_binary()
-        spotty_exec = '%s -n temp -c "%s" --pass-through --single-track %s' %(spotty, self.mass.datapath, track_id)
+        spotty_exec = '%s -n temp -c "%s" --pass-through --single-track %s' %(spotty, self.mass.datapath, track.item_id)
         return {
             "type": "executable",
             "path": spotty_exec,
             "content_type": "ogg",
             "sample_rate": 44100,
-            "bit_depth": 16
+            "bit_depth": 16,
+            "provider": PROV_ID,
+            "item_id": track.item_id
         }
         
     async def __parse_artist(self, artist_obj):
@@ -483,12 +505,12 @@ class SpotifyProvider(MusicProvider):
                     result = None
                 return result
 
-    async def __delete_data(self, endpoint, params={}):
-        ''' get data from api'''
+    async def __delete_data(self, endpoint, params={}, data=None):
+        ''' delete data from api'''
         url = 'https://api.spotify.com/v1/%s' % endpoint
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
-        async with self.http_session.delete(url, headers=headers, params=params) as response:
+        async with self.http_session.delete(url, headers=headers, params=params, json=data, verify_ssl=False) as response:
             return await response.text()
 
     async def __put_data(self, endpoint, params={}, data=None):
@@ -496,7 +518,15 @@ class SpotifyProvider(MusicProvider):
         url = 'https://api.spotify.com/v1/%s' % endpoint
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
-        async with self.http_session.put(url, headers=headers, params=params, json=data) as response:
+        async with self.http_session.put(url, headers=headers, params=params, json=data, verify_ssl=False) as response:
+            return await response.text()
+
+    async def __post_data(self, endpoint, params={}, data=None):
+        ''' post data on api'''
+        url = 'https://api.spotify.com/v1/%s' % endpoint
+        token = await self.get_token()
+        headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
+        async with self.http_session.post(url, headers=headers, params=params, json=data, verify_ssl=False) as response:
             return await response.text()
 
     @staticmethod

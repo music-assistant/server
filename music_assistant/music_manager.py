@@ -200,18 +200,20 @@ class MusicManager():
     async def item_action(self, item_id, media_type, provider, action, action_details=None):
         ''' perform action on item (such as library add/remove) '''
         result = None
-        item = await self.item(item_id, media_type, provider)
+        item = await self.item(item_id, media_type, provider, lazy=False)
         if item and action in ['library_add', 'library_remove']:
             # remove or add item to the library
-            for prov_mapping in result.provider_ids:
+            for prov_mapping in item.provider_ids:
                 prov_id = prov_mapping['provider']
                 prov_item_id = prov_mapping['item_id']
                 for prov in self.providers.values():
                     if prov.prov_id == prov_id:
-                        if action == 'add':
+                        if action == 'library_add':
                             result = await prov.add_library(prov_item_id, media_type)
-                        elif action == 'remove':
+                            await self.mass.db.add_to_library(item.item_id, item.media_type, prov_id)
+                        elif action == 'library_remove':
                             result = await prov.remove_library(prov_item_id, media_type)
+                            await self.mass.db.remove_from_library(item.item_id, item.media_type, prov_id)
         return result
     
     async def add_playlist_tracks(self, playlist_id, tracks:List[Track]):
@@ -239,7 +241,7 @@ class MusicManager():
             track_playlist_provs = [item['provider'] for item in track.provider_ids]
             if playlist_prov['provider'] in track_playlist_provs:
                 # a track can contain multiple versions on the same provider
-                # # simply sort by quality and just add the first one (assuming the track is still available)
+                # simply sort by quality and just add the first one (assuming the track is still available)
                 track_versions = sorted(track.provider_ids, key=operator.itemgetter('quality'), reverse=True)
                 for track_version in track_versions:
                     if track_version['provider'] == playlist_prov['provider']:

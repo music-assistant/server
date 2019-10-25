@@ -200,7 +200,7 @@ class PySqueezePlayer(Player):
     async def cmd_queue_insert(self, queue_items, insert_at_index):
         # queue handled by built-in queue controller
         # we only check the start index
-        if insert_at_index == 0:
+        if insert_at_index == self.queue.cur_index:
             return await self.cmd_queue_play_index(insert_at_index)
 
     async def cmd_queue_append(self, queue_items):

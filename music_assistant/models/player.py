@@ -500,6 +500,11 @@ class Player():
 
     async def volume_set(self, volume_level):
         ''' [PROTECTED] send new volume level command to player '''
+        if isinstance(volume_level, str):
+            if '+' in volume_level or 'up' in volume_level.lower():
+                return await self.volume_up()
+            elif '-' in volume_level or 'down' in volume_level.lower():
+                return await self.volume_down()
         volume_level = try_parse_int(volume_level)
         # handle group volume
         if self.is_group:

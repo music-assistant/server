@@ -82,9 +82,9 @@ class Web():
         app.add_routes([web.get('/api/artists/{artist_id}/toptracks', self.artist_toptracks)])
         app.add_routes([web.get('/api/artists/{artist_id}/albums', self.artist_albums)])
         app.add_routes([web.get('/api/albums/{album_id}/tracks', self.album_tracks)])
-        app.add_routes([web.get('/api/{media_type}', self.get_items)])
         app.add_routes([web.get('/api/{media_type}/{media_id}/{action}', self.get_item)])
         app.add_routes([web.get('/api/{media_type}/{media_id}', self.get_item)])
+        app.add_routes([web.get('/api/{media_type}', self.get_items)])
         app.add_routes([web.get('/', self.index)])
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web/')
         app.router.add_static("/", webdir)
@@ -349,6 +349,12 @@ class Web():
             await player.next()
         elif cmd_str == 'playlist index -1':
             await player.previous()
+        elif 'mixer volume' in cmd_str and '+' in cmds[2]:
+            volume_level = cmds[2].split('+')[1]
+            await player.volume_set(volume_level)
+        elif 'mixer volume' in cmd_str and '-' in cmds[2]:
+            volume_level = cmds[2].split('-')[1]
+            await player.volume_set(volume_level)
         elif 'mixer volume' in cmd_str:
             await player.volume_set(cmds[2])
         elif cmd_str == 'mixer muting 1':
