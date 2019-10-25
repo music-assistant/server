@@ -39,7 +39,7 @@ class Web():
             # retrieve ingress port
             import requests
             response = requests.get(
-                    "http://hassio/addons/self/options", 
+                    "http://hassio/addons/self/info", 
                     headers = {"X-HASSIO-KEY": os.environ["HASSIO_TOKEN"]}).json()
             self.http_port = response["data"]["ingress_port"]
             self.https_port = 0
