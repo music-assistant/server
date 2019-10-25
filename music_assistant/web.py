@@ -14,13 +14,17 @@ from .utils import run_periodic, LOGGER, IS_HASSIO, run_async_background_task, g
 
 CONF_KEY = 'web'
 
-CONFIG_ENTRIES = [
-        ('http_port', 8095, 'web_http_port'),
-        ('https_port', 8096, 'web_https_port'),
-        ('ssl_certificate', '', 'web_ssl_cert'), 
-        ('ssl_key', '', 'web_ssl_key'),
-        ('cert_fqdn_host', '', 'cert_fqdn_host')
-        ]
+if IS_HASSIO:
+    # on hassio we use ingress
+    CONFIG_ENTRIES = []
+else:
+    CONFIG_ENTRIES = [
+            ('http_port', 8095, 'web_http_port'),
+            ('https_port', 8096, 'web_https_port'),
+            ('ssl_certificate', '', 'web_ssl_cert'), 
+            ('ssl_key', '', 'web_ssl_key'),
+            ('cert_fqdn_host', '', 'cert_fqdn_host')
+            ]
 
 class Web():
     ''' webserver and json/websocket api '''
@@ -29,19 +33,31 @@ class Web():
         self.mass = mass
         # load/create/update config
         config = self.mass.config.create_module_config(CONF_KEY, CONFIG_ENTRIES)
-        enable_ssl = config['ssl_certificate'] and config['ssl_key']
-        if config['ssl_certificate'] and not os.path.isfile(
-                config['ssl_certificate']):
-            enable_ssl = False
-            LOGGER.warning("SSL certificate file not found: %s" % config['ssl_certificate'])
-        if config['ssl_key'] and not os.path.isfile(config['ssl_key']):
-            enable_ssl = False
-            LOGGER.warning( "SSL certificate key file not found: %s" % config['ssl_key'])
-        self.http_port = config['http_port']
-        self.https_port = config['https_port']
-        self._enable_ssl = enable_ssl
         self.local_ip = get_ip()
         self.config = config
+        if IS_HASSIO:
+            # retrieve ingress port
+            import requests
+            response = requests.get(
+                    "http://hassio/addons/self/options", 
+                    headers = {"X-HASSIO-KEY": os.environ["HASSIO_TOKEN"]}).json()
+            self.http_port = response["data"]["ingress_port"]
+            self.https_port = 0
+            self._enable_ssl = False
+        else:
+            # use settings from config
+            self.http_port = config['http_port']
+            enable_ssl = config['ssl_certificate'] and config['ssl_key']
+            if config['ssl_certificate'] and not os.path.isfile(
+                    config['ssl_certificate']):
+                enable_ssl = False
+                LOGGER.warning("SSL certificate file not found: %s" % config['ssl_certificate'])
+            if config['ssl_key'] and not os.path.isfile(config['ssl_key']):
+                enable_ssl = False
+                LOGGER.warning( "SSL certificate key file not found: %s" % config['ssl_key'])
+            self.https_port = config['https_port']
+            self._enable_ssl = enable_ssl
+        
 
     async def setup(self):
         ''' perform async setup '''
@@ -83,19 +99,6 @@ class Web():
             https_site = web.TCPSite(self.runner, '0.0.0.0', self.config['https_port'], ssl_context=ssl_context)
             await https_site.start()
             LOGGER.info("Started HTTPS webserver on port %s" % self.config['https_port'])
-        if IS_HASSIO:
-            # host additional http port for hassio ingress
-            headers = {"X-HASSIO-KEY": os.environ["HASSIO_TOKEN"]}
-            url = "http://hassio/addons/self/info"
-            async with aiohttp.ClientSession().get(url, headers=headers, verify_ssl=False) as response:
-                result = await response.json()
-                if result and result.get("data"):
-                    ingress_port = result["data"]["ingress_port"]
-                    ingress_site = web.TCPSite(self.runner, '0.0.0.0', ingress_port)
-                    await ingress_site.start()
-                    LOGGER.info("Started INGRESS webserver on port %s" % ingress_port)
-
-
 
     async def get_items(self, request):
         ''' get multiple library items'''

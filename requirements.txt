@@ -1,5 +1,6 @@
 cytoolz
 aiohttp
+requests
 spotify_token
 protobuf
 pychromecast
