@@ -89,10 +89,11 @@ class Web():
             url = "http://hassio/addons/self/info"
             async with aiohttp.ClientSession().get(url, headers=headers, verify_ssl=False) as response:
                 result = await response.json()
-                ingress_port = int(result["ingress_port"])
-                ingress_site = web.TCPSite(self.runner, '0.0.0.0', ingress_port)
-                await ingress_site.start()
-                LOGGER.info("Started INGRESS webserver on port %s" % ingress_port)
+                if result and result.get("data"):
+                    ingress_port = result["data"]["ingress_port"]
+                    ingress_site = web.TCPSite(self.runner, '0.0.0.0', ingress_port)
+                    await ingress_site.start()
+                    LOGGER.info("Started INGRESS webserver on port %s" % ingress_port)
 
 
 
