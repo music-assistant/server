@@ -71,7 +71,6 @@ class Web():
         app.add_routes([web.get('/api/config', self.get_config)])
         app.add_routes([web.post('/api/config/{key}/{subkey}', self.save_config)])
         app.add_routes([web.get('/api/players', self.players)])
-        app.add_routes([web.get('api/players', self.players)])
         app.add_routes([web.get('/api/players/{player_id}', self.player)])
         app.add_routes([web.get('/api/players/{player_id}/queue', self.player_queue)])
         app.add_routes([web.get('/api/players/{player_id}/queue/{item_id}', self.player_queue_item)])
