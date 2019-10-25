@@ -473,9 +473,10 @@ class QobuzProvider(MusicProvider):
             return self.__user_auth_info["user_auth_token"]
         params = { "username": self.__username, "password": self.__password, "device_manufacturer_id": "music_assistant"}
         details = await self.__get_data("user/login", params, ignore_cache=True)
-        self.__user_auth_info = details
-        LOGGER.info("Succesfully logged in to Qobuz as %s" % (details["user"]["display_name"]))
-        return details["user_auth_token"]
+        if details and "user" in details:
+            self.__user_auth_info = details
+            LOGGER.info("Succesfully logged in to Qobuz as %s" % (details["user"]["display_name"]))
+            return details["user_auth_token"]
 
     async def __get_all_items(self, endpoint, params={}, key="playlists", limit=0, offset=0, cache_checksum=None):
         ''' get all items from a paged list '''
@@ -516,7 +517,11 @@ class QobuzProvider(MusicProvider):
         url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
         headers = {"X-App-Id": get_app_var(0)}
         if endpoint != 'user/login':
-            headers["X-User-Auth-Token"] = await self.__auth_token()
+            auth_token = await self.__auth_token()
+            if not auth_token:
+                LOGGER.debug("Not logged in")
+                return None
+            headers["X-User-Auth-Token"] = auth_token
         if sign_request:
             signing_data = "".join(endpoint.split('/'))
             keys = list(params.keys())
@@ -530,23 +535,19 @@ class QobuzProvider(MusicProvider):
             params["request_sig"] = request_sig
             params["app_id"] = get_app_var(0)
             params["user_auth_token"] = await self.__auth_token()
-        try:
-            async with self.throttler:
-                async with self.http_session.get(url, headers=headers, params=params, verify_ssl=False) as response:
-                    try:
-                        result = await response.json()
-                        if "error" in result:
-                            return None
-                        return result
-                    except Exception as exc:
-                        LOGGER.error(exc)
-                        LOGGER.debug(url)
-                        LOGGER.debug(params)
-                        result = response
-                        LOGGER.debug(await response.text())
-        except Exception as exc:
-            LOGGER.exception(exc)
-            return None
+        async with self.throttler:
+            async with self.http_session.get(url, headers=headers, params=params, verify_ssl=False) as response:
+                try:
+                    result = await response.json()
+                    if "error" in result:
+                        return None
+                    return result
+                except Exception as exc:
+                    LOGGER.error(exc)
+                    LOGGER.debug(url)
+                    LOGGER.debug(params)
+                    result = await response.text()
+                    LOGGER.error(result)
 
     async def __post_data(self, endpoint, params={}, data={}):
         ''' post data to api'''
@@ -563,5 +564,5 @@ class QobuzProvider(MusicProvider):
                 LOGGER.error(exc)
                 LOGGER.debug(url)
                 LOGGER.debug(params)
-                result = response
-                LOGGER.debug(await response.text())
+                result = await response.text()
+                LOGGER.error(result)

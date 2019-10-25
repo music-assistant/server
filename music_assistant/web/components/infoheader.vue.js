@@ -1,7 +1,7 @@
 Vue.component("infoheader", {
 	template: `
 		<v-flex xs12>
-          <v-card color="cyan darken-2" class="white--text" img="../images/info_gradient.jpg">
+          <v-card color="cyan darken-2" class="white--text" img="./images/info_gradient.jpg">
             <v-img
               class="white--text"
               width="100%"
@@ -16,7 +16,7 @@ Vue.component("infoheader", {
               
               <!-- left side: cover image -->
               <v-flex xs5 pa-4 v-if="!isMobile()">
-								<v-img :src="getThumb()" lazy-src="/images/default_artist.png" width="250px" height="250px" style="border: 4px solid grey;border-radius: 15px;"></v-img>
+								<v-img :src="getThumb()" lazy-src="./images/default_artist.png" width="250px" height="250px" style="border: 4px solid grey;border-radius: 15px;"></v-img>
 								
 								<!-- tech specs and provider icons -->
 								<div style="margin-top:10px;">
