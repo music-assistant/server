@@ -1,7 +1,7 @@
 var TrackDetails = Vue.component('TrackDetails', {
   template: `
   <section>
-      <infoheader v-bind:info="info"/>
+      <infoheader v-bind:info="info" :context="'trackdetails'"/>
       <v-tabs
           v-model="active"
           color="transparent"
@@ -21,7 +21,9 @@ var TrackDetails = Vue.component('TrackDetails', {
                       :hideavatar="isMobile()"
                       :hidetracknum="true"
                       :hideproviders="isMobile()"
-                      :hidelibrary="isMobile()">
+                      :hidelibrary="isMobile()"
+                      :context="'trackversions'"
+                      >
                   </listviewItem>
               </v-list>
             </v-card>
@@ -52,6 +54,7 @@ var TrackDetails = Vue.component('TrackDetails', {
         .then(result => {
           data = result.data;
           this.info = data;
+          this.$globals.curContext = data;
           this.getTrackVersions()
           this.$globals.loading = false;
         })

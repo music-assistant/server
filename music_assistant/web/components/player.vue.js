@@ -135,7 +135,7 @@ Vue.component("player", {
             </div>
         </v-list>
     </v-navigation-drawer>
-    <playmenu v-model="$globals.showplaymenu" v-on:playItem="playItem" :active_player="active_player" />
+    <contextmenu v-on:playItem="playItem" :active_player="active_player" />
   </div>
   
   `,

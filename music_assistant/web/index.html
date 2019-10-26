@@ -18,15 +18,7 @@
     <body>
 
         <div id="app">
-            <v-app light>
-                <v-content>
-                    <headermenu></headermenu>
-                    <player></player>
-                    <router-view app :key="$route.path"></router-view>      
-                    <searchbox/>             
-                </v-content>
-                <loading :active.sync="$globals.loading" :can-cancel="true" color="#2196f3" loader="dots"></loading>
-            </v-app>
+            
         </div>
 
 
@@ -61,11 +53,12 @@
         <script src='./components/player.vue.js'></script>
         <script src='./components/listviewItem.vue.js'></script>
         <script src='./components/readmore.vue.js'></script>
-        <script src='./components/playmenu.vue.js'></script>
+        <script src='./components/listdialog.vue.js'></script>
+        <script src='./components/contextmenu.vue.js'></script>
+        <script src='./components/addtoplaylistdialog.vue.js'></script>
         <script src='./components/volumecontrol.vue.js'></script>
         <script src='./components/infoheader.vue.js'></script>
         <script src='./components/providericons.vue.js'></script>
-        <script src='./components/searchbox.vue.js'></script>
         
         <script src='./strings.js'></script>
         <script src='./app.js'></script>

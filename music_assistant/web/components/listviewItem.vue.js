@@ -4,7 +4,7 @@ Vue.component("listviewItem", {
     <v-list-tile
     avatar
     ripple
-    @click="clickItem(item)">
+    @click="clickItem(item, context)">
 
           <v-list-tile-avatar color="grey" v-if="!hideavatar">
               <img v-if="(item.media_type != 3) && item.metadata && item.metadata.image" :src="item.metadata.image"/>
@@ -59,14 +59,14 @@ Vue.component("listviewItem", {
           </v-list-tile-action> 
         
           <!-- menu button/icon -->
-          <v-icon v-if="!hidemenu" @click="showPlayMenu(item)" @click.stop="" color="grey lighten-1" style="margin-right:-10px;padding-left:10px">more_vert</v-icon>
+          <v-icon v-if="!hidemenu" @click="showPlayMenu(item, context)" @click.stop="" color="grey lighten-1" style="margin-right:-10px;padding-left:10px">more_vert</v-icon>
           
 
         </v-list-tile>
         <v-divider v-if="index + 1 < totalitems" :key="index"></v-divider>
         </div>
      `,
-props: ['item', 'index', 'totalitems', 'hideavatar', 'hidetracknum', 'hideproviders', 'hidemenu', 'hidelibrary', 'hideduration'],
+props: ['item', 'context', 'index', 'totalitems', 'hideavatar', 'hidetracknum', 'hideproviders', 'hidemenu', 'hidelibrary', 'hideduration'],
 data() {
   return {}
   },

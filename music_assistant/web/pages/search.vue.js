@@ -31,7 +31,9 @@ var Search = Vue.component('Search', {
                         :hidetracknum="true"
                         :hideproviders="isMobile()"
                         :hideduration="isMobile()"
-                        :showlibrary="true">
+                        :showlibrary="true"
+                        :context="'searchtracks'"
+                        >
                     </listviewItem>
               </v-list>
             </v-card>
@@ -48,6 +50,7 @@ var Search = Vue.component('Search', {
                       v-bind:totalitems="artists.length"
                       v-bind:index="index"
                       :hideproviders="isMobile()"
+                      :context="'searchartists'"
                       >
                   </listviewItem>
                 </v-list>
@@ -65,6 +68,7 @@ var Search = Vue.component('Search', {
                         v-bind:totalitems="albums.length"
                         v-bind:index="index"
                         :hideproviders="isMobile()"
+                        :context="'searchalbums'"
                         >
                     </listviewItem>
               </v-list>
@@ -81,7 +85,9 @@ var Search = Vue.component('Search', {
                         :key="item.db_id"
                         v-bind:totalitems="playlists.length"
                         v-bind:index="index"
-                        :hidelibrary="true">
+                        :hidelibrary="true"
+                        :context="'searchplaylists'"
+                        >
                     </listviewItem>
               </v-list>
             </v-card>

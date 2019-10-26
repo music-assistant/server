@@ -1,7 +1,7 @@
 var AlbumDetails = Vue.component('AlbumDetails', {
   template: `
   <section>
-      <infoheader v-bind:info="info"/>
+      <infoheader v-bind:info="info" :context="'albumdetails'"/>
       <v-tabs
           v-model="active"
           color="transparent"
@@ -20,6 +20,7 @@ var AlbumDetails = Vue.component('AlbumDetails', {
                     v-bind:index="index"
                     :hideavatar="true"
                     :hideproviders="isMobile()"
+                    :context="'albumtracks'"
                     >
                 </listviewItem>
               </v-list>
@@ -36,6 +37,7 @@ var AlbumDetails = Vue.component('AlbumDetails', {
                       :key="item.db_id"
                       v-bind:totalitems="albumversions.length"
                       v-bind:index="index"
+                      :context="'albumtracks'"
                       >
                   </listviewItem>
               </v-list>
@@ -62,7 +64,6 @@ var AlbumDetails = Vue.component('AlbumDetails', {
   },
   methods: {
     getInfo () {
-      this.$globals.loading = true;
       const api_url = this.$globals.server + 'api/albums/' + this.media_id
       axios
         .get(api_url, { params: { provider: this.provider }})
@@ -70,13 +71,14 @@ var AlbumDetails = Vue.component('AlbumDetails', {
           data = result.data;
           this.info = data;
           this.getAlbumVersions()
-          this.$globals.loading = false;
+          this.$globals.curContext = data;
         })
         .catch(error => {
           console.log("error", error);
         });
     },
     getAlbumTracks () {
+      this.$globals.loading = true;
       const api_url = this.$globals.server + 'api/albums/' + this.media_id + '/tracks'
       axios
         .get(api_url, { params: { offset: this.offset, limit: 50, provider: this.provider}})
@@ -84,6 +86,7 @@ var AlbumDetails = Vue.component('AlbumDetails', {
           data = result.data;
           this.albumtracks.push(...data);
           this.offset += 50;
+          this.$globals.loading = false;
         })
         .catch(error => {
           console.log("error", error);

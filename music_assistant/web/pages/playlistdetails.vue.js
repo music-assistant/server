@@ -1,7 +1,7 @@
 var PlaylistDetails = Vue.component('PlaylistDetails', {
   template: `
   <section>
-      <infoheader v-bind:info="info"/>
+      <infoheader v-bind:info="info" :context="'playlistdetails'"/>
       <v-tabs
           v-model="active"
           color="transparent"
@@ -19,7 +19,9 @@ var PlaylistDetails = Vue.component('PlaylistDetails', {
                       :hideavatar="isMobile()"
                       :hidetracknum="true"
                       :hideproviders="isMobile()"
-                      :hidelibrary="isMobile()">
+                      :hidelibrary="isMobile()"
+                      v-bind:context="info"
+                      >
                   </listviewItem>
                 </v-list>
             </v-card>
@@ -50,6 +52,7 @@ var PlaylistDetails = Vue.component('PlaylistDetails', {
         .then(result => {
           data = result.data;
           this.info = data;
+          this.$globals.curContext = data;
         })
         .catch(error => {
           console.log("error", error);

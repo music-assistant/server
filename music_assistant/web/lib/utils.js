@@ -1,22 +1,26 @@
 const isMobile = () => (document.body.clientWidth < 800);
 const isInStandaloneMode = () => ('standalone' in window.navigator) && (window.navigator.standalone);
 
-function showPlayMenu (item) {
-    this.$globals.playmenuitem = item;
-    this.$globals.showplaymenu = !this.$globals.showplaymenu;
+function showPlayMenu (item, context=null) {
+    /// make the contextmenu visible
+    console.log(context);
+    this.$globals.contextmenuitem = item;
+    this.$globals.contextmenucontext = context;
+    this.$globals.showcontextmenu = !this.$globals.showcontextmenu;
     }
 
-function clickItem (item) {
+function clickItem (item, context=null) {
+    /// triggered when user clicks on mediaitem
     var endpoint = "";
     if (item.media_type == 1)
         endpoint = "/artists/"
     else if (item.media_type == 2)
         endpoint = "/albums/"
     else if (item.media_type == 3 || item.media_type == 5)
-        {
-        this.showPlayMenu(item);
+    {
+        this.showPlayMenu(item, context);
         return;
-        }
+    }
     else if (item.media_type == 4)
         endpoint = "/playlists/"
     item_id = item.item_id.toString();
@@ -39,15 +43,16 @@ String.prototype.formatDuration = function () {
         return hours+':'+minutes+':'+seconds;
 }
 function toggleLibrary (item) {
+    /// triggered when user clicks the library (heart) button
     var endpoint = this.$globals.server + "api/" + item.media_type + "/";
     item_id = item.item_id.toString();
-    var action = "/library_remove"
+    var action = "library_remove"
     if (item.in_library.length == 0)
-        action = "/library_add"
-    var url = endpoint + item_id + action;
+        action = "library_add"
+    var url = endpoint + item_id;
     console.log('loading ' + url);
     axios
-        .get(url, { params: { provider: item.provider }})
+        .get(url, { params: { provider: item.provider, action: action }})
         .then(result => {
             data = result.data;
             console.log(data);
@@ -59,5 +64,6 @@ function toggleLibrary (item) {
         .catch(error => {
             console.log("error", error);
         });
-
 };
+
+

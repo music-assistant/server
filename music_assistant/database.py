@@ -246,7 +246,7 @@ class Database():
                 await db.execute(sql_query, (item_id,media_type, provider))
             await db.commit()
     
-    async def artists(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=False, db=None) -> List[Artist]:
+    async def artists(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=True, db=None) -> List[Artist]:
         ''' fetch artist records from table'''
         artists = []
         sql_query = 'SELECT * FROM artists'
@@ -269,11 +269,10 @@ class Database():
             artist.sort_name = db_row[2]
             artist.provider_ids = await self.__get_prov_ids(artist.item_id, MediaType.Artist, db)
             artist.in_library = await self.__get_library_providers(artist.item_id, MediaType.Artist, db)
-            artist.external_ids = await self.__get_external_ids(artist.item_id, MediaType.Artist, db)
             if fulldata:
+                artist.external_ids = await self.__get_external_ids(artist.item_id, MediaType.Artist, db)
                 artist.metadata = await self.__get_metadata(artist.item_id, MediaType.Artist, db)
                 artist.tags = await self.__get_tags(artist.item_id, MediaType.Artist, db)
-            else:
                 artist.metadata = await self.__get_metadata(artist.item_id, MediaType.Artist, db, filter_key='image')
             artists.append(artist)
         if should_close_db:
@@ -323,7 +322,7 @@ class Database():
         LOGGER.debug('added artist %s (%s) to database: %s' %(artist.name, artist.provider_ids, artist_id))
         return artist_id
     
-    async def albums(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=False, db=None) -> List[Album]:
+    async def albums(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=True, db=None) -> List[Album]:
         ''' fetch all album records from table'''
         albums = []
         sql_query = 'SELECT * FROM albums'
@@ -342,15 +341,15 @@ class Database():
             for db_row in db_rows:
                 album = Album()
                 album.item_id = db_row[0]
-                album.artist = await self.artist(db_row[1], fulldata=fulldata)
                 album.name = db_row[2]
                 album.albumtype = db_row[3]
                 album.year = db_row[4]
                 album.version = db_row[5]
                 album.provider_ids = await self.__get_prov_ids(album.item_id, MediaType.Album, db)
                 album.in_library = await self.__get_library_providers(album.item_id, MediaType.Album, db)
-                album.external_ids = await self.__get_external_ids(album.item_id, MediaType.Album, db)
                 if fulldata:
+                    album.artist = await self.artist(db_row[1], fulldata=False)
+                    album.external_ids = await self.__get_external_ids(album.item_id, MediaType.Album, db)
                     album.metadata = await self.__get_metadata(album.item_id, MediaType.Album, db)
                     album.tags = await self.__get_tags(album.item_id, MediaType.Album, db)
                     album.labels = await self.__get_album_labels(album.item_id, db)
@@ -407,7 +406,7 @@ class Database():
         LOGGER.debug('added album %s (%s) to database: %s' %(album.name, album.provider_ids, album_id))
         return album_id
 
-    async def tracks(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=False, db=None) -> List[Track]:
+    async def tracks(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=True, db=None) -> List[Track]:
         ''' fetch all track records from table'''
         tracks = []
         sql_query = 'SELECT * FROM tracks'
@@ -427,17 +426,18 @@ class Database():
             track = Track()
             track.item_id = db_row[0]
             track.name = db_row[1]
-            track.album = await self.album(db_row[2], fulldata=fulldata, db=db)
+            track.album = await self.album(db_row[2], fulldata=False, db=db)
+            track.artists = await self.__get_track_artists(track.item_id, db, fulldata=False)
             track.duration = db_row[3]
             track.version = db_row[4]
             track.disc_number = db_row[5]
             track.track_number = db_row[6]
-            track.metadata = await self.__get_metadata(track.item_id, MediaType.Track, db)
-            track.tags = await self.__get_tags(track.item_id, MediaType.Track, db)
-            track.provider_ids = await self.__get_prov_ids(track.item_id, MediaType.Track, db)
             track.in_library = await self.__get_library_providers(track.item_id, MediaType.Track, db)
-            track.artists = await self.__get_track_artists(track.item_id, db, fulldata=fulldata)
             track.external_ids = await self.__get_external_ids(track.item_id, MediaType.Track, db)
+            track.provider_ids = await self.__get_prov_ids(track.item_id, MediaType.Track, db)
+            if fulldata:
+                track.metadata = await self.__get_metadata(track.item_id, MediaType.Track, db)
+                track.tags = await self.__get_tags(track.item_id, MediaType.Track, db)
             tracks.append(track)
         if should_close_db:
             await db.close()
@@ -505,14 +505,14 @@ class Database():
         ''' get all library tracks for the given artist '''
         artist_id = try_parse_int(artist_id)
         sql_query = ' WHERE track_id in (SELECT track_id FROM track_artists WHERE artist_id = %d)' % artist_id
-        return await self.tracks(sql_query, limit=limit, offset=offset, orderby=orderby)
+        return await self.tracks(sql_query, limit=limit, offset=offset, orderby=orderby, fulldata=False)
 
     async def artist_albums(self, artist_id, limit=1000000, offset=0, orderby='name') -> List[Album]:
         ''' get all library albums for the given artist '''
         sql_query = ' WHERE artist_id = %d' % artist_id
-        return await self.albums(sql_query, limit=limit, offset=offset, orderby=orderby)
+        return await self.albums(sql_query, limit=limit, offset=offset, orderby=orderby, fulldata=False)
 
-    async def playlist_tracks(self, playlist_id:int, limit=100000, offset=0, orderby='position', fulldata=False) -> List[Track]:
+    async def playlist_tracks(self, playlist_id:int, limit=100000, offset=0, orderby='position') -> List[Track]:
         ''' get playlist tracks for the given playlist_id '''
         playlist_id = try_parse_int(playlist_id)
         playlist_tracks = []
@@ -524,7 +524,7 @@ class Database():
                 db_rows = await cursor.fetchall()
             playlist_track_ids = [str(item[0]) for item in db_rows]
             sql_query = 'WHERE track_id in (%s)' % ','.join(playlist_track_ids)
-            tracks = await self.tracks(sql_query, orderby='track_id', db=db)
+            tracks = await self.tracks(sql_query, orderby='track_id', db=db, fulldata=False)
             for index, track in enumerate(tracks):
                 track.position = db_rows[index][1]
                 playlist_tracks.append(track)
@@ -534,7 +534,7 @@ class Database():
     async def add_playlist_track(self, playlist_id:int, track_id, position):
         ''' add playlist track to playlist '''
         async with aiosqlite.connect(self.dbfile, timeout=20) as db:
-            sql_query = 'INSERT or IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES(?,?,?);'
+            sql_query = 'INSERT or REPLACE INTO playlist_tracks (playlist_id, track_id, position) VALUES(?,?,?);'
             await db.execute(sql_query, (playlist_id, track_id, position))
             await db.commit()
 
@@ -625,7 +625,7 @@ class Database():
     async def __get_track_artists(self, track_id, db, fulldata=False) -> List[Artist]:
         ''' get artists for track '''
         sql_query = 'WHERE artist_id in (SELECT artist_id FROM track_artists WHERE track_id = %s)' % track_id
-        return await self.artists(sql_query, db=db)
+        return await self.artists(sql_query, db=db, fulldata=fulldata)
     
     async def __add_external_ids(self, item_id, media_type, external_ids, db):
         ''' add or update external_ids'''

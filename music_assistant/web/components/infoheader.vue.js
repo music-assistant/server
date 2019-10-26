@@ -16,12 +16,12 @@ Vue.component("infoheader", {
               
               <!-- left side: cover image -->
               <v-flex xs5 pa-4 v-if="!isMobile()">
-								<v-img :src="getThumb()" lazy-src="./images/default_artist.png" width="250px" height="250px" style="border: 4px solid grey;border-radius: 15px;"></v-img>
-								
-								<!-- tech specs and provider icons -->
-								<div style="margin-top:10px;">
-									<providericons v-bind:item="info" :height="30" :compact="false"/>
-								</div>
+				<v-img :src="getThumb()" lazy-src="./images/default_artist.png" width="250px" height="250px" style="border: 4px solid grey;border-radius: 15px;"></v-img>
+				
+				<!-- tech specs and provider icons -->
+				<div style="margin-top:10px;">
+					<providericons v-bind:item="info" :height="30" :compact="false"/>
+				</div>
               </v-flex>
               
               <v-flex>
@@ -51,7 +51,7 @@ Vue.component("infoheader", {
 
                   <!-- play/info buttons -->
                   <div style="margin-left:8px;">
-                      <v-btn color="blue-grey" @click="showPlayMenu(info)"  class="white--text"><v-icon v-if="!isMobile()" left dark>play_circle_outline</v-icon>{{ $t('play') }}</v-btn>
+                      <v-btn color="blue-grey" @click="showPlayMenu(info, context)"  class="white--text"><v-icon v-if="!isMobile()" left dark>play_circle_outline</v-icon>{{ $t('play') }}</v-btn>
                       <v-btn v-if="!!info.in_library && info.in_library.length == 0" color="blue-grey" @click="toggleLibrary(info)"  class="white--text"><v-icon v-if="!isMobile()" left dark>favorite_border</v-icon>{{ $t('add_library') }}</v-btn>
                       <v-btn v-if="!!info.in_library && info.in_library.length > 0" color="blue-grey" @click="toggleLibrary(info)"  class="white--text"><v-icon v-if="!isMobile()" left dark>favorite</v-icon>{{ $t('remove_library') }}</v-btn>
                   </div>
@@ -74,7 +74,7 @@ Vue.component("infoheader", {
           </v-card>
         </v-flex>
 `,
-	props: ['info'],
+	props: ['info', 'context'],
 	data (){
 		return{}
 	},

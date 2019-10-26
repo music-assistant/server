@@ -4,14 +4,16 @@ var Browse = Vue.component('Browse', {
       <v-list two-line>
         <listviewItem 
             v-for="(item, index) in items"
-            :key="item.db_id"
+            :key="item.item_id"
             v-bind:item="item"
             v-bind:totalitems="items.length"
             v-bind:index="index"
             :hideavatar="item.media_type == 3 ? isMobile() : false"
             :hidetracknum="true"
             :hideproviders="isMobile()"
-            :hidelibrary="isMobile() ? true : item.media_type != 3">
+            :hidelibrary="isMobile() ? true : item.media_type != 3"
+            :context="mediatype"
+            >
         </listviewItem>
       </v-list>
     </section>

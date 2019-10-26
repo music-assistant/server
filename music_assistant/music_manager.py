@@ -201,7 +201,9 @@ class MusicManager():
         ''' perform action on item (such as library add/remove) '''
         result = None
         item = await self.item(item_id, media_type, provider, lazy=False)
-        if item and action in ['library_add', 'library_remove']:
+        if not item:
+            return False
+        if action in ['library_add', 'library_remove']:
             # remove or add item to the library
             for prov_mapping in item.provider_ids:
                 prov_id = prov_mapping['provider']
@@ -214,8 +216,10 @@ class MusicManager():
                         elif action == 'library_remove':
                             result = await prov.remove_library(prov_item_id, media_type)
                             await self.mass.db.remove_from_library(item.item_id, item.media_type, prov_id)
-                        elif action == 'add_to_playlist':
-                            result = await self.add_playlist_tracks(action_details, [item])
+        elif action == 'playlist_add':
+            result = await self.add_playlist_tracks(action_details, [item])
+        elif action == 'playlist_remove':
+            result = await self.remove_playlist_tracks(action_details, [item])
         return result
     
     async def add_playlist_tracks(self, playlist_id, tracks:List[Track]):
@@ -230,7 +234,7 @@ class MusicManager():
         # grab all (database) track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = [item.item_id for item in cur_playlist_tracks]
         track_ids_to_add = []
-        for track in tracks:
+        for index, track in enumerate(tracks):
             if not track.provider == 'database':
                 # make sure we have a database track
                 track = await self.track(track.item_id, track.provider, lazy=False)
@@ -255,10 +259,35 @@ class MusicManager():
             else:
                 LOGGER.warning("Track %s not available on provider %s - skip addition to playlist %s" %(track.name, playlist_prov['provider'], playlist.name))
                 continue
+            # add track to db playlist
+            new_pos = len(cur_playlist_tracks) + index
+            await self.mass.db.add_playlist_track(playlist.item_id, track.item_id, new_pos)
         # actually add the tracks to the playlist on the provider
-        await self.providers[playlist_prov['provider']].add_playlist_tracks(playlist_prov['item_id'], track_ids_to_add)
-        # schedule sync
-        self.mass.event_loop.create_task(self.sync_playlist_tracks(playlist.item_id, playlist_prov['provider'], playlist_prov['item_id']))
+        return await self.providers[playlist_prov['provider']].add_playlist_tracks(playlist_prov['item_id'], track_ids_to_add)
+
+    async def remove_playlist_tracks(self, playlist_id, tracks:List[Track]):
+        ''' remove tracks from playlist '''
+        # we can only edit playlists that are in the database (marked as editable)
+        playlist = await self.playlist(playlist_id, 'database')
+        if not playlist or not playlist.is_editable:
+            LOGGER.warning("Playlist %s is not editable - skip removal of tracks" %(playlist.name))
+            return False
+        prov_playlist = playlist.provider_ids[0] # playlist can only have one provider (for now)
+        prov_playlist_playlist_id = prov_playlist['item_id']
+        prov_playlist_provider_id = prov_playlist['provider']
+        track_ids_to_remove = []
+        for track in tracks:
+            if not track.provider == 'database':
+                # make sure we have a database track
+                track = await self.track(track.item_id, track.provider, lazy=False)
+            # a track can contain multiple versions on the same provider, remove all
+            for track_provider in track.provider_ids:
+                if track_provider['provider'] == prov_playlist_provider_id:
+                    track_ids_to_remove.append(track_provider['item_id'])
+            # remove track from db playlist
+            await self.mass.db.remove_playlist_track(playlist.item_id, track.item_id)
+        # actually remove the tracks from the playlist on the provider
+        return await self.providers[prov_playlist_provider_id].add_playlist_tracks(prov_playlist_playlist_id, track_ids_to_remove)
 
     @run_periodic(3600)
     async def sync_music_providers(self):

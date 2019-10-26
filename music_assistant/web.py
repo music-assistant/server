@@ -82,7 +82,6 @@ class Web():
         app.add_routes([web.get('/api/artists/{artist_id}/toptracks', self.artist_toptracks)])
         app.add_routes([web.get('/api/artists/{artist_id}/albums', self.artist_albums)])
         app.add_routes([web.get('/api/albums/{album_id}/tracks', self.album_tracks)])
-        app.add_routes([web.get('/api/{media_type}/{media_id}/{action}', self.get_item)])
         app.add_routes([web.get('/api/{media_type}/{media_id}', self.get_item)])
         app.add_routes([web.get('/api/{media_type}', self.get_items)])
         app.add_routes([web.get('/', self.index)])
@@ -118,7 +117,8 @@ class Web():
         media_type_str = request.match_info.get('media_type')
         media_type = media_type_from_string(media_type_str)
         media_id = request.match_info.get('media_id')
-        action = request.match_info.get('action','')
+        # optional params
+        action = request.rel_url.query.get('action','')
         action_details = request.rel_url.query.get('action_details')
         lazy = request.rel_url.query.get('lazy', '') != 'false'
         provider = request.rel_url.query.get('provider')

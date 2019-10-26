@@ -1,7 +1,7 @@
 var ArtistDetails = Vue.component('ArtistDetails', {
   template: `
   <section>
-      <infoheader v-bind:info="info"/>
+      <infoheader v-bind:info="info" :context="'artistdetails'"/>
       <v-tabs
           v-model="active"
           color="transparent"
@@ -21,7 +21,9 @@ var ArtistDetails = Vue.component('ArtistDetails', {
                       :hideavatar="isMobile()"
                       :hidetracknum="true"
                       :hideproviders="isMobile()"
-                      :hidelibrary="isMobile()">
+                      :hidelibrary="isMobile()"
+                      :context="'artisttracks'"
+                      >
                   </listviewItem>
                 </v-list>
             </v-card>
@@ -38,6 +40,7 @@ var ArtistDetails = Vue.component('ArtistDetails', {
                         v-bind:totalitems="artistalbums.length"
                         v-bind:index="index"
                         :hideproviders="isMobile()"
+                        :context="'artistalbums'"
                         >
                     </listviewItem>
               </v-list>
@@ -54,8 +57,8 @@ var ArtistDetails = Vue.component('ArtistDetails', {
       artistalbums: [],
       bg_image: "../images/info_gradient.jpg",
       active: null,
-      playmenu: false,
-      playmenuitem: null
+      contextmenu: false,
+      contextmenuitem: null
     }
   },
   created() {
@@ -80,6 +83,7 @@ var ArtistDetails = Vue.component('ArtistDetails', {
         .then(result => {
           data = result.data;
           this.info = data;
+          this.$globals.curContext = data;
           this.$globals.loading = false;
           if (data.is_lazy == true)
               // refresh the info if we got a lazy object

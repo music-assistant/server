@@ -52,6 +52,26 @@ const routes = [
     },
 ]
 
+const globalStore = new Vue({
+    data: {
+        windowtitle: 'Home',
+        loading: false,
+        showcontextmenu: false,
+        contextmenuitem: null,
+        contextmenucontext: null,
+        server: null,
+        apiAddress: null,
+        wsAddress: null
+    }
+})
+
+Vue.prototype.$globals = globalStore;
+Vue.prototype.isMobile = isMobile;
+Vue.prototype.isInStandaloneMode = isInStandaloneMode;
+Vue.prototype.toggleLibrary = toggleLibrary;
+Vue.prototype.showPlayMenu = showPlayMenu;
+Vue.prototype.clickItem= clickItem;
+
 let router = new VueRouter({
     //mode: 'history',
     routes // short for `routes: routes`
@@ -60,25 +80,6 @@ let router = new VueRouter({
 router.beforeEach((to, from, next) => {
     next()
 })
-
-const globalStore = new Vue({
-    data: {
-        windowtitle: 'Home',
-        loading: false,
-        showplaymenu: false,
-        showsearchbox: false,
-        playmenuitem: null,
-        server: null,
-        apiAddress: null,
-        wsAddress: null
-    }
-})
-Vue.prototype.$globals = globalStore;
-Vue.prototype.isMobile = isMobile;
-Vue.prototype.isInStandaloneMode = isInStandaloneMode;
-Vue.prototype.toggleLibrary = toggleLibrary;
-Vue.prototype.showPlayMenu = showPlayMenu;
-Vue.prototype.clickItem= clickItem;
 
 const i18n = new VueI18n({
     locale: navigator.language.split('-')[0],
@@ -117,5 +118,15 @@ var app = new Vue({
     },
     data: { },
     methods: {},
-    router
+    router,
+    template: `
+        <v-app light>
+            <v-content>
+                <headermenu></headermenu>
+                <player></player>
+                <router-view app :key="$route.path"></router-view>               
+            </v-content>
+            <loading :active.sync="$globals.loading" :can-cancel="true" color="#2196f3" loader="dots"></loading>
+        </v-app>
+    `
 })

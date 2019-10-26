@@ -9,7 +9,9 @@ var Queue = Vue.component('Queue', {
             :hideavatar="isMobile()"
             :hidetracknum="true"
             :hideproviders="isMobile()"
-            :hidelibrary="isMobile()">
+            :hidelibrary="isMobile()"
+            :context="'playerqueue'"
+            >
         </listviewItem>
       </v-list>
       </section>`,
