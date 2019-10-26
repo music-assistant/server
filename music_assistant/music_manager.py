@@ -214,6 +214,8 @@ class MusicManager():
                         elif action == 'library_remove':
                             result = await prov.remove_library(prov_item_id, media_type)
                             await self.mass.db.remove_from_library(item.item_id, item.media_type, prov_id)
+                        elif action == 'add_to_playlist':
+                            result = await self.add_playlist_tracks(action_details, [item])
         return result
     
     async def add_playlist_tracks(self, playlist_id, tracks:List[Track]):
@@ -398,4 +400,3 @@ class MusicManager():
             if db_id not in cur_db_ids:
                 await self.mass.db.remove_from_library(db_id, MediaType.Radio, prov_id)
         LOGGER.info("Finished syncing Radios for provider %s" % prov_id)
-

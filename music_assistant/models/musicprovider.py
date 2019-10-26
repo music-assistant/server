@@ -356,10 +356,6 @@ class MusicProvider():
     async def remove_playlist_tracks(self, prov_playlist_id, prov_track_ids):
         ''' remove track(s) from playlist '''
         raise NotImplementedError
-
-    async def get_stream_content_type(self, track_id):
-        ''' return the content type for the given track when it will be streamed'''
-        raise NotImplementedError
     
     async def get_stream_details(self, track_id):
         ''' get streamdetails for a track '''

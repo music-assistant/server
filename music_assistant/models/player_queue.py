@@ -179,12 +179,13 @@ class PlayerQueue():
         ''' resume previous queue '''
         if self.items:
             prev_index = self.cur_index
-            if self.use_queue_stream:
+            if self.use_queue_stream or not self._player.supports_queue:
                 await self.play_index(prev_index)
             else:
                 # at this point we don't know if the queue is synced with the player
-                # so just to be safe we only send the queue_items from the index
-                await self.load(self._items[prev_index:])
+                # so just to be safe we send the queue_items to the player
+                await self._player.cmd_queue_load(self.items)
+                await self.play_index(prev_index)
         else:
             LOGGER.warning("resume queue requested for %s but queue is empty" % self._player.name)
     

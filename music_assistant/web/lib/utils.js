@@ -54,7 +54,7 @@ function toggleLibrary (item) {
             if (action == "/library_remove")
                 item.in_library = []
             else
-            item.in_library = [provider]
+                item.in_library = [provider]
             })
         .catch(error => {
             console.log("error", error);

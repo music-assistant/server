@@ -350,10 +350,10 @@ class Web():
         elif cmd_str == 'playlist index -1':
             await player.previous()
         elif 'mixer volume' in cmd_str and '+' in cmds[2]:
-            volume_level = cmds[2].split('+')[1]
+            volume_level = player.volume_level + int(cmds[2].split('+')[1])
             await player.volume_set(volume_level)
         elif 'mixer volume' in cmd_str and '-' in cmds[2]:
-            volume_level = cmds[2].split('-')[1]
+            volume_level = player.volume_level - int(cmds[2].split('-')[1])
             await player.volume_set(volume_level)
         elif 'mixer volume' in cmd_str:
             await player.volume_set(cmds[2])
