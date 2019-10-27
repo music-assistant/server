@@ -15,11 +15,12 @@ var PlaylistDetails = Vue.component('PlaylistDetails', {
                   <listviewItem 
                       v-for="(item, index) in items" 
                       v-bind:item="item"
-                      :key="item.db_id"
+                      :key="index"
                       :hideavatar="isMobile()"
                       :hidetracknum="true"
                       :hideproviders="isMobile()"
                       :hidelibrary="isMobile()"
+                      :hidemenu="true"
                       v-bind:context="info"
                       >
                   </listviewItem>
@@ -35,7 +36,8 @@ var PlaylistDetails = Vue.component('PlaylistDetails', {
       info: {},
       items: [],
       offset: 0,
-      active: 0
+      active: 0,
+      full_list_loaded: false
     }
   },
   created() {
@@ -45,7 +47,7 @@ var PlaylistDetails = Vue.component('PlaylistDetails', {
     this.scroll(this.Browse);
   },
   methods: {
-    getInfo () {
+    async getInfo () {
       const api_url = this.$globals.apiAddress + 'playlists/' + this.media_id
       axios
       .get(api_url, { params: { provider: this.provider }})
@@ -58,26 +60,36 @@ var PlaylistDetails = Vue.component('PlaylistDetails', {
           console.log("error", error);
         });
     },
-    getPlaylistTracks () {
-      this.$globals.loading = true
+    async getPlaylistTracks () {
+      if (this.full_list_loaded)
+        return;
+      this.$globals.loading = true;
       const api_url = this.$globals.apiAddress + 'playlists/' + this.media_id + '/tracks'
+      let limit = 20;
       axios
-        .get(api_url, { params: { offset: this.offset, limit: 25, provider: this.provider}})
+        .get(api_url, { params: { offset: this.offset, limit: limit, provider: this.provider}})
         .then(result => {
-          data = result.data;
-          this.items.push(...data);
-          this.offset += 25;
           this.$globals.loading = false;
+          data = result.data;
+          if (data.length < limit)
+          {
+            this.full_list_loaded = true;
+            this.$globals.loading = false;
+            if (data.length == 0)
+              return
+          }
+          this.items.push(...data);
+          this.offset += limit;
+          
         })
         .catch(error => {
           console.log("error", error);
         });
-        
     },
     scroll (Browse) {
       window.onscroll = () => {
         let bottomOfWindow = document.documentElement.scrollTop + window.innerHeight === document.documentElement.offsetHeight;
-        if (bottomOfWindow) {
+        if (bottomOfWindow && !this.full_list_loaded) {
           this.getPlaylistTracks();
         }
       };

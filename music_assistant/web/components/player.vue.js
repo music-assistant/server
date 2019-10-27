@@ -135,7 +135,7 @@ Vue.component("player", {
             </div>
         </v-list>
     </v-navigation-drawer>
-    <contextmenu v-on:playItem="playItem" :active_player="active_player" />
+    <contextmenu v-model="$globals.showcontextmenu" v-on:playItem="playItem" :active_player="active_player" />
   </div>
   
   `,
@@ -233,7 +233,6 @@ Vue.component("player", {
       this.ws.send(JSON.stringify({message:'player command', message_details: msg_details}));
     },
     playItem(item, queueopt) {
-      console.log('playItem: ' + item);
       this.$globals.loading = true;
       var api_url = 'api/players/' + this.active_player_id + '/play_media/' + item.media_type + '/' + item.item_id + '/' + queueopt;
       axios
@@ -243,11 +242,9 @@ Vue.component("player", {
         }
       })
       .then(result => {
-        console.log(result.data);
         this.$globals.loading = false;
       })
       .catch(error => {
-        console.log("error", error);
         this.$globals.loading = false;
       });
     },

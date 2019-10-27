@@ -4,14 +4,15 @@ var Browse = Vue.component('Browse', {
       <v-list two-line>
         <listviewItem 
             v-for="(item, index) in items"
-            :key="item.item_id"
+            :key="item.item_id+item.provider"
             v-bind:item="item"
             v-bind:totalitems="items.length"
             v-bind:index="index"
             :hideavatar="item.media_type == 3 ? isMobile() : false"
             :hidetracknum="true"
             :hideproviders="isMobile()"
-            :hidelibrary="isMobile() ? true : item.media_type != 3"
+            :hidelibrary="true"
+            :hidemenu="item.media_type == 3"
             :context="mediatype"
             >
         </listviewItem>
@@ -23,26 +24,36 @@ var Browse = Vue.component('Browse', {
     return {
       selected: [2],
       items: [],
-      offset: 0
+      offset: 0,
+      full_list_loaded: false
     }
   },
   created() {
-    this.showavatar = true;
-    mediatitle = 
     this.$globals.windowtitle = this.$t(this.mediatype)
     this.scroll(this.Browse);
-    this.getItems();
+    if (!this.full_list_loaded)
+      this.getItems();
   },
   methods: {
     getItems () {
+      if (this.full_list_loaded)
+        return;
       this.$globals.loading = true
       const api_url = this.$globals.apiAddress + this.mediatype;
+      const limit = 20;
       axios
-        .get(api_url, { params: { offset: this.offset, limit: 50, provider: this.provider }})
+        .get(api_url, { params: { offset: this.offset, limit: limit, provider: this.provider }})
         .then(result => {
           data = result.data;
+          if (data.length < limit)
+          {
+            this.full_list_loaded = true;
+            this.$globals.loading = false;
+            if (data.length == 0)
+              return
+          }
           this.items.push(...data);
-          this.offset += 50;
+          this.offset += limit;
           this.$globals.loading = false;
         })
         .catch(error => {
@@ -53,8 +64,7 @@ var Browse = Vue.component('Browse', {
     scroll (Browse) {
       window.onscroll = () => {
         let bottomOfWindow = document.documentElement.scrollTop + window.innerHeight === document.documentElement.offsetHeight;
-
-        if (bottomOfWindow) {
+        if (bottomOfWindow && !this.full_list_loaded) {
           this.getItems();
         }
       };

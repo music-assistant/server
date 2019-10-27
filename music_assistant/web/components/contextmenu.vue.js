@@ -1,13 +1,48 @@
 Vue.component("contextmenu", {
 	template: `
-	<listdialog v-model="$globals.showcontextmenu" 
-		v-on:onClick="itemCommand" 
-		:items=menuItems 
-		:header="header" 
-		:subheader="subheader" 
-	</listdialog>
+	<v-dialog :value="value" @input="$emit('input', $event)" max-width="500px">
+		<v-card>
+			<v-list>
+				<v-subheader class="title">{{ header }}</v-subheader>
+				<v-subheader v-if="subheader">{{ subheader }}</v-subheader>
+				<!-- normal contextmenu items -->
+				<div v-if="!show_playlists" v-for="(item, index) in menuItems">
+					<v-list-tile avatar @click="itemCommand(item.action)">
+						<v-list-tile-avatar>
+							<v-icon>{{item.icon}}</v-icon>
+						</v-list-tile-avatar>
+						<v-list-tile-content>
+							<v-list-tile-title>{{ $t(item.label) }}</v-list-tile-title>
+						</v-list-tile-content>
+					</v-list-tile>
+					<v-divider></v-divider>
+				</div>
+				<listviewItem v-if="show_playlists"
+					v-for="(item, index) in playlists"
+					:key="item.item_id"
+					v-bind:item="item"
+					v-bind:totalitems="playlists.length"
+					v-bind:index="index"
+					:hideavatar="false"
+					:hidetracknum="true"
+					:hideproviders="false"
+					:hidelibrary="true"
+					:hidemenu="true"
+					:context="'selectplaylist'"
+					:onClick="playlistSelected"
+					>
+				</listviewItem>
+			</v-list>
+		</v-card>
+      </v-dialog>
 `,
-	props: ['active_player'],
+	props: ['value', 'active_player'],
+	watch: {
+		value: function (val) {
+			if (!val)
+				this.show_playlists = false;
+		}
+	},
 	data () { 
 		return {
 			mediaPlayItems: [
@@ -43,7 +78,9 @@ Vue.component("contextmenu", {
 					icon: "remove_circle_outline"
 			},
 			playerQueueItems: [
-			]
+			],
+			playlists: [],
+			show_playlists: false
 		}
 	},
 	mounted() { },
@@ -52,6 +89,8 @@ Vue.component("contextmenu", {
 		menuItems() {
 			if (!this.$globals.contextmenuitem)
 				return [];
+			else if (this.show_playlists)
+				return this.playlists;
 			else if (this.$globals.contextmenucontext == 'playerqueue')
 				return this.playerQueueItems; // TODO: return queue contextmenu
 			else if (this.$globals.contextmenucontext == 'trackdetails') {
@@ -77,18 +116,24 @@ Vue.component("contextmenu", {
 			}
 		},
 		header() {
-			return !!this.$globals.contextmenuitem ? this.$globals.contextmenuitem.name : '';
+			if (this.show_playlists)
+				return this.$t('add_playlist');
+			else if (!this.$globals.contextmenuitem)
+				return "";
+			else
+				return this.$globals.contextmenuitem.name;
 		},
 		subheader() {
-			if (!!this.active_player)
-				return this.$t('play_on') + this.active_player.name;
-			else
+			if (this.show_playlists && !!this.$globals.contextmenuitem)
+				return this.$globals.contextmenuitem.name;
+			else if (!this.active_player)
 				return "";
+			else
+				return this.$t('play_on') + this.active_player.name;
 		}
 	},
 	methods: { 
 		itemCommand(cmd) {
-			console.log('itemCommand: ' + cmd);
       		if (cmd == 'info') {
 				// show track info
 				this.$router.push({ path: '/tracks/' + this.$globals.contextmenuitem.item_id, query: {provider: this.$globals.contextmenuitem.provider}})
@@ -96,7 +141,6 @@ Vue.component("contextmenu", {
 			}	
 			else if (cmd == 'add_playlist') {
 				// add to playlist
-				console.log(`add ${this.$globals.contextmenuitem.name} to playlist?`);
 				this.getPlaylists();
 				this.show_playlists = true;
 			}
@@ -112,10 +156,13 @@ Vue.component("contextmenu", {
 			}
 			
 		},
+		playlistSelected(playlistobj) {
+			this.playlistAddRemove(this.$globals.contextmenuitem, playlistobj.item_id, 'playlist_add');
+			this.$globals.showcontextmenu = false;
+		},
 		playlistAddRemove(track, playlist_id, action='playlist_add') {
 			/// add or remove track on playlist
 			var url = `${this.$globals.server}api/track/${track.item_id}`;
-			console.log('loading ' + url);
 			axios
 				.get(url, { params: { 
 					provider: track.provider, 
@@ -123,8 +170,7 @@ Vue.component("contextmenu", {
 					action_details: playlist_id
 				}})
 				.then(result => {
-					console.log(result);
-					// reload playlist
+					// reload listing
 					if (action == 'playlist_remove')
 						this.$router.go()
 					})
@@ -135,16 +181,22 @@ Vue.component("contextmenu", {
 		getPlaylists() {
 			// get all editable playlists
 			const api_url = this.$globals.apiAddress + 'playlists';
+			let track_provs = [];
+			for (var prov of this.$globals.contextmenuitem.provider_ids)
+				track_provs.push(prov.provider);
 			axios
 				.get(api_url, { })
 				.then(result => {
 					let items = []
-					for (var item of result.data) {
-						if (item.item_id != this.$globals.contextmenucontext.item_id)
-							if (item.is_editable)
-								items.push(item);
+					for (var playlist of result.data) {
+						if (playlist.is_editable && playlist.item_id != this.$globals.contextmenucontext.item_id)
+							for (var prov of playlist.provider_ids)
+								if (track_provs.includes(prov.provider))
+								{
+									items.push(playlist);
+									break
+								}
 					}
-					console.log(items);
 					this.playlists = items;
 				})
 				.catch(error => {

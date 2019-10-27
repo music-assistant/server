@@ -4,8 +4,8 @@ Vue.component("listviewItem", {
     <v-list-tile
     avatar
     ripple
-    @click="clickItem(item, context)">
-
+    @click="onClick ? onClick(item, context) : clickItem(item, context)"
+    >
           <v-list-tile-avatar color="grey" v-if="!hideavatar">
               <img v-if="(item.media_type != 3) && item.metadata && item.metadata.image" :src="item.metadata.image"/>
               <img v-if="(item.media_type == 3) && item.album && item.album.metadata && item.album.metadata.image" :src="item.album.metadata.image"/>
@@ -22,7 +22,7 @@ Vue.component("listviewItem", {
             </v-list-tile-title>
             
             <v-list-tile-sub-title v-if="item.artists">
-                <span v-for="(artist, artistindex) in item.artists">
+                <span v-for="(artist, artistindex) in item.artists" :key="artist.item_id">
                     <a v-on:click="clickItem(artist)" @click.stop="">{{ artist.name }}</a>
                     <label v-if="artistindex + 1 < item.artists.length" :key="artistindex"> / </label>
                 </span>
@@ -61,12 +61,11 @@ Vue.component("listviewItem", {
           <!-- menu button/icon -->
           <v-icon v-if="!hidemenu" @click="showPlayMenu(item, context)" @click.stop="" color="grey lighten-1" style="margin-right:-10px;padding-left:10px">more_vert</v-icon>
           
-
         </v-list-tile>
         <v-divider v-if="index + 1 < totalitems" :key="index"></v-divider>
         </div>
      `,
-props: ['item', 'context', 'index', 'totalitems', 'hideavatar', 'hidetracknum', 'hideproviders', 'hidemenu', 'hidelibrary', 'hideduration'],
+props: ['item', 'context', 'index', 'totalitems', 'hideavatar', 'hidetracknum', 'hideproviders', 'hidemenu', 'hidelibrary', 'hideduration', 'onClick'],
 data() {
   return {}
   },

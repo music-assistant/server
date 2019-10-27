@@ -263,7 +263,8 @@ class MusicManager():
             new_pos = len(cur_playlist_tracks) + index
             await self.mass.db.add_playlist_track(playlist.item_id, track.item_id, new_pos)
         # actually add the tracks to the playlist on the provider
-        return await self.providers[playlist_prov['provider']].add_playlist_tracks(playlist_prov['item_id'], track_ids_to_add)
+        if track_ids_to_add:
+            return await self.providers[playlist_prov['provider']].add_playlist_tracks(playlist_prov['item_id'], track_ids_to_add)
 
     async def remove_playlist_tracks(self, playlist_id, tracks:List[Track]):
         ''' remove tracks from playlist '''
@@ -287,7 +288,8 @@ class MusicManager():
             # remove track from db playlist
             await self.mass.db.remove_playlist_track(playlist.item_id, track.item_id)
         # actually remove the tracks from the playlist on the provider
-        return await self.providers[prov_playlist_provider_id].add_playlist_tracks(prov_playlist_playlist_id, track_ids_to_remove)
+        if track_ids_to_remove:
+            return await self.providers[prov_playlist_provider_id].add_playlist_tracks(prov_playlist_playlist_id, track_ids_to_remove)
 
     @run_periodic(3600)
     async def sync_music_providers(self):
@@ -400,8 +402,10 @@ class MusicManager():
                 item_provider = prov_mapping['provider']
                 prov_item_id = prov_mapping['item_id']
                 db_item = await self.providers[item_provider].track(prov_item_id, lazy=False)
-                cur_db_ids.append(db_item.item_id)
-                if not db_item.item_id in prev_db_ids:
+                if not db_item.item_id in cur_db_ids:
+                    cur_db_ids.append(db_item.item_id)
+                    # always add/update because position could be changed
+                    # note: we ignore duplicate tracks in the same playlist
                     await self.mass.db.add_playlist_track(db_playlist_id, db_item.item_id, pos)
             pos += 1
         # process playlist track deletions

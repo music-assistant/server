@@ -3,7 +3,7 @@ const isInStandaloneMode = () => ('standalone' in window.navigator) && (window.n
 
 function showPlayMenu (item, context=null) {
     /// make the contextmenu visible
-    console.log(context);
+    console.log("showPlayMenu");
     this.$globals.contextmenuitem = item;
     this.$globals.contextmenucontext = context;
     this.$globals.showcontextmenu = !this.$globals.showcontextmenu;
