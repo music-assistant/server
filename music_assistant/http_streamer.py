@@ -319,7 +319,7 @@ class HTTPStreamer():
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
         bytes_sent = 0
-        while True:
+        while process.poll() == None:
             if cancelled.is_set():
                 # http session ended
                 # send terminate and pick up left over bytes
