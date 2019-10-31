@@ -163,7 +163,7 @@ class MusicManager():
         # collect the tracks from the first provider
         for prov in album.provider_ids:
             prov_obj = self.providers[prov['provider']]
-            items = await prov_obj.album_tracks(album_id)
+            items = await prov_obj.album_tracks(prov['item_id'])
             if items:
                 break
         items = sorted(items, key=operator.attrgetter('track_number'), reverse=False)

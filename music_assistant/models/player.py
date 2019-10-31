@@ -135,6 +135,14 @@ class Player():
         return self._prov_id
 
     @property
+    def enabled(self):
+        ''' [PROTECTED] enabled state of this player '''
+        if self.settings.get('enabled'):
+            return True
+        else:
+            return False
+
+    @property
     def name(self):
         ''' [PROTECTED] name of this player '''
         if self.settings.get('name'):
@@ -201,7 +209,7 @@ class Player():
     @property
     def state(self):
         ''' [PROTECTED] state property of this player '''
-        if not self.powered:
+        if not self.powered or not self.enabled:
             return PlayerState.Off
         # prefer group player state
         for group_parent_id in self.group_parents:
@@ -220,6 +228,8 @@ class Player():
     @property
     def powered(self):
         ''' [PROTECTED] return power state for this player '''
+        if not self.enabled:
+            return False
         # homeassistant integration
         if (self.mass.hass.enabled and self.settings.get('hass_power_entity') and 
                 self.settings.get('hass_power_entity_source')):
@@ -551,7 +561,7 @@ class Player():
 
     async def update(self, update_queue=False):
         ''' [PROTECTED] signal player updated '''
-        if not self._initialized:
+        if not self._initialized or not self.enabled:
             return
         # update queue state if player state changes
         if update_queue:

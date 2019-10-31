@@ -54,9 +54,10 @@ class PlayerManager():
         ''' register a new player '''
         player._initialized = True
         self._players[player.player_id] = player
-        await self.mass.signal_event(EVENT_PLAYER_ADDED, player.to_dict())
-        # TODO: turn on player if it was previously turned on ?
-        LOGGER.info(f"New player added: {player.player_provider}/{player.player_id}")
+        if player.enabled:
+            await self.mass.signal_event(EVENT_PLAYER_ADDED, player.to_dict())
+            # TODO: turn on player if it was previously turned on ?
+            LOGGER.info(f"New player added: {player.player_provider}/{player.player_id}")
         return player
 
     async def remove_player(self, player_id):
