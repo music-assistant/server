@@ -162,7 +162,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id, limit=50, offset=0) -> List[Track]:
         ''' get playlist tracks for given playlist id '''
-        playlist_obj = await self.__get_data("playlists/%s?fields=snapshot_id" % prov_playlist_id, ignore_cache=True)
+        playlist_obj = await self.__get_data("playlists/%s?fields=snapshot_id,name" % prov_playlist_id, ignore_cache=True)
         cache_checksum = playlist_obj["snapshot_id"]
         track_objs = await self.__get_all_items("playlists/%s/tracks" % prov_playlist_id, limit=limit, offset=offset, cache_checksum=cache_checksum)
         tracks = []
@@ -170,6 +170,8 @@ class SpotifyProvider(MusicProvider):
             playlist_track = await self.__parse_track(track_obj)
             if playlist_track:
                 tracks.append(playlist_track)
+            else:
+                LOGGER.warning("Unavailable track found in playlist %s: %s" %(playlist_obj['name'], track_obj['track']['name']))
         return tracks
 
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
@@ -342,7 +344,8 @@ class SpotifyProvider(MusicProvider):
             album.metadata['explicit'] = str(album_obj['explicit']).lower()
         album.provider_ids.append({
             "provider": self.prov_id,
-            "item_id": album_obj['id']
+            "item_id": album_obj['id'],
+            "quality": TrackQuality.LOSSY_OGG
         })
         return album
 

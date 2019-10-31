@@ -57,16 +57,15 @@ class Web():
                 LOGGER.warning( "SSL certificate key file not found: %s" % config['ssl_key'])
             self.https_port = config['https_port']
             self._enable_ssl = enable_ssl
-        
 
     async def setup(self):
         ''' perform async setup '''
-        app = web.Application()
+        app = web.Application(middlewares=[self.handle_cors])
         app.add_routes([web.get('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.get('/ws', self.websocket_handler)])
-        app.add_routes([web.get('/stream/{player_id}', self.mass.http_streamer.stream)])
-        app.add_routes([web.get('/stream/{player_id}/{queue_item_id}', self.mass.http_streamer.stream)])
+        app.add_routes([web.get('/stream/{player_id}', self.mass.http_streamer.stream, allow_head=False)])
+        app.add_routes([web.get('/stream/{player_id}/{queue_item_id}', self.mass.http_streamer.stream, allow_head=False)])
         app.add_routes([web.get('/api/search', self.search)])
         app.add_routes([web.get('/api/config', self.get_config)])
         app.add_routes([web.post('/api/config/{key}/{subkey}', self.save_config)])
@@ -82,6 +81,7 @@ class Web():
         app.add_routes([web.get('/api/artists/{artist_id}/toptracks', self.artist_toptracks)])
         app.add_routes([web.get('/api/artists/{artist_id}/albums', self.artist_albums)])
         app.add_routes([web.get('/api/albums/{album_id}/tracks', self.album_tracks)])
+        app.add_routes([web.get('/api/{media_type}/{media_id}/image', self.get_image)])
         app.add_routes([web.get('/api/{media_type}/{media_id}', self.get_item)])
         app.add_routes([web.get('/api/{media_type}', self.get_items)])
         app.add_routes([web.get('/', self.index)])
@@ -98,6 +98,13 @@ class Web():
             https_site = web.TCPSite(self.runner, '0.0.0.0', self.config['https_port'], ssl_context=ssl_context)
             await https_site.start()
             LOGGER.info("Started HTTPS webserver on port %s" % self.config['https_port'])
+
+    @web.middleware
+    async def handle_cors(self, request, handler):
+        ''' append CORS header to our API '''
+        response = await handler(request)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
 
     async def get_items(self, request):
         ''' get multiple library items'''
@@ -128,17 +135,32 @@ class Web():
             result = await self.mass.music.item(media_id, media_type, provider, lazy=lazy)
         return web.json_response(result, dumps=json_serializer)
 
+    async def get_image(self, request):
+        ''' get item image '''
+        media_type_str = request.match_info.get('media_type')
+        media_type = media_type_from_string(media_type_str)
+        media_id = request.match_info.get('media_id')
+        # optional params
+        provider = request.rel_url.query.get('provider', 'database')
+        size = int(request.rel_url.query.get('size', 0))
+        type_key = request.rel_url.query.get('type', 'image')
+        img_file = await self.mass.music.get_image_path(media_id, media_type, provider, size, type_key)
+        if not img_file or not os.path.isfile(img_file):
+            return web.Response(status=404)
+        headers = {'Cache-Control': 'max-age=86400, public', 'Pragma': 'public'}
+        return web.FileResponse(img_file, headers=headers)
+
     async def artist_toptracks(self, request):
         ''' get top tracks for given artist '''
         artist_id = request.match_info.get('artist_id')
-        provider = request.rel_url.query.get('provider')
+        provider = request.rel_url.query.get('provider', 'database')
         result = await self.mass.music.artist_toptracks(artist_id, provider)
         return web.json_response(result, dumps=json_serializer)
 
     async def artist_albums(self, request):
         ''' get (all) albums for given artist '''
         artist_id = request.match_info.get('artist_id')
-        provider = request.rel_url.query.get('provider')
+        provider = request.rel_url.query.get('provider', 'database')
         result = await self.mass.music.artist_albums(artist_id, provider)
         return web.json_response(result, dumps=json_serializer)
 
@@ -147,14 +169,14 @@ class Web():
         playlist_id = request.match_info.get('playlist_id')
         limit = int(request.query.get('limit', 50))
         offset = int(request.query.get('offset', 0))
-        provider = request.rel_url.query.get('provider')
+        provider = request.rel_url.query.get('provider', 'database')
         result = await self.mass.music.playlist_tracks(playlist_id, provider, offset=offset, limit=limit)
         return web.json_response(result, dumps=json_serializer)
 
     async def album_tracks(self, request):
         ''' get album tracks from provider'''
         album_id = request.match_info.get('album_id')
-        provider = request.rel_url.query.get('provider')
+        provider = request.rel_url.query.get('provider','database')
         result = await self.mass.music.album_tracks(album_id, provider)
         return web.json_response(result, dumps=json_serializer)
 
@@ -332,6 +354,8 @@ class Web():
         cmds = params[1]
         cmd_str = " ".join(cmds)
         player = await self.mass.players.get_player(player_id)
+        if not player:
+            return web.Response(status=404)
         if cmd_str == 'play':
             await player.play()
         elif cmd_str == 'pause':

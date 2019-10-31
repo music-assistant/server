@@ -6,6 +6,9 @@ from typing import List
 import toolz
 import operator
 import os
+import base64
+from PIL import Image
+import aiohttp
 
 from .utils import run_periodic, LOGGER, load_provider_modules
 from .models.media_types import MediaType, Track, Artist, Album, Playlist, Radio
@@ -151,15 +154,18 @@ class MusicManager():
 
     async def album_tracks(self, album_id, provider='database') -> List[Track]:
         ''' get the album tracks for given album '''
-        items = []
         album = await self.album(album_id, provider)
-        for prov_mapping in album.provider_ids:
-            prov_id = prov_mapping['provider']
-            prov_item_id = prov_mapping['item_id']
-            prov_obj = self.providers[prov_id]
-            items += await prov_obj.album_tracks(prov_item_id)
-        items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
-        items = sorted(items, key=operator.attrgetter('disc_number'), reverse=False)
+        if provider == 'database' and album.in_library:
+            # library albums are synced
+            items =  await self.mass.db.album_tracks(album_id)
+            if items:
+                return items
+        # collect the tracks from the first provider
+        for prov in album.provider_ids:
+            prov_obj = self.providers[prov['provider']]
+            items = await prov_obj.album_tracks(album_id)
+            if items:
+                break
         items = sorted(items, key=operator.attrgetter('track_number'), reverse=False)
         return items
 
@@ -339,8 +345,8 @@ class MusicManager():
             db_item = await music_provider.album(item.item_id, lazy=False)
             cur_db_ids.append(db_item.item_id)
             # precache album tracks...
-            for album_track in await music_provider.get_album_tracks(item.item_id):
-                await music_provider.track(album_track.item_id)
+            for album_track in await music_provider.album_tracks(item.item_id):
+                await self.track(album_track.item_id, album_track.provider)
             if not db_item.item_id in prev_db_ids:
                 await self.mass.db.add_to_library(db_item.item_id, MediaType.Album, prov_id)
         # process deletions
@@ -390,6 +396,7 @@ class MusicManager():
 
     async def sync_playlist_tracks(self, db_playlist_id, prov_id, prov_playlist_id):
         ''' sync library playlists tracks for given provider'''
+        playlist = await self.mass.db.playlist(db_playlist_id)
         music_provider = self.providers[prov_id]
         prev_items = await self.playlist_tracks(db_playlist_id)
         prev_db_ids = [item.item_id for item in prev_items]
@@ -407,12 +414,14 @@ class MusicManager():
                     # always add/update because position could be changed
                     # note: we ignore duplicate tracks in the same playlist
                     await self.mass.db.add_playlist_track(db_playlist_id, db_item.item_id, pos)
+                else:
+                    LOGGER.warning("SKIP duplicate track in playlist %s: %s" %(playlist.name, db_item.name))
             pos += 1
         # process playlist track deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
                 await self.mass.db.remove_playlist_track(db_playlist_id, db_id)
-        LOGGER.info("Finished syncing Playlist %s tracks for provider %s" % (prov_playlist_id, prov_id))
+        LOGGER.info("Finished syncing Playlist %s tracks for provider %s" % (playlist.name, prov_id))
 
     async def sync_radios(self, prov_id):
         ''' sync library radios for given provider'''
@@ -433,3 +442,50 @@ class MusicManager():
             if db_id not in cur_db_ids:
                 await self.mass.db.remove_from_library(db_id, MediaType.Radio, prov_id)
         LOGGER.info("Finished syncing Radios for provider %s" % prov_id)
+
+    async def get_image_path(self, item_id, media_type:MediaType, provider, size=50, key='image'):
+        ''' get path to (resized) thumb image for given media item '''
+        cache_folder = os.path.join(self.mass.datapath, '.thumbs')
+        cache_id = f'{item_id}{media_type}{provider}{key}'
+        cache_id = base64.b64encode(cache_id.encode('utf-8')).decode('utf-8')
+        cache_file_org = os.path.join(cache_folder, f'{cache_id}0.png')
+        cache_file_sized = os.path.join(cache_folder, f'{cache_id}{size}.png')
+        if os.path.isfile(cache_file_sized):
+            # return file from cache
+            return cache_file_sized
+        # no file in cache so we should get it
+        img_url = ''
+        item = await self.item(item_id, media_type, provider)
+        if item and item.metadata.get(key):
+            img_url = item.metadata[key]
+        elif media_type == MediaType.Track:
+            # try album image instead for tracks
+            return await self.get_image_path(
+                    item.album.item_id, MediaType.Album, item.album.provider, size, key)
+        elif media_type == MediaType.Album:
+            # try artist image instead for albums
+            return await self.get_image_path(
+                    item.artist.item_id, MediaType.Artist, item.artist.provider, size, key)
+        if not img_url:
+            return None
+        # fetch image and store in cache
+        os.makedirs(cache_folder, exist_ok=True)
+        # download base image
+        async with aiohttp.ClientSession() as session:
+            async with session.get(img_url, verify_ssl=False) as response:
+                assert response.status == 200
+                img_data = await response.read()
+                with open(cache_file_org, 'wb') as f:
+                    f.write(img_data)
+        if not size:
+            # return base image
+            return cache_file_org
+        # save resized image
+        basewidth = size
+        img = Image.open(cache_file_org)
+        wpercent = (basewidth/float(img.size[0]))
+        hsize = int((float(img.size[1])*float(wpercent)))
+        img = img.resize((basewidth,hsize), Image.ANTIALIAS)
+        img.save(cache_file_sized)
+        # return file from cache
+        return cache_file_sized

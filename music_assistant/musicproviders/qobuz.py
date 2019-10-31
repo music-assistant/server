@@ -166,6 +166,8 @@ class QobuzProvider(MusicProvider):
             track = await self.__parse_track(track_obj)
             if track:
                 tracks.append(track)
+            else:
+                LOGGER.warning("Unavailable track found in album %s: %s" %(prov_album_id, track_obj['title']))
         return tracks
 
     async def get_playlist_tracks(self, prov_playlist_id, limit=100, offset=0) -> List[Track]:
@@ -179,7 +181,9 @@ class QobuzProvider(MusicProvider):
             playlist_track = await self.__parse_track(track_obj)
             if playlist_track:
                 tracks.append(playlist_track)
-            # TODO: should we look for an alternative track version if the original is marked unavailable ?
+            else:
+                LOGGER.warning("Unavailable track found in playlist %s: %s" %(playlist_obj['name'], track_obj['title']))
+                # TODO: should we look for an alternative track version if the original is marked unavailable ?
         return tracks
 
     async def get_artist_albums(self, prov_artist_id, limit=100, offset=0) -> List[Album]:
@@ -197,14 +201,16 @@ class QobuzProvider(MusicProvider):
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
         ''' get a list of most popular tracks for the given artist '''
         # artist toptracks not supported on Qobuz, so use search instead
+        # assuming qobuz returns results sorted by popularity
         items = []
         artist = await self.get_artist(prov_artist_id)
-        params = {"query": artist.name, "limit": 10, "type": "tracks" }
+        params = {"query": artist.name, "limit": 25, "type": "tracks" }
         searchresult = await self.__get_data("catalog/search", params)
         for item in searchresult["tracks"]["items"]:
             if "performer" in item and str(item["performer"]["id"]) == str(prov_artist_id):
                 track = await self.__parse_track(item)
-                items.append(track)
+                if track:
+                    items.append(track)
         return items
     
     async def add_library(self, prov_item_id, media_type:MediaType):
@@ -336,9 +342,22 @@ class QobuzProvider(MusicProvider):
             return None
         album.item_id = album_obj['id']
         album.provider = self.prov_id
+        if album_obj['maximum_sampling_rate'] > 192:
+            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_4
+        elif album_obj['maximum_sampling_rate'] > 96:
+            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_3
+        elif album_obj['maximum_sampling_rate'] > 48:
+            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_2
+        elif album_obj['maximum_bit_depth'] > 16:
+            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_1
+        elif album_obj.get('format_id',0) == 5:
+            quality = TrackQuality.LOSSY_AAC
+        else:
+            quality = TrackQuality.FLAC_LOSSLESS
         album.provider_ids.append({
             "provider": self.prov_id,
             "item_id": album_obj['id'],
+            "quality": quality,
             "details": "%skHz %sbit" %(album_obj['maximum_sampling_rate'], album_obj['maximum_bit_depth'])
         })
         album.name, album.version = parse_track_title(album_obj['title'])

@@ -17,3 +17,4 @@ pyloudnorm
 SoundFile
 aiorun
 soco
+pillow

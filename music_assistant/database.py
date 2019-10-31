@@ -274,7 +274,7 @@ class Database():
                 artist.external_ids = await self.__get_external_ids(artist.item_id, MediaType.Artist, db)
                 artist.metadata = await self.__get_metadata(artist.item_id, MediaType.Artist, db)
                 artist.tags = await self.__get_tags(artist.item_id, MediaType.Artist, db)
-                artist.metadata = await self.__get_metadata(artist.item_id, MediaType.Artist, db, filter_key='image')
+                artist.metadata = await self.__get_metadata(artist.item_id, MediaType.Artist, db)
             artists.append(artist)
         if should_close_db:
             await db.close()
@@ -354,8 +354,6 @@ class Database():
                     album.metadata = await self.__get_metadata(album.item_id, MediaType.Album, db)
                     album.tags = await self.__get_tags(album.item_id, MediaType.Album, db)
                     album.labels = await self.__get_album_labels(album.item_id, db)
-                else:
-                    album.metadata = await self.__get_metadata(album.item_id, MediaType.Album, db, filter_key='image')
                 albums.append(album)
         if should_close_db:
             await db.close()
@@ -511,6 +509,12 @@ class Database():
         ''' get all library albums for the given artist '''
         sql_query = ' WHERE artist_id = %d' % artist_id
         return await self.albums(sql_query, limit=limit, offset=offset, orderby=orderby, fulldata=False)
+
+    async def album_tracks(self, album_id:int, limit=100000, offset=0, orderby='disc_number,track_number') -> List[Track]:
+        ''' get album tracks for the given album '''
+        sql_query = """SELECT * FROM tracks
+                    WHERE album_id=%s""" % album_id
+        return await self.tracks(sql_query, orderby=orderby, limit=limit, offset=offset, fulldata=False)
 
     async def playlist_tracks(self, playlist_id:int, limit=100000, offset=0, orderby='position') -> List[Track]:
         ''' get playlist tracks for the given playlist_id '''
