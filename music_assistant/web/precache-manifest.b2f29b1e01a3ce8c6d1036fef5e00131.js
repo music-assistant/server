@@ -1,14 +1,14 @@
 self.__precacheManifest = (self.__precacheManifest || []).concat([
   {
-    "revision": "094b4d662956c240c073",
-    "url": "css/app.ccd7be77.css"
+    "revision": "105c11112c457bcaca7a",
+    "url": "css/app.f7c6b061.css"
   },
   {
     "revision": "1a83e8d3597e9275d477",
     "url": "css/chunk-vendors.7d5374e7.css"
   },
   {
-    "revision": "a64061b8603f1a3e6d46",
+    "revision": "243b64d77de6086d7c1c",
     "url": "css/config.18def958.css"
   },
   {
@@ -16,7 +16,7 @@ self.__precacheManifest = (self.__precacheManifest || []).concat([
     "url": "css/config~search.af60f7e1.css"
   },
   {
-    "revision": "01a7285a48e96e4c5b9a",
+    "revision": "9d703042a11142ef7164",
     "url": "css/itemdetails.bd2e4eb1.css"
   },
   {
@@ -192,43 +192,43 @@ self.__precacheManifest = (self.__precacheManifest || []).concat([
     "url": "img/webplayer.8e1a0da9.png"
   },
   {
-    "revision": "ab75ff1241d25e7b428cb95242325da5",
+    "revision": "18f6743d054c603468166d5eb145346e",
     "url": "index.html"
   },
   {
-    "revision": "094b4d662956c240c073",
-    "url": "js/app.df1cf09c.js"
+    "revision": "105c11112c457bcaca7a",
+    "url": "js/app.164646f9.js"
   },
   {
     "revision": "1a83e8d3597e9275d477",
     "url": "js/chunk-vendors.b98bba01.js"
   },
   {
-    "revision": "a64061b8603f1a3e6d46",
-    "url": "js/config.328c2668.js"
+    "revision": "243b64d77de6086d7c1c",
+    "url": "js/config.3af84ca2.js"
   },
   {
     "revision": "276e9bcee543fb0e0ca6",
     "url": "js/config~search.9f3e890b.js"
   },
   {
-    "revision": "01a7285a48e96e4c5b9a",
-    "url": "js/itemdetails.b7fcbe37.js"
+    "revision": "9d703042a11142ef7164",
+    "url": "js/itemdetails.5c314dae.js"
   },
   {
     "revision": "f99e5094257d36798190",
     "url": "js/itemdetails~playerqueue~search.1e2b2bfd.js"
   },
   {
-    "revision": "18eb47f2f2f9addc2da3",
-    "url": "js/playerqueue.39a08978.js"
+    "revision": "e8c0708dab48c5678fe7",
+    "url": "js/playerqueue.5fa460a7.js"
   },
   {
-    "revision": "f86728ca50beba0b14eb",
-    "url": "js/search.5fcda21d.js"
+    "revision": "7191dbe3902034215a2e",
+    "url": "js/search.56af5cc1.js"
   },
   {
-    "revision": "0895c4ca94f1d637bb13f84373f6cfff",
+    "revision": "a69fc7789e4488064e5e6c87b668ce90",
     "url": "manifest.json"
   },
   {

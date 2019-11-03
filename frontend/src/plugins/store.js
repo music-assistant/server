@@ -6,7 +6,7 @@ const globalStore = new Vue({
       windowtitle: 'Home',
       loading: false,
       showNavigationMenu: false,
-      topBarColor: 'black',
+      topBarColor: '#424242',
       isMobile: false,
       isInStandaloneMode: false
     }

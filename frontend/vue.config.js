@@ -5,7 +5,15 @@ module.exports = {
       fallbackLocale: 'en',
       localeDir: 'locales',
       enableInSFC: true
-    }
+    },
+    cordovaPath: 'src-cordova'
+  },
+  pwa: {
+    name: 'Music Assistant',
+    themeColor: '#424242',
+    msTileColor: '#424242',
+    appleMobileWebAppCapable: 'yes',
+    appleMobileWebAppStatusBarStyle: 'black'
   },
 
   transpileDependencies: [

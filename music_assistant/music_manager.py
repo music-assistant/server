@@ -456,6 +456,8 @@ class MusicManager():
         # no file in cache so we should get it
         img_url = ''
         item = await self.item(item_id, media_type, provider)
+        if not item:
+            return ''
         if item and item.metadata.get(key):
             img_url = item.metadata[key]
         elif media_type == MediaType.Track:

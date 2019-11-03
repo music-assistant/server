@@ -1,5 +1,5 @@
 <template>
-  <v-app-bar app scroll-off-screen hide-on-scroll flat dense dark :color="$store.topBarColor">
+  <v-app-bar app scroll-off-screen flat dense dark :color="$store.topBarColor">
     <v-layout>
       <v-toolbar-title class="body-1" v-if="$store.topBarColor != 'transparent'" style="position:fixed;width:100%;text-align:center;vertical-align:center;margin-top:11px;">{{ $store.windowtitle }}</v-toolbar-title>
       <v-btn icon v-on:click="$store.showNavigationMenu=!$store.showNavigationMenu" style="margin-left:-13px">

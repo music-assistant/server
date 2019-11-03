@@ -8,17 +8,17 @@
     style="background-color: #424242"
   >
     <v-card
-      class="flex"
       dense
       flat
       light
       subheader
       tile
       width="100%"
-      color="transparent"
+      color="#E0E0E0"
+      style="margin-top:1px;"
     >
       <!-- now playing media -->
-      <v-list-item dense two-line style="background-color:#E0E0E0;margin-top:1px">
+      <v-list-item two-line>
         <v-list-item-avatar tile v-if="curQueueItem">
           <img
             :src="$server.getImageUrl(curQueueItem)"
@@ -31,18 +31,18 @@
         </v-list-item-avatar>
 
         <v-list-item-content>
-          <v-list-item-title class="title" v-if="curQueueItem" style="height: 19px">
+          <v-list-item-title v-if="curQueueItem">
             {{ curQueueItem.name }}</v-list-item-title
           >
-          <v-list-item-title class="title" v-else-if="$server.activePlayer">
+          <v-list-item-title v-else-if="$server.activePlayer">
             {{ $server.activePlayer.name }}</v-list-item-title
           >
-          <v-list-item-subtitle v-if="curQueueItem" class="subtitle-1" style="font-weight:normal;color: primary">
+          <v-list-item-subtitle v-if="curQueueItem" style="color: primary">
             <span
               v-for="(artist, artistindex) in curQueueItem.artists"
               :key="artistindex"
             >
-              <a v-on:click="clickItem(artist)" @click.stop="">{{
+              <a v-on:click="artistClick(artist)" @click.stop="">{{
                 artist.name
               }}</a>
               <label
@@ -59,7 +59,7 @@
       <!-- progress bar -->
       <div
         class="body-2"
-        style="height:30px;width:100%;color:rgba(0,0,0,.65);margin-top:-5px;background-color:#E0E0E0;"
+        style="height:30px;width:100%;color:rgba(0,0,0,.65);margin-top:-12px;background-color:#E0E0E0;"
         align="center"
       >
         <div
@@ -78,16 +78,18 @@
         fixed
         light
         :value="progress"
+        v-if="curQueueItem"
         :style="
           'margin-top:-22px;margin-left:80px;width:' + progressBarWidth + 'px;'
         "
       />
+    </v-card>
 
       <!-- Control buttons -->
       <v-list-item
         dark
         dense
-        style="height:50px;margin-bottom:5px;"
+        style="height:44px;margin-bottom:5px;margin-top:-4px;background-color:#424242;"
       >
         <v-list-item-action v-if="$server.activePlayer" style="margin-top:15px">
           <v-btn small icon @click="playerCommand('previous')">
@@ -168,7 +170,7 @@
       </v-list-item>
       <!-- add some additional whitespace in standalone mode only -->
       <div style="height:14px" v-if="$store.isInStandaloneMode" />
-    </v-card>
+
   </v-footer>
 </template>
 
@@ -246,12 +248,17 @@ export default Vue.extend({
       return totalSecs.toString().formatDuration()
     },
     progressBarWidth () {
-      return window.innerWidth - 180
+      return window.innerWidth - 160
     }
   },
   methods: {
     playerCommand (cmd, cmd_opt = null) {
       this.$server.playerCommand(cmd, cmd_opt, this.$server.activePlayerId)
+    },
+    artistClick (item) {
+      // artist entry clicked within the listviewItem
+      var url = '/artists/' + item.item_id
+      this.$router.push({ path: url, query: { provider: item.provider } })
     }
   }
 })

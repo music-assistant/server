@@ -13,7 +13,7 @@
         height="300"
         position="center top"
         :src="$server.getImageUrl(itemDetails, 'fanart')"
-        gradient="to bottom, rgba(0,0,0,.85), rgba(66,66,66,.85)"
+        gradient="to bottom, rgba(66,66,66,.95), rgba(0,0,0,.75)"
       >
         <div class="text-xs-center" style="height:40px;" id="whitespace_top" />
 

@@ -137,8 +137,7 @@ const server = new Vue({
       }.bind(this), 5000)
     },
 
-    _onWsError (err) {
-      console.error('Socket encountered error: ', err.message, 'Closing socket')
+    _onWsError () {
       this._ws.close()
     },
 
