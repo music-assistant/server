@@ -1,0 +1,162 @@
+<template>
+  <section>
+    <v-text-field
+      solo
+      clearable
+      :label="$t('type_to_search')"
+      append-icon="search"
+      v-model="searchQuery"
+      v-on:keyup.enter="Search"
+      @click:append="Search"
+      style="margin-left:30px; margin-right:30px; margin-top:10px"
+    >
+    </v-text-field>
+
+    <v-tabs v-model="active" color="transparent" light slider-color="black">
+      <v-tab ripple v-if="tracks.length">{{ $t("tracks") }}</v-tab>
+      <v-tab-item v-if="tracks.length">
+        <v-card flat>
+          <v-list two-line style="margin-left:15px; margin-right:15px">
+            <listviewItem
+              v-for="(item, index) in tracks"
+              v-bind:item="item"
+              :key="item.db_id"
+              v-bind:totalitems="tracks.length"
+              v-bind:index="index"
+              :hideavatar="$store.isMobile"
+              :hidetracknum="true"
+              :hideproviders="$store.isMobile"
+              :hideduration="$store.isMobile"
+              :showlibrary="true"
+              v-on:click="itemClicked"
+              v-on:menuClick="menuClick"
+            >
+            </listviewItem>
+          </v-list>
+        </v-card>
+      </v-tab-item>
+
+      <v-tab ripple v-if="artists.length">{{ $t("artists") }}</v-tab>
+      <v-tab-item v-if="artists.length">
+        <v-card flat>
+          <v-list two-line>
+            <listviewItem
+              v-for="(item, index) in artists"
+              v-bind:item="item"
+              :key="item.db_id"
+              v-bind:totalitems="artists.length"
+              v-bind:index="index"
+              :hideproviders="$store.isMobile"
+              v-on:click="itemClicked"
+          v-on:menuClick="menuClick"
+            >
+            </listviewItem>
+          </v-list>
+        </v-card>
+      </v-tab-item>
+
+      <v-tab ripple v-if="albums.length">{{ $t("albums") }}</v-tab>
+      <v-tab-item v-if="albums.length">
+        <v-card flat>
+          <v-list two-line>
+            <listviewItem
+              v-for="(item, index) in albums"
+              v-bind:item="item"
+              :key="item.db_id"
+              v-bind:totalitems="albums.length"
+              v-bind:index="index"
+              :hideproviders="$store.isMobile"
+              v-on:click="itemClicked"
+              v-on:menuClick="menuClick"
+            >
+            </listviewItem>
+          </v-list>
+        </v-card>
+      </v-tab-item>
+
+      <v-tab ripple v-if="playlists.length">{{ $t("playlists") }}</v-tab>
+      <v-tab-item v-if="playlists.length">
+        <v-card flat>
+          <v-list two-line>
+            <listviewItem
+              v-for="(item, index) in playlists"
+              v-bind:item="item"
+              :key="item.db_id"
+              v-bind:totalitems="playlists.length"
+              v-bind:index="index"
+              :hidelibrary="true"
+              v-on:click="itemClicked"
+              v-on:menuClick="menuClick"
+            >
+            </listviewItem>
+          </v-list>
+        </v-card>
+      </v-tab-item>
+    </v-tabs>
+  </section>
+</template>
+
+<script>
+// @ is an alias to /src
+import ListviewItem from '@/components/ListviewItem.vue'
+
+export default {
+  components: {
+    ListviewItem
+  },
+  props: { },
+  data () {
+    return {
+      selected: [2],
+      artists: [],
+      albums: [],
+      tracks: [],
+      playlists: [],
+      timeout: null,
+      active: 0,
+      searchQuery: ''
+    }
+  },
+  created () {
+    this.$store.windowtitle = this.$t('search')
+  },
+  methods: {
+    itemClicked (item) {
+      // item in the list is clicked
+      let url = ''
+      if (item.media_type === 1) {
+        url = '/artists/' + item.item_id
+      } else if (item.media_type === 2) {
+        url = '/albums/' + item.item_id
+      } else if (item.media_type === 4) {
+        url = '/playlists/' + item.item_id
+      } else {
+        // assume track (or radio) item
+        this.$server.$emit('showContextMenu', item)
+        return
+      }
+      this.$router.push({ path: url, query: { provider: item.provider } })
+    },
+    menuClick (item) {
+      // contextmenu button clicked
+      this.$server.$emit('showContextMenu', item)
+    },
+    async Search () {
+      this.artists = []
+      this.albums = []
+      this.tracks = []
+      this.playlists = []
+      if (this.searchQuery) {
+        this.$store.loading = true
+        let params = { query: this.searchQuery, online: true, limit: 10 }
+        let result = await this.$server.getData('search', params)
+        this.artists = result.artists
+        this.albums = result.albums
+        this.tracks = result.tracks
+        this.playlists = result.playlists
+        this.$store.loading = false
+      }
+    }
+  }
+}
+</script>

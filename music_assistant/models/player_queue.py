@@ -10,7 +10,7 @@ import os
 import pickle
 
 from ..utils import LOGGER, json, filename_from_string
-from ..constants import CONF_ENABLED, EVENT_PLAYBACK_STARTED, EVENT_PLAYBACK_STOPPED
+from ..constants import CONF_ENABLED, EVENT_PLAYBACK_STARTED, EVENT_PLAYBACK_STOPPED, EVENT_QUEUE_UPDATED
 from .media_types import Track, TrackQuality
 from .playerstate import PlayerState
 
@@ -208,11 +208,12 @@ class PlayerQueue():
         if self._shuffle_enabled:
             queue_items = await self.__shuffle_items(queue_items)
         self._items = queue_items
+        await self.mass.signal_event(EVENT_QUEUE_UPDATED, self._player.player_id)
         if self.use_queue_stream or not self._player.supports_queue:
             await self.play_index(0)
         else:
             await self._player.cmd_queue_load(queue_items)
-
+        
     async def insert(self, queue_items:List[QueueItem], offset=0):
         ''' 
             insert new items at offset x from current position
@@ -228,6 +229,8 @@ class PlayerQueue():
         if self.shuffle_enabled:
             queue_items = await self.__shuffle_items(queue_items)
         self._items = self._items[:insert_at_index] + queue_items + self._items[insert_at_index:]
+        self.mass.event_loop.create_task(
+            self.mass.signal_event(EVENT_QUEUE_UPDATED, self._player.player_id))
         if self.use_queue_stream or not self._player.supports_queue:
             if offset == 0:
                 return await self.play_index(insert_at_index)
@@ -237,7 +240,7 @@ class PlayerQueue():
             except NotImplementedError:
                 # not supported by player, use load queue instead
                 LOGGER.debug("cmd_queue_insert not supported by player, fallback to cmd_queue_load ")
-                await self._player.cmd_queue_load(self._items[insert_at_index:])
+                return await self._player.cmd_queue_load(self._items[insert_at_index:])
 
     async def append(self, queue_items:List[QueueItem]):
         ''' 
@@ -246,13 +249,15 @@ class PlayerQueue():
         if self.shuffle_enabled:
             queue_items = await self.__shuffle_items(queue_items)
         self._items = self._items + queue_items
+        self.mass.event_loop.create_task(
+            self.mass.signal_event(EVENT_QUEUE_UPDATED, self._player.player_id))
         if self._player.supports_queue:
             try:
                 return await self._player.cmd_queue_append(queue_items)
             except NotImplementedError:
                 # not supported by player, use load queue instead
                 LOGGER.debug("cmd_queue_append not supported by player, fallback to cmd_queue_load ")
-                await self._player.cmd_queue_load(self._items[self.cur_index:])
+                return await self._player.cmd_queue_load(self._items[self.cur_index:])
 
     async def update(self):
         ''' update queue details, called when player updates '''

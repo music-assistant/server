@@ -71,15 +71,17 @@ class Database():
             "playlists": []
         }
         searchquery = "%" + searchquery + "%"
-        sql_query = ' WHERE name LIKE "%s"' % searchquery
         if MediaType.Artist in media_types:
+            sql_query = ' WHERE name LIKE "%s"' % searchquery
             result["artists"] = await self.artists(sql_query, limit=limit)
         if MediaType.Album in media_types:
+            sql_query = ' WHERE name LIKE "%s"' % searchquery
             result["albums"] = await self.albums(sql_query, limit=limit)
         if MediaType.Track in media_types:
             sql_query = 'SELECT * FROM tracks WHERE name LIKE "%s"' % searchquery
             result["tracks"] = await self.tracks(sql_query, limit=limit)
         if MediaType.Playlist in media_types:
+            sql_query = ' WHERE name LIKE "%s"' % searchquery
             result["playlists"] = await self.playlists(sql_query, limit=limit)
         return result
     

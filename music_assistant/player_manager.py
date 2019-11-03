@@ -54,10 +54,9 @@ class PlayerManager():
         ''' register a new player '''
         player._initialized = True
         self._players[player.player_id] = player
-        if player.enabled:
-            await self.mass.signal_event(EVENT_PLAYER_ADDED, player.to_dict())
-            # TODO: turn on player if it was previously turned on ?
-            LOGGER.info(f"New player added: {player.player_provider}/{player.player_id}")
+        await self.mass.signal_event(EVENT_PLAYER_ADDED, player.to_dict())
+        # TODO: turn on player if it was previously turned on ?
+        LOGGER.info(f"New player added: {player.player_provider}/{player.player_id}")
         return player
 
     async def remove_player(self, player_id):
@@ -69,7 +68,7 @@ class PlayerManager():
     async def trigger_update(self, player_id):
         ''' manually trigger update for a player '''
         if player_id in self._players:
-            await self._players[player_id].update()
+            await self._players[player_id].update(force=True)
     
     async def play_media(self, player_id, media_item, queue_opt='play'):
         ''' 

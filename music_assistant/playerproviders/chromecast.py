@@ -270,7 +270,7 @@ class ChromecastProvider(PlayerProvider):
             if not player_id in self.mass.players._players:
                 self.__chromecast_discovered(player_id, discovery_info)
         listener, browser = start_discovery(discovered_callback)
-        time.sleep(15) # run discovery for 15 seconds
+        time.sleep(30) # run discovery for 30 seconds
         stop_discovery(browser)
         LOGGER.debug("Chromecast discovery completed...")
         self._discovery_running = False

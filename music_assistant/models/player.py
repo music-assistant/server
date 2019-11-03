@@ -346,11 +346,6 @@ class Player():
             self.mass.event_loop.create_task(self.update())
 
     @property
-    def enabled(self):
-        ''' [PROTECTED] player enabled config setting '''
-        return self.settings.get('enabled')
-
-    @property
     def queue(self):
         ''' [PROTECTED] player's queue '''
         # prefer group player's state
@@ -559,9 +554,9 @@ class Player():
         ''' [PROTECTED] send mute command to player '''
         return await self.cmd_volume_mute(is_muted)
 
-    async def update(self, update_queue=False):
+    async def update(self, update_queue=False, force=False):
         ''' [PROTECTED] signal player updated '''
-        if not self._initialized or not self.enabled:
+        if not force and (not self._initialized or not self.enabled):
             return
         # update queue state if player state changes
         if update_queue:

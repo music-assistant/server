@@ -155,11 +155,11 @@ class MusicManager():
     async def album_tracks(self, album_id, provider='database') -> List[Track]:
         ''' get the album tracks for given album '''
         album = await self.album(album_id, provider)
-        if provider == 'database' and album.in_library:
-            # library albums are synced
-            items =  await self.mass.db.album_tracks(album_id)
-            if items:
-                return items
+        # if provider == 'database' and album.in_library:
+        #     # library albums are synced
+        #     items =  await self.mass.db.album_tracks(album_id)
+        #     if items:
+        #         return items
         # collect the tracks from the first provider
         for prov in album.provider_ids:
             prov_obj = self.providers[prov['provider']]

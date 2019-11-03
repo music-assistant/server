@@ -18,3 +18,4 @@ SoundFile
 aiorun
 soco
 pillow
+aiohttp_cors

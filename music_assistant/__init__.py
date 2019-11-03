@@ -64,7 +64,7 @@ class MusicAssistant():
         LOGGER.debug(f"Caught exception: {context}")
         loop.default_exception_handler(context)
 
-    async def signal_event(self, msg, msg_details:dict):
+    async def signal_event(self, msg, msg_details):
         ''' signal (systemwide) event '''
         if not (msg_details == None or isinstance(msg_details, (str, dict))):
             msg_details = serialize_values(msg_details)

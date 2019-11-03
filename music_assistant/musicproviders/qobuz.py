@@ -308,7 +308,7 @@ class QobuzProvider(MusicProvider):
                 'track_id': msg_details["item_id"],
                 'duration': int(msg_details["seconds_played"])
                 }
-            await self.__get_data('/track/reportStreamingEnd', params)
+            await self.__get_data('/track/reportStreamingEnd', params, ignore_cache=True)
     
     async def __parse_artist(self, artist_obj):
         ''' parse qobuz artist object to generic layout '''

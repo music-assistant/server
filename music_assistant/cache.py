@@ -26,7 +26,7 @@ class Cache(object):
 
     async def setup(self):
         ''' async initialize of cache module '''
-        asyncio.create_task(self._do_cleanup())
+        asyncio.get_running_loop().create_task(self._do_cleanup())
 
     async def get_async(self, endpoint, checksum=""):
         return await asyncio.get_running_loop().run_in_executor(None, self.get, endpoint, checksum)

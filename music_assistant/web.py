@@ -4,6 +4,7 @@
 import asyncio
 import os
 import aiohttp
+import aiohttp_cors
 from aiohttp import web
 from functools import partial
 import ssl
@@ -60,15 +61,15 @@ class Web():
 
     async def setup(self):
         ''' perform async setup '''
-        app = web.Application(middlewares=[self.handle_cors])
+        app = web.Application()
         app.add_routes([web.get('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.get('/ws', self.websocket_handler)])
         app.add_routes([web.get('/stream/{player_id}', self.mass.http_streamer.stream, allow_head=False)])
         app.add_routes([web.get('/stream/{player_id}/{queue_item_id}', self.mass.http_streamer.stream, allow_head=False)])
         app.add_routes([web.get('/api/search', self.search)])
-        app.add_routes([web.get('/api/config', self.get_config)])
         app.add_routes([web.post('/api/config/{key}/{subkey}', self.save_config)])
+        app.add_routes([web.get('/api/config', self.get_config)])
         app.add_routes([web.get('/api/players', self.players)])
         app.add_routes([web.get('/api/players/{player_id}', self.player)])
         app.add_routes([web.get('/api/players/{player_id}/queue', self.player_queue)])
@@ -87,6 +88,17 @@ class Web():
         app.add_routes([web.get('/', self.index)])
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web/')
         app.router.add_static("/", webdir)
+        
+        # Add CORS support to all routes
+        cors = aiohttp_cors.setup( app,
+            defaults={
+                "*": aiohttp_cors.ResourceOptions(
+                    allow_credentials=True,
+                    expose_headers="*",
+                    allow_headers="*")
+            })
+        for route in list(app.router.routes()):
+            cors.add(route)
         self.runner = web.AppRunner(app, access_log=None)
         await self.runner.setup()
         http_site = web.TCPSite(self.runner, '0.0.0.0', self.http_port)
@@ -98,13 +110,6 @@ class Web():
             https_site = web.TCPSite(self.runner, '0.0.0.0', self.config['https_port'], ssl_context=ssl_context)
             await https_site.start()
             LOGGER.info("Started HTTPS webserver on port %s" % self.config['https_port'])
-
-    @web.middleware
-    async def handle_cors(self, request, handler):
-        ''' append CORS header to our API '''
-        response = await handler(request)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return response
 
     async def get_items(self, request):
         ''' get multiple library items'''
@@ -250,7 +255,8 @@ class Web():
         limit = int(request.query.get('limit', 50))
         offset = int(request.query.get('offset', 0))
         player = await self.mass.players.get_player(player_id)
-        return web.json_response(player.queue.items[offset:limit], dumps=json_serializer) 
+        print("queue items - offset: %s - limit: %s" %(offset, limit))
+        return web.json_response(player.queue.items[offset:offset+limit], dumps=json_serializer) 
 
     async def player_queue_item(self, request):
         ''' return item (by index or queue item id) from the player's queue '''
@@ -336,10 +342,18 @@ class Web():
             # config changed
             result["settings_changed"] = True
             self.mass.config[conf_key][conf_subkey] = new_values
-            if conf_key != "player_settings":
+            if conf_key == "player_settings":
+                # player settings don't require restart, force update of player
+                self.mass.event_loop.create_task(
+                    self.mass.players.trigger_update(conf_subkey))
+            else:
+                # TODO: allow some settings without restart ?
                 result["restart_required"] = True
             self.mass.config.save()
         return web.json_response(result)
+
+    async def headers_only(self, request):
+        return web.Response(status=200)
 
     async def json_rpc(self, request):
         ''' 
