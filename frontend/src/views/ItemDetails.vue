@@ -2,14 +2,10 @@
   <section>
     <InfoHeader v-bind:itemDetails="itemDetails" />
     <v-tabs grow show-arrows v-model="activeTab">
-      <v-tab
-        v-for="tab in tabs"
-        :key="tab.label"
-      > {{ $t(tab.label) + ' (' + tab.items.length + ')' }}</v-tab>
-      <v-tab-item
-        v-for="tab in tabs"
-        :key="tab.label"
+      <v-tab v-for="tab in tabs" :key="tab.label">
+        {{ $t(tab.label) + " (" + tab.items.length + ")" }}</v-tab
       >
+      <v-tab-item v-for="tab in tabs" :key="tab.label">
         <v-card flat>
           <v-list two-line>
             <RecycleScroller
@@ -27,8 +23,6 @@
                 :hideproviders="$store.isMobile"
                 :hidelibrary="$store.isMobile"
                 :hidemenu="item.media_type == 3 ? $store.isMobile : false"
-                v-on:click="itemClicked"
-                v-on:menuClick="menuClick"
               ></ListviewItem>
             </RecycleScroller>
           </v-list>
@@ -67,9 +61,8 @@ export default {
       tabs: []
     }
   },
-  async created () {
-    // retrieve the item details
-    await this.getItemDetails()
+  created () {
+    this.$server.$on('refresh_listing', this.retrieveInfos)
     if (this.media_type === 'artists') {
       // artist details
       this.tabs = [
@@ -118,32 +111,19 @@ export default {
         }
       ]
     }
-    // retrieve the tabs with additional details
-    for (var tab of this.tabs) {
-      this.getTabItems(tab)
-    }
+    this.retrieveInfos()
+  },
+  beforeDestroy () {
+    this.$server.$off('refresh_listing')
   },
   methods: {
-    itemClicked (item) {
-      // listitem was clicked
-      // item in the list is clicked
-      let url = ''
-      if (item.media_type === 1) {
-        url = '/artists/' + item.item_id
-      } else if (item.media_type === 2) {
-        url = '/albums/' + item.item_id
-      } else if (item.media_type === 4) {
-        url = '/playlists/' + item.item_id
-      } else {
-        // assume track (or radio) item
-        this.$server.$emit('showContextMenu', item)
-        return
+    retrieveInfos () {
+      // retrieve the item details
+      this.getItemDetails()
+      // retrieve the tabs with additional details
+      for (var tab of this.tabs) {
+        this.getTabItems(tab)
       }
-      this.$router.push({ path: url, query: { provider: item.provider } })
-    },
-    menuClick (item) {
-      // contextmenu button (within listitem) clicked
-      this.$server.$emit('showContextMenu', item)
     },
     async getItemDetails () {
       // get the full details for the mediaitem
@@ -156,15 +136,11 @@ export default {
     },
     async getTabItems (tab) {
       // retrieve the lists of items for each tab
-      let offset = 0
-      let limit = 50
       let paginated = 'paginated' in tab ? tab.paginated : false
-      while (true) {
-        let items = await this.$server.getData(tab.endpoint, { offset: offset, limit: limit, provider: this.provider })
-        if (!items || items.length === 0) break
-        tab.items.push(...items)
-        offset += limit
-        if (items.length < limit || !paginated) break
+      if (paginated) {
+        return this.$server.getAllItems(tab.endpoint, tab.items, { provider: this.provider })
+      } else {
+        tab.items = await this.$server.getData(tab.endpoint, { provider: this.provider })
       }
     }
   }

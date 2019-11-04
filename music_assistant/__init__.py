@@ -39,7 +39,7 @@ class MusicAssistant():
         self.event_listeners = {}
         self.config = MassConfig(self)
         # init modules
-        self.db = Database(datapath)
+        self.db = Database(self)
         self.cache = Cache(datapath)
         self.metadata = MetaData(self)
         self.web = Web(self)
@@ -58,20 +58,30 @@ class MusicAssistant():
         await self.players.setup()
         await self.web.setup()
         await self.http_streamer.setup()
+        # wait for exit
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            LOGGER.info("Application shutdown")
+            await self.signal_event("shutdown")
 
     def handle_exception(self, loop, context):
         ''' global exception handler '''
         LOGGER.debug(f"Caught exception: {context}")
         loop.default_exception_handler(context)
 
-    async def signal_event(self, msg, msg_details):
+    async def signal_event(self, msg, msg_details=None):
         ''' signal (systemwide) event '''
         if not (msg_details == None or isinstance(msg_details, (str, dict))):
             msg_details = serialize_values(msg_details)
         listeners = list(self.event_listeners.values())
         for callback, eventfilter in listeners:
             if not eventfilter or eventfilter in msg:
-                self.event_loop.create_task(callback(msg, msg_details))
+                if msg == 'shutdown':
+                    await callback(msg, msg_details)
+                else:
+                    self.event_loop.create_task(callback(msg, msg_details))
 
     async def add_event_listener(self, cb, eventfilter=None):
         ''' add callback to our event listeners '''

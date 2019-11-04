@@ -2,7 +2,7 @@
   <v-flex v-observe-visibility="visibilityChanged">
     <v-card
       tile
-      color="cyan darken-2"
+      color="black"
       class="white--text"
       :img="require('../assets/info_gradient.jpg')"
       style="margin-top:-60px;"
@@ -13,7 +13,7 @@
         height="300"
         position="center top"
         :src="$server.getImageUrl(itemDetails, 'fanart')"
-        gradient="to bottom, rgba(66,66,66,.95), rgba(0,0,0,.75)"
+        gradient="to bottom, rgba(0,0,0,.90), rgba(0,0,0,.75)"
       >
         <div class="text-xs-center" style="height:40px;" id="whitespace_top" />
 
@@ -39,100 +39,155 @@
 
           <v-flex>
             <!-- Main title -->
-            <v-card-title style="text-shadow: 1px 1px #000000;" class="headline">
+            <v-card-title
+              style="text-shadow: 1px 1px #000000;"
+              class="headline"
+            >
               {{ itemDetails.name }}
             </v-card-title>
 
             <!-- other details -->
             <v-card-subtitle>
-
               <!-- version -->
-              <div v-if="itemDetails.version" class="caption"
-              style="color: white;"
-            >{{ itemDetails.version }}
+              <div
+                v-if="itemDetails.version"
+                class="caption"
+                style="color: white;"
+              >
+                {{ itemDetails.version }}
               </div>
 
-            <!-- item artists -->
-            <div class="title" style="text-shadow: 1px 1px #000000;" v-if="itemDetails.artists">
-                <v-icon color="#cccccc" style="margin-left: -3px;margin-right:3px" small>person</v-icon>
+              <!-- item artists -->
+              <div
+                class="title"
+                style="text-shadow: 1px 1px #000000;"
+                v-if="itemDetails.artists"
+              >
+                <v-icon
+                  color="#cccccc"
+                  style="margin-left: -3px;margin-right:3px"
+                  small
+                  >person</v-icon
+                >
                 <span
                   v-for="(artist, artistindex) in itemDetails.artists"
                   :key="artist.db_id"
                 >
-                  <a style="color: primary" v-on:click="artistClick(artist)">{{ artist.name }}</a>
+                  <a style="color: primary" v-on:click="artistClick(artist)">{{
+                    artist.name
+                  }}</a>
                   <span
                     style="color: #cccccc"
                     v-if="artistindex + 1 < itemDetails.artists.length"
                     :key="artistindex"
-                  >{{ ' / ' }}</span>
+                    >{{ " / " }}</span
+                  >
                 </span>
-            </div>
+              </div>
 
-            <!-- album artist -->
-            <div class="title" v-if="itemDetails.artist">
-                <v-icon color="#cccccc" style="margin-left: -3px;margin-right:3px" small>person</v-icon>
+              <!-- album artist -->
+              <div class="title" v-if="itemDetails.artist">
+                <v-icon
+                  color="#cccccc"
+                  style="margin-left: -3px;margin-right:3px"
+                  small
+                  >person</v-icon
+                >
                 <a
                   style="color: primary"
                   v-on:click="artistClick(itemDetails.artist)"
-                >{{ itemDetails.artist.name }}</a>
-            </div>
+                  >{{ itemDetails.artist.name }}</a
+                >
+              </div>
 
-            <!-- playlist owner -->
-            <div class="title" style="text-shadow: 1px 1px #000000;" v-if="itemDetails.owner">
-                <v-icon color="#cccccc" style="margin-left: -3px;margin-right:3px" small>person</v-icon>
+              <!-- playlist owner -->
+              <div
+                class="title"
+                style="text-shadow: 1px 1px #000000;"
+                v-if="itemDetails.owner"
+              >
+                <v-icon
+                  color="#cccccc"
+                  style="margin-left: -3px;margin-right:3px"
+                  small
+                  >person</v-icon
+                >
                 <a style="color:primary">{{ itemDetails.owner }}</a>
-            </div>
+              </div>
 
-            <div
-              v-if="itemDetails.album"
-              style="color:#ffffff;text-shadow: 1px 1px #000000;"
-            >
-              <v-icon color="#cccccc" style="margin-left: -3px;margin-right:3px" small>album</v-icon>
-              <a
-                style="color:#ffffff"
-                v-on:click="albumClick(itemDetails.album)"
-              >{{ itemDetails.album.name }}</a>
-            </div>
+              <div
+                v-if="itemDetails.album"
+                style="color:#ffffff;text-shadow: 1px 1px #000000;"
+              >
+                <v-icon
+                  color="#cccccc"
+                  style="margin-left: -3px;margin-right:3px"
+                  small
+                  >album</v-icon
+                >
+                <a
+                  style="color:#ffffff"
+                  v-on:click="albumClick(itemDetails.album)"
+                  >{{ itemDetails.album.name }}</a
+                >
+              </div>
             </v-card-subtitle>
 
             <!-- play/info buttons -->
             <div style="margin-left:14px;">
-              <v-btn color="primary" tile
+              <v-btn
+                color="primary"
+                tile
                 @click="$server.$emit('showPlayMenu', itemDetails)"
               >
-              <v-icon left dark>play_circle_filled</v-icon>
-                {{ $t('play') }}
+                <v-icon left dark>play_circle_filled</v-icon>
+                {{ $t("play") }}
               </v-btn>
-              <v-btn style="margin-left:10px;"
-                v-if="!$store.isMobile && !!itemDetails.in_library && itemDetails.in_library.length == 0"
-                color="primary" tile
+              <v-btn
+                style="margin-left:10px;"
+                v-if="
+                  !$store.isMobile &&
+                    !!itemDetails.in_library &&
+                    itemDetails.in_library.length == 0
+                "
+                color="primary"
+                tile
                 @click="toggleLibrary(itemDetails)"
               >
                 <v-icon left dark>favorite_border</v-icon>
-                  {{ $t('add_library') }}
+                {{ $t("add_library") }}
               </v-btn>
-              <v-btn style="margin-left:10px;"
-                v-if="!$store.isMobile && !!itemDetails.in_library && itemDetails.in_library.length > 0"
-                color="primary" tile
+              <v-btn
+                style="margin-left:10px;"
+                v-if="
+                  !$store.isMobile &&
+                    !!itemDetails.in_library &&
+                    itemDetails.in_library.length > 0
+                "
+                color="primary"
+                tile
                 @click="toggleLibrary(itemDetails)"
               >
                 <v-icon left dark>favorite</v-icon>
-                  {{ $t('remove_library') }}
+                {{ $t("remove_library") }}
               </v-btn>
             </div>
 
             <!-- Description/metadata -->
             <v-card-subtitle class="body-2">
               <div class="justify-left" style="text-shadow: 1px 1px #000000;">
-                <ReadMore :text="getDescription()" :max-chars="$store.isMobile ? 100 : 300" />
+                <ReadMore
+                  :text="getDescription()"
+                  :max-chars="$store.isMobile ? 100 : 300"
+                />
               </div>
               <!-- tech specs and provider icons -->
-            <ProviderIcons
-              v-bind:providerIds="itemDetails.provider_ids"
-              :height="25"
-              :dark="true"
-              v-if="$store.isMobile"
-            />
+              <ProviderIcons
+                v-bind:providerIds="itemDetails.provider_ids"
+                :height="25"
+                :dark="true"
+                v-if="$store.isMobile"
+              />
             </v-card-subtitle>
           </v-flex>
         </v-layout>
@@ -162,15 +217,24 @@ export default Vue.extend({
   },
   mounted () { },
   created () {
-    this.$store.topBarColor = 'transparent'
+    this.$store.topBarTransparent = true
   },
   beforeDestroy () {
-    this.$store.topBarColor = '#424242'
+    this.$store.topBarTransparent = false
+    this.$store.topBarContextItem = null
+  },
+  watch: {
+    itemDetails: function (val) {
+      // set itemDetails as contextitem
+      if (val) {
+        this.$store.topBarContextItem = val
+      }
+    }
   },
   methods: {
     visibilityChanged (isVisible, entry) {
-      if (isVisible) this.$store.topBarColor = 'transparent'
-      else this.$store.topBarColor = '#424242'
+      if (isVisible) this.$store.topBarTransparent = true
+      else this.$store.topBarTransparent = false
     },
     artistClick (item) {
       // artist entry clicked

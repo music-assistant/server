@@ -1,9 +1,8 @@
 <template>
-  <v-app light>
+  <v-app>
     <TopBar />
     <NavigationMenu></NavigationMenu>
     <v-content>
-      <!-- <player></player> -->
       <router-view app :key="$route.path"></router-view>
     </v-content>
     <PlayerOSD :showPlayerSelect="showPlayerSelect" />
@@ -14,6 +13,12 @@
     </v-overlay>
   </v-app>
 </template>
+
+<style>
+  .body {
+    background-color: black
+  }
+</style>
 
 <script>
 import Vue from 'vue'

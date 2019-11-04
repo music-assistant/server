@@ -28,8 +28,6 @@
               :hideproviders="$store.isMobile"
               :hideduration="$store.isMobile"
               :showlibrary="true"
-              v-on:click="itemClicked"
-              v-on:menuClick="menuClick"
             >
             </listviewItem>
           </v-list>
@@ -47,8 +45,6 @@
               v-bind:totalitems="artists.length"
               v-bind:index="index"
               :hideproviders="$store.isMobile"
-              v-on:click="itemClicked"
-          v-on:menuClick="menuClick"
             >
             </listviewItem>
           </v-list>
@@ -66,8 +62,6 @@
               v-bind:totalitems="albums.length"
               v-bind:index="index"
               :hideproviders="$store.isMobile"
-              v-on:click="itemClicked"
-              v-on:menuClick="menuClick"
             >
             </listviewItem>
           </v-list>
@@ -85,8 +79,6 @@
               v-bind:totalitems="playlists.length"
               v-bind:index="index"
               :hidelibrary="true"
-              v-on:click="itemClicked"
-              v-on:menuClick="menuClick"
             >
             </listviewItem>
           </v-list>
@@ -121,26 +113,6 @@ export default {
     this.$store.windowtitle = this.$t('search')
   },
   methods: {
-    itemClicked (item) {
-      // item in the list is clicked
-      let url = ''
-      if (item.media_type === 1) {
-        url = '/artists/' + item.item_id
-      } else if (item.media_type === 2) {
-        url = '/albums/' + item.item_id
-      } else if (item.media_type === 4) {
-        url = '/playlists/' + item.item_id
-      } else {
-        // assume track (or radio) item
-        this.$server.$emit('showContextMenu', item)
-        return
-      }
-      this.$router.push({ path: url, query: { provider: item.provider } })
-    },
-    menuClick (item) {
-      // contextmenu button clicked
-      this.$server.$emit('showContextMenu', item)
-    },
     async Search () {
       this.artists = []
       this.albums = []

@@ -5,7 +5,7 @@
     padless
     light
     elevation="10"
-    style="background-color: #424242"
+    style="background-color: black;"
   >
     <v-card
       dense
@@ -89,7 +89,7 @@
       <v-list-item
         dark
         dense
-        style="height:44px;margin-bottom:5px;margin-top:-4px;background-color:#424242;"
+        style="height:44px;margin-bottom:5px;margin-top:-4px;background-color:black;"
       >
         <v-list-item-action v-if="$server.activePlayer" style="margin-top:15px">
           <v-btn small icon @click="playerCommand('previous')">
@@ -169,8 +169,15 @@
         </v-list-item-action>
       </v-list-item>
       <!-- add some additional whitespace in standalone mode only -->
-      <div style="height:14px" v-if="$store.isInStandaloneMode" />
-
+      <v-card
+        dense
+        flat
+        light
+        subheader
+        tile
+        width="100%"
+        color="black"
+        style="height:20px" v-if="$store.isInStandaloneMode"/>
   </v-footer>
 </template>
 

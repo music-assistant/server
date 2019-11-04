@@ -54,7 +54,6 @@
 </template>
 
 <script>
-import Vue from 'vue'
 import ListviewItem from '@/components/ListviewItem.vue'
 
 export default {
@@ -121,26 +120,8 @@ export default {
     },
     async getItems () {
       // retrieve the queue items
-      var offset = 0
-      var limit = 50
-      var index = 0
       const endpoint = 'players/' + this.$server.activePlayerId + '/queue'
-      while (true) {
-        let items = await this.$server.getData(endpoint, { offset: offset, limit: limit })
-        if (!items || items.length === 0) break
-        for (var item of items) {
-          if (this.items.length >= index) {
-            Vue.set(this.items, index, item)
-          } else this.items.push(item)
-          index += 1
-        }
-        offset += limit
-        if (items.length < limit) break
-      }
-      // truncate list if needed
-      if (this.items.length > index) {
-        this.items = this.items.slice(0, index + 1)
-      }
+      return this.$server.getAllItems(endpoint, this.items)
     }
   }
 }

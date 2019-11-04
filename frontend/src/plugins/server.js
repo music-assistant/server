@@ -74,6 +74,29 @@ const server = new Vue({
       return result.data
     },
 
+    async getAllItems (endpoint, list, params = {}) {
+      // retrieve all items and fill list
+      var offset = 0
+      var limit = 50
+      var index = 0
+      while (true) {
+        let items = await this.$server.getData(endpoint, { offset: offset, limit: limit, ...params })
+        if (!items || items.length === 0) break
+        for (var item of items) {
+          if (list.length >= index) {
+            Vue.set(list, index, item)
+          } else list.push(item)
+          index += 1
+        }
+        offset += limit
+        if (items.length < limit) break
+      }
+      // truncate list if needed
+      if (list.length > index) {
+        list = list.slice(0, index)
+      }
+    },
+
     playerCommand (cmd, cmd_opt = null, playerId = this.activePlayerId) {
       let msgDetails = {
         player_id: playerId,

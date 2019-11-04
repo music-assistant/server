@@ -6,7 +6,8 @@ const globalStore = new Vue({
       windowtitle: 'Home',
       loading: false,
       showNavigationMenu: false,
-      topBarColor: '#424242',
+      topBarTransparent: false,
+      topBarContextItem: null,
       isMobile: false,
       isInStandaloneMode: false
     }
@@ -21,7 +22,7 @@ const globalStore = new Vue({
   methods: {
     handleWindowOptions () {
       this.isMobile = (document.body.clientWidth < 700)
-      this.isInStandaloneMode = 'standalone' in window.navigator && window.navigator.standalone
+      this.isInStandaloneMode = (window.navigator.standalone === true) || (window.matchMedia('(display-mode: standalone)').matches)
     }
   }
 })

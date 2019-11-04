@@ -1,6 +1,6 @@
 <template>
   <div>
-    <v-list-item ripple @click="$emit('click', item)">
+    <v-list-item ripple @click="itemClicked(item)">
       <v-list-item-avatar tile color="grey" v-if="!hideavatar">
         <img
           :src="$server.getImageUrl(item, 'image', 80)"
@@ -17,12 +17,12 @@
 
         <v-list-item-subtitle v-if="item.artists">
           <span v-for="(artist, artistindex) in item.artists" :key="artist.item_id">
-            <a v-on:click="artistClick(artist)" @click.stop>{{ artist.name }}</a>
+            <a v-on:click="itemClicked(artist)" @click.stop>{{ artist.name }}</a>
             <label v-if="artistindex + 1 < item.artists.length" :key="artistindex">/</label>
           </span>
           <a
             v-if="!!item.album && !!hidetracknum"
-            v-on:click="albumClick(item.album)"
+            v-on:click="itemClicked(item.album)"
             @click.stop
             style="color:grey"
           > - {{ item.album.name }}</a>
@@ -32,7 +32,7 @@
           >- disc {{ item.disc_number }} track {{ item.track_number }}</label>
         </v-list-item-subtitle>
         <v-list-item-subtitle v-if="item.artist">
-          <a v-on:click="artistClick(item.artist)" @click.stop>{{ item.artist.name }}</a>
+          <a v-on:click="itemClicked(item.artist)" @click.stop>{{ item.artist.name }}</a>
         </v-list-item-subtitle>
 
         <v-list-item-subtitle v-if="!!item.owner">{{ item.owner }}</v-list-item-subtitle>
@@ -72,7 +72,7 @@
       <!-- menu button/icon -->
       <v-icon
         v-if="!hidemenu"
-        @click="$emit('menuClick', item)"
+        @click="menuClick(item)"
         @click.stop
         color="grey lighten-1"
         style="margin-right:-10px;padding-left:10px"
@@ -99,7 +99,8 @@ export default Vue.extend({
     hideproviders: Boolean,
     hidemenu: Boolean,
     hidelibrary: Boolean,
-    hideduration: Boolean
+    hideduration: Boolean,
+    onclickHandler: null
   },
   data () {
     return {}
@@ -116,19 +117,30 @@ export default Vue.extend({
   },
   mounted () { },
   methods: {
-    artistClick (item) {
-      // artist entry clicked within the listviewItem
-      var url = '/artists/' + item.item_id
-      this.$router.push({ path: url, query: { provider: item.provider } })
+    itemClicked (mediaItem) {
+      // mediaItem in the list is clicked
+      if (this.onclickHandler) return this.onclickHandler(mediaItem)
+      let url = ''
+      if (mediaItem.media_type === 1) {
+        url = '/artists/' + mediaItem.item_id
+      } else if (mediaItem.media_type === 2) {
+        url = '/albums/' + mediaItem.item_id
+      } else if (mediaItem.media_type === 4) {
+        url = '/playlists/' + mediaItem.item_id
+      } else {
+        // assume track (or radio) item
+        this.$server.$emit('showPlayMenu', mediaItem)
+        return
+      }
+      this.$router.push({ path: url, query: { provider: mediaItem.provider } })
     },
-    albumClick (item) {
-      // album entry clicked within the listviewItem
-      var url = '/albums/' + item.item_id
-      this.$router.push({ path: url, query: { provider: item.provider } })
+    menuClick (mediaItem) {
+      // contextmenu button clicked
+      this.$server.$emit('showContextMenu', mediaItem)
     },
-    toggleLibrary (item) {
+    toggleLibrary (mediaItem) {
       // library button clicked on item
-      this.$server.toggleLibrary(item)
+      this.$server.toggleLibrary(mediaItem)
     }
   }
 })

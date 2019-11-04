@@ -34,9 +34,9 @@ class ChromecastPlayer(Player):
     ''' Chromecast player object '''
     
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
         self.__cc_report_progress_task = None
-
+        super().__init__(*args, **kwargs)
+        
     def __del__(self):
         if self.__cc_report_progress_task:
             self.__cc_report_progress_task.cancel()

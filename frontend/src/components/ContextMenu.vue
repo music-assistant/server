@@ -8,7 +8,7 @@
         <div v-for="item of menuItems" :key="item.label">
           <v-list-item @click="itemCommand(item.action)">
             <v-list-item-avatar>
-              <v-icon>{{item.icon}}</v-icon>
+              <v-icon>{{ item.icon }}</v-icon>
             </v-list-item-avatar>
             <v-list-item-content>
               <v-list-item-title>{{ $t(item.label) }}</v-list-item-title>
@@ -31,7 +31,7 @@
           :hideproviders="false"
           :hidelibrary="true"
           :hidemenu="true"
-          @click="playlistSelected"
+          :onclickHandler="playlistSelected"
         ></listviewItem>
       </v-list>
     </v-card>
@@ -59,38 +59,6 @@ export default Vue.extend({
       subheader: '',
       curItem: null,
       curPlaylist: null,
-      mediaPlayItems: [
-        {
-          label: 'play_now',
-          action: 'play',
-          icon: 'play_circle_outline'
-        },
-        {
-          label: 'play_next',
-          action: 'next',
-          icon: 'queue_play_next'
-        },
-        {
-          label: 'add_queue',
-          action: 'add',
-          icon: 'playlist_add'
-        }
-      ],
-      showTrackInfoItem: {
-        label: 'show_info',
-        action: 'info',
-        icon: 'info'
-      },
-      addToPlaylistItem: {
-        label: 'add_playlist',
-        action: 'add_playlist',
-        icon: 'add_circle_outline'
-      },
-      removeFromPlaylistItem: {
-        label: 'remove_playlist',
-        action: 'remove_playlist',
-        icon: 'remove_circle_outline'
-      },
       playerQueueItems: [],
       playlists: []
     }
@@ -107,44 +75,128 @@ export default Vue.extend({
   computed: {
   },
   methods: {
-    showContextMenu (item, playlist = null) {
-      this.curItem = item
-      this.curPlaylist = playlist
-      if (!item) return
-      if (item.media_type === 3) {
-        // track item in list
-        let items = []
-        items.push(...this.mediaPlayItems)
-        items.push(this.showTrackInfoItem)
-        items.push(this.addToPlaylistItem)
-        if (!!playlist && playlist.is_editable) {
-          items.push(this.removeFromPlaylistItem)
-        }
-        this.menuItems = items
-      } else {
-        // all other playable media
-        this.menuItems = this.mediaPlayItems
+    showContextMenu (mediaItem) {
+      // show contextmenu items for the given mediaItem
+      this.playlists = []
+      if (!mediaItem) return
+      this.curItem = mediaItem
+      let curBrowseContext = this.$store.topBarContextItem
+      let menuItems = []
+      // show playmenu
+      menuItems.push({
+        label: 'play',
+        action: 'playmenu',
+        icon: 'play_circle_outline'
+      })
+      // show info
+      if (mediaItem !== curBrowseContext) {
+        menuItems.push({
+          label: 'show_info',
+          action: 'info',
+          icon: 'info'
+        })
       }
-      this.header = item.name
+      // add to library
+      if (mediaItem.in_library.length === 0) {
+        menuItems.push({
+          label: 'add_library',
+          action: 'add_library',
+          icon: 'favorite_border'
+        })
+      }
+      // remove from library
+      if (mediaItem.in_library.length > 0) {
+        menuItems.push({
+          label: 'remove_library',
+          action: 'remove_library',
+          icon: 'favorite'
+        })
+      }
+      // remove from playlist (playlist tracks only)
+      if (curBrowseContext && curBrowseContext.media_type === 4) {
+        this.curPlaylist = curBrowseContext
+        if (mediaItem.media_type === 3 && curBrowseContext.is_editable) {
+          menuItems.push({
+            label: 'remove_playlist',
+            action: 'remove_playlist',
+            icon: 'remove_circle_outline'
+          })
+        }
+      }
+      // add to playlist action (tracks only)
+      if (mediaItem.media_type === 3) {
+        menuItems.push({
+          label: 'add_playlist',
+          action: 'add_playlist',
+          icon: 'add_circle_outline'
+        })
+      }
+      this.menuItems = menuItems
+      this.header = mediaItem.name
       this.subheader = ''
       this.visible = true
     },
-    showPlayMenu (item) {
-      this.curItem = item
-      if (!item) return
-      this.menuItems = this.mediaPlayItems
-      this.header = item.name
+    showPlayMenu (mediaItem) {
+      // show playmenu items for the given mediaItem
+      this.playlists = []
+      this.curItem = mediaItem
+      if (!mediaItem) return
+      let menuItems = [
+        {
+          label: 'play_now',
+          action: 'play',
+          icon: 'play_circle_outline'
+        },
+        {
+          label: 'play_next',
+          action: 'next',
+          icon: 'queue_play_next'
+        },
+        {
+          label: 'add_queue',
+          action: 'add',
+          icon: 'playlist_add'
+        }
+      ]
+      this.menuItems = menuItems
+      this.header = mediaItem.name
       this.subheader = ''
       this.visible = true
+    },
+    async showPlaylistsMenu () {
+      // get all editable playlists
+      let trackProviders = []
+      for (let item of this.curItem.provider_ids) {
+        trackProviders.push(item.provider)
+      }
+      let playlists = await this.$server.getData('playlists')
+      let items = []
+      for (var playlist of playlists) {
+        if (
+          playlist.is_editable &&
+          (!this.curPlaylist || playlist.item_id !== this.curPlaylist.item_id)
+        ) {
+          for (let item of playlist.provider_ids) {
+            if (trackProviders.includes(item.provider)) {
+              items.push(playlist)
+              break
+            }
+          }
+        }
+      }
+      this.playlists = items
     },
     itemCommand (cmd) {
       if (cmd === 'info') {
-        // show track info
+        // show media info
         this.$router.push({
-          path: '/tracks/' + this.curItem.item_id,
+          path: '/' + this.curItem.media_type + '/' + this.curItem.item_id,
           query: { provider: this.curItem.provider }
         })
         this.visible = false
+      } else if (cmd === 'playmenu') {
+        // show play menu
+        return this.showPlayMenu(this.curItem)
       } else if (cmd === 'add_playlist') {
         // add to playlist
         return this.showPlaylistsMenu()
@@ -165,50 +217,26 @@ export default Vue.extend({
     playlistSelected (playlistobj) {
       this.playlistAddRemove(
         this.curItem,
-        playlistobj,
+        playlistobj.item_id,
         'playlist_add'
       )
       this.visible = false
     },
-    playlistAddRemove (track, playlist, action = 'playlist_add') {
+    playlistAddRemove (track, playlistId, action = 'playlist_add') {
       /// add or remove track on playlist
-      var url = `${this.$store.server}api/track/${track.item_id}`
-      this.$axios
-        .get(url, {
-          params: {
-            provider: track.provider,
-            action: action,
-            action_details: playlist.item_id
-          }
-        })
+      let endpoint = 'track/' + track.item_id
+      let params = {
+        provider: track.provider,
+        action: action,
+        action_details: playlistId
+      }
+      this.$server.getData(endpoint, params)
         .then(result => {
           // reload listing
-          if (action === 'playlist_remove') this.$router.go()
-        })
-    },
-    async showPlaylistsMenu () {
-      // get all editable playlists
-      const url = this.$store.apiAddress + 'playlists'
-      let trackProviders = []
-      for (let item of this.curItem.provider_ids) {
-        trackProviders.push(item.provider)
-      }
-      let result = await this.$axios.get(url, {})
-      let items = []
-      for (var playlist of result.data) {
-        if (
-          playlist.is_editable &&
-          playlist.item_id !== this.curPlaylist.item_id
-        ) {
-          for (let item of playlist.provider_ids) {
-            if (trackProviders.includes(item.provider)) {
-              items.push(playlist)
-              break
-            }
+          if (action === 'playlist_remove') {
+            this.$server.$emit('refresh_listing')
           }
-        }
-      }
-      this.playlists = items
+        })
     }
   }
 })
