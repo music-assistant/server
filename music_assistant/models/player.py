@@ -6,7 +6,7 @@ from enum import Enum
 from typing import List
 import operator
 import time
-from ..utils import run_periodic, LOGGER, parse_track_title, try_parse_int, \
+from ..utils import run_periodic, LOGGER, try_parse_int, \
        try_parse_bool, try_parse_float
 from ..constants import EVENT_PLAYER_CHANGED
 from ..cache import use_cache

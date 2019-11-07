@@ -10,7 +10,7 @@ import base64
 import taglib
 
 from ..cache import use_cache
-from ..utils import run_periodic, LOGGER, parse_track_title
+from ..utils import run_periodic, LOGGER, parse_title_and_version
 from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from ..constants import CONF_ENABLED
 
@@ -62,43 +62,39 @@ class FileProvider(MusicProvider):
         ''' get artist folders in music directory '''
         if not os.path.isdir(self._music_dir):
             LOGGER.error("music path does not exist: %s" % self._music_dir)
-            return []
-        result = []
+            return
+            yield
         for dirname in os.listdir(self._music_dir):
             dirpath = os.path.join(self._music_dir, dirname)
             if os.path.isdir(dirpath) and not dirpath.startswith('.'):
                 artist = await self.get_artist(dirpath)
                 if artist:
-                    result.append(artist)
-        return result
+                    yield artist
     
     async def get_library_albums(self) -> List[Album]:
         ''' get album folders recursively '''
-        result = []
-        for artist in await self.get_library_artists():
-            result += await self.get_artist_albums(artist.item_id)
-        return result
+        async for artist in await self.get_library_artists():
+            async for album in self.get_artist_albums(artist.item_id):
+                yield album
 
     async def get_library_tracks(self) -> List[Track]:
         ''' get all tracks recursively '''
         #TODO: support disk subfolders
-        result = []
-        for album in await self.get_library_albums():
-            result += await self.get_album_tracks(album.item_id)
-        return result
+        async for album in await self.get_library_albums():
+            async for track in self.get_album_tracks(album.item_id):
+                yield track
     
     async def get_playlists(self) -> List[Playlist]:
         ''' retrieve playlists from disk '''
         if not self._playlists_dir:
-            return []
-        result = []
+            return
+            yield
         for filename in os.listdir(self._playlists_dir):
             filepath = os.path.join(self._playlists_dir, filename)
             if os.path.isfile(filepath) and not filename.startswith('.') and filename.lower().endswith('.m3u'):
                 playlist = await self.get_playlist(filepath)
                 if playlist:
-                    result.append(playlist)
-        return result 
+                    yield playlist
 
     async def get_artist(self, prov_item_id) -> Artist:
         ''' get full artist details by id '''
@@ -136,7 +132,7 @@ class FileProvider(MusicProvider):
         album = Album()
         album.item_id = prov_item_id
         album.provider = self.prov_id
-        album.name, album.version = parse_track_title(name)
+        album.name, album.version = parse_title_and_version(name)
         album.artist = await self.get_artist(artistpath)
         if not album.artist:
             raise Exception("No album artist ! %s" % artistpath)
@@ -181,14 +177,13 @@ class FileProvider(MusicProvider):
     
     async def get_album_tracks(self, prov_album_id) -> List[Track]:
         ''' get album tracks for given album id '''
-        result = []
         if not os.sep in prov_album_id:
             albumpath = base64.b64decode(prov_album_id).decode('utf-8')
         else:
             albumpath = prov_album_id
         if not os.path.isdir(albumpath):
             LOGGER.error("album path does not exist: %s" % albumpath)
-            return []
+            return
         album = await self.get_album(albumpath)
         for filename in os.listdir(albumpath):
             filepath = os.path.join(albumpath, filename)
@@ -196,20 +191,19 @@ class FileProvider(MusicProvider):
                 track = await self.__parse_track(filepath)
                 if track:
                     track.album = album
-                    result.append(track)
-        return result
+                    yield track
 
     async def get_playlist_tracks(self, prov_playlist_id, limit=50, offset=0) -> List[Track]:
         ''' get playlist tracks for given playlist id '''
-        tracks = []
         if not os.sep in prov_playlist_id:
             itempath = base64.b64decode(prov_playlist_id).decode('utf-8')
         else:
             itempath = prov_playlist_id
         if not os.path.isfile(itempath):
             LOGGER.error("playlist path does not exist: %s" % itempath)
-            return []
+            return
         counter = 0
+        index = 0
         with open(itempath) as f:
             for line in f.readlines():
                 line = line.strip()
@@ -218,35 +212,32 @@ class FileProvider(MusicProvider):
                     if counter > offset:
                         track = await self.__parse_track_from_uri(line)
                         if track:
-                            tracks.append(track)
-                    if limit and len(tracks) == limit:
+                            yield track
+                            index += 1
+                    if limit and index == limit:
                         break
-        return tracks
 
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
         ''' get a list of albums for the given artist '''
-        result = []
         if not os.sep in prov_artist_id:
             artistpath = base64.b64decode(prov_artist_id).decode('utf-8')
         else:
             artistpath = prov_artist_id
         if not os.path.isdir(artistpath):
             LOGGER.error("artist path does not exist: %s" % artistpath)
-            return []
+            return
         for dirname in os.listdir(artistpath):
             dirpath = os.path.join(artistpath, dirname)
             if os.path.isdir(dirpath) and not dirpath.startswith('.'):
                 album = await self.get_album(dirpath)
                 if album:
-                    result.append(album)
-        return result
+                    yield album
 
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
-        ''' get a list of 10 random tracks as we have no clue about preference '''
-        tracks = []
-        for album in await self.get_artist_albums(prov_artist_id):
-            tracks += await self.get_album_tracks(album.item_id)
-        return tracks[:10]
+        ''' get a list of random tracks as we have no clue about preference '''
+        async for album in await self.get_artist_albums(prov_artist_id):
+            async for track in self.get_album_tracks(album.item_id):
+                yield track
 
     async def get_stream_details(self, track_id):
         ''' return the content details for the given track when it will be streamed'''
@@ -275,7 +266,7 @@ class FileProvider(MusicProvider):
         track.item_id = prov_item_id
         track.provider = self.prov_id
         name = song.tags['TITLE'][0]
-        track.name, track.version = parse_track_title(name)
+        track.name, track.version = parse_title_and_version(name)
         albumpath = filename.rsplit(os.sep,1)[0]
         track.album = await self.get_album(albumpath)
         artists = []

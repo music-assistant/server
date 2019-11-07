@@ -20,7 +20,8 @@ const server = new Vue({
     return {
       connected: false,
       players: {},
-      activePlayerId: null
+      activePlayerId: null,
+      syncStatus: []
     }
   },
   methods: {
@@ -57,7 +58,15 @@ const server = new Vue({
     getImageUrl (mediaItem, imageType = 'image', size = 0) {
       // format the image url
       if (!mediaItem || !mediaItem.media_type) return ''
-      return `${this._address}api/${mediaItem.media_type}/${mediaItem.item_id}/image?type=${imageType}&provider=${mediaItem.provider}&size=${size}`
+      if (mediaItem.provider === 'database') {
+        return `${this._address}api/${mediaItem.media_type}/${mediaItem.item_id}/image?type=${imageType}&provider=${mediaItem.provider}&size=${size}`
+      } else if (mediaItem.metadata && mediaItem.metadata['image']) {
+        return mediaItem.metadata['image']
+      } else if (mediaItem.album && mediaItem.album.metadata && mediaItem.album.metadata['image']) {
+        return mediaItem.album.metadata['image']
+      } else if (mediaItem.artist && mediaItem.artist.metadata && mediaItem.artist.metadata['image']) {
+        return mediaItem.artist.metadata['image']
+      } else return ''
     },
 
     async getData (endpoint, params = {}) {
@@ -89,7 +98,6 @@ const server = new Vue({
           index += 1
         }
         offset += limit
-        if (items.length < limit) break
       }
       // truncate list if needed
       if (list.length > index) {
@@ -147,6 +155,8 @@ const server = new Vue({
         }
         this._selectActivePlayer()
         this.$emit('players changed')
+      } else if (msg.message === 'music sync status') {
+        this.syncStatus = msg.message_details
       } else {
         this.$emit(msg.message, msg.message_details)
       }

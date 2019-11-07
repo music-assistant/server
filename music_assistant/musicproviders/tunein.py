@@ -11,7 +11,7 @@ import json
 import aiohttp
 
 from ..cache import use_cache
-from ..utils import run_periodic, LOGGER, parse_track_title
+from ..utils import run_periodic, LOGGER
 from ..models import MusicProvider, MediaType, TrackQuality, Radio
 from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, CONF_TYPE_PASSWORD
 
@@ -59,7 +59,6 @@ class TuneInProvider(MusicProvider):
 
     async def get_radios(self):
         ''' get favorited/library radio stations '''
-        items = []
         params = {"c": "presets"}
         result = await self.__get_data("Browse.ashx", params, ignore_cache=True)
         if result and "body" in result:
@@ -67,8 +66,7 @@ class TuneInProvider(MusicProvider):
                 # TODO: expand folders
                 if item["type"] == "audio":
                     radio = await self.__parse_radio(item)
-                    items.append(radio)
-        return items
+                    yield radio
 
     async def get_radio(self, radio_id):
         ''' get radio station details '''

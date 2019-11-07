@@ -27,21 +27,12 @@
               height="220px"
               style="border: 4px solid rgba(0,0,0,.33);border-radius: 6px;"
             ></v-img>
-
-            <!-- tech specs and provider icons -->
-            <div style="position:fixed;margin-top:-45px;margin-left:10px;">
-              <ProviderIcons
-                v-bind:providerIds="itemDetails.provider_ids"
-                :height="30"
-              />
-            </div>
           </v-flex>
 
           <v-flex>
             <!-- Main title -->
             <v-card-title
               style="text-shadow: 1px 1px #000000;"
-              class="headline"
             >
               {{ itemDetails.name }}
             </v-card-title>
@@ -178,18 +169,18 @@
               <div class="justify-left" style="text-shadow: 1px 1px #000000;">
                 <ReadMore
                   :text="getDescription()"
-                  :max-chars="$store.isMobile ? 100 : 300"
+                  :max-chars="$store.isMobile ? 140 : 260"
                 />
               </div>
-              <!-- tech specs and provider icons -->
-              <ProviderIcons
-                v-bind:providerIds="itemDetails.provider_ids"
-                :height="25"
-                :dark="true"
-                v-if="$store.isMobile"
-              />
             </v-card-subtitle>
           </v-flex>
+          <!-- tech specs and provider icons -->
+          <div style="margin-top:15px">
+            <ProviderIcons
+              v-bind:providerIds="itemDetails.provider_ids"
+              :height="25"
+            />
+          </div>
         </v-layout>
       </v-img>
       <!-- <div class="text-xs-center" v-if="itemDetails.tags" style="height:30px;margin-top:-8px;margin-left:15px;margin-right:15px;">

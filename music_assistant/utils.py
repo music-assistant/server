@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 import socket
 import importlib
 import os
+import re
+import unidecode
 try:
     import simplejson as json
 except ImportError:
@@ -74,10 +76,9 @@ def try_parse_bool(possible_bool):
     else:
         return possible_bool in ['true', 'True', '1', 'on', 'ON', 1]
 
-def parse_track_title(track_title):
+def parse_title_and_version(track_title, track_version=None):
     ''' try to parse clean track title and version from the title '''
-    track_title = track_title.lower()
-    title = track_title
+    title = track_title.lower()
     version = ''
     for splitter in [" (", " [", " - ", " (", " [", "-"]:
         if splitter in title:
@@ -87,26 +88,38 @@ def parse_track_title(track_title):
                 for end_splitter in [")", "]"]:
                     if end_splitter in title_part:
                         title_part = title_part.split(end_splitter)[0]
-                for ignore_str in ["feat.", "featuring", "ft.", "with ", " & "]:
+                for ignore_str in ["feat.", "featuring", "ft.", "with ", " & ", "explicit"]:
                     if ignore_str in title_part:
                         title = title.split(splitter+title_part)[0]
                 for version_str in ["version", "live", "edit", "remix", "mix", 
-                            "acoustic", " instrumental", "karaoke", "remaster", "versie", "explicit", "radio", "unplugged", "disco"]:
+                            "acoustic", " instrumental", "karaoke", "remaster", "versie", "radio", "unplugged", "disco"]:
                     if version_str in title_part:
                         version = title_part
                         title = title.split(splitter+version)[0]
     title = title.strip().title()
-    # version substitutes
-    if "radio" in version:
-        version = "radio version"
-    elif "album" in version:
-        version = "album version"
-    elif "single" in version:
-        version = "single version"
-    elif "remaster" in version:
-        version = "remaster"
-    version = version.strip().title()
+    if not version and track_version:
+        version = track_version
+    version = get_version_substitute(version).title()
     return title, version
+
+def get_version_substitute(version_str):
+    ''' transform provider version str to universal version type '''
+    version_str = version_str.lower()
+    # substitute edit and edition with version
+    if 'edition' in version_str or 'edit' in version_str:
+        version_str = version_str.replace(' edition',' version')
+        version_str = version_str.replace(' edit ',' version')
+    if version_str.startswith('the '):
+        version_str = version_str.split('the ')[1]
+    if "radio mix" in version_str:
+        version_str = "radio version"
+    elif "video mix" in version_str:
+        version_str = "video version"
+    elif "spanglish" in version_str or "spanish" in version_str:
+        version_str = "spanish version"
+    elif version_str.endswith('remaster'):
+        version_str = 'remaster'
+    return version_str.strip()
 
 def get_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -136,7 +149,7 @@ def get_folder_size(folderpath):
 def serialize_values(obj):
     ''' recursively create serializable values for custom data types '''
     def get_val(val):
-        if isinstance(val, (int, str, bool, float)):
+        if isinstance(val, (int, str, bool, float, tuple)):
             return val
         elif isinstance(val, list):
             new_list = []
@@ -157,6 +170,17 @@ def serialize_values(obj):
             return new_dict
     return get_val(obj)
 
+def get_compare_string(str):
+    ''' get clean lowered string for compare actions '''
+    unaccented_string = unidecode.unidecode(str)
+    return re.sub(r"[^a-zA-Z0-9]","",unaccented_string).lower()
+
+def compare_strings(str1, str2, strict=False):
+    ''' compare strings and return True if we have an (almost) perfect match '''
+    match = str1.lower() == str2.lower()
+    if not match and not strict:
+        match = get_compare_string(str1) == get_compare_string(str2)
+    return match
 
 def json_serializer(obj):
     ''' json serializer to recursively create serializable values for custom data types '''

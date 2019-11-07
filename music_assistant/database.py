@@ -28,16 +28,17 @@ class Database():
     async def setup(self):
         ''' init database '''
         self._db = await aiosqlite.connect(self._dbfile)
+        self._db.row_factory = aiosqlite.Row
         await self.mass.add_event_listener(self.on_shutdown, "shutdown")
 
         await self._db.execute('CREATE TABLE IF NOT EXISTS library_items(item_id INTEGER NOT NULL, provider TEXT NOT NULL, media_type INTEGER NOT NULL, UNIQUE(item_id, provider, media_type));')
 
         await self._db.execute('CREATE TABLE IF NOT EXISTS artists(artist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, sort_name TEXT, musicbrainz_id TEXT NOT NULL UNIQUE);')            
-        await self._db.execute('CREATE TABLE IF NOT EXISTS albums(album_id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL, name TEXT NOT NULL, albumtype TEXT, year INTEGER, version TEXT, UNIQUE(artist_id, name, version, albumtype));')
+        await self._db.execute('CREATE TABLE IF NOT EXISTS albums(album_id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL, name TEXT NOT NULL, albumtype TEXT, year INTEGER, version TEXT, versiontype TEXT, UNIQUE(artist_id, name, version, year, albumtype));')
         await self._db.execute('CREATE TABLE IF NOT EXISTS labels(label_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE);')
         await self._db.execute('CREATE TABLE IF NOT EXISTS album_labels(album_id INTEGER, label_id INTEGER, UNIQUE(album_id, label_id));')
 
-        await self._db.execute('CREATE TABLE IF NOT EXISTS tracks(track_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, album_id INTEGER, duration INTEGER, version TEXT, disc_number INT, track_number INT, UNIQUE(name, album_id, version));')
+        await self._db.execute('CREATE TABLE IF NOT EXISTS tracks(track_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, album_id INTEGER, version TEXT, duration INTEGER, UNIQUE(name, version, album_id, duration));')
         await self._db.execute('CREATE TABLE IF NOT EXISTS track_artists(track_id INTEGER, artist_id INTEGER, UNIQUE(track_id, artist_id));')
         
         await self._db.execute('CREATE TABLE IF NOT EXISTS tags(tag_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE);')
@@ -49,8 +50,7 @@ class Database():
         await self._db.execute('CREATE TABLE IF NOT EXISTS external_ids(item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, key TEXT NOT NULL, value TEXT, UNIQUE(item_id, media_type, key, value));')
         
         await self._db.execute('CREATE TABLE IF NOT EXISTS playlists(playlist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, owner TEXT NOT NULL, is_editable BOOLEAN NOT NULL, UNIQUE(name, owner));')
-        await self._db.execute('CREATE TABLE IF NOT EXISTS playlist_tracks(playlist_id INTEGER NOT NULL, track_id INTEGER NOT NULL, position INTEGER, UNIQUE(playlist_id, track_id));')
-        
+
         await self._db.execute('CREATE TABLE IF NOT EXISTS radios(radio_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);')
         
         await self._db.execute('CREATE TABLE IF NOT EXISTS track_loudness(provider_track_id INTEGER NOT NULL, provider TEXT NOT NULL, loudness REAL, UNIQUE(provider_track_id, provider));')
@@ -60,6 +60,8 @@ class Database():
 
     async def get_database_id(self, provider:str, prov_item_id:str, media_type:MediaType):
         ''' get the database id for the given prov_id '''
+        if provider == 'database':
+            return prov_item_id
         sql_query = 'SELECT item_id FROM provider_mappings WHERE prov_item_id = ? AND provider = ? AND media_type = ?;'
         cursor = await self._db.execute(sql_query, (prov_item_id, provider, media_type))
         item_id = await cursor.fetchone()
@@ -298,22 +300,22 @@ class Database():
             assert(musicbrainz_id) # musicbrainz id is required
             if not artist.sort_name:
                 artist.sort_name = get_sort_name(artist.name)
-            sql_query = 'INSERT OR IGNORE INTO artists (name, sort_name, musicbrainz_id) VALUES(?,?,?);'
-            await self._db.execute(sql_query, (artist.name, artist.sort_name, musicbrainz_id))
-            await self._db.commit()
-            # get id from (newly created) item (the safe way)
-            artist_id = await self.__get_item_by_external_id(artist)
-            if not artist_id:
-                async with self._db.execute('SELECT (artist_id) FROM artists WHERE musicbrainz_id=?;', (musicbrainz_id,)) as cursor:
-                    artist_id = await cursor.fetchone()
-                    artist_id = artist_id[0]
-            # add metadata and tags etc.
-            await self.__add_prov_ids(artist_id, MediaType.Artist, artist.provider_ids)
-            await self.__add_metadata(artist_id, MediaType.Artist, artist.metadata)
-            await self.__add_tags(artist_id, MediaType.Artist, artist.tags)
-            await self.__add_external_ids(artist_id, MediaType.Artist, artist.external_ids)
-            # save
-            await self._db.commit()
+            sql_query = 'INSERT INTO artists (name, sort_name, musicbrainz_id) VALUES(?,?,?);'
+            async with self._db.execute(sql_query, (artist.name, artist.sort_name, musicbrainz_id)) as cursor:
+                last_row_id = cursor.lastrowid
+                await self._db.commit()
+            # get id from (newly created) item
+            async with self._db.execute('SELECT artist_id FROM artists WHERE ROWID=?;', (last_row_id,)) as cursor:
+                artist_id = await cursor.fetchone()
+                artist_id = artist_id[0]
+        # always add metadata and tags etc. because we might have received
+        # additional info or a match from other provider
+        await self.__add_prov_ids(artist_id, MediaType.Artist, artist.provider_ids)
+        await self.__add_metadata(artist_id, MediaType.Artist, artist.metadata)
+        await self.__add_tags(artist_id, MediaType.Artist, artist.tags)
+        await self.__add_external_ids(artist_id, MediaType.Artist, artist.external_ids)
+        # save
+        await self._db.commit()
         LOGGER.debug('added artist %s (%s) to database: %s' %(artist.name, artist.provider_ids, artist_id))
         return artist_id
     
@@ -361,33 +363,33 @@ class Database():
         album_id = await self.__get_item_by_external_id(album)
         # fallback to matching on artist_id, name and version
         if not album_id:
-            async with self._db.execute('SELECT (album_id) FROM albums WHERE artist_id=? AND name=? AND version=?;', (album.artist.item_id, album.name, album.version)) as cursor:
-                result = await cursor.fetchone()
-                if result:
-                    album_id = result[0]
-        if not album_id and album.year:
-            async with self._db.execute('SELECT (album_id) FROM albums WHERE year=? AND name=? AND version=?;', (album.year, album.name, album.version)) as cursor:
-                result = await cursor.fetchone()
-                if result:
-                    album_id = result[0]
+            sql_query = 'SELECT album_id, year, version FROM albums WHERE artist_id=? AND name=?'
+            async with self._db.execute(sql_query, (album.artist.item_id, album.name)) as cursor:
+                for result in await cursor.fetchall():
+                    if (not album.version and result['year'] == album.year or (album.version and result['version'] == album.version)):
+                        album_id = result['album_id']
+                        break
         if not album_id:
             # insert album
-            sql_query = 'INSERT OR IGNORE INTO albums (artist_id, name, albumtype, year, version) VALUES(?,?,?,?,?);'
-            await self._db.execute(sql_query, (album.artist.item_id, album.name, album.albumtype, album.year, album.version))
-            await self._db.commit()
+            sql_query = 'INSERT INTO albums (artist_id, name, albumtype, year, version) VALUES(?,?,?,?,?);'
+            query_params =  (album.artist.item_id, album.name, album.albumtype, album.year, album.version)
+            async with self._db.execute(sql_query, query_params) as cursor:
+                last_row_id = cursor.lastrowid
+                await self._db.commit()
             # get id from newly created item
-            async with self._db.execute('SELECT (album_id) FROM albums WHERE artist_id=? AND name=? AND version=?;', (album.artist.item_id, album.name, album.version)) as cursor:
+            sql_query = 'SELECT (album_id) FROM albums WHERE ROWID=?'
+            async with self._db.execute(sql_query, (last_row_id,)) as cursor:
                 album_id = await cursor.fetchone()
-                assert(album_id)
                 album_id = album_id[0]
-            # add metadata, artists and tags etc.
-            await self.__add_prov_ids(album_id, MediaType.Album, album.provider_ids)
-            await self.__add_metadata(album_id, MediaType.Album, album.metadata)
-            await self.__add_tags(album_id, MediaType.Album, album.tags)
-            await self.__add_album_labels(album_id, album.labels)
-            await self.__add_external_ids(album_id, MediaType.Album, album.external_ids)
-            # save
-            await self._db.commit()
+        # always add metadata and tags etc. because we might have received
+        # additional info or a match from other provider
+        await self.__add_prov_ids(album_id, MediaType.Album, album.provider_ids)
+        await self.__add_metadata(album_id, MediaType.Album, album.metadata)
+        await self.__add_tags(album_id, MediaType.Album, album.tags)
+        await self.__add_album_labels(album_id, album.labels)
+        await self.__add_external_ids(album_id, MediaType.Album, album.external_ids)
+        # save
+        await self._db.commit()
         LOGGER.debug('added album %s (%s) to database: %s' %(album.name, album.provider_ids, album_id))
         return album_id
 
@@ -400,7 +402,6 @@ class Database():
         sql_query += ' ORDER BY %s' % orderby
         if limit:
             sql_query += ' LIMIT %d OFFSET %d' %(limit, offset)
-        self._db.row_factory = aiosqlite.Row
         async with self._db.execute(sql_query) as cursor:
             for db_row in await cursor.fetchall():
                 track = Track()
@@ -410,9 +411,12 @@ class Database():
                 track.artists = await self.__get_track_artists(track.item_id, fulldata=False)
                 track.duration = db_row["duration"]
                 track.version = db_row["version"]
-                track.disc_number = db_row["disc_number"]
-                track.track_number = db_row["track_number"]
-                try:
+                try: # album tracks only
+                    track.disc_number = db_row["disc_number"]
+                    track.track_number = db_row["track_number"]
+                except IndexError:
+                    pass
+                try: # playlist tracks only
                     track.position = db_row["position"]
                 except IndexError:
                     pass
@@ -437,49 +441,54 @@ class Database():
     async def add_track(self, track:Track):
         ''' add a new track record into table'''
         assert(track.name and track.album)
+        assert(track.album.provider == 'database')
+        for artist in track.artists:
+            assert(artist.provider == 'database')
         track_id = None
         # always try to grab existing track with external_id
         track_id = await self.__get_item_by_external_id(track)
-        # fallback to matching on album_id, name and version or track number
-        if not track_id and track.track_number:
-            async with self._db.execute('SELECT (track_id) FROM tracks WHERE album_id=? AND track_number=?;', (track.album.item_id, track.track_number)) as cursor:
-                result = await cursor.fetchone()
-                if result:
-                    track_id = result[0]
+        # fallback to matching on album_id, name and version
         if not track_id:
-            async with self._db.execute('SELECT (track_id) FROM tracks WHERE album_id=? AND name=? AND version=?;', (track.album.item_id, track.name, track.version)) as cursor:
-                result = await cursor.fetchone()
-                if result:
-                    track_id = result[0]
+            sql_query = 'SELECT track_id, duration, version FROM tracks WHERE album_id=? AND name=?'
+            async with self._db.execute(sql_query, (track.album.item_id, track.name)) as cursor:
+                results = await cursor.fetchall()
+                for result in results:
+                    # we perform an additional safety check on the duration or version
+                    if ((track.version and result['version'] == track.version) or 
+                            (not track.version and abs(result['duration'] - track.duration) < 3)):
+                        track_id = result['track_id']
+                        break
         if not track_id:
             # insert track
             assert(track.name and track.album.item_id)
-            sql_query = 'INSERT OR IGNORE INTO tracks (name, album_id, duration, version, disc_number, track_number) VALUES(?,?,?,?,?,?);'
-            await self._db.execute(sql_query, (track.name, track.album.item_id, track.duration, track.version, track.disc_number, track.track_number))
+            sql_query = 'INSERT INTO tracks (name, album_id, duration, version) VALUES(?,?,?,?);'
+            query_params = (track.name, track.album.item_id, track.duration, track.version)
+            async with self._db.execute(sql_query, query_params) as cursor:
+                last_row_id = cursor.lastrowid
             await self._db.commit()
             # get id from newly created item (the safe way)
-            async with self._db.execute('SELECT (track_id) FROM tracks WHERE name=? AND album_id=? AND version=?;', (track.name, track.album.item_id, track.version)) as cursor:
+            async with self._db.execute('SELECT track_id FROM tracks WHERE ROWID=?', (last_row_id,)) as cursor:
                 track_id = await cursor.fetchone()
-                assert(track_id)
                 track_id = track_id[0]
         # add track artists
         for artist in track.artists:
             sql_query = 'INSERT or IGNORE INTO track_artists (track_id, artist_id) VALUES(?,?);'
             await self._db.execute(sql_query, (track_id, artist.item_id))
-            # add metadata, tags and artists etc.
-            await self.__add_prov_ids(track_id, MediaType.Track, track.provider_ids)
-            await self.__add_metadata(track_id, MediaType.Track, track.metadata)
-            await self.__add_tags(track_id, MediaType.Track, track.tags)
-            await self.__add_external_ids(track_id, MediaType.Track, track.external_ids)
-            # save to db
-            await self._db.commit()
+        # always add metadata and tags etc. because we might have received
+        # additional info or a match from other provider
+        await self.__add_prov_ids(track_id, MediaType.Track, track.provider_ids)
+        await self.__add_metadata(track_id, MediaType.Track, track.metadata)
+        await self.__add_tags(track_id, MediaType.Track, track.tags)
+        await self.__add_external_ids(track_id, MediaType.Track, track.external_ids)
+        # save to db
+        await self._db.commit()
         LOGGER.debug('added track %s (%s) to database: %s' %(track.name, track.provider_ids, track_id))
         return track_id
 
     async def update_track(self, track_id, column_key, column_value):
         ''' update column of existing track '''
-        sql_query = 'UPDATE tracks SET %s=%s WHERE track_id=%s;' %(column_key, column_value, track_id)
-        await self._db.execute(sql_query)
+        sql_query = 'UPDATE tracks SET %s=? WHERE track_id=?;' % column_key
+        await self._db.execute(sql_query, column_value, track_id)
         await self._db.commit()
 
     async def artist_tracks(self, artist_id, limit=1000000, offset=0, orderby='name') -> List[Track]:
@@ -492,32 +501,7 @@ class Database():
         ''' get all library albums for the given artist '''
         sql_query = ' WHERE artist_id = %d' % artist_id
         return await self.albums(sql_query, limit=limit, offset=offset, orderby=orderby, fulldata=False)
-
-    async def album_tracks(self, album_id:int, limit=100000, offset=0, orderby='disc_number,track_number') -> List[Track]:
-        ''' get album tracks for the given album '''
-        sql_query = """SELECT * FROM tracks
-                    WHERE album_id=%s""" % album_id
-        return await self.tracks(sql_query, orderby=orderby, limit=limit, offset=offset, fulldata=False)
-
-    async def playlist_tracks(self, playlist_id:int, limit=100000, offset=0, orderby='position') -> List[Track]:
-        ''' get playlist tracks for the given playlist_id '''
-        sql_query = """SELECT *, playlist_tracks.position FROM tracks
-                    INNER JOIN playlist_tracks USING(track_id)
-                    WHERE playlist_tracks.playlist_id=%s""" % playlist_id
-        return await self.tracks(sql_query, orderby=orderby, limit=limit, offset=offset, fulldata=False)
-
-    async def add_playlist_track(self, playlist_id:int, track_id, position):
-        ''' add playlist track to playlist '''
-        sql_query = 'INSERT or REPLACE INTO playlist_tracks (playlist_id, track_id, position) VALUES(?,?,?);'
-        await self._db.execute(sql_query, (playlist_id, track_id, position))
-        await self._db.commit()
-
-    async def remove_playlist_track(self, playlist_id:int, track_id):
-        ''' remove playlist track from playlist '''
-        sql_query = 'DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id=?;'
-        await self._db.execute(sql_query, (playlist_id, track_id))
-        await self._db.commit()
-            
+   
     async def set_track_loudness(self, provider_track_id, provider, loudness):
         ''' set integrated loudness for a track in db '''
         sql_query = 'INSERT or REPLACE INTO track_loudness (provider_track_id, provider, loudness) VALUES(?,?,?);'

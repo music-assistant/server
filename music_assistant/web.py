@@ -255,7 +255,6 @@ class Web():
         limit = int(request.query.get('limit', 50))
         offset = int(request.query.get('offset', 0))
         player = await self.mass.players.get_player(player_id)
-        print("queue items - offset: %s - limit: %s" %(offset, limit))
         return web.json_response(player.queue.items[offset:offset+limit], dumps=json_serializer) 
 
     async def player_queue_item(self, request):

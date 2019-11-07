@@ -11,7 +11,7 @@ from typing import List
 import random
 import sys
 import socket
-from ..utils import run_periodic, LOGGER, parse_track_title, try_parse_int, get_ip, get_hostname
+from ..utils import run_periodic, LOGGER, try_parse_int, get_ip, get_hostname
 from ..models import PlayerProvider, Player, PlayerState, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from ..constants import CONF_ENABLED
 

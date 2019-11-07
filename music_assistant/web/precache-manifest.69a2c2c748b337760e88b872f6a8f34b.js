@@ -1,10 +1,10 @@
 self.__precacheManifest = (self.__precacheManifest || []).concat([
   {
-    "revision": "105c11112c457bcaca7a",
-    "url": "css/app.f7c6b061.css"
+    "revision": "abc8ff8efef12bdb4e4f",
+    "url": "css/app.286e99c8.css"
   },
   {
-    "revision": "1a83e8d3597e9275d477",
+    "revision": "8e1f8bdca60ddbf47be4",
     "url": "css/chunk-vendors.7d5374e7.css"
   },
   {
@@ -16,8 +16,8 @@ self.__precacheManifest = (self.__precacheManifest || []).concat([
     "url": "css/config~search.af60f7e1.css"
   },
   {
-    "revision": "9d703042a11142ef7164",
-    "url": "css/itemdetails.bd2e4eb1.css"
+    "revision": "ba3255737834fad26ecc",
+    "url": "css/itemdetails.66e507cb.css"
   },
   {
     "revision": "f99e5094257d36798190",
@@ -192,16 +192,16 @@ self.__precacheManifest = (self.__precacheManifest || []).concat([
     "url": "img/webplayer.8e1a0da9.png"
   },
   {
-    "revision": "18f6743d054c603468166d5eb145346e",
+    "revision": "c857dd2b18cc25d138d89483b8c495e0",
     "url": "index.html"
   },
   {
-    "revision": "105c11112c457bcaca7a",
-    "url": "js/app.164646f9.js"
+    "revision": "abc8ff8efef12bdb4e4f",
+    "url": "js/app.a7d20a64.js"
   },
   {
-    "revision": "1a83e8d3597e9275d477",
-    "url": "js/chunk-vendors.b98bba01.js"
+    "revision": "8e1f8bdca60ddbf47be4",
+    "url": "js/chunk-vendors.d9e063c0.js"
   },
   {
     "revision": "243b64d77de6086d7c1c",
@@ -212,20 +212,20 @@ self.__precacheManifest = (self.__precacheManifest || []).concat([
     "url": "js/config~search.9f3e890b.js"
   },
   {
-    "revision": "9d703042a11142ef7164",
-    "url": "js/itemdetails.5c314dae.js"
+    "revision": "ba3255737834fad26ecc",
+    "url": "js/itemdetails.66f74ea0.js"
   },
   {
     "revision": "f99e5094257d36798190",
     "url": "js/itemdetails~playerqueue~search.1e2b2bfd.js"
   },
   {
-    "revision": "e8c0708dab48c5678fe7",
-    "url": "js/playerqueue.5fa460a7.js"
+    "revision": "a308405a1c3efd19295e",
+    "url": "js/playerqueue.a3006395.js"
   },
   {
-    "revision": "7191dbe3902034215a2e",
-    "url": "js/search.56af5cc1.js"
+    "revision": "a52b7a127a3c642eb6ab",
+    "url": "js/search.a47a53ec.js"
   },
   {
     "revision": "a69fc7789e4488064e5e6c87b668ce90",

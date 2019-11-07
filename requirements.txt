@@ -19,3 +19,4 @@ aiorun
 soco
 pillow
 aiohttp_cors
+unidecode

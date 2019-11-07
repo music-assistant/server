@@ -40,7 +40,7 @@ class MusicAssistant():
         self.config = MassConfig(self)
         # init modules
         self.db = Database(self)
-        self.cache = Cache(datapath)
+        self.cache = Cache(self)
         self.metadata = MetaData(self)
         self.web = Web(self)
         self.hass = HomeAssistant(self)

@@ -1,34 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
-import asyncio
+
 import os
 from typing import List
-import sys
 import time
-import concurrent
+import subprocess
+import platform
+import asyncio
 from asyncio_throttle import Throttler
 import aiohttp
 
 from ..cache import use_cache
-from ..utils import run_periodic, LOGGER, parse_track_title, json
+from ..utils import LOGGER, parse_title_and_version, json
 from ..app_vars import get_app_var
-from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from ..models import MusicProvider, MediaType, TrackQuality, \
+    AlbumType, Artist, Album, Track, Playlist
 from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, CONF_TYPE_PASSWORD
-
 
 PROV_ID = 'spotify'
 PROV_NAME = 'Spotify'
 PROV_CLASS = 'SpotifyProvider'
 
-CONFIG_ENTRIES = [
-    (CONF_ENABLED, False, CONF_ENABLED),
-    (CONF_USERNAME, "", CONF_USERNAME), 
-    (CONF_PASSWORD, CONF_TYPE_PASSWORD, CONF_PASSWORD)
-    ]
+CONFIG_ENTRIES = [(CONF_ENABLED, False, CONF_ENABLED),
+                  (CONF_USERNAME, "", CONF_USERNAME),
+                  (CONF_PASSWORD, CONF_TYPE_PASSWORD, CONF_PASSWORD)]
+
 
 class SpotifyProvider(MusicProvider):
-    
     def __init__(self, mass, conf):
         ''' Support for streaming provider Spotify '''
         self.mass = mass
@@ -42,21 +41,15 @@ class SpotifyProvider(MusicProvider):
         self._password = conf[CONF_PASSWORD]
         self.__auth_token = {}
 
-
     async def setup(self):
         ''' perform async setup '''
-        self.throttler = Throttler(rate_limit=1, period=1)
+        self.throttler = Throttler(rate_limit=4, period=1)
         self.http_session = aiohttp.ClientSession(
-                loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
+            loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''
-        result = {
-            "artists": [],
-            "albums": [],
-            "tracks": [],
-            "playlists": []
-        }
+        result = {"artists": [], "albums": [], "tracks": [], "playlists": []}
         searchtypes = []
         if MediaType.Artist in media_types:
             searchtypes.append("artist")
@@ -67,8 +60,10 @@ class SpotifyProvider(MusicProvider):
         if MediaType.Playlist in media_types:
             searchtypes.append("playlist")
         searchtype = ",".join(searchtypes)
-        params = {"q": searchstring, "type": searchtype, "limit": limit }
-        searchresult = await self.__get_data("search", params=params, cache_checksum="bla")
+        params = {"q": searchstring, "type": searchtype, "limit": limit}
+        searchresult = await self.__get_data("search",
+                                             params=params,
+                                             cache_checksum="bla")
         if searchresult:
             if "artists" in searchresult:
                 for item in searchresult["artists"]["items"]:
@@ -91,44 +86,38 @@ class SpotifyProvider(MusicProvider):
                     if playlist:
                         result["playlists"].append(playlist)
         return result
-    
+
     async def get_library_artists(self) -> List[Artist]:
         ''' retrieve library artists from spotify '''
-        items = []
-        spotify_artists = await self.__get_data("me/following?type=artist&limit=50")
+        spotify_artists = await self.__get_data(
+            "me/following?type=artist&limit=50")
         if spotify_artists:
             # TODO: use cursor method to retrieve more than 50 artists
             for artist_obj in spotify_artists['artists']['items']:
                 prov_artist = await self.__parse_artist(artist_obj)
-                items.append(prov_artist)
-        return items
-    
+                yield prov_artist
+
     async def get_library_albums(self) -> List[Album]:
         ''' retrieve library albums from the provider '''
-        result = []
         for item in await self.__get_all_items("me/albums"):
             album = await self.__parse_album(item)
             if album:
-                result.append(album)
-        return result
+                yield album
 
     async def get_library_tracks(self) -> List[Track]:
         ''' retrieve library tracks from the provider '''
-        result = []
         for item in await self.__get_all_items("me/tracks"):
             track = await self.__parse_track(item)
             if track:
-                result.append(track)
-        return result 
+                yield track
 
     async def get_playlists(self) -> List[Playlist]:
         ''' retrieve playlists from the provider '''
-        result = []
-        for item in await self.__get_all_items("me/playlists", cache_checksum=time.time()):
+        for item in await self.__get_all_items("me/playlists",
+                                               cache_checksum=time.time()):
             playlist = await self.__parse_playlist(item)
             if playlist:
-                result.append(playlist)
-        return result 
+                yield playlist
 
     async def get_artist(self, prov_artist_id) -> Artist:
         ''' get full artist details by id '''
@@ -147,60 +136,67 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         ''' get full playlist details by id '''
-        playlist_obj = await self.__get_data("playlists/%s" % prov_playlist_id, ignore_cache=True)
+        playlist_obj = await self.__get_data("playlists/%s" % prov_playlist_id,
+                                             ignore_cache=True)
         return await self.__parse_playlist(playlist_obj)
 
-    async def get_album_tracks(self, prov_album_id) -> List[Track]:
+    async def get_album_tracks(self, prov_album_id, limit=50, offset=0) -> List[Track]:
         ''' get album tracks for given album id '''
-        track_objs = await self.__get_all_items("albums/%s/tracks" % prov_album_id)
-        tracks = []
+        track_objs = await self.__get_all_items(
+                f"albums/{prov_album_id}/tracks", limit=limit, offset=offset)
         for track_obj in track_objs:
             track = await self.__parse_track(track_obj)
             if track:
-                tracks.append(track)
-        return tracks
+                yield track
 
-    async def get_playlist_tracks(self, prov_playlist_id, limit=50, offset=0) -> List[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id, limit=50,
+                                  offset=0) -> List[Track]:
         ''' get playlist tracks for given playlist id '''
-        playlist_obj = await self.__get_data("playlists/%s?fields=snapshot_id,name" % prov_playlist_id, ignore_cache=True)
+        playlist_obj = await self.__get_data(
+            "playlists/%s?fields=snapshot_id,name" % prov_playlist_id,
+            ignore_cache=True)
         cache_checksum = playlist_obj["snapshot_id"]
-        track_objs = await self.__get_all_items("playlists/%s/tracks" % prov_playlist_id, limit=limit, offset=offset, cache_checksum=cache_checksum)
-        tracks = []
+        track_objs = await self.__get_all_items("playlists/%s/tracks" %
+                                                prov_playlist_id,
+                                                limit=limit,
+                                                offset=offset,
+                                                cache_checksum=cache_checksum)
         for track_obj in track_objs:
             playlist_track = await self.__parse_track(track_obj)
             if playlist_track:
-                tracks.append(playlist_track)
+                 yield playlist_track
             else:
-                LOGGER.warning("Unavailable track found in playlist %s: %s" %(playlist_obj['name'], track_obj['track']['name']))
-        return tracks
+                LOGGER.warning(
+                    "Unavailable track found in playlist %s: %s",
+                    playlist_obj['name'], track_obj['track']['name'])
 
-    async def get_artist_albums(self, prov_artist_id) -> List[Album]:
+    async def get_artist_albums(self, prov_artist_id, limit=25, offset=0) -> List[Album]:
         ''' get a list of albums for the given artist '''
         params = {'include_groups': 'album,single,compilation'}
-        items = await self.__get_all_items('artists/%s/albums' % prov_artist_id, params)
-        albums = []
+        items = await self.__get_all_items(
+            'artists/%s/albums' % prov_artist_id, params, limit=limit, offset=offset)
         for item in items:
             album = await self.__parse_album(item)
             if album:
-                albums.append(album)
-        return albums
+                yield album
 
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
         ''' get a list of 10 most popular tracks for the given artist '''
         artist = await self.get_artist(prov_artist_id)
         items = await self.__get_data('artists/%s/top-tracks' % prov_artist_id)
-        tracks = []
         for item in items['tracks']:
             track = await self.__parse_track(item)
             if track:
                 track.artists = [artist]
-                tracks.append(track)
-        return tracks
+                yield track
 
-    async def add_library(self, prov_item_id, media_type:MediaType):
+    async def add_library(self, prov_item_id, media_type: MediaType):
         ''' add item to library '''
         if media_type == MediaType.Artist:
-            result = await self.__put_data('me/following', {'ids': prov_item_id, 'type': 'artist'})
+            result = await self.__put_data('me/following', {
+                'ids': prov_item_id,
+                'type': 'artist'
+            })
             item = await self.artist(prov_item_id)
         elif media_type == MediaType.Album:
             result = await self.__put_data('me/albums', {'ids': prov_item_id})
@@ -208,22 +204,31 @@ class SpotifyProvider(MusicProvider):
         elif media_type == MediaType.Track:
             result = await self.__put_data('me/tracks', {'ids': prov_item_id})
             item = await self.track(prov_item_id)
-        await self.mass.db.add_to_library(item.item_id, media_type, self.prov_id)
-        LOGGER.debug("added item %s to %s - %s" %(prov_item_id, self.prov_id, result))
+        await self.mass.db.add_to_library(item.item_id, media_type,
+                                          self.prov_id)
+        LOGGER.debug("added item %s to %s - %s",
+                     prov_item_id, self.prov_id, result)
 
-    async def remove_library(self, prov_item_id, media_type:MediaType):
+    async def remove_library(self, prov_item_id, media_type: MediaType):
         ''' remove item from library '''
         if media_type == MediaType.Artist:
-            result = await self.__delete_data('me/following', {'ids': prov_item_id, 'type': 'artist'})
+            result = await self.__delete_data('me/following', {
+                'ids': prov_item_id,
+                'type': 'artist'
+            })
             item = await self.artist(prov_item_id)
         elif media_type == MediaType.Album:
-            result = await self.__delete_data('me/albums', {'ids': prov_item_id})
+            result = await self.__delete_data('me/albums',
+                                              {'ids': prov_item_id})
             item = await self.album(prov_item_id)
         elif media_type == MediaType.Track:
-            result = await self.__delete_data('me/tracks', {'ids': prov_item_id})
+            result = await self.__delete_data('me/tracks',
+                                              {'ids': prov_item_id})
             item = await self.track(prov_item_id)
-        await self.mass.db.remove_from_library(item.item_id, media_type, self.prov_id)
-        LOGGER.debug("deleted item %s from %s - %s" %(prov_item_id, self.prov_id, result))
+        await self.mass.db.remove_from_library(item.item_id, media_type,
+                                               self.prov_id)
+        LOGGER.debug("deleted item %s from %s - %s" %
+                     (prov_item_id, self.prov_id, result))
 
     async def add_playlist_tracks(self, prov_playlist_id, prov_track_ids):
         ''' add track(s) to playlist '''
@@ -231,7 +236,8 @@ class SpotifyProvider(MusicProvider):
         for track_id in prov_track_ids:
             track_uris.append("spotify:track:%s" % track_id)
         data = {"uris": track_uris}
-        return await self.__post_data(f'playlists/{prov_playlist_id}/tracks', data=data)
+        return await self.__post_data(f'playlists/{prov_playlist_id}/tracks',
+                                      data=data)
 
     async def remove_playlist_tracks(self, prov_playlist_id, prov_track_ids):
         ''' remove track(s) from playlist '''
@@ -239,14 +245,19 @@ class SpotifyProvider(MusicProvider):
         for track_id in prov_track_ids:
             track_uris.append("spotify:track:%s" % track_id)
         data = {"tracks": track_uris}
-        return await self.__delete_data(f'playlists/{prov_playlist_id}/tracks', data=data)
+        return await self.__delete_data(f'playlists/{prov_playlist_id}/tracks',
+                                        data=data)
 
     async def devices(self):
         ''' list all available devices '''
         items = await self.__get_data('me/player/devices')
         return items['devices']
 
-    async def play_media(self, device_id, uri, offset_pos=None, offset_uri=None):
+    async def play_media(self,
+                         device_id,
+                         uri,
+                         offset_pos=None,
+                         offset_uri=None):
         ''' play uri on spotify device'''
         opts = {}
         if isinstance(uri, list):
@@ -255,11 +266,12 @@ class SpotifyProvider(MusicProvider):
             opts['uris'] = [uri]
         else:
             opts['context_uri'] = uri
-        if offset_pos != None: # only for playlists/albums!
-            opts["offset"] = {"position": offset_pos }
-        elif offset_uri != None: # only for playlists/albums!
-            opts["offset"] = {"uri": offset_uri }
-        return await self.__put_data('me/player/play', {"device_id": device_id}, opts)
+        if offset_pos is not None:  # only for playlists/albums!
+            opts["offset"] = {"position": offset_pos}
+        elif offset_uri is not None:  # only for playlists/albums!
+            opts["offset"] = {"uri": offset_uri}
+        return await self.__put_data('me/player/play',
+                                     {"device_id": device_id}, opts)
 
     async def get_stream_details(self, track_id):
         ''' return the content details for the given track when it will be streamed'''
@@ -270,7 +282,8 @@ class SpotifyProvider(MusicProvider):
         # make sure that the token is still valid by just requesting it
         await self.get_token()
         spotty = self.get_spotty_binary()
-        spotty_exec = '%s -n temp -c "%s" --pass-through --single-track %s' %(spotty, self.mass.datapath, track.item_id)
+        spotty_exec = '%s -n temp -c "%s" --pass-through --single-track %s' % (
+            spotty, self.mass.datapath, track.item_id)
         return {
             "type": "executable",
             "path": spotty_exec,
@@ -280,7 +293,7 @@ class SpotifyProvider(MusicProvider):
             "provider": PROV_ID,
             "item_id": track.item_id
         }
-        
+
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''
         artist = Artist()
@@ -300,19 +313,20 @@ class SpotifyProvider(MusicProvider):
                     artist.metadata["image"] = img_url
                     break
         if artist_obj.get('external_urls'):
-            artist.metadata["spotify_url"] = artist_obj['external_urls']['spotify']
+            artist.metadata["spotify_url"] = artist_obj['external_urls'][
+                'spotify']
         return artist
 
     async def __parse_album(self, album_obj):
         ''' parse spotify album object to generic layout '''
         if 'album' in album_obj:
             album_obj = album_obj['album']
-        if not album_obj['id'] or album_obj.get('is_playable') == False:
+        if not album_obj['id'] or not album_obj.get('is_playable', True):
             return None
         album = Album()
         album.item_id = album_obj['id']
         album.provider = self.prov_id
-        album.name, album.version = parse_track_title(album_obj['name'])
+        album.name, album.version = parse_title_and_version(album_obj['name'])
         for artist in album_obj['artists']:
             album.artist = await self.__parse_artist(artist)
             if album.artist:
@@ -331,7 +345,7 @@ class SpotifyProvider(MusicProvider):
             album.metadata["image"] = album_obj['images'][0]['url']
         if 'external_ids' in album_obj:
             for key, value in album_obj['external_ids'].items():
-                album.external_ids.append( { key: value } )
+                album.external_ids.append({key: value})
         if 'label' in album_obj:
             album.labels = album_obj['label'].split('/')
         if album_obj.get('release_date'):
@@ -339,7 +353,8 @@ class SpotifyProvider(MusicProvider):
         if album_obj.get('copyrights'):
             album.metadata["copyright"] = album_obj['copyrights'][0]['text']
         if album_obj.get('external_urls'):
-            album.metadata["spotify_url"] = album_obj['external_urls']['spotify']
+            album.metadata["spotify_url"] = album_obj['external_urls'][
+                'spotify']
         if album_obj.get('explicit'):
             album.metadata['explicit'] = str(album_obj['explicit']).lower()
         album.provider_ids.append({
@@ -353,7 +368,8 @@ class SpotifyProvider(MusicProvider):
         ''' parse spotify track object to generic layout '''
         if 'track' in track_obj:
             track_obj = track_obj['track']
-        if track_obj['is_local'] or not track_obj['id'] or not track_obj['is_playable']:
+        if track_obj['is_local'] or not track_obj['id'] or not track_obj[
+                'is_playable']:
             # do not return unavailable items
             return None
         track = Track()
@@ -363,22 +379,23 @@ class SpotifyProvider(MusicProvider):
             artist = await self.__parse_artist(track_artist)
             if artist:
                 track.artists.append(artist)
-        track.name, track.version = parse_track_title(track_obj['name'])
+        track.name, track.version = parse_title_and_version(track_obj['name'])
         track.duration = track_obj['duration_ms'] / 1000
         track.metadata['explicit'] = str(track_obj['explicit']).lower()
-        if not track.version and track_obj['explicit']:
-            track.version = 'Explicit'
         if 'external_ids' in track_obj:
             for key, value in track_obj['external_ids'].items():
-                track.external_ids.append( { key: value } )
+                track.external_ids.append({key: value})
         if 'album' in track_obj:
             track.album = await self.__parse_album(track_obj['album'])
         if track_obj.get('copyright'):
             track.metadata["copyright"] = track_obj['copyright']
+        if track_obj.get('explicit'):
+            track.metadata["explicit"] = True
         track.disc_number = track_obj['disc_number']
         track.track_number = track_obj['track_number']
         if track_obj.get('external_urls'):
-            track.metadata["spotify_url"] = track_obj['external_urls']['spotify']
+            track.metadata["spotify_url"] = track_obj['external_urls'][
+                'spotify']
         track.provider_ids.append({
             "provider": self.prov_id,
             "item_id": track_obj['id'],
@@ -399,62 +416,60 @@ class SpotifyProvider(MusicProvider):
         })
         playlist.name = playlist_obj['name']
         playlist.owner = playlist_obj['owner']['display_name']
-        playlist.is_editable = playlist_obj['owner']['id'] == self.sp_user["id"] or playlist_obj['collaborative']
+        playlist.is_editable = playlist_obj['owner']['id'] == self.sp_user[
+            "id"] or playlist_obj['collaborative']
         if playlist_obj.get('images'):
             playlist.metadata["image"] = playlist_obj['images'][0]['url']
         if playlist_obj.get('external_urls'):
-            playlist.metadata["spotify_url"] = playlist_obj['external_urls']['spotify']
+            playlist.metadata["spotify_url"] = playlist_obj['external_urls'][
+                'spotify']
         return playlist
 
     async def get_token(self):
         ''' get auth token on spotify '''
         # return existing token if we have one in memory
-        if self.__auth_token and (self.__auth_token['expiresAt'] > int(time.time()) + 20):
+        if self.__auth_token and (self.__auth_token['expiresAt'] >
+                                  int(time.time()) + 20):
             return self.__auth_token
         tokeninfo = {}
         if not self._username or not self._password:
             return tokeninfo
         # retrieve token with spotty
-        tokeninfo = await self.mass.event_loop.run_in_executor(None, self.__get_token)
+        tokeninfo = await self.mass.event_loop.run_in_executor(
+            None, self.__get_token)
         if tokeninfo:
             self.__auth_token = tokeninfo
             self.sp_user = await self.__get_data("me")
-            LOGGER.info("Succesfully logged in to Spotify as %s" % self.sp_user["id"])
+            LOGGER.info("Succesfully logged in to Spotify as %s" %
+                        self.sp_user["id"])
             self.__auth_token = tokeninfo
         else:
-            raise Exception("Can't get Spotify token for user %s" % self._username)
+            raise Exception("Can't get Spotify token for user %s" %
+                            self._username)
         return tokeninfo
 
     def __get_token(self):
         ''' get spotify auth token with spotty bin '''
         # get token with spotty
         scopes = [
-            "user-read-playback-state",
-            "user-read-currently-playing",
-            "user-modify-playback-state",
-            "playlist-read-private",
-            "playlist-read-collaborative",
-            "playlist-modify-public",
-            "playlist-modify-private",
-            "user-follow-modify",
-            "user-follow-read",
-            "user-library-read",
-            "user-library-modify",
-            "user-read-private",
-            "user-read-email",
-            "user-read-birthdate",
-            "user-top-read"]
+            "user-read-playback-state", "user-read-currently-playing",
+            "user-modify-playback-state", "playlist-read-private",
+            "playlist-read-collaborative", "playlist-modify-public",
+            "playlist-modify-private", "user-follow-modify",
+            "user-follow-read", "user-library-read", "user-library-modify",
+            "user-read-private", "user-read-email", "user-read-birthdate",
+            "user-top-read"
+        ]
         scope = ",".join(scopes)
-        args = [self.get_spotty_binary(), "-t",
-            "--client-id", get_app_var(2), 
-            "--scope", scope, 
-            "-n", "temp-spotty", 
-            "-u", self._username, 
-            "-p", self._password,
-            "-c", self.mass.datapath,
-            "--disable-discovery"]
-        import subprocess
-        spotty = subprocess.Popen(args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        args = [
+            self.get_spotty_binary(), "-t", "--client-id",
+            get_app_var(2), "--scope", scope, "-n", "temp-spotty", "-u",
+            self._username, "-p", self._password, "-c", self.mass.datapath,
+            "--disable-discovery"
+        ]
+        spotty = subprocess.Popen(args,
+                                  stdout=asyncio.subprocess.PIPE,
+                                  stderr=asyncio.subprocess.STDOUT)
         stdout, stderr = spotty.communicate()
         result = json.loads(stdout)
         # transform token info to spotipy compatible format
@@ -463,19 +478,32 @@ class SpotifyProvider(MusicProvider):
             tokeninfo['expiresAt'] = tokeninfo['expiresIn'] + int(time.time())
         return tokeninfo
 
-    async def __get_all_items(self, endpoint, params={}, limit=0, offset=0, cache_checksum=None):
+    async def __get_all_items(self,
+                              endpoint,
+                              params={},
+                              limit=0,
+                              offset=0,
+                              cache_checksum=None):
         ''' get all items from a paged list '''
         if not cache_checksum:
             params["limit"] = 1
             params["offset"] = 0
-            cache_checksum = await self.__get_data(endpoint, params, ignore_cache=True)
+            cache_checksum = await self.__get_data(endpoint,
+                                                   params,
+                                                   ignore_cache=True)
             cache_checksum = cache_checksum["total"]
         if limit:
             # partial listing
             params["limit"] = limit
             params["offset"] = offset
-            result = await self.__get_data(endpoint, params=params, cache_checksum=cache_checksum)
-            return result["items"]
+            result = await self.__get_data(endpoint,
+                                           params=params,
+                                           cache_checksum=cache_checksum)
+            if result and "items" in result:
+                return result["items"]
+            else:
+                LOGGER.error(f"Empty result for {endpoint} limit {limit} offset {offset}")
+                return []
         else:
             # full listing
             total_items = 1
@@ -484,7 +512,9 @@ class SpotifyProvider(MusicProvider):
             while count < total_items:
                 params["limit"] = 50
                 params["offset"] = offset
-                result = await self.__get_data(endpoint, params=params, cache_checksum=cache_checksum)
+                result = await self.__get_data(endpoint,
+                                               params=params,
+                                               cache_checksum=cache_checksum)
                 total_items = result["total"]
                 offset += 50
                 count += len(result["items"])
@@ -492,7 +522,11 @@ class SpotifyProvider(MusicProvider):
             return items
 
     @use_cache(7)
-    async def __get_data(self, endpoint, params={}, ignore_cache=False, cache_checksum=None):
+    async def __get_data(self,
+                         endpoint,
+                         params={},
+                         ignore_cache=False,
+                         cache_checksum=None):
         ''' get data from api'''
         url = 'https://api.spotify.com/v1/%s' % endpoint
         params['market'] = 'from_token'
@@ -500,7 +534,11 @@ class SpotifyProvider(MusicProvider):
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
         async with self.throttler:
-            async with self.http_session.get(url, headers=headers, params=params, verify_ssl=False) as response:
+            print("%s - %s" %(url, params))
+            async with self.http_session.get(url,
+                                             headers=headers,
+                                             params=params,
+                                             verify_ssl=False) as response:
                 result = await response.json()
                 if not result or 'error' in result:
                     LOGGER.error(url)
@@ -513,7 +551,11 @@ class SpotifyProvider(MusicProvider):
         url = 'https://api.spotify.com/v1/%s' % endpoint
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
-        async with self.http_session.delete(url, headers=headers, params=params, json=data, verify_ssl=False) as response:
+        async with self.http_session.delete(url,
+                                            headers=headers,
+                                            params=params,
+                                            json=data,
+                                            verify_ssl=False) as response:
             return await response.text()
 
     async def __put_data(self, endpoint, params={}, data=None):
@@ -521,7 +563,11 @@ class SpotifyProvider(MusicProvider):
         url = 'https://api.spotify.com/v1/%s' % endpoint
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
-        async with self.http_session.put(url, headers=headers, params=params, json=data, verify_ssl=False) as response:
+        async with self.http_session.put(url,
+                                         headers=headers,
+                                         params=params,
+                                         json=data,
+                                         verify_ssl=False) as response:
             return await response.text()
 
     async def __post_data(self, endpoint, params={}, data=None):
@@ -529,27 +575,33 @@ class SpotifyProvider(MusicProvider):
         url = 'https://api.spotify.com/v1/%s' % endpoint
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
-        async with self.http_session.post(url, headers=headers, params=params, json=data, verify_ssl=False) as response:
+        async with self.http_session.post(url,
+                                          headers=headers,
+                                          params=params,
+                                          json=data,
+                                          verify_ssl=False) as response:
             return await response.text()
 
     @staticmethod
     def get_spotty_binary():
         '''find the correct spotty binary belonging to the platform'''
-        import platform
         sp_binary = None
         if platform.system() == "Windows":
-            sp_binary = os.path.join(os.path.dirname(__file__), "spotty", "windows", "spotty.exe")
+            sp_binary = os.path.join(os.path.dirname(__file__), "spotty",
+                                     "windows", "spotty.exe")
         elif platform.system() == "Darwin":
             # macos binary is x86_64 intel
-            sp_binary = os.path.join(os.path.dirname(__file__), "spotty", "darwin", "spotty")
+            sp_binary = os.path.join(os.path.dirname(__file__), "spotty",
+                                     "darwin", "spotty")
         elif platform.system() == "Linux":
             # try to find out the correct architecture by trial and error
             architecture = platform.machine()
-            if architecture.startswith('AMD64') or architecture.startswith('x86_64'):
+            if architecture.startswith('AMD64') or architecture.startswith(
+                    'x86_64'):
                 # generic linux x86_64 binary
-                sp_binary = os.path.join(os.path.dirname(__file__), "spotty", "x86-linux", "spotty-x86_64")
+                sp_binary = os.path.join(os.path.dirname(__file__), "spotty",
+                                         "x86-linux", "spotty-x86_64")
             else:
-                sp_binary = os.path.join(os.path.dirname(__file__), "spotty", "arm-linux", "spotty-muslhf")
+                sp_binary = os.path.join(os.path.dirname(__file__), "spotty",
+                                         "arm-linux", "spotty-muslhf")
         return sp_binary
-
-

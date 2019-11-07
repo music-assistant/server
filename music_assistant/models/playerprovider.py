@@ -4,7 +4,7 @@
 import asyncio
 from enum import Enum
 from typing import List
-from ..utils import run_periodic, LOGGER, parse_track_title
+from ..utils import run_periodic, LOGGER
 from ..constants import CONF_ENABLED
 from ..cache import use_cache
 from .player_queue import PlayerQueue
