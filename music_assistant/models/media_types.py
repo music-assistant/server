@@ -57,6 +57,7 @@ class MediaItem(object):
         self.provider_ids = []
         self.in_library = []
         self.is_lazy = False
+        self.available = True
     def __eq__(self, other): 
         if not isinstance(other, self.__class__):
             return NotImplemented
@@ -103,6 +104,7 @@ class Playlist(MediaItem):
         self.owner = ''
         self.media_type = MediaType.Playlist
         self.is_editable = False
+        self.checksum = '' # some value to detect playlist track changes
 
 class Radio(MediaItem):
     ''' representation of a radio station '''

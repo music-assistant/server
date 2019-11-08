@@ -84,7 +84,7 @@ class FileProvider(MusicProvider):
             async for track in self.get_album_tracks(album.item_id):
                 yield track
     
-    async def get_playlists(self) -> List[Playlist]:
+    async def get_library_playlists(self) -> List[Playlist]:
         ''' retrieve playlists from disk '''
         if not self._playlists_dir:
             return
@@ -173,6 +173,7 @@ class FileProvider(MusicProvider):
             "item_id": prov_item_id
         })
         playlist.owner = 'disk'
+        playlist.checksum = os.path.getmtime(itempath)
         return playlist
     
     async def get_album_tracks(self, prov_album_id) -> List[Track]:

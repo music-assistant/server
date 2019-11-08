@@ -97,7 +97,7 @@ class PlayerManager():
                         provider=media_item.provider)
             elif media_item.media_type == MediaType.Playlist:
                 tracks = await self.mass.music.playlist_tracks(media_item.item_id, 
-                        provider=media_item.provider, offset=0, limit=0) 
+                        provider=media_item.provider) 
             else:
                 tracks = [media_item] # single track
             for track in tracks:
@@ -108,7 +108,7 @@ class PlayerManager():
                 queue_items.append(queue_item)
                     
         # load items into the queue
-        if queue_opt == 'replace' or (queue_opt in ['next', 'play'] and len(queue_items) > 50):
+        if queue_opt == 'replace' or (queue_opt in ['next', 'play'] and len(queue_items) > 10):
             return await player.queue.load(queue_items)
         elif queue_opt == 'next':
             return await player.queue.insert(queue_items, 1)

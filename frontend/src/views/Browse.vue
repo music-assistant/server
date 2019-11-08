@@ -49,7 +49,7 @@ export default {
   methods: {
     async getItems () {
       // retrieve the full list of items
-      return this.$server.getAllItems(this.mediatype, this.items, { provider: this.provider })
+      return this.$server.getAllItems(this.mediatype, this.items)
     }
   }
 }

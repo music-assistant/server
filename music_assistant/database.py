@@ -49,7 +49,7 @@ class Database():
         await self._db.execute('CREATE TABLE IF NOT EXISTS metadata(item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, key TEXT NOT NULL, value TEXT, UNIQUE(item_id, media_type, key));')
         await self._db.execute('CREATE TABLE IF NOT EXISTS external_ids(item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, key TEXT NOT NULL, value TEXT, UNIQUE(item_id, media_type, key, value));')
         
-        await self._db.execute('CREATE TABLE IF NOT EXISTS playlists(playlist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, owner TEXT NOT NULL, is_editable BOOLEAN NOT NULL, UNIQUE(name, owner));')
+        await self._db.execute('CREATE TABLE IF NOT EXISTS playlists(playlist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, owner TEXT NOT NULL, is_editable BOOLEAN NOT NULL, checksum TEXT NOT NULL, UNIQUE(name, owner));')
 
         await self._db.execute('CREATE TABLE IF NOT EXISTS radios(radio_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);')
         
@@ -70,7 +70,7 @@ class Database():
         await cursor.close()
         return item_id
     
-    async def search(self, searchquery, media_types:List[MediaType], limit=10):
+    async def search(self, searchquery, media_types:List[MediaType]):
         ''' search library for the given searchphrase '''
         result = {
             "artists": [],
@@ -81,78 +81,75 @@ class Database():
         searchquery = "%" + searchquery + "%"
         if MediaType.Artist in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
-            result["artists"] = await self.artists(sql_query, limit=limit)
+            result["artists"] = [item async for item in self.artists(sql_query)]
         if MediaType.Album in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
-            result["albums"] = await self.albums(sql_query, limit=limit)
+            result["albums"] = [item async for item in self.albums(sql_query)]
         if MediaType.Track in media_types:
             sql_query = 'SELECT * FROM tracks WHERE name LIKE "%s"' % searchquery
-            result["tracks"] = await self.tracks(sql_query, limit=limit)
+            result["tracks"] = [item async for item in self.tracks(sql_query)]
         if MediaType.Playlist in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
-            result["playlists"] = await self.playlists(sql_query, limit=limit)
+            result["playlists"] = [item async for item in self.library_playlists(sql_query)]
         return result
     
-    async def library_artists(self, provider=None, limit=100000, offset=0, orderby='name') -> List[Artist]:
+    async def library_artists(self, provider=None, orderby='name') -> List[Artist]:
         ''' get all library artists, optionally filtered by provider'''
         if provider != None:
             sql_query = ' WHERE artist_id in (SELECT item_id FROM library_items WHERE provider = "%s" AND media_type = %d)' % (provider,MediaType.Artist)
         else:
             sql_query = ' WHERE artist_id in (SELECT item_id FROM library_items WHERE media_type = %d)' % MediaType.Artist
-        return await self.artists(sql_query, limit=limit, offset=offset, orderby=orderby)
+        async for item in self.artists(sql_query, orderby=orderby):
+            yield item
 
-    async def library_albums(self, provider=None, limit=100000, offset=0, orderby='name') -> List[Album]:
+    async def library_albums(self, provider=None, orderby='name') -> List[Album]:
         ''' get all library albums, optionally filtered by provider'''
         if provider != None:
             sql_query = ' WHERE album_id in (SELECT item_id FROM library_items WHERE provider = "%s" AND media_type = %d)' % (provider,MediaType.Album)
         else:
             sql_query = ' WHERE album_id in (SELECT item_id FROM library_items WHERE media_type = %d)' % MediaType.Album
-        return await self.albums(sql_query, limit=limit, offset=offset, orderby=orderby)
+        async for item in self.albums(sql_query, orderby=orderby):
+            yield item
 
-    async def library_tracks(self, provider=None, limit=100000, offset=0, orderby='name') -> List[Track]:
+    async def library_tracks(self, provider=None, orderby='name') -> List[Track]:
         ''' get all library tracks, optionally filtered by provider'''
         if provider != None:
             sql_query = 'SELECT * FROM tracks WHERE track_id in (SELECT item_id FROM library_items WHERE provider = "%s" AND media_type = %d)' % (provider,MediaType.Track)
         else:
             sql_query = 'SELECT * FROM tracks WHERE track_id in (SELECT item_id FROM library_items WHERE media_type = %d)' % MediaType.Track
-        return await self.tracks(sql_query, limit=limit, offset=offset, orderby=orderby)
+        async for item in self.tracks(sql_query, orderby=orderby):
+            yield item
     
-    async def playlists(self, filter_query=None, provider=None, limit=100000, offset=0, orderby='name') -> List[Playlist]:
+    async def library_playlists(self, filter_query=None, provider=None, orderby='name') -> List[Playlist]:
         ''' fetch all playlist records from table'''
-        playlists = []
         sql_query = 'SELECT * FROM playlists'
         if filter_query:
             sql_query += filter_query
         elif provider != None:
             sql_query += ' WHERE playlist_id in (SELECT item_id FROM provider_mappings WHERE provider = "%s" AND media_type = %d)' % (provider,MediaType.Playlist)
         sql_query += ' ORDER BY %s' % orderby
-        if limit:
-            sql_query += ' LIMIT %d OFFSET %d' %(limit, offset)
         async with self._db.execute(sql_query) as cursor:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
             playlist = Playlist()
-            playlist.item_id = db_row[0]
-            playlist.name = db_row[1]
-            playlist.owner = db_row[2]
-            playlist.is_editable = db_row[3]
+            playlist.item_id = db_row['playlist_id']
+            playlist.name = db_row['name']
+            playlist.owner = db_row['owner']
+            playlist.is_editable = db_row['is_editable']
+            playlist.checksum = db_row['checksum']
             playlist.metadata = await self.__get_metadata(playlist.item_id, MediaType.Playlist)
             playlist.provider_ids = await self.__get_prov_ids(playlist.item_id, MediaType.Playlist)
             playlist.in_library = await self.__get_library_providers(playlist.item_id, MediaType.Playlist)
-            playlists.append(playlist)
-        return playlists
+            yield playlist
 
-    async def radios(self, filter_query=None, provider=None, limit=100000, offset=0, orderby='name') -> List[Radio]:
+    async def library_radios(self, filter_query=None, provider=None, orderby='name') -> List[Radio]:
         ''' fetch all radio records from table'''
-        items = []
         sql_query = 'SELECT * FROM radios'
         if filter_query:
             sql_query += filter_query
         elif provider != None:
             sql_query += ' WHERE radio_id in (SELECT item_id FROM provider_mappings WHERE provider = "%s" AND media_type = %d)' % (provider,MediaType.Radio)
         sql_query += ' ORDER BY %s' % orderby
-        if limit:
-            sql_query += ' LIMIT %d OFFSET %d' %(limit, offset)
         async with self._db.execute(sql_query) as cursor:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
@@ -162,24 +159,21 @@ class Database():
             radio.metadata = await self.__get_metadata(radio.item_id, MediaType.Radio)
             radio.provider_ids = await self.__get_prov_ids(radio.item_id, MediaType.Radio)
             radio.in_library = await self.__get_library_providers(radio.item_id, MediaType.Radio)
-            items.append(radio)
-        return items
+            yield radio
 
     async def playlist(self, playlist_id:int) -> Playlist:
         ''' get playlist record by id '''
         playlist_id = try_parse_int(playlist_id)
-        playlists = await self.playlists(' WHERE playlist_id = %s' % playlist_id)
-        if not playlists:
-            return None
-        return playlists[0]
+        async for item in self.library_playlists(' WHERE playlist_id = %s' % playlist_id):
+            return item
+        return None
 
     async def radio(self, radio_id:int) -> Playlist:
         ''' get radio record by id '''
         radio_id = try_parse_int(radio_id)
-        radios = await self.radios(' WHERE radio_id = %s' % radio_id)
-        if not radios:
-            return None
-        return radios[0]
+        async for item in self.library_radios(' WHERE radio_id = %s' % radio_id):
+            return item
+        return None
 
     async def add_playlist(self, playlist:Playlist):
         ''' add a new playlist record into table'''
@@ -189,12 +183,12 @@ class Database():
             if result:
                 playlist_id = result[0]
                 # update existing
-                sql_query = 'UPDATE playlists SET is_editable=? WHERE playlist_id=?;'
-                await self._db.execute(sql_query, (playlist.is_editable, playlist_id))
+                sql_query = 'UPDATE playlists SET is_editable=?, checksum=? WHERE playlist_id=?;'
+                await self._db.execute(sql_query, (playlist.is_editable, playlist.checksum, playlist_id))
             else:
                 # insert playlist
-                sql_query = 'INSERT OR REPLACE INTO playlists (name, owner, is_editable) VALUES(?,?,?);'
-                await self._db.execute(sql_query, (playlist.name, playlist.owner, playlist.is_editable))
+                sql_query = 'INSERT OR REPLACE INTO playlists (name, owner, is_editable, checksum) VALUES(?,?,?,?);'
+                await self._db.execute(sql_query, (playlist.name, playlist.owner, playlist.is_editable, playlist.checksum))
                 # get id from newly created item (the safe way)
                 async with self._db.execute('SELECT (playlist_id) FROM playlists WHERE name=? AND owner=?;', (playlist.name,playlist.owner)) as cursor:
                     playlist_id = await cursor.fetchone()
@@ -243,23 +237,18 @@ class Database():
         sql_query = 'DELETE FROM library_items WHERE item_id=? AND provider=? AND media_type=?;'
         await self._db.execute(sql_query, (item_id, provider, media_type))
         if media_type == MediaType.Playlist:
-            sql_query = 'DELETE FROM playlist_tracks WHERE playlist_id=?;'
-            await self._db.execute(sql_query, (item_id,))
             sql_query = 'DELETE FROM playlists WHERE playlist_id=?;'
             await self._db.execute(sql_query, (item_id,))
             sql_query = 'DELETE FROM provider_mappings WHERE item_id=? AND media_type=? AND provider=?;'
             await self._db.execute(sql_query, (item_id,media_type, provider))
             await self._db.commit()
     
-    async def artists(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=True) -> List[Artist]:
+    async def artists(self, filter_query=None, orderby='name', fulldata=False) -> List[Artist]:
         ''' fetch artist records from table'''
-        artists = []
         sql_query = 'SELECT * FROM artists'
         if filter_query:
             sql_query += ' ' + filter_query
         sql_query += ' ORDER BY %s' % orderby
-        if limit:
-            sql_query += ' LIMIT %d OFFSET %d' %(limit, offset)
         async with self._db.execute(sql_query) as cursor:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
@@ -274,16 +263,14 @@ class Database():
                 artist.metadata = await self.__get_metadata(artist.item_id, MediaType.Artist)
                 artist.tags = await self.__get_tags(artist.item_id, MediaType.Artist)
                 artist.metadata = await self.__get_metadata(artist.item_id, MediaType.Artist)
-            artists.append(artist)
-        return artists
+            yield artist
 
     async def artist(self, artist_id:int, fulldata=True) -> Artist:
         ''' get artist record by id '''
         artist_id = try_parse_int(artist_id)
-        artists = await self.artists('WHERE artist_id = %s' % artist_id, fulldata=fulldata)
-        if not artists:
-            return None
-        return artists[0]
+        async for item in self.artists('WHERE artist_id = %s' % artist_id, fulldata=fulldata):
+            return item
+        return None
 
     async def add_artist(self, artist:Artist):
         ''' add a new artist record into table'''
@@ -319,15 +306,12 @@ class Database():
         LOGGER.debug('added artist %s (%s) to database: %s' %(artist.name, artist.provider_ids, artist_id))
         return artist_id
     
-    async def albums(self, filter_query=None, limit=100000, offset=0, orderby='name', fulldata=True) -> List[Album]:
+    async def albums(self, filter_query=None, orderby='name', fulldata=False) -> List[Album]:
         ''' fetch all album records from table'''
-        albums = []
         sql_query = 'SELECT * FROM albums'
         if filter_query:
             sql_query += ' ' + filter_query
         sql_query += ' ORDER BY %s' % orderby
-        if limit:
-            sql_query += ' LIMIT %d OFFSET %d' %(limit, offset)
         async with self._db.execute(sql_query) as cursor:
             db_rows = await cursor.fetchall()
             for db_row in db_rows:
@@ -345,16 +329,14 @@ class Database():
                     album.metadata = await self.__get_metadata(album.item_id, MediaType.Album)
                     album.tags = await self.__get_tags(album.item_id, MediaType.Album)
                     album.labels = await self.__get_album_labels(album.item_id)
-                albums.append(album)
-        return albums
+                yield album
 
     async def album(self, album_id:int, fulldata=True) -> Album:
         ''' get album record by id '''
         album_id = try_parse_int(album_id)
-        albums = await self.albums('WHERE album_id = %s' % album_id, fulldata=fulldata)
-        if not albums:
-            return None
-        return albums[0]
+        async for item in self.albums('WHERE album_id = %s' % album_id, fulldata=fulldata):
+            return item
+        return None
 
     async def add_album(self, album:Album):
         ''' add a new album record into table'''
@@ -393,15 +375,13 @@ class Database():
         LOGGER.debug('added album %s (%s) to database: %s' %(album.name, album.provider_ids, album_id))
         return album_id
 
-    async def tracks(self, custom_query=None, limit=100000, offset=0, orderby='name', fulldata=True) -> List[Track]:
+    async def tracks(self, custom_query=None, orderby='name', fulldata=False) -> List[Track]:
         ''' fetch all track records from table'''
         tracks = []
         sql_query = 'SELECT * FROM tracks'
         if custom_query:
             sql_query = custom_query
         sql_query += ' ORDER BY %s' % orderby
-        if limit:
-            sql_query += ' LIMIT %d OFFSET %d' %(limit, offset)
         async with self._db.execute(sql_query) as cursor:
             for db_row in await cursor.fetchall():
                 track = Track()
@@ -426,17 +406,15 @@ class Database():
                 if fulldata:
                     track.metadata = await self.__get_metadata(track.item_id, MediaType.Track)
                     track.tags = await self.__get_tags(track.item_id, MediaType.Track)
-                tracks.append(track)
-        return tracks
+                yield track
 
     async def track(self, track_id:int, fulldata=True) -> Track:
         ''' get track record by id '''
         track_id = try_parse_int(track_id)
         sql_query = "SELECT * FROM tracks WHERE track_id = %s" % track_id
-        tracks = await self.tracks(sql_query, fulldata=fulldata)
-        if not tracks:
-            return None
-        return tracks[0]
+        async for item in self.tracks(sql_query, fulldata=fulldata):
+            return item
+        return None
 
     async def add_track(self, track:Track):
         ''' add a new track record into table'''
@@ -488,19 +466,27 @@ class Database():
     async def update_track(self, track_id, column_key, column_value):
         ''' update column of existing track '''
         sql_query = 'UPDATE tracks SET %s=? WHERE track_id=?;' % column_key
-        await self._db.execute(sql_query, column_value, track_id)
+        await self._db.execute(sql_query, (column_value, track_id))
         await self._db.commit()
 
-    async def artist_tracks(self, artist_id, limit=1000000, offset=0, orderby='name') -> List[Track]:
+    async def update_playlist(self, playlist_id, column_key, column_value):
+        ''' update column of existing playlist '''
+        sql_query = 'UPDATE playlists SET %s=? WHERE playlist_id=?;' % column_key
+        await self._db.execute(sql_query, (column_value, playlist_id))
+        await self._db.commit()
+
+    async def artist_tracks(self, artist_id, orderby='name') -> List[Track]:
         ''' get all library tracks for the given artist '''
         artist_id = try_parse_int(artist_id)
         sql_query = 'SELECT * FROM tracks WHERE track_id in (SELECT track_id FROM track_artists WHERE artist_id = %d)' % artist_id
-        return await self.tracks(sql_query, limit=limit, offset=offset, orderby=orderby, fulldata=False)
+        async for item in self.tracks(sql_query, orderby=orderby, fulldata=False):
+            yield item
 
-    async def artist_albums(self, artist_id, limit=1000000, offset=0, orderby='name') -> List[Album]:
+    async def artist_albums(self, artist_id, orderby='name') -> List[Album]:
         ''' get all library albums for the given artist '''
         sql_query = ' WHERE artist_id = %d' % artist_id
-        return await self.albums(sql_query, limit=limit, offset=offset, orderby=orderby, fulldata=False)
+        async for item in self.albums(sql_query, orderby=orderby, fulldata=False):
+            yield item
    
     async def set_track_loudness(self, provider_track_id, provider, loudness):
         ''' set integrated loudness for a track in db '''
@@ -580,7 +566,7 @@ class Database():
     async def __get_track_artists(self, track_id, fulldata=False) -> List[Artist]:
         ''' get artists for track '''
         sql_query = 'WHERE artist_id in (SELECT artist_id FROM track_artists WHERE track_id = %s)' % track_id
-        return await self.artists(sql_query, fulldata=fulldata)
+        return [item async for item in self.artists(sql_query, fulldata=fulldata)]
     
     async def __add_external_ids(self, item_id, media_type, external_ids):
         ''' add or update external_ids'''

@@ -1,14 +1,14 @@
 self.__precacheManifest = (self.__precacheManifest || []).concat([
   {
-    "revision": "abc8ff8efef12bdb4e4f",
+    "revision": "47e69782623b583d75f4",
     "url": "css/app.286e99c8.css"
   },
   {
-    "revision": "8e1f8bdca60ddbf47be4",
+    "revision": "e2c601e2ff2a3c10818a",
     "url": "css/chunk-vendors.7d5374e7.css"
   },
   {
-    "revision": "243b64d77de6086d7c1c",
+    "revision": "6656fd7c5c9f63d3c53a",
     "url": "css/config.18def958.css"
   },
   {
@@ -16,8 +16,8 @@ self.__precacheManifest = (self.__precacheManifest || []).concat([
     "url": "css/config~search.af60f7e1.css"
   },
   {
-    "revision": "ba3255737834fad26ecc",
-    "url": "css/itemdetails.66e507cb.css"
+    "revision": "1ab5fc3ff7f22e169d8d",
+    "url": "css/itemdetails.742ba64e.css"
   },
   {
     "revision": "f99e5094257d36798190",
@@ -192,40 +192,40 @@ self.__precacheManifest = (self.__precacheManifest || []).concat([
     "url": "img/webplayer.8e1a0da9.png"
   },
   {
-    "revision": "c857dd2b18cc25d138d89483b8c495e0",
+    "revision": "a2a962e97e5e8d9d42a35bb8a5d7ed8a",
     "url": "index.html"
   },
   {
-    "revision": "abc8ff8efef12bdb4e4f",
-    "url": "js/app.a7d20a64.js"
+    "revision": "47e69782623b583d75f4",
+    "url": "js/app.0ae1c192.js"
   },
   {
-    "revision": "8e1f8bdca60ddbf47be4",
-    "url": "js/chunk-vendors.d9e063c0.js"
+    "revision": "e2c601e2ff2a3c10818a",
+    "url": "js/chunk-vendors.a6d30324.js"
   },
   {
-    "revision": "243b64d77de6086d7c1c",
-    "url": "js/config.3af84ca2.js"
+    "revision": "6656fd7c5c9f63d3c53a",
+    "url": "js/config.ccaf05b8.js"
   },
   {
     "revision": "276e9bcee543fb0e0ca6",
     "url": "js/config~search.9f3e890b.js"
   },
   {
-    "revision": "ba3255737834fad26ecc",
-    "url": "js/itemdetails.66f74ea0.js"
+    "revision": "1ab5fc3ff7f22e169d8d",
+    "url": "js/itemdetails.2785d492.js"
   },
   {
     "revision": "f99e5094257d36798190",
     "url": "js/itemdetails~playerqueue~search.1e2b2bfd.js"
   },
   {
-    "revision": "a308405a1c3efd19295e",
-    "url": "js/playerqueue.a3006395.js"
+    "revision": "ae9b694cadf843ae3729",
+    "url": "js/playerqueue.215152f1.js"
   },
   {
-    "revision": "a52b7a127a3c642eb6ab",
-    "url": "js/search.a47a53ec.js"
+    "revision": "b05db5ee09edafa7376f",
+    "url": "js/search.0b1a2f05.js"
   },
   {
     "revision": "a69fc7789e4488064e5e6c87b668ce90",

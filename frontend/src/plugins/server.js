@@ -2,6 +2,7 @@
 
 import Vue from 'vue'
 import axios from 'axios'
+import oboe from 'oboe'
 
 const axiosConfig = {
   timeout: 60 * 1000
@@ -85,24 +86,25 @@ const server = new Vue({
 
     async getAllItems (endpoint, list, params = {}) {
       // retrieve all items and fill list
-      var offset = 0
-      var limit = 50
-      var index = 0
-      while (true) {
-        let items = await this.$server.getData(endpoint, { offset: offset, limit: limit, ...params })
-        if (!items || items.length === 0) break
-        for (var item of items) {
-          if (list.length >= index) {
-            Vue.set(list, index, item)
-          } else list.push(item)
+      let url = this._address + 'api/' + endpoint
+      if (params) {
+        var urlParams = new URLSearchParams(params)
+        url += '?' + urlParams.toString()
+      }
+      let index = 0
+      oboe(url)
+        .node('items.*', function (item) {
+          Vue.set(list, index, item)
           index += 1
-        }
-        offset += limit
-      }
-      // truncate list if needed
-      if (list.length > index) {
-        list = list.slice(0, index)
-      }
+        })
+        .done(function (fullList) {
+          // truncate list if needed
+          if (list.length === 0) {
+            list = []
+          } else if (list.length > index) {
+            list = list.slice(0, index)
+          }
+        })
     },
 
     playerCommand (cmd, cmd_opt = null, playerId = this.activePlayerId) {

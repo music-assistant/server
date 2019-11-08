@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
-
 import os
 from typing import List
 import time
@@ -11,7 +10,6 @@ import asyncio
 from asyncio_throttle import Throttler
 import aiohttp
 
-from ..cache import use_cache
 from ..utils import LOGGER, parse_title_and_version, json
 from ..app_vars import get_app_var
 from ..models import MusicProvider, MediaType, TrackQuality, \
@@ -28,10 +26,14 @@ CONFIG_ENTRIES = [(CONF_ENABLED, False, CONF_ENABLED),
 
 
 class SpotifyProvider(MusicProvider):
+
+    throttler = None
+    http_session = None
+    sp_user = None
+
     def __init__(self, mass, conf):
         ''' Support for streaming provider Spotify '''
-        self.mass = mass
-        self.cache = mass.cache
+        super().__init__(mass)
         self.name = PROV_NAME
         self.prov_id = PROV_ID
         self._cur_user = None
@@ -62,8 +64,7 @@ class SpotifyProvider(MusicProvider):
         searchtype = ",".join(searchtypes)
         params = {"q": searchstring, "type": searchtype, "limit": limit}
         searchresult = await self.__get_data("search",
-                                             params=params,
-                                             cache_checksum="bla")
+                                             params=params)
         if searchresult:
             if "artists" in searchresult:
                 for item in searchresult["artists"]["items"]:
@@ -99,22 +100,21 @@ class SpotifyProvider(MusicProvider):
 
     async def get_library_albums(self) -> List[Album]:
         ''' retrieve library albums from the provider '''
-        for item in await self.__get_all_items("me/albums"):
+        async for item in self.__get_all_items("me/albums"):
             album = await self.__parse_album(item)
             if album:
                 yield album
 
     async def get_library_tracks(self) -> List[Track]:
         ''' retrieve library tracks from the provider '''
-        for item in await self.__get_all_items("me/tracks"):
+        async for item in self.__get_all_items("me/tracks"):
             track = await self.__parse_track(item)
             if track:
                 yield track
 
-    async def get_playlists(self) -> List[Playlist]:
+    async def get_library_playlists(self) -> List[Playlist]:
         ''' retrieve playlists from the provider '''
-        for item in await self.__get_all_items("me/playlists",
-                                               cache_checksum=time.time()):
+        async for item in self.__get_all_items("me/playlists"):
             playlist = await self.__parse_playlist(item)
             if playlist:
                 yield playlist
@@ -136,46 +136,34 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         ''' get full playlist details by id '''
-        playlist_obj = await self.__get_data("playlists/%s" % prov_playlist_id,
-                                             ignore_cache=True)
+        playlist_obj = await self.__get_data(f'playlists/{prov_playlist_id}')
         return await self.__parse_playlist(playlist_obj)
 
-    async def get_album_tracks(self, prov_album_id, limit=50, offset=0) -> List[Track]:
-        ''' get album tracks for given album id '''
-        track_objs = await self.__get_all_items(
-                f"albums/{prov_album_id}/tracks", limit=limit, offset=offset)
-        for track_obj in track_objs:
+    async def get_album_tracks(self, prov_album_id) -> List[Track]:
+        ''' get all album tracks for given album id '''
+        endpoint = f"albums/{prov_album_id}/tracks"
+        async for track_obj in self.__get_all_items(endpoint):
             track = await self.__parse_track(track_obj)
             if track:
                 yield track
 
-    async def get_playlist_tracks(self, prov_playlist_id, limit=50,
-                                  offset=0) -> List[Track]:
-        ''' get playlist tracks for given playlist id '''
-        playlist_obj = await self.__get_data(
-            "playlists/%s?fields=snapshot_id,name" % prov_playlist_id,
-            ignore_cache=True)
-        cache_checksum = playlist_obj["snapshot_id"]
-        track_objs = await self.__get_all_items("playlists/%s/tracks" %
-                                                prov_playlist_id,
-                                                limit=limit,
-                                                offset=offset,
-                                                cache_checksum=cache_checksum)
-        for track_obj in track_objs:
+    async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
+        ''' get all playlist tracks for given playlist id '''
+        endpoint = f"playlists/{prov_playlist_id}/tracks"
+        async for track_obj in self.__get_all_items(endpoint):
             playlist_track = await self.__parse_track(track_obj)
             if playlist_track:
-                 yield playlist_track
+                yield playlist_track
             else:
-                LOGGER.warning(
-                    "Unavailable track found in playlist %s: %s",
-                    playlist_obj['name'], track_obj['track']['name'])
+                LOGGER.warning("Unavailable track found in playlist %s: %s",
+                               prov_playlist_id,
+                               track_obj['track']['name'])
 
-    async def get_artist_albums(self, prov_artist_id, limit=25, offset=0) -> List[Album]:
-        ''' get a list of albums for the given artist '''
+    async def get_artist_albums(self, prov_artist_id) -> List[Album]:
+        ''' get a list of all albums for the given artist '''
         params = {'include_groups': 'album,single,compilation'}
-        items = await self.__get_all_items(
-            'artists/%s/albums' % prov_artist_id, params, limit=limit, offset=offset)
-        for item in items:
+        endpoint = f'artists/{prov_artist_id}/albums'
+        async for item in self.__get_all_items(endpoint, params):
             album = await self.__parse_album(item)
             if album:
                 yield album
@@ -183,7 +171,8 @@ class SpotifyProvider(MusicProvider):
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
         ''' get a list of 10 most popular tracks for the given artist '''
         artist = await self.get_artist(prov_artist_id)
-        items = await self.__get_data('artists/%s/top-tracks' % prov_artist_id)
+        endpoint = f'artists/{prov_artist_id}/top-tracks'
+        items = await self.__get_data(endpoint)
         for item in items['tracks']:
             track = await self.__parse_track(item)
             if track:
@@ -206,8 +195,8 @@ class SpotifyProvider(MusicProvider):
             item = await self.track(prov_item_id)
         await self.mass.db.add_to_library(item.item_id, media_type,
                                           self.prov_id)
-        LOGGER.debug("added item %s to %s - %s",
-                     prov_item_id, self.prov_id, result)
+        LOGGER.debug("added item %s to %s - %s", prov_item_id, self.prov_id,
+                     result)
 
     async def remove_library(self, prov_item_id, media_type: MediaType):
         ''' remove item from library '''
@@ -243,35 +232,10 @@ class SpotifyProvider(MusicProvider):
         ''' remove track(s) from playlist '''
         track_uris = []
         for track_id in prov_track_ids:
-            track_uris.append("spotify:track:%s" % track_id)
-        data = {"tracks": track_uris}
+            track_uris.append({"uri": "spotify:track:%s" % track_id})
+        data = { "tracks": track_uris }
         return await self.__delete_data(f'playlists/{prov_playlist_id}/tracks',
                                         data=data)
-
-    async def devices(self):
-        ''' list all available devices '''
-        items = await self.__get_data('me/player/devices')
-        return items['devices']
-
-    async def play_media(self,
-                         device_id,
-                         uri,
-                         offset_pos=None,
-                         offset_uri=None):
-        ''' play uri on spotify device'''
-        opts = {}
-        if isinstance(uri, list):
-            opts['uris'] = uri
-        elif uri.startswith('spotify:track'):
-            opts['uris'] = [uri]
-        else:
-            opts['context_uri'] = uri
-        if offset_pos is not None:  # only for playlists/albums!
-            opts["offset"] = {"position": offset_pos}
-        elif offset_uri is not None:  # only for playlists/albums!
-            opts["offset"] = {"uri": offset_uri}
-        return await self.__put_data('me/player/play',
-                                     {"device_id": device_id}, opts)
 
     async def get_stream_details(self, track_id):
         ''' return the content details for the given track when it will be streamed'''
@@ -423,6 +387,7 @@ class SpotifyProvider(MusicProvider):
         if playlist_obj.get('external_urls'):
             playlist.metadata["spotify_url"] = playlist_obj['external_urls'][
                 'spotify']
+        playlist.checksum = playlist_obj['snapshot_id']
         return playlist
 
     async def get_token(self):
@@ -440,7 +405,7 @@ class SpotifyProvider(MusicProvider):
         if tokeninfo:
             self.__auth_token = tokeninfo
             self.sp_user = await self.__get_data("me")
-            LOGGER.info("Succesfully logged in to Spotify as %s" %
+            LOGGER.info("Succesfully logged in to Spotify as %s",
                         self.sp_user["id"])
             self.__auth_token = tokeninfo
         else:
@@ -478,63 +443,34 @@ class SpotifyProvider(MusicProvider):
             tokeninfo['expiresAt'] = tokeninfo['expiresIn'] + int(time.time())
         return tokeninfo
 
-    async def __get_all_items(self,
-                              endpoint,
-                              params={},
-                              limit=0,
-                              offset=0,
-                              cache_checksum=None):
+    async def __get_all_items(self, endpoint, params=None, key='items'):
         ''' get all items from a paged list '''
-        if not cache_checksum:
-            params["limit"] = 1
-            params["offset"] = 0
-            cache_checksum = await self.__get_data(endpoint,
-                                                   params,
-                                                   ignore_cache=True)
-            cache_checksum = cache_checksum["total"]
-        if limit:
-            # partial listing
+        if not params:
+            params = {}
+        limit = 50
+        offset = 0
+        while True:
             params["limit"] = limit
             params["offset"] = offset
-            result = await self.__get_data(endpoint,
-                                           params=params,
-                                           cache_checksum=cache_checksum)
-            if result and "items" in result:
-                return result["items"]
-            else:
-                LOGGER.error(f"Empty result for {endpoint} limit {limit} offset {offset}")
-                return []
-        else:
-            # full listing
-            total_items = 1
-            count = 0
-            items = []
-            while count < total_items:
-                params["limit"] = 50
-                params["offset"] = offset
-                result = await self.__get_data(endpoint,
-                                               params=params,
-                                               cache_checksum=cache_checksum)
-                total_items = result["total"]
-                offset += 50
-                count += len(result["items"])
-                items += result["items"]
-            return items
+            result = await self.__get_data(endpoint, params=params)
+            offset += limit
+            if not result or not key in result or not result[key]:
+                break
+            for item in result[key]:
+                yield item
+            if len(result[key]) < limit:
+                break
 
-    @use_cache(7)
-    async def __get_data(self,
-                         endpoint,
-                         params={},
-                         ignore_cache=False,
-                         cache_checksum=None):
+    async def __get_data(self, endpoint, params=None):
         ''' get data from api'''
+        if not params:
+            params = {}
         url = 'https://api.spotify.com/v1/%s' % endpoint
         params['market'] = 'from_token'
         params['country'] = 'from_token'
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
         async with self.throttler:
-            print("%s - %s" %(url, params))
             async with self.http_session.get(url,
                                              headers=headers,
                                              params=params,
@@ -546,8 +482,10 @@ class SpotifyProvider(MusicProvider):
                     result = None
                 return result
 
-    async def __delete_data(self, endpoint, params={}, data=None):
+    async def __delete_data(self, endpoint, params=None, data=None):
         ''' delete data from api'''
+        if not params:
+            params = {}
         url = 'https://api.spotify.com/v1/%s' % endpoint
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
@@ -558,8 +496,10 @@ class SpotifyProvider(MusicProvider):
                                             verify_ssl=False) as response:
             return await response.text()
 
-    async def __put_data(self, endpoint, params={}, data=None):
+    async def __put_data(self, endpoint, params=None, data=None):
         ''' put data on api'''
+        if not params:
+            params = {}
         url = 'https://api.spotify.com/v1/%s' % endpoint
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}
@@ -570,8 +510,10 @@ class SpotifyProvider(MusicProvider):
                                          verify_ssl=False) as response:
             return await response.text()
 
-    async def __post_data(self, endpoint, params={}, data=None):
+    async def __post_data(self, endpoint, params=None, data=None):
         ''' post data on api'''
+        if not params:
+            params = {}
         url = 'https://api.spotify.com/v1/%s' % endpoint
         token = await self.get_token()
         headers = {'Authorization': 'Bearer %s' % token["accessToken"]}

@@ -106,7 +106,6 @@ export default {
         {
           label: 'playlist_tracks',
           endpoint: 'playlists/' + this.media_id + '/tracks',
-          paginated: true,
           items: []
         }
       ]
@@ -136,12 +135,7 @@ export default {
     },
     async getTabItems (tab) {
       // retrieve the lists of items for each tab
-      let paginated = 'paginated' in tab ? tab.paginated : false
-      if (paginated) {
-        return this.$server.getAllItems(tab.endpoint, tab.items, { provider: this.provider })
-      } else {
-        tab.items = await this.$server.getData(tab.endpoint, { provider: this.provider })
-      }
+      return this.$server.getAllItems(tab.endpoint, tab.items, { provider: this.provider })
     }
   }
 }

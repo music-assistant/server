@@ -171,7 +171,7 @@ export default Vue.extend({
       }
       let playlists = await this.$server.getData('playlists')
       let items = []
-      for (var playlist of playlists) {
+      for (var playlist of playlists.items) {
         if (
           playlist.is_editable &&
           (!this.curPlaylist || playlist.item_id !== this.curPlaylist.item_id)

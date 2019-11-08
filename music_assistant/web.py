@@ -28,7 +28,7 @@ else:
             ]
 
 class Web():
-    ''' webserver and json/websocket api '''
+    """ webserver and json/websocket api """
     
     def __init__(self, mass):
         self.mass = mass
@@ -60,7 +60,7 @@ class Web():
             self._enable_ssl = enable_ssl
 
     async def setup(self):
-        ''' perform async setup '''
+        """ perform async setup """
         app = web.Application()
         app.add_routes([web.get('/jsonrpc.js', self.json_rpc)])
         app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])
@@ -84,7 +84,11 @@ class Web():
         app.add_routes([web.get('/api/albums/{album_id}/tracks', self.album_tracks)])
         app.add_routes([web.get('/api/{media_type}/{media_id}/image', self.get_image)])
         app.add_routes([web.get('/api/{media_type}/{media_id}', self.get_item)])
-        app.add_routes([web.get('/api/{media_type}', self.get_items)])
+        app.add_routes([web.get('/api/artists', self.library_artists)])
+        app.add_routes([web.get('/api/albums', self.library_albums)])
+        app.add_routes([web.get('/api/tracks', self.library_tracks)])
+        app.add_routes([web.get('/api/radios', self.library_radios)])
+        app.add_routes([web.get('/api/playlists', self.library_playlists)])
         app.add_routes([web.get('/', self.index)])
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web/')
         app.router.add_static("/", webdir)
@@ -111,21 +115,43 @@ class Web():
             await https_site.start()
             LOGGER.info("Started HTTPS webserver on port %s" % self.config['https_port'])
 
-    async def get_items(self, request):
-        ''' get multiple library items'''
-        media_type_str = request.match_info.get('media_type')
-        media_type = media_type_from_string(media_type_str)
-        limit = int(request.query.get('limit', 50))
-        offset = int(request.query.get('offset', 0))
+    async def library_artists(self, request):
+        """Get all library artists."""
         orderby = request.query.get('orderby', 'name')
         provider_filter = request.rel_url.query.get('provider')
-        result = await self.mass.music.library_items(media_type, 
-                    limit=limit, offset=offset, 
-                    orderby=orderby, provider_filter=provider_filter)
-        return web.json_response(result, dumps=json_serializer)
+        iterator = self.mass.music.library_artists(orderby=orderby, provider_filter=provider_filter)
+        return await self.__stream_json(request, iterator)
+
+    async def library_albums(self, request):
+        """Get all library albums."""
+        orderby = request.query.get('orderby', 'name')
+        provider_filter = request.rel_url.query.get('provider')
+        iterator = self.mass.music.library_albums(orderby=orderby, provider_filter=provider_filter)
+        return await self.__stream_json(request, iterator)
+
+    async def library_tracks(self, request):
+        """Get all library tracks."""
+        orderby = request.query.get('orderby', 'name')
+        provider_filter = request.rel_url.query.get('provider')
+        iterator = self.mass.music.library_tracks(orderby=orderby, provider_filter=provider_filter)
+        return await self.__stream_json(request, iterator)
+
+    async def library_radios(self, request):
+        """Get all library radios."""
+        orderby = request.query.get('orderby', 'name')
+        provider_filter = request.rel_url.query.get('provider')
+        iterator = self.mass.music.library_radios(orderby=orderby, provider_filter=provider_filter)
+        return await self.__stream_json(request, iterator)
+
+    async def library_playlists(self, request):
+        """Get all library playlists."""
+        orderby = request.query.get('orderby', 'name')
+        provider_filter = request.rel_url.query.get('provider')
+        iterator = self.mass.music.library_playlists(orderby=orderby, provider_filter=provider_filter)
+        return await self.__stream_json(request, iterator)
 
     async def get_item(self, request):
-        ''' get item full details'''
+        """ get item full details"""
         media_type_str = request.match_info.get('media_type')
         media_type = media_type_from_string(media_type_str)
         media_id = request.match_info.get('media_id')
@@ -141,7 +167,7 @@ class Web():
         return web.json_response(result, dumps=json_serializer)
 
     async def get_image(self, request):
-        ''' get item image '''
+        """ get item image """
         media_type_str = request.match_info.get('media_type')
         media_type = media_type_from_string(media_type_str)
         media_id = request.match_info.get('media_id')
@@ -156,37 +182,35 @@ class Web():
         return web.FileResponse(img_file, headers=headers)
 
     async def artist_toptracks(self, request):
-        ''' get top tracks for given artist '''
+        """ get top tracks for given artist """
         artist_id = request.match_info.get('artist_id')
         provider = request.rel_url.query.get('provider', 'database')
-        result = await self.mass.music.artist_toptracks(artist_id, provider)
-        return web.json_response(result, dumps=json_serializer)
+        iterator = self.mass.music.artist_toptracks(artist_id, provider)
+        return await self.__stream_json(request, iterator)
 
     async def artist_albums(self, request):
-        ''' get (all) albums for given artist '''
+        """ get (all) albums for given artist """
         artist_id = request.match_info.get('artist_id')
         provider = request.rel_url.query.get('provider', 'database')
-        result = await self.mass.music.artist_albums(artist_id, provider)
-        return web.json_response(result, dumps=json_serializer)
+        iterator = self.mass.music.artist_albums(artist_id, provider)
+        return await self.__stream_json(request, iterator)
 
     async def playlist_tracks(self, request):
-        ''' get playlist tracks from provider'''
+        """ get playlist tracks from provider"""
         playlist_id = request.match_info.get('playlist_id')
-        limit = int(request.query.get('limit', 50))
-        offset = int(request.query.get('offset', 0))
         provider = request.rel_url.query.get('provider', 'database')
-        result = await self.mass.music.playlist_tracks(playlist_id, provider, offset=offset, limit=limit)
-        return web.json_response(result, dumps=json_serializer)
+        iterator = self.mass.music.playlist_tracks(playlist_id, provider)
+        return await self.__stream_json(request, iterator)
 
     async def album_tracks(self, request):
-        ''' get album tracks from provider'''
+        """ get album tracks from provider"""
         album_id = request.match_info.get('album_id')
         provider = request.rel_url.query.get('provider','database')
-        result = await self.mass.music.album_tracks(album_id, provider)
-        return web.json_response(result, dumps=json_serializer)
+        iterator = self.mass.music.album_tracks(album_id, provider)
+        return await self.__stream_json(request, iterator)
 
     async def search(self, request):
-        ''' search database or providers '''
+        """ search database or providers """
         searchquery = request.rel_url.query.get('query')
         media_types_query = request.rel_url.query.get('media_types')
         limit = request.rel_url.query.get('media_id', 5)
@@ -207,19 +231,19 @@ class Web():
         return web.json_response(result, dumps=json_serializer)
 
     async def players(self, request):
-        ''' get all players '''
+        """ get all players """
         players = list(self.mass.players.players)
         players.sort(key=lambda x: x.name, reverse=False)
         return web.json_response(players, dumps=json_serializer)
 
     async def player(self, request):
-        ''' get single player '''
+        """ get single player """
         player_id = request.match_info.get('player_id')
         player = await self.mass.players.get_player(player_id)
         return web.json_response(player, dumps=json_serializer)
 
     async def player_command(self, request):
-        ''' issue player command'''
+        """ issue player command"""
         result = False
         player_id = request.match_info.get('player_id')
         player = await self.mass.players.get_player(player_id)
@@ -238,7 +262,7 @@ class Web():
         return web.json_response(result, dumps=json_serializer) 
     
     async def play_media(self, request):
-        ''' issue player play_media command'''
+        """ issue player play_media command"""
         player_id = request.match_info.get('player_id')
         media_type_str = request.match_info.get('media_type')
         media_type = media_type_from_string(media_type_str)
@@ -250,15 +274,16 @@ class Web():
         return web.json_response(result, dumps=json_serializer) 
     
     async def player_queue(self, request):
-        ''' return the items in the player's queue '''
+        """ return the items in the player's queue """
         player_id = request.match_info.get('player_id')
-        limit = int(request.query.get('limit', 50))
-        offset = int(request.query.get('offset', 0))
         player = await self.mass.players.get_player(player_id)
-        return web.json_response(player.queue.items[offset:offset+limit], dumps=json_serializer) 
+        async def queue_tracks_iter():
+            for item in player.queue.items:
+                yield item
+        return await self.__stream_json(request, queue_tracks_iter())
 
     async def player_queue_item(self, request):
-        ''' return item (by index or queue item id) from the player's queue '''
+        """ return item (by index or queue item id) from the player's queue """
         player_id = request.match_info.get('player_id')
         item_id = request.match_info.get('item_id')
         player = await self.mass.players.get_player(player_id)
@@ -275,7 +300,7 @@ class Web():
         return web.FileResponse(index_file)
 
     async def websocket_handler(self, request):
-        ''' websockets handler '''
+        """ websockets handler """
         cb_id = None
         ws = None
         try:
@@ -326,11 +351,11 @@ class Web():
         return ws
 
     async def get_config(self, request):
-        ''' get the config '''
+        """ get the config """
         return web.json_response(self.mass.config)
 
     async def save_config(self, request):
-        ''' save (partial) config '''
+        """ save (partial) config """
         conf_key = request.match_info.get('key')
         conf_subkey = request.match_info.get('subkey')
         new_values = await request.json()
@@ -354,12 +379,33 @@ class Web():
     async def headers_only(self, request):
         return web.Response(status=200)
 
+    async def __stream_json(self, request, iterator):
+        """ stream items from async iterator as json object """
+        resp = web.StreamResponse(status=200,
+                                  reason='OK',
+                                  headers={'Content-Type': 'application/json'})
+        await resp.prepare(request)
+        # write json open tag
+        json_response = '{ "items": ['
+        await resp.write(json_response.encode('utf-8'))
+        count = 0
+        async for item in iterator:
+            # write each item into the items object of the json
+            json_response = json_serializer(item) + ','
+            await resp.write(json_response.encode('utf-8'))
+            count += 1
+        # write json close tag
+        json_response = '], "count": %s }' % count
+        await resp.write((json_response).encode('utf-8'))
+        await resp.write_eof()
+        return resp
+
     async def json_rpc(self, request):
-        ''' 
+        """ 
             implement LMS jsonrpc interface 
             for some compatability with tools that talk to lms
             only support for basic commands
-        '''
+        """
         data = await request.json()
         LOGGER.debug("jsonrpc: %s" % data)
         params = data['params']

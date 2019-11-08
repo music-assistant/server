@@ -5,6 +5,7 @@ import operator
 import os
 import base64
 import functools
+import time
 from typing import List
 import toolz
 from PIL import Image
@@ -83,93 +84,40 @@ class MusicManager():
         else:
             return None
 
-    async def library_artists(self,
-                              limit=0,
-                              offset=0,
-                              orderby='name',
-                              provider_filter=None) -> List[Artist]:
+    async def library_artists(self, orderby='name', provider_filter=None) -> List[Artist]:
         ''' return all library artists, optionally filtered by provider '''
-        return await self.mass.db.library_artists(provider=provider_filter,
-                                                  limit=limit,
-                                                  offset=offset,
-                                                  orderby=orderby)
+        async for item in self.mass.db.library_artists(provider=provider_filter, orderby=orderby):
+            yield item
 
     async def library_albums(self,
-                             limit=0,
-                             offset=0,
                              orderby='name',
                              provider_filter=None) -> List[Album]:
         ''' return all library albums, optionally filtered by provider '''
-        return await self.mass.db.library_albums(provider=provider_filter,
-                                                 limit=limit,
-                                                 offset=offset,
-                                                 orderby=orderby)
+        async for item in self.mass.db.library_albums(provider=provider_filter, orderby=orderby):
+            yield item
 
     async def library_tracks(self,
-                             limit=0,
-                             offset=0,
                              orderby='name',
                              provider_filter=None) -> List[Track]:
         ''' return all library tracks, optionally filtered by provider '''
-        return await self.mass.db.library_tracks(provider=provider_filter,
-                                                 limit=limit,
-                                                 offset=offset,
-                                                 orderby=orderby)
+        async for item in self.mass.db.library_tracks(provider=provider_filter, orderby=orderby):
+            yield item
 
-    async def playlists(self,
-                        limit=0,
-                        offset=0,
+    async def library_playlists(self,
                         orderby='name',
                         provider_filter=None) -> List[Playlist]:
         ''' return all library playlists, optionally filtered by provider '''
-        return await self.mass.db.playlists(provider=provider_filter,
-                                            limit=limit,
-                                            offset=offset,
-                                            orderby=orderby)
+        async for item in self.mass.db.library_playlists(provider=provider_filter,
+                                            orderby=orderby):
+            yield item
 
-    async def radios(self,
-                     limit=0,
-                     offset=0,
+    async def library_radios(self,
                      orderby='name',
                      provider_filter=None) -> List[Playlist]:
         ''' return all library radios, optionally filtered by provider '''
-        return await self.mass.db.radios(provider=provider_filter,
-                                         limit=limit,
-                                         offset=offset,
-                                         orderby=orderby)
-
-    async def library_items(self,
-                            media_type: MediaType,
-                            limit=0,
-                            offset=0,
-                            orderby='name',
-                            provider_filter=None) -> List[object]:
-        ''' get multiple music items in library'''
-        if media_type == MediaType.Artist:
-            return await self.library_artists(limit=limit,
-                                              offset=offset,
-                                              orderby=orderby,
-                                              provider_filter=provider_filter)
-        elif media_type == MediaType.Album:
-            return await self.library_albums(limit=limit,
-                                             offset=offset,
-                                             orderby=orderby,
-                                             provider_filter=provider_filter)
-        elif media_type == MediaType.Track:
-            return await self.library_tracks(limit=limit,
-                                             offset=offset,
-                                             orderby=orderby,
-                                             provider_filter=provider_filter)
-        elif media_type == MediaType.Playlist:
-            return await self.playlists(limit=limit,
-                                        offset=offset,
-                                        orderby=orderby,
-                                        provider_filter=provider_filter)
-        elif media_type == MediaType.Radio:
-            return await self.radios(limit=limit,
-                                     offset=offset,
-                                     orderby=orderby,
-                                     provider_filter=provider_filter)
+        async for item in self.mass.db.library_radios(provider=provider_filter,
+                                         orderby=orderby):
+            yield item
 
     async def artist(self, item_id, provider='database', lazy=True) -> Artist:
         ''' get artist by id '''
@@ -203,14 +151,14 @@ class MusicManager():
 
     async def playlist_by_name(self, name) -> Playlist:
         ''' get playlist by name '''
-        for playlist in await self.playlists():
+        async for playlist in self.library_playlists():
             if playlist.name == name:
                 return playlist
         return None
 
     async def radio_by_name(self, name) -> Radio:
         ''' get radio by name '''
-        for radio in await self.radios():
+        async for radio in self.library_radios():
             if radio.name == name:
                 return radio
         return None
@@ -220,58 +168,49 @@ class MusicManager():
         ''' get top tracks for given artist '''
         artist = await self.artist(artist_id, provider)
         # always append database tracks
-        items = await self.mass.db.artist_tracks(artist.item_id)
-        for prov_mapping in artist.provider_ids:
-            prov_id = prov_mapping['provider']
-            prov_item_id = prov_mapping['item_id']
-            prov_obj = self.providers[prov_id]
-            items += [item async for item in prov_obj.artist_toptracks(prov_item_id)]
-        items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
-        #items.sort(key=lambda x: x.name, reverse=False)
-        return items
+        async for item in self.mass.db.artist_tracks(artist.item_id):
+            yield item
+        # for prov_mapping in artist.provider_ids:
+        #     prov_id = prov_mapping['provider']
+        #     prov_item_id = prov_mapping['item_id']
+        #     prov_obj = self.providers[prov_id]
+        #     items += [item async for item in prov_obj.artist_toptracks(prov_item_id)]
+        # items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
+        # #items.sort(key=lambda x: x.name, reverse=False)
+        # return items
 
     async def artist_albums(self, artist_id,
                             provider='database') -> List[Album]:
         ''' get (all) albums for given artist '''
         artist = await self.artist(artist_id, provider)
         # always append database tracks
-        items = await self.mass.db.artist_albums(artist.item_id)
-        for prov_mapping in artist.provider_ids:
-            prov_id = prov_mapping['provider']
-            prov_item_id = prov_mapping['item_id']
-            prov_obj = self.providers[prov_id]
-            items += [item async for item in  prov_obj.artist_albums(prov_item_id)]
-        items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
+        async for item in self.mass.db.artist_albums(artist.item_id):
+            yield item
+        # for prov_mapping in artist.provider_ids:
+        #     prov_id = prov_mapping['provider']
+        #     prov_item_id = prov_mapping['item_id']
+        #     prov_obj = self.providers[prov_id]
+        #     items += [item async for item in  prov_obj.artist_albums(prov_item_id)]
+        # items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
         #items.sort(key=lambda x: x.name, reverse=False)
-        return items
+        #return items
 
     async def album_tracks(self, album_id, provider='database') -> List[Track]:
         ''' get the album tracks for given album '''
-        items = []
         album = await self.album(album_id, provider)
         # collect the tracks from the first provider
         prov = album.provider_ids[0]
         prov_obj = self.providers[prov['provider']]
-        items = [item async for item in prov_obj.album_tracks(prov['item_id'])]
-        items = sorted(items,
-                       key=operator.attrgetter('disc_number', 'track_number'),
-                       reverse=False)
-        return items
+        async for item in prov_obj.album_tracks(prov['item_id']):
+            yield item
 
-    async def playlist_tracks(self,
-                              playlist_id,
-                              provider='database',
-                              offset=0,
-                              limit=50) -> List[Track]:
+    async def playlist_tracks(self, playlist_id, provider='database') -> List[Track]:
         ''' get the tracks for given playlist '''
         playlist = await self.playlist(playlist_id, provider)
         # return playlist tracks from provider
         prov = playlist.provider_ids[0]
-        res = self.providers[prov['provider']
-                                    ].playlist_tracks(prov['item_id'],
-                                                      offset=offset,
-                                                      limit=limit)
-        return [item async for item in res]
+        async for item in self.providers[prov['provider']].playlist_tracks(prov['item_id']):
+            yield item
 
     async def search(self,
                      searchquery,
@@ -280,7 +219,7 @@ class MusicManager():
                      online=False) -> dict:
         ''' search database or providers '''
         # get results from database
-        result = await self.mass.db.search(searchquery, media_types, limit)
+        result = await self.mass.db.search(searchquery, media_types)
         if online:
             # include results from music providers
             for prov in self.providers.values():
@@ -384,10 +323,13 @@ class MusicManager():
                 continue
         # actually add the tracks to the playlist on the provider
         if track_ids_to_add:
+            # invalidate cache
+            await self.mass.db.update_playlist(playlist.item_id, 'checksum', str(time.time()))
             return await self.providers[playlist_prov['provider']
                                         ].add_playlist_tracks(
                                             playlist_prov['item_id'],
                                             track_ids_to_add)
+            
 
     async def remove_playlist_tracks(self, playlist_id, tracks: List[Track]):
         ''' remove tracks from playlist '''
@@ -415,6 +357,8 @@ class MusicManager():
                     track_ids_to_remove.append(track_provider['item_id'])
         # actually remove the tracks from the playlist on the provider
         if track_ids_to_remove:
+            # invalidate cache
+            await self.mass.db.update_playlist(playlist.item_id, 'checksum', str(time.time()))
             return await self.providers[prov_playlist_provider_id
                                         ].remove_playlist_tracks(
                                             prov_playlist_playlist_id,
@@ -434,14 +378,14 @@ class MusicManager():
         await self.sync_library_albums(prov_id)
         await self.sync_library_tracks(prov_id)
         await self.sync_library_artists(prov_id)
-        await self.sync_playlists(prov_id)
-        await self.sync_radios(prov_id)
+        await self.sync_library_playlists(prov_id)
+        await self.sync_library_radios(prov_id)
 
     @sync_task('artists')
     async def sync_library_artists(self, prov_id):
         ''' sync library artists for given provider'''
         music_provider = self.providers[prov_id]
-        prev_items = await self.library_artists(provider_filter=prov_id)
+        prev_items = [item async for item in self.library_artists(provider_filter=prov_id)]
         prev_db_ids = [item.item_id for item in prev_items]
         cur_db_ids = []
         async for item in music_provider.get_library_artists():
@@ -460,7 +404,7 @@ class MusicManager():
     async def sync_library_albums(self, prov_id):
         ''' sync library albums for given provider'''
         music_provider = self.providers[prov_id]
-        prev_items = await self.library_albums(provider_filter=prov_id)
+        prev_items = [item async for item in self.library_albums(provider_filter=prov_id)]
         prev_db_ids = [item.item_id for item in prev_items]
         cur_db_ids = []
         async for item in music_provider.get_library_albums():
@@ -481,7 +425,7 @@ class MusicManager():
     async def sync_library_tracks(self, prov_id):
         ''' sync library tracks for given provider'''
         music_provider = self.providers[prov_id]
-        prev_items = await self.library_tracks(provider_filter=prov_id)
+        prev_items = [item async for item in self.library_tracks(provider_filter=prov_id)]
         prev_db_ids = [item.item_id for item in prev_items]
         cur_db_ids = []
         async for item in music_provider.get_library_tracks():
@@ -497,13 +441,13 @@ class MusicManager():
                                                        prov_id)
 
     @sync_task('playlists')
-    async def sync_playlists(self, prov_id):
+    async def sync_library_playlists(self, prov_id):
         ''' sync library playlists for given provider'''
         music_provider = self.providers[prov_id]
-        prev_items = await self.playlists(provider_filter=prov_id)
+        prev_items = [item async for item in self.library_playlists(provider_filter=prov_id)]
         prev_db_ids = [item.item_id for item in prev_items]
         cur_db_ids = []
-        async for item in music_provider.get_playlists():
+        async for item in music_provider.get_library_playlists():
             # always add to db because playlist attributes could have changed
             db_id = await self.mass.db.add_playlist(item)
             cur_db_ids.append(db_id)
@@ -518,10 +462,10 @@ class MusicManager():
                                                        prov_id)
 
     @sync_task('radios')
-    async def sync_radios(self, prov_id):
+    async def sync_library_radios(self, prov_id):
         ''' sync library radios for given provider'''
         music_provider = self.providers[prov_id]
-        prev_items = await self.radios(provider_filter=prov_id)
+        prev_items = [item async for item in self.library_radios(provider_filter=prov_id)]
         prev_db_ids = [item.item_id for item in prev_items]
         cur_db_ids = []
         async for item in music_provider.get_radios():

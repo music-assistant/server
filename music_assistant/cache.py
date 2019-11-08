@@ -4,8 +4,8 @@
 
 import os
 import functools
-import datetime
 import time
+import pickle
 from functools import reduce
 import aiosqlite
 
@@ -40,10 +40,10 @@ class Cache(object):
         await self._db.close()
         LOGGER.info("cache db connection closed")
 
-    async def get(self, endpoint, checksum=""):
+    async def get(self, cache_key, checksum=""):
         """
             get object from cache and return the results
-            endpoint: the (unique) name of the cache object as reference
+            cache_key: the (unique) name of the cache object as reference
             checkum: optional argument to check if the checksum in the
                      cacheobject matches the checkum provided
         """
@@ -51,34 +51,34 @@ class Cache(object):
         cur_time = int(time.time())
         checksum = self._get_checksum(checksum)
         sql_query = "SELECT expires, data, checksum FROM simplecache WHERE id = ?"
-        async with self._db.execute(sql_query, (endpoint, )) as cursor:
+        async with self._db.execute(sql_query, (cache_key, )) as cursor:
             cache_data = await cursor.fetchone()
             if not cache_data:
-                LOGGER.debug('no cache data for %s', endpoint)
+                LOGGER.debug('no cache data for %s', cache_key)
             elif cache_data['expires'] < cur_time:
-                LOGGER.debug('cache expired for %s', endpoint)
+                LOGGER.debug('cache expired for %s', cache_key)
             elif checksum and cache_data['checksum'] != checksum:
-                LOGGER.debug('cache checksum mismatch for %s', endpoint)
+                LOGGER.debug('cache checksum mismatch for %s', cache_key)
             if cache_data and cache_data['expires'] > cur_time:
                 if checksum is None or cache_data['checksum'] == checksum:
-                    LOGGER.debug('return cache data for %s', endpoint)
-                    result = eval(cache_data[1])
+                    LOGGER.debug('return cache data for %s', cache_key)
+                    result = pickle.loads(cache_data[1])
         return result
 
     async def set(self,
-                  endpoint,
+                  cache_key,
                   data,
                   checksum="",
-                  expiration=datetime.timedelta(days=14)):
+                  expiration=(86400*30)):
         """
             set data in cache
         """
         checksum = self._get_checksum(checksum)
-        expires = int(time.time() + expiration.seconds)
-        data = repr(data)
+        expires = int(time.time() + expiration)
+        data = pickle.dumps(data)
         sql_query = """INSERT OR REPLACE INTO simplecache
             (id, expires, data, checksum) VALUES (?, ?, ?, ?)"""
-        await self._db.execute(sql_query, (endpoint, expires, data, checksum))
+        await self._db.execute(sql_query, (cache_key, expires, data, checksum))
         await self._db.commit()
 
     @run_periodic(3600)
@@ -103,11 +103,6 @@ class Cache(object):
         LOGGER.debug("Auto cleanup done")
 
     @staticmethod
-    def _get_timestamp(date_time):
-        """Converts a datetime object to unix timestamp"""
-        return int(time.mktime(date_time.timetuple()))
-
-    @staticmethod
     def _get_checksum(stringinput):
         """get int checksum from string"""
         if not stringinput:
@@ -117,7 +112,22 @@ class Cache(object):
         return reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
-def use_cache(cache_days=14, cache_hours=8):
+async def cached_iterator(cache, iter_func, cache_key, expires=(86400*30), checksum=None):
+    """Helper method to store results of an iterator in the cache."""
+    cache_result = await cache.get(cache_key, checksum)
+    if cache_result:
+        for item in cache_result:
+            yield item
+    else:
+        # nothing in cache, yield from iterator and store in cache when complete
+        cache_result = []
+        async for item in iter_func:
+            yield item
+            cache_result.append(item)
+        await cache.set(cache_key, cache_result, checksum, expires)
+
+def use_cache(cache_days=14):
+    """ decorator that can be used to cache a method's result."""
     def wrapper(func):
         @functools.wraps(func)
         async def wrapped(*args, **kwargs):
@@ -157,11 +167,8 @@ def use_cache(cache_days=14, cache_hours=8):
                     cache_str,
                     result,
                     checksum=cache_checksum,
-                    expiration=datetime.timedelta(days=cache_days,
-                                                  hours=cache_hours),
+                    expiration=(86400*cache_days),
                 )
                 return result
-
         return wrapped
-
     return wrapper
