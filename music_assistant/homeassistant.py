@@ -244,7 +244,8 @@ class HomeAssistant():
     @run_periodic(120)
     async def __get_sources(self):
         ''' we build a list of all playlists to use as player sources '''
-        self._sources = [playlist.name for playlist in await self.mass.music.playlists()]
+        self._sources = [playlist.name async for playlist in self.mass.music.library_playlists()]
+        self._sources += [playlist.name async for playlist in self.mass.music.library_radios()]
 
     async def __set_state(self, entity_id, new_state, state_attributes={}):
         ''' set state to hass entity '''
