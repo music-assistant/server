@@ -1,6 +1,7 @@
 <template>
   <div>
-    <v-list-item ripple @click="itemClicked(item)">
+    <v-list-item ripple @click="itemClicked(item)" v-long-press="500" @click.stop
+      @long-press-start="menuClick(item)" @long-press-start.prevent>
       <v-list-item-avatar tile color="grey" v-if="!hideavatar">
         <img
           :src="$server.getImageUrl(item, 'image', 80)"
@@ -103,7 +104,9 @@ export default Vue.extend({
     onclickHandler: null
   },
   data () {
-    return {}
+    return {
+      touchMoving: false
+    }
   },
   computed: {
     isHiRes () {
@@ -115,6 +118,7 @@ export default Vue.extend({
       return false
     }
   },
+  created () { },
   mounted () { },
   methods: {
     itemClicked (mediaItem) {

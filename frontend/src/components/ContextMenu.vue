@@ -31,7 +31,7 @@
           :hideproviders="false"
           :hidelibrary="true"
           :hidemenu="true"
-          :onclickHandler="playlistSelected"
+          :onclickHandler="addToPlaylist"
         ></listviewItem>
       </v-list>
     </v-card>
@@ -100,7 +100,7 @@ export default Vue.extend({
       if (mediaItem.in_library.length === 0) {
         menuItems.push({
           label: 'add_library',
-          action: 'add_library',
+          action: 'toggle_library',
           icon: 'favorite_border'
         })
       }
@@ -108,7 +108,7 @@ export default Vue.extend({
       if (mediaItem.in_library.length > 0) {
         menuItems.push({
           label: 'remove_library',
-          action: 'remove_library',
+          action: 'toggle_library',
           icon: 'favorite'
         })
       }
@@ -169,9 +169,9 @@ export default Vue.extend({
       for (let item of this.curItem.provider_ids) {
         trackProviders.push(item.provider)
       }
-      let playlists = await this.$server.getData('playlists')
+      let playlists = await this.$server.getData('library/playlists')
       let items = []
-      for (var playlist of playlists.items) {
+      for (var playlist of playlists['items']) {
         if (
           playlist.is_editable &&
           (!this.curPlaylist || playlist.item_id !== this.curPlaylist.item_id)
@@ -189,8 +189,14 @@ export default Vue.extend({
     itemCommand (cmd) {
       if (cmd === 'info') {
         // show media info
+        let endpoint = ''
+        if (this.curItem.media_type === 1) endpoint = 'artists'
+        if (this.curItem.media_type === 2) endpoint = 'albums'
+        if (this.curItem.media_type === 3) endpoint = 'tracks'
+        if (this.curItem.media_type === 4) endpoint = 'playlists'
+        if (this.curItem.media_type === 5) endpoint = 'radios'
         this.$router.push({
-          path: '/' + this.curItem.media_type + '/' + this.curItem.item_id,
+          path: '/' + endpoint + '/' + this.curItem.item_id,
           query: { provider: this.curItem.provider }
         })
         this.visible = false
@@ -202,11 +208,15 @@ export default Vue.extend({
         return this.showPlaylistsMenu()
       } else if (cmd === 'remove_playlist') {
         // remove track from playlist
-        this.playlistAddRemove(
+        this.removeFromPlaylist(
           this.curItem,
           this.curPlaylist.item_id,
           'playlist_remove'
         )
+        this.visible = false
+      } else if (cmd === 'toggle_library') {
+        // add/remove to/from library
+        this.$server.toggleLibrary(this.curItem)
         this.visible = false
       } else {
         // assume play command
@@ -214,28 +224,21 @@ export default Vue.extend({
         this.visible = false
       }
     },
-    playlistSelected (playlistobj) {
-      this.playlistAddRemove(
-        this.curItem,
-        playlistobj.item_id,
-        'playlist_add'
-      )
-      this.visible = false
+    addToPlaylist (playlistObj) {
+      /// add track to playlist
+      let endpoint = 'playlists/' + playlistObj.item_id + '/tracks'
+      this.$server.putData(endpoint, this.curItem)
+        .then(result => {
+          this.visible = false
+        })
     },
-    playlistAddRemove (track, playlistId, action = 'playlist_add') {
-      /// add or remove track on playlist
-      let endpoint = 'track/' + track.item_id
-      let params = {
-        provider: track.provider,
-        action: action,
-        action_details: playlistId
-      }
-      this.$server.getData(endpoint, params)
+    removeFromPlaylist (track, playlistId) {
+      /// remove track from playlist
+      let endpoint = 'playlists/' + playlistId + '/tracks'
+      this.$server.deleteData(endpoint, track)
         .then(result => {
           // reload listing
-          if (action === 'playlist_remove') {
-            this.$server.$emit('refresh_listing')
-          }
+          this.$server.$emit('refresh_listing')
         })
     }
   }

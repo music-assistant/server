@@ -478,13 +478,13 @@ class Database():
     async def artist_tracks(self, artist_id, orderby='name') -> List[Track]:
         ''' get all library tracks for the given artist '''
         artist_id = try_parse_int(artist_id)
-        sql_query = 'SELECT * FROM tracks WHERE track_id in (SELECT track_id FROM track_artists WHERE artist_id = %d)' % artist_id
+        sql_query = 'SELECT * FROM tracks WHERE track_id in (SELECT track_id FROM track_artists WHERE artist_id = %s)' % artist_id
         async for item in self.tracks(sql_query, orderby=orderby, fulldata=False):
             yield item
 
     async def artist_albums(self, artist_id, orderby='name') -> List[Album]:
         ''' get all library albums for the given artist '''
-        sql_query = ' WHERE artist_id = %d' % artist_id
+        sql_query = ' WHERE artist_id = %s' % artist_id
         async for item in self.albums(sql_query, orderby=orderby, fulldata=False):
             yield item
    

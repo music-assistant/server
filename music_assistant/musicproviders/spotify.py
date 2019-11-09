@@ -477,8 +477,7 @@ class SpotifyProvider(MusicProvider):
                                              verify_ssl=False) as response:
                 result = await response.json()
                 if not result or 'error' in result:
-                    LOGGER.error(url)
-                    LOGGER.error(params)
+                    LOGGER.error('%s - %s', endpoint, result)
                     result = None
                 return result
 

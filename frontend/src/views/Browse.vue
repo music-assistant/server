@@ -45,11 +45,16 @@ export default {
   created () {
     this.$store.windowtitle = this.$t(this.mediatype)
     this.getItems()
+    this.$server.$on('refresh_listing', this.getItems)
+  },
+  beforeDestroy () {
+    this.$server.$off('refresh_listing')
   },
   methods: {
     async getItems () {
       // retrieve the full list of items
-      return this.$server.getAllItems(this.mediatype, this.items)
+      let endpoint = 'library/' + this.mediatype
+      return this.$server.getAllItems(endpoint, this.items)
     }
   }
 }

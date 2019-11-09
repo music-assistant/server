@@ -4,6 +4,7 @@
 import asyncio
 import os
 from enum import Enum
+from typing import List
 import operator
 import random
 import functools
@@ -11,10 +12,11 @@ import urllib
 
 from .constants import CONF_KEY_PLAYERPROVIDERS, EVENT_PLAYER_ADDED, EVENT_PLAYER_REMOVED, EVENT_HASS_ENTITY_CHANGED
 from .utils import run_periodic, LOGGER, try_parse_int, try_parse_float, \
-    get_ip, run_async_background_task, load_provider_modules
-from .models.media_types import MediaType, TrackQuality
-from .models.player_queue import QueueItem
+    get_ip, run_async_background_task, load_provider_modules, iter_items
+from .models.media_types import MediaItem, MediaType, TrackQuality
+from .models.player_queue import QueueItem, QueueOption
 from .models.playerstate import PlayerState
+from .models.player import Player
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODULES_PATH = os.path.join(BASE_DIR, "playerproviders" )
@@ -42,15 +44,15 @@ class PlayerManager():
         ''' return list of all players '''
         return self._players.values()
 
-    async def get_player(self, player_id):
+    async def get_player(self, player_id:str):
         ''' return player by id '''
         return self._players.get(player_id, None)
 
-    def get_player_sync(self, player_id):
+    def get_player_sync(self, player_id:str):
         ''' return player by id (non async) '''
         return self._players.get(player_id, None)
 
-    async def add_player(self, player):
+    async def add_player(self, player:Player):
         ''' register a new player '''
         player._initialized = True
         self._players[player.player_id] = player
@@ -59,48 +61,50 @@ class PlayerManager():
         LOGGER.info(f"New player added: {player.player_provider}/{player.player_id}")
         return player
 
-    async def remove_player(self, player_id):
+    async def remove_player(self, player_id:str):
         ''' handle a player remove '''
         self._players.pop(player_id, None)
         await self.mass.signal_event(EVENT_PLAYER_REMOVED, {"player_id": player_id})
         LOGGER.info(f"Player removed: {player_id}")
 
-    async def trigger_update(self, player_id):
+    async def trigger_update(self, player_id:str):
         ''' manually trigger update for a player '''
         if player_id in self._players:
             await self._players[player_id].update(force=True)
     
-    async def play_media(self, player_id, media_item, queue_opt='play'):
+    async def play_media(self, 
+                        player_id:str, 
+                        media_items:List[MediaItem], 
+                        queue_opt:QueueOption='play'):
         ''' 
-            play media item(s) on the given player 
+            play media item(s) on the given player
             :param media_item: media item(s) that should be played (Track, Album, Artist, Playlist, Radio)
                         single item or list of items
             :param queue_opt: 
-                play -> insert new items in queue and start playing at the inserted position
-                replace -> replace queue contents with these items
-                next -> play item(s) after current playing item
-                add -> append new items at end of the queue
+                QueueOption.Play -> insert new items in queue and start playing at the inserted position
+                QueueOption.Replace -> replace queue contents with these items
+                QueueOption.Next -> play item(s) after current playing item
+                QueueOption.Add -> append new items at end of the queue
         '''
         player = await self.get_player(player_id)
         if not player:
             return
         # a single item or list of items may be provided
-        media_items = media_item if isinstance(media_item, list) else [media_item]
         queue_items = []
         for media_item in media_items:
             # collect tracks to play
             if media_item.media_type == MediaType.Artist:
-                tracks = await self.mass.music.artist_toptracks(media_item.item_id, 
+                tracks = self.mass.music.artist_toptracks(media_item.item_id, 
                         provider=media_item.provider)
             elif media_item.media_type == MediaType.Album:
-                tracks = await self.mass.music.album_tracks(media_item.item_id, 
+                tracks = self.mass.music.album_tracks(media_item.item_id, 
                         provider=media_item.provider)
             elif media_item.media_type == MediaType.Playlist:
-                tracks = await self.mass.music.playlist_tracks(media_item.item_id, 
+                tracks = self.mass.music.playlist_tracks(media_item.item_id, 
                         provider=media_item.provider) 
             else:
-                tracks = [media_item] # single track
-            for track in tracks:
+                tracks = iter_items(media_item) # single track
+            async for track in tracks:
                 queue_item = QueueItem(track)
                 # generate uri for this queue item
                 queue_item.uri = 'http://%s:%s/stream/%s/%s'% (
@@ -108,13 +112,16 @@ class PlayerManager():
                 queue_items.append(queue_item)
                     
         # load items into the queue
-        if queue_opt == 'replace' or (queue_opt in ['next', 'play'] and len(queue_items) > 10):
+        if (queue_opt == QueueOption.Replace or
+                (len(queue_items) > 10 and
+                queue_opt == QueueOption.Play or
+                queue_opt == QueueOption.Next)):
             return await player.queue.load(queue_items)
-        elif queue_opt == 'next':
+        elif queue_opt == QueueOption.Next:
             return await player.queue.insert(queue_items, 1)
-        elif queue_opt == 'play':
+        elif queue_opt == QueueOption.Play:
             return await player.queue.insert(queue_items, 0)
-        elif queue_opt == 'add':
+        elif queue_opt == QueueOption.Add:
             return await player.queue.append(queue_items)
     
     async def handle_mass_events(self, msg, msg_details=None):

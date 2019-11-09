@@ -117,7 +117,7 @@ class QobuzProvider(MusicProvider):
 
     async def get_library_playlists(self) -> List[Playlist]:
         ''' retrieve all library playlists from the provider '''
-        endpoint = 'favorite/getUserPlaylists'
+        endpoint = 'playlist/getUserPlaylists'
         async for item in self.__get_all_items(endpoint, key='playlists'):
             playlist = await self.__parse_playlist(item)
             if playlist:
@@ -594,17 +594,11 @@ class QobuzProvider(MusicProvider):
                                              headers=headers,
                                              params=params,
                                              verify_ssl=False) as response:
-                try:
-                    result = await response.json()
-                    if "error" in result:
-                        return None
-                    return result
-                except Exception as exc:
-                    LOGGER.error(exc)
-                    LOGGER.debug(url)
-                    LOGGER.debug(params)
-                    result = await response.text()
-                    LOGGER.error(result)
+                result = await response.json()
+                if 'error' in result or ('status' in result and 'error' in result['status']):
+                    LOGGER.error('%s - %s', endpoint, result)
+                    return None
+                return result
 
     async def __post_data(self, endpoint, params=None, data=None):
         ''' post data to api'''
@@ -619,14 +613,8 @@ class QobuzProvider(MusicProvider):
                                           params=params,
                                           json=data,
                                           verify_ssl=False) as response:
-            try:
-                result = await response.json()
-                if "error" in result:
-                    return None
-                return result
-            except Exception as exc:
-                LOGGER.error(exc)
-                LOGGER.debug(url)
-                LOGGER.debug(params)
-                result = await response.text()
-                LOGGER.error(result)
+            result = await response.json()
+            if 'error' in result or ('status' in result and 'error' in result['status']):
+                LOGGER.error('%s - %s', endpoint, result)
+                return None
+            return result

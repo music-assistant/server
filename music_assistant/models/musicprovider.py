@@ -375,8 +375,7 @@ class MusicProvider():
         search_results = await self.search(searchstr, [MediaType.Album],
                                            limit=5)
         for item in search_results["albums"]:
-            if (item and
-                (item.name in searchalbum.name
+            if (item and (item.name in searchalbum.name
                  or searchalbum.name in item.name) and compare_strings(
                      item.artist.name, searchalbum.artist.name, strict=False)):
                 # some providers mess up versions in the title, try to fix that situation

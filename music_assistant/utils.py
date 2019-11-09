@@ -64,6 +64,14 @@ def try_parse_int(possible_int):
     except:
         return 0
 
+async def iter_items(items):
+    '''fake async iterator for compatability reasons.'''
+    if not isinstance(items, list):
+        yield items
+    else:
+        for item in items:
+            yield items
+
 def try_parse_float(possible_float):
     try:
         return float(possible_float)

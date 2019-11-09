@@ -8,11 +8,19 @@ import random
 import uuid
 import os
 import pickle
+from enum import Enum
 
 from ..utils import LOGGER, json, filename_from_string
 from ..constants import CONF_ENABLED, EVENT_PLAYBACK_STARTED, EVENT_PLAYBACK_STOPPED, EVENT_QUEUE_UPDATED
 from .media_types import Track, TrackQuality
 from .playerstate import PlayerState
+
+
+class QueueOption(str, Enum):
+    Play = "play"
+    Replace = "replace"
+    Next = "next"
+    Add = "add"
 
 
 class QueueItem(Track):

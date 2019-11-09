@@ -4,6 +4,7 @@
 import asyncio
 import os
 import aiohttp
+import inspect
 import aiohttp_cors
 from aiohttp import web
 from functools import partial
@@ -27,8 +28,31 @@ else:
             ('cert_fqdn_host', '', 'cert_fqdn_host')
             ]
 
+class ClassRouteTableDef(web.RouteTableDef):
+    def __repr__(self) -> str:
+        return "<ClassRouteTableDef count={}>".format(len(self._items))
+
+    def route(self,
+              method: str,
+              path: str,
+              **kwargs):
+        def inner(handler):
+            handler.route_info = (method, path, kwargs)
+            return handler
+        return inner
+
+    def add_class_routes(self, instance) -> None:
+        def predicate(member) -> bool:
+            return all((inspect.iscoroutinefunction(member),
+                        hasattr(member, "route_info")))
+        for _, handler in inspect.getmembers(instance, predicate):
+            method, path, kwargs = handler.route_info
+            super().route(method, path, **kwargs)(handler)
+routes = ClassRouteTableDef()
+
 class Web():
     """ webserver and json/websocket api """
+    runner = None
     
     def __init__(self, mass):
         self.mass = mass
@@ -52,44 +76,26 @@ class Web():
             if config['ssl_certificate'] and not os.path.isfile(
                     config['ssl_certificate']):
                 enable_ssl = False
-                LOGGER.warning("SSL certificate file not found: %s" % config['ssl_certificate'])
+                LOGGER.warning("SSL certificate file not found: %s", config['ssl_certificate'])
             if config['ssl_key'] and not os.path.isfile(config['ssl_key']):
                 enable_ssl = False
-                LOGGER.warning( "SSL certificate key file not found: %s" % config['ssl_key'])
+                LOGGER.warning( "SSL certificate key file not found: %s", config['ssl_key'])
             self.https_port = config['https_port']
             self._enable_ssl = enable_ssl
 
     async def setup(self):
         """ perform async setup """
+        routes.add_class_routes(self)
         app = web.Application()
-        app.add_routes([web.get('/jsonrpc.js', self.json_rpc)])
-        app.add_routes([web.post('/jsonrpc.js', self.json_rpc)])
-        app.add_routes([web.get('/ws', self.websocket_handler)])
-        app.add_routes([web.get('/stream/{player_id}', self.mass.http_streamer.stream, allow_head=False)])
-        app.add_routes([web.get('/stream/{player_id}/{queue_item_id}', self.mass.http_streamer.stream, allow_head=False)])
-        app.add_routes([web.get('/api/search', self.search)])
-        app.add_routes([web.post('/api/config/{key}/{subkey}', self.save_config)])
-        app.add_routes([web.get('/api/config', self.get_config)])
-        app.add_routes([web.get('/api/players', self.players)])
-        app.add_routes([web.get('/api/players/{player_id}', self.player)])
-        app.add_routes([web.get('/api/players/{player_id}/queue', self.player_queue)])
-        app.add_routes([web.get('/api/players/{player_id}/queue/{item_id}', self.player_queue_item)])
-        app.add_routes([web.get('/api/players/{player_id}/cmd/{cmd}', self.player_command)])
-        app.add_routes([web.get('/api/players/{player_id}/cmd/{cmd}/{cmd_args}', self.player_command)])
-        app.add_routes([web.get('/api/players/{player_id}/play_media/{media_type}/{media_id}', self.play_media)])
-        app.add_routes([web.get('/api/players/{player_id}/play_media/{media_type}/{media_id}/{queue_opt}', self.play_media)])
-        app.add_routes([web.get('/api/playlists/{playlist_id}/tracks', self.playlist_tracks)])
-        app.add_routes([web.get('/api/artists/{artist_id}/toptracks', self.artist_toptracks)])
-        app.add_routes([web.get('/api/artists/{artist_id}/albums', self.artist_albums)])
-        app.add_routes([web.get('/api/albums/{album_id}/tracks', self.album_tracks)])
-        app.add_routes([web.get('/api/{media_type}/{media_id}/image', self.get_image)])
-        app.add_routes([web.get('/api/{media_type}/{media_id}', self.get_item)])
-        app.add_routes([web.get('/api/artists', self.library_artists)])
-        app.add_routes([web.get('/api/albums', self.library_albums)])
-        app.add_routes([web.get('/api/tracks', self.library_tracks)])
-        app.add_routes([web.get('/api/radios', self.library_radios)])
-        app.add_routes([web.get('/api/playlists', self.library_playlists)])
-        app.add_routes([web.get('/', self.index)])
+        app.add_routes(routes)
+        app.add_routes([
+            web.get('/stream/{player_id}', self.mass.http_streamer.stream, allow_head=False),
+            web.get('/stream/{player_id}/{queue_item_id}', self.mass.http_streamer.stream, allow_head=False),
+            web.get('/', self.index),
+            web.get('/jsonrpc.js', self.json_rpc),
+            web.post('/jsonrpc.js', self.json_rpc),
+            web.get('/ws', self.websocket_handler)
+        ])
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web/')
         app.router.add_static("/", webdir)
         
@@ -99,7 +105,8 @@ class Web():
                 "*": aiohttp_cors.ResourceOptions(
                     allow_credentials=True,
                     expose_headers="*",
-                    allow_headers="*")
+                    allow_headers="*",
+                    allow_methods=["POST", "PUT", "DELETE"])
             })
         for route in list(app.router.routes()):
             cors.add(route)
@@ -107,14 +114,20 @@ class Web():
         await self.runner.setup()
         http_site = web.TCPSite(self.runner, '0.0.0.0', self.http_port)
         await http_site.start()
-        LOGGER.info("Started HTTP webserver on port %s" % self.http_port)
+        LOGGER.info("Started HTTP webserver on port %s", self.http_port)
         if self._enable_ssl:
             ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ssl_context.load_cert_chain(self.config['ssl_certificate'], self.config['ssl_key'])
             https_site = web.TCPSite(self.runner, '0.0.0.0', self.config['https_port'], ssl_context=ssl_context)
             await https_site.start()
-            LOGGER.info("Started HTTPS webserver on port %s" % self.config['https_port'])
+            LOGGER.info("Started HTTPS webserver on port %s", self.config['https_port'])
 
+    async def index(self, request):
+        index_file = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'web/index.html')
+        return web.FileResponse(index_file)
+
+    @routes.get('/api/library/artists')
     async def library_artists(self, request):
         """Get all library artists."""
         orderby = request.query.get('orderby', 'name')
@@ -122,6 +135,7 @@ class Web():
         iterator = self.mass.music.library_artists(orderby=orderby, provider_filter=provider_filter)
         return await self.__stream_json(request, iterator)
 
+    @routes.get('/api/library/albums')
     async def library_albums(self, request):
         """Get all library albums."""
         orderby = request.query.get('orderby', 'name')
@@ -129,6 +143,7 @@ class Web():
         iterator = self.mass.music.library_albums(orderby=orderby, provider_filter=provider_filter)
         return await self.__stream_json(request, iterator)
 
+    @routes.get('/api/library/tracks')
     async def library_tracks(self, request):
         """Get all library tracks."""
         orderby = request.query.get('orderby', 'name')
@@ -136,6 +151,7 @@ class Web():
         iterator = self.mass.music.library_tracks(orderby=orderby, provider_filter=provider_filter)
         return await self.__stream_json(request, iterator)
 
+    @routes.get('/api/library/radios')
     async def library_radios(self, request):
         """Get all library radios."""
         orderby = request.query.get('orderby', 'name')
@@ -143,6 +159,7 @@ class Web():
         iterator = self.mass.music.library_radios(orderby=orderby, provider_filter=provider_filter)
         return await self.__stream_json(request, iterator)
 
+    @routes.get('/api/library/playlists')
     async def library_playlists(self, request):
         """Get all library playlists."""
         orderby = request.query.get('orderby', 'name')
@@ -150,22 +167,73 @@ class Web():
         iterator = self.mass.music.library_playlists(orderby=orderby, provider_filter=provider_filter)
         return await self.__stream_json(request, iterator)
 
-    async def get_item(self, request):
-        """ get item full details"""
-        media_type_str = request.match_info.get('media_type')
-        media_type = media_type_from_string(media_type_str)
-        media_id = request.match_info.get('media_id')
-        # optional params
-        action = request.rel_url.query.get('action','')
-        action_details = request.rel_url.query.get('action_details')
-        lazy = request.rel_url.query.get('lazy', '') != 'false'
-        provider = request.rel_url.query.get('provider')
-        if action:
-            result = await self.mass.music.item_action(media_id, media_type, provider, action, action_details)
-        else:
-            result = await self.mass.music.item(media_id, media_type, provider, lazy=lazy)
+    @routes.put('/api/library')
+    async def library_add(self, request):
+        """Add item(s) to the library"""
+        body = await request.json()
+        media_items = await self.__media_items_from_body(body)
+        result = await self.mass.music.library_add(media_items)
         return web.json_response(result, dumps=json_serializer)
 
+    @routes.delete('/api/library')
+    async def library_remove(self, request):
+        """R remove item(s) from the library"""
+        body = await request.json()
+        media_items = await self.__media_items_from_body(body)
+        result = await self.mass.music.library_remove(media_items)
+        return web.json_response(result, dumps=json_serializer)
+
+    @routes.get('/api/artists/{item_id}')
+    async def artist(self, request):
+        """ get full artist details"""
+        item_id = request.match_info.get('item_id')
+        provider = request.rel_url.query.get('provider')
+        if (item_id is None or provider is None):
+            return web.Response(text='invalid item or provider', status=501)
+        result = await self.mass.music.artist(item_id, provider, lazy=False)
+        return web.json_response(result, dumps=json_serializer)
+    
+    @routes.get('/api/albums/{item_id}')
+    async def album(self, request):
+        """ get full album details"""
+        item_id = request.match_info.get('item_id')
+        provider = request.rel_url.query.get('provider')
+        if (item_id is None or provider is None):
+            return web.Response(text='invalid item or provider', status=501)
+        result = await self.mass.music.album(item_id, provider, lazy=False)
+        return web.json_response(result, dumps=json_serializer)
+
+    @routes.get('/api/tracks/{item_id}')
+    async def track(self, request):
+        """ get full track details"""
+        item_id = request.match_info.get('item_id')
+        provider = request.rel_url.query.get('provider')
+        if (item_id is None or provider is None):
+            return web.Response(text='invalid item or provider', status=501)
+        result = await self.mass.music.track(item_id, provider, lazy=False)
+        return web.json_response(result, dumps=json_serializer)
+
+    @routes.get('/api/playlists/{item_id}')
+    async def playlist(self, request):
+        """ get full playlist details"""
+        item_id = request.match_info.get('item_id')
+        provider = request.rel_url.query.get('provider')
+        if (item_id is None or provider is None):
+            return web.Response(text='invalid item or provider', status=501)
+        result = await self.mass.music.playlist(item_id, provider)
+        return web.json_response(result, dumps=json_serializer)
+
+    @routes.get('/api/radios/{item_id}')
+    async def radio(self, request):
+        """ get full radio details"""
+        item_id = request.match_info.get('item_id')
+        provider = request.rel_url.query.get('provider')
+        if (item_id is None or provider is None):
+            return web.Response(text='invalid item or provider', status=501)
+        result = await self.mass.music.radio(item_id, provider)
+        return web.json_response(result, dumps=json_serializer)
+
+    @routes.get('/api/{media_type}/{media_id}/image')
     async def get_image(self, request):
         """ get item image """
         media_type_str = request.match_info.get('media_type')
@@ -175,12 +243,14 @@ class Web():
         provider = request.rel_url.query.get('provider', 'database')
         size = int(request.rel_url.query.get('size', 0))
         type_key = request.rel_url.query.get('type', 'image')
-        img_file = await self.mass.music.get_image_path(media_id, media_type, provider, size, type_key)
+        img_file = await self.mass.music.get_image_path(
+                    media_id, media_type, provider, size, type_key)
         if not img_file or not os.path.isfile(img_file):
             return web.Response(status=404)
         headers = {'Cache-Control': 'max-age=86400, public', 'Pragma': 'public'}
         return web.FileResponse(img_file, headers=headers)
 
+    @routes.get('/api/artists/{artist_id}/toptracks')
     async def artist_toptracks(self, request):
         """ get top tracks for given artist """
         artist_id = request.match_info.get('artist_id')
@@ -188,6 +258,7 @@ class Web():
         iterator = self.mass.music.artist_toptracks(artist_id, provider)
         return await self.__stream_json(request, iterator)
 
+    @routes.get('/api/artists/{artist_id}/albums')
     async def artist_albums(self, request):
         """ get (all) albums for given artist """
         artist_id = request.match_info.get('artist_id')
@@ -195,6 +266,7 @@ class Web():
         iterator = self.mass.music.artist_albums(artist_id, provider)
         return await self.__stream_json(request, iterator)
 
+    @routes.get('/api/playlists/{playlist_id}/tracks')
     async def playlist_tracks(self, request):
         """ get playlist tracks from provider"""
         playlist_id = request.match_info.get('playlist_id')
@@ -202,18 +274,38 @@ class Web():
         iterator = self.mass.music.playlist_tracks(playlist_id, provider)
         return await self.__stream_json(request, iterator)
 
+    @routes.put('/api/playlists/{playlist_id}/tracks')
+    async def add_playlist_tracks(self, request):
+        """Add tracks to (editable) playlist."""
+        playlist_id = request.match_info.get('playlist_id')
+        body = await request.json()
+        tracks = await self.__media_items_from_body(body)
+        result = await self.mass.music.add_playlist_tracks(playlist_id, tracks)
+        return web.json_response(result, dumps=json_serializer)
+
+    @routes.delete('/api/playlists/{playlist_id}/tracks')
+    async def remove_playlist_tracks(self, request):
+        """Remove tracks from (editable) playlist."""
+        playlist_id = request.match_info.get('playlist_id')
+        body = await request.json()
+        tracks = await self.__media_items_from_body(body)
+        result = await self.mass.music.remove_playlist_tracks(playlist_id, tracks)
+        return web.json_response(result, dumps=json_serializer)
+
+    @routes.get('/api/albums/{album_id}/tracks')
     async def album_tracks(self, request):
         """ get album tracks from provider"""
         album_id = request.match_info.get('album_id')
-        provider = request.rel_url.query.get('provider','database')
+        provider = request.rel_url.query.get('provider', 'database')
         iterator = self.mass.music.album_tracks(album_id, provider)
         return await self.__stream_json(request, iterator)
 
+    @routes.get('/api/search')
     async def search(self, request):
         """ search database or providers """
         searchquery = request.rel_url.query.get('query')
         media_types_query = request.rel_url.query.get('media_types')
-        limit = request.rel_url.query.get('media_id', 5)
+        limit = request.rel_url.query.get('limit', 5)
         online = request.rel_url.query.get('online', False)
         media_types = []
         if not media_types_query or "artists" in media_types_query:
@@ -230,49 +322,59 @@ class Web():
         result = await self.mass.music.search(searchquery, media_types, limit=limit, online=online)
         return web.json_response(result, dumps=json_serializer)
 
+    @routes.get('/api/players')
     async def players(self, request):
         """ get all players """
         players = list(self.mass.players.players)
         players.sort(key=lambda x: x.name, reverse=False)
         return web.json_response(players, dumps=json_serializer)
 
-    async def player(self, request):
-        """ get single player """
-        player_id = request.match_info.get('player_id')
-        player = await self.mass.players.get_player(player_id)
-        return web.json_response(player, dumps=json_serializer)
-
+    @routes.post('/api/players/{player_id}/cmd/{cmd}')
     async def player_command(self, request):
         """ issue player command"""
         result = False
         player_id = request.match_info.get('player_id')
         player = await self.mass.players.get_player(player_id)
-        if player:
-            cmd = request.match_info.get('cmd')
-            cmd_args = request.match_info.get('cmd_args')
-            player_cmd = getattr(player, cmd, None)
-            if player_cmd and cmd_args != None:
-                result = await player_cmd(cmd_args)
-            elif player_cmd:
-                result = await player_cmd()
-            else:
-                LOGGER.error("Received non-existing command %s for player %s" %(cmd, player.name))
+        if not player:
+            return web.Response(text='invalid player', status=404)
+        cmd = request.match_info.get('cmd')
+        cmd_args = await request.json()
+        player_cmd = getattr(player, cmd, None)
+        if player_cmd and cmd_args is not None:
+            result = await player_cmd(cmd_args)
+        elif player_cmd:
+            result = await player_cmd()
         else:
-            LOGGER.error("Received command for non-existing player %s" %(player_id))
+            return web.Response(text='invalid command', status=501)
         return web.json_response(result, dumps=json_serializer) 
     
-    async def play_media(self, request):
+    @routes.post('/api/players/{player_id}/play_media/{queue_opt}')
+    async def player_play_media(self, request):
         """ issue player play_media command"""
         player_id = request.match_info.get('player_id')
-        media_type_str = request.match_info.get('media_type')
-        media_type = media_type_from_string(media_type_str)
-        media_id = request.match_info.get('media_id')
-        queue_opt = request.match_info.get('queue_opt','')
-        provider = request.rel_url.query.get('provider')
-        media_item = await self.mass.music.item(media_id, media_type, provider, lazy=True)
-        result = await self.mass.players.play_media(player_id, media_item, queue_opt)
-        return web.json_response(result, dumps=json_serializer) 
+        player = await self.mass.players.get_player(player_id)
+        if not player:
+            return web.Response(status=404)
+        queue_opt = request.match_info.get('queue_opt', 'play')
+        body = await request.json()
+        media_items = await self.__media_items_from_body(body)
+        result = await self.mass.players.play_media(player_id, media_items, queue_opt)
+        return web.json_response(result, dumps=json_serializer)
     
+    @routes.get('/api/players/{player_id}/queue/{queue_item}')
+    async def player_queue_item(self, request):
+        """ return item (by index or queue item id) from the player's queue """
+        player_id = request.match_info.get('player_id')
+        item_id = request.match_info.get('queue_item')
+        player = await self.mass.players.get_player(player_id)
+        try:
+            item_id = int(item_id)
+            queue_item = await player.queue.get_item(item_id)
+        except ValueError:
+            queue_item = await player.queue.by_item_id(item_id)
+        return web.json_response(queue_item, dumps=json_serializer)
+    
+    @routes.get('/api/players/{player_id}/queue')
     async def player_queue(self, request):
         """ return the items in the player's queue """
         player_id = request.match_info.get('player_id')
@@ -282,22 +384,42 @@ class Web():
                 yield item
         return await self.__stream_json(request, queue_tracks_iter())
 
-    async def player_queue_item(self, request):
-        """ return item (by index or queue item id) from the player's queue """
+    @routes.get('/api/players/{player_id}')
+    async def player(self, request):
+        """ get single player """
         player_id = request.match_info.get('player_id')
-        item_id = request.match_info.get('item_id')
         player = await self.mass.players.get_player(player_id)
-        try:
-            item_id = int(item_id)
-            queue_item = await player.queue.get_item(item_id)
-        except:
-            queue_item = await player.queue.by_item_id(item_id)
-        return web.json_response(queue_item, dumps=json_serializer)
-    
-    async def index(self, request):
-        index_file = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), 'web/index.html')
-        return web.FileResponse(index_file)
+        if not player:
+            return web.Response(text='invalid player', status=404)
+        return web.json_response(player, dumps=json_serializer)
+
+    @routes.get('/api/config')
+    async def get_config(self, request):
+        """ get the config """
+        return web.json_response(self.mass.config)
+
+    @routes.put('/api/config/{key}/{subkey}')
+    async def put_config(self, request):
+        """ save (partial) config """
+        conf_key = request.match_info.get('key')
+        conf_subkey = request.match_info.get('subkey')
+        new_values = await request.json()
+        LOGGER.debug(f'save config called for {conf_key}/{conf_subkey} - new value: {new_values}')
+        cur_values = self.mass.config[conf_key][conf_subkey]
+        result = {"success": True, "restart_required": False, "settings_changed": False}
+        if cur_values != new_values:
+            # config changed
+            result["settings_changed"] = True
+            self.mass.config[conf_key][conf_subkey] = new_values
+            if conf_key == "player_settings":
+                # player settings don't require restart, force update of player
+                self.mass.event_loop.create_task(
+                    self.mass.players.trigger_update(conf_subkey))
+            else:
+                # TODO: allow some settings without restart ?
+                result["restart_required"] = True
+            self.mass.config.save()
+        return web.json_response(result)
 
     async def websocket_handler(self, request):
         """ websockets handler """
@@ -323,82 +445,15 @@ class Web():
                     LOGGER.warning(msg.data)
                 else:
                     data = msg.json()
-                    # for now we only use WS for (simple) player commands
-                    if data['message'] == 'players':
-                        players = list(self.mass.players.players)
-                        players.sort(key=lambda x: x.name, reverse=False)
-                        ws_msg = {'message': 'players', 'message_details': players}
-                        await ws.send_json(ws_msg, dumps=json_serializer)
-                    elif data['message'] == 'player command':
-                        player_id = data['message_details']['player_id']
-                        cmd = data['message_details']['cmd']
-                        cmd_args = data['message_details']['cmd_args']
-                        player = await self.mass.players.get_player(player_id)
-                        player_cmd = getattr(player, cmd, None)
-                        if player_cmd and cmd_args:
-                            result = await player_cmd(cmd_args)
-                        elif player_cmd:
-                            result = await player_cmd()
-                    else:
-                        # echo the websocket message on event bus
-                        # can be picked up by other modules, e.g. the webplayer
-                        await self.mass.signal_event(data['message'], data['message_details'])
+                    # echo the websocket message on event bus
+                    # can be picked up by other modules, e.g. the webplayer
+                    await self.mass.signal_event(data['message'], data['message_details'])
         except (Exception, AssertionError, asyncio.CancelledError) as exc:
             LOGGER.warning("Websocket disconnected - %s" % str(exc))
         finally:
             await self.mass.remove_event_listener(cb_id)
         LOGGER.debug('websocket connection closed')
         return ws
-
-    async def get_config(self, request):
-        """ get the config """
-        return web.json_response(self.mass.config)
-
-    async def save_config(self, request):
-        """ save (partial) config """
-        conf_key = request.match_info.get('key')
-        conf_subkey = request.match_info.get('subkey')
-        new_values = await request.json()
-        LOGGER.debug(f'save config called for {conf_key}/{conf_subkey} - new value: {new_values}')
-        cur_values = self.mass.config[conf_key][conf_subkey]
-        result = {"success": True, "restart_required": False, "settings_changed": False}
-        if cur_values != new_values:
-            # config changed
-            result["settings_changed"] = True
-            self.mass.config[conf_key][conf_subkey] = new_values
-            if conf_key == "player_settings":
-                # player settings don't require restart, force update of player
-                self.mass.event_loop.create_task(
-                    self.mass.players.trigger_update(conf_subkey))
-            else:
-                # TODO: allow some settings without restart ?
-                result["restart_required"] = True
-            self.mass.config.save()
-        return web.json_response(result)
-
-    async def headers_only(self, request):
-        return web.Response(status=200)
-
-    async def __stream_json(self, request, iterator):
-        """ stream items from async iterator as json object """
-        resp = web.StreamResponse(status=200,
-                                  reason='OK',
-                                  headers={'Content-Type': 'application/json'})
-        await resp.prepare(request)
-        # write json open tag
-        json_response = '{ "items": ['
-        await resp.write(json_response.encode('utf-8'))
-        count = 0
-        async for item in iterator:
-            # write each item into the items object of the json
-            json_response = json_serializer(item) + ','
-            await resp.write(json_response.encode('utf-8'))
-            count += 1
-        # write json close tag
-        json_response = '], "count": %s }' % count
-        await resp.write((json_response).encode('utf-8'))
-        await resp.write_eof()
-        return resp
 
     async def json_rpc(self, request):
         """ 
@@ -453,4 +508,38 @@ class Web():
         else:
             return web.Response(text='command not supported')
         return web.Response(text='success')
-        
+    
+    async def __media_items_from_body(self, data):
+        """Helper to turn posted body data into media items."""
+        if not isinstance(data, list):
+            data = [data]
+        media_items = []
+        for item in data:
+            media_item = await self.mass.music.item(
+                item['item_id'], item['media_type'], item['provider'], lazy=True)
+            media_items.append(media_item)
+        return media_items
+    
+    async def __stream_json(self, request, iterator):
+        """ stream items from async iterator as json object """
+        resp = web.StreamResponse(status=200,
+                                  reason='OK',
+                                  headers={'Content-Type': 'application/json'})
+        await resp.prepare(request)
+        # write json open tag
+        json_response = '{ "items": ['
+        await resp.write(json_response.encode('utf-8'))
+        count = 0
+        async for item in iterator:
+            # write each item into the items object of the json
+            if count:
+                json_response = ',' + json_serializer(item)
+            else:
+                json_response = json_serializer(item)
+            await resp.write(json_response.encode('utf-8'))
+            count += 1
+        # write json close tag
+        json_response = '], "count": %s }' % count
+        await resp.write((json_response).encode('utf-8'))
+        await resp.write_eof()
+        return resp

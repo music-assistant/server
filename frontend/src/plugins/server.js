@@ -27,13 +27,20 @@ const server = new Vue({
   },
   methods: {
 
-    connect (serverAddress) {
+    async connect (serverAddress) {
       // Connect to the server
       if (!serverAddress.endsWith('/')) {
         serverAddress = serverAddress + '/'
       }
       this._address = serverAddress
       let wsAddress = serverAddress.replace('http', 'ws') + 'ws'
+      // retrieve all players
+      let players = await this.getData('players')
+      for (let player of players) {
+        Vue.set(this.players, player.player_id, player)
+      }
+      this._selectActivePlayer()
+      this.$emit('players changed')
       this._ws = new WebSocket(wsAddress)
       this._ws.onopen = this._onWsConnect
       this._ws.onmessage = this._onWsMessage
@@ -43,22 +50,23 @@ const server = new Vue({
 
     async toggleLibrary (item) {
       /// triggered when user clicks the library (heart) button
-      let endpoint = item.media_type + '/' + item.item_id
-      let action = 'library_remove'
       if (item.in_library.length === 0) {
-        action = 'library_add'
-      }
-      await this.getData(endpoint, { provider: item.provider, action: action })
-      if (action === '/library_remove') {
-        item.in_library = []
-      } else {
+        // add to library
+        await this.putData('library', item)
         item.in_library = [item.provider]
+      } else {
+        // remove from library
+        await this.deleteData('library', item)
+        item.in_library = []
       }
     },
 
     getImageUrl (mediaItem, imageType = 'image', size = 0) {
       // format the image url
       if (!mediaItem || !mediaItem.media_type) return ''
+      if (mediaItem.media_type in ['playlists', 'radios'] && imageType !== 'image') {
+        return ''
+      }
       if (mediaItem.provider === 'database') {
         return `${this._address}api/${mediaItem.media_type}/${mediaItem.item_id}/image?type=${imageType}&provider=${mediaItem.provider}&size=${size}`
       } else if (mediaItem.metadata && mediaItem.metadata['image']) {
@@ -74,13 +82,34 @@ const server = new Vue({
       // get data from the server
       let url = this._address + 'api/' + endpoint
       let result = await _axios.get(url, { params: params })
+      Vue.$log.debug('getData', endpoint, result)
       return result.data
     },
 
     async postData (endpoint, data) {
       // post data to the server
       let url = this._address + 'api/' + endpoint
+      data = JSON.stringify(data)
       let result = await _axios.post(url, data)
+      Vue.$log.debug('postData', endpoint, result)
+      return result.data
+    },
+
+    async putData (endpoint, data) {
+      // put data to the server
+      let url = this._address + 'api/' + endpoint
+      data = JSON.stringify(data)
+      let result = await _axios.put(url, data)
+      Vue.$log.debug('putData', endpoint, result)
+      return result.data
+    },
+
+    async deleteData (endpoint, dataObj) {
+      // delete data on the server
+      let url = this._address + 'api/' + endpoint
+      dataObj = JSON.stringify(dataObj)
+      let result = await _axios.delete(url, { data: dataObj })
+      Vue.$log.debug('deleteData', endpoint, result)
       return result.data
     },
 
@@ -99,27 +128,21 @@ const server = new Vue({
         })
         .done(function (fullList) {
           // truncate list if needed
-          if (list.length === 0) {
-            list = []
-          } else if (list.length > index) {
-            list = list.slice(0, index)
+          if (list.length > fullList.items.length) {
+            list.splice(fullList.items.length)
           }
         })
     },
 
-    playerCommand (cmd, cmd_opt = null, playerId = this.activePlayerId) {
-      let msgDetails = {
-        player_id: playerId,
-        cmd: cmd,
-        cmd_args: cmd_opt
-      }
-      this._ws.send(JSON.stringify({ message: 'player command', message_details: msgDetails }))
+    playerCommand (cmd, cmd_opt = '', playerId = this.activePlayerId) {
+      let endpoint = 'players/' + playerId + '/cmd/' + cmd
+      this.postData(endpoint, cmd_opt)
     },
 
     async playItem (item, queueOpt) {
       this.$store.loading = true
-      let endpoint = 'players/' + this.activePlayerId + '/play_media/' + item.media_type + '/' + item.item_id + '/' + queueOpt
-      await this.getData(endpoint)
+      let endpoint = 'players/' + this.activePlayerId + '/play_media/' + queueOpt
+      await this.postData(endpoint, item)
       this.$store.loading = false
     },
 
@@ -131,7 +154,7 @@ const server = new Vue({
 
     _onWsConnect () {
       // Websockets connection established
-      // console.log('Connected to server ' + this._address)
+      Vue.$log.info('Connected to server ' + this._address)
       this.connected = true
       // request all players
       let data = JSON.stringify({ message: 'players', message_details: null })
@@ -151,12 +174,6 @@ const server = new Vue({
         Vue.delete(this.players, msg.message_details.player_id)
         this._selectActivePlayer()
         this.$emit('players changed')
-      } else if (msg.message === 'players') {
-        for (var item of msg.message_details) {
-          Vue.set(this.players, item.player_id, item)
-        }
-        this._selectActivePlayer()
-        this.$emit('players changed')
       } else if (msg.message === 'music sync status') {
         this.syncStatus = msg.message_details
       } else {
@@ -166,7 +183,7 @@ const server = new Vue({
 
     _onWsClose (e) {
       this.connected = false
-      // console.log('Socket is closed. Reconnect will be attempted in 5 seconds.', e.reason)
+      Vue.$log.error('Socket is closed. Reconnect will be attempted in 5 seconds.', e.reason)
       setTimeout(function () {
         this.connect(this._address)
       }.bind(this), 5000)

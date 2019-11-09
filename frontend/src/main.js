@@ -11,11 +11,26 @@ import vuetify from './plugins/vuetify'
 import store from './plugins/store'
 import server from './plugins/server'
 import '@babel/polyfill'
+import VueLogger from 'vuejs-logger'
+import LongPress from 'vue-directive-long-press'
+
+const isProduction = process.env.NODE_ENV === 'production'
+const loggerOptions = {
+  isEnabled: true,
+  logLevel: isProduction ? 'error' : 'debug',
+  stringifyArguments: false,
+  showLogLevel: true,
+  showMethodName: false,
+  separator: '|',
+  showConsoleColors: true
+}
 
 Vue.config.productionTip = false
+Vue.use(VueLogger, loggerOptions)
 Vue.use(VueVirtualScroller)
 Vue.use(store)
 Vue.use(server)
+Vue.directive('long-press', LongPress)
 
 // eslint-disable-next-line no-extend-native
 String.prototype.formatDuration = function () {
