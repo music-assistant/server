@@ -263,7 +263,9 @@ class PlayerQueue():
             return
         # move the item in the list
         items.insert(new_index, items.pop(item_index))
-        return await self.update(items)
+        await self.update(items)
+        if new_index == 0:
+            await self.play_index(new_index)
     
     async def load(self, queue_items:List[QueueItem]):
         ''' load (overwrite) queue with new items '''

@@ -238,7 +238,7 @@ class Player():
         ''' [PROTECTED] set state property of this player '''
         if state != self._state:
             self._state = state
-            self.mass.event_loop.create_task(self.update(update_queue=True))
+            self.mass.event_loop.create_task(self.update())
 
     @property
     def powered(self):
@@ -287,7 +287,7 @@ class Player():
         if cur_time != self._cur_time:
             self._cur_time = cur_time
             self._media_position_updated_at = time.time()
-            self.mass.event_loop.create_task(self.update(update_queue=True, update_player=False))
+            self.mass.event_loop.create_task(self.update())
 
     @property
     def media_position_updated_at(self):
@@ -309,7 +309,7 @@ class Player():
         ''' [PROTECTED] set cur_uri (uri loaded in player) property of this player '''
         if cur_uri != self._cur_uri:
             self._cur_uri = cur_uri
-            self.mass.event_loop.create_task(self.update(update_queue=True))
+            self.mass.event_loop.create_task(self.update())
 
     @property
     def volume_level(self):
@@ -569,15 +569,13 @@ class Player():
         ''' [PROTECTED] send mute command to player '''
         return await self.cmd_volume_mute(is_muted)
 
-    async def update(self, update_queue=False, update_player=True, force=False):
+    async def update(self, force=False):
         ''' [PROTECTED] signal player updated '''
         if not force and (not self._initialized or not self.enabled):
             return
         # update queue state if player state changes
-        if update_queue or force:
-            await self.queue.update_state()
-        if update_player or force:
-            await self.mass.signal_event(EVENT_PLAYER_CHANGED, self.to_dict())
+        await self.queue.update_state()
+        await self.mass.signal_event(EVENT_PLAYER_CHANGED, self.to_dict())
 
     @property
     def settings(self):
