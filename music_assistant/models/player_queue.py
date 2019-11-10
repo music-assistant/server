@@ -236,7 +236,7 @@ class PlayerQueue():
         if not len(self.items) > index:
             return
         if self.use_queue_stream:
-            self._last_queue_startindex = index
+            self._next_queue_startindex = index
             queue_stream_uri = 'http://%s:%s/stream/%s'% (
                         self.mass.web.local_ip, self.mass.web.http_port, self._player.player_id)
             return await self._player.cmd_play_uri(queue_stream_uri)
@@ -388,6 +388,7 @@ class PlayerQueue():
 
     async def start_queue_stream(self):
         ''' called by the queue streamer when it starts playing the queue stream '''
+        self._last_queue_startindex = self._next_queue_startindex
         return await self.get_item(self._next_queue_startindex)
 
     def to_dict(self):
@@ -446,7 +447,7 @@ class PlayerQueue():
             if (self._player.cur_time == 0 and 
                 self._player.state in [PlayerState.Stopped, PlayerState.Off]):
                 # player stopped playing
-                self._last_queue_startindex = self.cur_index
+                self._next_queue_startindex = self.cur_index
         # update vars
         if track_time > 2:
             # account for track changing state so keep this a few seconds behind
