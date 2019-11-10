@@ -211,27 +211,14 @@ export default Vue.extend({
   props: [],
   data () {
     return {
-      curQueueItem: null
+      playerQueueDetails: {}
     }
   },
-  watch: {
-    curQueueItemId: function (val) {
-      // get info for current track
-      if (val == null) {
-        this.curQueueItem = null
-      } else {
-        let endpoint = 'players/' + this.$server.activePlayerId + '/queue/' + val
-        this.$server.getData(endpoint)
-          .then(result => {
-            this.curQueueItem = result
-          })
-      }
-    }
-  },
+  watch: { },
   computed: {
-    curQueueItemId () {
-      if (this.$server.activePlayer) {
-        return this.$server.activePlayer.cur_queue_item
+    curQueueItem () {
+      if (this.playerQueueDetails) {
+        return this.playerQueueDetails.cur_item
       } else {
         return null
       }
@@ -239,14 +226,13 @@ export default Vue.extend({
     progress () {
       if (!this.curQueueItem) return 0
       var totalSecs = this.curQueueItem.duration
-      var curSecs = this.$server.activePlayer.cur_time
+      var curSecs = this.playerQueueDetails.cur_item_time
       var curPercent = curSecs / totalSecs * 100
       return curPercent
     },
     playerCurTimeStr () {
       if (!this.curQueueItem) return '0:00'
-      if (!this.$server.activePlayer.cur_time) return '0:00'
-      var curSecs = this.$server.activePlayer.cur_time
+      var curSecs = this.playerQueueDetails.cur_item_time
       return curSecs.toString().formatDuration()
     },
     playerTotalTimeStr () {
@@ -258,6 +244,10 @@ export default Vue.extend({
       return window.innerWidth - 160
     }
   },
+  created () {
+    this.$server.$on('queue updated', this.queueUpdatedMsg)
+    this.$server.$on('new player selected', this.getQueueDetails)
+  },
   methods: {
     playerCommand (cmd, cmd_opt = null) {
       this.$server.playerCommand(cmd, cmd_opt, this.$server.activePlayerId)
@@ -266,6 +256,19 @@ export default Vue.extend({
       // artist entry clicked within the listviewItem
       var url = '/artists/' + item.item_id
       this.$router.push({ path: url, query: { provider: item.provider } })
+    },
+    queueUpdatedMsg (data) {
+      if (data.player_id === this.$server.activePlayerId) {
+        for (const [key, value] of Object.entries(data)) {
+          Vue.set(this.playerQueueDetails, key, value)
+        }
+      }
+    },
+    async getQueueDetails () {
+      if (this.$server.activePlayer) {
+        let endpoint = 'players/' + this.$server.activePlayerId + '/queue'
+        this.playerQueueDetails = await this.$server.getData(endpoint)
+      }
     }
   }
 })

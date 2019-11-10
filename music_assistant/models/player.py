@@ -93,6 +93,21 @@ class Player():
         '''
         raise NotImplementedError
 
+    async def cmd_queue_update(self, queue_items):
+        ''' 
+            [OVERRIDE IF SUPPORTED]
+            overwrite the existing items in the queue, used for reordering
+            :param queue_items: a list of QueueItems
+        '''
+        raise NotImplementedError
+
+    async def cmd_queue_clear(self):
+        ''' 
+            [OVERRIDE IF SUPPORTED]
+            empty the queue
+        '''
+        raise NotImplementedError
+
     async def cmd_play_uri(self, uri:str):
         '''
             [MUST OVERRIDE]
@@ -262,17 +277,17 @@ class Player():
             group_player = self.mass.players.get_player_sync(group_id)
             if group_player.state != PlayerState.Off:
                 return group_player.cur_time
-        return self.queue.cur_item_time
+        return self._cur_time
 
     @cur_time.setter
     def cur_time(self, cur_time:int):
         ''' [PROTECTED] set cur_time (player's elapsed time) property of this player '''
-        if cur_time == None:
+        if cur_time is None:
             cur_time = 0
         if cur_time != self._cur_time:
             self._cur_time = cur_time
             self._media_position_updated_at = time.time()
-            self.mass.event_loop.create_task(self.update(update_queue=True))
+            self.mass.event_loop.create_task(self.update(update_queue=True, update_player=False))
 
     @property
     def media_position_updated_at(self):
@@ -554,14 +569,15 @@ class Player():
         ''' [PROTECTED] send mute command to player '''
         return await self.cmd_volume_mute(is_muted)
 
-    async def update(self, update_queue=False, force=False):
+    async def update(self, update_queue=False, update_player=True, force=False):
         ''' [PROTECTED] signal player updated '''
         if not force and (not self._initialized or not self.enabled):
             return
         # update queue state if player state changes
-        if update_queue:
-            await self.queue.update()
-        await self.mass.signal_event(EVENT_PLAYER_CHANGED, self.to_dict())
+        if update_queue or force:
+            await self.queue.update_state()
+        if update_player or force:
+            await self.mass.signal_event(EVENT_PLAYER_CHANGED, self.to_dict())
 
     @property
     def settings(self):
@@ -621,6 +637,7 @@ class Player():
             "group_parents": self.group_parents,
             "group_childs": self.group_childs,
             "enabled": self.enabled,
-            "cur_queue_index": self.queue.cur_index,
-            "cur_queue_item": self.queue.cur_item
+            "supports_queue": self.supports_queue,
+            "supports_gapless": self.supports_gapless,
+            "supports_queue": self.supports_queue
         }

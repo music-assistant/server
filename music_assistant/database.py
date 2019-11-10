@@ -34,7 +34,7 @@ class Database():
         await self._db.execute('CREATE TABLE IF NOT EXISTS library_items(item_id INTEGER NOT NULL, provider TEXT NOT NULL, media_type INTEGER NOT NULL, UNIQUE(item_id, provider, media_type));')
 
         await self._db.execute('CREATE TABLE IF NOT EXISTS artists(artist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, sort_name TEXT, musicbrainz_id TEXT NOT NULL UNIQUE);')            
-        await self._db.execute('CREATE TABLE IF NOT EXISTS albums(album_id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL, name TEXT NOT NULL, albumtype TEXT, year INTEGER, version TEXT, versiontype TEXT, UNIQUE(artist_id, name, version, year, albumtype));')
+        await self._db.execute('CREATE TABLE IF NOT EXISTS albums(album_id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL, name TEXT NOT NULL, albumtype TEXT, year INTEGER, version TEXT, UNIQUE(artist_id, name, version, year, albumtype));')
         await self._db.execute('CREATE TABLE IF NOT EXISTS labels(label_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE);')
         await self._db.execute('CREATE TABLE IF NOT EXISTS album_labels(album_id INTEGER, label_id INTEGER, UNIQUE(album_id, label_id));')
 
@@ -323,8 +323,8 @@ class Database():
                 album.version = db_row[5]
                 album.provider_ids = await self.__get_prov_ids(album.item_id, MediaType.Album)
                 album.in_library = await self.__get_library_providers(album.item_id, MediaType.Album)
+                album.artist = await self.artist(db_row[1], fulldata=fulldata)
                 if fulldata:
-                    album.artist = await self.artist(db_row[1], fulldata=False)
                     album.external_ids = await self.__get_external_ids(album.item_id, MediaType.Album)
                     album.metadata = await self.__get_metadata(album.item_id, MediaType.Album)
                     album.tags = await self.__get_tags(album.item_id, MediaType.Album)
@@ -345,15 +345,27 @@ class Database():
         album_id = await self.__get_item_by_external_id(album)
         # fallback to matching on artist_id, name and version
         if not album_id:
-            sql_query = 'SELECT album_id, year, version FROM albums WHERE artist_id=? AND name=?'
+            sql_query = 'SELECT album_id, year, version, albumtype FROM albums WHERE artist_id=? AND name=?'
             async with self._db.execute(sql_query, (album.artist.item_id, album.name)) as cursor:
-                for result in await cursor.fetchall():
-                    if (not album.version and result['year'] == album.year or (album.version and result['version'] == album.version)):
+                albums = await cursor.fetchall()
+                # search exact match first
+                for result in albums:
+                    if (result['albumtype'] == album.albumtype and 
+                            result['year'] == album.year and 
+                            result['version'] == album.version):
                         album_id = result['album_id']
                         break
+                # fallback to almost exact match
+                if not album_id:
+                    for result in albums:
+                        if (result['albumtype'] == album.albumtype and 
+                                (not album.version and result['year'] == album.year) or 
+                                (album.version and result['version'] == album.version)):
+                            album_id = result['album_id']
+                            break
         if not album_id:
             # insert album
-            sql_query = 'INSERT INTO albums (artist_id, name, albumtype, year, version) VALUES(?,?,?,?,?);'
+            sql_query = 'INSERT OR REPLACE INTO albums (artist_id, name, albumtype, year, version) VALUES(?,?,?,?,?);'
             query_params =  (album.artist.item_id, album.name, album.albumtype, album.year, album.version)
             async with self._db.execute(sql_query, query_params) as cursor:
                 last_row_id = cursor.lastrowid
@@ -387,8 +399,8 @@ class Database():
                 track = Track()
                 track.item_id = db_row["track_id"]
                 track.name = db_row["name"]
-                track.album = await self.album(db_row["album_id"], fulldata=False)
-                track.artists = await self.__get_track_artists(track.item_id, fulldata=False)
+                track.album = await self.album(db_row["album_id"], fulldata=fulldata)
+                track.artists = await self.__get_track_artists(track.item_id, fulldata=fulldata)
                 track.duration = db_row["duration"]
                 track.version = db_row["version"]
                 try: # album tracks only

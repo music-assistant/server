@@ -68,10 +68,6 @@ export default Vue.extend({
     this.$server.$on('showContextMenu', this.showContextMenu)
     this.$server.$on('showPlayMenu', this.showPlayMenu)
   },
-  beforeDestroy () {
-    this.$server.$off('showContextMenu')
-    this.$server.$off('showPlayMenu')
-  },
   computed: {
   },
   methods: {
@@ -82,12 +78,6 @@ export default Vue.extend({
       this.curItem = mediaItem
       let curBrowseContext = this.$store.topBarContextItem
       let menuItems = []
-      // show playmenu
-      menuItems.push({
-        label: 'play',
-        action: 'playmenu',
-        icon: 'play_circle_outline'
-      })
       // show info
       if (mediaItem !== curBrowseContext) {
         menuItems.push({

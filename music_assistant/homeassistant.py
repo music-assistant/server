@@ -219,12 +219,11 @@ class HomeAssistant():
         if state != "off":
             player = await self.mass.players.get_player(player_id)
             if player.queue.cur_item:
-                queue_item = await player.queue.by_item_id(player.queue.cur_item)
-                state_attributes["media_duration"] = queue_item.duration
-                state_attributes["media_title"] = queue_item.name
-                state_attributes["media_artist"] = queue_item.artists[0].name
-                state_attributes["media_album_name"] = queue_item.album.name
-                state_attributes["entity_picture"] = queue_item.album.metadata.get("image")
+                state_attributes["media_duration"] = player.queue.cur_item.duration
+                state_attributes["media_title"] = player.queue.cur_item.name
+                state_attributes["media_artist"] = player.queue.cur_item.artists[0].name
+                state_attributes["media_album_name"] = player.queue.cur_item.album.name
+                state_attributes["entity_picture"] = player.queue.cur_item.album.metadata.get("image")
         self._published_players[entity_id] = player_id
         await self.__set_state(entity_id, state, state_attributes)
 

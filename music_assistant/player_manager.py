@@ -114,8 +114,7 @@ class PlayerManager():
         # load items into the queue
         if (queue_opt == QueueOption.Replace or
                 (len(queue_items) > 10 and
-                queue_opt == QueueOption.Play or
-                queue_opt == QueueOption.Next)):
+                queue_opt in [QueueOption.Play, QueueOption.Next])):
             return await player.queue.load(queue_items)
         elif queue_opt == QueueOption.Next:
             return await player.queue.insert(queue_items, 1)

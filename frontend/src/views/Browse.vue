@@ -47,9 +47,6 @@ export default {
     this.getItems()
     this.$server.$on('refresh_listing', this.getItems)
   },
-  beforeDestroy () {
-    this.$server.$off('refresh_listing')
-  },
   methods: {
     async getItems () {
       // retrieve the full list of items

@@ -112,10 +112,6 @@ export default Vue.extend({
     this.$server.$on('players changed', this.getAvailablePlayers)
     this.getAvailablePlayers()
   },
-  beforeDestroy () {
-    this.$server.$off('showPlayersMenu')
-    this.$server.$off('players changed')
-  },
   methods: {
     show () {
       this.visible = true

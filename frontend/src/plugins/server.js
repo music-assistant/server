@@ -34,13 +34,6 @@ const server = new Vue({
       }
       this._address = serverAddress
       let wsAddress = serverAddress.replace('http', 'ws') + 'ws'
-      // retrieve all players
-      let players = await this.getData('players')
-      for (let player of players) {
-        Vue.set(this.players, player.player_id, player)
-      }
-      this._selectActivePlayer()
-      this.$emit('players changed')
       this._ws = new WebSocket(wsAddress)
       this._ws.onopen = this._onWsConnect
       this._ws.onmessage = this._onWsMessage
@@ -64,17 +57,18 @@ const server = new Vue({
     getImageUrl (mediaItem, imageType = 'image', size = 0) {
       // format the image url
       if (!mediaItem || !mediaItem.media_type) return ''
-      if (mediaItem.media_type in ['playlists', 'radios'] && imageType !== 'image') {
-        return ''
-      }
-      if (mediaItem.provider === 'database') {
-        return `${this._address}api/${mediaItem.media_type}/${mediaItem.item_id}/image?type=${imageType}&provider=${mediaItem.provider}&size=${size}`
-      } else if (mediaItem.metadata && mediaItem.metadata['image']) {
-        return mediaItem.metadata['image']
-      } else if (mediaItem.album && mediaItem.album.metadata && mediaItem.album.metadata['image']) {
-        return mediaItem.album.metadata['image']
-      } else if (mediaItem.artist && mediaItem.artist.metadata && mediaItem.artist.metadata['image']) {
-        return mediaItem.artist.metadata['image']
+      if (mediaItem.media_type === 4 && imageType !== 'image') return ''
+      if (mediaItem.media_type === 5 && imageType !== 'image') return ''
+      if (mediaItem.provider === 'database' && imageType === 'image') {
+        return `${this._address}api/${mediaItem.media_type}/${mediaItem.item_id}/thumb?provider=${mediaItem.provider}&size=${size}`
+      } else if (mediaItem.metadata && mediaItem.metadata[imageType]) {
+        return mediaItem.metadata[imageType]
+      } else if (mediaItem.album && mediaItem.album.metadata && mediaItem.album.metadata[imageType]) {
+        return mediaItem.album.metadata[imageType]
+      } else if (mediaItem.artist && mediaItem.artist.metadata && mediaItem.artist.metadata[imageType]) {
+        return mediaItem.artist.metadata[imageType]
+      } else if (mediaItem.album && mediaItem.album.artist && mediaItem.album.artist.metadata && mediaItem.album.artist.metadata[imageType]) {
+        return mediaItem.artist.metadata[imageType]
       } else return ''
     },
 
@@ -147,21 +141,27 @@ const server = new Vue({
     },
 
     switchPlayer (newPlayerId) {
-      this.activePlayerId = newPlayerId
-      localStorage.setItem('activePlayerId', newPlayerId)
-      this.$emit('new player selected', newPlayerId)
+      if (newPlayerId !== this.activePlayerId) {
+        this.activePlayerId = newPlayerId
+        localStorage.setItem('activePlayerId', newPlayerId)
+        this.$emit('new player selected', newPlayerId)
+      }
     },
 
-    _onWsConnect () {
+    async _onWsConnect () {
       // Websockets connection established
       Vue.$log.info('Connected to server ' + this._address)
       this.connected = true
-      // request all players
-      let data = JSON.stringify({ message: 'players', message_details: null })
-      this._ws.send(data)
+      // retrieve all players once through api
+      let players = await this.getData('players')
+      for (let player of players) {
+        Vue.set(this.players, player.player_id, player)
+      }
+      this._selectActivePlayer()
+      this.$emit('players changed')
     },
 
-    _onWsMessage (e) {
+    async _onWsMessage (e) {
       // Message retrieved on the websocket
       var msg = JSON.parse(e.data)
       if (msg.message === 'player changed') {

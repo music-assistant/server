@@ -27,4 +27,5 @@ EVENT_PLAYBACK_STOPPED = "playback stopped"
 EVENT_HASS_ENTITY_CHANGED = "hass entity changed"
 EVENT_MUSIC_SYNC_STATUS = "music sync status"
 EVENT_QUEUE_UPDATED = "queue updated"
+EVENT_QUEUE_ITEMS_UPDATED = "queue items updated"
 

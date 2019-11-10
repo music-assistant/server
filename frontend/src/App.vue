@@ -16,7 +16,8 @@
 
 <style>
   .body {
-    background-color: black
+    background-color: black;
+    overscroll-behavior-x: none;
   }
 </style>
 

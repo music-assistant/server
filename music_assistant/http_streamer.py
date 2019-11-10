@@ -176,6 +176,9 @@ class HTTPStreamer():
                 cur_chunk += 1
 
                 ### HANDLE FIRST PART OF TRACK
+                if cur_chunk == 1 and is_last_chunk:
+                    LOGGER.warning("Stream error, skip track %s", queue_track.item_id)
+                    break
                 if cur_chunk <= 2 and not last_fadeout_data:
                     # no fadeout_part available so just pass it to the output directly
                     sox_proc.stdin.write(chunk)
@@ -196,10 +199,8 @@ class HTTPStreamer():
                         stdin=subprocess.PIPE).communicate(prev_chunk + chunk)
                     if len(first_part) < fade_bytes:
                         # part is too short after the strip action?!
-                        # so we just cut off at the fade position
+                        # so we just use the full first part
                         first_part = prev_chunk + chunk
-                        if len(first_part) >= fade_bytes:
-                            first_part = first_part[fade_bytes:]
                     fade_in_part = first_part[:fade_bytes]
                     remaining_bytes = first_part[fade_bytes:]
                     del first_part
@@ -230,10 +231,8 @@ class HTTPStreamer():
                         stdin=subprocess.PIPE).communicate(prev_chunk + chunk)
                     if len(last_part) < fade_bytes:
                         # part is too short after the strip action
-                        # so we just cut off at the fade position
+                        # so we just use the entire original data
                         last_part = prev_chunk + chunk
-                        if len(last_part) >= fade_bytes:
-                            last_part = last_part[:fade_bytes]
                     if not player.queue.crossfade_enabled:
                         # crossfading is not enabled so just pass the (stripped) audio data
                         sox_proc.stdin.write(last_part)
@@ -303,7 +302,10 @@ class HTTPStreamer():
         # get stream details from provider
         # sort by quality and check track availability
         streamdetails = None
-        for prov_media in sorted(queue_item.provider_ids,
+        full_track = self.mass.run_task(
+                self.mass.music.track(queue_item.item_id, queue_item.provider, lazy=True),
+                wait_for_result=True)
+        for prov_media in sorted(full_track.provider_ids,
                                  key=operator.itemgetter('quality'),
                                  reverse=True):
             if not prov_media['provider'] in self.mass.music.providers:
@@ -322,7 +324,7 @@ class HTTPStreamer():
                 queue_item.streamdetails = streamdetails
                 break
         if not streamdetails:
-            LOGGER.warning(f"no stream details for {queue_item.name}")
+            LOGGER.warning("no stream details for %s", queue_item.name)
             yield (True, b'')
             return
         # get sox effects and resample options

@@ -479,15 +479,14 @@ class MusicManager():
                 await self.mass.db.remove_from_library(db_id, MediaType.Radio,
                                                        prov_id)
 
-    async def get_image_path(self,
+    async def get_image_thumb(self,
                              item_id,
                              media_type: MediaType,
                              provider,
-                             size=50,
-                             key='image'):
+                             size=50):
         ''' get path to (resized) thumb image for given media item '''
         cache_folder = os.path.join(self.mass.datapath, '.thumbs')
-        cache_id = f'{item_id}{media_type}{provider}{key}'
+        cache_id = f'{item_id}{media_type}{provider}'
         cache_id = base64.b64encode(cache_id.encode('utf-8')).decode('utf-8')
         cache_file_org = os.path.join(cache_folder, f'{cache_id}0.png')
         cache_file_sized = os.path.join(cache_folder, f'{cache_id}{size}.png')
@@ -502,18 +501,18 @@ class MusicManager():
             item = await self.item(item_id, media_type, provider)
         if not item:
             return ''
-        if item and item.metadata.get(key):
-            img_url = item.metadata[key]
-        elif media_type == MediaType.Track:
+        if item and item.metadata.get('image'):
+            img_url = item.metadata['image']
+        elif media_type == MediaType.Track and item.album:
             # try album image instead for tracks
-            return await self.get_image_path(item.album.item_id,
+            return await self.get_image_thumb(item.album.item_id,
                                              MediaType.Album,
-                                             item.album.provider, size, key)
-        elif media_type == MediaType.Album:
+                                             item.album.provider, size)
+        elif media_type == MediaType.Album and item.artist:
             # try artist image instead for albums
-            return await self.get_image_path(item.artist.item_id,
+            return await self.get_image_thumb(item.artist.item_id,
                                              MediaType.Artist,
-                                             item.artist.provider, size, key)
+                                             item.artist.provider, size)
         if not img_url:
             return None
         # fetch image and store in cache

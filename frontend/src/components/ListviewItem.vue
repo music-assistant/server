@@ -74,6 +74,7 @@
               ripple
               v-on="on"
               v-on:click="toggleLibrary(item)"
+              @click.prevent
               @click.stop
             >
               <v-icon height="20" v-if="item.in_library.length > 0"
@@ -161,7 +162,8 @@ export default Vue.extend({
   },
   data () {
     return {
-      touchMoving: false
+      touchMoving: false,
+      cancelled: false
     }
   },
   computed: {
@@ -175,6 +177,9 @@ export default Vue.extend({
     }
   },
   created () { },
+  beforeDestroy () {
+    this.cancelled = true
+  },
   mounted () { },
   methods: {
     itemClicked (mediaItem = null) {
@@ -196,11 +201,14 @@ export default Vue.extend({
     },
     menuClick () {
       // contextmenu button clicked
+      if (this.cancelled) return
       this.$server.$emit('showContextMenu', this.item)
     },
-    toggleLibrary (mediaItem) {
+    async toggleLibrary (mediaItem) {
       // library button clicked on item
-      this.$server.toggleLibrary(mediaItem)
+      this.cancelled = true
+      await this.$server.toggleLibrary(mediaItem)
+      this.cancelled = false
     }
   }
 })

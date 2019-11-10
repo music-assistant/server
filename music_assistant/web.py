@@ -229,75 +229,83 @@ class Web():
         item_id = request.match_info.get('item_id')
         provider = request.rel_url.query.get('provider')
         if (item_id is None or provider is None):
-            return web.Response(text='invalid item or provider', status=501)
+            return web.Response(text='invalid item_id or provider', status=501)
         result = await self.mass.music.radio(item_id, provider)
         return web.json_response(result, dumps=json_serializer)
 
-    @routes.get('/api/{media_type}/{media_id}/image')
+    @routes.get('/api/{media_type}/{media_id}/thumb')
     async def get_image(self, request):
-        """ get item image """
+        """ get (resized) thumb image """
         media_type_str = request.match_info.get('media_type')
         media_type = media_type_from_string(media_type_str)
         media_id = request.match_info.get('media_id')
-        # optional params
-        provider = request.rel_url.query.get('provider', 'database')
+        provider = request.rel_url.query.get('provider')
+        if (media_id is None or provider is None):
+            return web.Response(text='invalid media_id or provider', status=501)
         size = int(request.rel_url.query.get('size', 0))
-        type_key = request.rel_url.query.get('type', 'image')
-        img_file = await self.mass.music.get_image_path(
-                    media_id, media_type, provider, size, type_key)
+        img_file = await self.mass.music.get_image_thumb(
+                    media_id, media_type, provider, size)
         if not img_file or not os.path.isfile(img_file):
             return web.Response(status=404)
         headers = {'Cache-Control': 'max-age=86400, public', 'Pragma': 'public'}
         return web.FileResponse(img_file, headers=headers)
 
-    @routes.get('/api/artists/{artist_id}/toptracks')
+    @routes.get('/api/artists/{item_id}/toptracks')
     async def artist_toptracks(self, request):
         """ get top tracks for given artist """
-        artist_id = request.match_info.get('artist_id')
-        provider = request.rel_url.query.get('provider', 'database')
-        iterator = self.mass.music.artist_toptracks(artist_id, provider)
+        item_id = request.match_info.get('item_id')
+        provider = request.rel_url.query.get('provider')
+        if (item_id is None or provider is None):
+            return web.Response(text='invalid item_id or provider', status=501)
+        iterator = self.mass.music.artist_toptracks(item_id, provider)
         return await self.__stream_json(request, iterator)
 
-    @routes.get('/api/artists/{artist_id}/albums')
+    @routes.get('/api/artists/{item_id}/albums')
     async def artist_albums(self, request):
         """ get (all) albums for given artist """
-        artist_id = request.match_info.get('artist_id')
-        provider = request.rel_url.query.get('provider', 'database')
-        iterator = self.mass.music.artist_albums(artist_id, provider)
+        item_id = request.match_info.get('item_id')
+        provider = request.rel_url.query.get('provider')
+        if (item_id is None or provider is None):
+            return web.Response(text='invalid item_id or provider', status=501)
+        iterator = self.mass.music.artist_albums(item_id, provider)
         return await self.__stream_json(request, iterator)
 
-    @routes.get('/api/playlists/{playlist_id}/tracks')
+    @routes.get('/api/playlists/{item_id}/tracks')
     async def playlist_tracks(self, request):
         """ get playlist tracks from provider"""
-        playlist_id = request.match_info.get('playlist_id')
-        provider = request.rel_url.query.get('provider', 'database')
-        iterator = self.mass.music.playlist_tracks(playlist_id, provider)
+        item_id = request.match_info.get('item_id')
+        provider = request.rel_url.query.get('provider')
+        if (item_id is None or provider is None):
+            return web.Response(text='invalid item_id or provider', status=501)
+        iterator = self.mass.music.playlist_tracks(item_id, provider)
         return await self.__stream_json(request, iterator)
 
-    @routes.put('/api/playlists/{playlist_id}/tracks')
+    @routes.put('/api/playlists/{item_id}/tracks')
     async def add_playlist_tracks(self, request):
         """Add tracks to (editable) playlist."""
-        playlist_id = request.match_info.get('playlist_id')
+        item_id = request.match_info.get('item_id')
         body = await request.json()
         tracks = await self.__media_items_from_body(body)
-        result = await self.mass.music.add_playlist_tracks(playlist_id, tracks)
+        result = await self.mass.music.add_playlist_tracks(item_id, tracks)
         return web.json_response(result, dumps=json_serializer)
 
-    @routes.delete('/api/playlists/{playlist_id}/tracks')
+    @routes.delete('/api/playlists/{item_id}/tracks')
     async def remove_playlist_tracks(self, request):
         """Remove tracks from (editable) playlist."""
-        playlist_id = request.match_info.get('playlist_id')
+        item_id = request.match_info.get('item_id')
         body = await request.json()
         tracks = await self.__media_items_from_body(body)
-        result = await self.mass.music.remove_playlist_tracks(playlist_id, tracks)
+        result = await self.mass.music.remove_playlist_tracks(item_id, tracks)
         return web.json_response(result, dumps=json_serializer)
 
-    @routes.get('/api/albums/{album_id}/tracks')
+    @routes.get('/api/albums/{item_id}/tracks')
     async def album_tracks(self, request):
         """ get album tracks from provider"""
-        album_id = request.match_info.get('album_id')
-        provider = request.rel_url.query.get('provider', 'database')
-        iterator = self.mass.music.album_tracks(album_id, provider)
+        item_id = request.match_info.get('item_id')
+        provider = request.rel_url.query.get('provider')
+        if (item_id is None or provider is None):
+            return web.Response(text='invalid item_id or provider', status=501)
+        iterator = self.mass.music.album_tracks(item_id, provider)
         return await self.__stream_json(request, iterator)
 
     @routes.get('/api/search')
@@ -361,7 +369,7 @@ class Web():
         result = await self.mass.players.play_media(player_id, media_items, queue_opt)
         return web.json_response(result, dumps=json_serializer)
     
-    @routes.get('/api/players/{player_id}/queue/{queue_item}')
+    @routes.get('/api/players/{player_id}/queue/items/{queue_item}')
     async def player_queue_item(self, request):
         """ return item (by index or queue item id) from the player's queue """
         player_id = request.match_info.get('player_id')
@@ -374,8 +382,8 @@ class Web():
             queue_item = await player.queue.by_item_id(item_id)
         return web.json_response(queue_item, dumps=json_serializer)
     
-    @routes.get('/api/players/{player_id}/queue')
-    async def player_queue(self, request):
+    @routes.get('/api/players/{player_id}/queue/items')
+    async def player_queue_items(self, request):
         """ return the items in the player's queue """
         player_id = request.match_info.get('player_id')
         player = await self.mass.players.get_player(player_id)
@@ -383,6 +391,36 @@ class Web():
             for item in player.queue.items:
                 yield item
         return await self.__stream_json(request, queue_tracks_iter())
+    
+    @routes.get('/api/players/{player_id}/queue')
+    async def player_queue(self, request):
+        """ return the player queue details """
+        player_id = request.match_info.get('player_id')
+        player = await self.mass.players.get_player(player_id)
+        return web.json_response(player.queue, dumps=json_serializer)
+
+    @routes.put('/api/players/{player_id}/queue/{cmd}')
+    async def player_queue_cmd(self, request):
+        """ change the player queue details """
+        player_id = request.match_info.get('player_id')
+        player = await self.mass.players.get_player(player_id)
+        cmd = request.match_info.get('cmd')
+        cmd_args = await request.json()
+        if cmd == 'repeat_enabled':
+            player.queue.repeat_enabled = cmd_args
+        elif cmd == 'shuffle_enabled':
+            player.queue.shuffle_enabled = cmd_args
+        elif cmd == 'clear':
+            await player.queue.clear()
+        elif cmd == 'index':
+            await player.queue.play_index(cmd_args)
+        elif cmd == 'move_up':
+            await player.queue.move_item(cmd_args, -1)
+        elif cmd == 'move_down':
+            await player.queue.move_item(cmd_args, 1)
+        elif cmd == 'next':
+            await player.queue.move_item(cmd_args, 0)
+        return web.json_response(player.queue, dumps=json_serializer)
 
     @routes.get('/api/players/{player_id}')
     async def player(self, request):
