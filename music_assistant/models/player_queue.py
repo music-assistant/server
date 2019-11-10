@@ -53,6 +53,7 @@ class PlayerQueue():
         self._cur_item_time = 0
         self._last_item_time = 0
         self._last_queue_startindex = 0
+        self._next_queue_startindex = 0
         self._last_player_state = PlayerState.Stopped
         self._save_busy_ = False
         self._last_track = None
@@ -264,7 +265,7 @@ class PlayerQueue():
         # move the item in the list
         items.insert(new_index, items.pop(item_index))
         await self.update(items)
-        if new_index == 0:
+        if pos_shift == 0:
             await self.play_index(new_index)
     
     async def load(self, queue_items:List[QueueItem]):
@@ -387,7 +388,7 @@ class PlayerQueue():
 
     async def start_queue_stream(self):
         ''' called by the queue streamer when it starts playing the queue stream '''
-        return await self.get_item(self._last_queue_startindex)
+        return await self.get_item(self._next_queue_startindex)
 
     def to_dict(self):
         ''' instance attributes as dict so it can be serialized to json '''
@@ -425,6 +426,7 @@ class PlayerQueue():
                 else:
                     track_time = cur_time_queue - total_time
                     break
+            self._next_queue_startindex = queue_index + 1
         return queue_index, track_time
         
     async def __process_queue_update(self, new_index, track_time):
