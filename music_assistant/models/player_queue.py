@@ -447,7 +447,9 @@ class PlayerQueue():
             if (self._player.cur_time == 0 and 
                 self._player.state in [PlayerState.Stopped, PlayerState.Off]):
                 # player stopped playing
-                await self.mass.signal_event(EVENT_PLAYBACK_STOPPED, self._last_track.streamdetails)
+                if self._last_track:
+                    await self.mass.signal_event(
+                        EVENT_PLAYBACK_STOPPED, self._last_track.streamdetails)
         # update vars
         if track_time > 2:
             # account for track changing state so keep this a few seconds behind

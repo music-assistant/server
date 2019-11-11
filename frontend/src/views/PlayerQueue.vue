@@ -1,6 +1,6 @@
 <template>
   <section>
-    <v-tabs v-model="activeTab" grow>
+    <v-tabs v-model="activeTab" grow show-arrows>
       <v-tab>
         {{ $t("queue_next_tracks") + " (" + next_items.length + ")" }}</v-tab
       >
@@ -55,9 +55,12 @@
       </v-tab-item>
       <v-menu offset-y>
         <template v-slot:activator="{ on }">
-          <v-btn text v-on="on" class="align-self-center mr-4">
+          <v-btn text v-on="on" class="align-self-center mr-4" v-if="!$store.isMobile">
             {{ $t("queue_options") }}
             <v-icon right>arrow_drop_down</v-icon>
+          </v-btn>
+          <v-btn icon v-on="on" class="align-self-center mr-4" v-if="$store.isMobile">
+            <v-icon>settings</v-icon>
           </v-btn>
         </template>
 
@@ -117,7 +120,6 @@
     </v-tabs>
     <v-dialog
       v-model="showPlayMenu"
-      @input="$emit('input', $event)"
       max-width="500px"
     >
       <v-card>

@@ -54,6 +54,66 @@
             </span>
           </v-list-item-subtitle>
         </v-list-item-content>
+         <!-- streaming quality details -->
+        <v-list-item-action v-if="streamDetails">
+          <v-menu
+            :close-on-content-click="false"
+            :nudge-width="250"
+            offset-x
+            top
+            @click.native.prevent
+          >
+            <template v-slot:activator="{ on }">
+              <v-btn icon v-on="on">
+              <v-img contain v-if="streamDetails.quality > 6" :src="require('../assets/hires.png')" height="30" />
+              <v-img contain v-if="streamDetails.quality <= 6" :src="streamDetails.content_type ? require('../assets/' + streamDetails.content_type + '.png') : ''" height="30" style='filter: invert(100%);' />
+              </v-btn>
+            </template>
+            <v-list v-if="streamDetails">
+              <v-subheader class="title">{{ $t('stream_details') }}</v-subheader>
+                <v-list-item tile dense>
+                  <v-list-item-icon>
+                    <v-img max-width="50" contain :src="streamDetails.provider ? require('../assets/' + streamDetails.provider + '.png') : ''" />
+                  </v-list-item-icon>
+                  <v-list-item-content>
+                    <v-list-item-title>{{ streamDetails.provider }}</v-list-item-title>
+                  </v-list-item-content>
+                </v-list-item>
+                <v-divider></v-divider>
+                <v-list-item tile dense>
+                  <v-list-item-icon>
+                    <v-img max-width="50" contain :src="streamDetails.content_type ? require('../assets/' + streamDetails.content_type + '.png') : ''" style='filter: invert(100%);' />
+                  </v-list-item-icon>
+                  <v-list-item-content>
+                    <v-list-item-title>{{ streamDetails.sample_rate/1000 }} kHz / {{ streamDetails.bit_depth }} bits </v-list-item-title>
+                  </v-list-item-content>
+                </v-list-item>
+                <v-divider></v-divider>
+                <div v-if="playerQueueDetails.crossfade_enabled">
+                  <v-list-item tile dense>
+                  <v-list-item-icon>
+                    <v-img max-width="50" contain :src="require('../assets/crossfade.png')"/>
+                  </v-list-item-icon>
+                  <v-list-item-content>
+                    <v-list-item-title>{{ $t('crossfade_enabled') }}</v-list-item-title>
+                  </v-list-item-content>
+                </v-list-item>
+                <v-divider></v-divider>
+                </div>
+                <div v-if="streamVolumeLevelAdjustment">
+                  <v-list-item tile dense>
+                  <v-list-item-icon>
+                    <v-icon color="black" style="margin-left:13px">volume_up</v-icon>
+                  </v-list-item-icon>
+                  <v-list-item-content>
+                    <v-list-item-title style="margin-left:12px">{{ streamVolumeLevelAdjustment }}</v-list-item-title>
+                  </v-list-item-content>
+                </v-list-item>
+                <v-divider></v-divider>
+                </div>
+            </v-list>
+          </v-menu>
+        </v-list-item-action>
       </v-list-item>
 
       <!-- progress bar -->
@@ -242,6 +302,19 @@ export default Vue.extend({
     },
     progressBarWidth () {
       return window.innerWidth - 160
+    },
+    streamDetails () {
+      if (!this.playerQueueDetails.cur_item || !this.playerQueueDetails.cur_item || !this.playerQueueDetails.cur_item.streamdetails.provider || !this.playerQueueDetails.cur_item.streamdetails.content_type) return {}
+      return this.playerQueueDetails.cur_item.streamdetails
+    },
+    streamVolumeLevelAdjustment () {
+      if (!this.streamDetails || !this.streamDetails.sox_options) return ''
+      if (this.streamDetails.sox_options.includes('vol ')) {
+        var re = /(.*vol\s+)(.*)(\s+dB.*)/
+        var volLevel = this.streamDetails.sox_options.replace(re, '$2')
+        return volLevel + ' dB'
+      }
+      return ''
     }
   },
   created () {

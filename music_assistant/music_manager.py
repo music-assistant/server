@@ -160,34 +160,40 @@ class MusicManager():
     async def artist_toptracks(self, artist_id,
                                provider='database') -> List[Track]:
         ''' get top tracks for given artist '''
+        track_names = []
         artist = await self.artist(artist_id, provider)
         # always append database tracks
         async for item in self.mass.db.artist_tracks(artist.item_id):
-            yield item
-        # for prov_mapping in artist.provider_ids:
-        #     prov_id = prov_mapping['provider']
-        #     prov_item_id = prov_mapping['item_id']
-        #     prov_obj = self.providers[prov_id]
-        #     items += [item async for item in prov_obj.artist_toptracks(prov_item_id)]
-        # items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
-        # #items.sort(key=lambda x: x.name, reverse=False)
-        # return items
+            if (item.name + item.version) not in track_names:
+                yield item
+                track_names.append(item.name+item.version)
+        for prov_mapping in artist.provider_ids:
+            prov_id = prov_mapping['provider']
+            prov_item_id = prov_mapping['item_id']
+            prov_obj = self.providers[prov_id]
+            async for item in prov_obj.artist_toptracks(prov_item_id):
+                if (item.name + item.version) not in track_names:
+                    yield item
+                    track_names.append(item.name+item.version)
 
     async def artist_albums(self, artist_id,
                             provider='database') -> List[Album]:
         ''' get (all) albums for given artist '''
+        album_names = []
         artist = await self.artist(artist_id, provider)
         # always append database tracks
         async for item in self.mass.db.artist_albums(artist.item_id):
-            yield item
-        # for prov_mapping in artist.provider_ids:
-        #     prov_id = prov_mapping['provider']
-        #     prov_item_id = prov_mapping['item_id']
-        #     prov_obj = self.providers[prov_id]
-        #     items += [item async for item in  prov_obj.artist_albums(prov_item_id)]
-        # items = list(toolz.unique(items, key=operator.attrgetter('item_id')))
-        #items.sort(key=lambda x: x.name, reverse=False)
-        #return items
+            if (item.name + item.version) not in album_names:
+                yield item
+                album_names.append(item.name+item.version)
+        for prov_mapping in artist.provider_ids:
+            prov_id = prov_mapping['provider']
+            prov_item_id = prov_mapping['item_id']
+            prov_obj = self.providers[prov_id]
+            async for item in  prov_obj.artist_albums(prov_item_id):
+                if (item.name + item.version) not in album_names:
+                    yield item
+                    album_names.append(item.name+item.version)
 
     async def album_tracks(self, album_id, provider='database') -> List[Track]:
         ''' get the album tracks for given album '''

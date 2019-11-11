@@ -319,6 +319,8 @@ class QobuzProvider(MusicProvider):
         elif msg == EVENT_PLAYBACK_STOPPED and msg_details[
                 "provider"] == self.prov_id:
             # report streaming ended to qobuz
+            if msg_details.get('msg_details',0) < 6:
+                return
             user_id = self.__user_auth_info["user"]["id"]
             params = {
                 'user_id': user_id,

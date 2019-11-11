@@ -112,9 +112,6 @@ export default {
     }
     this.retrieveInfos()
   },
-  beforeDestroy () {
-    this.$server.$off('refresh_listing')
-  },
   methods: {
     retrieveInfos () {
       // retrieve the item details

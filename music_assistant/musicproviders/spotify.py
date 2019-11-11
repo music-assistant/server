@@ -351,6 +351,8 @@ class SpotifyProvider(MusicProvider):
                 track.external_ids.append({key: value})
         if 'album' in track_obj:
             track.album = await self.__parse_album(track_obj['album'])
+            if not track.album:
+                track.album = await self.get_album(track_obj['album']['id'])
         if track_obj.get('copyright'):
             track.metadata["copyright"] = track_obj['copyright']
         if track_obj.get('explicit'):

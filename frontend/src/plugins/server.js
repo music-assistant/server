@@ -68,7 +68,9 @@ const server = new Vue({
       } else if (mediaItem.artist && mediaItem.artist.metadata && mediaItem.artist.metadata[imageType]) {
         return mediaItem.artist.metadata[imageType]
       } else if (mediaItem.album && mediaItem.album.artist && mediaItem.album.artist.metadata && mediaItem.album.artist.metadata[imageType]) {
-        return mediaItem.artist.metadata[imageType]
+        return mediaItem.album.artist.metadata[imageType]
+      } else if (mediaItem.artists && mediaItem.artists[0].metadata && mediaItem.artists[0].metadata[imageType]) {
+        return mediaItem.artists[0].metadata[imageType]
       } else return ''
     },
 

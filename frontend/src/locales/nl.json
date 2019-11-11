@@ -88,7 +88,7 @@
   "queue_clear"     : "Wachtrij leegmaken",
   "show_info"       : "Bekijk informatie",
   "queue_next_tracks": "Aankomend",
-  "queue_previous_tracks": "Reeds afgespeeld",
+  "queue_previous_tracks": "Afgespeeld",
   "queue_move_up"   : "Verplaats omhoog",
   "queue_move_down" : "Verplaats omlaag",
   "queue_options"   : "Wachtrij opties",
@@ -97,6 +97,8 @@
   "enable_shuffle"   : "Shuffle inschakelen",
   "disable_shuffle"  : "Shuffle uitschakelen",
   "read_more": "meer lezen",
+  "stream_details": "Streamdetails",
+  "crossfade_enabled": "Crossfade ingeschakeld",
   "state"           : {
     "playing" : "afspelen",
     "stopped" : "gestopt",

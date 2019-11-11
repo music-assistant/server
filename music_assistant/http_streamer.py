@@ -201,6 +201,7 @@ class HTTPStreamer():
                         # part is too short after the strip action?!
                         # so we just use the full first part
                         first_part = prev_chunk + chunk
+                        LOGGER.warning("Not enough data after strip action: %s", len(first_part))
                     fade_in_part = first_part[:fade_bytes]
                     remaining_bytes = first_part[fade_bytes:]
                     del first_part
@@ -233,6 +234,7 @@ class HTTPStreamer():
                         # part is too short after the strip action
                         # so we just use the entire original data
                         last_part = prev_chunk + chunk
+                        LOGGER.warning("Not enough data for last_part after strip action: %s", len(last_part))
                     if not player.queue.crossfade_enabled:
                         # crossfading is not enabled so just pass the (stripped) audio data
                         sox_proc.stdin.write(last_part)

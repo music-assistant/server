@@ -2,7 +2,7 @@
   <div>
     <v-list-item
       ripple
-      @click.left="itemClicked(item)"
+      @click.left="onclickHandler ? onclickHandler(item) : itemClicked(item)"
       @contextmenu="menuClick"
       @contextmenu.prevent
       v-longpress="menuClick"
@@ -63,7 +63,12 @@
       </v-list-item-action>
 
       <v-list-item-action v-if="isHiRes">
-        <img :src="require('../assets/hires.png')" height="20" />
+        <v-tooltip bottom>
+          <template v-slot:activator="{ on }">
+          <img :src="require('../assets/hires.png')" height="20" v-on="on" />
+          </template>
+          <span>{{ isHiRes }}</span>
+        </v-tooltip>
       </v-list-item-action>
 
       <v-list-item-action v-if="!hidelibrary">
@@ -170,10 +175,20 @@ export default Vue.extend({
     isHiRes () {
       for (var prov of this.item.provider_ids) {
         if (prov.quality > 6) {
-          return true
+          if (prov.details) {
+            return prov.details
+          } else if (prov.quality === 7) {
+            return '44.1/48khz 24 bits'
+          } else if (prov.quality === 8) {
+            return '88.2/96khz 24 bits'
+          } else if (prov.quality === 9) {
+            return '176/192khz 24 bits'
+          } else {
+            return '+192kHz 24 bits'
+          }
         }
       }
-      return false
+      return ''
     }
   },
   created () { },
@@ -184,7 +199,6 @@ export default Vue.extend({
   methods: {
     itemClicked (mediaItem = null) {
       // mediaItem in the list is clicked
-      if (this.onclickHandler) return this.onclickHandler(mediaItem)
       let url = ''
       if (mediaItem.media_type === 1) {
         url = '/artists/' + mediaItem.item_id

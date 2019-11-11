@@ -259,6 +259,9 @@ export default Vue.extend({
       }
       return desc
     },
+    getQualityInfo () {
+
+    },
     getUniqueProviders () {
       var keys = []
       var qualities = []
@@ -274,17 +277,6 @@ export default Vue.extend({
         }
       }
       return qualities
-    },
-    getFileFormatLogo (provider) {
-      if (provider.quality === 0) return 'mp3.png'
-      else if (provider.quality === 1) return 'vorbis.png'
-      else if (provider.quality === 2) return 'aac.png'
-      else if (provider.quality > 2) return 'flac.png'
-    },
-    getFileFormatDesc (provider) {
-      var desc = ''
-      if (provider.details) desc += ' ' + provider.details
-      return desc
     }
   }
 })
