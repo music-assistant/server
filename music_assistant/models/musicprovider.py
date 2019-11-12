@@ -4,7 +4,7 @@
 import asyncio
 from typing import List
 from ..utils import LOGGER, compare_strings
-from ..cache import use_cache, cached_iterator
+from ..cache import use_cache, cached_iterator, cached
 from ..constants import CONF_ENABLED
 from .media_types import Album, Artist, Track, Playlist, MediaType, Radio
 
@@ -42,7 +42,8 @@ class MusicProvider():
                                                      MediaType.Artist)
         if not item_id:
             # artist not yet in local database so fetch details
-            artist_details = await self.get_artist(prov_item_id)
+            cache_key = f'{self.prov_id}.get_artist.{prov_item_id}'
+            artist_details = await cached(self.cache, cache_key, self.get_artist, prov_item_id )
             if not artist_details:
                 raise Exception('artist not found: %s' % prov_item_id)
             if lazy:
@@ -165,7 +166,8 @@ class MusicProvider():
         if not item_id:
             # album not yet in local database so fetch details
             if not album_details:
-                album_details = await self.get_album(prov_item_id)
+                cache_key = f'{self.prov_id}.get_album.{prov_item_id}'
+                album_details = await cached(self.cache, cache_key, self.get_album, prov_item_id)
             if not album_details:
                 raise Exception('album not found: %s' % prov_item_id)
             if lazy:
@@ -173,6 +175,7 @@ class MusicProvider():
                 album_details.is_lazy = True
                 return album_details
             item_id = await self.add_album(album_details)
+            LOGGER.info("item_id after add_album: %s", item_id)
         return await self.mass.db.album(item_id)
 
     async def add_album(self, album_details) -> int:
@@ -203,7 +206,8 @@ class MusicProvider():
         if not item_id:
             # track not yet in local database so fetch details
             if not track_details:
-                track_details = await self.get_track(prov_item_id)
+                cache_key = f'{self.prov_id}.get_track.{prov_item_id}'
+                track_details = await cached(self.cache, cache_key, self.get_track, prov_item_id)
             if not track_details:
                 raise Exception('track not found: %s' % prov_item_id)
             if lazy:
@@ -224,6 +228,7 @@ class MusicProvider():
             if db_track_artist:
                 track_artists.append(db_track_artist)
         track_details.artists = track_artists
+        # fetch album details
         if not prov_album_id:
             prov_album_id = track_details.album.item_id
         track_details.album = await self.album(prov_album_id, lazy=False)

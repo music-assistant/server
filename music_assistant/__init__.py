@@ -65,6 +65,8 @@ class MusicAssistant():
         except asyncio.CancelledError:
             LOGGER.info("Application shutdown")
             await self.signal_event("shutdown")
+            await self.db.close()
+            await self.cache.close()
 
     def handle_exception(self, loop, context):
         ''' global exception handler '''
@@ -78,10 +80,7 @@ class MusicAssistant():
         listeners = list(self.event_listeners.values())
         for callback, eventfilter in listeners:
             if not eventfilter or eventfilter in msg:
-                if msg == 'shutdown':
-                    await callback(msg, msg_details)
-                else:
-                    self.event_loop.create_task(callback(msg, msg_details))
+                await callback(msg, msg_details)
 
     async def add_event_listener(self, cb, eventfilter=None):
         ''' add callback to our event listeners '''

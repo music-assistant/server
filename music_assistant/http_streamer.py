@@ -4,6 +4,7 @@
 import asyncio
 import os
 import operator
+import concurrent
 from aiohttp import web
 import threading
 import urllib
@@ -129,14 +130,16 @@ class HTTPStreamer():
                     self.mass.run_task(buffer.write(chunk),
                                        wait_for_result=True,
                                        ignore_exception=(BrokenPipeError,
-                                                         ConnectionResetError))
+                                                         ConnectionResetError,
+                                                         concurrent.futures._base.CancelledError))
                 del chunk
             # indicate EOF if no more data
             if not cancelled.is_set():
                 self.mass.run_task(buffer.write_eof(),
                                    wait_for_result=True,
                                    ignore_exception=(BrokenPipeError,
-                                                     ConnectionResetError))
+                                                     ConnectionResetError,
+                                                     concurrent.futures._base.CancelledError))
 
         # start fill buffer task in background
         fill_buffer_thread = threading.Thread(target=fill_buffer)
@@ -201,7 +204,6 @@ class HTTPStreamer():
                         # part is too short after the strip action?!
                         # so we just use the full first part
                         first_part = prev_chunk + chunk
-                        LOGGER.warning("Not enough data after strip action: %s", len(first_part))
                     fade_in_part = first_part[:fade_bytes]
                     remaining_bytes = first_part[fade_bytes:]
                     del first_part
@@ -234,8 +236,9 @@ class HTTPStreamer():
                         # part is too short after the strip action
                         # so we just use the entire original data
                         last_part = prev_chunk + chunk
-                        LOGGER.warning("Not enough data for last_part after strip action: %s", len(last_part))
-                    if not player.queue.crossfade_enabled:
+                        if len(last_part) < fade_bytes:
+                            LOGGER.warning("Not enough data for crossfade: %s", len(last_part))
+                    if not player.queue.crossfade_enabled or len(last_part) < fade_bytes:
                         # crossfading is not enabled so just pass the (stripped) audio data
                         sox_proc.stdin.write(last_part)
                         bytes_written += len(last_part)
@@ -301,17 +304,18 @@ class HTTPStreamer():
                            chunksize=128000,
                            resample=None):
         ''' get audio stream from provider and apply additional effects/processing where/if needed'''
-        # get stream details from provider
-        # sort by quality and check track availability
         streamdetails = None
+        # always request the full db track as there might be other qualities available
         full_track = self.mass.run_task(
                 self.mass.music.track(queue_item.item_id, queue_item.provider, lazy=True),
                 wait_for_result=True)
+        # sort by quality and check track availability
         for prov_media in sorted(full_track.provider_ids,
                                  key=operator.itemgetter('quality'),
                                  reverse=True):
             if not prov_media['provider'] in self.mass.music.providers:
                 continue
+            # get stream details from provider
             streamdetails = self.mass.run_task(self.mass.music.providers[
                 prov_media['provider']].get_stream_details(
                     prov_media['item_id']), wait_for_result=True)
@@ -336,14 +340,15 @@ class HTTPStreamer():
             outputfmt = 'raw -b 32 -c 2 -e signed-integer'
             sox_options += ' rate -v %s' % resample
         streamdetails['sox_options'] = sox_options
-        # determine how to proceed based on input file ype
+        # determine how to proceed based on input file type
         if streamdetails["content_type"] == 'aac':
             # support for AAC created with ffmpeg in between
             args = 'ffmpeg -v quiet -i "%s" -f flac - | sox -t flac - -t %s - %s' % (
                 streamdetails["path"], outputfmt, sox_options)
             process = subprocess.Popen(args,
                                        shell=True,
-                                       stdout=subprocess.PIPE)
+                                       stdout=subprocess.PIPE,
+                                       bufsize=chunksize)
         elif streamdetails['type'] in ['url', 'file']:
             args = 'sox -t %s "%s" -t %s - %s' % (
                 streamdetails["content_type"], streamdetails["path"],
@@ -351,16 +356,18 @@ class HTTPStreamer():
             args = shlex.split(args)
             process = subprocess.Popen(args,
                                        shell=False,
-                                       stdout=subprocess.PIPE)
+                                       stdout=subprocess.PIPE,
+                                       bufsize=chunksize)
         elif streamdetails['type'] == 'executable':
             args = '%s | sox -t %s - -t %s - %s' % (
                 streamdetails["path"], streamdetails["content_type"],
                 outputfmt, sox_options)
             process = subprocess.Popen(args,
                                        shell=True,
-                                       stdout=subprocess.PIPE)
+                                       stdout=subprocess.PIPE,
+                                       bufsize=chunksize)
         else:
-            LOGGER.warning(f"no streaming options for {queue_item.name}")
+            LOGGER.warning("no streaming options for %s", queue_item.name)
             yield (True, b'')
             return
         # fire event that streaming has started for this track
@@ -368,8 +375,8 @@ class HTTPStreamer():
             self.mass.signal_event(EVENT_STREAM_STARTED, streamdetails))
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
-        bytes_sent = 0
-        while process.poll() == None:
+        prev_chunk = b''
+        while True:
             if cancelled.is_set():
                 # http session ended
                 # send terminate and pick up left over bytes
@@ -378,12 +385,12 @@ class HTTPStreamer():
             chunk = process.stdout.read(chunksize)
             if len(chunk) < chunksize:
                 # last chunk
-                bytes_sent += len(chunk)
-                yield (True, chunk)
+                yield (True, prev_chunk + chunk)
                 break
             else:
-                bytes_sent += len(chunk)
-                yield (False, chunk)
+                if prev_chunk:
+                    yield (False, prev_chunk)
+                prev_chunk = chunk
         # fire event that streaming has ended
         self.mass.run_task(
             self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails))
@@ -452,7 +459,8 @@ class HTTPStreamer():
                          (item_key, loudness))
         self.analyze_jobs.pop(item_key, None)
 
-    def __crossfade_pcm_parts(self, fade_in_part, fade_out_part, pcm_args,
+    @staticmethod
+    def __crossfade_pcm_parts(fade_in_part, fade_out_part, pcm_args,
                               fade_length):
         ''' crossfade two chunks of audio using sox '''
         # create fade-in part

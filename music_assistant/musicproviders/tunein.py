@@ -10,7 +10,6 @@ from asyncio_throttle import Throttler
 import json
 import aiohttp
 
-from ..cache import use_cache
 from ..utils import run_periodic, LOGGER
 from ..models import MusicProvider, MediaType, TrackQuality, Radio
 from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, CONF_TYPE_PASSWORD
@@ -31,10 +30,9 @@ class TuneInProvider(MusicProvider):
 
     def __init__(self, mass, conf):
         ''' Support for streaming radio provider TuneIn '''
+        super().__init__(mass)
         self.name = PROV_NAME
         self.prov_id = PROV_ID
-        self.mass = mass
-        self.cache = mass.cache
         if not conf[CONF_USERNAME] or not conf[CONF_PASSWORD]:
             raise Exception("Username and password must not be empty")
         self._username = conf[CONF_USERNAME]
@@ -60,7 +58,7 @@ class TuneInProvider(MusicProvider):
     async def get_radios(self):
         ''' get favorited/library radio stations '''
         params = {"c": "presets"}
-        result = await self.__get_data("Browse.ashx", params, ignore_cache=True)
+        result = await self.__get_data("Browse.ashx", params)
         if result and "body" in result:
             for item in result["body"]:
                 # TODO: expand folders
@@ -72,7 +70,7 @@ class TuneInProvider(MusicProvider):
         ''' get radio station details '''
         radio = None
         params = {"c": "composite", "detail": "listing", "id": radio_id}
-        result = await self.__get_data("Describe.ashx", params, ignore_cache=True)
+        result = await self.__get_data("Describe.ashx", params)
         if result and result.get("body") and result["body"][0].get("children"):
             item = result["body"][0]["children"][0]
             radio = await self.__parse_radio(item)
@@ -139,8 +137,7 @@ class TuneInProvider(MusicProvider):
                 }
         return {}
         
-    @use_cache(7)
-    async def __get_data(self, endpoint, params={}, ignore_cache=False, cache_checksum=None):
+    async def __get_data(self, endpoint, params={}):
         ''' get data from api'''
         url = 'https://opml.radiotime.com/%s' % endpoint
         params['render'] = 'json'

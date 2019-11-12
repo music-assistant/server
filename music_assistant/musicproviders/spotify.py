@@ -295,8 +295,6 @@ class SpotifyProvider(MusicProvider):
             album.artist = await self.__parse_artist(artist)
             if album.artist:
                 break
-        if not album.artist:
-            raise Exception("No album artist ! %s" % album_obj)
         if album_obj['album_type'] == 'single':
             album.albumtype = AlbumType.Single
         elif album_obj['album_type'] == 'compilation':
@@ -351,8 +349,6 @@ class SpotifyProvider(MusicProvider):
                 track.external_ids.append({key: value})
         if 'album' in track_obj:
             track.album = await self.__parse_album(track_obj['album'])
-            if not track.album:
-                track.album = await self.get_album(track_obj['album']['id'])
         if track_obj.get('copyright'):
             track.metadata["copyright"] = track_obj['copyright']
         if track_obj.get('explicit'):

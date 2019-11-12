@@ -390,8 +390,6 @@ class QobuzProvider(MusicProvider):
         album.name, album.version = parse_title_and_version(
             album_obj['title'], album_obj.get('version'))
         album.artist = await self.__parse_artist(album_obj['artist'])
-        if not album.artist:
-            raise Exception("No album artist ! %s" % album_obj)
         if album_obj.get('product_type', '') == 'single':
             album.albumtype = AlbumType.Single
         elif album_obj.get(
@@ -440,8 +438,6 @@ class QobuzProvider(MusicProvider):
         if track_obj.get(
                 'performer') and not 'Various ' in track_obj['performer']:
             artist = await self.__parse_artist(track_obj['performer'])
-            if not artist:
-                artist = self.get_artist(track_obj['performer']['id'])
             if artist:
                 track.artists.append(artist)
         if not track.artists:

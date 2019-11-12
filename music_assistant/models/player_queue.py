@@ -7,7 +7,6 @@ import operator
 import random
 import uuid
 import os
-import pickle
 from enum import Enum
 
 from ..utils import LOGGER, json, filename_from_string, serialize_values
@@ -55,18 +54,12 @@ class PlayerQueue():
         self._last_queue_startindex = 0
         self._next_queue_startindex = 0
         self._last_player_state = PlayerState.Stopped
-        self._save_busy_ = False
         self._last_track = None
-        self.mass.event_loop.create_task(
+        self.mass.run_task(
                 self.mass.add_event_listener(self.on_shutdown, "shutdown"))
         # load previous queue settings from disk
-        self.mass.event_loop.run_in_executor(None, self.__load_from_file)
+        self.mass.run_task(self.__restore_saved_state())
 
-    async def on_shutdown(self, msg, msg_details):
-        """Handle shutdown event, save queue state."""
-        self.__save_to_file()
-        LOGGER.info("queue state saved to file for player %s", self._player.player_id)
-        
     @property
     def shuffle_enabled(self):
         return self._shuffle_enabled
@@ -362,9 +355,8 @@ class PlayerQueue():
             try:
                 await self._player.cmd_queue_update(self._items)
             except NotImplementedError:
-                # not supported by player, use load queue instead
-                LOGGER.debug("cmd_queue_update not supported by player, fallback to cmd_queue_load ")
-                await self._player.cmd_queue_load(self._items)
+                # not supported by player, ignore
+                pass
         self.mass.event_loop.create_task(
             self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict()))
 
@@ -471,42 +463,28 @@ class PlayerQueue():
                 item_index = index
         return item_index
     
-    def __load_from_file(self):
-        ''' try to load the saved queue for this player from file '''
-        player_safe_str = filename_from_string(self._player.player_id)
-        settings_dir = os.path.join(self.mass.datapath, 'queue')
-        player_file = os.path.join(settings_dir, player_safe_str)
-        if os.path.isfile(player_file):
-            try:
-                with open(player_file, 'rb') as f:
-                    data = pickle.load(f)
-                    self._shuffle_enabled = data["shuffle_enabled"]
-                    self._repeat_enabled = data["repeat_enabled"]
-                    self._items = data["items"]
-                    self._cur_index = data["cur_item"]
-                    self._last_queue_startindex = data["last_index"]
-            except Exception as exc:
-                LOGGER.debug("Could not load queue from disk - %s" % str(exc))
+    async def __restore_saved_state(self):
+        ''' try to load the saved queue for this player from cache file '''
+        cache_str = 'queue_%s' % self._player.player_id
+        cache_data = await self.mass.cache.get(cache_str)
+        if cache_data:
+            self._shuffle_enabled = cache_data["shuffle_enabled"]
+            self._repeat_enabled = cache_data["repeat_enabled"]
+            self._items = cache_data["items"]
+            self._cur_index = cache_data["cur_item"]
+            self._next_queue_startindex = cache_data["next_queue_index"]
 
-    def __save_to_file(self):
+    async def on_shutdown(self, msg, msg_details):
+        """Handle shutdown event, save queue state."""
         ''' save current queue settings to file '''
-        if self._save_busy_:
-            return
-        self._save_busy_ = True
-        player_safe_str = filename_from_string(self._player.player_id)
-        settings_dir = os.path.join(self.mass.datapath, 'queue')
-        player_file = os.path.join(settings_dir, player_safe_str)
-        data = {
+        cache_str = 'queue_%s' % self._player.player_id
+        cache_data = {
             "shuffle_enabled": self._shuffle_enabled,
             "repeat_enabled": self._repeat_enabled,
             "items": self._items,
             "cur_item": self._cur_index,
-            "last_index": self._cur_index
+            "next_queue_index": self._next_queue_startindex
         }
-        if not os.path.isdir(settings_dir):
-            os.mkdir(settings_dir)
-        with open(player_file, 'wb') as f:
-            data = pickle.dump(data, f)
-        self._save_busy_ = False
-
-
+        await self.mass.cache.set(cache_str, cache_data)
+        LOGGER.info("queue state saved to file for player %s", self._player.player_id)
+        

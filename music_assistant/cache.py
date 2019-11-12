@@ -29,13 +29,12 @@ class Cache(object):
         """Async initialize of cache module."""
         self._db = await aiosqlite.connect(self._dbfile, timeout=30)
         self._db.row_factory = aiosqlite.Row
-        await self.mass.add_event_listener(self.on_shutdown, "shutdown")
         await self._db.execute("""CREATE TABLE IF NOT EXISTS simplecache(
             id TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)""")
         await self._db.commit()
         self.mass.event_loop.create_task(self.auto_cleanup())
 
-    async def on_shutdown(self, msg, msg_details):
+    async def close(self):
         """Handle shutdown event, close db connection."""
         await self._db.close()
         LOGGER.info("cache db connection closed")
@@ -80,7 +79,7 @@ class Cache(object):
             (id, expires, data, checksum) VALUES (?, ?, ?, ?)"""
         await self._db.execute(sql_query, (cache_key, expires, data, checksum))
         await self._db.commit()
-
+    
     @run_periodic(3600)
     async def auto_cleanup(self):
         """ (scheduled) auto cleanup task """
@@ -126,39 +125,26 @@ async def cached_iterator(cache, iter_func, cache_key, expires=(86400*30), check
             cache_result.append(item)
         await cache.set(cache_key, cache_result, checksum, expires)
 
-def use_cache(cache_days=14):
+async def cached(cache, cache_key, coro_func, *args, **kwargs):
+    """Helper method to store results of a coroutine in the cache."""
+    cache_result = await cache.get(cache_key)
+    if cache_result is not None:
+        return cache_result
+    result = await coro_func(*args, **kwargs)
+    await cache.set(cache_key, result)
+    return result
+
+def use_cache(cache_days=14, cache_checksum=None):
     """ decorator that can be used to cache a method's result."""
     def wrapper(func):
         @functools.wraps(func)
         async def wrapped(*args, **kwargs):
-            if kwargs.get("ignore_cache"):
-                return await func(*args, **kwargs)
-            cache_checksum = kwargs.get("cache_checksum")
             method_class = args[0]
             method_class_name = method_class.__class__.__name__
             cache_str = "%s.%s" % (method_class_name, func.__name__)
-            # append args to cache identifier
-            for item in args[1:]:
-                if isinstance(item, dict):
-                    for subkey in sorted(list(item.keys())):
-                        subvalue = item[subkey]
-                        cache_str += ".%s%s" % (subkey, subvalue)
-                else:
-                    cache_str += ".%s" % item
-            # append kwargs to cache identifier
-            for key in sorted(list(kwargs.keys())):
-                if key in ["ignore_cache", "cache_checksum"]:
-                    continue
-                value = kwargs[key]
-                if isinstance(value, dict):
-                    for subkey in sorted(list(value.keys())):
-                        subvalue = value[subkey]
-                        cache_str += ".%s%s" % (subkey, subvalue)
-                else:
-                    cache_str += ".%s%s" % (key, value)
+            cache_str += __cache_id_from_args(*args, **kwargs)
             cache_str = cache_str.lower()
-            cachedata = await method_class.cache.get(cache_str,
-                                                     checksum=cache_checksum)
+            cachedata = await method_class.cache.get(cache_str)
             if cachedata is not None:
                 return cachedata
             else:
@@ -172,3 +158,25 @@ def use_cache(cache_days=14):
                 return result
         return wrapped
     return wrapper
+
+def __cache_id_from_args(*args, **kwargs):
+    ''' parse arguments to build cache id '''
+    cache_str = ''
+    # append args to cache identifier
+    for item in args[1:]:
+        if isinstance(item, dict):
+            for subkey in sorted(list(item.keys())):
+                subvalue = item[subkey]
+                cache_str += ".%s%s" % (subkey, subvalue)
+        else:
+            cache_str += ".%s" % item
+    # append kwargs to cache identifier
+    for key in sorted(list(kwargs.keys())):
+        value = kwargs[key]
+        if isinstance(value, dict):
+            for subkey in sorted(list(value.keys())):
+                subvalue = value[subkey]
+                cache_str += ".%s%s" % (subkey, subvalue)
+        else:
+            cache_str += ".%s%s" % (key, value)
+    return cache_str

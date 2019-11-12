@@ -9,7 +9,6 @@ import time
 from ..utils import run_periodic, LOGGER, try_parse_int, \
        try_parse_bool, try_parse_float
 from ..constants import EVENT_PLAYER_CHANGED
-from ..cache import use_cache
 from .media_types import Track, MediaType
 from .player_queue import PlayerQueue, QueueItem
 from .playerstate import PlayerState

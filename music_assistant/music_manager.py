@@ -402,7 +402,10 @@ class MusicManager():
         ]
         cur_db_ids = []
         async for item in music_provider.get_library_albums():
-            db_album = await music_provider.album(item.item_id, lazy=False)
+            
+            db_album = await music_provider.album(item.item_id, album_details=item, lazy=False)
+            if not db_album:
+                LOGGER.error("provider %s album: %s", prov_id, item.__dict__)
             cur_db_ids.append(db_album.item_id)
             if not db_album.item_id in prev_db_ids:
                 await self.mass.db.add_to_library(db_album.item_id,

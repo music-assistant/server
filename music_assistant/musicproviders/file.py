@@ -9,7 +9,6 @@ import time
 import base64
 import taglib
 
-from ..cache import use_cache
 from ..utils import run_periodic, LOGGER, parse_title_and_version
 from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from ..constants import CONF_ENABLED
