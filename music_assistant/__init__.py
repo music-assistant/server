@@ -80,7 +80,11 @@ class MusicAssistant():
         listeners = list(self.event_listeners.values())
         for callback, eventfilter in listeners:
             if not eventfilter or eventfilter in msg:
-                await callback(msg, msg_details)
+                if msg == 'shutdown':
+                    # the shutdown event should be awaited
+                    await callback(msg, msg_details)
+                else:
+                    self.event_loop.create_task(callback(msg, msg_details))
 
     async def add_event_listener(self, cb, eventfilter=None):
         ''' add callback to our event listeners '''
