@@ -402,7 +402,7 @@ class MusicProvider():
         search_results = await self.search(searchstr, [MediaType.Track],
                                            limit=5)
         for item in search_results["tracks"]:
-            if not item or not item.album:
+            if not item or not item.name or not item.album:
                 continue
             if ((item.name in searchtrack.name
                  or searchtrack.name in item.name) and item.album

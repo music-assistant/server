@@ -195,7 +195,8 @@ class PySqueezePlayer(Player):
             :param queue_items: a list of QueueItems
         '''
         await self.__send_flush()
-        await self.__send_play(queue_items[0].uri)
+        if queue_items:
+            await self.__send_play(queue_items[0].uri)
 
     async def cmd_queue_insert(self, queue_items, insert_at_index):
         # queue handled by built-in queue controller
