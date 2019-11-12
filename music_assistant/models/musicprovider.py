@@ -175,7 +175,6 @@ class MusicProvider():
                 album_details.is_lazy = True
                 return album_details
             item_id = await self.add_album(album_details)
-            LOGGER.info("item_id after add_album: %s", item_id)
         return await self.mass.db.album(item_id)
 
     async def add_album(self, album_details) -> int:
