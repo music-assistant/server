@@ -17,17 +17,16 @@ class MusicProvider():
         Uses a form of lazy provisioning to local db as cache
     """
 
-    name = 'My great Music provider'  # display name
-    prov_id = 'my_provider'  # used as id
-    icon = ''
-
     def __init__(self, mass):
+        """[DO NOT OVERRIDE]"""
+        self.prov_id = ''
+        self.name = ''
         self.mass = mass
         self.cache = mass.cache
 
-    async def setup(self):
-        """ async initialize of module """
-        pass
+    async def setup(self, conf):
+        """[SHOULD OVERRIDE] Setup the provider"""
+        return False
 
     ### Common methods and properties ####
 

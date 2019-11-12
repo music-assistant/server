@@ -65,6 +65,7 @@ class MusicAssistant():
         except asyncio.CancelledError:
             LOGGER.info("Application shutdown")
             await self.signal_event("shutdown")
+            self.config.save()
             await self.db.close()
             await self.cache.close()
 

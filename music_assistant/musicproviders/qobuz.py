@@ -15,7 +15,6 @@ from ..models import MusicProvider, MediaType, TrackQuality, \
 from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, \
     CONF_TYPE_PASSWORD, EVENT_STREAM_STARTED, EVENT_PLAYBACK_STOPPED
 
-PROV_ID = 'qobuz'
 PROV_NAME = 'Qobuz'
 PROV_CLASS = 'QobuzProvider'
 
@@ -28,21 +27,19 @@ class QobuzProvider(MusicProvider):
 
     http_session = None
     throttler = None
+    __username = None
+    __password = None
+    __user_auth_info = None
+    __logged_in = None
 
-    def __init__(self, mass, conf):
-        ''' Support for streaming music provider Qobuz '''
-        super().__init__(mass)
-        self.name = PROV_NAME
-        self.prov_id = PROV_ID
+    async def setup(self, conf):
+        ''' perform async setup '''
         self.__username = conf[CONF_USERNAME]
         self.__password = conf[CONF_PASSWORD]
         if not conf[CONF_USERNAME] or not conf[CONF_PASSWORD]:
             raise Exception("Username and password must not be empty")
         self.__user_auth_info = None
         self.__logged_in = False
-
-    async def setup(self):
-        ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
             loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=4, period=1)

@@ -3,7 +3,6 @@
 
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
 import socket
 import importlib
 import os
@@ -15,7 +14,7 @@ except ImportError:
     import json
 LOGGER = logging.getLogger('music_assistant')
 
-from .constants import CONF_KEY_MUSICPROVIDERS, CONF_ENABLED
+from .constants import CONF_KEY_MUSICPROVIDERS, CONF_KEY_PLAYERPROVIDERS, CONF_ENABLED
 
 IS_HASSIO = os.path.isfile('/data/options.json')
 
@@ -40,13 +39,13 @@ def run_background_task(corofn, *args, executor=None):
 def run_async_background_task(executor, corofn, *args):
     ''' run async task in background '''
     def run_task(corofn, *args):
-        LOGGER.debug('running %s in background task' % corofn.__name__)
+        LOGGER.debug('running %s in background task', corofn.__name__)
         new_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(new_loop)
         coro = corofn(*args)
         res = new_loop.run_until_complete(coro)
         new_loop.close()
-        LOGGER.debug('completed %s in background task' % corofn.__name__)
+        LOGGER.debug('completed %s in background task', corofn.__name__)
         return res
     return asyncio.get_event_loop().run_in_executor(executor, run_task, corofn, *args)
 
@@ -70,7 +69,7 @@ async def iter_items(items):
         yield items
     else:
         for item in items:
-            yield items
+            yield item
 
 def try_parse_float(possible_float):
     try:
@@ -204,38 +203,54 @@ def try_load_json_file(jsonfile):
         LOGGER.debug("Could not load json from file %s - %s" % (jsonfile, str(exc)))
         return None
 
-def load_provider_modules(mass, prov_type=CONF_KEY_MUSICPROVIDERS):
+async def load_provider_modules(mass, provider_modules, prov_type=CONF_KEY_MUSICPROVIDERS):
     ''' dynamically load music/player providers '''
-    provider_modules = {}
     base_dir = os.path.dirname(os.path.abspath(__file__))
     modules_path = os.path.join(base_dir, prov_type )
+    # load modules
     for item in os.listdir(modules_path):
         if (os.path.isfile(os.path.join(modules_path, item)) and not item.startswith("_") and 
                 item.endswith('.py') and not item.startswith('.')):
             module_name = item.replace(".py","")
-            prov_mod = load_provider_module(mass, module_name, prov_type)
-            if prov_mod:
-                provider_modules[prov_mod.prov_id] = prov_mod
-    return provider_modules
+            if module_name not in provider_modules:
+                prov_mod = await load_provider_module(mass, module_name, prov_type)
+                if prov_mod:
+                    provider_modules[module_name] = prov_mod
+    # unload modules (if needed)
+    removed_modules = []
+    for prov_id, prov in provider_modules.items():
+        if not mass.config[prov_type][prov_id][CONF_ENABLED]:
+            removed_modules.append(prov_id)
+            if hasattr(prov, 'http_session'):
+                await prov.http_session.close()
+            if prov_type == CONF_KEY_PLAYERPROVIDERS:
+                for player in prov.players:
+                    await mass.players.remove_player(player.player_id)
+    for prov_id in removed_modules:
+        provider_modules.pop(prov_id, None)
+        LOGGER.info('Unloaded %s module', prov_id)
 
-
-def load_provider_module(mass, module_name, prov_type):
+async def load_provider_module(mass, module_name, prov_type):
     ''' dynamically load music/player provider '''
-    LOGGER.debug("Loading provider module %s" % module_name)
     try:
         prov_mod = importlib.import_module(f".{module_name}", 
                 f"music_assistant.{prov_type}")
         prov_conf_entries = prov_mod.CONFIG_ENTRIES
-        prov_id = prov_mod.PROV_ID
+        prov_id = module_name
+        prov_name = prov_mod.PROV_NAME
+        prov_class = prov_mod.PROV_CLASS
         # get/create config for the module
         prov_config = mass.config.create_module_config(
                 prov_id, prov_conf_entries, prov_type)
         if prov_config[CONF_ENABLED]:
-            prov_mod_cls = getattr(prov_mod, prov_mod.PROV_CLASS)
-            provider = prov_mod_cls(mass, prov_config)
-            LOGGER.info("Successfully initialized module %s" % provider.name)
+            prov_mod_cls = getattr(prov_mod, prov_class)
+            provider = prov_mod_cls(mass)
+            provider.prov_id = prov_id
+            provider.name = prov_name
+            await provider.setup(prov_config)
+            LOGGER.info("Successfully initialized module %s", provider.name)
             return provider
         else:
             return None
     except Exception as exc:
-        LOGGER.exception("Error loading module %s: %s" %(module_name, exc))
+        LOGGER.exception("Error loading module %s: %s", module_name, exc)

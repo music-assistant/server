@@ -48,16 +48,25 @@ class MusicManager():
     def __init__(self, mass):
         self.running_sync_jobs = []
         self.mass = mass
-        # dynamically load musicprovider modules
-        self.providers = load_provider_modules(mass, CONF_KEY_MUSICPROVIDERS)
+        self.providers = {}
 
     async def setup(self):
         ''' async initialize of module '''
-        # start providers
-        for prov in self.providers.values():
-            await prov.setup()
+        # load providers
+        await self.load_modules()
         # schedule sync task
         self.mass.event_loop.create_task(self.__sync_music_providers())
+
+    async def load_modules(self):
+        """Dynamically (un)load musicprovider modules."""
+        prev_ids = list(self.providers.keys())
+        await load_provider_modules(self.mass, 
+                self.providers, CONF_KEY_MUSICPROVIDERS)
+        # schedule sync for any newly added providers
+        for prov_id in self.providers:
+            if prov_id not in prev_ids:
+                self.mass.event_loop.create_task(
+                        self.sync_music_provider(prov_id))
 
     async def item(self,
                    item_id,

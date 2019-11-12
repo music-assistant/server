@@ -28,16 +28,19 @@ class PlayerManager():
     def __init__(self, mass):
         self.mass = mass
         self._players = {}
-        # dynamically load musicprovider modules
-        self.providers = load_provider_modules(mass, CONF_KEY_PLAYERPROVIDERS)
+        self.providers = {}
         
     async def setup(self):
         ''' async initialize of module '''
-        # start providers
-        for prov in self.providers.values():
-            await prov.setup()
+        # load providers
+        await self.load_modules()
         # register state listener
         await self.mass.add_event_listener(self.handle_mass_events, EVENT_HASS_ENTITY_CHANGED)
+
+    async def load_modules(self):
+        """Dynamically (un)load musicprovider modules."""
+        await load_provider_modules(self.mass, 
+                self.providers, CONF_KEY_PLAYERPROVIDERS)
     
     @property
     def players(self):

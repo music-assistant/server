@@ -13,7 +13,6 @@ from ..utils import run_periodic, LOGGER, parse_title_and_version
 from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
 from ..constants import CONF_ENABLED
 
-PROV_ID = 'file'
 PROV_NAME = 'Local files and playlists'
 PROV_CLASS = 'FileProvider'
 
@@ -33,13 +32,9 @@ class FileProvider(MusicProvider):
         Supports having URI's from streaming providers within m3u playlist
         Should be compatible with LMS
     '''
-    
 
-    def __init__(self, mass, conf):
-        self.name = PROV_NAME
-        self.prov_id = PROV_ID
-        self.mass = mass
-        self.cache = mass.cache
+    async def setup(self, conf):
+        """ setup the provider, return True if succesfull"""
         self._music_dir = conf["music_dir"]
         self._playlists_dir = conf["playlists_dir"]
         if not os.path.isdir(conf["music_dir"]):

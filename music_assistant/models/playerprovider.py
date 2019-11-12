@@ -17,16 +17,20 @@ class PlayerProvider():
         Common methods usable for every provider
         Provider specific methods should be overriden in the provider specific implementation
     '''
-    
 
-    def __init__(self, mass, conf):
+    def __init__(self, mass):
+        """[DO NOT OVERRIDE]"""
+        self.prov_id = ''
+        self.name = ''
         self.mass = mass
-        self.name = 'My great Musicplayer provider' # display name
-        self.prov_id = 'my_provider' # used as id
-        self.player_config_entries = [] # player specific config entries
+        self.cache = mass.cache
+        self.player_config_entries = []
+
+    async def setup(self, conf):
+        """[SHOULD OVERRIDE] Setup the provider"""
+        return False
 
     ### Common methods and properties ####
-
 
     @property
     def players(self):

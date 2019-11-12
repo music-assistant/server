@@ -36,7 +36,7 @@ class ChromecastPlayer(Player):
     def __init__(self, *args, **kwargs):
         self.__cc_report_progress_task = None
         super().__init__(*args, **kwargs)
-        
+
     def __del__(self):
         if self.__cc_report_progress_task:
             self.__cc_report_progress_task.cancel()
@@ -217,17 +217,13 @@ class ChromecastPlayer(Player):
 
 class ChromecastProvider(PlayerProvider):
     ''' support for ChromeCast Audio '''
+    _discovery_running = False
     
-    def __init__(self, mass, conf):
-        super().__init__(mass, conf)
-        self.prov_id = PROV_ID
-        self.name = PROV_NAME
+    async def setup(self, conf):
+        ''' perform async setup '''
         self._discovery_running = False
         logging.getLogger('pychromecast').setLevel(logging.WARNING)
         self.player_config_entries = PLAYER_CONFIG_ENTRIES
-
-    async def setup(self):
-        ''' perform async setup '''
         self.mass.event_loop.create_task(
                 self.__periodic_chromecast_discovery())
 

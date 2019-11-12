@@ -24,21 +24,13 @@ CONFIG_ENTRIES = [
     (CONF_ENABLED, True, CONF_ENABLED),
     ]
 
-PLAYER_CONFIG_ENTRIES = []
-
 
 class PySqueezeProvider(PlayerProvider):
     ''' Python implementation of SlimProto server '''
 
-    def __init__(self, mass, conf):
-        super().__init__(mass, conf)
-        self.prov_id = PROV_ID
-        self.name = PROV_NAME
-        self.player_config_entries = PLAYER_CONFIG_ENTRIES
-
      ### Provider specific implementation #####
 
-    async def setup(self):
+    async def setup(self, conf):
         ''' async initialize of module '''
         # start slimproto server
         self.mass.event_loop.create_task(

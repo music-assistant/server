@@ -23,8 +23,6 @@ CONFIG_ENTRIES = [
     (CONF_ENABLED, True, CONF_ENABLED),
     ]
 
-PLAYER_CONFIG_ENTRIES = []
-
 class SonosPlayer(Player):
     ''' Sonos player object '''
 
@@ -163,15 +161,9 @@ class SonosPlayer(Player):
 
 class SonosProvider(PlayerProvider):
     ''' support for Sonos speakers '''
-    
-    def __init__(self, mass, conf):
-        super().__init__(mass, conf)
-        self.prov_id = PROV_ID
-        self.name = PROV_NAME
-        self._discovery_running = False
-        self.player_config_entries = PLAYER_CONFIG_ENTRIES
+    _discovery_running = False
 
-    async def setup(self):
+    async def setup(self, conf):
         ''' perform async setup '''
         self.mass.event_loop.create_task(
                 self.__periodic_discovery())

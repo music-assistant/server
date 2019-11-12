@@ -24,8 +24,6 @@ CONFIG_ENTRIES = [
     (CONF_ENABLED, True, CONF_ENABLED),
     ]
 
-PLAYER_CONFIG_ENTRIES = []
-
 EVENT_WEBPLAYER_CMD = 'webplayer command'
 EVENT_WEBPLAYER_STATE = 'webplayer state'
 EVENT_WEBPLAYER_REGISTER = 'webplayer register'
@@ -38,15 +36,9 @@ class WebPlayerProvider(PlayerProvider):
         and our internal event bus
     '''
 
-    def __init__(self, mass, conf):
-        super().__init__(mass, conf)
-        self.prov_id = PROV_ID
-        self.name = PROV_NAME
-        self.player_config_entries = PLAYER_CONFIG_ENTRIES
-
      ### Provider specific implementation #####
 
-    async def setup(self):
+    async def setup(self, conf):
         ''' async initialize of module '''
         await self.mass.add_event_listener(self.handle_mass_event, EVENT_WEBPLAYER_STATE)
         await self.mass.add_event_listener(self.handle_mass_event, EVENT_WEBPLAYER_REGISTER)

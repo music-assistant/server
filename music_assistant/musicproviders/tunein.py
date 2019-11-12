@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
-import asyncio
-import os
 from typing import List
-import sys
-import time
 from asyncio_throttle import Throttler
-import json
 import aiohttp
 
-from ..utils import run_periodic, LOGGER
+from ..utils import LOGGER
 from ..models import MusicProvider, MediaType, TrackQuality, Radio
 from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, CONF_TYPE_PASSWORD
 
 
-PROV_ID = 'tunein'
 PROV_NAME = 'TuneIn Radio'
 PROV_CLASS = 'TuneInProvider'
 
@@ -26,20 +20,18 @@ CONFIG_ENTRIES = [
     ]
 
 class TuneInProvider(MusicProvider):
-    
 
-    def __init__(self, mass, conf):
-        ''' Support for streaming radio provider TuneIn '''
-        super().__init__(mass)
-        self.name = PROV_NAME
-        self.prov_id = PROV_ID
+    _username = None
+    _password = None
+    http_session = None
+    throttler = None
+
+    async def setup(self, conf):
+        ''' perform async setup '''
         if not conf[CONF_USERNAME] or not conf[CONF_PASSWORD]:
             raise Exception("Username and password must not be empty")
         self._username = conf[CONF_USERNAME]
         self._password = conf[CONF_PASSWORD]
-
-    async def setup(self):
-        ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
                 loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=1, period=1)

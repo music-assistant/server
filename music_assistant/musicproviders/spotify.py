@@ -16,7 +16,6 @@ from ..models import MusicProvider, MediaType, TrackQuality, \
     AlbumType, Artist, Album, Track, Playlist
 from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, CONF_TYPE_PASSWORD
 
-PROV_ID = 'spotify'
 PROV_NAME = 'Spotify'
 PROV_CLASS = 'SpotifyProvider'
 
@@ -31,20 +30,14 @@ class SpotifyProvider(MusicProvider):
     http_session = None
     sp_user = None
 
-    def __init__(self, mass, conf):
-        ''' Support for streaming provider Spotify '''
-        super().__init__(mass)
-        self.name = PROV_NAME
-        self.prov_id = PROV_ID
+    async def setup(self, conf):
+        ''' perform async setup '''
         self._cur_user = None
         if not conf[CONF_USERNAME] or not conf[CONF_PASSWORD]:
             raise Exception("Username and password must not be empty")
         self._username = conf[CONF_USERNAME]
         self._password = conf[CONF_PASSWORD]
         self.__auth_token = {}
-
-    async def setup(self):
-        ''' perform async setup '''
         self.throttler = Throttler(rate_limit=4, period=1)
         self.http_session = aiohttp.ClientSession(
             loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
@@ -216,8 +209,8 @@ class SpotifyProvider(MusicProvider):
             item = await self.track(prov_item_id)
         await self.mass.db.remove_from_library(item.item_id, media_type,
                                                self.prov_id)
-        LOGGER.debug("deleted item %s from %s - %s" %
-                     (prov_item_id, self.prov_id, result))
+        LOGGER.debug("deleted item %s from %s - %s",
+                     prov_item_id, self.prov_id, result)
 
     async def add_playlist_tracks(self, prov_playlist_id, prov_track_ids):
         ''' add track(s) to playlist '''
@@ -254,7 +247,7 @@ class SpotifyProvider(MusicProvider):
             "content_type": "ogg",
             "sample_rate": 44100,
             "bit_depth": 16,
-            "provider": PROV_ID,
+            "provider": self.prov_id,
             "item_id": track.item_id
         }
 
