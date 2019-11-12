@@ -188,9 +188,10 @@ class Web():
         """ get full artist details"""
         item_id = request.match_info.get('item_id')
         provider = request.rel_url.query.get('provider')
+        lazy = request.rel_url.query.get('lazy', 'true') != 'false'
         if (item_id is None or provider is None):
             return web.Response(text='invalid item or provider', status=501)
-        result = await self.mass.music.artist(item_id, provider, lazy=False)
+        result = await self.mass.music.artist(item_id, provider, lazy=lazy)
         return web.json_response(result, dumps=json_serializer)
     
     @routes.get('/api/albums/{item_id}')
@@ -198,9 +199,10 @@ class Web():
         """ get full album details"""
         item_id = request.match_info.get('item_id')
         provider = request.rel_url.query.get('provider')
+        lazy = request.rel_url.query.get('lazy', 'true') != 'false'
         if (item_id is None or provider is None):
             return web.Response(text='invalid item or provider', status=501)
-        result = await self.mass.music.album(item_id, provider, lazy=False)
+        result = await self.mass.music.album(item_id, provider, lazy=lazy)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get('/api/tracks/{item_id}')
@@ -208,9 +210,10 @@ class Web():
         """ get full track details"""
         item_id = request.match_info.get('item_id')
         provider = request.rel_url.query.get('provider')
+        lazy = request.rel_url.query.get('lazy', 'true') != 'false'
         if (item_id is None or provider is None):
             return web.Response(text='invalid item or provider', status=501)
-        result = await self.mass.music.track(item_id, provider, lazy=False)
+        result = await self.mass.music.track(item_id, provider, lazy=lazy)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get('/api/playlists/{item_id}')

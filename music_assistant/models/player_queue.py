@@ -55,10 +55,10 @@ class PlayerQueue():
         self._next_queue_startindex = 0
         self._last_player_state = PlayerState.Stopped
         self._last_track = None
-        self.mass.run_task(
-                self.mass.add_event_listener(self.on_shutdown, "shutdown"))
+        asyncio.run_coroutine_threadsafe(
+                self.mass.add_event_listener(self.on_shutdown, "shutdown"), self.mass.event_loop)
         # load previous queue settings from disk
-        self.mass.run_task(self.__restore_saved_state())
+        asyncio.run_coroutine_threadsafe(self.__restore_saved_state(), self.mass.event_loop)
 
     @property
     def shuffle_enabled(self):

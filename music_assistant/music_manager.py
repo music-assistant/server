@@ -161,7 +161,7 @@ class MusicManager():
                                provider='database') -> List[Track]:
         ''' get top tracks for given artist '''
         track_names = []
-        artist = await self.artist(artist_id, provider)
+        artist = await self.artist(artist_id, provider, lazy=False)
         # always append database tracks
         async for item in self.mass.db.artist_tracks(artist.item_id):
             if (item.name + item.version) not in track_names:
@@ -180,8 +180,8 @@ class MusicManager():
                             provider='database') -> List[Album]:
         ''' get (all) albums for given artist '''
         album_names = []
-        artist = await self.artist(artist_id, provider)
-        # always append database tracks
+        artist = await self.artist(artist_id, provider, lazy=False)
+        # always append database tracks (if db artist)
         async for item in self.mass.db.artist_albums(artist.item_id):
             if (item.name + item.version) not in album_names:
                 yield item

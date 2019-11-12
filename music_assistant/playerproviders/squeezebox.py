@@ -581,6 +581,9 @@ class DiscoveryProtocol():
         mreq = struct.pack('4sL', group, socket.INADDR_ANY)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
+    def error_received(self, exc):
+        LOGGER.error(exc)
+
     def connection_lost(self, *args, **kwargs):
         LOGGER.debug("Connection lost to discovery")
     

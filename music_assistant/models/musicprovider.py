@@ -95,9 +95,8 @@ class MusicProvider():
             ]
             for prov_id, provider in self.mass.music.providers.items():
                 if not prov_id in item_provider_keys:
-                    self.mass.event_loop.create_task(
-                        provider.match_artist(new_artist, new_artist_albums,
-                                              new_artist_toptracks))
+                    await provider.match_artist(
+                            new_artist, new_artist_albums, new_artist_toptracks)
         return item_id
 
     async def get_artist_musicbrainz_id(self,
@@ -192,8 +191,7 @@ class MusicProvider():
         ]
         for prov_id, provider in self.mass.music.providers.items():
             if not prov_id in item_provider_keys:
-                self.mass.event_loop.create_task(
-                    provider.match_album(new_album))
+                await provider.match_album(new_album)
         return item_id
 
     async def track(self, prov_item_id, lazy=True,
@@ -239,8 +237,7 @@ class MusicProvider():
         ]
         for prov_id, provider in self.mass.music.providers.items():
             if not prov_id in item_provider_keys:
-                self.mass.event_loop.create_task(
-                    provider.match_track(new_track))
+                await provider.match_track(new_track)
         return item_id
 
     async def playlist(self, prov_playlist_id) -> Playlist:
