@@ -32,15 +32,18 @@ class FileProvider(MusicProvider):
         Supports having URI's from streaming providers within m3u playlist
         Should be compatible with LMS
     '''
+    _music_dir = None
+    _playlists_dir = None
 
     async def setup(self, conf):
         """ setup the provider, return True if succesfull"""
-        self._music_dir = conf["music_dir"]
-        self._playlists_dir = conf["playlists_dir"]
         if not os.path.isdir(conf["music_dir"]):
             raise FileNotFoundError(f"Directory {conf['music_dir']} does not exist")
-        if not os.path.isdir(conf["playlists_dir"]):
-            raise FileNotFoundError(f"Directory {conf['playlists_dir']} does not exist")
+        self._music_dir = conf["music_dir"]
+        if os.path.isdir(conf["playlists_dir"]):
+            self._playlists_dir = conf["playlists_dir"]
+        else:
+            self._playlists_dir = None
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
         ''' perform search on the provider '''
@@ -67,14 +70,14 @@ class FileProvider(MusicProvider):
     
     async def get_library_albums(self) -> List[Album]:
         ''' get album folders recursively '''
-        async for artist in await self.get_library_artists():
+        async for artist in self.get_library_artists():
             async for album in self.get_artist_albums(artist.item_id):
                 yield album
 
     async def get_library_tracks(self) -> List[Track]:
         ''' get all tracks recursively '''
         #TODO: support disk subfolders
-        async for album in await self.get_library_albums():
+        async for album in self.get_library_albums():
             async for track in self.get_album_tracks(album.item_id):
                 yield track
     
@@ -230,7 +233,7 @@ class FileProvider(MusicProvider):
 
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
         ''' get a list of random tracks as we have no clue about preference '''
-        async for album in await self.get_artist_albums(prov_artist_id):
+        async for album in self.get_artist_albums(prov_artist_id):
             async for track in self.get_album_tracks(album.item_id):
                 yield track
 

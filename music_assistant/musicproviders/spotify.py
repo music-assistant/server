@@ -253,6 +253,8 @@ class SpotifyProvider(MusicProvider):
 
     async def __parse_artist(self, artist_obj):
         ''' parse spotify artist object to generic layout '''
+        if not artist_obj:
+            return None
         artist = Artist()
         artist.item_id = artist_obj['id']
         artist.provider = self.prov_id
@@ -276,6 +278,8 @@ class SpotifyProvider(MusicProvider):
 
     async def __parse_album(self, album_obj):
         ''' parse spotify album object to generic layout '''
+        if not album_obj:
+            return None
         if 'album' in album_obj:
             album_obj = album_obj['album']
         if not album_obj['id'] or not album_obj.get('is_playable', True):
@@ -321,6 +325,8 @@ class SpotifyProvider(MusicProvider):
 
     async def __parse_track(self, track_obj):
         ''' parse spotify track object to generic layout '''
+        if not track_obj:
+            return None
         if 'track' in track_obj:
             track_obj = track_obj['track']
         if track_obj['is_local'] or not track_obj['id'] or not track_obj[

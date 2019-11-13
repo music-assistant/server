@@ -139,6 +139,8 @@ class HomeAssistant():
                 # call is for one of our players so handle it
                 player_id = self._published_players[entity_id]
                 player = await self.mass.players.get_player(player_id)
+                if not player:
+                    return
                 if service == 'turn_on':
                     await player.power_on()
                 elif service == 'turn_off':

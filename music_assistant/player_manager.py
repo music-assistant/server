@@ -39,6 +39,13 @@ class PlayerManager():
 
     async def load_modules(self):
         """Dynamically (un)load musicprovider modules."""
+        if reload_module and reload_module in self.providers:
+            # unload existing module
+            if hasattr(self.providers[reload_module], 'http_session'):
+                await self.providers[reload_module].http_session.close()
+            self.providers.pop(reload_module, None)
+            LOGGER.info('Unloaded %s module', reload_module)
+        # load all modules (that are not already loaded)
         await load_provider_modules(self.mass, 
                 self.providers, CONF_KEY_PLAYERPROVIDERS)
     

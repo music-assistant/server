@@ -329,7 +329,7 @@ class QobuzProvider(MusicProvider):
     async def __parse_artist(self, artist_obj):
         ''' parse qobuz artist object to generic layout '''
         artist = Artist()
-        if not artist_obj.get('id'):
+        if not artist_obj or not artist_obj.get('id'):
             return None
         artist.item_id = artist_obj['id']
         artist.provider = self.prov_id
@@ -355,7 +355,7 @@ class QobuzProvider(MusicProvider):
     async def __parse_album(self, album_obj):
         ''' parse qobuz album object to generic layout '''
         album = Album()
-        if not album_obj.get('id') or not album_obj[
+        if not album_obj or not album_obj.get('id') or not album_obj[
                 "streamable"] or not album_obj["displayable"]:
             # do not return unavailable items
             return None
@@ -426,7 +426,7 @@ class QobuzProvider(MusicProvider):
     async def __parse_track(self, track_obj):
         ''' parse qobuz track object to generic layout '''
         track = Track()
-        if not track_obj.get('id') or not track_obj[
+        if not track_obj or not track_obj.get('id') or not track_obj[
                 "streamable"] or not track_obj["displayable"]:
             # do not return unavailable items
             return None
@@ -505,7 +505,7 @@ class QobuzProvider(MusicProvider):
     async def __parse_playlist(self, playlist_obj):
         ''' parse qobuz playlist object to generic layout '''
         playlist = Playlist()
-        if not playlist_obj.get('id'):
+        if not playlist_obj or not playlist_obj.get('id'):
             return None
         playlist.item_id = playlist_obj['id']
         playlist.provider = self.prov_id

@@ -57,16 +57,17 @@ class MusicManager():
         # schedule sync task
         self.mass.event_loop.create_task(self.__sync_music_providers())
 
-    async def load_modules(self):
+    async def load_modules(self, reload_module=None):
         """Dynamically (un)load musicprovider modules."""
-        prev_ids = list(self.providers.keys())
+        if reload_module and reload_module in self.providers:
+            # unload existing module
+            for player in self.providers[reload_module].players:
+                await self.mass.players.remove_player(player.player_id)
+            self.providers.pop(reload_module, None)
+            LOGGER.info('Unloaded %s module', reload_module)
+        # load all modules (that are not already loaded)
         await load_provider_modules(self.mass, 
                 self.providers, CONF_KEY_MUSICPROVIDERS)
-        # schedule sync for any newly added providers
-        for prov_id in self.providers:
-            if prov_id not in prev_ids:
-                self.mass.event_loop.create_task(
-                        self.sync_music_provider(prov_id))
 
     async def item(self,
                    item_id,

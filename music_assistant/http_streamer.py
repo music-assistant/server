@@ -444,6 +444,9 @@ class HTTPStreamer():
             elif streamdetails['type'] == 'executable':
                 audio_data = subprocess.check_output(streamdetails["path"],
                                                      shell=True)
+            elif streamdetails['type'] == 'file':
+                with open(streamdetails['path'], 'rb') as f:
+                    audio_data = f.read()
             # calculate BS.1770 R128 integrated loudness
             with io.BytesIO(audio_data) as tmpfile:
                 data, rate = soundfile.read(tmpfile)

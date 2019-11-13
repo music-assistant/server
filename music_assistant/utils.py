@@ -216,19 +216,6 @@ async def load_provider_modules(mass, provider_modules, prov_type=CONF_KEY_MUSIC
                 prov_mod = await load_provider_module(mass, module_name, prov_type)
                 if prov_mod:
                     provider_modules[module_name] = prov_mod
-    # unload modules (if needed)
-    removed_modules = []
-    for prov_id, prov in provider_modules.items():
-        if not mass.config[prov_type][prov_id][CONF_ENABLED]:
-            removed_modules.append(prov_id)
-            if hasattr(prov, 'http_session'):
-                await prov.http_session.close()
-            if prov_type == CONF_KEY_PLAYERPROVIDERS:
-                for player in prov.players:
-                    await mass.players.remove_player(player.player_id)
-    for prov_id in removed_modules:
-        provider_modules.pop(prov_id, None)
-        LOGGER.info('Unloaded %s module', prov_id)
 
 async def load_provider_module(mass, module_name, prov_type):
     ''' dynamically load music/player provider '''
@@ -253,4 +240,5 @@ async def load_provider_module(mass, module_name, prov_type):
         else:
             return None
     except Exception as exc:
-        LOGGER.exception("Error loading module %s: %s", module_name, exc)
+        LOGGER.error("Error loading module %s: %s", module_name, exc)
+        LOGGER.debug(exc_info=exc)

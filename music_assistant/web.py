@@ -496,13 +496,13 @@ class Web():
                 self.mass.event_loop.create_task(
                     self.mass.players.trigger_update(conf_subkey))
             elif conf_key == CONF_KEY_MUSICPROVIDERS:
-                # (re)load music provider modules
+                # (re)load music provider module
                 self.mass.event_loop.create_task(
-                    self.mass.music.load_modules())
+                    self.mass.music.load_modules(conf_subkey))
             elif conf_key == CONF_KEY_PLAYERPROVIDERS:
-                # (re)load player provider modules
+                # (re)load player provider module
                 self.mass.event_loop.create_task(
-                    self.mass.players.load_modules())
+                    self.mass.players.load_modules(conf_subkey))
             else:
                 # other settings need restart
                 result["restart_required"] = True
