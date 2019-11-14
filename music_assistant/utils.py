@@ -14,9 +14,10 @@ except ImportError:
     import json
 LOGGER = logging.getLogger('music_assistant')
 
-from .constants import CONF_KEY_MUSICPROVIDERS, CONF_KEY_PLAYERPROVIDERS, CONF_ENABLED
+from .constants import CONF_KEY_MUSICPROVIDERS, CONF_ENABLED
 
 IS_HASSIO = os.path.isfile('/data/options.json')
+
 
 def run_periodic(period):
     def scheduler(fcn):
@@ -24,20 +25,26 @@ def run_periodic(period):
             while True:
                 asyncio.create_task(fcn(*args, **kwargs))
                 await asyncio.sleep(period)
+
         return wrapper
+
     return scheduler
 
+
 def filename_from_string(string):
-    ''' create filename from unsafe string '''
-    keepcharacters = (' ','.','_')
-    return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
+    """ create filename from unsafe string """
+    keepcharacters = (' ', '.', '_')
+    return "".join(c for c in string
+                   if c.isalnum() or c in keepcharacters).rstrip()
+
 
 def run_background_task(corofn, *args, executor=None):
-    ''' run non-async task in background '''
+    """ run non-async task in background """
     return asyncio.get_event_loop().run_in_executor(executor, corofn, *args)
 
+
 def run_async_background_task(executor, corofn, *args):
-    ''' run async task in background '''
+    """ run async task in background """
     def run_task(corofn, *args):
         LOGGER.debug('running %s in background task', corofn.__name__)
         new_loop = asyncio.new_event_loop()
@@ -47,35 +54,42 @@ def run_async_background_task(executor, corofn, *args):
         new_loop.close()
         LOGGER.debug('completed %s in background task', corofn.__name__)
         return res
-    return asyncio.get_event_loop().run_in_executor(executor, run_task, corofn, *args)
+
+    return asyncio.get_event_loop().run_in_executor(executor, run_task, corofn,
+                                                    *args)
+
 
 def get_sort_name(name):
-    ''' create a sort name for an artist/title '''
+    """ create a sort name for an artist/title """
     sort_name = name
     for item in ["The ", "De ", "de ", "Les "]:
         if name.startswith(item):
             sort_name = "".join(name.split(item)[1:])
     return sort_name
 
+
 def try_parse_int(possible_int):
     try:
         return int(possible_int)
-    except:
+    except (TypeError, ValueError):
         return 0
 
+
 async def iter_items(items):
-    '''fake async iterator for compatability reasons.'''
+    """fake async iterator for compatability reasons."""
     if not isinstance(items, list):
         yield items
     else:
         for item in items:
             yield item
 
+
 def try_parse_float(possible_float):
     try:
         return float(possible_float)
-    except:
+    except (TypeError, ValueError):
         return 0.0
+
 
 def try_parse_bool(possible_bool):
     if isinstance(possible_bool, bool):
@@ -83,8 +97,9 @@ def try_parse_bool(possible_bool):
     else:
         return possible_bool in ['true', 'True', '1', 'on', 'ON', 1]
 
+
 def parse_title_and_version(track_title, track_version=None):
-    ''' try to parse clean track title and version from the title '''
+    """ try to parse clean track title and version from the title """
     title = track_title.lower()
     version = ''
     for splitter in [" (", " [", " - ", " (", " [", "-"]:
@@ -95,27 +110,33 @@ def parse_title_and_version(track_title, track_version=None):
                 for end_splitter in [")", "]"]:
                     if end_splitter in title_part:
                         title_part = title_part.split(end_splitter)[0]
-                for ignore_str in ["feat.", "featuring", "ft.", "with ", " & ", "explicit"]:
+                for ignore_str in [
+                        "feat.", "featuring", "ft.", "with ", " & ", "explicit"
+                ]:
                     if ignore_str in title_part:
-                        title = title.split(splitter+title_part)[0]
-                for version_str in ["version", "live", "edit", "remix", "mix", 
-                            "acoustic", " instrumental", "karaoke", "remaster", "versie", "radio", "unplugged", "disco"]:
+                        title = title.split(splitter + title_part)[0]
+                for version_str in [
+                        "version", "live", "edit", "remix", "mix", "acoustic",
+                        " instrumental", "karaoke", "remaster", "versie",
+                        "radio", "unplugged", "disco"
+                ]:
                     if version_str in title_part:
                         version = title_part
-                        title = title.split(splitter+version)[0]
+                        title = title.split(splitter + version)[0]
     title = title.strip().title()
     if not version and track_version:
         version = track_version
     version = get_version_substitute(version).title()
     return title, version
 
+
 def get_version_substitute(version_str):
-    ''' transform provider version str to universal version type '''
+    """ transform provider version str to universal version type """
     version_str = version_str.lower()
     # substitute edit and edition with version
     if 'edition' in version_str or 'edit' in version_str:
-        version_str = version_str.replace(' edition',' version')
-        version_str = version_str.replace(' edit ',' version')
+        version_str = version_str.replace(' edition', ' version')
+        version_str = version_str.replace(' edit ', ' version')
     if version_str.startswith('the '):
         version_str = version_str.split('the ')[1]
     if "radio mix" in version_str:
@@ -128,40 +149,51 @@ def get_version_substitute(version_str):
         version_str = 'remaster'
     return version_str.strip()
 
+
+# pylint: disable=broad-except
 def get_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         # doesn't even have to be reachable
         s.connect(('10.255.255.255', 1))
         IP = s.getsockname()[0]
-    except:
+    except Exception:
         IP = '127.0.0.1'
     finally:
         s.close()
     return IP
 
+
+# pylint: enable=broad-except
+
+
 def get_hostname():
+    """Get hostname for this machine."""
     return socket.gethostname()
 
+
 def get_folder_size(folderpath):
-    ''' get folder size in gb'''
+    """ get folder size in gb"""
     total_size = 0
+    # pylint: disable=unused-variable
     for dirpath, dirnames, filenames in os.walk(folderpath):
         for f in filenames:
             fp = os.path.join(dirpath, f)
             total_size += os.path.getsize(fp)
-    total_size_gb = total_size/float(1<<30)
+    # pylint: enable=unused-variable
+    total_size_gb = total_size / float(1 << 30)
     return total_size_gb
 
+
 def serialize_values(obj):
-    ''' recursively create serializable values for custom data types '''
+    """Recursively create serializable values for (custom) data types."""
     def get_val(val):
         if isinstance(val, (int, str, bool, float, tuple)):
             return val
         elif isinstance(val, list):
             new_list = []
             for item in val:
-                new_list.append( get_val(item))
+                new_list.append(get_val(item))
             return new_list
         elif hasattr(val, 'to_dict'):
             return get_val(val.to_dict())
@@ -175,60 +207,76 @@ def serialize_values(obj):
             for key, value in val.__dict__.items():
                 new_dict[key] = get_val(value)
             return new_dict
+
     return get_val(obj)
 
-def get_compare_string(str):
-    ''' get clean lowered string for compare actions '''
-    unaccented_string = unidecode.unidecode(str)
-    return re.sub(r"[^a-zA-Z0-9]","",unaccented_string).lower()
+
+def get_compare_string(input_str):
+    """ get clean lowered string for compare actions """
+    unaccented_string = unidecode.unidecode(input_str)
+    return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string).lower()
+
 
 def compare_strings(str1, str2, strict=False):
-    ''' compare strings and return True if we have an (almost) perfect match '''
+    """ compare strings and return True if we have an (almost) perfect match """
     match = str1.lower() == str2.lower()
     if not match and not strict:
         match = get_compare_string(str1) == get_compare_string(str2)
     return match
 
+
 def json_serializer(obj):
-    ''' json serializer to recursively create serializable values for custom data types '''
+    """ json serializer to recursively create serializable values for custom data types """
     return json.dumps(serialize_values(obj), skipkeys=True)
 
 
 def try_load_json_file(jsonfile):
-    ''' try to load json from file '''
+    """ try to load json from file """
+    # pylint: disable=broad-except
     try:
         with open(jsonfile) as f:
             return json.loads(f.read())
     except Exception as exc:
-        LOGGER.debug("Could not load json from file %s - %s" % (jsonfile, str(exc)))
+        LOGGER.debug("Could not load json from file %s",
+                     jsonfile,
+                     exc_info=exc)
         return None
+    # pylint: enable=broad-except
 
-async def load_provider_modules(mass, provider_modules, prov_type=CONF_KEY_MUSICPROVIDERS):
-    ''' dynamically load music/player providers '''
+
+async def load_provider_modules(mass,
+                                provider_modules,
+                                prov_type=CONF_KEY_MUSICPROVIDERS):
+    """ dynamically load music/player providers """
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    modules_path = os.path.join(base_dir, prov_type )
+    modules_path = os.path.join(base_dir, prov_type)
     # load modules
     for item in os.listdir(modules_path):
-        if (os.path.isfile(os.path.join(modules_path, item)) and not item.startswith("_") and 
-                item.endswith('.py') and not item.startswith('.')):
-            module_name = item.replace(".py","")
+        if (os.path.isfile(os.path.join(modules_path, item))
+                and not item.startswith("_") and item.endswith('.py')
+                and not item.startswith('.')):
+            module_name = item.replace(".py", "")
             if module_name not in provider_modules:
-                prov_mod = await load_provider_module(mass, module_name, prov_type)
+                prov_mod = await load_provider_module(mass, module_name,
+                                                      prov_type)
                 if prov_mod:
                     provider_modules[module_name] = prov_mod
 
+
 async def load_provider_module(mass, module_name, prov_type):
-    ''' dynamically load music/player provider '''
+    """ dynamically load music/player provider """
+    # pylint: disable=broad-except
     try:
-        prov_mod = importlib.import_module(f".{module_name}", 
-                f"music_assistant.{prov_type}")
+        prov_mod = importlib.import_module(f".{module_name}",
+                                           f"music_assistant.{prov_type}")
         prov_conf_entries = prov_mod.CONFIG_ENTRIES
         prov_id = module_name
         prov_name = prov_mod.PROV_NAME
         prov_class = prov_mod.PROV_CLASS
         # get/create config for the module
-        prov_config = mass.config.create_module_config(
-                prov_id, prov_conf_entries, prov_type)
+        prov_config = mass.config.create_module_config(prov_id,
+                                                       prov_conf_entries,
+                                                       prov_type)
         if prov_config[CONF_ENABLED]:
             prov_mod_cls = getattr(prov_mod, prov_class)
             provider = prov_mod_cls(mass)
@@ -241,4 +289,5 @@ async def load_provider_module(mass, module_name, prov_type):
             return None
     except Exception as exc:
         LOGGER.error("Error loading module %s: %s", module_name, exc)
-        LOGGER.debug(exc_info=exc)
+        LOGGER.debug("Error loading module", exc_info=exc)
+    # pylint: enable=broad-except

@@ -4,8 +4,7 @@
 import asyncio
 from typing import List
 from ..utils import LOGGER, compare_strings
-from ..cache import use_cache, cached_iterator, cached
-from ..constants import CONF_ENABLED
+from ..cache import cached_iterator, cached
 from .media_types import Album, Artist, Track, Playlist, MediaType, Radio
 
 
@@ -16,7 +15,6 @@ class MusicProvider():
         Provider specific get methods shoud be overriden in the provider specific implementation
         Uses a form of lazy provisioning to local db as cache
     """
-
     def __init__(self, mass):
         """[DO NOT OVERRIDE]"""
         self.prov_id = ''
@@ -26,7 +24,7 @@ class MusicProvider():
 
     async def setup(self, conf):
         """[SHOULD OVERRIDE] Setup the provider"""
-        return False
+        LOGGER.debug(conf)
 
     ### Common methods and properties ####
 
@@ -42,7 +40,8 @@ class MusicProvider():
         if not item_id:
             # artist not yet in local database so fetch details
             cache_key = f'{self.prov_id}.get_artist.{prov_item_id}'
-            artist_details = await cached(self.cache, cache_key, self.get_artist, prov_item_id )
+            artist_details = await cached(self.cache, cache_key,
+                                          self.get_artist, prov_item_id)
             if not artist_details:
                 raise Exception('artist not found: %s' % prov_item_id)
             if lazy:
@@ -94,8 +93,8 @@ class MusicProvider():
             ]
             for prov_id, provider in self.mass.music.providers.items():
                 if not prov_id in item_provider_keys:
-                    await provider.match_artist(
-                            new_artist, new_artist_albums, new_artist_toptracks)
+                    await provider.match_artist(new_artist, new_artist_albums,
+                                                new_artist_toptracks)
         return item_id
 
     async def get_artist_musicbrainz_id(self,
@@ -150,8 +149,8 @@ class MusicProvider():
                 if musicbrainz_id:
                     break
         if not musicbrainz_id:
-            LOGGER.warning("Unable to get musicbrainz ID for artist %s !" %
-                           artist_details.name)
+            LOGGER.debug("Unable to get musicbrainz ID for artist %s !",
+                         artist_details.name)
             musicbrainz_id = artist_details.name
         return musicbrainz_id
 
@@ -165,7 +164,8 @@ class MusicProvider():
             # album not yet in local database so fetch details
             if not album_details:
                 cache_key = f'{self.prov_id}.get_album.{prov_item_id}'
-                album_details = await cached(self.cache, cache_key, self.get_album, prov_item_id)
+                album_details = await cached(self.cache, cache_key,
+                                             self.get_album, prov_item_id)
             if not album_details:
                 raise Exception('album not found: %s' % prov_item_id)
             if lazy:
@@ -203,7 +203,8 @@ class MusicProvider():
             # track not yet in local database so fetch details
             if not track_details:
                 cache_key = f'{self.prov_id}.get_track.{prov_item_id}'
-                track_details = await cached(self.cache, cache_key, self.get_track, prov_item_id)
+                track_details = await cached(self.cache, cache_key,
+                                             self.get_track, prov_item_id)
             if not track_details:
                 raise Exception('track not found: %s' % prov_item_id)
             if lazy:
@@ -263,8 +264,9 @@ class MusicProvider():
     async def album_tracks(self, prov_album_id) -> List[Track]:
         """ return album tracks for the given provider album id"""
         cache_key = f'{self.prov_id}.album_tracks.{prov_album_id}'
-        async for item in cached_iterator(
-                self.cache, self.get_album_tracks(prov_album_id), cache_key):
+        async for item in cached_iterator(self.cache,
+                                          self.get_album_tracks(prov_album_id),
+                                          cache_key):
             if not item:
                 continue
             db_id = await self.mass.db.get_database_id(item.provider,
@@ -286,9 +288,10 @@ class MusicProvider():
         cache_key = f'{self.prov_id}.playlist_tracks.{prov_playlist_id}'
         pos = 0
         async for item in cached_iterator(
-                                        self.cache, 
-                                        self.get_playlist_tracks(prov_playlist_id), 
-                                        cache_key, checksum=cache_checksum):
+                self.cache,
+                self.get_playlist_tracks(prov_playlist_id),
+                cache_key,
+                checksum=cache_checksum):
             if not item:
                 continue
             db_id = await self.mass.db.get_database_id(item.provider,
@@ -305,7 +308,8 @@ class MusicProvider():
         """ return top tracks for an artist """
         cache_key = f'{self.prov_id}.artist_toptracks.{prov_artist_id}'
         async for item in cached_iterator(
-                self.cache, self.get_artist_toptracks(prov_artist_id), cache_key):
+                self.cache, self.get_artist_toptracks(prov_artist_id),
+                cache_key):
             if item:
                 db_id = await self.mass.db.get_database_id(
                     self.prov_id, item.item_id, MediaType.Track)
@@ -375,7 +379,8 @@ class MusicProvider():
         search_results = await self.search(searchstr, [MediaType.Album],
                                            limit=5)
         for item in search_results["albums"]:
-            if (item and (item.name in searchalbum.name
+            if (item and
+                (item.name in searchalbum.name
                  or searchalbum.name in item.name) and compare_strings(
                      item.artist.name, searchalbum.artist.name, strict=False)):
                 # some providers mess up versions in the title, try to fix that situation
@@ -427,6 +432,7 @@ class MusicProvider():
         """ perform search on the provider """
         return {"artists": [], "albums": [], "tracks": [], "playlists": []}
 
+    # pylint: disable=unreachable
     async def get_library_artists(self) -> List[Artist]:
         """ retrieve library artists from the provider """
         # iterator !
@@ -472,6 +478,8 @@ class MusicProvider():
         # iterator !
         return
         yield
+
+    # pylint: enable=unreachable
 
     async def get_album(self, prov_album_id) -> Album:
         """ get full album details by id """

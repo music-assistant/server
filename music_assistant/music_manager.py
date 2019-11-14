@@ -39,7 +39,9 @@ def sync_task(desc):
             method_class.running_sync_jobs.remove(sync_job)
             await method_class.mass.signal_event(
                 EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs)
+
         return wrapped
+
     return wrapper
 
 
@@ -66,8 +68,8 @@ class MusicManager():
             self.providers.pop(reload_module, None)
             LOGGER.info('Unloaded %s module', reload_module)
         # load all modules (that are not already loaded)
-        await load_provider_modules(self.mass, 
-                self.providers, CONF_KEY_MUSICPROVIDERS)
+        await load_provider_modules(self.mass, self.providers,
+                                    CONF_KEY_MUSICPROVIDERS)
 
     async def item(self,
                    item_id,
@@ -176,7 +178,7 @@ class MusicManager():
         async for item in self.mass.db.artist_tracks(artist.item_id):
             if (item.name + item.version) not in track_names:
                 yield item
-                track_names.append(item.name+item.version)
+                track_names.append(item.name + item.version)
         for prov_mapping in artist.provider_ids:
             prov_id = prov_mapping['provider']
             prov_item_id = prov_mapping['item_id']
@@ -184,7 +186,7 @@ class MusicManager():
             async for item in prov_obj.artist_toptracks(prov_item_id):
                 if (item.name + item.version) not in track_names:
                     yield item
-                    track_names.append(item.name+item.version)
+                    track_names.append(item.name + item.version)
 
     async def artist_albums(self, artist_id,
                             provider='database') -> List[Album]:
@@ -195,15 +197,15 @@ class MusicManager():
         async for item in self.mass.db.artist_albums(artist.item_id):
             if (item.name + item.version) not in album_names:
                 yield item
-                album_names.append(item.name+item.version)
+                album_names.append(item.name + item.version)
         for prov_mapping in artist.provider_ids:
             prov_id = prov_mapping['provider']
             prov_item_id = prov_mapping['item_id']
             prov_obj = self.providers[prov_id]
-            async for item in  prov_obj.artist_albums(prov_item_id):
+            async for item in prov_obj.artist_albums(prov_item_id):
                 if (item.name + item.version) not in album_names:
                     yield item
-                    album_names.append(item.name+item.version)
+                    album_names.append(item.name + item.version)
 
     async def album_tracks(self, album_id, provider='database') -> List[Track]:
         ''' get the album tracks for given album '''
@@ -253,7 +255,10 @@ class MusicManager():
         result = False
         for item in media_items:
             # make sure we have a database item
-            media_item = await self.item(item.item_id, item.media_type, item.provider, lazy=False)
+            media_item = await self.item(item.item_id,
+                                         item.media_type,
+                                         item.provider,
+                                         lazy=False)
             if not media_item:
                 continue
             # add to provider's libraries
@@ -264,8 +269,9 @@ class MusicManager():
                     result = await self.providers[prov_id].add_library(
                         prov_item_id, media_item.media_type)
                 # mark as library item in internal db
-                await self.mass.db.add_to_library(
-                    media_item.item_id, media_item.media_type, prov_id)
+                await self.mass.db.add_to_library(media_item.item_id,
+                                                  media_item.media_type,
+                                                  prov_id)
         return result
 
     async def library_remove(self, media_items: List[MediaItem]):
@@ -273,7 +279,10 @@ class MusicManager():
         result = False
         for item in media_items:
             # make sure we have a database item
-            media_item = await self.item(item.item_id, item.media_type, item.provider, lazy=False)
+            media_item = await self.item(item.item_id,
+                                         item.media_type,
+                                         item.provider,
+                                         lazy=False)
             if not media_item:
                 continue
             # remove from provider's libraries
@@ -284,8 +293,9 @@ class MusicManager():
                     result = await self.providers[prov_id].remove_library(
                         prov_item_id, media_item.media_type)
                 # mark as library item in internal db
-                await self.mass.db.remove_from_library(
-                    media_item.item_id, media_item.media_type, prov_id)
+                await self.mass.db.remove_from_library(media_item.item_id,
+                                                       media_item.media_type,
+                                                       prov_id)
         return result
 
     async def add_playlist_tracks(self, db_playlist_id, tracks: List[Track]):
@@ -298,7 +308,8 @@ class MusicManager():
         playlist_prov = playlist.provider_ids[0]
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = []
-        async for item in self.providers[playlist_prov['provider']].playlist_tracks(
+        async for item in self.providers[
+                playlist_prov['provider']].playlist_tracks(
                     playlist_prov['item_id']):
             cur_playlist_track_ids.append(item.item_id)
             cur_playlist_track_ids += [i['item_id'] for i in item.provider_ids]
@@ -311,18 +322,18 @@ class MusicManager():
                     already_exists = True
             if already_exists:
                 continue
-            # we can only add a track to a provider playlist if the track is available on that provider
+            # we can only add a track to a provider playlist if track is available on that provider
             # this should all be handled in the frontend but these checks are here just to be safe
             # a track can contain multiple versions on the same provider
-            # simply sort by quality and just add the first one (assuming the track is still available)
+            # simply sort by quality and just add the first one (assuming track is still available)
             for track_version in sorted(track.provider_ids,
-                                    key=operator.itemgetter('quality'),
-                                    reverse=True):
+                                        key=operator.itemgetter('quality'),
+                                        reverse=True):
                 if track_version['provider'] == playlist_prov['provider']:
                     track_ids_to_add.append(track_version['item_id'])
                     break
                 elif playlist_prov['provider'] == 'file':
-                    # the file provider can handle uri's from all providers in the file so simply add the uri
+                    # the file provider can handle uri's from all providers so simply add the uri
                     uri = f'{track_version["provider"]}://{track_version["item_id"]}'
                     track_ids_to_add.append(uri)
                     break
@@ -338,7 +349,8 @@ class MusicManager():
                                             track_ids_to_add)
         return False
 
-    async def remove_playlist_tracks(self, db_playlist_id, tracks: List[Track]):
+    async def remove_playlist_tracks(self, db_playlist_id,
+                                     tracks: List[Track]):
         ''' remove tracks from playlist '''
         # we can only edit playlists that are in the database (marked as editable)
         playlist = await self.playlist(db_playlist_id, 'database')
@@ -364,7 +376,7 @@ class MusicManager():
                                             prov_playlist_playlist_id,
                                             track_ids_to_remove)
 
-    @run_periodic(3600)
+    @run_periodic(3600*3)
     async def __sync_music_providers(self):
         ''' periodic sync of all music providers '''
         for prov_id in self.providers:
@@ -412,8 +424,10 @@ class MusicManager():
         ]
         cur_db_ids = []
         async for item in music_provider.get_library_albums():
-            
-            db_album = await music_provider.album(item.item_id, album_details=item, lazy=False)
+
+            db_album = await music_provider.album(item.item_id,
+                                                  album_details=item,
+                                                  lazy=False)
             if not db_album:
                 LOGGER.error("provider %s album: %s", prov_id, item.__dict__)
             cur_db_ids.append(db_album.item_id)
@@ -421,7 +435,8 @@ class MusicManager():
                 await self.mass.db.add_to_library(db_album.item_id,
                                                   MediaType.Album, prov_id)
             # precache album tracks
-            [item async for item in music_provider.album_tracks(item.item_id)]
+            async for item in music_provider.album_tracks(item.item_id):
+                pass
         # process deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
@@ -466,7 +481,8 @@ class MusicManager():
                 await self.mass.db.add_to_library(db_id, MediaType.Playlist,
                                                   prov_id)
             # precache playlist tracks
-            [item async for item in music_provider.playlist_tracks(item.item_id)]
+            async for item in music_provider.playlist_tracks(item.item_id):
+                pass
         # process playlist deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
@@ -499,10 +515,10 @@ class MusicManager():
                                                        prov_id)
 
     async def get_image_thumb(self,
-                             item_id,
-                             media_type: MediaType,
-                             provider,
-                             size=50):
+                              item_id,
+                              media_type: MediaType,
+                              provider,
+                              size=50):
         ''' get path to (resized) thumb image for given media item '''
         cache_folder = os.path.join(self.mass.datapath, '.thumbs')
         cache_id = f'{item_id}{media_type}{provider}'
@@ -525,13 +541,13 @@ class MusicManager():
         elif media_type == MediaType.Track and item.album:
             # try album image instead for tracks
             return await self.get_image_thumb(item.album.item_id,
-                                             MediaType.Album,
-                                             item.album.provider, size)
+                                              MediaType.Album,
+                                              item.album.provider, size)
         elif media_type == MediaType.Album and item.artist:
             # try artist image instead for albums
             return await self.get_image_thumb(item.artist.item_id,
-                                             MediaType.Artist,
-                                             item.artist.provider, size)
+                                              MediaType.Artist,
+                                              item.artist.provider, size)
         if not img_url:
             return None
         # fetch image and store in cache
@@ -541,8 +557,8 @@ class MusicManager():
             async with session.get(img_url, verify_ssl=False) as response:
                 assert response.status == 200
                 img_data = await response.read()
-                with open(cache_file_org, 'wb') as f:
-                    f.write(img_data)
+                with open(cache_file_org, 'wb') as img_file:
+                    img_file.write(img_data)
         if not size:
             # return base image
             return cache_file_org
