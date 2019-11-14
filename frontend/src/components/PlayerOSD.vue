@@ -16,6 +16,7 @@
       width="100%"
       color="#E0E0E0"
       style="margin-top:1px;"
+      v-if="!$store.isMobile"
     >
       <!-- now playing media -->
       <v-list-item two-line>
