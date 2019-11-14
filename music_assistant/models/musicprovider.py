@@ -206,7 +206,8 @@ class MusicProvider():
                 track_details = await cached(self.cache, cache_key,
                                              self.get_track, prov_item_id)
             if not track_details:
-                raise Exception('track not found: %s' % prov_item_id)
+                LOGGER.error('track not found: %s', prov_item_id)
+                return None
             if lazy:
                 asyncio.create_task(self.add_track(track_details))
                 track_details.is_lazy = True
