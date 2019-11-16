@@ -176,7 +176,12 @@ class FanartTv():
         params['api_key'] = '639191cb0774661597f28a47e7e2bad5'
         async with self.throttler:
             async with self.http_session.get(url, params=params, verify_ssl=False) as response:
-                result = await response.json()
+                try:
+                    result = await response.json()
+                except aiohttp.client_exceptions.ContentTypeError:
+                    text_result = await response.text()
+                    LOGGER.error(text_result)
+                    return None
                 if 'error' in result and 'limit' in result['error']:
                     raise Exception(result['error'])
                 return result

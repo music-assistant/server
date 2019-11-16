@@ -229,7 +229,6 @@ class PySqueezePlayer(Player):
         request = "GET %s HTTP/1.0\r\n%s\r\n" % (uri, headers)
         data = data + request.encode("utf-8")
         await self.__send_frame(b'strm', data)
-        LOGGER.info("Requesting play from squeezebox" )
 
     def __delete__(self, instance):
         ''' make sure the heartbeat task is deleted '''
