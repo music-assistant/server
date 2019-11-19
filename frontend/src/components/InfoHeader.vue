@@ -6,11 +6,12 @@
       class="white--text"
       :img="require('../assets/info_gradient.jpg')"
       style="margin-top:-60px;"
+      height="290"
     >
       <v-img
         class="white--text"
         width="100%"
-        height="300"
+        height="360"
         position="center top"
         :src="$server.getImageUrl(itemDetails, 'fanart')"
         gradient="to bottom, rgba(0,0,0,.90), rgba(0,0,0,.75)"

@@ -246,21 +246,21 @@ class MusicProvider():
         db_id = await self.mass.db.get_database_id(self.prov_id,
                                                    prov_playlist_id,
                                                    MediaType.Playlist)
-        if db_id:
-            # synced playlist, return database details
-            return await self.mass.db.playlist(db_id)
-        else:
-            return await self.get_playlist(prov_playlist_id)
+        if not db_id:
+            # item not yet in local database so fetch and store details
+            item_details = await self.get_playlist(prov_playlist_id)
+            db_id = await self.mass.db.add_playlist(item_details)
+        return await self.mass.db.playlist(db_id)
 
     async def radio(self, prov_radio_id) -> Radio:
         """ return radio details for the given provider playlist id """
         db_id = await self.mass.db.get_database_id(self.prov_id, prov_radio_id,
                                                    MediaType.Radio)
-        if db_id:
-            # synced radio, return database details
-            return await self.mass.db.radio(db_id)
-        else:
-            return await self.get_radio(prov_radio_id)
+        if not db_id:
+            # item not yet in local database so fetch and store details
+            item_details = await self.get_radio(prov_radio_id)
+            db_id = await self.mass.db.add_radio(item_details)
+        return await self.mass.db.radio(db_id)
 
     async def album_tracks(self, prov_album_id) -> List[Track]:
         """ return album tracks for the given provider album id"""

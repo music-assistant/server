@@ -22,6 +22,12 @@
   "remove_playlist" : "Remove from playlist",
   "no_player"       : "No player selected",
   "reboot_required" : "A reboot is required to activate the new settings!",
+  "sort_name"       : "Sort by name",
+  "sort_artist"     : "Sort by artist name",
+  "sort_album"      : "Sort by album name",
+  "sort_date"       : "Sort by date",
+  "sort_default"    : "Default sorting",
+  "items"           : "item(s)",
   "conf"            : {
     "enabled"                          : "Enabled",
     "base"                             : "Generic settings",

@@ -281,7 +281,7 @@ class PySqueezePlayer(Player):
     async def process_msg(self, operation, packet):
         handler = getattr(self, "process_%s" % operation, None)
         if handler is None:
-            LOGGER.error("No handler for %s" % operation)
+            LOGGER.debug("No handler for %s" % operation)
         else:
             await handler(packet)
 

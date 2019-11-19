@@ -57,8 +57,6 @@ const server = new Vue({
     getImageUrl (mediaItem, imageType = 'image', size = 0) {
       // format the image url
       if (!mediaItem || !mediaItem.media_type) return ''
-      if (mediaItem.media_type === 4 && imageType !== 'image') return ''
-      if (mediaItem.media_type === 5 && imageType !== 'image') return ''
       if (mediaItem.provider === 'database' && imageType === 'image') {
         return `${this._address}api/${mediaItem.media_type}/${mediaItem.item_id}/thumb?provider=${mediaItem.provider}&size=${size}`
       } else if (mediaItem.metadata && mediaItem.metadata[imageType]) {
@@ -71,6 +69,9 @@ const server = new Vue({
         return mediaItem.album.artist.metadata[imageType]
       } else if (mediaItem.artists && mediaItem.artists[0].metadata && mediaItem.artists[0].metadata[imageType]) {
         return mediaItem.artists[0].metadata[imageType]
+      } else if (imageType === 'fanart') {
+        // fallback to normal image instead of fanart
+        return this.getImageUrl(mediaItem, 'image', size)
       } else return ''
     },
 
@@ -109,7 +110,7 @@ const server = new Vue({
       return result.data
     },
 
-    async getAllItems (endpoint, list, params = {}) {
+    async getAllItems (endpoint, list, params = null) {
       // retrieve all items and fill list
       let url = this._address + 'api/' + endpoint
       if (params) {
@@ -117,6 +118,7 @@ const server = new Vue({
         url += '?' + urlParams.toString()
       }
       let index = 0
+      Vue.$log.debug('getAllItems', url)
       oboe(url)
         .node('items.*', function (item) {
           Vue.set(list, index, item)

@@ -22,6 +22,12 @@
   "remove_playlist" : "Verwijder uit playlist",
   "no_player"       : "Geen speler geselecteerd",
   "reboot_required" : "Je moet de server opnieuw starten om de nieuwe instellingen actief te maken!",
+  "sort_name"       : "Sorteer op naam",
+  "sort_artist"     : "Sorteer op artiest",
+  "sort_album"      : "Sorteer op album",
+  "sort_date"       : "Sorteer op datum",
+  "sort_default"    : "Standaard sortering",
+  "items"           : "item(s)",
   "conf"            : {
     "enabled"                          : "Ingeschakeld",
     "base"                             : "Algemene instellingen",

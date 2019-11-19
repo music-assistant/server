@@ -1,32 +1,12 @@
 <template>
   <section>
     <InfoHeader v-bind:itemDetails="itemDetails" />
-    <v-tabs grow show-arrows v-model="activeTab">
+    <v-tabs dark show-arrows v-model="activeTab" grow hide-slider background-color="rgba(0,0,0,.45)">
       <v-tab v-for="tab in tabs" :key="tab.label">
-        {{ $t(tab.label) + " (" + tab.items.length + ")" }}</v-tab
+        {{ $t(tab.label) }}</v-tab
       >
       <v-tab-item v-for="tab in tabs" :key="tab.label">
-        <v-card flat>
-          <v-list two-line>
-            <RecycleScroller
-              class="scroller"
-              :items="tab.items"
-              :item-size="72"
-              key-field="item_id"
-              v-slot="{ item }"
-              page-mode
-            >
-              <ListviewItem
-                v-bind:item="item"
-                :hideavatar="$store.isMobile || tab.label === 'album_tracks'"
-                :hidetracknum="tab.label !== 'album_tracks'"
-                :hideproviders="$store.isMobile"
-                :hidelibrary="$store.isMobile"
-                :hidemenu="item.media_type == 3 ? $store.isMobile : false"
-              ></ListviewItem>
-            </RecycleScroller>
-          </v-list>
-        </v-card>
+        <ItemsListing :endpoint="tab.endpoint" />
       </v-tab-item>
     </v-tabs>
   </section>
@@ -40,12 +20,12 @@
 
 <script>
 // @ is an alias to /src
-import ListviewItem from '@/components/ListviewItem.vue'
+import ItemsListing from '@/components/ItemsListing.vue'
 import InfoHeader from '@/components/InfoHeader.vue'
 
 export default {
   components: {
-    ListviewItem,
+    ItemsListing,
     InfoHeader
   },
   props: {
@@ -56,25 +36,21 @@ export default {
   data () {
     return {
       itemDetails: {},
-      items: [],
       activeTab: 0,
       tabs: []
     }
   },
   created () {
-    this.$server.$on('refresh_listing', this.retrieveInfos)
     if (this.media_type === 'artists') {
       // artist details
       this.tabs = [
         {
           label: 'artist_toptracks',
-          endpoint: 'artists/' + this.media_id + '/toptracks',
-          items: []
+          endpoint: 'artists/' + this.media_id + '/toptracks?provider=' + this.provider
         },
         {
           label: 'artist_albums',
-          endpoint: 'artists/' + this.media_id + '/albums',
-          items: []
+          endpoint: 'artists/' + this.media_id + '/albums?provider=' + this.provider
         }
       ]
     } else if (this.media_type === 'albums') {
@@ -82,13 +58,11 @@ export default {
       this.tabs = [
         {
           label: 'album_tracks',
-          endpoint: 'albums/' + this.media_id + '/tracks',
-          items: []
+          endpoint: 'albums/' + this.media_id + '/tracks?provider=' + this.provider
         },
         {
           label: 'album_versions',
-          endpoint: 'albums/' + this.media_id + '/versions',
-          items: []
+          endpoint: 'albums/' + this.media_id + '/versions?provider=' + this.provider
         }
       ]
     } else if (this.media_type === 'tracks') {
@@ -96,8 +70,7 @@ export default {
       this.tabs = [
         {
           label: 'track_versions',
-          endpoint: 'tracks/' + this.media_id + '/versions',
-          items: []
+          endpoint: 'tracks/' + this.media_id + '/versions?provider=' + this.provider
         }
       ]
     } else if (this.media_type === 'playlists') {
@@ -105,22 +78,13 @@ export default {
       this.tabs = [
         {
           label: 'playlist_tracks',
-          endpoint: 'playlists/' + this.media_id + '/tracks',
-          items: []
+          endpoint: 'playlists/' + this.media_id + '/tracks?provider=' + this.provider
         }
       ]
     }
-    this.retrieveInfos()
+    this.getItemDetails()
   },
   methods: {
-    retrieveInfos () {
-      // retrieve the item details
-      this.getItemDetails()
-      // retrieve the tabs with additional details
-      for (var tab of this.tabs) {
-        this.getTabItems(tab)
-      }
-    },
     async getItemDetails () {
       // get the full details for the mediaitem
       this.$store.loading = true
@@ -129,10 +93,6 @@ export default {
       this.itemDetails = result
       this.$store.windowtitle = result.name
       this.$store.loading = false
-    },
-    async getTabItems (tab) {
-      // retrieve the lists of items for each tab
-      return this.$server.getAllItems(tab.endpoint, tab.items, { provider: this.provider })
     }
   }
 }

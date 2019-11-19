@@ -174,43 +174,38 @@ class SpotifyProvider(MusicProvider):
 
     async def add_library(self, prov_item_id, media_type: MediaType):
         ''' add item to library '''
+        result = False
         if media_type == MediaType.Artist:
             result = await self.__put_data('me/following', {
                 'ids': prov_item_id,
                 'type': 'artist'
             })
-            item = await self.artist(prov_item_id)
         elif media_type == MediaType.Album:
             result = await self.__put_data('me/albums', {'ids': prov_item_id})
-            item = await self.album(prov_item_id)
         elif media_type == MediaType.Track:
             result = await self.__put_data('me/tracks', {'ids': prov_item_id})
-            item = await self.track(prov_item_id)
-        await self.mass.db.add_to_library(item.item_id, media_type,
-                                          self.prov_id)
-        LOGGER.debug("added item %s to %s - %s", prov_item_id, self.prov_id,
-                     result)
+        elif media_type == MediaType.Playlist:
+            result = await self.__put_data(f'playlists/{prov_item_id}/followers',
+                                           data={'public': False})
+        return result
 
     async def remove_library(self, prov_item_id, media_type: MediaType):
         ''' remove item from library '''
+        result = False
         if media_type == MediaType.Artist:
             result = await self.__delete_data('me/following', {
                 'ids': prov_item_id,
                 'type': 'artist'
             })
-            item = await self.artist(prov_item_id)
         elif media_type == MediaType.Album:
             result = await self.__delete_data('me/albums',
                                               {'ids': prov_item_id})
-            item = await self.album(prov_item_id)
         elif media_type == MediaType.Track:
             result = await self.__delete_data('me/tracks',
                                               {'ids': prov_item_id})
-            item = await self.track(prov_item_id)
-        await self.mass.db.remove_from_library(item.item_id, media_type,
-                                               self.prov_id)
-        LOGGER.debug("deleted item %s from %s - %s",
-                     prov_item_id, self.prov_id, result)
+        elif media_type == MediaType.Playlist:
+            result = await self.__delete_data(f'playlists/{prov_item_id}/followers')
+        return result
 
     async def add_playlist_tracks(self, prov_playlist_id, prov_track_ids):
         ''' add track(s) to playlist '''

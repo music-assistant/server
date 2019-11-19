@@ -6,14 +6,15 @@ from asyncio_throttle import Throttler
 from yarl import URL
 import re
 
-from .utils import LOGGER, compare_strings
+from .utils import LOGGER, compare_strings, get_compare_string
 from .cache import use_cache
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
+
 class MetaData():
     ''' several helpers to search and store mediadata for mediaitems '''
-    
+    # TODO: create periodic task to search for missing metadata
     def __init__(self, mass):
         self.mass = mass
         self.musicbrainz = MusicBrainz(mass)
@@ -29,25 +30,49 @@ class MetaData():
         metadata = cur_metadata
         if not 'fanart' in metadata:
             res = await self.fanarttv.artist_images(mb_artist_id)
-            self.merge_metadata(cur_metadata, res)
+            if res:
+                self.merge_metadata(cur_metadata, res)
         return metadata
 
-    async def get_mb_artist_id(self, artistname, albumname=None, album_upc=None, trackname=None, track_isrc=None):
+    async def get_mb_artist_id(self,
+                               artistname,
+                               albumname=None,
+                               album_upc=None,
+                               trackname=None,
+                               track_isrc=None):
         ''' retrieve musicbrainz artist id for the given details '''
-        LOGGER.debug('searching musicbrainz for %s (albumname: %s - album_upc: %s - trackname: %s - track_isrc: %s)' %(artistname, albumname, album_upc, trackname, track_isrc))
+        LOGGER.debug(
+            'searching musicbrainz for %s (albumname: %s - album_upc: %s - trackname: %s - track_isrc: %s)',
+            artistname, albumname, album_upc, trackname, track_isrc)
         mb_artist_id = None
         if album_upc:
-            mb_artist_id = await self.musicbrainz.search_artist_by_album(artistname, None, album_upc)
-            if mb_artist_id: LOGGER.debug('Got MusicbrainzArtistId for %s after search on upc %s --> %s' %(artistname, album_upc, mb_artist_id))
+            mb_artist_id = await self.musicbrainz.search_artist_by_album(
+                artistname, None, album_upc)
+            if mb_artist_id:
+                LOGGER.debug(
+                    'Got MusicbrainzArtistId for %s after search on upc %s --> %s',
+                    artistname, album_upc, mb_artist_id)
         if not mb_artist_id and track_isrc:
-            mb_artist_id = await self.musicbrainz.search_artist_by_track(artistname, None, track_isrc)
-            if mb_artist_id: LOGGER.debug('Got MusicbrainzArtistId for %s after search on isrc %s --> %s' %(artistname, track_isrc, mb_artist_id))
+            mb_artist_id = await self.musicbrainz.search_artist_by_track(
+                artistname, None, track_isrc)
+            if mb_artist_id:
+                LOGGER.debug(
+                    'Got MusicbrainzArtistId for %s after search on isrc %s --> %s',
+                    artistname, track_isrc, mb_artist_id)
         if not mb_artist_id and albumname:
-            mb_artist_id = await self.musicbrainz.search_artist_by_album(artistname, albumname)
-            if mb_artist_id: LOGGER.debug('Got MusicbrainzArtistId for %s after search on albumname %s --> %s' %(artistname, albumname, mb_artist_id))
+            mb_artist_id = await self.musicbrainz.search_artist_by_album(
+                artistname, albumname)
+            if mb_artist_id:
+                LOGGER.debug(
+                    'Got MusicbrainzArtistId for %s after search on albumname %s --> %s',
+                    artistname, albumname, mb_artist_id)
         if not mb_artist_id and trackname:
-            mb_artist_id = await self.musicbrainz.search_artist_by_track(artistname, trackname)
-            if mb_artist_id: LOGGER.debug('Got MusicbrainzArtistId for %s after search on trackname %s --> %s' %(artistname, trackname, mb_artist_id))
+            mb_artist_id = await self.musicbrainz.search_artist_by_track(
+                artistname, trackname)
+            if mb_artist_id:
+                LOGGER.debug(
+                    'Got MusicbrainzArtistId for %s after search on trackname %s --> %s',
+                    artistname, trackname, mb_artist_id)
         return mb_artist_id
 
     @staticmethod
@@ -58,8 +83,8 @@ class MetaData():
                 cur_metadata[key] = value
         return cur_metadata
 
-class MusicBrainz():
 
+class MusicBrainz():
     def __init__(self, mass):
         self.mass = mass
         self.cache = mass.cache
@@ -67,34 +92,49 @@ class MusicBrainz():
     async def setup(self):
         ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
-                loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
+            loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=1, period=1)
 
-    async def search_artist_by_album(self, artistname, albumname=None, album_upc=None):
+    async def search_artist_by_album(self,
+                                     artistname,
+                                     albumname=None,
+                                     album_upc=None):
         ''' retrieve musicbrainz artist id by providing the artist name and albumname or upc '''
-        searchartist = re.sub(LUCENE_SPECIAL, r'\\\1', artistname)
-        #searchartist = searchartist.replace('/','').replace('\\','').replace('-', '')
-        if album_upc:
-            endpoint = 'release'
-            params = {'query': 'barcode:%s' % album_upc}
-        else:
-            searchalbum = re.sub(LUCENE_SPECIAL, r'\\\1', albumname)
-            endpoint = 'release'
-            params = {'query': 'artist:"%s" AND release:"%s"' % (searchartist, searchalbum)}
-        result = await self.get_data(endpoint, params)
-        if result and 'releases' in result:
-            for strictness in [True, False]:
-                for item in result['releases']:
-                    if album_upc or compare_strings(item['title'], albumname, strictness):
-                        for artist in item['artist-credit']:
-                            if compare_strings(artist['artist']['name'], artistname, strictness):
-                                return artist['artist']['id']
-                            for item in artist.get('aliases',[]):
-                                if compare_strings(item['name'], artistname, strictness):
-                                    return artist['id']
+        for searchartist in [
+                re.sub(LUCENE_SPECIAL, r'\\\1', artistname),
+                get_compare_string(artistname)
+        ]:
+            if album_upc:
+                endpoint = 'release'
+                params = {'query': 'barcode:%s' % album_upc}
+            else:
+                searchalbum = re.sub(LUCENE_SPECIAL, r'\\\1', albumname)
+                endpoint = 'release'
+                params = {
+                    'query':
+                    'artist:"%s" AND release:"%s"' %
+                    (searchartist, searchalbum)
+                }
+            result = await self.get_data(endpoint, params)
+            if result and 'releases' in result:
+                for strictness in [True, False]:
+                    for item in result['releases']:
+                        if album_upc or compare_strings(
+                                item['title'], albumname, strictness):
+                            for artist in item['artist-credit']:
+                                if compare_strings(artist['artist']['name'],
+                                                   artistname, strictness):
+                                    return artist['artist']['id']
+                                for item in artist.get('aliases', []):
+                                    if compare_strings(item['name'],
+                                                       artistname, strictness):
+                                        return artist['id']
         return ''
 
-    async def search_artist_by_track(self, artistname, trackname=None, track_isrc=None):
+    async def search_artist_by_track(self,
+                                     artistname,
+                                     trackname=None,
+                                     track_isrc=None):
         ''' retrieve artist id by providing the artist name and trackname or track isrc '''
         endpoint = 'recording'
         searchartist = re.sub(LUCENE_SPECIAL, r'\\\1', artistname)
@@ -105,17 +145,22 @@ class MusicBrainz():
         else:
             searchtrack = re.sub(LUCENE_SPECIAL, r'\\\1', trackname)
             endpoint = 'recording'
-            params = {'query': '"%s" AND artist:"%s"' % (searchtrack, searchartist)}
+            params = {
+                'query': '"%s" AND artist:"%s"' % (searchtrack, searchartist)
+            }
         result = await self.get_data(endpoint, params)
         if result and 'recordings' in result:
             for strictness in [True, False]:
                 for item in result['recordings']:
-                    if track_isrc or compare_strings(item['title'], trackname, strictness):
+                    if track_isrc or compare_strings(item['title'], trackname,
+                                                     strictness):
                         for artist in item['artist-credit']:
-                            if compare_strings(artist['artist']['name'], artistname, strictness):
+                            if compare_strings(artist['artist']['name'],
+                                               artistname, strictness):
                                 return artist['artist']['id']
-                            for item in artist.get('aliases',[]):
-                                if compare_strings(item['name'], artistname, strictness):
+                            for item in artist.get('aliases', []):
+                                if compare_strings(item['name'], artistname,
+                                                   strictness):
                                     return artist['id']
         return ''
 
@@ -123,10 +168,16 @@ class MusicBrainz():
     async def get_data(self, endpoint, params={}):
         ''' get data from api'''
         url = 'http://musicbrainz.org/ws/2/%s' % endpoint
-        headers = {'User-Agent': 'Music Assistant/1.0.0 https://github.com/marcelveldt'}
+        headers = {
+            'User-Agent':
+            'Music Assistant/1.0.0 https://github.com/marcelveldt'
+        }
         params['fmt'] = 'json'
         async with self.throttler:
-            async with self.http_session.get(url, headers=headers, params=params, verify_ssl=False) as response:
+            async with self.http_session.get(url,
+                                             headers=headers,
+                                             params=params,
+                                             verify_ssl=False) as response:
                 try:
                     result = await response.json()
                 except Exception as exc:
@@ -135,8 +186,8 @@ class MusicBrainz():
                     result = None
                 return result
 
-class FanartTv():
 
+class FanartTv():
     def __init__(self, mass):
         self.mass = mass
         self.cache = mass.cache
@@ -144,7 +195,7 @@ class FanartTv():
     async def setup(self):
         ''' perform async setup '''
         self.http_session = aiohttp.ClientSession(
-                loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
+            loop=self.mass.event_loop, connector=aiohttp.TCPConnector())
         self.throttler = Throttler(rate_limit=1, period=2)
 
     async def artist_images(self, mb_artist_id):
@@ -175,13 +226,20 @@ class FanartTv():
         url = 'http://webservice.fanart.tv/v3/%s' % endpoint
         params['api_key'] = '639191cb0774661597f28a47e7e2bad5'
         async with self.throttler:
-            async with self.http_session.get(url, params=params, verify_ssl=False) as response:
+            async with self.http_session.get(url,
+                                             params=params,
+                                             verify_ssl=False) as response:
                 try:
                     result = await response.json()
                 except aiohttp.client_exceptions.ContentTypeError:
+                    LOGGER.error("Failed to retrieve %s", endpoint)
                     text_result = await response.text()
-                    LOGGER.error(text_result)
+                    LOGGER.debug(text_result)
+                    return None
+                except aiohttp.client_exceptions.ClientConnectorError:
+                    LOGGER.error("Failed to retrieve %s", endpoint)
                     return None
                 if 'error' in result and 'limit' in result['error']:
-                    raise Exception(result['error'])
+                    LOGGER.error(result['error'])
+                    return None
                 return result

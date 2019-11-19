@@ -127,19 +127,20 @@ class HTTPStreamer():
                 if not chunk:
                     break
                 if chunk and not cancelled.is_set():
-                    self.mass.run_task(buffer.write(chunk),
-                                       wait_for_result=True,
-                                       ignore_exception=(BrokenPipeError,
-                                                         ConnectionResetError,
-                                                         concurrent.futures._base.CancelledError))
+                    self.mass.run_task(
+                        buffer.write(chunk),
+                        wait_for_result=True,
+                        ignore_exception=(
+                            BrokenPipeError, ConnectionResetError,
+                            concurrent.futures._base.CancelledError))
                 del chunk
             # indicate EOF if no more data
             if not cancelled.is_set():
-                self.mass.run_task(buffer.write_eof(),
-                                   wait_for_result=True,
-                                   ignore_exception=(BrokenPipeError,
-                                                     ConnectionResetError,
-                                                     concurrent.futures._base.CancelledError))
+                self.mass.run_task(
+                    buffer.write_eof(),
+                    wait_for_result=True,
+                    ignore_exception=(BrokenPipeError, ConnectionResetError,
+                                      concurrent.futures._base.CancelledError))
 
         # start fill buffer task in background
         fill_buffer_thread = threading.Thread(target=fill_buffer)
@@ -180,7 +181,8 @@ class HTTPStreamer():
 
                 ### HANDLE FIRST PART OF TRACK
                 if cur_chunk == 1 and is_last_chunk:
-                    LOGGER.warning("Stream error, skip track %s", queue_track.item_id)
+                    LOGGER.warning("Stream error, skip track %s",
+                                   queue_track.item_id)
                     break
                 if cur_chunk <= 2 and not last_fadeout_data:
                     # no fadeout_part available so just pass it to the output directly
@@ -237,8 +239,10 @@ class HTTPStreamer():
                         # so we just use the entire original data
                         last_part = prev_chunk + chunk
                         if len(last_part) < fade_bytes:
-                            LOGGER.warning("Not enough data for crossfade: %s", len(last_part))
-                    if not player.queue.crossfade_enabled or len(last_part) < fade_bytes:
+                            LOGGER.warning("Not enough data for crossfade: %s",
+                                           len(last_part))
+                    if not player.queue.crossfade_enabled or len(
+                            last_part) < fade_bytes:
                         # crossfading is not enabled so just pass the (stripped) audio data
                         sox_proc.stdin.write(last_part)
                         bytes_written += len(last_part)
@@ -306,9 +310,11 @@ class HTTPStreamer():
         ''' get audio stream from provider and apply additional effects/processing where/if needed'''
         streamdetails = None
         # always request the full db track as there might be other qualities available
-        full_track = self.mass.run_task(
-                self.mass.music.track(queue_item.item_id, queue_item.provider, lazy=True),
-                wait_for_result=True)
+        full_track = self.mass.run_task(self.mass.music.track(
+            queue_item.item_id,
+            queue_item.provider,
+            lazy=True,
+            track_details=queue_item), wait_for_result=True)
         # sort by quality and check track availability
         for prov_media in sorted(full_track.provider_ids,
                                  key=operator.itemgetter('quality'),
@@ -318,7 +324,8 @@ class HTTPStreamer():
             # get stream details from provider
             streamdetails = self.mass.run_task(self.mass.music.providers[
                 prov_media['provider']].get_stream_details(
-                    prov_media['item_id']), wait_for_result=True)
+                    prov_media['item_id']),
+                                               wait_for_result=True)
             if streamdetails:
                 streamdetails['player_id'] = player.player_id
                 if not 'item_id' in streamdetails:

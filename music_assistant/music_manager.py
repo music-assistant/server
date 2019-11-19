@@ -137,11 +137,16 @@ class MusicManager():
             return await self.mass.db.album(item_id)
         return await self.providers[provider].album(item_id, lazy=lazy)
 
-    async def track(self, item_id, provider='database', lazy=True) -> Track:
+    async def track(self,
+                    item_id,
+                    provider='database',
+                    lazy=True,
+                    track_details=None) -> Track:
         ''' get track by id '''
         if not provider or provider == 'database':
             return await self.mass.db.track(item_id)
-        return await self.providers[provider].track(item_id, lazy=lazy)
+        return await self.providers[provider].track(
+            item_id, lazy=lazy, track_details=track_details)
 
     async def playlist(self, item_id, provider='database') -> Playlist:
         ''' get playlist by id '''
@@ -376,7 +381,7 @@ class MusicManager():
                                             prov_playlist_playlist_id,
                                             track_ids_to_remove)
 
-    @run_periodic(3600*3)
+    @run_periodic(3600 * 3)
     async def __sync_music_providers(self):
         ''' periodic sync of all music providers '''
         for prov_id in self.providers:

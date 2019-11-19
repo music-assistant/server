@@ -1,18 +1,20 @@
 <template>
   <section>
     <v-text-field
-      solo
+      dense
       clearable
       :label="$t('type_to_search')"
       append-icon="search"
       v-model="searchQuery"
       v-on:keyup.enter="Search"
       @click:append="Search"
-      style="margin-left:30px; margin-right:30px; margin-top:10px"
+      style="margin-left:15px; margin-right:15px; margin-top:18px;margin-bottom:-8px"
     >
     </v-text-field>
 
-    <v-tabs v-model="active" color="transparent" light slider-color="black">
+    <v-tabs show-arrows v-model="activeTab" grow
+    background-color="rgba(0,0,0,.75)"
+    dark>
       <v-tab ripple v-if="tracks.length">{{ $t("tracks") }}</v-tab>
       <v-tab-item v-if="tracks.length">
         <v-card flat>
