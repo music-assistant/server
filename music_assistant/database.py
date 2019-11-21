@@ -124,13 +124,12 @@ class Database():
             return prov_item_id
         sql_query = '''SELECT item_id FROM provider_mappings
             WHERE prov_item_id = ? AND provider = ? AND media_type = ?;'''
-        cursor = await self._db.execute(sql_query,
-                                        (prov_item_id, provider, media_type))
-        item_id = await cursor.fetchone()
-        if item_id:
-            item_id = item_id[0]
-        await cursor.close()
-        return item_id
+        async with self._db.execute(
+                sql_query, (prov_item_id, provider, media_type)) as cursor:
+            item_id = await cursor.fetchone()
+            if item_id:
+                return item_id[0]
+        return None
 
     async def search(self, searchquery, media_types: List[MediaType]):
         ''' search library for the given searchphrase '''

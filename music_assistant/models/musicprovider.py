@@ -37,7 +37,7 @@ class MusicProvider():
         item_id = await self.mass.db.get_database_id(self.prov_id,
                                                      prov_item_id,
                                                      MediaType.Artist)
-        if not item_id:
+        if item_id is not None:
             # artist not yet in local database so fetch details
             cache_key = f'{self.prov_id}.get_artist.{prov_item_id}'
             artist_details = await cached(self.cache, cache_key,
@@ -220,9 +220,13 @@ class MusicProvider():
         track_artists = []
         # we need to fetch track artists too
         for track_artist in track_details.artists:
-            db_track_artist = await self.artist(track_artist.item_id,
-                                                lazy=False,
-                                                ref_track=track_details)
+            if track_artist.provider == 'database':
+                db_track_artist = await self.mass.db.artist(
+                    track_artist.item_id)
+            else:
+                db_track_artist = await self.artist(track_artist.item_id,
+                                                    lazy=False,
+                                                    ref_track=track_details)
             if db_track_artist:
                 track_artists.append(db_track_artist)
         track_details.artists = track_artists
