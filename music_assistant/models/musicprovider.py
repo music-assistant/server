@@ -32,10 +32,12 @@ class MusicProvider():
                      prov_item_id,
                      lazy=True,
                      ref_album=None,
-                     ref_track=None) -> Artist:
+                     ref_track=None,
+                     provider=None) -> Artist:
         """ return artist details for the given provider artist id """
-        item_id = await self.mass.db.get_database_id(self.prov_id,
-                                                     prov_item_id,
+        if not provider:
+            provider = self.prov_id
+        item_id = await self.mass.db.get_database_id(provider, prov_item_id,
                                                      MediaType.Artist)
         if item_id is not None:
             # artist not yet in local database so fetch details
@@ -154,11 +156,15 @@ class MusicProvider():
             musicbrainz_id = artist_details.name
         return musicbrainz_id
 
-    async def album(self, prov_item_id, lazy=True,
-                    album_details=None) -> Album:
+    async def album(self,
+                    prov_item_id,
+                    lazy=True,
+                    album_details=None,
+                    provider=None) -> Album:
         """ return album details for the given provider album id"""
-        item_id = await self.mass.db.get_database_id(self.prov_id,
-                                                     prov_item_id,
+        if not provider:
+            provider = self.prov_id
+        item_id = await self.mass.db.get_database_id(provider, prov_item_id,
                                                      MediaType.Album)
         if not item_id:
             # album not yet in local database so fetch details
@@ -180,7 +186,8 @@ class MusicProvider():
         # we need to fetch album artist too
         db_album_artist = await self.artist(album_details.artist.item_id,
                                             lazy=False,
-                                            ref_album=album_details)
+                                            ref_album=album_details,
+                                            provider=album_details.artist.provider)
         album_details.artist = db_album_artist
         item_id = await self.mass.db.add_album(album_details)
         # also fetch same album on all providers
@@ -193,11 +200,15 @@ class MusicProvider():
                 await provider.match_album(new_album)
         return item_id
 
-    async def track(self, prov_item_id, lazy=True,
-                    track_details=None) -> Track:
+    async def track(self,
+                    prov_item_id,
+                    lazy=True,
+                    track_details=None,
+                    provider=None) -> Track:
         """ return track details for the given provider track id """
-        item_id = await self.mass.db.get_database_id(self.prov_id,
-                                                     prov_item_id,
+        if not provider:
+            provider = self.prov_id
+        item_id = await self.mass.db.get_database_id(provider, prov_item_id,
                                                      MediaType.Track)
         if not item_id:
             # track not yet in local database so fetch details
@@ -220,20 +231,24 @@ class MusicProvider():
         track_artists = []
         # we need to fetch track artists too
         for track_artist in track_details.artists:
-            if track_artist.provider == 'database':
-                db_track_artist = await self.mass.db.artist(
-                    track_artist.item_id)
-            else:
-                db_track_artist = await self.artist(track_artist.item_id,
-                                                    lazy=False,
-                                                    ref_track=track_details)
+            db_track_artist = await self.artist(track_artist.item_id,
+                                                lazy=False,
+                                                ref_track=track_details,
+                                                provider=track_artist.provider)
             if db_track_artist:
                 track_artists.append(db_track_artist)
         track_details.artists = track_artists
-        # fetch album details
-        if not prov_album_id:
-            prov_album_id = track_details.album.item_id
-        track_details.album = await self.album(prov_album_id, lazy=False)
+        # fetch album details - prefer prov_album_id
+        if prov_album_id:
+            album_details = await self.album(prov_album_id, lazy=False)
+            if album_details:
+                track_details.album = album_details
+        # make sure we have a database album
+        if track_details.album and track_details.album.provider != 'database':
+            track_details.album = await self.album(
+                track_details.album.item_id,
+                lazy=False,
+                provider=track_details.album.provider)
         item_id = await self.mass.db.add_track(track_details)
         # also fetch same track on all providers (will also get other quality versions)
         new_track = await self.mass.db.track(item_id)
@@ -245,10 +260,11 @@ class MusicProvider():
                 await provider.match_track(new_track)
         return item_id
 
-    async def playlist(self, prov_playlist_id) -> Playlist:
+    async def playlist(self, prov_playlist_id, provider=None) -> Playlist:
         """ return playlist details for the given provider playlist id """
-        db_id = await self.mass.db.get_database_id(self.prov_id,
-                                                   prov_playlist_id,
+        if not provider:
+            provider = self.prov_id
+        db_id = await self.mass.db.get_database_id(provider, prov_playlist_id,
                                                    MediaType.Playlist)
         if not db_id:
             # item not yet in local database so fetch and store details
@@ -256,9 +272,11 @@ class MusicProvider():
             db_id = await self.mass.db.add_playlist(item_details)
         return await self.mass.db.playlist(db_id)
 
-    async def radio(self, prov_radio_id) -> Radio:
+    async def radio(self, prov_radio_id, provider=None) -> Radio:
         """ return radio details for the given provider playlist id """
-        db_id = await self.mass.db.get_database_id(self.prov_id, prov_radio_id,
+        if not provider:
+            provider = self.prov_id
+        db_id = await self.mass.db.get_database_id(provider, prov_radio_id,
                                                    MediaType.Radio)
         if not db_id:
             # item not yet in local database so fetch and store details
