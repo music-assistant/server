@@ -222,9 +222,11 @@ class HomeAssistant():
             if player.queue.cur_item:
                 state_attributes["media_duration"] = player.queue.cur_item.duration
                 state_attributes["media_title"] = player.queue.cur_item.name
-                state_attributes["media_artist"] = player.queue.cur_item.artists[0].name
-                state_attributes["media_album_name"] = player.queue.cur_item.album.name
-                state_attributes["entity_picture"] = player.queue.cur_item.album.metadata.get("image")
+                if player.queue.cur_item.artists:
+                    state_attributes["media_artist"] = player.queue.cur_item.artists[0].name
+                if player.queue.cur_item.album:
+                    state_attributes["media_album_name"] = player.queue.cur_item.album.name
+                    state_attributes["entity_picture"] = player.queue.cur_item.album.metadata.get("image")
         self._published_players[entity_id] = player_id
         await self.__set_state(entity_id, state, state_attributes)
 
