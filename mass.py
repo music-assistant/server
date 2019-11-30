@@ -6,7 +6,6 @@ import os
 import logging
 from aiorun import run
 import asyncio
-import uvloop
 
 logger = logging.getLogger()
 logformat = logging.Formatter('%(asctime)-15s %(levelname)-5s %(name)s.%(module)s -- %(message)s')
@@ -79,7 +78,12 @@ if __name__ == "__main__":
         do_update()
     # create event_loop with uvloop
     event_loop = asyncio.get_event_loop()
-    uvloop.install()
+    try:
+        import uvloop
+        uvloop.install()
+    except ImportError:
+        # uvloop is not available on Windows so safe to ignore this
+        logger.warning("uvloop support is disabled")
     # config debug settings if needed
     if debug:
         event_loop.set_debug(True)

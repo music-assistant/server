@@ -3,7 +3,6 @@
 
 import asyncio
 import re
-import uvloop
 import os
 import shutil
 import slugify as unicode_slug

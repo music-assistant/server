@@ -10,6 +10,7 @@ from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 import types
 import time
+import uuid
 
 from ..utils import run_periodic, LOGGER, try_parse_int
 from ..models.playerprovider import PlayerProvider
@@ -229,15 +230,27 @@ class ChromecastProvider(PlayerProvider):
 
     async def __handle_group_members_update(self, mz, added_player=None, removed_player=None):
         ''' handle callback from multizone manager '''
+        group_player_id = str(uuid.UUID(mz._uuid))
+        group_player = await self.get_player(group_player_id)
         if added_player:
-            group_player = await self.get_player(str(mz._uuid))
-            group_player.add_group_child(added_player)
+            player_id = str(uuid.UUID(added_player))
+            child_player = await self.get_player(player_id)
+            if child_player and player_id != group_player_id:
+                group_player.add_group_child(player_id)
+                LOGGER.debug("%s added to %s", child_player.name, group_player.name)
         elif removed_player:
-            group_player = await self.get_player(str(mz._uuid))
-            group_player.remove_group_child(added_player)
+            player_id = str(uuid.UUID(removed_player))
+            group_player.remove_group_child(player_id)
+            LOGGER.debug("%s removed from %s", player_id, group_player.name)
         else:
-            group_player = await self.get_player(str(mz._uuid))
-            group_player.group_childs = mz.members
+            for member in mz.members:
+                player_id = str(uuid.UUID(member))
+                child_player = await self.get_player(player_id)
+                if not child_player or player_id == group_player_id:
+                    continue
+                if not player_id in group_player.group_childs:
+                    group_player.add_group_child(player_id)
+                    LOGGER.debug("%s added to %s", child_player.name, group_player.name)
     
     @run_periodic(1800)
     async def __periodic_chromecast_discovery(self):
@@ -265,6 +278,7 @@ class ChromecastProvider(PlayerProvider):
             player_id = str(uuid)
             if not player_id in self.mass.players._players:
                 self.__chromecast_discovered(player_id, discovery_info)
+            self.__update_group_players()
         listener, browser = start_discovery(discovered_callback)
         time.sleep(30) # run discovery for 30 seconds
         stop_discovery(browser)
@@ -299,8 +313,12 @@ class ChromecastProvider(PlayerProvider):
         chromecast.media_controller.register_status_listener(status_listener)
         player.cc.wait()
         self.mass.run_task(self.add_player(player))
-        if player.mz:
-            player.mz.update_members()
+
+    def __update_group_players(self):
+        '''update childs of all group players'''
+        for player in self.players:
+            if player.cc.cast_type == 'group':
+                player.mz.update_members()
 
 def chunks(l, n):
     """Yield successive n-sized chunks from l."""
