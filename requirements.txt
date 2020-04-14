@@ -1,5 +1,5 @@
 cytoolz
-aiohttp
+aiohttp[speedups]
 requests
 spotify_token
 protobuf

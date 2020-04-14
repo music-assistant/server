@@ -1,9 +1,9 @@
-FROM python:3.7-slim
+FROM python:slim
 
 COPY requirements.txt requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		# required packages
-		flac sox libsox-fmt-mp3 zip curl wget unzip ffmpeg libsndfile1 libtag1v5 \
+		flac sox libsox-fmt-mp3 zip curl wget unzip ffmpeg libsndfile1 libtag1v5 libjemalloc1 \
 		# build packages
 		libtag1-dev build-essential && \
 	# install required python packages with pip
@@ -24,5 +24,7 @@ VOLUME ["/data"]
 ENV mass_debug false
 ENV mass_datadir /data
 ENV mass_update false
+
+ENV LD_PRELOAD="/usr/local/lib/libjemalloc.so.2"
 
 CMD ["/usr/src/app/mass.py"]
