@@ -1,10 +1,10 @@
+argparse
 cytoolz
 aiohttp[speedups]
 requests
 spotify_token
 protobuf
 pychromecast
-uvloop
 asyncio_throttle
 aiocometd
 aiosqlite
@@ -20,3 +20,4 @@ soco
 pillow
 aiohttp_cors
 unidecode
+webbrowser
