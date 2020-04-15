@@ -26,9 +26,9 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url = 'https://github.com/marcelveldt/musicassistant.git',
     packages=['music_assistant'],
-    classifiers=(
+    classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
-    ),
+    ],
     install_requires=INSTALL_REQUIRES,
     )
