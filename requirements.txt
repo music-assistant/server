@@ -20,4 +20,3 @@ soco
 pillow
 aiohttp_cors
 unidecode
-webbrowser
