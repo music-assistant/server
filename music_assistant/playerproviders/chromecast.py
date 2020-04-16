@@ -12,12 +12,12 @@ import types
 import time
 import uuid
 
-from ..utils import run_periodic, LOGGER, try_parse_int
-from ..models.playerprovider import PlayerProvider
-from ..models.player import Player, PlayerState
-from ..models.playerstate import PlayerState
-from ..models.player_queue import QueueItem, PlayerQueue
-from ..constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
+from music_assistant.utils import run_periodic, LOGGER, try_parse_int
+from music_assistant.models.playerprovider import PlayerProvider
+from music_assistant.models.player import Player, PlayerState
+from music_assistant.models.playerstate import PlayerState
+from music_assistant.models.player_queue import QueueItem, PlayerQueue
+from music_assistant.constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
 
 PROV_ID = 'chromecast'
 PROV_NAME = 'Chromecast'

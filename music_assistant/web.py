@@ -11,9 +11,9 @@ from functools import partial
 import ssl
 import concurrent
 import threading
-from .models.media_types import MediaItem, MediaType, media_type_from_string
-from .utils import run_periodic, LOGGER, IS_HASSIO, run_async_background_task, get_ip, json_serializer
-from .constants import CONF_KEY_PLAYERSETTINGS, CONF_KEY_MUSICPROVIDERS, CONF_KEY_PLAYERPROVIDERS
+from music_assistant.models.media_types import MediaItem, MediaType, media_type_from_string
+from music_assistant.utils import run_periodic, LOGGER, IS_HASSIO, run_async_background_task, get_ip, json_serializer
+from music_assistant.constants import CONF_KEY_PLAYERSETTINGS, CONF_KEY_MUSICPROVIDERS, CONF_KEY_PLAYERPROVIDERS
 
 CONF_KEY = 'web'
 

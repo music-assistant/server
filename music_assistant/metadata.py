@@ -6,8 +6,8 @@ from asyncio_throttle import Throttler
 from yarl import URL
 import re
 
-from .utils import LOGGER, compare_strings, get_compare_string
-from .cache import use_cache
+from music_assistant.utils import LOGGER, compare_strings, get_compare_string
+from music_assistant.cache import use_cache
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 

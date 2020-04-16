@@ -4,11 +4,11 @@
 import asyncio
 from enum import Enum
 from typing import List
-from ..utils import run_periodic, LOGGER
-from ..constants import CONF_ENABLED
-from .player_queue import PlayerQueue
-from .media_types import Track
-from .player import Player
+from music_assistant.utils import run_periodic, LOGGER
+from music_assistant.constants import CONF_ENABLED
+from music_assistant.models.player_queue import PlayerQueue
+from music_assistant.models.media_types import Track
+from music_assistant.models.player import Player
 
 
 class PlayerProvider():

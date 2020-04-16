@@ -6,10 +6,10 @@
 """
 
 import time
-from ..utils import try_parse_int, try_parse_bool, try_parse_float
-from ..constants import EVENT_PLAYER_CHANGED
-from .player_queue import PlayerQueue
-from .playerstate import PlayerState
+from music_assistant.utils import try_parse_int, try_parse_bool, try_parse_float
+from music_assistant.constants import EVENT_PLAYER_CHANGED
+from music_assistant.models.player_queue import PlayerQueue
+from music_assistant.models.playerstate import PlayerState
 
 # pylint: disable=too-many-instance-attributes
 # pylint: disable=too-many-public-methods

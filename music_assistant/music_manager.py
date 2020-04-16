@@ -11,9 +11,9 @@ import toolz
 from PIL import Image
 import aiohttp
 
-from .utils import run_periodic, LOGGER, load_provider_modules
-from .models.media_types import MediaItem, MediaType, Track, Artist, Album, Playlist, Radio
-from .constants import CONF_KEY_MUSICPROVIDERS, EVENT_MUSIC_SYNC_STATUS
+from music_assistant.utils import run_periodic, LOGGER, load_provider_modules
+from music_assistant.models.media_types import MediaItem, MediaType, Track, Artist, Album, Playlist, Radio
+from music_assistant.constants import CONF_KEY_MUSICPROVIDERS, EVENT_MUSIC_SYNC_STATUS
 
 
 def sync_task(desc):

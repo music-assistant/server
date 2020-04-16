@@ -4,12 +4,12 @@
 import os
 from typing import List
 
-from .constants import CONF_KEY_PLAYERPROVIDERS, EVENT_PLAYER_ADDED, \
+from music_assistant.constants import CONF_KEY_PLAYERPROVIDERS, EVENT_PLAYER_ADDED, \
     EVENT_PLAYER_REMOVED, EVENT_HASS_ENTITY_CHANGED
-from .utils import LOGGER, load_provider_modules, iter_items
-from .models.media_types import MediaItem, MediaType
-from .models.player_queue import QueueItem, QueueOption
-from .models.player import Player
+from music_assistant.utils import LOGGER, load_provider_modules, iter_items
+from music_assistant.models.media_types import MediaItem, MediaType
+from music_assistant.models.player_queue import QueueItem, QueueOption
+from music_assistant.models.player import Player
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODULES_PATH = os.path.join(BASE_DIR, "playerproviders")

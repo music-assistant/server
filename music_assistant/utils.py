@@ -14,7 +14,7 @@ except ImportError:
     import json
 LOGGER = logging.getLogger('music_assistant')
 
-from .constants import CONF_KEY_MUSICPROVIDERS, CONF_ENABLED
+from music_assistant.constants import CONF_KEY_MUSICPROVIDERS, CONF_ENABLED
 
 IS_HASSIO = os.path.isfile('/data/options.json')
 

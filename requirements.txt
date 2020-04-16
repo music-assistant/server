@@ -1,6 +1,6 @@
 argparse
 cytoolz
-aiohttp[speedups]
+aiohttp
 requests
 spotify_token
 protobuf

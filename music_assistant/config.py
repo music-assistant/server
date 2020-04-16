@@ -4,8 +4,8 @@
 import os
 import shutil
 
-from .utils import try_load_json_file, json, LOGGER
-from .constants import CONF_KEY_BASE, CONF_KEY_PLAYERSETTINGS, \
+from music_assistant.utils import try_load_json_file, json, LOGGER
+from music_assistant.constants import CONF_KEY_BASE, CONF_KEY_PLAYERSETTINGS, \
         CONF_KEY_MUSICPROVIDERS, CONF_KEY_PLAYERPROVIDERS, EVENT_CONFIG_CHANGED
 
 

@@ -11,11 +11,11 @@ import random
 import uuid
 from enum import Enum
 
-from ..utils import LOGGER, serialize_values
-from ..constants import EVENT_PLAYBACK_STARTED, EVENT_PLAYBACK_STOPPED, \
+from music_assistant.utils import LOGGER, serialize_values
+from music_assistant.constants import EVENT_PLAYBACK_STARTED, EVENT_PLAYBACK_STOPPED, \
     EVENT_QUEUE_UPDATED, EVENT_QUEUE_ITEMS_UPDATED
-from .media_types import Track
-from .playerstate import PlayerState
+from music_assistant.models.media_types import Track
+from music_assistant.models.playerstate import PlayerState
 
 # pylint: disable=too-many-instance-attributes
 # pylint: disable=too-many-public-methods

@@ -7,8 +7,8 @@ import os
 from typing import List
 import aiosqlite
 
-from .utils import LOGGER, get_sort_name, try_parse_int
-from .models.media_types import MediaType, Artist, Album, Track, Playlist, Radio
+from music_assistant.utils import LOGGER, get_sort_name, try_parse_int
+from music_assistant.models.media_types import MediaType, Artist, Album, Track, Playlist, Radio
 
 
 def commit_guard(func):

@@ -5,9 +5,9 @@ from typing import List
 from asyncio_throttle import Throttler
 import aiohttp
 
-from ..utils import LOGGER
-from ..models import MusicProvider, MediaType, TrackQuality, Radio
-from ..constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, CONF_TYPE_PASSWORD
+from music_assistant.utils import LOGGER
+from music_assistant.models import MusicProvider, MediaType, TrackQuality, Radio
+from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, CONF_TYPE_PASSWORD
 
 
 PROV_NAME = 'TuneIn Radio'

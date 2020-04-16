@@ -9,7 +9,7 @@ import pickle
 from functools import reduce
 import aiosqlite
 
-from .utils import run_periodic, LOGGER
+from music_assistant.utils import run_periodic, LOGGER
 
 
 class Cache(object):

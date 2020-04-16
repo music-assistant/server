@@ -14,9 +14,9 @@ from aiocometd import Client, ConnectionType, Extension
 import copy
 import slugify as slug
 import json
-from .utils import run_periodic, LOGGER, IS_HASSIO, try_parse_int
-from .models.media_types import Track
-from .constants import CONF_ENABLED, CONF_URL, CONF_TOKEN, EVENT_PLAYER_CHANGED, EVENT_PLAYER_ADDED, EVENT_HASS_ENTITY_CHANGED
+from music_assistant.utils import run_periodic, LOGGER, IS_HASSIO, try_parse_int
+from music_assistant.models.media_types import Track
+from music_assistant.constants import CONF_ENABLED, CONF_URL, CONF_TOKEN, EVENT_PLAYER_CHANGED, EVENT_PLAYER_ADDED, EVENT_HASS_ENTITY_CHANGED
 
 CONF_KEY = 'homeassistant'
 CONF_PUBLISH_PLAYERS = "publish_players"

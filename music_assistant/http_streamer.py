@@ -17,10 +17,10 @@ import subprocess
 import gc
 import shlex
 
-from .constants import EVENT_STREAM_STARTED, EVENT_STREAM_ENDED
-from .utils import LOGGER, try_parse_int, get_ip, run_async_background_task, run_periodic, get_folder_size
-from .models.media_types import TrackQuality, MediaType
-from .models.playerstate import PlayerState
+from music_assistant.constants import EVENT_STREAM_STARTED, EVENT_STREAM_ENDED
+from music_assistant.utils import LOGGER, try_parse_int, get_ip, run_async_background_task, run_periodic, get_folder_size
+from music_assistant.models.media_types import TrackQuality, MediaType
+from music_assistant.models.playerstate import PlayerState
 
 
 class HTTPStreamer():

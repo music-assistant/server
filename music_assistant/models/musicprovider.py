@@ -3,9 +3,9 @@
 
 import asyncio
 from typing import List
-from ..utils import LOGGER, compare_strings
-from ..cache import cached_iterator, cached
-from .media_types import Album, Artist, Track, Playlist, MediaType, Radio
+from music_assistant.utils import LOGGER, compare_strings
+from music_assistant.cache import cached_iterator, cached
+from music_assistant.models.media_types import Album, Artist, Track, Playlist, MediaType, Radio
 
 
 class MusicProvider():

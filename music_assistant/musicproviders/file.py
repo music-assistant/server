@@ -9,9 +9,9 @@ import time
 import base64
 import taglib
 
-from ..utils import run_periodic, LOGGER, parse_title_and_version
-from ..models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
-from ..constants import CONF_ENABLED
+from music_assistant.utils import run_periodic, LOGGER, parse_title_and_version
+from music_assistant.models import MusicProvider, MediaType, TrackQuality, AlbumType, Artist, Album, Track, Playlist
+from music_assistant.constants import CONF_ENABLED
 
 PROV_NAME = 'Local files and playlists'
 PROV_CLASS = 'FileProvider'
