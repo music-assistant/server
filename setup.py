@@ -31,6 +31,9 @@ setup(
     python_requires=">=3.7",
     include_package_data=True,
     install_requires=INSTALL_REQUIRES,
+    package_data={
+        'music_assistant': PACKAGE_FILES,
+    },
     zip_safe=False,
     classifiers=[
         "Development Status :: 4 - Beta",
