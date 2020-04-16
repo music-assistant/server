@@ -34,7 +34,7 @@ setup(
     include_package_data=True,
     install_requires=INSTALL_REQUIRES,
     zip_safe=False,
-    package_data=DATA_FILES,
+    package_data={'music_assistant': DATA_FILES},
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
