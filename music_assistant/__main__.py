@@ -1,12 +1,12 @@
 """Start Music Assistant."""
 import argparse
+import asyncio
+import logging
+import os
 import platform
 import sys
-import os
-import logging
-import asyncio
-from aiorun import run
 
+from aiorun import run
 from music_assistant.mass import MusicAssistant
 
 

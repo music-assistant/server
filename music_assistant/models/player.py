@@ -6,16 +6,18 @@
 """
 
 import time
-from music_assistant.utils import try_parse_int, try_parse_bool, try_parse_float
+
 from music_assistant.constants import EVENT_PLAYER_CHANGED
 from music_assistant.models.player_queue import PlayerQueue
 from music_assistant.models.playerstate import PlayerState
+from music_assistant.utils import try_parse_bool, try_parse_float, try_parse_int
 
 # pylint: disable=too-many-instance-attributes
 # pylint: disable=too-many-public-methods
 # pylint: disable=too-few-public-methods
 
-class Player():
+
+class Player:
     """
         Representation of a musicplayer.
         Should be subclassed/overriden with provider specific implementation.
@@ -37,11 +39,11 @@ class Player():
 
     async def cmd_next(self):
         """ [CAN OVERRIDE] send next track command to player """
-        return await self.queue.play_index(self.queue.cur_index+1)
+        return await self.queue.play_index(self.queue.cur_index + 1)
 
     async def cmd_previous(self):
         """ [CAN OVERRIDE] send previous track command to player """
-        return await self.queue.play_index(self.queue.cur_index-1)
+        return await self.queue.play_index(self.queue.cur_index - 1)
 
     async def cmd_power_on(self):
         """ [MUST OVERRIDE] send power ON command to player """
@@ -123,24 +125,24 @@ class Player():
     def __init__(self, mass, player_id, prov_id):
         # private attributes
         self.mass = mass
-        self._player_id = player_id # unique id for this player
-        self._prov_id = prov_id # unique provider id for the player
-        self._name = ''
+        self._player_id = player_id  # unique id for this player
+        self._prov_id = prov_id  # unique provider id for the player
+        self._name = ""
         self._state = PlayerState.Stopped
         self._group_childs = []
         self._powered = False
         self._cur_time = 0
         self._media_position_updated_at = 0
-        self._cur_uri = ''
+        self._cur_uri = ""
         self._volume_level = 0
         self._muted = False
         self._queue = PlayerQueue(mass, self)
         self.__update_player_settings()
         self.initialized = False
         # public attributes
-        self.supports_queue = True # has native support for a queue
-        self.supports_gapless = False # has native gapless support
-        self.supports_crossfade = False # has native crossfading support
+        self.supports_queue = True  # has native support for a queue
+        self.supports_gapless = False  # has native gapless support
+        self.supports_crossfade = False  # has native crossfading support
 
     @property
     def player_id(self):
@@ -155,7 +157,7 @@ class Player():
     @property
     def enabled(self):
         """ [PROTECTED] enabled state of this player """
-        if self.settings.get('enabled'):
+        if self.settings.get("enabled"):
             return True
         else:
             return False
@@ -163,8 +165,8 @@ class Player():
     @property
     def name(self):
         """ [PROTECTED] name of this player """
-        if self.settings.get('name'):
-            return self.settings['name']
+        if self.settings.get("name"):
+            return self.settings["name"]
         else:
             return self._name
 
@@ -190,7 +192,7 @@ class Player():
         return player_ids
 
     @property
-    def group_childs(self)->list:
+    def group_childs(self) -> list:
         """
             [PROTECTED]
             return all child player ids for this group player as list
@@ -206,7 +208,8 @@ class Player():
             self.mass.event_loop.create_task(self.update())
             for child_player_id in group_childs:
                 self.mass.event_loop.create_task(
-                    self.mass.players.trigger_update(child_player_id))
+                    self.mass.players.trigger_update(child_player_id)
+                )
 
     def add_group_child(self, child_player_id):
         """ add player as child to this group player """
@@ -214,7 +217,8 @@ class Player():
             self._group_childs.append(child_player_id)
             self.mass.event_loop.create_task(self.update())
             self.mass.event_loop.create_task(
-                self.mass.players.trigger_update(child_player_id))
+                self.mass.players.trigger_update(child_player_id)
+            )
 
     def remove_group_child(self, child_player_id):
         """ remove player as child from this group player """
@@ -222,7 +226,8 @@ class Player():
             self._group_childs.remove(child_player_id)
             self.mass.event_loop.create_task(self.update())
             self.mass.event_loop.create_task(
-                self.mass.players.trigger_update(child_player_id))
+                self.mass.players.trigger_update(child_player_id)
+            )
 
     @property
     def state(self):
@@ -249,18 +254,20 @@ class Player():
         if not self.enabled:
             return False
         # homeassistant integration
-        if (self.mass.hass.enabled and self.settings.get('hass_power_entity') and
-                self.settings.get('hass_power_entity_source')):
+        if (
+            self.mass.hass.enabled
+            and self.settings.get("hass_power_entity")
+            and self.settings.get("hass_power_entity_source")
+        ):
             hass_state = self.mass.hass.get_state(
-                self.settings['hass_power_entity'],
-                attribute='source')
-            return hass_state == self.settings['hass_power_entity_source']
-        elif self.mass.hass.enabled and self.settings.get('hass_power_entity'):
-            hass_state = self.mass.hass.get_state(
-                self.settings['hass_power_entity'])
-            return hass_state != 'off'
+                self.settings["hass_power_entity"], attribute="source"
+            )
+            return hass_state == self.settings["hass_power_entity_source"]
+        elif self.mass.hass.enabled and self.settings.get("hass_power_entity"):
+            hass_state = self.mass.hass.get_state(self.settings["hass_power_entity"])
+            return hass_state != "off"
         # mute as power
-        elif self.settings.get('mute_as_power'):
+        elif self.settings.get("mute_as_power"):
             return not self.muted
         else:
             return self._powered
@@ -330,11 +337,11 @@ class Player():
                 group_volume = group_volume / active_players
             return group_volume
         # handle hass integration
-        elif self.mass.hass.enabled and self.settings.get('hass_volume_entity'):
+        elif self.mass.hass.enabled and self.settings.get("hass_volume_entity"):
             hass_state = self.mass.hass.get_state(
-                self.settings['hass_volume_entity'],
-                attribute='volume_level')
-            return int(try_parse_float(hass_state)*100)
+                self.settings["hass_volume_entity"], attribute="volume_level"
+            )
+            return int(try_parse_float(hass_state) * 100)
         else:
             return self._volume_level
 
@@ -348,7 +355,8 @@ class Player():
             # trigger update on group player
             for group_parent_id in self.group_parents:
                 self.mass.event_loop.create_task(
-                    self.mass.players.trigger_update(group_parent_id))
+                    self.mass.players.trigger_update(group_parent_id)
+                )
 
     @property
     def muted(self):
@@ -440,26 +448,31 @@ class Player():
         """ [PROTECTED] send power ON command to player """
         await self.cmd_power_on()
         # handle mute as power
-        if self.settings.get('mute_as_power'):
+        if self.settings.get("mute_as_power"):
             await self.volume_mute(False)
         # handle hass integration
-        if (self.mass.hass.enabled and
-                self.settings.get('hass_power_entity') and
-                self.settings.get('hass_power_entity_source')):
+        if (
+            self.mass.hass.enabled
+            and self.settings.get("hass_power_entity")
+            and self.settings.get("hass_power_entity_source")
+        ):
             cur_source = await self.mass.hass.get_state_async(
-                self.settings['hass_power_entity'], attribute='source')
+                self.settings["hass_power_entity"], attribute="source"
+            )
             if not cur_source:
                 service_data = {
-                    'entity_id': self.settings['hass_power_entity'],
-                    'source': self.settings['hass_power_entity_source']
+                    "entity_id": self.settings["hass_power_entity"],
+                    "source": self.settings["hass_power_entity_source"],
                 }
-                await self.mass.hass.call_service('media_player', 'select_source', service_data)
-        elif self.mass.hass.enabled and self.settings.get('hass_power_entity'):
-            domain = self.settings['hass_power_entity'].split('.')[0]
-            service_data = {'entity_id': self.settings['hass_power_entity']}
-            await self.mass.hass.call_service(domain, 'turn_on', service_data)
+                await self.mass.hass.call_service(
+                    "media_player", "select_source", service_data
+                )
+        elif self.mass.hass.enabled and self.settings.get("hass_power_entity"):
+            domain = self.settings["hass_power_entity"].split(".")[0]
+            service_data = {"entity_id": self.settings["hass_power_entity"]}
+            await self.mass.hass.call_service(domain, "turn_on", service_data)
         # handle play on power on
-        if self.settings.get('play_power_on'):
+        if self.settings.get("play_power_on"):
             # play player's own queue if it has items
             if self._queue.items:
                 await self.play()
@@ -477,21 +490,26 @@ class Player():
             await self.stop()
         await self.cmd_power_off()
         # handle mute as power
-        if self.settings.get('mute_as_power'):
+        if self.settings.get("mute_as_power"):
             await self.volume_mute(True)
         # handle hass integration
-        if (self.mass.hass.enabled and
-                self.settings.get('hass_power_entity') and
-                self.settings.get('hass_power_entity_source')):
+        if (
+            self.mass.hass.enabled
+            and self.settings.get("hass_power_entity")
+            and self.settings.get("hass_power_entity_source")
+        ):
             cur_source = await self.mass.hass.get_state_async(
-                self.settings['hass_power_entity'], attribute='source')
-            if cur_source == self.settings['hass_power_entity_source']:
-                service_data = {'entity_id': self.settings['hass_power_entity']}
-                await self.mass.hass.call_service('media_player', 'turn_off', service_data)
-        elif self.mass.hass.enabled and self.settings.get('hass_power_entity'):
-            domain = self.settings['hass_power_entity'].split('.')[0]
-            service_data = {'entity_id': self.settings['hass_power_entity']}
-            await self.mass.hass.call_service(domain, 'turn_off', service_data)
+                self.settings["hass_power_entity"], attribute="source"
+            )
+            if cur_source == self.settings["hass_power_entity_source"]:
+                service_data = {"entity_id": self.settings["hass_power_entity"]}
+                await self.mass.hass.call_service(
+                    "media_player", "turn_off", service_data
+                )
+        elif self.mass.hass.enabled and self.settings.get("hass_power_entity"):
+            domain = self.settings["hass_power_entity"].split(".")[0]
+            service_data = {"entity_id": self.settings["hass_power_entity"]}
+            await self.mass.hass.call_service(domain, "turn_off", service_data)
         # handle group power
         if self.is_group:
             # player is group, turn off all childs
@@ -534,22 +552,26 @@ class Player():
             new_volume = volume_level
             volume_dif = new_volume - cur_volume
             if cur_volume == 0:
-                volume_dif_percent = 1+(new_volume/100)
+                volume_dif_percent = 1 + (new_volume / 100)
             else:
-                volume_dif_percent = volume_dif/cur_volume
+                volume_dif_percent = volume_dif / cur_volume
             for child_player_id in self.group_childs:
                 child_player = await self.mass.players.get_player(child_player_id)
                 if child_player and child_player.enabled and child_player.powered:
                     cur_child_volume = child_player.volume_level
-                    new_child_volume = cur_child_volume + (cur_child_volume * volume_dif_percent)
+                    new_child_volume = cur_child_volume + (
+                        cur_child_volume * volume_dif_percent
+                    )
                     await child_player.volume_set(new_child_volume)
         # handle hass integration
-        elif self.mass.hass.enabled and self.settings.get('hass_volume_entity'):
+        elif self.mass.hass.enabled and self.settings.get("hass_volume_entity"):
             service_data = {
-                'entity_id': self.settings['hass_volume_entity'],
-                'volume_level': volume_level/100
+                "entity_id": self.settings["hass_volume_entity"],
+                "volume_level": volume_level / 100,
             }
-            await self.mass.hass.call_service('media_player', 'volume_set', service_data)
+            await self.mass.hass.call_service(
+                "media_player", "volume_set", service_data
+            )
             # just force full volume on actual player if volume is outsourced to hass
             await self.cmd_volume_set(100)
         else:
@@ -584,45 +606,49 @@ class Player():
     @property
     def settings(self):
         """ [PROTECTED] get player config settings """
-        if self.player_id in self.mass.config['player_settings']:
-            return self.mass.config['player_settings'][self.player_id]
+        if self.player_id in self.mass.config["player_settings"]:
+            return self.mass.config["player_settings"][self.player_id]
         else:
             self.__update_player_settings()
-            return self.mass.config['player_settings'][self.player_id]
+            return self.mass.config["player_settings"][self.player_id]
 
     def __update_player_settings(self):
         """ [PROTECTED] update player config settings """
-        player_settings = self.mass.config['player_settings'].get(self.player_id, {})
+        player_settings = self.mass.config["player_settings"].get(self.player_id, {})
         # generate config for the player
-        config_entries = [ # default config entries for a player
+        config_entries = [  # default config entries for a player
             ("enabled", True, "player_enabled"),
             ("name", "", "player_name"),
             ("mute_as_power", False, "player_mute_power"),
             ("max_sample_rate", 96000, "max_sample_rate"),
-            ('volume_normalisation', True, 'enable_r128_volume_normalisation'),
-            ('target_volume', '-23', 'target_volume_lufs'),
-            ('fallback_gain_correct', '-12', 'fallback_gain_correct'),
+            ("volume_normalisation", True, "enable_r128_volume_normalisation"),
+            ("target_volume", "-23", "target_volume_lufs"),
+            ("fallback_gain_correct", "-12", "fallback_gain_correct"),
             ("crossfade_duration", 0, "crossfade_duration"),
             ("play_power_on", False, "player_power_play"),
         ]
         # append player specific settings
-        config_entries += self.mass.players.providers[self._prov_id].player_config_entries
+        config_entries += self.mass.players.providers[
+            self._prov_id
+        ].player_config_entries
         # hass integration
-        if self.mass.config['base'].get('homeassistant', {}).get("enabled"):
+        if self.mass.config["base"].get("homeassistant", {}).get("enabled"):
             # append hass specific config entries
-            config_entries += [("hass_power_entity", "", "hass_player_power"),
-                               ("hass_power_entity_source", "", "hass_player_source"),
-                               ("hass_volume_entity", "", "hass_player_volume")]
+            config_entries += [
+                ("hass_power_entity", "", "hass_player_power"),
+                ("hass_power_entity_source", "", "hass_player_source"),
+                ("hass_volume_entity", "", "hass_player_volume"),
+            ]
         # pylint: disable=unused-variable
         for key, def_value, desc in config_entries:
             if not key in player_settings:
-                if (isinstance(def_value, str) and def_value.startswith('<')):
+                if isinstance(def_value, str) and def_value.startswith("<"):
                     player_settings[key] = None
                 else:
                     player_settings[key] = def_value
         # pylint: enable=unused-variable
-        self.mass.config['player_settings'][self.player_id] = player_settings
-        self.mass.config['player_settings'][self.player_id]['__desc__'] = config_entries
+        self.mass.config["player_settings"][self.player_id] = player_settings
+        self.mass.config["player_settings"][self.player_id]["__desc__"] = config_entries
 
     def to_dict(self):
         """ instance attributes as dict so it can be serialized to json """
@@ -642,5 +668,5 @@ class Player():
             "group_childs": self.group_childs,
             "enabled": self.enabled,
             "supports_queue": self.supports_queue,
-            "supports_gapless": self.supports_gapless
+            "supports_gapless": self.supports_gapless,
         }

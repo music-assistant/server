@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 """provides a simple stateless caching system."""
 
-import os
 import functools
-import time
-import pickle
 from functools import reduce
-import aiosqlite
+import os
+import pickle
+import time
 
-from music_assistant.utils import run_periodic, LOGGER
+import aiosqlite
+from music_assistant.utils import LOGGER, run_periodic
 
 
 class Cache(object):
@@ -21,16 +21,17 @@ class Cache(object):
         """Initialize our caching class."""
         self.mass = mass
         if not os.path.isdir(mass.datapath):
-            raise FileNotFoundError(
-                f"data directory {mass.datapath} does not exist!")
+            raise FileNotFoundError(f"data directory {mass.datapath} does not exist!")
         self._dbfile = os.path.join(mass.datapath, "cache.db")
 
     async def setup(self):
         """Async initialize of cache module."""
         self._db = await aiosqlite.connect(self._dbfile, timeout=30)
         self._db.row_factory = aiosqlite.Row
-        await self._db.execute("""CREATE TABLE IF NOT EXISTS simplecache(
-            id TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)""")
+        await self._db.execute(
+            """CREATE TABLE IF NOT EXISTS simplecache(
+            id TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
+        )
         await self._db.commit()
         self.mass.event_loop.create_task(self.auto_cleanup())
 
@@ -50,25 +51,21 @@ class Cache(object):
         cur_time = int(time.time())
         checksum = self._get_checksum(checksum)
         sql_query = "SELECT expires, data, checksum FROM simplecache WHERE id = ?"
-        async with self._db.execute(sql_query, (cache_key, )) as cursor:
+        async with self._db.execute(sql_query, (cache_key,)) as cursor:
             cache_data = await cursor.fetchone()
             if not cache_data:
-                LOGGER.debug('no cache data for %s', cache_key)
-            elif cache_data['expires'] < cur_time:
-                LOGGER.debug('cache expired for %s', cache_key)
-            elif checksum and cache_data['checksum'] != checksum:
-                LOGGER.debug('cache checksum mismatch for %s', cache_key)
-            if cache_data and cache_data['expires'] > cur_time:
-                if checksum is None or cache_data['checksum'] == checksum:
-                    LOGGER.debug('return cache data for %s', cache_key)
+                LOGGER.debug("no cache data for %s", cache_key)
+            elif cache_data["expires"] < cur_time:
+                LOGGER.debug("cache expired for %s", cache_key)
+            elif checksum and cache_data["checksum"] != checksum:
+                LOGGER.debug("cache checksum mismatch for %s", cache_key)
+            if cache_data and cache_data["expires"] > cur_time:
+                if checksum is None or cache_data["checksum"] == checksum:
+                    LOGGER.debug("return cache data for %s", cache_key)
                     result = pickle.loads(cache_data[1])
         return result
 
-    async def set(self,
-                  cache_key,
-                  data,
-                  checksum="",
-                  expiration=(86400*30)):
+    async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
         """
             set data in cache
         """
@@ -79,7 +76,7 @@ class Cache(object):
             (id, expires, data, checksum) VALUES (?, ?, ?, ?)"""
         await self._db.execute(sql_query, (cache_key, expires, data, checksum))
         await self._db.commit()
-    
+
     @run_periodic(3600)
     async def auto_cleanup(self):
         """ (scheduled) auto cleanup task """
@@ -89,11 +86,11 @@ class Cache(object):
         async with self._db.execute(sql_query) as cursor:
             cache_objects = await cursor.fetchall()
         for cache_data in cache_objects:
-            cache_id = cache_data['id']
+            cache_id = cache_data["id"]
             # clean up db cache object only if expired
-            if cache_data['expires'] < cur_timestamp:
+            if cache_data["expires"] < cur_timestamp:
                 sql_query = "DELETE FROM simplecache WHERE id = ?"
-                await self._db.execute(sql_query, (cache_id, ))
+                await self._db.execute(sql_query, (cache_id,))
                 LOGGER.debug("delete from db %s", cache_id)
         # compact db
         await self._db.commit()
@@ -111,7 +108,9 @@ class Cache(object):
         return reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
-async def cached_iterator(cache, iter_func, cache_key, expires=(86400*30), checksum=None):
+async def cached_iterator(
+    cache, iter_func, cache_key, expires=(86400 * 30), checksum=None
+):
     """Helper method to store results of an iterator in the cache."""
     cache_result = await cache.get(cache_key, checksum)
     if cache_result:
@@ -125,6 +124,7 @@ async def cached_iterator(cache, iter_func, cache_key, expires=(86400*30), check
             cache_result.append(item)
         await cache.set(cache_key, cache_result, checksum, expires)
 
+
 async def cached(cache, cache_key, coro_func, *args, **kwargs):
     """Helper method to store results of a coroutine in the cache."""
     cache_result = await cache.get(cache_key)
@@ -134,8 +134,10 @@ async def cached(cache, cache_key, coro_func, *args, **kwargs):
     await cache.set(cache_key, result)
     return result
 
+
 def use_cache(cache_days=14, cache_checksum=None):
     """ decorator that can be used to cache a method's result."""
+
     def wrapper(func):
         @functools.wraps(func)
         async def wrapped(*args, **kwargs):
@@ -153,15 +155,18 @@ def use_cache(cache_days=14, cache_checksum=None):
                     cache_str,
                     result,
                     checksum=cache_checksum,
-                    expiration=(86400*cache_days),
+                    expiration=(86400 * cache_days),
                 )
                 return result
+
         return wrapped
+
     return wrapper
 
+
 def __cache_id_from_args(*args, **kwargs):
-    ''' parse arguments to build cache id '''
-    cache_str = ''
+    """ parse arguments to build cache id """
+    cache_str = ""
     # append args to cache identifier
     for item in args[1:]:
         if isinstance(item, dict):

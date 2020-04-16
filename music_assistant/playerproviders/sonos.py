@@ -2,29 +2,27 @@
 # -*- coding:utf-8 -*-
 
 import asyncio
-import aiohttp
-from typing import List
 import logging
-import types
 import time
+import types
+from typing import List
 
-from music_assistant.utils import run_periodic, LOGGER, try_parse_int
-from music_assistant.models.playerprovider import PlayerProvider
-from music_assistant.models.player import Player, PlayerState
-from music_assistant.models.playerstate import PlayerState
-from music_assistant.models.player_queue import QueueItem, PlayerQueue
+import aiohttp
 from music_assistant.constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
+from music_assistant.models.player import Player, PlayerState
+from music_assistant.models.player_queue import PlayerQueue, QueueItem
+from music_assistant.models.playerprovider import PlayerProvider
+from music_assistant.utils import LOGGER, run_periodic, try_parse_int
 
-PROV_ID = 'sonos'
-PROV_NAME = 'Sonos'
-PROV_CLASS = 'SonosProvider'
+PROV_ID = "sonos"
+PROV_NAME = "Sonos"
+PROV_CLASS = "SonosProvider"
 
-CONFIG_ENTRIES = [
-    (CONF_ENABLED, True, CONF_ENABLED),
-    ]
+CONFIG_ENTRIES = [(CONF_ENABLED, True, CONF_ENABLED)]
+
 
 class SonosPlayer(Player):
-    ''' Sonos player object '''
+    """ Sonos player object """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -35,74 +33,74 @@ class SonosPlayer(Player):
             self.__sonos_report_progress_task.cancel()
 
     async def cmd_stop(self):
-        ''' send stop command to player '''
+        """ send stop command to player """
         self.soco.stop()
 
     async def cmd_play(self):
-        ''' send play command to player '''
+        """ send play command to player """
         self.soco.play()
 
     async def cmd_pause(self):
-        ''' send pause command to player '''
+        """ send pause command to player """
         self.soco.pause()
 
     async def cmd_next(self):
-        ''' send next track command to player '''
+        """ send next track command to player """
         self.soco.next()
 
     async def cmd_previous(self):
-        ''' send previous track command to player '''
+        """ send previous track command to player """
         self.soco.previous()
-    
+
     async def cmd_power_on(self):
-        ''' send power ON command to player '''
+        """ send power ON command to player """
         self.powered = True
 
     async def cmd_power_off(self):
-        ''' send power OFF command to player '''
+        """ send power OFF command to player """
         self.powered = False
         # power is not supported so send stop instead
         self.soco.stop()
 
     async def cmd_volume_set(self, volume_level):
-        ''' send new volume level command to player '''
+        """ send new volume level command to player """
         self.soco.volume = volume_level
 
     async def cmd_volume_mute(self, is_muted=False):
-        ''' send mute command to player '''
+        """ send mute command to player """
         self.soco.mute = is_muted
 
-    async def cmd_play_uri(self, uri:str):
-        ''' play single uri on player '''
+    async def cmd_play_uri(self, uri: str):
+        """ play single uri on player """
         self.soco.play_uri(uri)
 
-    async def cmd_queue_play_index(self, index:int):
-        '''
+    async def cmd_queue_play_index(self, index: int):
+        """
             play item at index X on player's queue
             :attrib index: (int) index of the queue item that should start playing
-        '''
+        """
         self.soco.play_from_queue(index)
 
-    async def cmd_queue_load(self, queue_items:List[QueueItem]):
-        ''' load (overwrite) queue with new items '''
+    async def cmd_queue_load(self, queue_items: List[QueueItem]):
+        """ load (overwrite) queue with new items """
         self.soco.clear_queue()
         for pos, item in enumerate(queue_items):
             self.soco.add_uri_to_queue(item.uri, pos)
 
-    async def cmd_queue_insert(self, queue_items:List[QueueItem], insert_at_index):
+    async def cmd_queue_insert(self, queue_items: List[QueueItem], insert_at_index):
         for pos, item in enumerate(queue_items):
-            self.soco.add_uri_to_queue(item.uri, insert_at_index+pos)
+            self.soco.add_uri_to_queue(item.uri, insert_at_index + pos)
 
-    async def cmd_queue_append(self, queue_items:List[QueueItem]):
-        ''' 
+    async def cmd_queue_append(self, queue_items: List[QueueItem]):
+        """ 
             append new items at the end of the queue
-        '''
+        """
         last_index = len(self.queue.items)
         for pos, item in enumerate(queue_items):
-            self.soco.add_uri_to_queue(item.uri, last_index+pos)
+            self.soco.add_uri_to_queue(item.uri, last_index + pos)
 
     async def __report_progress(self):
-        ''' report current progress while playing '''
+        """ report current progress while playing """
         # sonos does not send instant updates of the player's progress (cur_time)
         # so we need to send it in periodically
         while self._state == PlayerState.Playing:
@@ -111,9 +109,9 @@ class SonosPlayer(Player):
             self.cur_time = adjusted_current_time
             await asyncio.sleep(1)
         self.__sonos_report_progress_task = None
-    
+
     async def update_state(self, event=None):
-        ''' update state, triggerer by event '''
+        """ update state, triggerer by event """
         if event:
             variables = event.variables
             if "volume" in variables:
@@ -135,18 +133,24 @@ class SonosPlayer(Player):
         track_info = self.soco.get_current_track_info()
         self.cur_uri = track_info["uri"]
         position_info = self.soco.avTransport.GetPositionInfo(
-                [("InstanceID", 0), ("Channel", "Master")])
+            [("InstanceID", 0), ("Channel", "Master")]
+        )
         rel_time = self.__timespan_secs(position_info.get("RelTime"))
         self.cur_time = rel_time
-        if self._state == PlayerState.Playing and self.__sonos_report_progress_task == None:
-            self.__sonos_report_progress_task = self.mass.event_loop.create_task(self.__report_progress())
+        if (
+            self._state == PlayerState.Playing
+            and self.__sonos_report_progress_task == None
+        ):
+            self.__sonos_report_progress_task = self.mass.event_loop.create_task(
+                self.__report_progress()
+            )
 
     @staticmethod
     def __convert_state(sonos_state):
-        ''' convert sonos state to internal state '''
-        if sonos_state == 'PLAYING':
+        """ convert sonos state to internal state """
+        if sonos_state == "PLAYING":
             return PlayerState.Playing
-        elif sonos_state == 'PAUSED_PLAYBACK':
+        elif sonos_state == "PAUSED_PLAYBACK":
             return PlayerState.Paused
         else:
             return PlayerState.Stopped
@@ -156,30 +160,33 @@ class SonosPlayer(Player):
         """Parse a time-span into number of seconds."""
         if timespan in ("", "NOT_IMPLEMENTED", None):
             return None
-        return sum(60 ** x[0] * int(x[1]) for x in enumerate(reversed(timespan.split(":"))))
-        
+        return sum(
+            60 ** x[0] * int(x[1]) for x in enumerate(reversed(timespan.split(":")))
+        )
+
 
 class SonosProvider(PlayerProvider):
-    ''' support for Sonos speakers '''
+    """ support for Sonos speakers """
+
     _discovery_running = False
 
     async def setup(self, conf):
-        ''' perform async setup '''
-        self.mass.event_loop.create_task(
-                self.__periodic_discovery())
+        """ perform async setup """
+        self.mass.event_loop.create_task(self.__periodic_discovery())
 
     @run_periodic(1800)
     async def __periodic_discovery(self):
-        ''' run sonos discovery on interval '''
+        """ run sonos discovery on interval """
         self.mass.event_loop.run_in_executor(None, self.run_discovery)
 
     def run_discovery(self):
-        ''' background sonos discovery and handler '''
+        """ background sonos discovery and handler """
         if self._discovery_running:
             return
         self._discovery_running = True
         LOGGER.debug("Sonos discovery started...")
         import soco
+
         discovered_devices = soco.discover()
         if discovered_devices == None:
             discovered_devices = []
@@ -200,7 +207,7 @@ class SonosProvider(PlayerProvider):
             self.__process_groups([])
 
     def __device_discovered(self, soco_device):
-        '''handle new sonos player '''
+        """handle new sonos player """
         player = SonosPlayer(self.mass, soco_device.uid, self.prov_id)
         player.soco = soco_device
         player.name = soco_device.player_name
@@ -214,6 +221,7 @@ class SonosProvider(PlayerProvider):
             queue = _ProcessSonosEventQueue(self.mass, action)
             sub = service.subscribe(auto_renew=True, event_queue=queue)
             player._subscriptions.append(sub)
+
         subscribe(soco_device.avTransport, player.update_state)
         subscribe(soco_device.renderingControl, player.update_state)
         subscribe(soco_device.zoneGroupTopology, self.__topology_changed)
@@ -221,7 +229,7 @@ class SonosProvider(PlayerProvider):
         return player
 
     def __process_groups(self, sonos_groups):
-        ''' process all sonos groups '''
+        """ process all sonos groups """
         all_group_ids = []
         for group in sonos_groups:
             all_group_ids.append(group.uid)
@@ -233,14 +241,15 @@ class SonosProvider(PlayerProvider):
             # check members
             group_player.name = group.label
             group_player.group_childs = [item.uid for item in group.members]
-            
+
     async def __topology_changed(self, event=None):
-        ''' 
+        """ 
             received topology changed event 
             from one of the sonos players
             schedule discovery to work out the changes
-        '''
+        """
         self.mass.event_loop.run_in_executor(None, self.run_discovery)
+
 
 class _ProcessSonosEventQueue:
     """Queue like object for dispatching sonos events."""

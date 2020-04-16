@@ -4,19 +4,24 @@
 import os
 from typing import List
 
-from music_assistant.constants import CONF_KEY_PLAYERPROVIDERS, EVENT_PLAYER_ADDED, \
-    EVENT_PLAYER_REMOVED, EVENT_HASS_ENTITY_CHANGED
-from music_assistant.utils import LOGGER, load_provider_modules, iter_items
+from music_assistant.constants import (
+    CONF_KEY_PLAYERPROVIDERS,
+    EVENT_HASS_ENTITY_CHANGED,
+    EVENT_PLAYER_ADDED,
+    EVENT_PLAYER_REMOVED,
+)
 from music_assistant.models.media_types import MediaItem, MediaType
-from music_assistant.models.player_queue import QueueItem, QueueOption
 from music_assistant.models.player import Player
+from music_assistant.models.player_queue import QueueItem, QueueOption
+from music_assistant.utils import LOGGER, iter_items, load_provider_modules
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODULES_PATH = os.path.join(BASE_DIR, "playerproviders")
 
 
-class PlayerManager():
+class PlayerManager:
     """ several helpers to handle playback through player providers """
+
     def __init__(self, mass):
         self.mass = mass
         self._players = {}
@@ -27,20 +32,20 @@ class PlayerManager():
         # load providers
         await self.load_modules()
         # register state listener
-        await self.mass.add_event_listener(self.handle_mass_events,
-                                           EVENT_HASS_ENTITY_CHANGED)
+        await self.mass.add_event_listener(
+            self.handle_mass_events, EVENT_HASS_ENTITY_CHANGED
+        )
 
     async def load_modules(self, reload_module=None):
         """Dynamically (un)load musicprovider modules."""
         if reload_module and reload_module in self.providers:
             # unload existing module
-            if hasattr(self.providers[reload_module], 'http_session'):
+            if hasattr(self.providers[reload_module], "http_session"):
                 await self.providers[reload_module].http_session.close()
             self.providers.pop(reload_module, None)
-            LOGGER.info('Unloaded %s module', reload_module)
+            LOGGER.info("Unloaded %s module", reload_module)
         # load all modules (that are not already loaded)
-        await load_provider_modules(self.mass, self.providers,
-                                    CONF_KEY_PLAYERPROVIDERS)
+        await load_provider_modules(self.mass, self.providers, CONF_KEY_PLAYERPROVIDERS)
 
     @property
     def players(self):
@@ -61,15 +66,13 @@ class PlayerManager():
         self._players[player.player_id] = player
         await self.mass.signal_event(EVENT_PLAYER_ADDED, player.to_dict())
         # TODO: turn on player if it was previously turned on ?
-        LOGGER.info("New player added: %s/%s", player.player_provider,
-                    player.player_id)
+        LOGGER.info("New player added: %s/%s", player.player_provider, player.player_id)
         return player
 
     async def remove_player(self, player_id: str):
         """ handle a player remove """
         self._players.pop(player_id, None)
-        await self.mass.signal_event(EVENT_PLAYER_REMOVED,
-                                     {"player_id": player_id})
+        await self.mass.signal_event(EVENT_PLAYER_REMOVED, {"player_id": player_id})
         LOGGER.info("Player removed: %s", player_id)
 
     async def trigger_update(self, player_id: str):
@@ -77,10 +80,9 @@ class PlayerManager():
         if player_id in self._players:
             await self._players[player_id].update(force=True)
 
-    async def play_media(self,
-                         player_id: str,
-                         media_items: List[MediaItem],
-                         queue_opt=QueueOption.Play):
+    async def play_media(
+        self, player_id: str, media_items: List[MediaItem], queue_opt=QueueOption.Play
+    ):
         """
             play media item(s) on the given player
             :param media_item: media item(s) that should be played (single item or list of items)
@@ -99,27 +101,33 @@ class PlayerManager():
             # collect tracks to play
             if media_item.media_type == MediaType.Artist:
                 tracks = self.mass.music.artist_toptracks(
-                    media_item.item_id, provider=media_item.provider)
+                    media_item.item_id, provider=media_item.provider
+                )
             elif media_item.media_type == MediaType.Album:
                 tracks = self.mass.music.album_tracks(
-                    media_item.item_id, provider=media_item.provider)
+                    media_item.item_id, provider=media_item.provider
+                )
             elif media_item.media_type == MediaType.Playlist:
                 tracks = self.mass.music.playlist_tracks(
-                    media_item.item_id, provider=media_item.provider)
+                    media_item.item_id, provider=media_item.provider
+                )
             else:
                 tracks = iter_items(media_item)  # single track
             async for track in tracks:
                 queue_item = QueueItem(track)
                 # generate uri for this queue item
-                queue_item.uri = 'http://%s:%s/stream/%s/%s' % (
-                    self.mass.web.local_ip, self.mass.web.http_port, player_id,
-                    queue_item.queue_item_id)
+                queue_item.uri = "http://%s:%s/stream/%s/%s" % (
+                    self.mass.web.local_ip,
+                    self.mass.web.http_port,
+                    player_id,
+                    queue_item.queue_item_id,
+                )
                 queue_items.append(queue_item)
 
         # load items into the queue
-        if (queue_opt == QueueOption.Replace
-                or (len(queue_items) > 10
-                    and queue_opt in [QueueOption.Play, QueueOption.Next])):
+        if queue_opt == QueueOption.Replace or (
+            len(queue_items) > 10 and queue_opt in [QueueOption.Play, QueueOption.Next]
+        ):
             return await player.queue.load(queue_items)
         elif queue_opt == QueueOption.Next:
             return await player.queue.insert(queue_items, 1)
@@ -135,20 +143,21 @@ class PlayerManager():
             player_ids = list(self._players.keys())
             for player_id in player_ids:
                 player = self._players[player_id]
-                if (msg_details['entity_id'] == player.settings.get(
-                        'hass_power_entity') or msg_details['entity_id'] ==
-                        player.settings.get('hass_volume_entity')):
+                if msg_details["entity_id"] == player.settings.get(
+                    "hass_power_entity"
+                ) or msg_details["entity_id"] == player.settings.get(
+                    "hass_volume_entity"
+                ):
                     await player.update()
 
     async def get_gain_correct(self, player_id, item_id, provider_id):
         """ get gain correction for given player / track combination """
         player = self._players[player_id]
-        if not player.settings['volume_normalisation']:
+        if not player.settings["volume_normalisation"]:
             return 0
-        target_gain = int(player.settings['target_volume'])
-        fallback_gain = int(player.settings['fallback_gain_correct'])
-        track_loudness = await self.mass.db.get_track_loudness(
-            item_id, provider_id)
+        target_gain = int(player.settings["target_volume"])
+        fallback_gain = int(player.settings["fallback_gain_correct"])
+        track_loudness = await self.mass.db.get_track_loudness(item_id, provider_id)
         if track_loudness is None:
             gain_correct = fallback_gain
         else:
@@ -156,5 +165,9 @@ class PlayerManager():
         gain_correct = round(gain_correct, 2)
         LOGGER.debug(
             "Loudness level for track %s/%s is %s - calculated replayGain is %s",
-            provider_id, item_id, track_loudness, gain_correct)
+            provider_id,
+            item_id,
+            track_loudness,
+            gain_correct,
+        )
         return gain_correct

@@ -14,8 +14,16 @@ def set_prefs(prefs):
     # '.svn': matches 'pkg/.svn' and all of its children
     # 'build/*.o': matches 'build/lib.o' but not 'build/sub/lib.o'
     # 'build//*.o': matches 'build/lib.o' and 'build/sub/lib.o'
-    prefs['ignored_resources'] = ['*.pyc', '*~', '.ropeproject',
-                                  '.hg', '.svn', '_svn', '.git', '.tox']
+    prefs["ignored_resources"] = [
+        "*.pyc",
+        "*~",
+        ".ropeproject",
+        ".hg",
+        ".svn",
+        "_svn",
+        ".git",
+        ".tox",
+    ]
 
     # Specifies which files should be considered python files.  It is
     # useful when you have scripts inside your project.  Only files
@@ -37,66 +45,66 @@ def set_prefs(prefs):
     # prefs.add('python_path', '~/python/')
 
     # Should rope save object information or not.
-    prefs['save_objectdb'] = True
-    prefs['compress_objectdb'] = False
+    prefs["save_objectdb"] = True
+    prefs["compress_objectdb"] = False
 
     # If `True`, rope analyzes each module when it is being saved.
-    prefs['automatic_soa'] = True
+    prefs["automatic_soa"] = True
     # The depth of calls to follow in static object analysis
-    prefs['soa_followed_calls'] = 0
+    prefs["soa_followed_calls"] = 0
 
     # If `False` when running modules or unit tests "dynamic object
     # analysis" is turned off.  This makes them much faster.
-    prefs['perform_doa'] = True
+    prefs["perform_doa"] = True
 
     # Rope can check the validity of its object DB when running.
-    prefs['validate_objectdb'] = True
+    prefs["validate_objectdb"] = True
 
     # How many undos to hold?
-    prefs['max_history_items'] = 32
+    prefs["max_history_items"] = 32
 
     # Shows whether to save history across sessions.
-    prefs['save_history'] = True
-    prefs['compress_history'] = False
+    prefs["save_history"] = True
+    prefs["compress_history"] = False
 
     # Set the number spaces used for indenting.  According to
     # :PEP:`8`, it is best to use 4 spaces.  Since most of rope's
     # unit-tests use 4 spaces it is more reliable, too.
-    prefs['indent_size'] = 4
+    prefs["indent_size"] = 4
 
     # Builtin and c-extension modules that are allowed to be imported
     # and inspected by rope.
-    prefs['extension_modules'] = []
+    prefs["extension_modules"] = []
 
     # Add all standard c-extensions to extension_modules list.
-    prefs['import_dynload_stdmods'] = True
+    prefs["import_dynload_stdmods"] = True
 
     # If `True` modules with syntax errors are considered to be empty.
     # The default value is `False`; When `False` syntax errors raise
     # `rope.base.exceptions.ModuleSyntaxError` exception.
-    prefs['ignore_syntax_errors'] = False
+    prefs["ignore_syntax_errors"] = False
 
     # If `True`, rope ignores unresolvable imports.  Otherwise, they
     # appear in the importing namespace.
-    prefs['ignore_bad_imports'] = False
+    prefs["ignore_bad_imports"] = False
 
     # If `True`, rope will insert new module imports as
     # `from <package> import <module>` by default.
-    prefs['prefer_module_from_imports'] = False
+    prefs["prefer_module_from_imports"] = False
 
     # If `True`, rope will transform a comma list of imports into
     # multiple separate import statements when organizing
     # imports.
-    prefs['split_imports'] = False
+    prefs["split_imports"] = False
 
     # If `True`, rope will remove all top-level import statements and
     # reinsert them at the top of the module when making changes.
-    prefs['pull_imports_to_top'] = True
+    prefs["pull_imports_to_top"] = True
 
     # If `True`, rope will sort imports alphabetically by module name instead
     # of alphabetically by import statement, with from imports after normal
     # imports.
-    prefs['sort_imports_alphabetically'] = False
+    prefs["sort_imports_alphabetically"] = False
 
     # Location of implementation of
     # rope.base.oi.type_hinting.interfaces.ITypeHintingFactory In general
@@ -105,8 +113,9 @@ def set_prefs(prefs):
     # listed in module rope.base.oi.type_hinting.providers.interfaces
     # For example, you can add you own providers for Django Models, or disable
     # the search type-hinting in a class hierarchy, etc.
-    prefs['type_hinting_factory'] = (
-        'rope.base.oi.type_hinting.factory.default_type_hinting_factory')
+    prefs[
+        "type_hinting_factory"
+    ] = "rope.base.oi.type_hinting.factory.default_type_hinting_factory"
 
 
 def project_opened(project):

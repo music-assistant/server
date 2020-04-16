@@ -3,6 +3,7 @@
 
 from enum import Enum
 
+
 class PlayerState(str, Enum):
     Off = "off"
     Stopped = "stopped"

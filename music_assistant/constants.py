@@ -9,7 +9,7 @@ CONF_PORT = "port"
 CONF_TOKEN = "token"
 CONF_URL = "url"
 
-CONF_TYPE_PASSWORD = '<password>'
+CONF_TYPE_PASSWORD = "<password>"
 
 CONF_KEY_BASE = "base"
 CONF_KEY_PLAYERSETTINGS = "player_settings"
@@ -28,4 +28,3 @@ EVENT_HASS_ENTITY_CHANGED = "hass entity changed"
 EVENT_MUSIC_SYNC_STATUS = "music sync status"
 EVENT_QUEUE_UPDATED = "queue updated"
 EVENT_QUEUE_ITEMS_UPDATED = "queue items updated"
-

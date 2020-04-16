@@ -2,36 +2,36 @@
 # -*- coding:utf-8 -*-
 
 import asyncio
-import re
-import os
-import shutil
-import slugify as unicode_slug
-import uuid
 import json
-import time
 import logging
+import os
+import re
+import shutil
 import threading
+import time
+import uuid
 
-from .database import Database
-from .config import MassConfig
-from .utils import run_periodic, LOGGER, try_parse_bool, serialize_values
-from .metadata import MetaData
+import slugify as unicode_slug
+
 from .cache import Cache
+from .config import MassConfig
+from .database import Database
+from .homeassistant import HomeAssistant
+from .http_streamer import HTTPStreamer
+from .metadata import MetaData
 from .music_manager import MusicManager
 from .player_manager import PlayerManager
-from .http_streamer import HTTPStreamer
-from .homeassistant import HomeAssistant
+from .utils import LOGGER, run_periodic, serialize_values, try_parse_bool
 from .web import Web
 
 
-class MusicAssistant():
-
+class MusicAssistant:
     def __init__(self, datapath, event_loop):
-        ''' 
+        """ 
             Create an instance of MusicAssistant
             :param datapath: file location to store the data
             :param event_loop: asyncio event_loop
-        '''
+        """
         self.event_loop = event_loop
         self.event_loop.set_exception_handler(self.handle_exception)
         self.datapath = datapath
@@ -48,7 +48,7 @@ class MusicAssistant():
         self.http_streamer = HTTPStreamer(self)
 
     async def start(self):
-        ''' start running the music assistant server '''
+        """ start running the music assistant server """
         await self.db.setup()
         await self.cache.setup()
         await self.metadata.setup()
@@ -69,35 +69,35 @@ class MusicAssistant():
             await self.cache.close()
 
     def handle_exception(self, loop, context):
-        ''' global exception handler '''
+        """ global exception handler """
         LOGGER.debug(f"Caught exception: {context}")
         loop.default_exception_handler(context)
 
     async def signal_event(self, msg, msg_details=None):
-        ''' signal (systemwide) event '''
+        """ signal (systemwide) event """
         if not (msg_details == None or isinstance(msg_details, (str, dict))):
             msg_details = serialize_values(msg_details)
         listeners = list(self.event_listeners.values())
         for callback, eventfilter in listeners:
             if not eventfilter or eventfilter in msg:
-                if msg == 'shutdown':
+                if msg == "shutdown":
                     # the shutdown event should be awaited
                     await callback(msg, msg_details)
                 else:
                     self.event_loop.create_task(callback(msg, msg_details))
 
     async def add_event_listener(self, cb, eventfilter=None):
-        ''' add callback to our event listeners '''
+        """ add callback to our event listeners """
         cb_id = str(uuid.uuid4())
         self.event_listeners[cb_id] = (cb, eventfilter)
         return cb_id
 
     async def remove_event_listener(self, cb_id):
-        ''' remove callback from our event listeners '''
+        """ remove callback from our event listeners """
         self.event_listeners.pop(cb_id, None)
 
     def run_task(self, corofcn, wait_for_result=False, ignore_exception=None):
-        ''' helper to run a task on the main event loop from another thread '''
+        """ helper to run a task on the main event loop from another thread """
         if threading.current_thread() is threading.main_thread():
             raise Exception("Can not be called from main event loop!")
         future = asyncio.run_coroutine_threadsafe(corofcn, self.event_loop)
