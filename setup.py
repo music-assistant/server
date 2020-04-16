@@ -27,7 +27,7 @@ setup(
     description="Music library manager and player based on sox.",
     long_description=README_FILE.read_text(encoding="utf-8"),
     long_description_content_type="text/markdown",
-    packages=find_packages(exclude=["test.*", "test", "frontend", "frontend.*"]),
+    packages=find_packages(exclude=["test.*", "test", "frontend", "frontend.*", ".vscode", ".vscode*"]),
     python_requires=">=3.7",
     include_package_data=True,
     install_requires=INSTALL_REQUIRES,
