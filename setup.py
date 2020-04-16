@@ -13,10 +13,10 @@ if os.name != "nt":
     INSTALL_REQUIRES.append("uvloop")
 
 DATA_FILES = []
-for directory in glob.glob('music_assistant/'):
-    if directory.startswith('.'):
+for directory in glob.glob("music_assistant/"):
+    if directory.startswith("."):
         continue
-    files = glob.glob(directory+'*')
+    files = glob.glob(directory + "*")
     DATA_FILES.append((directory, files))
 
 setup(
@@ -34,7 +34,7 @@ setup(
     include_package_data=True,
     install_requires=INSTALL_REQUIRES,
     zip_safe=False,
-    package_data={'music_assistant': DATA_FILES},
+    data_files=DATA_FILES,
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
