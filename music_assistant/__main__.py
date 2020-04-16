@@ -27,7 +27,7 @@ def get_arguments():
         help="Directory that contains the MusicAssistant configuration",
     )
     parser.add_argument(
-        "--debug", default=False, help="Start MusicAssistant with verbose debug logging"
+        "--debug", action="store_true", help="Start MusicAssistant with verbose debug logging"
     )
     arguments = parser.parse_args()
     return arguments
