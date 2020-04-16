@@ -1,7 +1,7 @@
 from pathlib import Path
 import os
 
-from setuptools import setup, glob
+from setuptools import setup, glob, find_packages
 
 PROJECT_DIR = Path(__file__).parent.resolve()
 README_FILE = PROJECT_DIR / "README.md"
@@ -27,13 +27,11 @@ setup(
     description="Music library manager and player based on sox.",
     long_description=README_FILE.read_text(encoding="utf-8"),
     long_description_content_type="text/markdown",
-    packages=["music_assistant"],
+    packages=find_packages(exclude=["test.*", "test", "frontend", "frontend.*"]),
     python_requires=">=3.7",
     include_package_data=True,
     install_requires=INSTALL_REQUIRES,
     zip_safe=False,
-    package_data={
-        '': PACKAGE_FILES,
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
