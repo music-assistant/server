@@ -32,7 +32,7 @@ setup(
     include_package_data=True,
     install_requires=INSTALL_REQUIRES,
     zip_safe=False,
-    data_files=DATA_FILES,
+    package_data=DATA_FILES,
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
