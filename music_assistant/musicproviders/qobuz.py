@@ -10,8 +10,8 @@ from asyncio_throttle import Throttler
 
 from music_assistant.utils import LOGGER, parse_title_and_version
 from music_assistant.app_vars import get_app_var
-from music_assistant.models import MusicProvider, MediaType, TrackQuality, \
-    AlbumType, Artist, Album, Track, Playlist
+from music_assistant.models.media_types import MediaType, AlbumType, Artist, Album, Track, Playlist, TrackQuality
+from music_assistant.models.musicprovider import MusicProvider
 from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_ENABLED, \
     CONF_TYPE_PASSWORD, EVENT_STREAM_STARTED, EVENT_PLAYBACK_STOPPED
 
