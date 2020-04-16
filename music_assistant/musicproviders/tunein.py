@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
+"""Tunein musicprovider support for MusicAssistant."""
 from typing import List
 
 import aiohttp

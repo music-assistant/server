@@ -1,17 +1,11 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
-import asyncio
+"""Filesystem musicprovider support for MusicAssistant."""
 import base64
 import os
-import sys
-import time
 from typing import List
 
 from music_assistant.constants import CONF_ENABLED
 from music_assistant.models.media_types import (
     Album,
-    AlbumType,
     Artist,
     MediaType,
     Playlist,

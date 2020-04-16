@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
+"""Qobuz musicprovider support for MusicAssistant."""
 import datetime
 import hashlib
 import time

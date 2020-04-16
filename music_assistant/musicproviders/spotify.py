@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
+"""Spotify musicprovider support for MusicAssistant."""
 import asyncio
 import os
 import platform
