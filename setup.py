@@ -12,12 +12,10 @@ with open("requirements.txt") as f:
 if os.name != "nt":
     INSTALL_REQUIRES.append("uvloop")
 
-DATA_FILES = []
-for directory in glob.glob("music_assistant/"):
-    if directory.startswith("."):
-        continue
-    files = glob.glob(directory + "*")
-    DATA_FILES.append((directory, files))
+PACKAGE_FILES = []
+for (path, directories, filenames) in os.walk('music_assistant/'):
+    for filename in filenames:
+        PACKAGE_FILES.append(os.path.join('..', path, filename))
 
 setup(
     name="music_assistant",
@@ -34,7 +32,8 @@ setup(
     include_package_data=True,
     install_requires=INSTALL_REQUIRES,
     zip_safe=False,
-    data_files=DATA_FILES,
+    package_data={
+        '': PACKAGE_FILES,
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
