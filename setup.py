@@ -14,6 +14,8 @@ if os.name != "nt":
 
 DATA_FILES = []
 for directory in glob.glob('music_assistant/'):
+    if directory.startswith('.'):
+        continue
     files = glob.glob(directory+'*')
     DATA_FILES.append((directory, files))
 
