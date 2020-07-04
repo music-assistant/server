@@ -4,6 +4,7 @@
 import re
 
 import aiohttp
+import json
 from asyncio_throttle import Throttler
 from music_assistant.cache import use_cache
 from music_assistant.utils import LOGGER, compare_strings, get_compare_string
@@ -250,7 +251,7 @@ class FanartTv:
             ) as response:
                 try:
                     result = await response.json()
-                except aiohttp.client_exceptions.ContentTypeError:
+                except (aiohttp.client_exceptions.ContentTypeError, json.decoder.JSONDecodeError):
                     LOGGER.error("Failed to retrieve %s", endpoint)
                     text_result = await response.text()
                     LOGGER.debug(text_result)

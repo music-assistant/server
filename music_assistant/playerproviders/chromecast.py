@@ -20,6 +20,7 @@ from pychromecast.socket_client import (
     CONNECTION_STATUS_CONNECTED,
     CONNECTION_STATUS_DISCONNECTED,
 )
+import zeroconf
 
 PROV_ID = "chromecast"
 PROV_NAME = "Chromecast"
@@ -278,10 +279,15 @@ class ChromecastProvider(PlayerProvider):
                 # cleanup cast object
                 del player.cc
                 self.mass.run_task(self.remove_player(player.player_id))
+        
         # search for available chromecasts
-        from pychromecast.discovery import start_discovery, stop_discovery
 
-        def discovered_callback(name):
+        def list_devices():
+            LOGGER.debug("Currently known cast devices:")
+            for uuid, service in listener.services.items():
+                LOGGER.debug("  {} {}".format(uuid, service))
+
+        def add_callback(name):
             """Called when zeroconf has discovered a (new) chromecast."""
             discovery_info = listener.services[name]
             ip_address, port, uuid, model_name, friendly_name = discovery_info
@@ -290,9 +296,20 @@ class ChromecastProvider(PlayerProvider):
                 self.__chromecast_discovered(player_id, discovery_info)
             self.__update_group_players()
 
-        listener, browser = start_discovery(discovered_callback)
+        def remove_callback(uuid, name, service):
+            LOGGER.debug("Lost mDNS service for cast device {} {}".format(uuid, service))
+            list_devices()
+
+        def update_callback(uuid, name):
+            LOGGER.debug("Updated mDNS service for cast device {}".format(uuid))
+            list_devices()
+        
+        listener = pychromecast.CastListener(add_callback, remove_callback, update_callback)
+        zconf = zeroconf.Zeroconf()
+        browser = pychromecast.discovery.start_discovery(listener, zconf)
+        
         time.sleep(30)  # run discovery for 30 seconds
-        stop_discovery(browser)
+        pychromecast.stop_discovery(browser)
         LOGGER.debug("Chromecast discovery completed...")
         self._discovery_running = False
 

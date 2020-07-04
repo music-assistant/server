@@ -46,7 +46,7 @@ class MusicProvider:
         item_id = await self.mass.db.get_database_id(
             provider, prov_item_id, MediaType.Artist
         )
-        if item_id is not None:
+        if item_id is None:
             # artist not yet in local database so fetch details
             cache_key = f"{self.prov_id}.get_artist.{prov_item_id}"
             artist_details = await cached(
@@ -172,7 +172,7 @@ class MusicProvider:
         item_id = await self.mass.db.get_database_id(
             provider, prov_item_id, MediaType.Album
         )
-        if not item_id:
+        if item_id is None:
             # album not yet in local database so fetch details
             if not album_details:
                 cache_key = f"{self.prov_id}.get_album.{prov_item_id}"
@@ -216,7 +216,7 @@ class MusicProvider:
         item_id = await self.mass.db.get_database_id(
             provider, prov_item_id, MediaType.Track
         )
-        if not item_id:
+        if item_id is None:
             # track not yet in local database so fetch details
             if not track_details:
                 cache_key = f"{self.prov_id}.get_track.{prov_item_id}"
@@ -275,7 +275,7 @@ class MusicProvider:
         db_id = await self.mass.db.get_database_id(
             provider, prov_playlist_id, MediaType.Playlist
         )
-        if not db_id:
+        if db_id is None:
             # item not yet in local database so fetch and store details
             item_details = await self.get_playlist(prov_playlist_id)
             db_id = await self.mass.db.add_playlist(item_details)
@@ -288,7 +288,7 @@ class MusicProvider:
         db_id = await self.mass.db.get_database_id(
             provider, prov_radio_id, MediaType.Radio
         )
-        if not db_id:
+        if db_id is None:
             # item not yet in local database so fetch and store details
             item_details = await self.get_radio(prov_radio_id)
             db_id = await self.mass.db.add_radio(item_details)

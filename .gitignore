@@ -8,3 +8,4 @@ music_assistant/config.json
 music_assistant/testrun.sh
 build/
 dist/
+venv/
