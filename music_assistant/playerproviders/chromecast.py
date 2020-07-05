@@ -287,22 +287,19 @@ class ChromecastProvider(PlayerProvider):
             for uuid, service in listener.services.items():
                 LOGGER.debug("  {} {}".format(uuid, service))
 
-        def add_callback(name):
+        def add_callback(uuid, name):
             """Called when zeroconf has discovered a (new) chromecast."""
-            discovery_info = listener.services[name]
-            ip_address, port, uuid, model_name, friendly_name = discovery_info
+            services = listener.services[uuid]
             player_id = str(uuid)
             if not player_id in self.mass.players._players:
-                self.__chromecast_discovered(player_id, discovery_info)
+                self.__chromecast_discovered(player_id, services, zconf)
             self.__update_group_players()
 
         def remove_callback(uuid, name, service):
             LOGGER.debug("Lost mDNS service for cast device {} {}".format(uuid, service))
-            list_devices()
 
         def update_callback(uuid, name):
             LOGGER.debug("Updated mDNS service for cast device {}".format(uuid))
-            list_devices()
         
         listener = pychromecast.CastListener(add_callback, remove_callback, update_callback)
         zconf = zeroconf.Zeroconf()
@@ -313,15 +310,14 @@ class ChromecastProvider(PlayerProvider):
         LOGGER.debug("Chromecast discovery completed...")
         self._discovery_running = False
 
-    def __chromecast_discovered(self, player_id, discovery_info):
+    def __chromecast_discovered(self, player_id, services, zconf):
         """ callback when a (new) chromecast device is discovered """
-        from pychromecast import _get_chromecast_from_host, ChromecastConnectionError
 
         try:
-            chromecast = _get_chromecast_from_host(
-                discovery_info, tries=2, timeout=5, retry_wait=5
+            chromecast = pychromecast.get_chromecast_from_service(
+                services, zconf, tries=2, retry_wait=5, timeout=5
             )
-        except ChromecastConnectionError:
+        except pychromecast.ChromecastConnectionError:
             LOGGER.warning("Could not connect to device %s" % player_id)
             return
         player = ChromecastPlayer(self.mass, player_id, self.prov_id)

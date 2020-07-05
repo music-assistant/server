@@ -333,15 +333,18 @@ class HTTPStreamer:
         """ get audio stream from provider and apply additional effects/processing where/if needed"""
         streamdetails = None
         # always request the full db track as there might be other qualities available
-        full_track = self.mass.run_task(
-            self.mass.music.track(
-                queue_item.item_id,
-                queue_item.provider,
-                lazy=True,
-                track_details=queue_item,
-            ),
-            wait_for_result=True,
-        )
+        if queue_item.media_type == MediaType.Radio:
+            full_track = queue_item
+        else:
+            full_track = self.mass.run_task(
+                self.mass.music.track(
+                    queue_item.item_id,
+                    queue_item.provider,
+                    lazy=True,
+                    track_details=queue_item,
+                ),
+                wait_for_result=True,
+            )
         # sort by quality and check track availability
         for prov_media in sorted(
             full_track.provider_ids, key=operator.itemgetter("quality"), reverse=True

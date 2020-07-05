@@ -181,7 +181,7 @@ class Database:
         if MediaType.Playlist in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
             result["playlists"] = [
-                item async for item in self.library_playlists(sql_query)
+                item async for item in self.playlists(sql_query)
             ]
         return result
 
