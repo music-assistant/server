@@ -17,7 +17,7 @@ from aiohttp import web
 from memory_tempfile import MemoryTempfile
 from music_assistant.constants import EVENT_STREAM_ENDED, EVENT_STREAM_STARTED
 from music_assistant.models.media_types import MediaType, TrackQuality
-from music_assistant.models.playerstate import PlayerState
+from music_assistant.models.player import PlayerState
 from music_assistant.utils import (
     LOGGER,
     get_folder_size,
@@ -31,7 +31,7 @@ import soundfile
 
 
 class HTTPStreamer:
-    """ Built-in streamer using sox and webserver """
+    """Built-in streamer using sox and webserver"""
 
     def __init__(self, mass):
         self.mass = mass
@@ -40,16 +40,16 @@ class HTTPStreamer:
         self.stream_clients = []
 
     async def setup(self):
-        """ async initialize of module """
+        """async initialize of module"""
         pass  # we have nothing to initialize
 
     async def stream(self, http_request):
-        """ 
+        """
             start stream for a player
         """
         # make sure we have valid params
         player_id = http_request.match_info.get("player_id", "")
-        player = await self.mass.players.get_player(player_id)
+        player = await self.mass.player_manager.get_player(player_id)
         if not player:
             return web.Response(status=404, reason="Player not found")
         if not player.queue.use_queue_stream:
@@ -65,11 +65,11 @@ class HTTPStreamer:
         # run the streamer in executor to prevent the subprocess locking up our eventloop
         cancelled = threading.Event()
         if player.queue.use_queue_stream:
-            bg_task = self.mass.event_loop.run_in_executor(
+            bg_task = self.mass.loop.run_in_executor(
                 None, self.__get_queue_stream, player, resp, cancelled
             )
         else:
-            bg_task = self.mass.event_loop.run_in_executor(
+            bg_task = self.mass.loop.run_in_executor(
                 None, self.__get_queue_item_stream, player, queue_item, resp, cancelled
             )
         # let the streaming begin!
@@ -81,7 +81,7 @@ class HTTPStreamer:
         return resp
 
     def __get_queue_item_stream(self, player, queue_item, buffer, cancelled):
-        """ start streaming single queue track """
+        """start streaming single queue track"""
         LOGGER.debug(
             "stream single queue track started for track %s on player %s"
             % (queue_item.name, player.name)
@@ -118,7 +118,7 @@ class HTTPStreamer:
             )
 
     def __get_queue_stream(self, player, buffer, cancelled):
-        """ start streaming all queue tracks """
+        """start streaming all queue tracks"""
         sample_rate = try_parse_int(player.settings["max_sample_rate"])
         fade_length = try_parse_int(player.settings["crossfade_duration"])
         if not sample_rate or sample_rate < 44100 or sample_rate > 384000:
@@ -177,7 +177,7 @@ class HTTPStreamer:
             if is_start:
                 # report start of queue playback so we can calculate current track/duration etc.
                 queue_track = asyncio.run_coroutine_threadsafe(
-                    player.queue.start_queue_stream(), self.mass.event_loop
+                    player.queue.start_queue_stream(), self.mass.loop
                 ).result()
                 is_start = False
             else:
@@ -330,14 +330,14 @@ class HTTPStreamer:
     def __get_audio_stream(
         self, player, queue_item, cancelled, chunksize=128000, resample=None
     ):
-        """ get audio stream from provider and apply additional effects/processing where/if needed"""
+        """get audio stream from provider and apply additional effects/processing where/if needed"""
         streamdetails = None
         # always request the full db track as there might be other qualities available
         if queue_item.media_type == MediaType.Radio:
             full_track = queue_item
         else:
             full_track = self.mass.run_task(
-                self.mass.music.track(
+                self.mass.music_manager.track(
                     queue_item.item_id,
                     queue_item.provider,
                     lazy=True,
@@ -349,11 +349,11 @@ class HTTPStreamer:
         for prov_media in sorted(
             full_track.provider_ids, key=operator.itemgetter("quality"), reverse=True
         ):
-            if not prov_media["provider"] in self.mass.music.providers:
+            if not prov_media["provider"] in self.mass.music_manager.providers:
                 continue
             # get stream details from provider
             streamdetails = self.mass.run_task(
-                self.mass.music.providers[prov_media["provider"]].get_stream_details(
+                self.mass.music_manager.providers[prov_media["provider"]].get_stream_details(
                     prov_media["item_id"]
                 ),
                 wait_for_result=True,
@@ -439,16 +439,16 @@ class HTTPStreamer:
         self.mass.run_task(self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails))
         # send task to background to analyse the audio
         if queue_item.media_type == MediaType.Track:
-            self.mass.event_loop.run_in_executor(
+            self.mass.loop.run_in_executor(
                 None, self.__analyze_audio, streamdetails
             )
 
     def __get_player_sox_options(self, player, streamdetails):
-        """ get player specific sox effect options """
+        """get player specific sox effect options"""
         sox_options = []
         # volume normalisation
         gain_correct = self.mass.run_task(
-            self.mass.players.get_gain_correct(
+            self.mass.player_manager.get_gain_correct(
                 player.player_id, streamdetails["item_id"], streamdetails["provider"]
             ),
             wait_for_result=True,
@@ -480,13 +480,13 @@ class HTTPStreamer:
         return " ".join(sox_options)
 
     def __analyze_audio(self, streamdetails):
-        """ analyze track audio, for now we only calculate EBU R128 loudness """
+        """analyze track audio, for now we only calculate EBU R128 loudness"""
         item_key = "%s%s" % (streamdetails["item_id"], streamdetails["provider"])
         if item_key in self.analyze_jobs:
             return  # prevent multiple analyze jobs for same track
         self.analyze_jobs[item_key] = True
         track_loudness = self.mass.run_task(
-            self.mass.db.get_track_loudness(
+            self.mass.database.get_track_loudness(
                 streamdetails["item_id"], streamdetails["provider"]
             ),
             wait_for_result=True,
@@ -510,7 +510,7 @@ class HTTPStreamer:
             loudness = meter.integrated_loudness(data)  # measure loudness
             del data
             self.mass.run_task(
-                self.mass.db.set_track_loudness(
+                self.mass.database.set_track_loudness(
                     streamdetails["item_id"], streamdetails["provider"], loudness
                 )
             )
@@ -522,7 +522,7 @@ class HTTPStreamer:
 
     @staticmethod
     def __crossfade_pcm_parts(fade_in_part, fade_out_part, pcm_args, fade_length):
-        """ crossfade two chunks of audio using sox """
+        """crossfade two chunks of audio using sox"""
         # create fade-in part
         fadeinfile = MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
         args = "sox --ignore-length -t %s - -t %s %s fade t %s" % (

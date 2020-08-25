@@ -65,7 +65,7 @@ def main():
     else:
         logger.setLevel(logging.INFO)
 
-    mass = MusicAssistant(data_dir, event_loop)
+    mass = MusicAssistant(data_dir)
 
     # run UI in browser on windows and macos only
     if platform.system() in ["Windows", "Darwin"]:

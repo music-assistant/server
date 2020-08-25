@@ -7,18 +7,38 @@ import logging
 import os
 import re
 import socket
+from typing import Any, Callable, TypeVar
 
-from music_assistant.constants import CONF_ENABLED, CONF_KEY_MUSICPROVIDERS
 import unidecode
+from music_assistant.constants import CONF_ENABLED, CONF_KEY_MUSICPROVIDERS
 
 try:
     import simplejson as json
 except ImportError:
     import json
+
+
 LOGGER = logging.getLogger("music_assistant")
 
 
 IS_HASSIO = os.path.isfile("/data/options.json")
+
+# pylint: disable=invalid-name
+T = TypeVar("T")
+_UNDEF: dict = {}
+CALLABLE_T = TypeVar("CALLABLE_T", bound=Callable)
+CALLBACK_TYPE = Callable[[], None]
+# pylint: enable=invalid-name
+
+def callback(func: CALLABLE_T) -> CALLABLE_T:
+    """Annotation to mark method as safe to call from within the event loop."""
+    setattr(func, "_mass_callback", True)
+    return func
+
+
+def is_callback(func: Callable[..., Any]) -> bool:
+    """Check if function is safe to be called in the event loop."""
+    return getattr(func, "_mass_callback", False) is True
 
 
 def run_periodic(period):
@@ -34,18 +54,18 @@ def run_periodic(period):
 
 
 def filename_from_string(string):
-    """ create filename from unsafe string """
+    """create filename from unsafe string"""
     keepcharacters = (" ", ".", "_")
     return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
 
 
 def run_background_task(corofn, *args, executor=None):
-    """ run non-async task in background """
+    """run non-async task in background"""
     return asyncio.get_event_loop().run_in_executor(executor, corofn, *args)
 
 
 def run_async_background_task(executor, corofn, *args):
-    """ run async task in background """
+    """run async task in background"""
 
     def run_task(corofn, *args):
         LOGGER.debug("running %s in background task", corofn.__name__)
@@ -61,7 +81,7 @@ def run_async_background_task(executor, corofn, *args):
 
 
 def get_sort_name(name):
-    """ create a sort name for an artist/title """
+    """create a sort name for an artist/title"""
     sort_name = name
     for item in ["The ", "De ", "de ", "Les "]:
         if name.startswith(item):
@@ -100,7 +120,7 @@ def try_parse_bool(possible_bool):
 
 
 def parse_title_and_version(track_title, track_version=None):
-    """ try to parse clean track title and version from the title """
+    """try to parse clean track title and version from the title"""
     title = track_title.lower()
     version = ""
     for splitter in [" (", " [", " - ", " (", " [", "-"]:
@@ -147,7 +167,7 @@ def parse_title_and_version(track_title, track_version=None):
 
 
 def get_version_substitute(version_str):
-    """ transform provider version str to universal version type """
+    """transform provider version str to universal version type"""
     version_str = version_str.lower()
     # substitute edit and edition with version
     if "edition" in version_str or "edit" in version_str:
@@ -189,7 +209,7 @@ def get_hostname():
 
 
 def get_folder_size(folderpath):
-    """ get folder size in gb"""
+    """get folder size in gb"""
     total_size = 0
     # pylint: disable=unused-variable
     for dirpath, dirnames, filenames in os.walk(folderpath):
@@ -229,13 +249,13 @@ def serialize_values(obj):
 
 
 def get_compare_string(input_str):
-    """ get clean lowered string for compare actions """
+    """get clean lowered string for compare actions"""
     unaccented_string = unidecode.unidecode(input_str)
     return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string).lower()
 
 
 def compare_strings(str1, str2, strict=False):
-    """ compare strings and return True if we have an (almost) perfect match """
+    """compare strings and return True if we have an (almost) perfect match"""
     match = str1.lower() == str2.lower()
     if not match and not strict:
         match = get_compare_string(str1) == get_compare_string(str2)
@@ -243,12 +263,12 @@ def compare_strings(str1, str2, strict=False):
 
 
 def json_serializer(obj):
-    """ json serializer to recursively create serializable values for custom data types """
+    """json serializer to recursively create serializable values for custom data types"""
     return json.dumps(serialize_values(obj), skipkeys=True)
 
 
 def try_load_json_file(jsonfile):
-    """ try to load json from file """
+    """try to load json from file"""
     # pylint: disable=broad-except
     try:
         with open(jsonfile) as f:
@@ -262,7 +282,7 @@ def try_load_json_file(jsonfile):
 async def load_provider_modules(
     mass, provider_modules, prov_type=CONF_KEY_MUSICPROVIDERS
 ):
-    """ dynamically load music/player providers """
+    """dynamically load music/player providers"""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     modules_path = os.path.join(base_dir, prov_type)
     # load modules
@@ -281,7 +301,7 @@ async def load_provider_modules(
 
 
 async def load_provider_module(mass, module_name, prov_type):
-    """ dynamically load music/player provider """
+    """dynamically load music/player provider"""
     # pylint: disable=broad-except
     try:
         prov_mod = importlib.import_module(

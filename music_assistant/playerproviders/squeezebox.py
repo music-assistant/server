@@ -32,21 +32,21 @@ CONFIG_ENTRIES = [(CONF_ENABLED, True, CONF_ENABLED)]
 
 
 class PySqueezeProvider(PlayerProvider):
-    """ Python implementation of SlimProto server """
+    """Python implementation of SlimProto server"""
 
     ### Provider specific implementation #####
 
     async def setup(self, conf):
-        """ async initialize of module """
+        """async initialize of module"""
         # start slimproto server
-        self.mass.event_loop.create_task(
+        self.mass.loop.create_task(
             asyncio.start_server(self.__handle_socket_client, "0.0.0.0", 3483)
         )
         # setup discovery
-        self.mass.event_loop.create_task(self.start_discovery())
+        self.mass.loop.create_task(self.start_discovery())
 
     async def start_discovery(self):
-        transport, protocol = await self.mass.event_loop.create_datagram_endpoint(
+        transport, protocol = await self.mass.loop.create_datagram_endpoint(
             lambda: DiscoveryProtocol(self.mass.web.http_port),
             local_addr=("0.0.0.0", 3483),
         )
@@ -57,7 +57,7 @@ class PySqueezeProvider(PlayerProvider):
             transport.close()
 
     async def __handle_socket_client(self, reader, writer):
-        """ handle a client connection on the socket"""
+        """handle a client connection on the socket"""
         buffer = b""
         player = None
         try:
@@ -85,7 +85,7 @@ class PySqueezeProvider(PlayerProvider):
                             player = PySqueezePlayer(
                                 self.mass, player_id, self.prov_id, device_type, writer
                             )
-                            await self.mass.players.add_player(player)
+                            await self.mass.player_manager.add_player(player)
                         elif player != None:
                             await player.process_msg(operation, packet)
         except Exception as exc:
@@ -96,12 +96,12 @@ class PySqueezeProvider(PlayerProvider):
             if player:
                 if player._heartbeat_task:
                     player._heartbeat_task.cancel()
-                await self.mass.players.remove_player(player.player_id)
+                await self.mass.player_manager.remove_player(player.player_id)
                 self.mass.config.save()
 
 
 class PySqueezePlayer(Player):
-    """ Squeezebox socket client """
+    """Squeezebox socket client"""
 
     def __init__(self, mass, player_id, prov_id, dev_type, writer):
         super().__init__(mass, player_id, prov_id)
@@ -116,11 +116,11 @@ class PySqueezePlayer(Player):
         self._last_heartbeat = 0
         self._cur_time_milliseconds = 0
         # initialize player
-        self.mass.event_loop.create_task(self.initialize_player())
-        self._heartbeat_task = self.mass.event_loop.create_task(self.__send_heartbeat())
+        self.mass.loop.create_task(self.initialize_player())
+        self._heartbeat_task = self.mass.loop.create_task(self.__send_heartbeat())
 
     async def initialize_player(self):
-        """ set some startup settings for the player """
+        """set some startup settings for the player."""
         # send version
         await self.__send_frame(b"vers", b"7.8")
         await self.__send_frame(b"setd", struct.pack("B", 0))
@@ -138,35 +138,35 @@ class PySqueezePlayer(Player):
             await self.power_off()
 
     async def cmd_stop(self):
-        """ send stop command to player """
+        """Send stop command to player."""
         data = await self.__pack_stream(b"q", autostart=b"0", flags=0)
         await self.__send_frame(b"strm", data)
 
     async def cmd_play(self):
-        """ send play (unpause) command to player """
+        """Send play (unpause) command to player."""
         data = await self.__pack_stream(b"u", autostart=b"0", flags=0)
         await self.__send_frame(b"strm", data)
 
     async def cmd_pause(self):
-        """ send pause command to player """
+        """Send pause command to player."""
         data = await self.__pack_stream(b"p", autostart=b"0", flags=0)
         await self.__send_frame(b"strm", data)
 
     async def cmd_power_on(self):
-        """ send power ON command to player """
+        """Send power ON command to player."""
         await self.__send_frame(b"aude", struct.pack("2B", 1, 1))
         self.settings["last_power"] = True
         self.powered = True
 
     async def cmd_power_off(self):
-        """ send power TOGGLE command to player """
+        """Send power TOGGLE command to player."""
         await self.cmd_stop()
         await self.__send_frame(b"aude", struct.pack("2B", 0, 0))
         self.settings["last_power"] = False
         self.powered = False
 
     async def cmd_volume_set(self, volume_level):
-        """ send new volume level command to player """
+        """Send new volume level command to player."""
         self._volume.volume = volume_level
         og = self._volume.old_gain()
         ng = self._volume.new_gain()
@@ -175,7 +175,7 @@ class PySqueezePlayer(Player):
         self.volume_level = volume_level
 
     async def cmd_volume_mute(self, is_muted=False):
-        """ send mute command to player """
+        """Send mute command to player."""
         if is_muted:
             await self.__send_frame(b"aude", struct.pack("2B", 0, 0))
         else:
@@ -185,7 +185,7 @@ class PySqueezePlayer(Player):
     async def cmd_queue_play_index(self, index: int):
         """
             play item at index X on player's queue
-            :param index: (int) index of the queue item that should start playing
+                :param index: (int) index of the queue item that should start playing
         """
         new_track = await self.queue.get_item(index)
         if new_track:
@@ -193,9 +193,9 @@ class PySqueezePlayer(Player):
             await self.__send_play(new_track.uri)
 
     async def cmd_queue_load(self, queue_items):
-        """ 
+        """
             load/overwrite given items in the player's own queue implementation
-            :param queue_items: a list of QueueItems
+                :param queue_items: a list of QueueItems
         """
         await self.__send_flush()
         if queue_items:
@@ -223,7 +223,7 @@ class PySqueezePlayer(Player):
         await self.__send_frame(b"strm", data)
 
     async def __send_play(self, uri):
-        """ play uri """
+        """Play uri"""
         self.cur_uri = uri
         self.powered = True
         enable_crossfade = self.settings["crossfade_duration"] > 0
@@ -252,19 +252,19 @@ class PySqueezePlayer(Player):
         await self.__send_frame(b"strm", data)
 
     def __delete__(self, instance):
-        """ make sure the heartbeat task is deleted """
+        """make sure the heartbeat task is deleted"""
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
 
     @run_periodic(5)
     async def __send_heartbeat(self):
-        """ send periodic heartbeat message to player """
+        """Send periodic heartbeat message to player."""
         timestamp = int(time.time())
         data = await self.__pack_stream(b"t", replayGain=timestamp, flags=0)
         await self.__send_frame(b"strm", data)
 
     async def __send_frame(self, command, data):
-        """ send command to Squeeze player"""
+        """Send command to Squeeze player."""
         packet = struct.pack("!H", len(data) + 4) + command + data
         self._writer.write(packet)
         await self._writer.drain()
@@ -331,7 +331,7 @@ class PySqueezePlayer(Player):
             await handler(packet)
 
     async def process_STAT(self, data):
-        """process incoming event from player"""
+        """process incoming event from player."""
         event = data[:4].decode()
         event_data = data[4:]
         if event == b"\x00\x00\x00\x00":
@@ -366,7 +366,7 @@ class PySqueezePlayer(Player):
         self.state = PlayerState.Stopped
 
     async def stat_STMo(self, data):
-        """ No more decoded (uncompressed) data to play; triggers rebuffering. """
+        """No more decoded (uncompressed) data to play; triggers rebuffering."""
         LOGGER.debug("Output Underrun")
 
     async def stat_STMp(self, data):
@@ -382,7 +382,7 @@ class PySqueezePlayer(Player):
         self.state = PlayerState.Playing
 
     async def stat_STMt(self, data):
-        """ heartbeat from client """
+        """heartbeat from client"""
         timestamp = time.time()
         self._last_heartbeat = timestamp
         (
@@ -408,19 +408,19 @@ class PySqueezePlayer(Player):
         self._cur_time_milliseconds = cur_time_milliseconds
 
     async def stat_STMu(self, data):
-        """ Buffer underrun: Normal end of playback"""
+        """Buffer underrun: Normal end of playback"""
         self.state = PlayerState.Stopped
 
     async def process_RESP(self, data):
-        """ response received at player, send continue """
+        """response received at player, send continue"""
         LOGGER.debug("RESP received")
         await self.__send_frame(b"cont", b"0")
 
     async def process_IR(self, data):
-        """ Slightly involved codepath here. This raises an event, which may
+        """Slightly involved codepath here. This raises an event, which may
         be picked up by the service and then the process_remote_* function in
         this player will be called. This is mostly relevant for volume changes
-        - most other button presses will require some context to operate. """
+        - most other button presses will require some context to operate."""
         (time, code) = struct.unpack("!IxxI", data)
         LOGGER.info("IR code %s" % code)
         # command = Remote.codes.get(code, None)
@@ -431,7 +431,7 @@ class PySqueezePlayer(Player):
         #     LOGGER.info("Unknown IR received: %r, %r" % (time, code))
 
     async def process_SETD(self, data):
-        """ Get/set player firmware settings """
+        """Get/set player firmware settings"""
         LOGGER.debug("SETD received %s" % data)
         cmd_id = data[0]
         if cmd_id == 0:
@@ -458,8 +458,8 @@ devices = {
 
 class PySqueezeVolume(object):
 
-    """ Represents a sound volume. This is an awful lot more complex than it
-    sounds. """
+    """Represents a sound volume. This is an awful lot more complex than it
+    sounds."""
 
     minimum = 0
     maximum = 100
@@ -584,23 +584,23 @@ class PySqueezeVolume(object):
         self.volume = 50
 
     def increment(self):
-        """ Increment the volume """
+        """Increment the volume"""
         self.volume += self.step
         if self.volume > self.maximum:
             self.volume = self.maximum
 
     def decrement(self):
-        """ Decrement the volume """
+        """Decrement the volume"""
         self.volume -= self.step
         if self.volume < self.minimum:
             self.volume = self.minimum
 
     def old_gain(self):
-        """ Return the "Old" gain value as required by the squeezebox """
+        """Return the "Old" gain value as required by the squeezebox"""
         return self.old_map[self.volume]
 
     def decibels(self):
-        """ Return the "new" gain value. """
+        """Return the "new" gain value."""
 
         step_db = self.total_volume_range * self.step_fraction
         max_volume_db = 0  # different on the boom?

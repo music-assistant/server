@@ -33,7 +33,7 @@ class Cache(object):
             id TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
         )
         await self._db.commit()
-        self.mass.event_loop.create_task(self.auto_cleanup())
+        self.mass.loop.create_task(self.auto_cleanup())
 
     async def close(self):
         """Handle shutdown event, close db connection."""
@@ -72,14 +72,14 @@ class Cache(object):
         checksum = self._get_checksum(checksum)
         expires = int(time.time() + expiration)
         data = pickle.dumps(data)
-        sql_query = """INSERT OR REPLACE INTO simplecache
+        sql_query ="""INSERT OR REPLACE INTO simplecache
             (id, expires, data, checksum) VALUES (?, ?, ?, ?)"""
         await self._db.execute(sql_query, (cache_key, expires, data, checksum))
         await self._db.commit()
 
     @run_periodic(3600)
     async def auto_cleanup(self):
-        """ (scheduled) auto cleanup task """
+        """(scheduled) auto cleanup task"""
         cur_timestamp = int(time.time())
         LOGGER.debug("Running cleanup...")
         sql_query = "SELECT id, expires FROM simplecache"
@@ -136,7 +136,7 @@ async def cached(cache, cache_key, coro_func, *args, **kwargs):
 
 
 def use_cache(cache_days=14, cache_checksum=None):
-    """ decorator that can be used to cache a method's result."""
+    """decorator that can be used to cache a method's result."""
 
     def wrapper(func):
         @functools.wraps(func)
@@ -165,7 +165,7 @@ def use_cache(cache_days=14, cache_checksum=None):
 
 
 def __cache_id_from_args(*args, **kwargs):
-    """ parse arguments to build cache id """
+    """parse arguments to build cache id"""
     cache_str = ""
     # append args to cache identifier
     for item in args[1:]:

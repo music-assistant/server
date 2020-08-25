@@ -1,0 +1,25 @@
+Metadata-Version: 2.1
+Name: music-assistant
+Version: 0.0.20
+Summary: Music library manager and player based on sox.
+Home-page: https://github.com/marcelveldt/musicassistant
+Author: Marcel van der Veldt
+Author-email: m.vanderveldt@outlook.com
+License: UNKNOWN
+Download-URL: https://github.com/marcelveldt/musicassistant
+Description: # musicassistant
+        Music Assistant - A library manager for (streaming) media
+        
+        work in progress !!
+        More info soon
+        
+Platform: UNKNOWN
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Natural Language :: English
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Topic :: Home Automation
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown

@@ -27,7 +27,7 @@ CONFIG_ENTRIES = [
 
 
 class FileProvider(MusicProvider):
-    """ 
+    """
         Very basic implementation of a musicprovider for local files
         Assumes files are stored on disk in format <artist>/<album>/<track.ext>
         Reads ID3 tags from file and falls back to parsing filename
@@ -40,7 +40,7 @@ class FileProvider(MusicProvider):
     _playlists_dir = None
 
     async def setup(self, conf):
-        """ setup the provider, return True if succesfull"""
+        """setup the provider, return True if succesfull"""
         if not os.path.isdir(conf["music_dir"]):
             raise FileNotFoundError(f"Directory {conf['music_dir']} does not exist")
         self._music_dir = conf["music_dir"]
@@ -50,12 +50,12 @@ class FileProvider(MusicProvider):
             self._playlists_dir = None
 
     async def search(self, searchstring, media_types=List[MediaType], limit=5):
-        """ perform search on the provider """
+        """perform search on the provider"""
         result = {"artists": [], "albums": [], "tracks": [], "playlists": []}
         return result
 
     async def get_library_artists(self) -> List[Artist]:
-        """ get artist folders in music directory """
+        """get artist folders in music directory"""
         if not os.path.isdir(self._music_dir):
             LOGGER.error("music path does not exist: %s" % self._music_dir)
             return
@@ -68,20 +68,20 @@ class FileProvider(MusicProvider):
                     yield artist
 
     async def get_library_albums(self) -> List[Album]:
-        """ get album folders recursively """
+        """get album folders recursively"""
         async for artist in self.get_library_artists():
             async for album in self.get_artist_albums(artist.item_id):
                 yield album
 
     async def get_library_tracks(self) -> List[Track]:
-        """ get all tracks recursively """
+        """get all tracks recursively"""
         # TODO: support disk subfolders
         async for album in self.get_library_albums():
             async for track in self.get_album_tracks(album.item_id):
                 yield track
 
     async def get_library_playlists(self) -> List[Playlist]:
-        """ retrieve playlists from disk """
+        """retrieve playlists from disk"""
         if not self._playlists_dir:
             return
             yield
@@ -97,7 +97,7 @@ class FileProvider(MusicProvider):
                     yield playlist
 
     async def get_artist(self, prov_item_id) -> Artist:
-        """ get full artist details by id """
+        """get full artist details by id"""
         if not os.sep in prov_item_id:
             itempath = base64.b64decode(prov_item_id).decode("utf-8")
         else:
@@ -117,7 +117,7 @@ class FileProvider(MusicProvider):
         return artist
 
     async def get_album(self, prov_item_id) -> Album:
-        """ get full album details by id """
+        """get full album details by id"""
         if not os.sep in prov_item_id:
             itempath = base64.b64decode(prov_item_id).decode("utf-8")
         else:
@@ -139,7 +139,7 @@ class FileProvider(MusicProvider):
         return album
 
     async def get_track(self, prov_item_id) -> Track:
-        """ get full track details by id """
+        """get full track details by id"""
         if not os.sep in prov_item_id:
             itempath = base64.b64decode(prov_item_id).decode("utf-8")
         else:
@@ -150,7 +150,7 @@ class FileProvider(MusicProvider):
         return await self.__parse_track(itempath)
 
     async def get_playlist(self, prov_item_id) -> Playlist:
-        """ get full playlist details by id """
+        """get full playlist details by id"""
         if not os.sep in prov_item_id:
             itempath = base64.b64decode(prov_item_id).decode("utf-8")
         else:
@@ -172,7 +172,7 @@ class FileProvider(MusicProvider):
         return playlist
 
     async def get_album_tracks(self, prov_album_id) -> List[Track]:
-        """ get album tracks for given album id """
+        """get album tracks for given album id"""
         if not os.sep in prov_album_id:
             albumpath = base64.b64decode(prov_album_id).decode("utf-8")
         else:
@@ -192,7 +192,7 @@ class FileProvider(MusicProvider):
     async def get_playlist_tracks(
         self, prov_playlist_id, limit=50, offset=0
     ) -> List[Track]:
-        """ get playlist tracks for given playlist id """
+        """get playlist tracks for given playlist id"""
         if not os.sep in prov_playlist_id:
             itempath = base64.b64decode(prov_playlist_id).decode("utf-8")
         else:
@@ -216,7 +216,7 @@ class FileProvider(MusicProvider):
                         break
 
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
-        """ get a list of albums for the given artist """
+        """get a list of albums for the given artist"""
         if not os.sep in prov_artist_id:
             artistpath = base64.b64decode(prov_artist_id).decode("utf-8")
         else:
@@ -232,13 +232,13 @@ class FileProvider(MusicProvider):
                     yield album
 
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
-        """ get a list of random tracks as we have no clue about preference """
+        """get a list of random tracks as we have no clue about preference"""
         async for album in self.get_artist_albums(prov_artist_id):
             async for track in self.get_album_tracks(album.item_id):
                 yield track
 
     async def get_stream_details(self, track_id):
-        """ return the content details for the given track when it will be streamed"""
+        """return the content details for the given track when it will be streamed"""
         if not os.sep in track_id:
             track_id = base64.b64decode(track_id).decode("utf-8")
         if not os.path.isfile(track_id):
@@ -253,7 +253,7 @@ class FileProvider(MusicProvider):
         }
 
     async def __parse_track(self, filename):
-        """ try to parse a track from a filename with taglib """
+        """try to parse a track from a filename with taglib"""
         track = Track()
         try:
             song = taglib.File(filename)
@@ -326,13 +326,13 @@ class FileProvider(MusicProvider):
         return track
 
     async def __parse_track_from_uri(self, uri):
-        """ try to parse a track from an uri found in playlist """
+        """try to parse a track from an uri found in playlist"""
         if "://" in uri:
             # track is uri from external provider?
             prov_id = uri.split("://")[0]
             prov_item_id = uri.split("/")[-1].split(".")[0].split(":")[-1]
             try:
-                return await self.mass.music.providers[prov_id].track(
+                return await self.mass.music_manager.providers[prov_id].track(
                     prov_item_id, lazy=False
                 )
             except Exception as exc:

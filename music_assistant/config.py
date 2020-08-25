@@ -15,7 +15,7 @@ from music_assistant.utils import LOGGER, json, try_load_json_file
 
 
 class MassConfig(dict):
-    """ Class which holds our configuration """
+    """Class which holds our configuration"""
 
     def __init__(self, mass):
         self.loading = False
@@ -28,26 +28,26 @@ class MassConfig(dict):
 
     @property
     def base(self):
-        """ return base config """
+        """return base config"""
         return self[CONF_KEY_BASE]
 
     @property
     def players(self):
-        """ return player settings """
+        """return player settings"""
         return self[CONF_KEY_PLAYERSETTINGS]
 
     @property
     def playerproviders(self):
-        """ return playerprovider settings """
+        """return playerprovider settings"""
         return self[CONF_KEY_PLAYERPROVIDERS]
 
     @property
     def musicproviders(self):
-        """ return musicprovider settings """
+        """return musicprovider settings"""
         return self[CONF_KEY_MUSICPROVIDERS]
 
     def create_module_config(self, conf_key, conf_entries, base_key=CONF_KEY_BASE):
-        """ create (or update) module configuration """
+        """create (or update) module configuration"""
         cur_conf = self[base_key].get(conf_key)
         new_conf = {}
         for key, def_value, desc in conf_entries:
@@ -60,7 +60,7 @@ class MassConfig(dict):
         return self[base_key][conf_key]
 
     def save(self):
-        """ save config to file """
+        """save config to file"""
         if self.loading:
             LOGGER.warning("save already running")
             return

@@ -18,8 +18,8 @@ from music_assistant.constants import (
     EVENT_QUEUE_UPDATED,
 )
 from music_assistant.models.media_types import Track
-from music_assistant.models.playerstate import PlayerState
-from music_assistant.utils import LOGGER, serialize_values
+from music_assistant.models.player import PlayerState
+from music_assistant.utils import LOGGER, serialize_values, callback
 
 # pylint: disable=too-many-instance-attributes
 # pylint: disable=too-many-public-methods
@@ -71,11 +71,11 @@ class PlayerQueue:
         self._last_track = None
         asyncio.run_coroutine_threadsafe(
             self.mass.add_event_listener(self.on_shutdown, "shutdown"),
-            self.mass.event_loop,
+            self.mass.loop,
         )
         # load previous queue settings from disk
         asyncio.run_coroutine_threadsafe(
-            self.__restore_saved_state(), self.mass.event_loop
+            self.__restore_saved_state(), self.mass.loop
         )
 
     @property
@@ -93,7 +93,7 @@ class PlayerQueue:
                 played_items = self.items[: self.cur_index]
                 next_items = self.__shuffle_items(self.items[self.cur_index + 1 :])
                 items = played_items + [self.cur_item] + next_items
-                self.mass.event_loop.create_task(self.update(items))
+                self.mass.loop.create_task(self.update(items))
         elif self._shuffle_enabled and not enable_shuffle:
             # unshuffle
             self._shuffle_enabled = False
@@ -102,8 +102,8 @@ class PlayerQueue:
                 next_items = self.items[self.cur_index + 1 :]
                 next_items.sort(key=lambda x: x.sort_index, reverse=False)
                 items = played_items + [self.cur_item] + next_items
-                self.mass.event_loop.create_task(self.update(items))
-        self.mass.event_loop.create_task(self.update_state())
+                self.mass.loop.create_task(self.update(items))
+        self.mass.loop.create_task(self.update_state())
 
     @property
     def repeat_enabled(self):
@@ -115,8 +115,8 @@ class PlayerQueue:
         """Set the repeat mode for this queue."""
         if self._repeat_enabled != enable_repeat:
             self._repeat_enabled = enable_repeat
-            self.mass.event_loop.create_task(self.update_state())
-            self.mass.event_loop.create_task(self.__save_state())
+            self.mass.loop.create_task(self.update_state())
+            self.mass.loop.create_task(self.__save_state())
 
     @property
     def crossfade_enabled(self):
@@ -212,13 +212,15 @@ class PlayerQueue:
             self.gapless_enabled and not self._player.supports_gapless
         )
 
-    async def get_item(self, index):
+    @callback
+    def get_item(self, index):
         """get item by index from queue"""
         if index is not None and len(self.items) > index:
             return self.items[index]
         return None
 
-    async def by_item_id(self, queue_item_id: str):
+    @callback
+    def by_item_id(self, queue_item_id: str):
         """get item by queue_item_id from queue"""
         if not queue_item_id:
             return None
@@ -227,8 +229,8 @@ class PlayerQueue:
                 return item
         return None
 
-    async def next(self):
-        """Request player to play the next track in the queue."""
+    async def async_next(self):
+        """Play the next track in the queue."""
         if self.cur_index is None:
             return
         if self.use_queue_stream:
@@ -236,8 +238,8 @@ class PlayerQueue:
         else:
             return await self._player.cmd_next()
 
-    async def previous(self):
-        """Request player to play the previous track in the queue."""
+    async def async_previous(self):
+        """Play the previous track in the queue."""
         if self.cur_index is None:
             return
         if self.use_queue_stream:
@@ -245,7 +247,7 @@ class PlayerQueue:
         else:
             return await self._player.cmd_previous()
 
-    async def resume(self):
+    async def async_resume(self):
         """Resume previous queue."""
         if self.items:
             prev_index = self.cur_index
@@ -261,7 +263,7 @@ class PlayerQueue:
                 "resume queue requested for %s but queue is empty", self._player.name
             )
 
-    async def play_index(self, index):
+    async def async_play_index(self, index):
         """Play item at index X in queue."""
         if not isinstance(index, int):
             index = self.__index_by_id(index)
@@ -280,7 +282,7 @@ class PlayerQueue:
         else:
             return await self._player.cmd_play_uri(self._items[index].uri)
 
-    async def move_item(self, queue_item_id, pos_shift=1):
+    async def async_move_item(self, queue_item_id, pos_shift=1):
         """
             move queue item x up/down the queue
             param pos_shift: move item x positions down if positive value
@@ -303,7 +305,7 @@ class PlayerQueue:
         if pos_shift == 0:
             await self.play_index(new_index)
 
-    async def load(self, queue_items: List[QueueItem]):
+    async def async_load(self, queue_items: List[QueueItem]):
         """load (overwrite) queue with new items"""
         for index, item in enumerate(queue_items):
             item.sort_index = index
@@ -315,15 +317,15 @@ class PlayerQueue:
         else:
             await self._player.cmd_queue_load(queue_items)
         await self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
-        self.mass.event_loop.create_task(self.__save_state())
+        self.mass.loop.create_task(self.__save_state())
 
-    async def insert(self, queue_items: List[QueueItem], offset=0):
+    async def async_insert(self, queue_items: List[QueueItem], offset=0):
         """
             insert new items at offset x from current position
             keeps remaining items in queue
             if offset 0, will start playing newly added item(s)
-            :param queue_items: a list of QueueItem
-            :param offset: offset from current queue position
+                :param queue_items: a list of QueueItem
+                :param offset: offset from current queue position
        """
 
         if (
@@ -353,12 +355,12 @@ class PlayerQueue:
                 )
                 self._items = self._items[self.cur_index :]
                 await self._player.cmd_queue_load(self._items)
-        self.mass.event_loop.create_task(
+        self.mass.loop.create_task(
             self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
         )
-        self.mass.event_loop.create_task(self.__save_state())
+        self.mass.loop.create_task(self.__save_state())
 
-    async def append(self, queue_items: List[QueueItem]):
+    async def async_append(self, queue_items: List[QueueItem]):
         """
             append new items at the end of the queue
        """
@@ -381,12 +383,12 @@ class PlayerQueue:
                 )
                 self._items = self._items[self.cur_index :]
                 await self._player.cmd_queue_load(self._items)
-        self.mass.event_loop.create_task(
+        self.mass.loop.create_task(
             self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
         )
-        self.mass.event_loop.create_task(self.__save_state())
+        self.mass.loop.create_task(self.__save_state())
 
-    async def update(self, queue_items: List[QueueItem]):
+    async def async_update(self, queue_items: List[QueueItem]):
         """
             update the existing queue items, mostly caused by reordering
        """
@@ -401,12 +403,12 @@ class PlayerQueue:
                 )
                 self._items = self._items[self.cur_index :]
                 await self._player.cmd_queue_load(self._items)
-        self.mass.event_loop.create_task(
+        self.mass.loop.create_task(
             self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
         )
-        self.mass.event_loop.create_task(self.__save_state())
+        self.mass.loop.create_task(self.__save_state())
 
-    async def clear(self):
+    async def async_clear(self):
         """
             clear all items in the queue
        """
@@ -418,7 +420,7 @@ class PlayerQueue:
             except NotImplementedError:
                 # not supported by player, ignore
                 pass
-        self.mass.event_loop.create_task(
+        self.mass.loop.create_task(
             self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
         )
 
@@ -428,7 +430,7 @@ class PlayerQueue:
         track_time = self._cur_item_time
         # handle queue stream
         if self.use_queue_stream and self._player.state == PlayerState.Playing:
-            cur_index, track_time = await self.__get_queue_stream_index()
+            cur_index, track_time = self.__get_queue_stream_index()
         # normal queue based approach
         elif not self.use_queue_stream:
             track_time = self._player.cur_time
@@ -437,7 +439,7 @@ class PlayerQueue:
                     cur_index = index
                     break
         # process new index
-        await self.__process_queue_update(cur_index, track_time)
+        await self._async_process_queue_update(cur_index, track_time)
         await self.mass.signal_event(EVENT_QUEUE_UPDATED, self.to_dict())
 
     async def start_queue_stream(self):
@@ -463,7 +465,8 @@ class PlayerQueue:
             "queue_stream_enabled": self.use_queue_stream,
         }
 
-    async def __get_queue_stream_index(self):
+    @callback
+    def __get_queue_stream_index(self):
         # player is playing a constant stream of the queue so we need to do this the hard way
         queue_index = 0
         cur_time_queue = self._player.cur_time
@@ -485,7 +488,7 @@ class PlayerQueue:
             self._next_queue_startindex = queue_index + 1
         return queue_index, track_time
 
-    async def __process_queue_update(self, new_index, track_time):
+    async def async_process_queue_update(self, new_index, track_time):
         """compare the queue index to determine if playback changed"""
         new_track = await self.get_item(new_index)
         if (not self._last_track and new_track) or self._last_track != new_track:
