@@ -14,8 +14,7 @@ CONF_TYPE_PASSWORD = "<password>"
 
 CONF_KEY_BASE = "base"
 CONF_KEY_PLAYERSETTINGS = "player_settings"
-CONF_KEY_MUSICPROVIDERS = "musicproviders"
-CONF_KEY_PLAYERPROVIDERS = "playerproviders"
+CONF_KEY_PROVIDERS = "providers"
 
 EVENT_PLAYER_ADDED = "player added"
 EVENT_PLAYER_REMOVED = "player removed"

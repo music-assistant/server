@@ -1,8 +1,8 @@
 """Models and helpers for a player."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import List, Optional
+from typing import Awaitable, List, Optional
 
 from music_assistant.models.config_entry import ConfigEntry
 
@@ -35,17 +35,18 @@ class Player:
     """Model for a MusicPlayer."""
     player_id: str
     provider_id: str
-    name: Optional[str]
+    name: str = ""
     powered: bool = True
-    elapsed_time: Optional[int]
+    elapsed_time: int = 0
     state: PlayerState = PlayerState.Off
     available: bool = True
-    current_uri: Optional[str]
-    volume_level: Optional[int]
-    muted: Optional[bool]
+    current_uri: Optional[str] = None
+    volume_level: int = 0
+    muted: bool = False
     is_group_player: bool = False
-    group_childs: List[str] = []
-    device_info: Optional[DeviceInfo]
+    group_childs: List[str] = field(default_factory=list)
+    device_info: Optional[DeviceInfo] = None
     should_poll: bool = False
-    features: List[PlayerFeature] = []
-    config_entries: List[ConfigEntry] = []
+    features: List[PlayerFeature] = field(default_factory=list)
+    config_entries: List[ConfigEntry] = field(default_factory=list)
+

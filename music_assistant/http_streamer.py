@@ -347,7 +347,7 @@ class HTTPStreamer:
             )
         # sort by quality and check track availability
         for prov_media in sorted(
-            full_track.provider_ids, key=operator.itemgetter("quality"), reverse=True
+            full_track.ids, key=operator.itemgetter("quality"), reverse=True
         ):
             if not prov_media["provider"] in self.mass.music_manager.providers:
                 continue

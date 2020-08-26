@@ -1,25 +1,24 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
+"""Main Music Assistant class."""
 
 import asyncio
 import functools
-import threading
-import uuid
+import importlib
 from typing import Any, Awaitable, Callable, Coroutine, Union, Optional, List
 
 import zeroconf
 
 from .cache import Cache
 from .config import MassConfig
-from .constants import EVENT_SHUTDOWN
+from .constants import EVENT_SHUTDOWN, CONF_ENABLED
 from .database import Database
-from .homeassistant import HomeAssistant
 from .http_streamer import HTTPStreamer
 from .metadata import MetaData
 from .music_manager import MusicManager
 from .player_manager import PlayerManager
 from .utils import LOGGER, T, callback, is_callback, serialize_values
 from .web import Web
+
+from music_assistant.models.provider import Provider, ProviderType
 
 
 class MusicAssistant:
@@ -31,13 +30,13 @@ class MusicAssistant:
         self.loop = None
         self.datapath = datapath
         self._event_listeners = []
+        self._providers = {}
         self.config = MassConfig(self)
         # init modules
         self.database = Database(self)
         self.cache = Cache(self)
         self.metadata = MetaData(self)
         self.web = Web(self)
-        self.hass = HomeAssistant(self)
         self.music_manager = MusicManager(self)
         self.player_manager = PlayerManager(self)
         self.http_streamer = HTTPStreamer(self)
@@ -51,7 +50,6 @@ class MusicAssistant:
         await self.database.setup()
         await self.cache.setup()
         await self.metadata.setup()
-        await self.hass.setup()
         await self.music_manager.setup()
         await self.player_manager.async_setup()
         await self.web.setup()
@@ -66,6 +64,83 @@ class MusicAssistant:
             self.config.save()
             await self.database.close()
             await self.cache.close()
+
+    def register_provider(self, provider: Provider):
+        """Register a new Provider/Plugin."""
+        assert provider.id not in self._providers  # provider id's must be unique!
+        provider.mass = self # make sure we have the mass object
+        self._providers[provider.id] = provider
+        if self.config.providers[provider.id][CONF_ENABLED]:
+            self.create_task(provider.async_on_start())
+            LOGGER.info("New provider registered: %s", provider.name)
+        else:
+            LOGGER.debug("Not loading provider %s as it is disabled:", provider.name)
+
+    async def async_register_provider(self, provider: Provider):
+        """Register a new Provider/Plugin."""
+        await self.async_run_job(self.register_provider, provider)
+
+    @callback
+    def get_provider(self, provider_id: str) -> Provider:
+        """Return provider/plugin by id."""
+        return self._providers.get(provider_id)
+
+    @callback
+    def get_providers(self, filter_type: Optional[ProviderType]) -> List[Provider]:
+        """Return all providers, optionally filtered by type."""
+        return [item for item in self._providers.values()
+                if filter_type is None or item.type == filter_type]
+
+    async def async_load_providers(self):
+        """Dynamically load all providermodules."""
+        pass
+
+    #     base_dir = os.path.dirname(os.path.abspath(__file__))
+    #     modules_path = os.path.join(base_dir, prov_type)
+    #     # load modules
+    #     for item in os.listdir(modules_path):
+    #         if (
+    #             os.path.isfile(os.path.join(modules_path, item))
+    #             and not item.startswith("_")
+    #             and item.endswith(".py")
+    #             and not item.startswith(".")
+    #         ):
+    #             module_name = item.replace(".py", "")
+    #             if module_name not in provider_modules:
+    #                 prov_mod = await load_provider_module(mass, module_name, prov_type)
+    #                 if prov_mod:
+    #                     provider_modules[module_name] = prov_mod
+
+
+    # async def load_provider_module(mass, module_name, prov_type):
+    #     """dynamically load music/player provider"""
+    #     # pylint: disable=broad-except
+    #     try:
+    #         prov_mod = importlib.import_module(
+    #             f".{module_name}", f"music_assistant.{prov_type}"
+    #         )
+    #         prov_conf_entries = prov_mod.CONFIG_ENTRIES
+    #         prov_id = module_name
+    #         prov_name = prov_mod.PROV_NAME
+    #         prov_class = prov_mod.PROV_CLASS
+    #         # get/create config for the module
+    #         prov_config = mass.config.create_module_config(
+    #             prov_id, prov_conf_entries, prov_type
+    #         )
+    #         if prov_config[CONF_ENABLED]:
+    #             prov_mod_cls = getattr(prov_mod, prov_class)
+    #             provider = prov_mod_cls(mass)
+    #             provider.prov_id = prov_id
+    #             provider.name = prov_name
+    #             await provider.setup(prov_config)
+    #             LOGGER.info("Successfully initialized module %s", provider.name)
+    #             return provider
+    #         else:
+    #             return None
+    #     except Exception as exc:
+    #         LOGGER.error("Error loading module %s: %s", module_name, exc)
+    #         LOGGER.debug("Error loading module", exc_info=exc)
+        # pylint: enable=broad-except
 
     @callback
     def signal_event(self, event_msg: str, event_details: Any = None):

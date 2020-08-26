@@ -2,43 +2,19 @@
 
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
-from music_assistant.mass import MusicAssistant
-from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player_queue import QueueItem
+from music_assistant.models.provider import Provider, ProviderType
 
 
 @dataclass
-class PlayerProvider:
+class PlayerProvider(Provider):
     """
         Base class for a Playerprovider
         Should be overridden/subclassed by provider specific implementation.
     """
-    mass: Optional[MusicAssistant]
-
-    @abstractmethod
-    @property
-    def provider_id(self) -> str:
-        """Return Provider id of this provider."""
-        return None
-
-    @abstractmethod
-    @property
-    def name(self) -> str:
-        """Return name of this provider."""
-        return None
-
-    @abstractmethod
-    @property
-    def config_entries(self) -> List[ConfigEntry]:
-        """Return custom config entries for this provider."""
-        return []
-
-    @abstractmethod
-    async def async_setup(self, conf: dict) -> bool:
-        """Async setup of the provider. Return True on success."""
-        return False
+    type: ProviderType = ProviderType.MUSIC_PROVIDER
 
     # SERVICE CALLS / PLAYER COMMANDS
 
@@ -142,7 +118,7 @@ class PlayerProvider:
                 :param queue_items: a list of QueueItems
         """
         raise NotImplementedError
-    
+
     async def async_cmd_queue_insert(self,
                                      player_id: str,
                                      queue_items: List[QueueItem],

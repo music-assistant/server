@@ -10,7 +10,7 @@ from typing import List
 
 from PIL import Image
 import aiohttp
-from music_assistant.constants import CONF_KEY_MUSICPROVIDERS, EVENT_MUSIC_SYNC_STATUS
+from music_assistant.constants import EVENT_MUSIC_SYNC_STATUS
 from music_assistant.models.media_types import (
     Album,
     Artist,
@@ -20,7 +20,7 @@ from music_assistant.models.media_types import (
     Radio,
     Track,
 )
-from music_assistant.utils import LOGGER, load_provider_modules, run_periodic
+from music_assistant.utils import LOGGER, run_periodic
 import toolz
 
 
@@ -67,20 +67,10 @@ class MusicManager:
     async def setup(self):
         """async initialize of module"""
         # load providers
-        await self.load_modules()
+        # await self.load_modules()
         # schedule sync task
         self.mass.loop.create_task(self.__sync_music_providers())
 
-    async def load_modules(self, reload_module=None):
-        """Dynamically (un)load musicprovider modules."""
-        if reload_module and reload_module in self.providers:
-            # unload existing module
-            for player in self.providers[reload_module].players:
-                await self.mass.player_manager.remove_player(player.player_id)
-            self.providers.pop(reload_module, None)
-            LOGGER.info("Unloaded %s module", reload_module)
-        # load all modules (that are not already loaded)
-        await load_provider_modules(self.mass, self.providers, CONF_KEY_MUSICPROVIDERS)
 
 ##########################
 
@@ -144,7 +134,7 @@ class MusicManager:
                 item async for item in self.get_artist_albums(artist_details.item_id)
             ]
         if new_artist_toptracks or new_artist_albums:
-            item_provider_keys = [item["provider"] for item in new_artist.provider_ids]
+            item_provider_keys = [item["provider"] for item in new_artist.ids]
             for prov_id, provider in self.mass.music_manager.providers.items():
                 if not prov_id in item_provider_keys:
                     await provider.match_artist(
@@ -248,7 +238,7 @@ class MusicManager:
         item_id = await self.mass.database.add_album(album_details)
         # also fetch same album on all providers
         new_album = await self.mass.database.album(item_id)
-        item_provider_keys = [item["provider"] for item in new_album.provider_ids]
+        item_provider_keys = [item["provider"] for item in new_album.ids]
         for prov_id, provider in self.mass.music_manager.providers.items():
             if not prov_id in item_provider_keys:
                 await provider.match_album(new_album)
@@ -309,7 +299,7 @@ class MusicManager:
         item_id = await self.mass.database.add_track(track_details)
         # also fetch same track on all providers (will also get other quality versions)
         new_track = await self.mass.database.track(item_id)
-        item_provider_keys = [item["provider"] for item in new_track.provider_ids]
+        item_provider_keys = [item["provider"] for item in new_track.ids]
         for prov_id, provider in self.mass.music_manager.providers.items():
             if not prov_id in item_provider_keys:
                 await provider.match_track(new_track)
@@ -635,7 +625,7 @@ class MusicManager:
             if (item.name + item.version) not in track_names:
                 yield item
                 track_names.append(item.name + item.version)
-        for prov_mapping in artist.provider_ids:
+        for prov_mapping in artist.ids:
             prov_id = prov_mapping["provider"]
             prov_item_id = prov_mapping["item_id"]
             prov_obj = self.providers[prov_id]
@@ -653,7 +643,7 @@ class MusicManager:
             if (item.name + item.version) not in album_names:
                 yield item
                 album_names.append(item.name + item.version)
-        for prov_mapping in artist.provider_ids:
+        for prov_mapping in artist.ids:
             prov_id = prov_mapping["provider"]
             prov_item_id = prov_mapping["item_id"]
             prov_obj = self.providers[prov_id]
@@ -666,7 +656,7 @@ class MusicManager:
         """get the album tracks for given album"""
         album = await self.album(album_id, provider)
         # collect the tracks from the first provider
-        prov = album.provider_ids[0]
+        prov = album.ids[0]
         prov_obj = self.providers[prov["provider"]]
         async for item in prov_obj.album_tracks(prov["item_id"]):
             yield item
@@ -675,7 +665,7 @@ class MusicManager:
         """get the tracks for given playlist"""
         playlist = await self.playlist(playlist_id, provider)
         # return playlist tracks from provider
-        prov = playlist.provider_ids[0]
+        prov = playlist.ids[0]
         async for item in self.providers[prov["provider"]].playlist_tracks(
             prov["item_id"]
         ):
@@ -712,7 +702,7 @@ class MusicManager:
             if not media_item:
                 continue
             # add to provider's libraries
-            for prov in item.provider_ids:
+            for prov in item.ids:
                 prov_id = prov["provider"]
                 prov_item_id = prov["item_id"]
                 if prov_id in self.providers:
@@ -736,7 +726,7 @@ class MusicManager:
             if not media_item:
                 continue
             # remove from provider's libraries
-            for prov in item.provider_ids:
+            for prov in item.ids:
                 prov_id = prov["provider"]
                 prov_item_id = prov["item_id"]
                 if prov_id in self.providers:
@@ -756,19 +746,19 @@ class MusicManager:
         if not playlist or not playlist.is_editable:
             return False
         # playlist can only have one provider (for now)
-        playlist_prov = playlist.provider_ids[0]
+        playlist_prov = playlist.ids[0]
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = []
         async for item in self.providers[playlist_prov["provider"]].playlist_tracks(
             playlist_prov["item_id"]
         ):
             cur_playlist_track_ids.append(item.item_id)
-            cur_playlist_track_ids += [i["item_id"] for i in item.provider_ids]
+            cur_playlist_track_ids += [i["item_id"] for i in item.ids]
         track_ids_to_add = []
         for track in tracks:
             # check for duplicates
             already_exists = track.item_id in cur_playlist_track_ids
-            for track_prov in track.provider_ids:
+            for track_prov in track.ids:
                 if track_prov["item_id"] in cur_playlist_track_ids:
                     already_exists = True
             if already_exists:
@@ -778,7 +768,7 @@ class MusicManager:
             # a track can contain multiple versions on the same provider
             # simply sort by quality and just add the first one (assuming track is still available)
             for track_version in sorted(
-                track.provider_ids, key=operator.itemgetter("quality"), reverse=True
+                track.ids, key=operator.itemgetter("quality"), reverse=True
             ):
                 if track_version["provider"] == playlist_prov["provider"]:
                     track_ids_to_add.append(track_version["item_id"])
@@ -807,14 +797,14 @@ class MusicManager:
         if not playlist or not playlist.is_editable:
             return False
         # playlist can only have one provider (for now)
-        prov_playlist = playlist.provider_ids[0]
+        prov_playlist = playlist.ids[0]
         prov_playlist_playlist_id = prov_playlist["item_id"]
-        prov_playlist_provider_id = prov_playlist["provider"]
+        prov_playlist_id = prov_playlist["provider"]
         track_ids_to_remove = []
         for track in tracks:
             # a track can contain multiple versions on the same provider, remove all
-            for track_provider in track.provider_ids:
-                if track_provider["provider"] == prov_playlist_provider_id:
+            for track_provider in track.ids:
+                if track_provider["provider"] == prov_playlist_id:
                     track_ids_to_remove.append(track_provider["item_id"])
         # actually remove the tracks from the playlist on the provider
         if track_ids_to_remove:
@@ -823,7 +813,7 @@ class MusicManager:
                 playlist.item_id, "checksum", str(time.time())
             )
             return await self.providers[
-                prov_playlist_provider_id
+                prov_playlist_id
             ].remove_playlist_tracks(prov_playlist_playlist_id, track_ids_to_remove)
 
     @run_periodic(3600 * 3)

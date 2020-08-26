@@ -354,7 +354,7 @@ class QobuzProvider(MusicProvider):
             return None
         artist.item_id = artist_obj["id"]
         artist.provider = self.prov_id
-        artist.provider_ids.append(
+        artist.ids.append(
             {"provider": self.prov_id, "item_id": artist_obj["id"]}
         )
         artist.name = artist_obj["name"]
@@ -398,7 +398,7 @@ class QobuzProvider(MusicProvider):
             quality = TrackQuality.LOSSY_AAC
         else:
             quality = TrackQuality.FLAC_LOSSLESS
-        album.provider_ids.append(
+        album.ids.append(
             {
                 "provider": self.prov_id,
                 "item_id": album_obj["id"],
@@ -518,7 +518,7 @@ class QobuzProvider(MusicProvider):
             quality = TrackQuality.LOSSY_AAC
         else:
             quality = TrackQuality.FLAC_LOSSLESS
-        track.provider_ids.append(
+        track.ids.append(
             {
                 "provider": self.prov_id,
                 "item_id": track_obj["id"],
@@ -536,7 +536,7 @@ class QobuzProvider(MusicProvider):
             return None
         playlist.item_id = playlist_obj["id"]
         playlist.provider = self.prov_id
-        playlist.provider_ids.append(
+        playlist.ids.append(
             {"provider": self.prov_id, "item_id": playlist_obj["id"]}
         )
         playlist.name = playlist_obj["name"]

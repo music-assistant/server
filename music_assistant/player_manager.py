@@ -5,7 +5,6 @@ import os
 from typing import Any, List
 
 from music_assistant.constants import (
-    CONF_KEY_PLAYERPROVIDERS,
     EVENT_HASS_ENTITY_CHANGED,
     EVENT_PLAYER_ADDED,
     EVENT_PLAYER_REMOVED,
@@ -16,11 +15,11 @@ from music_assistant.models.media_types import MediaItem, MediaType
 from music_assistant.models.player import Player, PlayerState
 from music_assistant.models.player_queue import QueueItem, QueueOption
 from music_assistant.models.playerprovider import PlayerProvider
+from music_assistant.models.provider import ProviderType
 from music_assistant.utils import (
     LOGGER,
     callback,
     iter_items,
-    load_provider_modules,
     try_parse_int,
     try_parse_float
 )
@@ -40,19 +39,7 @@ class PlayerManager:
 
     async def async_setup(self):
         """Async initialize of module"""
-        # load providers
-        await self.async_load_modules()
-
-    async def async_load_modules(self, reload_module=None) -> None:
-        """Dynamically (un)load musicprovider modules."""
-        if reload_module is not None:
-            # unload existing module
-            if hasattr(self.providers[reload_module], "http_session"):
-                await self.providers[reload_module].http_session.close()
-            self.providers.pop(reload_module, None)
-            LOGGER.info("Unloaded %s module", reload_module)
-        # load all modules (that are not already loaded)
-        await load_provider_modules(self.mass, self.providers, CONF_KEY_PLAYERPROVIDERS)
+        pass
 
     @property
     def players(self) -> List[Player]:
@@ -62,7 +49,7 @@ class PlayerManager:
     @property
     def providers(self) -> List[PlayerProvider]:
         """Return all loaded player providers."""
-        return list(self._providers.values())
+        return self.mass.get_providers(ProviderType.PLAYER_PROVIDER)
 
     @callback
     def get_player(self, player_id: str) -> Player:
@@ -70,21 +57,16 @@ class PlayerManager:
         return self._players.get(player_id)
 
     @callback
-    def get_provider(self, provider_id: str) -> PlayerProvider:
-        """Return provider by provider_id or None if provider does not exist."""
-        return self._providers.get(provider_id)
-
-    @callback
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return provider by player_id or None if player does not exist."""
         player = self.get_player(player_id)
-        return self.get_provider(player.provider_id) if player else None
+        return self.mass.get_provider(player.provider_id) if player else None
 
     # ADD/REMOVE/UPDATE HELPERS
 
     async def async_add_player(self, player: Player) -> None:
         """Register a new player or update an existing one."""
-        assert player.player_id and player.player_provider_id
+        assert player.player_id and player.player_id
         new_player = player.player_id not in self._players
         if new_player:
             # TODO: turn on player if it was previously turned on ?
@@ -111,7 +93,7 @@ class PlayerManager:
         """Create internal Player object with all calculated properties."""
         final_player = Player(
             player_id=player.player_id,
-            provider_id=player.provider_id,
+            id=player.id,
             name = self.__get_player_name(player),
             powered = self.__get_player_power_state(player),
             elapsed_time = player.elapsed_time,
@@ -136,7 +118,7 @@ class PlayerManager:
                 QueueOption.Next -> Play item(s) after current playing item
                 QueueOption.Add -> Append new items at end of the queue
         """
-        player = self.get_player(player_id)
+        player = self._players[player_id]
         if not player:
             return
         # a single item or list of items may be provided
@@ -265,77 +247,71 @@ class PlayerManager:
             Send POWER ON command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        await player.async_power_on()
+        player = self._players[player_id]
+        player_config = self.mass.config.players[player.player_id]
+        # turn on player
+        await self.get_player_provider(player_id).async_cmd_power_on(player_id)
         # handle mute as power
-        # if self.settings.get("mute_as_power"):
-        #     await self.volume_mute(False)
+        if player_config.get("mute_as_power"):
+            await self.async_cmd_volume_mute(player_id, False)
         # handle hass integration
-        # if (
-        #     self.mass.hass.enabled
-        #     and self.settings.get("hass_power_entity")
-        #     and self.settings.get("hass_power_entity_source")
-        # ):
-        #     cur_source = await self.mass.hass.get_state_async(
-        #         self.settings["hass_power_entity"], attribute="source"
-        #     )
-        #     if not cur_source:
-        #         service_data = {
-        #             "entity_id": self.settings["hass_power_entity"],
-        #             "source": self.settings["hass_power_entity_source"],
-        #         }
-        #         await self.mass.hass.call_service(
-        #             "media_player", "select_source", service_data
-        #         )
-        # elif self.mass.hass.enabled and self.settings.get("hass_power_entity"):
-        #     domain = self.settings["hass_power_entity"].split(".")[0]
-        #     service_data = {"entity_id": self.settings["hass_power_entity"]}
-        #     await self.mass.hass.call_service(domain, "turn_on", service_data)
-        # # handle play on power on
-        # if self.settings.get("play_power_on"):
-        #     # play player's own queue if it has items
-        #     if self._queue.items:
-        #         await self.play()
-        #     # fallback to the first group parent with items
-        #     else:
-        #         for group_parent_id in self.group_parents:
-        #             group_player = await self.mass.player_manager.get_player(group_parent_id)
-        #             if group_player and group_player.queue.items:
-        #                 await group_player.play()
-        #                 break
+        # TODO: move to plugin construction
+        if (
+            self.mass.hass.enabled
+            and player_config.get("hass_power_entity")
+            and player_config.get("hass_power_entity_source")
+        ):
+            cur_source = await self.mass.hass.get_state_async(
+                player_config["hass_power_entity"], attribute="source"
+            )
+            if not cur_source:
+                service_data = {
+                    "entity_id": player_config["hass_power_entity"],
+                    "source": player_config["hass_power_entity_source"],
+                }
+                await self.mass.hass.call_service(
+                    "media_player", "select_source", service_data
+                )
+        elif self.mass.hass.enabled and player_config.get("hass_power_entity"):
+            domain = player_config["hass_power_entity"].split(".")[0]
+            service_data = {"entity_id": player_config["hass_power_entity"]}
+            await self.mass.hass.call_service(domain, "turn_on", service_data)
+        # handle play on power on
+        if player_config.get("play_power_on"):
+            await self.get_player_provider(player_id).async_cmd_play(player_id)
 
     async def async_cmd_power_off(self, player_id: str):
         """
             Send POWER OFF command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        await player.async_power_on()
-        if player.state in [PlayerState.Playing, PlayerState.Paused]:
-            await player.async_stop()
-        await player.async_power_off()
-        # # handle mute as power
-        # if self.settings.get("mute_as_power"):
-        #     await self.volume_mute(True)
-        # # handle hass integration
-        # if (
-        #     self.mass.hass.enabled
-        #     and self.settings.get("hass_power_entity")
-        #     and self.settings.get("hass_power_entity_source")
-        # ):
-        #     cur_source = await self.mass.hass.get_state_async(
-        #         self.settings["hass_power_entity"], attribute="source"
-        #     )
-        #     if cur_source == self.settings["hass_power_entity_source"]:
-        #         service_data = {"entity_id": self.settings["hass_power_entity"]}
-        #         await self.mass.hass.call_service(
-        #             "media_player", "turn_off", service_data
-        #         )
-        # elif self.mass.hass.enabled and self.settings.get("hass_power_entity"):
-        #     domain = self.settings["hass_power_entity"].split(".")[0]
-        #     service_data = {"entity_id": self.settings["hass_power_entity"]}
-        #     await self.mass.hass.call_service(domain, "turn_off", service_data)
-        # # handle group power
+        player = self._players[player_id]
+        player_config = self.mass.config.players[player.player_id]
+        # handle mute as power
+        if player_config.get("mute_as_power"):
+            await self.async_cmd_volume_mute(player_id, True)
+
+        
+        await self.get_player_provider(player_id).async_cmd_power_off(player_id)
+        # handle hass integration
+        if (
+            self.mass.hass.enabled
+            and player_config.get("hass_power_entity")
+            and player_config.get("hass_power_entity_source")
+        ):
+            cur_source = await self.mass.hass.get_state_async(
+                player_config["hass_power_entity"], attribute="source"
+            )
+            if cur_source == player_config["hass_power_entity_source"]:
+                service_data = {"entity_id": player_config["hass_power_entity"]}
+                await self.mass.hass.call_service(
+                    "media_player", "turn_off", service_data
+                )
+        elif self.mass.hass.enabled and player_config.get("hass_power_entity"):
+            domain = player_config["hass_power_entity"].split(".")[0]
+            service_data = {"entity_id": player_config["hass_power_entity"]}
+            await self.mass.hass.call_service(domain, "turn_off", service_data)
+        # TODO: handle group power
         # if self.is_group:
         #     # player is group, turn off all childs
         #     for child_player_id in self.group_childs:
@@ -432,7 +408,7 @@ class PlayerManager:
         """
         player = self.get_player(player_id)
         await player.async_power_on()
-        return await self.cmd_volume_mute(is_muted)
+        return await self.async_cmd_volume_mute(is_muted)
 
     async def async_cmd_queue_play_index(self, player_id: str, index: int):
         """
@@ -568,14 +544,14 @@ class PlayerManager:
     #             ):
     #                 await player.update()
 
-    async def async_get_gain_correct(self, player_id, item_id, provider_id):
+    async def async_get_gain_correct(self, player_id, item_id, id):
         """get gain correction for given player / track combination"""
         player = self._players[player_id]
         if not player.settings["volume_normalisation"]:
             return 0
         target_gain = int(player.settings["target_volume"])
         fallback_gain = int(player.settings["fallback_gain_correct"])
-        track_loudness = await self.mass.database.get_track_loudness(item_id, provider_id)
+        track_loudness = await self.mass.database.get_track_loudness(item_id, id)
         if track_loudness is None:
             gain_correct = fallback_gain
         else:
@@ -583,7 +559,7 @@ class PlayerManager:
         gain_correct = round(gain_correct, 2)
         LOGGER.debug(
             "Loudness level for track %s/%s is %s - calculated replayGain is %s",
-            provider_id,
+            id,
             item_id,
             track_loudness,
             gain_correct,

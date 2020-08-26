@@ -1,6 +1,6 @@
 """Models and helpers for media items."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from typing import List, Optional
 
@@ -80,7 +80,7 @@ class MediaItem(object):
     metadata: Optional[dict]
     tags: Optional[List[str]]
     external_ids: Optional[List[MediaItemExternalId]]
-    provider_ids: Optional[List[MediaItemProviderId]]
+    ids: Optional[List[MediaItemProviderId]]
     in_library: Optional[List[str]]
     media_type: Optional[MediaType]
     is_lazy: bool = False
@@ -90,17 +90,17 @@ class MediaItem(object):
 @dataclass
 class Artist(MediaItem):
     """Model for an artist"""
-    sort_name: Optional[str]
+    sort_name: Optional[str] = ""
     media_type: MediaType = MediaType.Artist
 
 
 @dataclass
 class Album(MediaItem):
     """Model for an album"""
-    version: Optional[str]
-    year: Optional[int]
-    artist: Optional[Artist]
-    labels: Optional[List[str]]
+    version: str = ""
+    year: int = 0
+    artist: Optional[Artist] = None
+    labels: List[str] = field(default_factory=list)
     album_type: AlbumType = AlbumType.Album
     media_type: MediaType = MediaType.Album
 
@@ -108,20 +108,20 @@ class Album(MediaItem):
 @dataclass
 class Track(MediaItem):
     """Model for a track"""
-    duration: Optional[int]
-    version: Optional[str]
-    artists: Optional[List[Artist]]
-    album: Optional[Album]
-    disc_number: Optional[int] = 1
-    track_number: Optional[int] = 1
+    duration: int = 0
+    version: str = ""
+    artists: List[Artist] = field(default_factory=list)
+    album: Optional[Album] = None
+    disc_number: int = 1
+    track_number: int = 1
     media_type: MediaType = MediaType.Track
 
 
 @dataclass
 class Playlist(MediaItem):
     """Model for a playlist"""
-    owner: str
-    checksum: [Optional[str]]  # some value to detect playlist track changes
+    owner: str = ""
+    checksum: [Optional[str]] = None  # some value to detect playlist track changes
     is_editable: bool = False
     media_type: MediaType = MediaType.Playlist
 

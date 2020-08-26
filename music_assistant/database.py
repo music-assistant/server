@@ -288,7 +288,7 @@ class Database:
             playlist.metadata = await self.__get_metadata(
                 playlist.item_id, MediaType.Playlist
             )
-            playlist.provider_ids = await self.__get_prov_ids(
+            playlist.ids = await self.__get_prov_ids(
                 playlist.item_id, MediaType.Playlist
             )
             playlist.in_library = await self.__get_library_providers(
@@ -316,7 +316,7 @@ class Database:
             radio.item_id = db_row[0]
             radio.name = db_row[1]
             radio.metadata = await self.__get_metadata(radio.item_id, MediaType.Radio)
-            radio.provider_ids = await self.__get_prov_ids(
+            radio.ids = await self.__get_prov_ids(
                 radio.item_id, MediaType.Radio
             )
             radio.in_library = await self.__get_library_providers(
@@ -371,7 +371,7 @@ class Database:
                 )
             # add/update metadata
             await self.__add_prov_ids(
-                playlist_id, MediaType.Playlist, playlist.provider_ids
+                playlist_id, MediaType.Playlist, playlist.ids
             )
             await self.__add_metadata(
                 playlist_id, MediaType.Playlist, playlist.metadata
@@ -405,7 +405,7 @@ class Database:
                     "added radio station %s to database: %s", radio.name, radio_id
                 )
             # add/update metadata
-            await self.__add_prov_ids(radio_id, MediaType.Radio, radio.provider_ids)
+            await self.__add_prov_ids(radio_id, MediaType.Radio, radio.ids)
             await self.__add_metadata(radio_id, MediaType.Radio, radio.metadata)
             # save
             await self._db.commit()
@@ -449,7 +449,7 @@ class Database:
             artist.item_id = db_row[0]
             artist.name = db_row[1]
             artist.sort_name = db_row[2]
-            artist.provider_ids = await self.__get_prov_ids(
+            artist.ids = await self.__get_prov_ids(
                 artist.item_id, MediaType.Artist
             )
             artist.in_library = await self.__get_library_providers(
@@ -508,7 +508,7 @@ class Database:
                 artist_id = artist_id[0]
         # always add metadata and tags etc. because we might have received
         # additional info or a match from other provider
-        await self.__add_prov_ids(artist_id, MediaType.Artist, artist.provider_ids)
+        await self.__add_prov_ids(artist_id, MediaType.Artist, artist.ids)
         await self.__add_metadata(artist_id, MediaType.Artist, artist.metadata)
         await self.__add_tags(artist_id, MediaType.Artist, artist.tags)
         await self.__add_external_ids(artist_id, MediaType.Artist, artist.external_ids)
@@ -517,7 +517,7 @@ class Database:
         LOGGER.debug(
             "added artist %s (%s) to database: %s",
             artist.name,
-            artist.provider_ids,
+            artist.ids,
             artist_id,
         )
         return artist_id
@@ -539,7 +539,7 @@ class Database:
                 album.albumtype = db_row[3]
                 album.year = db_row[4]
                 album.version = db_row[5]
-                album.provider_ids = await self.__get_prov_ids(
+                album.ids = await self.__get_prov_ids(
                     album.item_id, MediaType.Album
                 )
                 album.in_library = await self.__get_library_providers(
@@ -622,7 +622,7 @@ class Database:
                 album_id = album_id[0]
         # always add metadata and tags etc. because we might have received
         # additional info or a match from other provider
-        await self.__add_prov_ids(album_id, MediaType.Album, album.provider_ids)
+        await self.__add_prov_ids(album_id, MediaType.Album, album.ids)
         await self.__add_metadata(album_id, MediaType.Album, album.metadata)
         await self.__add_tags(album_id, MediaType.Album, album.tags)
         await self.__add_album_labels(album_id, album.labels)
@@ -632,7 +632,7 @@ class Database:
         LOGGER.debug(
             "added album %s (%s) to database: %s",
             album.name,
-            album.provider_ids,
+            album.ids,
             album_id,
         )
         return album_id
@@ -671,7 +671,7 @@ class Database:
                 track.external_ids = await self.__get_external_ids(
                     track.item_id, MediaType.Track
                 )
-                track.provider_ids = await self.__get_prov_ids(
+                track.ids = await self.__get_prov_ids(
                     track.item_id, MediaType.Track
                 )
                 if fulldata:
@@ -740,7 +740,7 @@ class Database:
             await self._db.execute(sql_query, (track_id, artist.item_id))
         # always add metadata and tags etc. because we might have received
         # additional info or a match from other provider
-        await self.__add_prov_ids(track_id, MediaType.Track, track.provider_ids)
+        await self.__add_prov_ids(track_id, MediaType.Track, track.ids)
         await self.__add_metadata(track_id, MediaType.Track, track.metadata)
         await self.__add_tags(track_id, MediaType.Track, track.tags)
         await self.__add_external_ids(track_id, MediaType.Track, track.external_ids)
@@ -749,7 +749,7 @@ class Database:
         LOGGER.debug(
             "added track %s (%s) to database: %s",
             track.name,
-            track.provider_ids,
+            track.ids,
             track_id,
         )
         return track_id
@@ -889,9 +889,9 @@ class Database:
             external_ids.append(external_id)
         return external_ids
 
-    async def __add_prov_ids(self, item_id, media_type, provider_ids):
+    async def __add_prov_ids(self, item_id, media_type, ids):
         """add provider ids for media item to db"""
-        for prov_mapping in provider_ids:
+        for prov_mapping in ids:
             prov_id = prov_mapping["provider"]
             prov_item_id = prov_mapping["item_id"]
             quality = prov_mapping.get("quality", 0)
@@ -903,8 +903,8 @@ class Database:
             )
 
     async def __get_prov_ids(self, item_id, media_type: MediaType):
-        """get all provider_ids for media item"""
-        provider_ids = []
+        """get all ids for media item"""
+        ids = []
         sql_query = "SELECT prov_item_id, provider, quality, details \
             FROM provider_mappings \
             WHERE item_id = ? AND media_type = ?"
@@ -918,8 +918,8 @@ class Database:
                 "quality": db_row[2],
                 "details": db_row[3],
             }
-            provider_ids.append(prov_mapping)
-        return provider_ids
+            ids.append(prov_mapping)
+        return ids
 
     async def __get_library_providers(self, item_id, media_type: MediaType):
         """get the providers that have this media_item added to the library"""

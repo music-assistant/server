@@ -13,8 +13,8 @@ import aiohttp
 from aiohttp import web
 import aiohttp_cors
 from music_assistant.constants import (
-    CONF_KEY_MUSICPROVIDERS,
-    CONF_KEY_PLAYERPROVIDERS,
+    CONF_KEY_PROVIDERS,
+    CONF_KEY_BASE,
     CONF_KEY_PLAYERSETTINGS,
 )
 from music_assistant.models.media_types import (
@@ -84,9 +84,8 @@ class Web:
     def __init__(self, mass):
         self.mass = mass
         # load/create/update config
-        config = self.mass.config.create_module_config(CONF_KEY, CONFIG_ENTRIES)
         self.local_ip = get_ip()
-        self.config = config
+        self.config = mass.config.base
         if IS_HASSIO:
             # retrieve ingress http port
             import requests
@@ -97,17 +96,17 @@ class Web:
             self.http_port = response["data"]["ingress_port"]
         else:
             # use settings from config
-            self.http_port = config["http_port"]
-        enable_ssl = config["ssl_certificate"] and config["ssl_key"]
-        if config["ssl_certificate"] and not os.path.isfile(config["ssl_certificate"]):
+            self.http_port = self.config["http_port"]
+        enable_ssl = self.config["ssl_certificate"] and self.config["ssl_key"]
+        if self.config["ssl_certificate"] and not os.path.isfile(self.config["ssl_certificate"]):
             enable_ssl = False
             LOGGER.warning(
-                "SSL certificate file not found: %s", config["ssl_certificate"]
+                "SSL certificate file not found: %s", self.config["ssl_certificate"]
             )
-        if config["ssl_key"] and not os.path.isfile(config["ssl_key"]):
+        if self.config["ssl_key"] and not os.path.isfile(self.config["ssl_key"]):
             enable_ssl = False
-            LOGGER.warning("SSL certificate key file not found: %s", config["ssl_key"])
-        self.https_port = config["https_port"]
+            LOGGER.warning("SSL certificate key file not found: %s", self.config["ssl_key"])
+        self.https_port = self.config["https_port"]
         self._enable_ssl = enable_ssl
 
     async def setup(self):
@@ -502,41 +501,41 @@ class Web:
         """get the config"""
         return web.json_response(self.mass.config)
 
-    @routes.put("/api/config/{key}/{subkey}")
+    @routes.put("/api/config/{base}/{key}")
     async def put_config(self, request):
         """save (partial) config"""
         conf_key = request.match_info.get("key")
-        conf_subkey = request.match_info.get("subkey")
+        conf_base = request.match_info.get("base")
         new_values = await request.json()
         LOGGER.debug(
-            f"save config called for {conf_key}/{conf_subkey} - new value: {new_values}"
+            f"save config called for {conf_base}/{conf_key} - new values: {new_values}"
         )
-        cur_values = self.mass.config[conf_key][conf_subkey]
-        result = {"success": True, "restart_required": False, "settings_changed": False}
-        if cur_values != new_values:
-            # config changed
-            result["settings_changed"] = True
-            self.mass.config[conf_key][conf_subkey] = new_values
-            if conf_key == CONF_KEY_PLAYERSETTINGS:
-                # player settings: force update of player
-                self.mass.loop.create_task(
-                    self.mass.player_manager.trigger_update(conf_subkey)
-                )
-            elif conf_key == CONF_KEY_MUSICPROVIDERS:
-                # (re)load music provider module
-                self.mass.loop.create_task(
-                    self.mass.music_manager.load_modules(conf_subkey)
-                )
-            elif conf_key == CONF_KEY_PLAYERPROVIDERS:
-                # (re)load player provider module
-                self.mass.loop.create_task(
-                    self.mass.player_manager.load_modules(conf_subkey)
-                )
-            else:
-                # other settings need restart
-                result["restart_required"] = True
-            self.mass.config.save()
-        return web.json_response(result)
+        # cur_values = self.mass.config[conf_key][conf_subkey]
+        # result = {"success": True, "restart_required": False, "settings_changed": False}
+        # if cur_values != new_values:
+        #     # config changed
+        #     result["settings_changed"] = True
+        #     self.mass.config[conf_key][conf_subkey] = new_values
+        #     if conf_key == CONF_KEY_PLAYERSETTINGS:
+        #         # player settings: force update of player
+        #         self.mass.loop.create_task(
+        #             self.mass.player_manager.trigger_update(conf_subkey)
+        #         )
+        #     elif conf_key == CONF_KEY_MUSICPROVIDERS:
+        #         # (re)load music provider module
+        #         self.mass.loop.create_task(
+        #             self.mass.music_manager.load_modules(conf_subkey)
+        #         )
+        #     elif conf_key == CONF_KEY_PLAYERPROVIDERS:
+        #         # (re)load player provider module
+        #         self.mass.loop.create_task(
+        #             self.mass.player_manager.load_modules(conf_subkey)
+        #         )
+        #     else:
+        #         # other settings need restart
+        #         result["restart_required"] = True
+        #     self.mass.config.save()
+        # return web.json_response(result)
 
     async def websocket_handler(self, request):
         """websockets handler"""

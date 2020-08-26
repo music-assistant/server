@@ -2,7 +2,6 @@
 # -*- coding:utf-8 -*-
 
 import asyncio
-import importlib
 import logging
 import os
 import re
@@ -10,7 +9,6 @@ import socket
 from typing import Any, Callable, TypeVar
 
 import unidecode
-from music_assistant.constants import CONF_ENABLED, CONF_KEY_MUSICPROVIDERS
 
 try:
     import simplejson as json
@@ -279,53 +277,4 @@ def try_load_json_file(jsonfile):
     # pylint: enable=broad-except
 
 
-async def load_provider_modules(
-    mass, provider_modules, prov_type=CONF_KEY_MUSICPROVIDERS
-):
-    """dynamically load music/player providers"""
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    modules_path = os.path.join(base_dir, prov_type)
-    # load modules
-    for item in os.listdir(modules_path):
-        if (
-            os.path.isfile(os.path.join(modules_path, item))
-            and not item.startswith("_")
-            and item.endswith(".py")
-            and not item.startswith(".")
-        ):
-            module_name = item.replace(".py", "")
-            if module_name not in provider_modules:
-                prov_mod = await load_provider_module(mass, module_name, prov_type)
-                if prov_mod:
-                    provider_modules[module_name] = prov_mod
 
-
-async def load_provider_module(mass, module_name, prov_type):
-    """dynamically load music/player provider"""
-    # pylint: disable=broad-except
-    try:
-        prov_mod = importlib.import_module(
-            f".{module_name}", f"music_assistant.{prov_type}"
-        )
-        prov_conf_entries = prov_mod.CONFIG_ENTRIES
-        prov_id = module_name
-        prov_name = prov_mod.PROV_NAME
-        prov_class = prov_mod.PROV_CLASS
-        # get/create config for the module
-        prov_config = mass.config.create_module_config(
-            prov_id, prov_conf_entries, prov_type
-        )
-        if prov_config[CONF_ENABLED]:
-            prov_mod_cls = getattr(prov_mod, prov_class)
-            provider = prov_mod_cls(mass)
-            provider.prov_id = prov_id
-            provider.name = prov_name
-            await provider.setup(prov_config)
-            LOGGER.info("Successfully initialized module %s", provider.name)
-            return provider
-        else:
-            return None
-    except Exception as exc:
-        LOGGER.error("Error loading module %s: %s", module_name, exc)
-        LOGGER.debug("Error loading module", exc_info=exc)
-    # pylint: enable=broad-except

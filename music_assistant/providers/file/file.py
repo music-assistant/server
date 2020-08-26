@@ -111,7 +111,7 @@ class FileProvider(MusicProvider):
         artist.item_id = prov_item_id
         artist.provider = self.prov_id
         artist.name = name
-        artist.provider_ids.append(
+        artist.ids.append(
             {"provider": self.prov_id, "item_id": artist.item_id}
         )
         return artist
@@ -135,7 +135,7 @@ class FileProvider(MusicProvider):
         album.artist = await self.get_artist(artistpath)
         if not album.artist:
             raise Exception("No album artist ! %s" % artistpath)
-        album.provider_ids.append({"provider": self.prov_id, "item_id": prov_item_id})
+        album.ids.append({"provider": self.prov_id, "item_id": prov_item_id})
         return album
 
     async def get_track(self, prov_item_id) -> Track:
@@ -164,7 +164,7 @@ class FileProvider(MusicProvider):
         playlist.provider = self.prov_id
         playlist.name = itempath.split(os.sep)[-1].replace(".m3u", "")
         playlist.is_editable = True
-        playlist.provider_ids.append(
+        playlist.ids.append(
             {"provider": self.prov_id, "item_id": prov_item_id}
         )
         playlist.owner = "disk"
@@ -277,7 +277,7 @@ class FileProvider(MusicProvider):
                 artist.name = artist_str
                 fake_artistpath = os.path.join(self._music_dir, artist_str)
                 artist.item_id = fake_artistpath  # temporary id
-                artist.provider_ids.append(
+                artist.ids.append(
                     {
                         "provider": self.prov_id,
                         "item_id": base64.b64encode(
@@ -315,7 +315,7 @@ class FileProvider(MusicProvider):
         else:
             quality = TrackQuality.LOSSY_MP3
             quality_details = "%s kbps" % (song.bitrate)
-        track.provider_ids.append(
+        track.ids.append(
             {
                 "provider": self.prov_id,
                 "item_id": prov_item_id,

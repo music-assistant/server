@@ -42,7 +42,7 @@ class SpotifyProvider(MusicProvider):
 
     
     @property
-    def provider_id(self) -> str:
+    def id(self) -> str:
         """Return Provider id of this provider."""
         return "spotify"
 
@@ -285,7 +285,7 @@ class SpotifyProvider(MusicProvider):
         artist = Artist()
         artist.item_id = artist_obj["id"]
         artist.provider = self.prov_id
-        artist.provider_ids.append(
+        artist.ids.append(
             {"provider": self.prov_id, "item_id": artist_obj["id"]}
         )
         artist.name = artist_obj["name"]
@@ -340,7 +340,7 @@ class SpotifyProvider(MusicProvider):
             album.metadata["spotify_url"] = album_obj["external_urls"]["spotify"]
         if album_obj.get("explicit"):
             album.metadata["explicit"] = str(album_obj["explicit"]).lower()
-        album.provider_ids.append(
+        album.ids.append(
             {
                 "provider": self.prov_id,
                 "item_id": album_obj["id"],
@@ -381,7 +381,7 @@ class SpotifyProvider(MusicProvider):
         track.track_number = track_obj["track_number"]
         if track_obj.get("external_urls"):
             track.metadata["spotify_url"] = track_obj["external_urls"]["spotify"]
-        track.provider_ids.append(
+        track.ids.append(
             {
                 "provider": self.prov_id,
                 "item_id": track_obj["id"],
@@ -395,10 +395,10 @@ class SpotifyProvider(MusicProvider):
         
         if not playlist_obj.get("id"):
             return None
-        playlist = Playlist(playlist_obj["id"], self.provider_id)
+        playlist = Playlist(playlist_obj["id"], self.id)
         playlist.item_id = playlist_obj["id"]
         playlist.provider = self.prov_id
-        playlist.provider_ids.append(
+        playlist.ids.append(
             {"provider": self.prov_id, "item_id": playlist_obj["id"]}
         )
         playlist.name = playlist_obj["name"]

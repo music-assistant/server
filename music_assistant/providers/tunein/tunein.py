@@ -96,7 +96,7 @@ class TuneInProvider(MusicProvider):
                 quality = TrackQuality.LOSSY_OGG
             else:
                 quality = TrackQuality.LOSSY_MP3
-            radio.provider_ids.append(
+            radio.ids.append(
                 {
                     "provider": self.prov_id,
                     "item_id": "%s--%s" % (details["preset_id"], stream["media_type"]),

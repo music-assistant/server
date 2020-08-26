@@ -16,38 +16,16 @@ from music_assistant.models.media_types import (
     Track,
 )
 from music_assistant.models.config_entry import ConfigEntry
+from music_assistant.models.provider import Provider, ProviderType
 
 
 @dataclass
-class MusicProvider:
+class MusicProvider(Provider):
     """
         Base class for a Musicprovider.
         Should be overriden in the provider specific implementation.
     """
-    mass: Optional[MusicAssistant]
-
-    @abstractmethod
-    @property
-    def provider_id(self) -> str:
-        """Return Provider id of this provider."""
-        return None
-
-    @abstractmethod
-    @property
-    def name(self) -> str:
-        """Return name of this provider."""
-        return None
-
-    @abstractmethod
-    @property
-    def config_entries(self) -> List[ConfigEntry]:
-        """Return custom config entries for this provider."""
-        return []
-
-    @abstractmethod
-    async def async_setup(self, conf: dict) -> bool:
-        """Setup the provider, will be called on start. Return True if succesfull."""
-        return False
+    type: ProviderType = ProviderType.MUSIC_PROVIDER
 
     @abstractmethod
     async def async_search(self, search_string: str, media_types=List[MediaType],
@@ -150,5 +128,5 @@ class MusicProvider:
     @abstractmethod
     async def async_get_stream_details(
             self, track_id: str) -> StreamDetails:
-        """get streamdetails for a track"""
+        """Get streamdetails for a track"""
         raise NotImplementedError
