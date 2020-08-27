@@ -28,10 +28,9 @@ class MusicAssistant:
                 :param datapath: file location to store the data
         """
         self.loop = None
-        self.datapath = datapath
         self._event_listeners = []
         self._providers = {}
-        self.config = MassConfig(self)
+        self.config = MassConfig(self, datapath)
         # init modules
         self.database = Database(self)
         self.cache = Cache(self)

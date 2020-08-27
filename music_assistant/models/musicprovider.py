@@ -35,27 +35,27 @@ class MusicProvider(Provider):
 
     @abstractmethod
     async def async_get_library_artists(self) -> List[Artist]:
-        """Retrieve library artists from the provider. Iterator."""
+        """Retrieve library artists from the provider."""
         raise NotImplementedError
 
     @abstractmethod
     async def async_get_library_albums(self) -> List[Album]:
-        """Retrieve library albums from the provider. Iterator."""
+        """Retrieve library albums from the provider."""
         raise NotImplementedError
 
     @abstractmethod
     async def async_get_library_tracks(self) -> List[Track]:
-        """Retrieve library tracks from the provider. Iterator."""
+        """Retrieve library tracks from the provider."""
         raise NotImplementedError
 
     @abstractmethod
     async def async_get_library_playlists(self) -> List[Playlist]:
-        """Retrieve library/subscribed playlists from the provider. Iterator."""
+        """Retrieve library/subscribed playlists from the provider."""
         raise NotImplementedError
 
     @abstractmethod
     async def async_get_radios(self) -> List[Radio]:
-        """Retrieve library/subscribed radio stations from the provider. Iterator."""
+        """Retrieve library/subscribed radio stations from the provider."""
         raise NotImplementedError
 
     @abstractmethod
@@ -65,12 +65,12 @@ class MusicProvider(Provider):
 
     @abstractmethod
     async def async_get_artist_albums(self, prov_artist_id: str) -> List[Album]:
-        """Get a list of all albums for the given artist. Iterator."""
+        """Get a list of all albums for the given artist."""
         raise NotImplementedError
 
     @abstractmethod
     async def async_get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
-        """Get a list of most popular tracks for the given artist. Iterator."""
+        """Get a list of most popular tracks for the given artist."""
         raise NotImplementedError
 
     @abstractmethod
@@ -95,12 +95,12 @@ class MusicProvider(Provider):
 
     @abstractmethod
     async def async_get_album_tracks(self, prov_album_id: str) -> List[Track]:
-        """Get album tracks for given album id. Iterator."""
+        """Get album tracks for given album id."""
         raise NotImplementedError
 
     @abstractmethod
     async def async_get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
-        """Get all playlist tracks for given playlist id. Iterator."""
+        """Get all playlist tracks for given playlist id."""
         raise NotImplementedError
 
     @abstractmethod

@@ -1,15 +1,13 @@
-#!/usr/bin/python3
-# -*- coding: utf-8 -*-
-"""provides a simple stateless caching system."""
+"""Provides a simple stateless caching system."""
 
 import functools
-from functools import reduce
 import os
 import pickle
 import time
-
+from functools import reduce
 import aiosqlite
 from music_assistant.utils import LOGGER, run_periodic
+import inspect
 
 
 class Cache(object):
@@ -20,11 +18,9 @@ class Cache(object):
     def __init__(self, mass):
         """Initialize our caching class."""
         self.mass = mass
-        if not os.path.isdir(mass.datapath):
-            raise FileNotFoundError(f"data directory {mass.datapath} does not exist!")
-        self._dbfile = os.path.join(mass.datapath, "cache.db")
+        self._dbfile = os.path.join(mass.config.data_path, "cache.db")
 
-    async def setup(self):
+    async def async_setup(self):
         """Async initialize of cache module."""
         self._db = await aiosqlite.connect(self._dbfile, timeout=30)
         self._db.row_factory = aiosqlite.Row
@@ -33,14 +29,14 @@ class Cache(object):
             id TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
         )
         await self._db.commit()
-        self.mass.loop.create_task(self.auto_cleanup())
+        self.mass.loop.create_task(self.async_auto_cleanup())
 
-    async def close(self):
+    async def async_close(self):
         """Handle shutdown event, close db connection."""
         await self._db.close()
         LOGGER.info("cache db connection closed")
 
-    async def get(self, cache_key, checksum=""):
+    async def async_get(self, cache_key, checksum=""):
         """
             get object from cache and return the results
             cache_key: the (unique) name of the cache object as reference
@@ -65,20 +61,20 @@ class Cache(object):
                     result = pickle.loads(cache_data[1])
         return result
 
-    async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
+    async def async_set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
         """
             set data in cache
         """
         checksum = self._get_checksum(checksum)
         expires = int(time.time() + expiration)
         data = pickle.dumps(data)
-        sql_query ="""INSERT OR REPLACE INTO simplecache
+        sql_query = """INSERT OR REPLACE INTO simplecache
             (id, expires, data, checksum) VALUES (?, ?, ?, ?)"""
         await self._db.execute(sql_query, (cache_key, expires, data, checksum))
         await self._db.commit()
 
     @run_periodic(3600)
-    async def auto_cleanup(self):
+    async def async_auto_cleanup(self):
         """(scheduled) auto cleanup task"""
         cur_timestamp = int(time.time())
         LOGGER.debug("Running cleanup...")
@@ -108,39 +104,44 @@ class Cache(object):
         return reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
-async def cached_iterator(
-    cache, iter_func, cache_key, expires=(86400 * 30), checksum=None
-):
-    """Helper method to store results of an iterator in the cache."""
-    cache_result = await cache.get(cache_key, checksum)
-    if cache_result:
-        for item in cache_result:
-            yield item
-    else:
-        # nothing in cache, yield from iterator and store in cache when complete
-        cache_result = []
-        async for item in iter_func:
-            yield item
-            cache_result.append(item)
-        await cache.set(cache_key, cache_result, checksum, expires)
-
-
-async def cached(cache, cache_key, coro_func, *args, **kwargs):
+async def async_cached(cache, cache_key, coro_func, expires=(86400 * 30), checksum=None):
     """Helper method to store results of a coroutine in the cache."""
+    cache_result = await cache.get(cache_key, checksum)
+    if inspect.isasyncgenfunction(coro_func):
+        # async generator
+        if cache_result is not None:
+            for item in cache_result:
+                yield item
+        else:
+            # nothing in cache, yield from iterator and store in cache when complete
+            cache_result = []
+            async for item in coro_func:
+                yield item
+                cache_result.append(item)
+            # store results in cache
+            await cache.set(cache_key, cache_result, checksum, expires)
+    else:
+        # normal async function
+        if cache_result is not None:
+            return cache_result
+        result = await coro_func()
+        await cache.set(cache_key, cache_result, checksum, expires)
+        return result
+
     cache_result = await cache.get(cache_key)
     if cache_result is not None:
         return cache_result
-    result = await coro_func(*args, **kwargs)
+    result = await coro_func()
     await cache.set(cache_key, result)
     return result
 
 
-def use_cache(cache_days=14, cache_checksum=None):
-    """decorator that can be used to cache a method's result."""
+def async_use_cache(cache_days=14, cache_checksum=None):
+    """Decorator that can be used to cache a method's result."""
 
     def wrapper(func):
         @functools.wraps(func)
-        async def wrapped(*args, **kwargs):
+        async def async_wrapped(*args, **kwargs):
             method_class = args[0]
             method_class_name = method_class.__class__.__name__
             cache_str = "%s.%s" % (method_class_name, func.__name__)
@@ -159,13 +160,13 @@ def use_cache(cache_days=14, cache_checksum=None):
                 )
                 return result
 
-        return wrapped
+        return async_wrapped
 
     return wrapper
 
 
 def __cache_id_from_args(*args, **kwargs):
-    """parse arguments to build cache id"""
+    """Parse arguments to build cache id."""
     cache_str = ""
     # append args to cache identifier
     for item in args[1:]:

@@ -61,28 +61,28 @@ class MediaItemProviderId():
     """Model for a MediaItem's provider id."""
     provider: str
     item_id: str
-    quality: Optional[TrackQuality]
+    quality: TrackQuality
 
 
-@dataclass
-class MediaItemExternalId():
-    """Model for a MediaItem external ID."""
-    provider: str
-    item_id: str
+class ExternalId(Enum):
+    """Enum with external id's."""
+    MUSICBRAINZ = "musicbrainz"
+    UPC = "upc"
+    ISRC = "isrc"
 
 
 @dataclass
 class MediaItem(object):
     """Representation of a media item."""
+    media_type: MediaType
     item_id: str
     provider: str
-    name: Optional[str]
-    metadata: Optional[dict]
-    tags: Optional[List[str]]
-    external_ids: Optional[List[MediaItemExternalId]]
-    ids: Optional[List[MediaItemProviderId]]
-    in_library: Optional[List[str]]
-    media_type: Optional[MediaType]
+    name: str
+    metadata: dict = field(default_factory=dict)
+    tags: List[str] = field(default_factory=list)
+    external_ids: dict = field(default_factory=dict)
+    provider_ids: List[MediaItemProviderId] = field(default_factory=list)
+    in_library: List[str] = field(default_factory=list)
     is_lazy: bool = False
     available: bool = True
 
@@ -90,57 +90,57 @@ class MediaItem(object):
 @dataclass
 class Artist(MediaItem):
     """Model for an artist"""
-    sort_name: Optional[str] = ""
     media_type: MediaType = MediaType.Artist
+    sort_name: str = ""
 
 
 @dataclass
 class Album(MediaItem):
     """Model for an album"""
+    media_type: MediaType = MediaType.Album
     version: str = ""
     year: int = 0
     artist: Optional[Artist] = None
     labels: List[str] = field(default_factory=list)
     album_type: AlbumType = AlbumType.Album
-    media_type: MediaType = MediaType.Album
 
 
 @dataclass
 class Track(MediaItem):
     """Model for a track"""
+    media_type: MediaType = MediaType.Track
     duration: int = 0
     version: str = ""
     artists: List[Artist] = field(default_factory=list)
     album: Optional[Album] = None
     disc_number: int = 1
     track_number: int = 1
-    media_type: MediaType = MediaType.Track
 
 
 @dataclass
 class Playlist(MediaItem):
     """Model for a playlist"""
+    media_type: MediaType = MediaType.Playlist
     owner: str = ""
     checksum: [Optional[str]] = None  # some value to detect playlist track changes
     is_editable: bool = False
-    media_type: MediaType = MediaType.Playlist
 
 
 @dataclass
 class Radio(MediaItem):
     """Model for a radio station"""
-    duration: int = 86400
     media_type: MediaType = MediaType.Radio
+    duration: int = 86400
 
 
 @dataclass
 class SearchResult():
     """Model for Media Item Search result."""
-    artists: Optional[List[Artist]]
-    albums: Optional[List[Album]]
-    tracks: Optional[List[Track]]
-    playlists: Optional[List[Playlist]]
-    radios: Optional[List[Radio]]
+    artists: List[Artist]
+    albums: List[Album]
+    tracks: List[Track]
+    playlists: List[Playlist]
+    radios: List[Radio]
 
 
 class StreamType(Enum):
@@ -160,6 +160,7 @@ class ContentType(Enum):
 
 @dataclass
 class StreamDetails():
+    """Model for streamdetails."""
     type: StreamType
     path: str
     content_type: ContentType

@@ -143,13 +143,21 @@ class ConfigBase():
 class MassConfig():
     """Class which holds our configuration"""
 
-    def __init__(self, mass):
+    def __init__(self, mass, data_path: str):
+        self._data_path = data_path
         self.loading = False
         self.mass = mass
         self._conf_base = ConfigItem(mass, "base", ConfigBaseType.BASE)
         self._conf_players = ConfigBase(mass, ConfigBaseType.PLAYER)
         self._conf_providers = ConfigBase(mass, ConfigBaseType.PROVIDER)
+        if not os.path.isdir(data_path):
+            raise FileNotFoundError(f"data directory {data_path} does not exist!")
         self.__load()
+
+    @property
+    def data_path(self):
+        """Return the path where all (configuration) data is stored."""
+        return self._data_path
 
     @property
     def base(self):
@@ -213,8 +221,8 @@ class MassConfig():
             return
         self.loading = True
         # backup existing file
-        conf_file = os.path.join(self.mass.datapath, "config.json")
-        conf_file_backup = os.path.join(self.mass.datapath, "config.json.backup")
+        conf_file = os.path.join(self.data_path, "config.json")
+        conf_file_backup = os.path.join(self.data_path, "config.json.backup")
         if os.path.isfile(conf_file):
             shutil.move(conf_file, conf_file_backup)
         # write current config to file
@@ -226,11 +234,11 @@ class MassConfig():
     def __load(self):
         """load config from file"""
         self.loading = True
-        conf_file = os.path.join(self.mass.datapath, "config.json")
+        conf_file = os.path.join(self.data_path, "config.json")
         data = try_load_json_file(conf_file)
         if not data:
             # might be a corrupt config file, retry with backup file
-            conf_file_backup = os.path.join(self.mass.datapath, "config.json.backup")
+            conf_file_backup = os.path.join(self.data_path, "config.json.backup")
             data = try_load_json_file(conf_file_backup)
         if data:
             if CONF_KEY_BASE in data and not data[CONF_KEY_BASE].get("web"):

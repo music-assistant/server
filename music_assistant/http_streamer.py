@@ -1,33 +1,24 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
+"""
+    HTTPStreamer: handles all audio streaming to players,
+    either by sending tracks one by one or send one continuous stream
+    of music with crossfade/gapless support (queue stream).
+"""
 import asyncio
 import concurrent
 import gc
 import io
 import operator
-import os
 import shlex
 import subprocess
 import threading
-import urllib
 
-import aiohttp
+import pyloudnorm
+import soundfile
 from aiohttp import web
 from memory_tempfile import MemoryTempfile
 from music_assistant.constants import EVENT_STREAM_ENDED, EVENT_STREAM_STARTED
 from music_assistant.models.media_types import MediaType, TrackQuality
-from music_assistant.models.player import PlayerState
-from music_assistant.utils import (
-    LOGGER,
-    get_folder_size,
-    get_ip,
-    run_async_background_task,
-    run_periodic,
-    try_parse_int,
-)
-import pyloudnorm
-import soundfile
+from music_assistant.utils import LOGGER, get_ip, try_parse_int
 
 
 class HTTPStreamer:
@@ -39,22 +30,22 @@ class HTTPStreamer:
         self.analyze_jobs = {}
         self.stream_clients = []
 
-    async def setup(self):
+    async def async_setup(self):
         """async initialize of module"""
-        pass  # we have nothing to initialize
+        # we have nothing to initialize
 
-    async def stream(self, http_request):
+    async def async_stream(self, http_request):
         """
             start stream for a player
         """
         # make sure we have valid params
         player_id = http_request.match_info.get("player_id", "")
-        player = await self.mass.player_manager.get_player(player_id)
+        player = self.mass.player_manager.get_player(player_id)
         if not player:
             return web.Response(status=404, reason="Player not found")
         if not player.queue.use_queue_stream:
             queue_item_id = http_request.match_info.get("queue_item_id")
-            queue_item = await player.queue.by_item_id(queue_item_id)
+            queue_item = player.queue.by_item_id(queue_item_id)
             if not queue_item:
                 return web.Response(status=404, reason="Invalid Queue item Id")
         # prepare headers as audio/flac content
@@ -82,9 +73,10 @@ class HTTPStreamer:
 
     def __get_queue_item_stream(self, player, queue_item, buffer, cancelled):
         """start streaming single queue track"""
+        # pylint: disable=unused-variable
         LOGGER.debug(
-            "stream single queue track started for track %s on player %s"
-            % (queue_item.name, player.name)
+            "stream single queue track started for track %s on player %s",
+            queue_item.name, player.name
         )
         for is_last_chunk, audio_chunk in self.__get_audio_stream(
             player, queue_item, cancelled
@@ -102,8 +94,8 @@ class HTTPStreamer:
         # all chunks received: streaming finished
         if cancelled.is_set():
             LOGGER.debug(
-                "stream single track interrupted for track %s on player %s"
-                % (queue_item.name, player.name)
+                "stream single track interrupted for track %s on player %s",
+                queue_item.name, player.name
             )
         else:
             # indicate EOF if no more data
@@ -113,9 +105,8 @@ class HTTPStreamer:
                 ignore_exception=(BrokenPipeError, ConnectionResetError),
             )
             LOGGER.debug(
-                "stream single track finished for track %s on player %s"
-                % (queue_item.name, player.name)
-            )
+                "stream single track finished for track %s on player %s",
+                queue_item.name, player.name)
 
     def __get_queue_stream(self, player, buffer, cancelled):
         """start streaming all queue tracks"""
@@ -147,7 +138,9 @@ class HTTPStreamer:
                         ignore_exception=(
                             BrokenPipeError,
                             ConnectionResetError,
+                            # pylint: disable=protected-access
                             concurrent.futures._base.CancelledError,
+                            # pylint: enable=protected-access
                         ),
                     )
                 del chunk
@@ -159,7 +152,9 @@ class HTTPStreamer:
                     ignore_exception=(
                         BrokenPipeError,
                         ConnectionResetError,
+                        # pylint: disable=protected-access
                         concurrent.futures._base.CancelledError,
+                        # pylint: enable=protected-access
                     ),
                 )
 
@@ -167,7 +162,7 @@ class HTTPStreamer:
         fill_buffer_thread = threading.Thread(target=fill_buffer)
         fill_buffer_thread.start()
 
-        LOGGER.info("Start Queue Stream for player %s " % (player.name))
+        LOGGER.info("Start Queue Stream for player %s ", player.name)
         is_start = True
         last_fadeout_data = b""
         while True:
@@ -186,8 +181,8 @@ class HTTPStreamer:
                 LOGGER.debug("no (more) tracks left in queue")
                 break
             LOGGER.debug(
-                "Start Streaming queue track: %s (%s) on player %s"
-                % (queue_track.item_id, queue_track.name, player.name)
+                "Start Streaming queue track: %s (%s) on player %s",
+                queue_track.item_id, queue_track.name, player.name
             )
             fade_in_part = b""
             cur_chunk = 0
@@ -203,7 +198,7 @@ class HTTPStreamer:
             ):
                 cur_chunk += 1
 
-                ### HANDLE FIRST PART OF TRACK
+                # HANDLE FIRST PART OF TRACK
                 if cur_chunk == 1 and is_last_chunk:
                     LOGGER.warning("Stream error, skip track %s", queue_track.item_id)
                     break
@@ -215,14 +210,14 @@ class HTTPStreamer:
                 elif cur_chunk == 1 and last_fadeout_data:
                     prev_chunk = chunk
                     del chunk
-                ### HANDLE CROSSFADE OF PREVIOUS TRACK FADE_OUT AND THIS TRACK FADE_IN
+                # HANDLE CROSSFADE OF PREVIOUS TRACK FADE_OUT AND THIS TRACK FADE_IN
                 elif cur_chunk == 2 and last_fadeout_data:
                     # combine the first 2 chunks and strip off silence
                     args = "sox --ignore-length -t %s - -t %s - silence 1 0.1 1%%" % (
                         pcm_args,
                         pcm_args,
                     )
-                    first_part, std_err = subprocess.Popen(
+                    first_part, _ = subprocess.Popen(
                         args, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE
                     ).communicate(prev_chunk + chunk)
                     if len(first_part) < fade_bytes:
@@ -247,15 +242,16 @@ class HTTPStreamer:
                     del remaining_bytes
                     del chunk
                     prev_chunk = None  # needed to prevent this chunk being sent again
-                ### HANDLE LAST PART OF TRACK
+                # HANDLE LAST PART OF TRACK
                 elif prev_chunk and is_last_chunk:
-                    # last chunk received so create the last_part with the previous chunk and this chunk
+                    # last chunk received so create the last_part
+                    # with the previous chunk and this chunk
                     # and strip off silence
                     args = (
                         "sox --ignore-length -t %s - -t %s - reverse silence 1 0.1 1%% reverse"
                         % (pcm_args, pcm_args)
                     )
-                    last_part, stderr = subprocess.Popen(
+                    last_part, _ = subprocess.Popen(
                         args, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE
                     ).communicate(prev_chunk + chunk)
                     if len(last_part) < fade_bytes:
@@ -286,10 +282,11 @@ class HTTPStreamer:
                         del last_part
                         del remaining_bytes
                         del chunk
-                ### MIDDLE PARTS OF TRACK
+                # MIDDLE PARTS OF TRACK
                 else:
                     # middle part of the track
-                    # keep previous chunk in memory so we have enough samples to perform the crossfade
+                    # keep previous chunk in memory so we have enough 
+                    # samples to perform the crossfade
                     if prev_chunk:
                         sox_proc.stdin.write(prev_chunk)
                         bytes_written += len(prev_chunk)
@@ -306,16 +303,15 @@ class HTTPStreamer:
                 accurate_duration = bytes_written / int(sample_rate * 4 * 2)
                 queue_track.duration = accurate_duration
                 LOGGER.debug(
-                    "Finished Streaming queue track: %s (%s) on player %s"
-                    % (queue_track.item_id, queue_track.name, player.name)
-                )
+                    "Finished Streaming queue track: %s (%s) on player %s",
+                    queue_track.item_id, queue_track.name, player.name)
                 # run garbage collect manually to avoid too much memory fragmentation
                 gc.collect()
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data and not cancelled.is_set():
             sox_proc.stdin.write(last_fadeout_data)
             del last_fadeout_data
-        ### END OF QUEUE STREAM
+        # END OF QUEUE STREAM
         sox_proc.stdin.close()
         sox_proc.terminate()
         fill_buffer_thread.join()
@@ -323,9 +319,9 @@ class HTTPStreamer:
         # run garbage collect manually to avoid too much memory fragmentation
         gc.collect()
         if cancelled.is_set():
-            LOGGER.info("streaming of queue for player %s interrupted" % player.name)
+            LOGGER.info("streaming of queue for player %s interrupted", player.name)
         else:
-            LOGGER.info("streaming of queue for player %s completed" % player.name)
+            LOGGER.info("streaming of queue for player %s completed", player.name)
 
     def __get_audio_stream(
         self, player, queue_item, cancelled, chunksize=128000, resample=None
@@ -491,9 +487,9 @@ class HTTPStreamer:
             ),
             wait_for_result=True,
         )
-        if track_loudness == None:
+        if track_loudness is None:
             # only when needed we do the analyze stuff
-            LOGGER.debug("Start analyzing track %s" % item_key)
+            LOGGER.debug("Start analyzing track %s", item_key)
             if streamdetails["type"] == "url":
                 import urllib
 
@@ -516,8 +512,7 @@ class HTTPStreamer:
             )
             del audio_data
             LOGGER.debug(
-                "Integrated loudness of track %s is: %s" % (item_key, loudness)
-            )
+                "Integrated loudness of track %s is: %s", item_key, loudness)
         self.analyze_jobs.pop(item_key, None)
 
     @staticmethod
@@ -560,7 +555,7 @@ class HTTPStreamer:
         process = subprocess.Popen(
             args, shell=False, stdout=subprocess.PIPE, stdin=subprocess.PIPE
         )
-        crossfade_part, stderr = process.communicate()
+        crossfade_part, _ = process.communicate()
         fadeinfile.close()
         fadeoutfile.close()
         del fadeinfile

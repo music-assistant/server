@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
+"""Database logic."""
 
 import asyncio
 import logging
@@ -19,9 +18,9 @@ from music_assistant.utils import LOGGER, get_sort_name, try_parse_int
 
 
 def commit_guard(func):
-    """decorator to guard against multiple db writes"""
+    """Decorator to guard against multiple db writes."""
 
-    async def wrapped(*args, **kwargs):
+    async def async_wrapped(*args, **kwargs):
         method_class = args[0]
         while method_class.commit_guard_active:
             await asyncio.sleep(0.1)
@@ -29,48 +28,46 @@ def commit_guard(func):
         res = await func(*args, **kwargs)
         method_class.commit_guard_active = False
         return res
-
-    return wrapped
+    return async_wrapped
 
 
 class Database:
+    """Class that holds the (logic to) database."""
     commit_guard_active = False
 
     def __init__(self, mass):
         self.mass = mass
-        if not os.path.isdir(mass.datapath):
-            raise FileNotFoundError(f"data directory {mass.datapath} does not exist!")
-        self._dbfile = os.path.join(mass.datapath, "database.db")
+        self._dbfile = os.path.join(mass.config.data_path, "database.db")
         self._db = None
         logging.getLogger("aiosqlite").setLevel(logging.INFO)
 
-    async def close(self):
-        """handle shutdown event, close db connection"""
+    async def async_close(self):
+        """Handle shutdown event, close db connection."""
         await self._db.close()
         LOGGER.info("db connection closed")
 
-    async def setup(self):
-        """init database"""
+    async def async_setup(self):
+        """Async initialization."""
         self._db = await aiosqlite.connect(self._dbfile)
         self._db.row_factory = aiosqlite.Row
 
         await self._db.execute(
             """CREATE TABLE IF NOT EXISTS library_items(
-                item_id INTEGER NOT NULL, provider TEXT NOT NULL, 
+                item_id INTEGER NOT NULL, provider TEXT NOT NULL,
                 media_type INTEGER NOT NULL, UNIQUE(item_id, provider, media_type)
             );"""
         )
 
         await self._db.execute(
             """CREATE TABLE IF NOT EXISTS artists(
-                artist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, 
+                artist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
                 sort_name TEXT, musicbrainz_id TEXT NOT NULL UNIQUE);"""
         )
 
         await self._db.execute(
             """CREATE TABLE IF NOT EXISTS albums(
-                album_id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL, 
-                name TEXT NOT NULL, albumtype TEXT, year INTEGER, version TEXT, 
+                album_id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL,
+                name TEXT NOT NULL, albumtype TEXT, year INTEGER, version TEXT,
                 UNIQUE(artist_id, name, version, year)
             );"""
         )
@@ -86,8 +83,8 @@ class Database:
 
         await self._db.execute(
             """CREATE TABLE IF NOT EXISTS tracks(
-                track_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, 
-                album_id INTEGER, version TEXT, duration INTEGER, 
+                track_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                album_id INTEGER, version TEXT, duration INTEGER,
                 UNIQUE(name, version, album_id, duration)
             );"""
         )
@@ -102,35 +99,35 @@ class Database:
         )
         await self._db.execute(
             """CREATE TABLE IF NOT EXISTS media_tags(
-                item_id INTEGER, media_type INTEGER, tag_id, 
+                item_id INTEGER, media_type INTEGER, tag_id,
                 UNIQUE(item_id, media_type, tag_id)
             );"""
         )
 
         await self._db.execute(
             """CREATE TABLE IF NOT EXISTS provider_mappings(
-                item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, prov_item_id TEXT NOT NULL, 
-                provider TEXT NOT NULL, quality INTEGER NOT NULL, details TEXT NULL, 
+                item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, prov_item_id TEXT NOT NULL,
+                provider TEXT NOT NULL, quality INTEGER NOT NULL, details TEXT NULL,
                 UNIQUE(item_id, media_type, prov_item_id, provider, quality)
                 );"""
         )
 
         await self._db.execute(
             """CREATE TABLE IF NOT EXISTS metadata(
-                item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, key TEXT NOT NULL, 
+                item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, key TEXT NOT NULL,
                 value TEXT, UNIQUE(item_id, media_type, key));"""
         )
 
         await self._db.execute(
             """CREATE TABLE IF NOT EXISTS external_ids(
-                item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, key TEXT NOT NULL, 
+                item_id INTEGER NOT NULL, media_type INTEGER NOT NULL, key TEXT NOT NULL,
                 value TEXT, UNIQUE(item_id, media_type, key, value));"""
         )
 
         await self._db.execute(
             """CREATE TABLE IF NOT EXISTS playlists(
-                playlist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, 
-                owner TEXT NOT NULL, is_editable BOOLEAN NOT NULL, checksum TEXT NOT NULL, 
+                playlist_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                owner TEXT NOT NULL, is_editable BOOLEAN NOT NULL, checksum TEXT NOT NULL,
                 UNIQUE(name, owner)
                 );"""
         )
@@ -142,87 +139,92 @@ class Database:
 
         await self._db.execute(
             """CREATE TABLE IF NOT EXISTS track_loudness(
-                provider_track_id INTEGER NOT NULL, provider TEXT NOT NULL, loudness REAL, 
+                provider_track_id INTEGER NOT NULL, provider TEXT NOT NULL, loudness REAL,
                 UNIQUE(provider_track_id, provider));"""
         )
 
         await self._db.commit()
         await self._db.execute("VACUUM;")
 
-    async def get_database_id(
-        self, provider: str, prov_item_id: str, media_type: MediaType
+    async def async_get_database_id(
+        self, provider_id: str, prov_item_id: str, media_type: MediaType
     ):
         """get the database id for the given prov_id"""
-        if provider == "database":
+        if provider_id == "database":
             return prov_item_id
-        sql_query ="""SELECT item_id FROM provider_mappings
+        sql_query = """SELECT item_id FROM provider_mappings
             WHERE prov_item_id = ? AND provider = ? AND media_type = ?;"""
         async with self._db.execute(
-            sql_query, (prov_item_id, provider, media_type)
+            sql_query, (prov_item_id, provider_id, media_type)
         ) as cursor:
             item_id = await cursor.fetchone()
             if item_id:
                 return item_id[0]
         return None
 
-    async def search(self, searchquery, media_types: List[MediaType]):
+    async def async_search(self, searchquery: str, media_types: List[MediaType]):
         """search library for the given searchphrase"""
         result = {"artists": [], "albums": [], "tracks": [], "playlists": []}
         searchquery = "%" + searchquery + "%"
         if MediaType.Artist in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
-            result["artists"] = [item async for item in self.artists(sql_query)]
+            result["artists"] = [item async for item in self.async_get_artists(sql_query)]
         if MediaType.Album in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
-            result["albums"] = [item async for item in self.albums(sql_query)]
+            result["albums"] = [item async for item in self.async_get_albums(sql_query)]
         if MediaType.Track in media_types:
             sql_query = 'SELECT * FROM tracks WHERE name LIKE "%s"' % searchquery
-            result["tracks"] = [item async for item in self.tracks(sql_query)]
+            result["tracks"] = [item async for item in self.async_get_tracks(sql_query)]
         if MediaType.Playlist in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
             result["playlists"] = [
-                item async for item in self.playlists(sql_query)
+                item async for item in self.async_get_playlists(sql_query)
             ]
         return result
 
-    async def library_artists(self, provider=None, orderby="name") -> List[Artist]:
-        """get all library artists, optionally filtered by provider"""
-        if provider is not None:
+    async def async_get_library_artists(self,
+                                        provider_id: str = None, orderby: str = "name") -> List[Artist]:
+        """Get all library artists, optionally filtered by provider."""
+        if provider_id is not None:
             sql_query = (
-                'WHERE artist_id in (SELECT item_id FROM library_items WHERE provider = "%s" AND media_type = %d)'
-                % (provider, MediaType.Artist)
+                '''WHERE artist_id in (SELECT item_id FROM library_items WHERE
+                provider = "%s" AND media_type = %d)'''
+                % (provider_id, MediaType.Artist.real)
             )
         else:
             sql_query = (
                 "WHERE artist_id in (SELECT item_id FROM library_items WHERE media_type = %d)"
-                % MediaType.Artist
+                % MediaType.Artist.real
             )
-        async for item in self.artists(sql_query, orderby=orderby):
+        async for item in self.async_get_artists(sql_query, orderby=orderby):
             yield item
 
-    async def library_albums(self, provider=None, orderby="name") -> List[Album]:
-        """get all library albums, optionally filtered by provider"""
-        if provider is not None:
+    async def async_get_library_albums(self,
+                                       provider_id: str = None, orderby: str = "name") -> List[Album]:
+        """Get all library albums, optionally filtered by provider."""
+        if provider_id is not None:
             sql_query = (
-                ' WHERE album_id in (SELECT item_id FROM library_items WHERE provider = "%s" AND media_type = %d)'
-                % (provider, MediaType.Album)
+                '''' WHERE album_id in (SELECT item_id FROM library_items
+                WHERE provider = "%s" AND media_type = %d)'''
+                % (provider_id, MediaType.Album.real)
             )
         else:
             sql_query = (
                 " WHERE album_id in (SELECT item_id FROM library_items WHERE media_type = %d)"
                 % MediaType.Album
             )
-        async for item in self.albums(sql_query, orderby=orderby):
+        async for item in self.async_get_albums(sql_query, orderby=orderby):
             yield item
 
-    async def library_tracks(self, provider=None, orderby="name") -> List[Track]:
-        """get all library tracks, optionally filtered by provider"""
-        if provider is not None:
-            sql_query ="""SELECT * FROM tracks
+    async def async_get_library_tracks(self,
+                                       provider_id: str = None, orderby: str = "name") -> List[Track]:
+        """Get all library tracks, optionally filtered by provider."""
+        if provider_id is not None:
+            sql_query = """SELECT * FROM tracks
                 WHERE track_id in (SELECT item_id FROM library_items WHERE provider = "%s" 
-                AND media_type = %d)"""% (
-                provider,
-                MediaType.Track,
+                AND media_type = %d)""" % (
+                provider_id,
+                MediaType.Track.real,
             )
         else:
             sql_query = (
@@ -231,17 +233,18 @@ class Database:
                 (SELECT item_id FROM library_items WHERE media_type = %d)"""
                 % MediaType.Track
             )
-        async for item in self.tracks(sql_query, orderby=orderby):
+        async for item in self.async_get_tracks(sql_query, orderby=orderby):
             yield item
 
-    async def library_playlists(self, provider=None, orderby="name") -> List[Playlist]:
-        """fetch all playlist records from table"""
-        if provider is not None:
-            sql_query ="""WHERE playlist_id in
+    async def async_get_library_playlists(self,
+                                          provider_id: str = None, orderby: str = "name") -> List[Playlist]:
+        """Fetch all playlist records from table."""
+        if provider_id is not None:
+            sql_query = """WHERE playlist_id in
                 (SELECT item_id FROM library_items WHERE provider = "%s"
-                AND media_type = %d)"""% (
-                provider,
-                MediaType.Playlist,
+                AND media_type = %d)""" % (
+                provider_id,
+                MediaType.Playlist.real,
             )
         else:
             sql_query = (
@@ -249,17 +252,18 @@ class Database:
                 (SELECT item_id FROM library_items WHERE media_type = %d)"""
                 % MediaType.Playlist
             )
-        async for item in self.playlists(sql_query, orderby=orderby):
+        async for item in self.async_get_playlists(sql_query, orderby=orderby):
             yield item
 
-    async def library_radios(self, provider=None, orderby="name") -> List[Radio]:
-        """fetch all radio records from table"""
-        if provider is not None:
-            sql_query ="""WHERE radio_id in 
+    async def async_get_library_radios(self,
+                                       provider_id: str = None, orderby: str = "name") -> List[Radio]:
+        """Fetch all radio records from table."""
+        if provider_id is not None:
+            sql_query = """WHERE radio_id in
                 (SELECT item_id FROM library_items WHERE provider = "%s"
-                AND media_type = %d)"""% (
-                provider,
-                MediaType.Radio,
+                AND media_type = %d)""" % (
+                provider_id,
+                MediaType.Radio.real,
             )
         else:
             sql_query = (
@@ -267,11 +271,12 @@ class Database:
                 (SELECT item_id FROM library_items WHERE media_type = %d)"""
                 % MediaType.Radio
             )
-        async for item in self.radios(sql_query, orderby=orderby):
+        async for item in self.async_get_radios(sql_query, orderby=orderby):
             yield item
 
-    async def playlists(self, filter_query=None, orderby="name") -> List[Playlist]:
-        """fetch playlist records from table"""
+    async def async_get_playlists(self,
+                                  filter_query: str = None, orderby: str = "name") -> List[Playlist]:
+        """Fetch playlist records from table."""
         sql_query = "SELECT * FROM playlists"
         if filter_query:
             sql_query += " " + filter_query
@@ -280,31 +285,33 @@ class Database:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
             playlist = Playlist()
+            playlist.provider = "database"
             playlist.item_id = db_row["playlist_id"]
             playlist.name = db_row["name"]
             playlist.owner = db_row["owner"]
             playlist.is_editable = db_row["is_editable"]
             playlist.checksum = db_row["checksum"]
-            playlist.metadata = await self.__get_metadata(
+            playlist.metadata = await self.__async_get_metadata(
                 playlist.item_id, MediaType.Playlist
             )
-            playlist.ids = await self.__get_prov_ids(
+            playlist.provider_ids = await self.__async_get_prov_ids(
                 playlist.item_id, MediaType.Playlist
             )
-            playlist.in_library = await self.__get_library_providers(
+            playlist.in_library = await self.__async_get_library_providers(
                 playlist.item_id, MediaType.Playlist
             )
             yield playlist
 
-    async def playlist(self, playlist_id: int) -> Playlist:
-        """get playlist record by id"""
+    async def async_get_playlist(self, playlist_id: int) -> Playlist:
+        """Get playlist record by id."""
         playlist_id = try_parse_int(playlist_id)
-        async for item in self.playlists("WHERE playlist_id = %s" % playlist_id):
+        async for item in self.async_get_playlists("WHERE playlist_id = %s" % playlist_id):
             return item
         return None
 
-    async def radios(self, filter_query=None, orderby="name") -> List[Playlist]:
-        """fetch radio records from table"""
+    async def async_get_radios(self,
+                               filter_query: str = None, orderby: str = "name") -> List[Playlist]:
+        """Fetch radio records from table."""
         sql_query = "SELECT * FROM radios"
         if filter_query:
             sql_query += " " + filter_query
@@ -313,27 +320,28 @@ class Database:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
             radio = Radio()
+            radio.provider = "database"
             radio.item_id = db_row[0]
             radio.name = db_row[1]
-            radio.metadata = await self.__get_metadata(radio.item_id, MediaType.Radio)
-            radio.ids = await self.__get_prov_ids(
+            radio.metadata = await self.__async_get_metadata(radio.item_id, MediaType.Radio)
+            radio.provider_ids = await self.__async_get_prov_ids(
                 radio.item_id, MediaType.Radio
             )
-            radio.in_library = await self.__get_library_providers(
+            radio.in_library = await self.__async_get_library_providers(
                 radio.item_id, MediaType.Radio
             )
             yield radio
 
-    async def radio(self, radio_id: int) -> Playlist:
-        """get radio record by id"""
+    async def async_get_radio(self, radio_id: int) -> Playlist:
+        """Get radio record by id."""
         radio_id = try_parse_int(radio_id)
-        async for item in self.radios("WHERE radio_id = %s" % radio_id):
+        async for item in self.async_get_radios("WHERE radio_id = %s" % radio_id):
             return item
         return None
 
     @commit_guard
-    async def add_playlist(self, playlist: Playlist):
-        """add a new playlist record into table"""
+    async def async_add_playlist(self, playlist: Playlist):
+        """Add a new playlist record into table."""
         assert playlist.name
         async with self._db.execute(
             "SELECT (playlist_id) FROM playlists WHERE name=? AND owner=?;",
@@ -349,7 +357,8 @@ class Database:
                 )
             else:
                 # insert playlist
-                sql_query = "INSERT INTO playlists (name, owner, is_editable, checksum) VALUES(?,?,?,?);"
+                sql_query = """INSERT INTO playlists (name, owner, is_editable, checksum)
+                VALUES(?,?,?,?);"""
                 async with self._db.execute(
                     sql_query,
                     (
@@ -370,10 +379,10 @@ class Database:
                     "added playlist %s to database: %s", playlist.name, playlist_id
                 )
             # add/update metadata
-            await self.__add_prov_ids(
-                playlist_id, MediaType.Playlist, playlist.ids
+            await self.__async_add_prov_ids(
+                playlist_id, MediaType.Playlist, playlist.provider_ids
             )
-            await self.__add_metadata(
+            await self.__async_add_metadata(
                 playlist_id, MediaType.Playlist, playlist.metadata
             )
             # save
@@ -381,7 +390,7 @@ class Database:
         return playlist_id
 
     @commit_guard
-    async def add_radio(self, radio: Radio):
+    async def async_add_radio(self, radio: Radio):
         """add a new radio record into table"""
         assert radio.name
         async with self._db.execute(
@@ -405,23 +414,24 @@ class Database:
                     "added radio station %s to database: %s", radio.name, radio_id
                 )
             # add/update metadata
-            await self.__add_prov_ids(radio_id, MediaType.Radio, radio.ids)
-            await self.__add_metadata(radio_id, MediaType.Radio, radio.metadata)
+            await self.__async_add_prov_ids(radio_id, MediaType.Radio, radio.provider_ids)
+            await self.__async_add_metadata(radio_id, MediaType.Radio, radio.metadata)
             # save
             await self._db.commit()
         return radio_id
 
-    async def add_to_library(self, item_id: int, media_type: MediaType, provider: str):
-        """add an item to the library (item must already be present in the db!)"""
+    async def async_add_to_library(self, item_id: int, media_type: MediaType, provider: str):
+        """Add an item to the library (item must already be present in the db!)."""
         item_id = try_parse_int(item_id)
-        sql_query = "INSERT or REPLACE INTO library_items (item_id, provider, media_type) VALUES(?,?,?);"
+        sql_query = """INSERT or REPLACE INTO library_items
+            (item_id, provider, media_type) VALUES(?,?,?);"""
         await self._db.execute(sql_query, (item_id, provider, media_type))
         await self._db.commit()
 
-    async def remove_from_library(
+    async def async_remove_from_library(
         self, item_id: int, media_type: MediaType, provider: str
     ):
-        """remove item from the library"""
+        """Remove item from the library."""
         item_id = try_parse_int(item_id)
         sql_query = (
             "DELETE FROM library_items WHERE item_id=? AND provider=? AND media_type=?;"
@@ -430,12 +440,13 @@ class Database:
         if media_type == MediaType.Playlist:
             sql_query = "DELETE FROM playlists WHERE playlist_id=?;"
             await self._db.execute(sql_query, (item_id,))
-            sql_query = "DELETE FROM provider_mappings WHERE item_id=? AND media_type=? AND provider=?;"
+            sql_query = """DELETE FROM provider_mappings WHERE
+                item_id=? AND media_type=? AND provider=?;"""
             await self._db.execute(sql_query, (item_id, media_type, provider))
             await self._db.commit()
 
-    async def artists(
-        self, filter_query=None, orderby="name", fulldata=False
+    async def async_get_artists(
+        self, filter_query: str = None, orderby: str = "name", fulldata=False
     ) -> List[Artist]:
         """fetch artist records from table"""
         sql_query = "SELECT * FROM artists"
@@ -446,43 +457,44 @@ class Database:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
             artist = Artist()
+            artist.provider = "database"
             artist.item_id = db_row[0]
             artist.name = db_row[1]
             artist.sort_name = db_row[2]
-            artist.ids = await self.__get_prov_ids(
+            artist.provider_ids = await self.__async_get_prov_ids(
                 artist.item_id, MediaType.Artist
             )
-            artist.in_library = await self.__get_library_providers(
+            artist.in_library = await self.__async_get_library_providers(
                 artist.item_id, MediaType.Artist
             )
             if fulldata:
-                artist.external_ids = await self.__get_external_ids(
+                artist.external_ids = await self.__async_get_external_ids(
                     artist.item_id, MediaType.Artist
                 )
-                artist.metadata = await self.__get_metadata(
+                artist.metadata = await self.__async_get_metadata(
                     artist.item_id, MediaType.Artist
                 )
-                artist.tags = await self.__get_tags(artist.item_id, MediaType.Artist)
-                artist.metadata = await self.__get_metadata(
+                artist.tags = await self.__async_get_tags(artist.item_id, MediaType.Artist)
+                artist.metadata = await self.__async_get_metadata(
                     artist.item_id, MediaType.Artist
                 )
             yield artist
 
-    async def artist(self, artist_id: int, fulldata=True) -> Artist:
-        """get artist record by id"""
+    async def async_get_artist(self, artist_id: int, fulldata=True) -> Artist:
+        """Get artist record by id."""
         artist_id = try_parse_int(artist_id)
-        async for item in self.artists(
+        async for item in self.async_get_artists(
             "WHERE artist_id = %s" % artist_id, fulldata=fulldata
         ):
             return item
         return None
 
     @commit_guard
-    async def add_artist(self, artist: Artist):
+    async def async_add_artist(self, artist: Artist):
         """add a new artist record into table"""
         artist_id = None
         # always prefer to grab existing artist with external_id (=musicbrainz_id)
-        artist_id = await self.__get_item_by_external_id(artist)
+        artist_id = await self.__async_get_item_by_external_id(artist)
         if not artist_id:
             # insert artist
             musicbrainz_id = None
@@ -508,24 +520,24 @@ class Database:
                 artist_id = artist_id[0]
         # always add metadata and tags etc. because we might have received
         # additional info or a match from other provider
-        await self.__add_prov_ids(artist_id, MediaType.Artist, artist.ids)
-        await self.__add_metadata(artist_id, MediaType.Artist, artist.metadata)
-        await self.__add_tags(artist_id, MediaType.Artist, artist.tags)
-        await self.__add_external_ids(artist_id, MediaType.Artist, artist.external_ids)
+        await self.__async_add_prov_ids(artist_id, MediaType.Artist, artist.provider_ids)
+        await self.__async_add_metadata(artist_id, MediaType.Artist, artist.metadata)
+        await self.__async_add_tags(artist_id, MediaType.Artist, artist.tags)
+        await self.__async_add_external_ids(artist_id, MediaType.Artist, artist.external_ids)
         # save
         await self._db.commit()
         LOGGER.debug(
             "added artist %s (%s) to database: %s",
             artist.name,
-            artist.ids,
+            artist.provider_ids,
             artist_id,
         )
         return artist_id
 
-    async def albums(
-        self, filter_query=None, orderby="name", fulldata=False
+    async def async_get_albums(
+        self, filter_query: str = None, orderby: str = "name", fulldata=False
     ) -> List[Album]:
-        """fetch all album records from table"""
+        """Fetch all album records from table."""
         sql_query = "SELECT * FROM albums"
         if filter_query:
             sql_query += " " + filter_query
@@ -534,50 +546,52 @@ class Database:
             db_rows = await cursor.fetchall()
             for db_row in db_rows:
                 album = Album()
+                album.provider = "database"
                 album.item_id = db_row[0]
                 album.name = db_row[2]
                 album.albumtype = db_row[3]
                 album.year = db_row[4]
                 album.version = db_row[5]
-                album.ids = await self.__get_prov_ids(
+                album.provider_ids = await self.__async_get_prov_ids(
                     album.item_id, MediaType.Album
                 )
-                album.in_library = await self.__get_library_providers(
+                album.in_library = await self.__async_get_library_providers(
                     album.item_id, MediaType.Album
                 )
-                album.artist = await self.artist(db_row[1], fulldata=fulldata)
+                album.artist = await self.async_get_artist(db_row[1], fulldata=fulldata)
                 if fulldata:
-                    album.external_ids = await self.__get_external_ids(
+                    album.external_ids = await self.__async_get_external_ids(
                         album.item_id, MediaType.Album
                     )
-                    album.metadata = await self.__get_metadata(
+                    album.metadata = await self.__async_get_metadata(
                         album.item_id, MediaType.Album
                     )
-                    album.tags = await self.__get_tags(album.item_id, MediaType.Album)
-                    album.labels = await self.__get_album_labels(album.item_id)
+                    album.tags = await self.__async_get_tags(album.item_id, MediaType.Album)
+                    album.labels = await self.__async_get_album_labels(album.item_id)
                 yield album
 
-    async def album(self, album_id: int, fulldata=True) -> Album:
+    async def async_get_album(self, album_id: int, fulldata=True) -> Album:
         """get album record by id"""
         album_id = try_parse_int(album_id)
-        async for item in self.albums(
+        async for item in self.async_get_albums(
             "WHERE album_id = %s" % album_id, fulldata=fulldata
         ):
             return item
         return None
 
     @commit_guard
-    async def add_album(self, album: Album):
+    async def async_add_album(self, album: Album):
         """add a new album record into table"""
         assert album.name and album.artist
         album_id = None
         assert album.artist.provider == "database"
         # always try to grab existing album with external_id
-        album_id = await self.__get_item_by_external_id(album)
+        album_id = await self.__async_get_item_by_external_id(album)
         # fallback to matching on artist_id, name and version
         if not album_id:
             # search exact match first
-            sql_query = "SELECT album_id FROM albums WHERE artist_id=? AND name=? AND version=? AND year=? AND albumtype=?"
+            sql_query = """SELECT album_id FROM albums WHERE
+                artist_id=? AND name=? AND version=? AND year=? AND albumtype=?"""
             async with self._db.execute(
                 sql_query,
                 (
@@ -592,7 +606,8 @@ class Database:
                 if album_id:
                     album_id = album_id["album_id"]
             # fallback to almost exact match
-            sql_query = "SELECT album_id, year, version, albumtype FROM albums WHERE artist_id=? AND name=?"
+            sql_query = """SELECT album_id, year, version, albumtype FROM
+                albums WHERE artist_id=? AND name=?"""
             async with self._db.execute(
                 sql_query, (album.artist.item_id, album.name)
             ) as cursor:
@@ -605,7 +620,8 @@ class Database:
                         break
         if not album_id:
             # insert album
-            sql_query = "INSERT INTO albums (artist_id, name, albumtype, year, version) VALUES(?,?,?,?,?);"
+            sql_query = """INSERT INTO albums (artist_id, name, albumtype, year, version)
+                VALUES(?,?,?,?,?);"""
             query_params = (
                 album.artist.item_id,
                 album.name,
@@ -622,23 +638,23 @@ class Database:
                 album_id = album_id[0]
         # always add metadata and tags etc. because we might have received
         # additional info or a match from other provider
-        await self.__add_prov_ids(album_id, MediaType.Album, album.ids)
-        await self.__add_metadata(album_id, MediaType.Album, album.metadata)
-        await self.__add_tags(album_id, MediaType.Album, album.tags)
-        await self.__add_album_labels(album_id, album.labels)
-        await self.__add_external_ids(album_id, MediaType.Album, album.external_ids)
+        await self.__async_add_prov_ids(album_id, MediaType.Album, album.provider_ids)
+        await self.__async_add_metadata(album_id, MediaType.Album, album.metadata)
+        await self.__async_add_tags(album_id, MediaType.Album, album.tags)
+        await self.__async_add_album_labels(album_id, album.labels)
+        await self.__async_add_external_ids(album_id, MediaType.Album, album.external_ids)
         # save
         await self._db.commit()
         LOGGER.debug(
             "added album %s (%s) to database: %s",
             album.name,
-            album.ids,
+            album.provider_ids,
             album_id,
         )
         return album_id
 
-    async def tracks(
-        self, custom_query=None, orderby="name", fulldata=False
+    async def async_get_tracks(
+        self, custom_query=None, orderby: str = "name", fulldata=False
     ) -> List[Track]:
         """fetch all track records from table"""
         sql_query = "SELECT * FROM tracks"
@@ -648,10 +664,11 @@ class Database:
         async with self._db.execute(sql_query) as cursor:
             for db_row in await cursor.fetchall():
                 track = Track()
+                track.provider = "database"
                 track.item_id = db_row["track_id"]
                 track.name = db_row["name"]
-                track.album = await self.album(db_row["album_id"], fulldata=fulldata)
-                track.artists = await self.__get_track_artists(
+                track.album = await self.async_get_album(db_row["album_id"], fulldata=fulldata)
+                track.artists = await self.__async_get_track_artists(
                     track.item_id, fulldata=fulldata
                 )
                 track.duration = db_row["duration"]
@@ -665,32 +682,32 @@ class Database:
                     track.position = db_row["position"]
                 except IndexError:
                     pass
-                track.in_library = await self.__get_library_providers(
+                track.in_library = await self.__async_get_library_providers(
                     track.item_id, MediaType.Track
                 )
-                track.external_ids = await self.__get_external_ids(
+                track.external_ids = await self.__async_get_external_ids(
                     track.item_id, MediaType.Track
                 )
-                track.ids = await self.__get_prov_ids(
+                track.provider_ids = await self.__async_get_prov_ids(
                     track.item_id, MediaType.Track
                 )
                 if fulldata:
-                    track.metadata = await self.__get_metadata(
+                    track.metadata = await self.__async_get_metadata(
                         track.item_id, MediaType.Track
                     )
-                    track.tags = await self.__get_tags(track.item_id, MediaType.Track)
+                    track.tags = await self.__async_get_tags(track.item_id, MediaType.Track)
                 yield track
 
-    async def track(self, track_id: int, fulldata=True) -> Track:
+    async def async_get_track(self, track_id: int, fulldata=True) -> Track:
         """get track record by id"""
         track_id = try_parse_int(track_id)
         sql_query = "SELECT * FROM tracks WHERE track_id = %s" % track_id
-        async for item in self.tracks(sql_query, fulldata=fulldata):
+        async for item in self.async_get_tracks(sql_query, fulldata=fulldata):
             return item
         return None
 
     @commit_guard
-    async def add_track(self, track: Track):
+    async def async_add_track(self, track: Track):
         """add a new track record into table"""
         assert track.name and track.album
         assert track.album.provider == "database"
@@ -698,7 +715,7 @@ class Database:
         for artist in track.artists:
             assert artist.provider == "database"
         # always try to grab existing track with external_id
-        track_id = await self.__get_item_by_external_id(track)
+        track_id = await self.__async_get_item_by_external_id(track)
         # fallback to matching on album_id, name and version
         if not track_id:
             sql_query = "SELECT track_id, duration, version FROM tracks WHERE album_id=? AND name=?"
@@ -740,57 +757,60 @@ class Database:
             await self._db.execute(sql_query, (track_id, artist.item_id))
         # always add metadata and tags etc. because we might have received
         # additional info or a match from other provider
-        await self.__add_prov_ids(track_id, MediaType.Track, track.ids)
-        await self.__add_metadata(track_id, MediaType.Track, track.metadata)
-        await self.__add_tags(track_id, MediaType.Track, track.tags)
-        await self.__add_external_ids(track_id, MediaType.Track, track.external_ids)
+        await self.__async_add_prov_ids(track_id, MediaType.Track, track.provider_ids)
+        await self.__async_add_metadata(track_id, MediaType.Track, track.metadata)
+        await self.__async_add_tags(track_id, MediaType.Track, track.tags)
+        await self.__async_add_external_ids(track_id, MediaType.Track, track.external_ids)
         # save to db
         await self._db.commit()
         LOGGER.debug(
             "added track %s (%s) to database: %s",
             track.name,
-            track.ids,
+            track.provider_ids,
             track_id,
         )
         return track_id
 
-    async def update_track(self, track_id, column_key, column_value):
+    async def async_update_track(self, track_id, column_key, column_value):
         """update column of existing track"""
         sql_query = "UPDATE tracks SET %s=? WHERE track_id=?;" % column_key
         await self._db.execute(sql_query, (column_value, track_id))
         await self._db.commit()
 
-    async def update_playlist(self, playlist_id, column_key, column_value):
+    async def async_update_playlist(self, playlist_id, column_key, column_value):
         """update column of existing playlist"""
         sql_query = "UPDATE playlists SET %s=? WHERE playlist_id=?;" % column_key
         await self._db.execute(sql_query, (column_value, playlist_id))
         await self._db.commit()
 
-    async def artist_tracks(self, artist_id, orderby="name") -> List[Track]:
+    async def async_get_artist_tracks(self, artist_id, orderby: str = "name") -> List[Track]:
         """get all library tracks for the given artist"""
         artist_id = try_parse_int(artist_id)
         sql_query = (
-            "SELECT * FROM tracks WHERE track_id in (SELECT track_id FROM track_artists WHERE artist_id = %s)"
+            """SELECT * FROM tracks WHERE
+                track_id in (SELECT track_id FROM track_artists WHERE artist_id = %s)"""
             % artist_id
         )
-        async for item in self.tracks(sql_query, orderby=orderby, fulldata=False):
+        async for item in self.async_get_tracks(sql_query, orderby=orderby, fulldata=False):
             yield item
 
-    async def artist_albums(self, artist_id, orderby="name") -> List[Album]:
+    async def async_get_artist_albums(self, artist_id, orderby: str = "name") -> List[Album]:
         """get all library albums for the given artist"""
         sql_query = " WHERE artist_id = %s" % artist_id
-        async for item in self.albums(sql_query, orderby=orderby, fulldata=False):
+        async for item in self.async_get_albums(sql_query, orderby=orderby, fulldata=False):
             yield item
 
-    async def set_track_loudness(self, provider_track_id, provider, loudness):
+    async def async_set_track_loudness(self, provider_track_id, provider, loudness):
         """set integrated loudness for a track in db"""
-        sql_query = "INSERT or REPLACE INTO track_loudness (provider_track_id, provider, loudness) VALUES(?,?,?);"
+        sql_query = """INSERT or REPLACE INTO track_loudness
+            (provider_track_id, provider, loudness) VALUES(?,?,?);"""
         await self._db.execute(sql_query, (provider_track_id, provider, loudness))
         await self._db.commit()
 
-    async def get_track_loudness(self, provider_track_id, provider):
+    async def async_get_track_loudness(self, provider_track_id, provider):
         """get integrated loudness for a track in db"""
-        sql_query = "SELECT loudness FROM track_loudness WHERE provider_track_id = ? AND provider = ?"
+        sql_query = """SELECT loudness FROM track_loudness WHERE
+            provider_track_id = ? AND provider = ?"""
         async with self._db.execute(sql_query, (provider_track_id, provider)) as cursor:
             result = await cursor.fetchone()
         if result:
@@ -798,14 +818,15 @@ class Database:
         else:
             return None
 
-    async def __add_metadata(self, item_id, media_type, metadata):
+    async def __async_add_metadata(self, item_id, media_type, metadata):
         """add or update metadata"""
         for key, value in metadata.items():
             if value:
-                sql_query = "INSERT or REPLACE INTO metadata (item_id, media_type, key, value) VALUES(?,?,?,?);"
+                sql_query = """INSERT or REPLACE INTO metadata
+                    (item_id, media_type, key, value) VALUES(?,?,?,?);"""
                 await self._db.execute(sql_query, (item_id, media_type, key, value))
 
-    async def __get_metadata(self, item_id, media_type, filter_key=None):
+    async def __async_get_metadata(self, item_id, media_type, filter_key=None):
         """get metadata for media item"""
         metadata = {}
         sql_query = (
@@ -821,26 +842,28 @@ class Database:
             metadata[key] = value
         return metadata
 
-    async def __add_tags(self, item_id, media_type, tags):
+    async def __async_add_tags(self, item_id, media_type, tags):
         """add tags to db"""
         for tag in tags:
             sql_query = "INSERT or IGNORE INTO tags (name) VALUES(?);"
             async with self._db.execute(sql_query, (tag,)) as cursor:
                 tag_id = cursor.lastrowid
-            sql_query = "INSERT or IGNORE INTO media_tags (item_id, media_type, tag_id) VALUES(?,?,?);"
+            sql_query = """INSERT or IGNORE INTO media_tags
+                (item_id, media_type, tag_id) VALUES(?,?,?);"""
             await self._db.execute(sql_query, (item_id, media_type, tag_id))
 
-    async def __get_tags(self, item_id, media_type):
+    async def __async_get_tags(self, item_id, media_type):
         """get tags for media item"""
         tags = []
-        sql_query = "SELECT name FROM tags INNER JOIN media_tags on tags.tag_id = media_tags.tag_id WHERE item_id = ? AND media_type = ?"
+        sql_query = """SELECT name FROM tags INNER JOIN media_tags ON
+            tags.tag_id = media_tags.tag_id WHERE item_id = ? AND media_type = ?"""
         async with self._db.execute(sql_query, (item_id, media_type)) as cursor:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
             tags.append(db_row[0])
         return tags
 
-    async def __add_album_labels(self, album_id, labels):
+    async def __async_add_album_labels(self, album_id, labels):
         """add labels to album in db"""
         for label in labels:
             sql_query = "INSERT or IGNORE INTO labels (name) VALUES(?);"
@@ -851,32 +874,34 @@ class Database:
             )
             await self._db.execute(sql_query, (album_id, label_id))
 
-    async def __get_album_labels(self, album_id):
+    async def __async_get_album_labels(self, album_id):
         """get labels for album item"""
         labels = []
-        sql_query = "SELECT name FROM labels INNER JOIN album_labels on labels.label_id = album_labels.label_id WHERE album_id = ?"
+        sql_query = """SELECT name FROM labels INNER JOIN album_labels
+            ON labels.label_id = album_labels.label_id WHERE album_id = ?"""
         async with self._db.execute(sql_query, (album_id,)) as cursor:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
             labels.append(db_row[0])
         return labels
 
-    async def __get_track_artists(self, track_id, fulldata=False) -> List[Artist]:
+    async def __async_get_track_artists(self, track_id, fulldata=False) -> List[Artist]:
         """get artists for track"""
         sql_query = (
             "WHERE artist_id in (SELECT artist_id FROM track_artists WHERE track_id = %s)"
             % track_id
         )
-        return [item async for item in self.artists(sql_query, fulldata=fulldata)]
+        return [item async for item in self.async_get_artists(sql_query, fulldata=fulldata)]
 
-    async def __add_external_ids(self, item_id, media_type, external_ids):
+    async def __async_add_external_ids(self, item_id, media_type, external_ids):
         """add or update external_ids"""
         for external_id in external_ids:
             for key, value in external_id.items():
-                sql_query = "INSERT or REPLACE INTO external_ids (item_id, media_type, key, value) VALUES(?,?,?,?);"
+                sql_query = """INSERT or REPLACE INTO external_ids
+                    (item_id, media_type, key, value) VALUES(?,?,?,?);"""
                 await self._db.execute(sql_query, (item_id, media_type, key, value))
 
-    async def __get_external_ids(self, item_id, media_type):
+    async def __async_get_external_ids(self, item_id, media_type):
         """get external_ids for media item"""
         external_ids = []
         sql_query = (
@@ -889,20 +914,22 @@ class Database:
             external_ids.append(external_id)
         return external_ids
 
-    async def __add_prov_ids(self, item_id, media_type, ids):
+    async def __async_add_prov_ids(self, item_id, media_type, ids):
         """add provider ids for media item to db"""
         for prov_mapping in ids:
             prov_id = prov_mapping["provider"]
             prov_item_id = prov_mapping["item_id"]
             quality = prov_mapping.get("quality", 0)
             details = prov_mapping.get("details", "")
-            sql_query = "INSERT OR REPLACE INTO provider_mappings (item_id, media_type, prov_item_id, provider, quality, details) VALUES(?,?,?,?,?,?);"
+            sql_query = """INSERT OR REPLACE INTO provider_mappings
+                (item_id, media_type, prov_item_id, provider, quality, details)
+                VALUES(?,?,?,?,?,?);"""
             await self._db.execute(
                 sql_query,
                 (item_id, media_type, prov_item_id, prov_id, quality, details),
             )
 
-    async def __get_prov_ids(self, item_id, media_type: MediaType):
+    async def __async_get_prov_ids(self, item_id, media_type: MediaType):
         """get all ids for media item"""
         ids = []
         sql_query = "SELECT prov_item_id, provider, quality, details \
@@ -921,7 +948,7 @@ class Database:
             ids.append(prov_mapping)
         return ids
 
-    async def __get_library_providers(self, item_id, media_type: MediaType):
+    async def __async_get_library_providers(self, item_id, media_type: MediaType):
         """get the providers that have this media_item added to the library"""
         providers = []
         sql_query = (
@@ -933,8 +960,8 @@ class Database:
             providers.append(db_row[0])
         return providers
 
-    async def __get_item_by_external_id(self, media_item):
-        """try to get existing item in db by matching the new item's external id's"""
+    async def __async_get_item_by_external_id(self, media_item):
+        """Try to get existing item in db by matching the new item's external id's."""
         item_id = None
         for external_id in media_item.external_ids:
             if item_id:
