@@ -1,24 +1,12 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
+"""The web module handles serving the frontend and the rest/websocket api's"""
 import asyncio
-import concurrent
-from functools import partial
 import inspect
 import os
 import ssl
-import threading
 
 import aiohttp
 from aiohttp import web
-import aiohttp_cors
-from music_assistant.constants import (
-    CONF_KEY_PROVIDERS,
-    CONF_KEY_BASE,
-    CONF_KEY_PLAYERSETTINGS,
-)
 from music_assistant.models.media_types import (
-    MediaItem,
     MediaType,
     media_type_from_string,
 )
@@ -26,32 +14,14 @@ from music_assistant.utils import (
     IS_HASSIO,
     LOGGER,
     get_ip,
-    json_serializer,
-    run_async_background_task,
-    run_periodic,
+    json_serializer
 )
 
-CONF_KEY = "web"
-
-if IS_HASSIO:
-    # on hassio we use ingress
-    CONFIG_ENTRIES = [
-        ("https_port", 8096, "web_https_port"),
-        ("ssl_certificate", "", "web_ssl_cert"),
-        ("ssl_key", "", "web_ssl_key"),
-        ("cert_fqdn_host", "", "cert_fqdn_host"),
-    ]
-else:
-    CONFIG_ENTRIES = [
-        ("http_port", 8095, "web_http_port"),
-        ("https_port", 8096, "web_https_port"),
-        ("ssl_certificate", "", "web_ssl_cert"),
-        ("ssl_key", "", "web_ssl_key"),
-        ("cert_fqdn_host", "", "cert_fqdn_host"),
-    ]
+import aiohttp_cors
 
 
 class ClassRouteTableDef(web.RouteTableDef):
+    """Helper class to add class based routing tables."""
     def __repr__(self) -> str:
         return "<ClassRouteTableDef count={}>".format(len(self._items))
 
@@ -79,13 +49,12 @@ routes = ClassRouteTableDef()
 class Web:
     """webserver and json/websocket api"""
 
-    runner = None
-
     def __init__(self, mass):
         self.mass = mass
         # load/create/update config
         self.local_ip = get_ip()
         self.config = mass.config.base
+        self.runner = None
         if IS_HASSIO:
             # retrieve ingress http port
             import requests
@@ -109,7 +78,7 @@ class Web:
         self.https_port = self.config["https_port"]
         self._enable_ssl = enable_ssl
 
-    async def setup(self):
+    async def async_setup(self):
         """perform async setup"""
         routes.add_class_routes(self)
         app = web.Application()
@@ -118,18 +87,18 @@ class Web:
             [
                 web.get(
                     "/stream/{player_id}",
-                    self.mass.http_streamer.stream,
+                    self.mass.http_streamer.async_stream,
                     allow_head=False,
                 ),
                 web.get(
                     "/stream/{player_id}/{queue_item_id}",
-                    self.mass.http_streamer.stream,
+                    self.mass.http_streamer.async_stream,
                     allow_head=False,
                 ),
-                web.get("/", self.index),
-                web.get("/jsonrpc.js", self.json_rpc),
-                web.post("/jsonrpc.js", self.json_rpc),
-                web.get("/ws", self.websocket_handler),
+                web.get("/", self.async_index),
+                web.get("/jsonrpc.js", self.async_json_rpc),
+                web.post("/jsonrpc.js", self.async_json_rpc),
+                web.get("/ws", self.async_websocket_handler),
             ]
         )
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web/")
@@ -168,133 +137,134 @@ class Web:
             await https_site.start()
             LOGGER.info("Started HTTPS webserver on port %s", self.config["https_port"])
 
-    async def index(self, request):
+    async def async_index(self, request):
+        # pylint: disable=unused-argument
         index_file = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "web/index.html"
         )
         return web.FileResponse(index_file)
 
     @routes.get("/api/library/artists")
-    async def library_artists(self, request):
+    async def async_library_artists(self, request):
         """Get all library artists."""
         orderby = request.query.get("orderby", "name")
         provider_filter = request.rel_url.query.get("provider")
-        iterator = self.mass.music_manager.library_artists(
+        iterator = self.mass.music_manager.async_get_library_artists(
             orderby=orderby, provider_filter=provider_filter
         )
-        return await self.__stream_json(request, iterator)
+        return await self.__async_stream_json(request, iterator)
 
     @routes.get("/api/library/albums")
-    async def library_albums(self, request):
+    async def async_library_albums(self, request):
         """Get all library albums."""
         orderby = request.query.get("orderby", "name")
         provider_filter = request.rel_url.query.get("provider")
-        iterator = self.mass.music_manager.library_albums(
+        iterator = self.mass.music_manager.async_get_library_albums(
             orderby=orderby, provider_filter=provider_filter
         )
-        return await self.__stream_json(request, iterator)
+        return await self.__async_stream_json(request, iterator)
 
     @routes.get("/api/library/tracks")
-    async def library_tracks(self, request):
+    async def async_library_tracks(self, request):
         """Get all library tracks."""
         orderby = request.query.get("orderby", "name")
         provider_filter = request.rel_url.query.get("provider")
-        iterator = self.mass.music_manager.library_tracks(
+        iterator = self.mass.music_manager.async_get_library_tracks(
             orderby=orderby, provider_filter=provider_filter
         )
-        return await self.__stream_json(request, iterator)
+        return await self.__async_stream_json(request, iterator)
 
     @routes.get("/api/library/radios")
-    async def library_radios(self, request):
+    async def async_library_radios(self, request):
         """Get all library radios."""
         orderby = request.query.get("orderby", "name")
         provider_filter = request.rel_url.query.get("provider")
-        iterator = self.mass.music_manager.library_radios(
+        iterator = self.mass.music_manager.async_get_library_radios(
             orderby=orderby, provider_filter=provider_filter
         )
-        return await self.__stream_json(request, iterator)
+        return await self.__async_stream_json(request, iterator)
 
     @routes.get("/api/library/playlists")
-    async def library_playlists(self, request):
+    async def async_library_playlists(self, request):
         """Get all library playlists."""
         orderby = request.query.get("orderby", "name")
         provider_filter = request.rel_url.query.get("provider")
-        iterator = self.mass.music_manager.library_playlists(
+        iterator = self.mass.music_manager.async_get_library_playlists(
             orderby=orderby, provider_filter=provider_filter
         )
-        return await self.__stream_json(request, iterator)
+        return await self.__async_stream_json(request, iterator)
 
     @routes.put("/api/library")
-    async def library_add(self, request):
+    async def async_library_add(self, request):
         """Add item(s) to the library"""
         body = await request.json()
-        media_items = await self.__media_items_from_body(body)
-        result = await self.mass.music_manager.library_add(media_items)
+        media_items = await self.__async_media_items_from_body(body)
+        result = await self.mass.music_manager.async_library_add(media_items)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.delete("/api/library")
-    async def library_remove(self, request):
+    async def async_library_remove(self, request):
         """R remove item(s) from the library"""
         body = await request.json()
-        media_items = await self.__media_items_from_body(body)
-        result = await self.mass.music_manager.library_remove(media_items)
+        media_items = await self.__async_media_items_from_body(body)
+        result = await self.mass.music_manager.async_library_remove(media_items)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/artists/{item_id}")
-    async def artist(self, request):
+    async def async_artist(self, request):
         """get full artist details"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         lazy = request.rel_url.query.get("lazy", "true") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
-        result = await self.mass.music_manager.artist(item_id, provider, lazy=lazy)
+        result = await self.mass.music_manager.async_get_artist(item_id, provider, lazy=lazy)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/albums/{item_id}")
-    async def album(self, request):
+    async def async_album(self, request):
         """get full album details"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         lazy = request.rel_url.query.get("lazy", "true") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
-        result = await self.mass.music_manager.album(item_id, provider, lazy=lazy)
+        result = await self.mass.music_manager.async_get_album(item_id, provider, lazy=lazy)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/tracks/{item_id}")
-    async def track(self, request):
+    async def async_track(self, request):
         """get full track details"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         lazy = request.rel_url.query.get("lazy", "true") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
-        result = await self.mass.music_manager.track(item_id, provider, lazy=lazy)
+        result = await self.mass.music_manager.async_get_track(item_id, provider, lazy=lazy)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/playlists/{item_id}")
-    async def playlist(self, request):
+    async def async_playlist(self, request):
         """get full playlist details"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
-        result = await self.mass.music_manager.playlist(item_id, provider)
+        result = await self.mass.music_manager.async_get_playlist(item_id, provider)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/radios/{item_id}")
-    async def radio(self, request):
+    async def async_radio(self, request):
         """get full radio details"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
             return web.Response(text="invalid item_id or provider", status=501)
-        result = await self.mass.music_manager.radio(item_id, provider)
+        result = await self.mass.music_manager.async_get_radio(item_id, provider)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/{media_type}/{media_id}/thumb")
-    async def get_image(self, request):
+    async def async_get_image(self, request):
         """get (resized) thumb image"""
         media_type_str = request.match_info.get("media_type")
         media_type = media_type_from_string(media_type_str)
@@ -303,8 +273,8 @@ class Web:
         if media_id is None or provider is None:
             return web.Response(text="invalid media_id or provider", status=501)
         size = int(request.rel_url.query.get("size", 0))
-        img_file = await self.mass.music_manager.get_image_thumb(
-            media_id, media_type, provider, size
+        img_file = await self.mass.music_manager.async_get_image_thumb(
+            media_id, provider, media_type, size
         )
         if not img_file or not os.path.isfile(img_file):
             return web.Response(status=404)
@@ -312,70 +282,69 @@ class Web:
         return web.FileResponse(img_file, headers=headers)
 
     @routes.get("/api/artists/{item_id}/toptracks")
-    async def artist_toptracks(self, request):
+    async def async_artist_toptracks(self, request):
         """get top tracks for given artist"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
             return web.Response(text="invalid item_id or provider", status=501)
-        iterator = self.mass.music_manager.artist_toptracks(item_id, provider)
-        return await self.__stream_json(request, iterator)
+        iterator = self.mass.music_manager.async_get_artist_toptracks(item_id, provider)
+        return await self.__async_stream_json(request, iterator)
 
     @routes.get("/api/artists/{item_id}/albums")
-    async def artist_albums(self, request):
+    async def async_artist_albums(self, request):
         """get (all) albums for given artist"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
             return web.Response(text="invalid item_id or provider", status=501)
-        iterator = self.mass.music_manager.artist_albums(item_id, provider)
-        return await self.__stream_json(request, iterator)
+        iterator = self.mass.music_manager.async_get_artist_albums(item_id, provider)
+        return await self.__async_stream_json(request, iterator)
 
     @routes.get("/api/playlists/{item_id}/tracks")
-    async def playlist_tracks(self, request):
+    async def async_playlist_tracks(self, request):
         """get playlist tracks from provider"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
             return web.Response(text="invalid item_id or provider", status=501)
-        iterator = self.mass.music_manager.playlist_tracks(item_id, provider)
-        return await self.__stream_json(request, iterator)
+        iterator = self.mass.music_manager.async_get_playlist_tracks(item_id, provider)
+        return await self.__async_stream_json(request, iterator)
 
     @routes.put("/api/playlists/{item_id}/tracks")
-    async def add_playlist_tracks(self, request):
+    async def async_add_playlist_tracks(self, request):
         """Add tracks to (editable) playlist."""
         item_id = request.match_info.get("item_id")
         body = await request.json()
-        tracks = await self.__media_items_from_body(body)
-        result = await self.mass.music_manager.add_playlist_tracks(item_id, tracks)
+        tracks = await self.__async_media_items_from_body(body)
+        result = await self.mass.music_manager.async_add_playlist_tracks(item_id, tracks)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.delete("/api/playlists/{item_id}/tracks")
-    async def remove_playlist_tracks(self, request):
+    async def async_remove_playlist_tracks(self, request):
         """Remove tracks from (editable) playlist."""
         item_id = request.match_info.get("item_id")
         body = await request.json()
-        tracks = await self.__media_items_from_body(body)
-        result = await self.mass.music_manager.remove_playlist_tracks(item_id, tracks)
+        tracks = await self.__async_media_items_from_body(body)
+        result = await self.mass.music_manager.async_remove_playlist_tracks(item_id, tracks)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/albums/{item_id}/tracks")
-    async def album_tracks(self, request):
-        """get album tracks from provider"""
+    async def async_album_tracks(self, request):
+        """Get album tracks from provider."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
             return web.Response(text="invalid item_id or provider", status=501)
-        iterator = self.mass.music_manager.album_tracks(item_id, provider)
-        return await self.__stream_json(request, iterator)
+        iterator = self.mass.music_manager.async_get_album_tracks(item_id, provider)
+        return await self.__async_stream_json(request, iterator)
 
     @routes.get("/api/search")
-    async def search(self, request):
-        """search database or providers"""
+    async def async_search(self, request):
+        """Search database and/or providers."""
         searchquery = request.rel_url.query.get("query")
         media_types_query = request.rel_url.query.get("media_types")
         limit = request.rel_url.query.get("limit", 5)
-        online = request.rel_url.query.get("online", False)
         media_types = []
         if not media_types_query or "artists" in media_types_query:
             media_types.append(MediaType.Artist)
@@ -388,20 +357,21 @@ class Web:
         if not media_types_query or "radios" in media_types_query:
             media_types.append(MediaType.Radio)
         # get results from database
-        result = await self.mass.music_manager.search(
-            searchquery, media_types, limit=limit, online=online
+        result = await self.mass.music_manager.async_global_search(
+            searchquery, media_types, limit=limit
         )
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/players")
-    async def players(self, request):
+    async def async_players(self, request):
+        # pylint: disable=unused-argument
         """get all players"""
         players = list(self.mass.player_manager.players)
         players.sort(key=lambda x: x.name, reverse=False)
         return web.json_response(players, dumps=json_serializer)
 
     @routes.post("/api/players/{player_id}/cmd/{cmd}")
-    async def player_command(self, request):
+    async def async_player_command(self, request):
         """issue player command"""
         result = False
         player_id = request.match_info.get("player_id")
@@ -420,7 +390,7 @@ class Web:
         return web.json_response(result, dumps=json_serializer)
 
     @routes.post("/api/players/{player_id}/play_media/{queue_opt}")
-    async def player_play_media(self, request):
+    async def async_player_play_media(self, request):
         """issue player play_media command"""
         player_id = request.match_info.get("player_id")
         player = await self.mass.player_manager.get_player(player_id)
@@ -428,12 +398,12 @@ class Web:
             return web.Response(status=404)
         queue_opt = request.match_info.get("queue_opt", "play")
         body = await request.json()
-        media_items = await self.__media_items_from_body(body)
+        media_items = await self.__async_media_items_from_body(body)
         result = await self.mass.player_manager.play_media(player_id, media_items, queue_opt)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/players/{player_id}/queue/items/{queue_item}")
-    async def player_queue_item(self, request):
+    async def async_player_queue_item(self, request):
         """return item (by index or queue item id) from the player's queue"""
         player_id = request.match_info.get("player_id")
         item_id = request.match_info.get("queue_item")
@@ -446,26 +416,26 @@ class Web:
         return web.json_response(queue_item, dumps=json_serializer)
 
     @routes.get("/api/players/{player_id}/queue/items")
-    async def player_queue_items(self, request):
+    async def async_player_queue_items(self, request):
         """return the items in the player's queue"""
         player_id = request.match_info.get("player_id")
         player = await self.mass.player_manager.get_player(player_id)
 
-        async def queue_tracks_iter():
+        async def async_queue_tracks_iter():
             for item in player.queue.items:
                 yield item
 
-        return await self.__stream_json(request, queue_tracks_iter())
+        return await self.__async_stream_json(request, async_queue_tracks_iter())
 
     @routes.get("/api/players/{player_id}/queue")
-    async def player_queue(self, request):
+    async def async_player_queue(self, request):
         """return the player queue details"""
         player_id = request.match_info.get("player_id")
         player = await self.mass.player_manager.get_player(player_id)
         return web.json_response(player.queue, dumps=json_serializer)
 
     @routes.put("/api/players/{player_id}/queue/{cmd}")
-    async def player_queue_cmd(self, request):
+    async def async_player_queue_cmd(self, request):
         """change the player queue details"""
         player_id = request.match_info.get("player_id")
         player = await self.mass.player_manager.get_player(player_id)
@@ -488,7 +458,7 @@ class Web:
         return web.json_response(player.queue, dumps=json_serializer)
 
     @routes.get("/api/players/{player_id}")
-    async def player(self, request):
+    async def async_player(self, request):
         """get single player."""
         player_id = request.match_info.get("player_id")
         player = await self.mass.player_manager.get_player(player_id)
@@ -497,18 +467,20 @@ class Web:
         return web.json_response(player, dumps=json_serializer)
 
     @routes.get("/api/config")
-    async def get_config(self, request):
+    async def async_get_config(self, request):
+        # pylint: disable=unused-argument
         """get the config"""
         return web.json_response(self.mass.config)
 
     @routes.put("/api/config/{base}/{key}")
-    async def put_config(self, request):
+    async def async_put_config(self, request):
         """save (partial) config"""
         conf_key = request.match_info.get("key")
         conf_base = request.match_info.get("base")
         new_values = await request.json()
         LOGGER.debug(
-            f"save config called for {conf_base}/{conf_key} - new values: {new_values}"
+            "save config called for %s/%s - new values: %s",
+            conf_base, conf_key, new_values
         )
         # cur_values = self.mass.config[conf_key][conf_subkey]
         # result = {"success": True, "restart_required": False, "settings_changed": False}
@@ -537,28 +509,27 @@ class Web:
         #     self.mass.config.save()
         # return web.json_response(result)
 
-    async def websocket_handler(self, request):
+    async def async_websocket_handler(self, request):
         """websockets handler"""
-        cb_id = None
         ws = None
         try:
             ws = web.WebSocketResponse()
             await ws.prepare(request)
 
             # register callback for internal events
-            async def send_event(msg, msg_details):
+            async def async_send_event(msg, msg_details):
                 ws_msg = {"message": msg, "message_details": msg_details}
                 try:
                     await ws.send_json(ws_msg)
                 except (AssertionError, asyncio.CancelledError):
-                    await self.mass.remove_event_listener(cb_id)
+                    remove_callback()
 
-            cb_id = await self.mass.add_event_listener(send_event)
+            remove_callback = self.mass.add_event_listener(async_send_event)
             # process incoming messages
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.ERROR:
                     LOGGER.debug(
-                        "ws connection closed with exception %s" % ws.exception()
+                        "ws connection closed with exception %s", ws.exception()
                     )
                 elif msg.type != aiohttp.WSMsgType.TEXT:
                     LOGGER.warning(msg.data)
@@ -569,21 +540,21 @@ class Web:
                     await self.mass.signal_event(
                         data["message"], data["message_details"]
                     )
-        except (Exception, AssertionError, asyncio.CancelledError) as exc:
-            LOGGER.warning("Websocket disconnected - %s" % str(exc))
+        except (AssertionError, asyncio.CancelledError) as exc:
+            LOGGER.warning("Websocket disconnected - %s", str(exc))
         finally:
-            await self.mass.remove_event_listener(cb_id)
+            remove_callback()
         LOGGER.debug("websocket connection closed")
         return ws
 
-    async def json_rpc(self, request):
+    async def async_json_rpc(self, request):
         """
             implement LMS jsonrpc interface 
             for some compatability with tools that talk to lms
             only support for basic commands
         """
         data = await request.json()
-        LOGGER.debug("jsonrpc: %s" % data)
+        LOGGER.debug("jsonrpc: %s", data)
         params = data["params"]
         player_id = params[0]
         cmds = params[1]
@@ -630,7 +601,7 @@ class Web:
             return web.Response(text="command not supported")
         return web.Response(text="success")
 
-    async def __media_items_from_body(self, data):
+    async def __async_media_items_from_body(self, data):
         """Helper to turn posted body data into media items."""
         if not isinstance(data, list):
             data = [data]
@@ -642,7 +613,7 @@ class Web:
             media_items.append(media_item)
         return media_items
 
-    async def __stream_json(self, request, iterator):
+    async def __async_stream_json(self, request, iterator):
         """stream items from async iterator as json object"""
         resp = web.StreamResponse(
             status=200, reason="OK", headers={"Content-Type": "application/json"}

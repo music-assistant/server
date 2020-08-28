@@ -103,7 +103,7 @@ class ChromecastPlayer():
         self.media_status = chromecast.media_controller.status
         self._chromecast.start()
 
-    async def _async_disconnect(self):
+    async def async__async_disconnect(self):
         """Disconnect Chromecast object if it is set."""
         # if self.__cc_report_progress_task:
         #     self.__cc_report_progress_task.cancel()

@@ -73,7 +73,7 @@ def main():
 
         webbrowser.open(f"http://localhost:{mass.web.http_port}")
 
-    run(mass.start(), loop=event_loop)
+    run(mass.async_start(), loop=event_loop)
 
 
 if __name__ == "__main__":

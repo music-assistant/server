@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import os
-from typing import List
+from typing import List, Optional
 
 import aiosqlite
 from music_assistant.models.media_types import (
@@ -13,6 +13,8 @@ from music_assistant.models.media_types import (
     Playlist,
     Radio,
     Track,
+    SearchResult,
+    MediaItemProviderId
 )
 from music_assistant.utils import LOGGER, get_sort_name, try_parse_int
 
@@ -162,28 +164,35 @@ class Database:
                 return item_id[0]
         return None
 
-    async def async_search(self, searchquery: str, media_types: List[MediaType]):
-        """search library for the given searchphrase"""
-        result = {"artists": [], "albums": [], "tracks": [], "playlists": []}
+    async def async_search(self, searchquery: str,
+                           media_types: Optional[List[MediaType]]) -> SearchResult:
+        """Search library for the given searchphrase."""
+        result = SearchResult([], [], [], [], [])
         searchquery = "%" + searchquery + "%"
-        if MediaType.Artist in media_types:
+        if media_types is None or MediaType.Artist in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
-            result["artists"] = [item async for item in self.async_get_artists(sql_query)]
-        if MediaType.Album in media_types:
+            result.artists = [item async for item in self.async_get_artists(sql_query)]
+        if media_types is None or MediaType.Album in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
-            result["albums"] = [item async for item in self.async_get_albums(sql_query)]
-        if MediaType.Track in media_types:
+            result.albums = [item async for item in self.async_get_albums(sql_query)]
+        if media_types is None or MediaType.Track in media_types:
             sql_query = 'SELECT * FROM tracks WHERE name LIKE "%s"' % searchquery
-            result["tracks"] = [item async for item in self.async_get_tracks(sql_query)]
-        if MediaType.Playlist in media_types:
+            result.tracks = [item async for item in self.async_get_tracks(sql_query)]
+        if media_types is None or MediaType.Playlist in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
-            result["playlists"] = [
+            result.playlists = [
                 item async for item in self.async_get_playlists(sql_query)
+            ]
+        if media_types is None or MediaType.Radio in media_types:
+            sql_query = ' WHERE name LIKE "%s"' % searchquery
+            result.radios = [
+                item async for item in self.async_get_radios(sql_query)
             ]
         return result
 
     async def async_get_library_artists(self,
-                                        provider_id: str = None, orderby: str = "name") -> List[Artist]:
+                                        provider_id: str = None,
+                                        orderby: str = "name") -> List[Artist]:
         """Get all library artists, optionally filtered by provider."""
         if provider_id is not None:
             sql_query = (
@@ -200,7 +209,8 @@ class Database:
             yield item
 
     async def async_get_library_albums(self,
-                                       provider_id: str = None, orderby: str = "name") -> List[Album]:
+                                       provider_id: str = None,
+                                       orderby: str = "name") -> List[Album]:
         """Get all library albums, optionally filtered by provider."""
         if provider_id is not None:
             sql_query = (
@@ -217,7 +227,8 @@ class Database:
             yield item
 
     async def async_get_library_tracks(self,
-                                       provider_id: str = None, orderby: str = "name") -> List[Track]:
+                                       provider_id: str = None,
+                                       orderby: str = "name") -> List[Track]:
         """Get all library tracks, optionally filtered by provider."""
         if provider_id is not None:
             sql_query = """SELECT * FROM tracks
@@ -237,7 +248,8 @@ class Database:
             yield item
 
     async def async_get_library_playlists(self,
-                                          provider_id: str = None, orderby: str = "name") -> List[Playlist]:
+                                          provider_id: str = None,
+                                          orderby: str = "name") -> List[Playlist]:
         """Fetch all playlist records from table."""
         if provider_id is not None:
             sql_query = """WHERE playlist_id in
@@ -256,7 +268,8 @@ class Database:
             yield item
 
     async def async_get_library_radios(self,
-                                       provider_id: str = None, orderby: str = "name") -> List[Radio]:
+                                       provider_id: str = None,
+                                       orderby: str = "name") -> List[Radio]:
         """Fetch all radio records from table."""
         if provider_id is not None:
             sql_query = """WHERE radio_id in
@@ -275,7 +288,8 @@ class Database:
             yield item
 
     async def async_get_playlists(self,
-                                  filter_query: str = None, orderby: str = "name") -> List[Playlist]:
+                                  filter_query: str = None,
+                                  orderby: str = "name") -> List[Playlist]:
         """Fetch playlist records from table."""
         sql_query = "SELECT * FROM playlists"
         if filter_query:
@@ -917,10 +931,10 @@ class Database:
     async def __async_add_prov_ids(self, item_id, media_type, ids):
         """add provider ids for media item to db"""
         for prov_mapping in ids:
-            prov_id = prov_mapping["provider"]
-            prov_item_id = prov_mapping["item_id"]
-            quality = prov_mapping.get("quality", 0)
-            details = prov_mapping.get("details", "")
+            prov_id = prov_mapping.provider
+            prov_item_id = prov_mapping.item_id
+            quality = prov_mapping.quality
+            details = prov_mapping.details
             sql_query = """INSERT OR REPLACE INTO provider_mappings
                 (item_id, media_type, prov_item_id, provider, quality, details)
                 VALUES(?,?,?,?,?,?);"""
@@ -939,12 +953,12 @@ class Database:
         async with self._db.execute(sql_query, (item_id, media_type)) as cursor:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
-            prov_mapping = {
-                "provider": db_row[1],
-                "item_id": db_row[0],
-                "quality": db_row[2],
-                "details": db_row[3],
-            }
+            prov_mapping = MediaItemProviderId(
+                provider=db_row[1],
+                item_id=db_row[0],
+                quality=db_row[2],
+                details=db_row[3]
+            )
             ids.append(prov_mapping)
         return ids
 

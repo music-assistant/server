@@ -13,13 +13,13 @@ from music_assistant.constants import (
 )
 from music_assistant.models.media_types import MediaItem, MediaType
 from music_assistant.models.player import Player, PlayerState
-from music_assistant.models.player_queue import QueueItem, QueueOption
+from music_assistant.models.player_queue import QueueItem, QueueOption, PlayerQueue
 from music_assistant.models.playerprovider import PlayerProvider
 from music_assistant.models.provider import ProviderType
 from music_assistant.utils import (
     LOGGER,
     callback,
-    iter_items,
+    async_iter_items,
     try_parse_int,
     try_parse_float
 )
@@ -40,6 +40,11 @@ class PlayerManager:
     async def async_setup(self):
         """Async initialize of module"""
         pass
+
+    async def async_close(self):
+        """Handle stop/shutdown."""
+        for player_queue in self._player_queues.values():
+            await player_queue.async_close()
 
     @property
     def players(self) -> List[Player]:
@@ -69,11 +74,14 @@ class PlayerManager:
         assert player.player_id and player.player_id
         new_player = player.player_id not in self._players
         if new_player:
+            # create player queue
+            if not player.player_id in self._player_queues:
+                self._player_queues[player.player_id] = PlayerQueue(self.mass, player.player_id)
             # TODO: turn on player if it was previously turned on ?
             LOGGER.info("New player added: %s/%s", player.player_provider, player.player_id)
-            self.mass.async_create_task(self.mass.signal_event(EVENT_PLAYER_ADDED, player))
+            self.mass.signal_event(EVENT_PLAYER_ADDED, player)
         else:
-            self.mass.async_create_task(self.mass.signal_event(EVENT_PLAYER_UPDATED, player))
+            self.mass.signal_event(EVENT_PLAYER_UPDATED, player)
 
     async def async_remove_player(self, player_id: str):
         """Remove a player from the registry."""
@@ -89,7 +97,7 @@ class PlayerManager:
         if not player.player_id in self._players:
             return await self.async_add_player(player)
 
-    async def __create_player(self, player: Player):
+    async def __async_create_player(self, player: Player):
         """Create internal Player object with all calculated properties."""
         final_player = Player(
             player_id=player.player_id,
@@ -138,7 +146,7 @@ class PlayerManager:
                     media_item.item_id, provider=media_item.provider
                 )
             else:
-                tracks = iter_items(media_item)  # single track
+                tracks = async_iter_items(media_item)  # single track
             async for track in tracks:
                 queue_item = QueueItem(track)
                 # generate uri for this queue item
@@ -256,26 +264,26 @@ class PlayerManager:
             await self.async_cmd_volume_mute(player_id, False)
         # handle hass integration
         # TODO: move to plugin construction
-        if (
-            self.mass.hass.enabled
-            and player_config.get("hass_power_entity")
-            and player_config.get("hass_power_entity_source")
-        ):
-            cur_source = await self.mass.hass.get_state_async(
-                player_config["hass_power_entity"], attribute="source"
-            )
-            if not cur_source:
-                service_data = {
-                    "entity_id": player_config["hass_power_entity"],
-                    "source": player_config["hass_power_entity_source"],
-                }
-                await self.mass.hass.call_service(
-                    "media_player", "select_source", service_data
-                )
-        elif self.mass.hass.enabled and player_config.get("hass_power_entity"):
-            domain = player_config["hass_power_entity"].split(".")[0]
-            service_data = {"entity_id": player_config["hass_power_entity"]}
-            await self.mass.hass.call_service(domain, "turn_on", service_data)
+        # if (
+        #     self.mass.hass.enabled
+        #     and player_config.get("hass_power_entity")
+        #     and player_config.get("hass_power_entity_source")
+        # ):
+        #     cur_source = await self.mass.hass.get_state_async(
+        #         player_config["hass_power_entity"], attribute="source"
+        #     )
+        #     if not cur_source:
+        #         service_data = {
+        #             "entity_id": player_config["hass_power_entity"],
+        #             "source": player_config["hass_power_entity_source"],
+        #         }
+        #         await self.mass.hass.call_service(
+        #             "media_player", "select_source", service_data
+        #         )
+        # elif self.mass.hass.enabled and player_config.get("hass_power_entity"):
+        #     domain = player_config["hass_power_entity"].split(".")[0]
+        #     service_data = {"entity_id": player_config["hass_power_entity"]}
+        #     await self.mass.hass.call_service(domain, "turn_on", service_data)
         # handle play on power on
         if player_config.get("play_power_on"):
             await self.get_player_provider(player_id).async_cmd_play(player_id)
@@ -294,23 +302,23 @@ class PlayerManager:
         
         await self.get_player_provider(player_id).async_cmd_power_off(player_id)
         # handle hass integration
-        if (
-            self.mass.hass.enabled
-            and player_config.get("hass_power_entity")
-            and player_config.get("hass_power_entity_source")
-        ):
-            cur_source = await self.mass.hass.get_state_async(
-                player_config["hass_power_entity"], attribute="source"
-            )
-            if cur_source == player_config["hass_power_entity_source"]:
-                service_data = {"entity_id": player_config["hass_power_entity"]}
-                await self.mass.hass.call_service(
-                    "media_player", "turn_off", service_data
-                )
-        elif self.mass.hass.enabled and player_config.get("hass_power_entity"):
-            domain = player_config["hass_power_entity"].split(".")[0]
-            service_data = {"entity_id": player_config["hass_power_entity"]}
-            await self.mass.hass.call_service(domain, "turn_off", service_data)
+        # if (
+        #     self.mass.hass.enabled
+        #     and player_config.get("hass_power_entity")
+        #     and player_config.get("hass_power_entity_source")
+        # ):
+        #     cur_source = await self.mass.hass.get_state_async(
+        #         player_config["hass_power_entity"], attribute="source"
+        #     )
+        #     if cur_source == player_config["hass_power_entity_source"]:
+        #         service_data = {"entity_id": player_config["hass_power_entity"]}
+        #         await self.mass.hass.call_service(
+        #             "media_player", "turn_off", service_data
+        #         )
+        # elif self.mass.hass.enabled and player_config.get("hass_power_entity"):
+        #     domain = player_config["hass_power_entity"].split(".")[0]
+        #     service_data = {"entity_id": player_config["hass_power_entity"]}
+        #     await self.mass.hass.call_service(domain, "turn_off", service_data)
         # TODO: handle group power
         # if self.is_group:
         #     # player is group, turn off all childs
@@ -365,16 +373,16 @@ class PlayerManager:
                     await self.async_cmd_volume_set(child_player_id, new_child_volume)
         # handle hass integration
         # TODO: move to plugin like implementation
-        elif self.mass.hass.enabled and player_config.get("hass_volume_entity"):
-            service_data = {
-                "entity_id": player_config["hass_volume_entity"],
-                "volume_level": volume_level / 100,
-            }
-            await self.mass.hass.call_service(
-                "media_player", "volume_set", service_data
-            )
-            # just force full volume on actual player if volume is outsourced to hass
-            await self.async_cmd_volume_set(player_id, 100)
+        # elif self.mass.hass.enabled and player_config.get("hass_volume_entity"):
+        #     service_data = {
+        #         "entity_id": player_config["hass_volume_entity"],
+        #         "volume_level": volume_level / 100,
+        #     }
+        #     await self.mass.hass.call_service(
+        #         "media_player", "volume_set", service_data
+        #     )
+        #     # just force full volume on actual player if volume is outsourced to hass
+        #     await self.async_cmd_volume_set(player_id, 100)
         else:
             await self.async_cmd_volume_set(player_id, volume_level)
 
@@ -413,11 +421,11 @@ class PlayerManager:
     async def async_cmd_queue_play_index(self, player_id: str, index: int):
         """
             Play item at index X on player's queue
-            :attrib index: (int) index of the queue item that should start playing
+                :attrib index: (int) index of the queue item that should start playing
         """
-        item = self.queue.get_item(index)
+        item = self._player_queues[player_id].get_item(index)
         if item:
-            return await self.async_play_uri(item.uri)
+            return await self._players[player_id].async_cmd_play_uri(item.uri)
 
     @callback
     def __get_player_name(self, player: Player):
@@ -432,18 +440,18 @@ class PlayerManager:
         player_config = self.mass.config.players[player.player_id]
         # homeassistant integration
         # TODO: move to plugin-like structure (volume_controls and power_controls)
-        if (
-            self.mass.hass.enabled
-            and player_config.get("hass_power_entity")
-            and player_config.get("hass_power_entity_source")
-        ):
-            hass_state = self.mass.hass.get_state(
-                player_config["hass_power_entity"], attribute="source"
-            )
-            return hass_state == player_config["hass_power_entity_source"]
-        if self.mass.hass.enabled and player_config.get("hass_power_entity"):
-            hass_state = self.mass.hass.get_state(player_configs["hass_power_entity"])
-            return hass_state != "off"
+        # if (
+        #     self.mass.hass.enabled
+        #     and player_config.get("hass_power_entity")
+        #     and player_config.get("hass_power_entity_source")
+        # ):
+        #     hass_state = self.mass.hass.get_state(
+        #         player_config["hass_power_entity"], attribute="source"
+        #     )
+        #     return hass_state == player_config["hass_power_entity_source"]
+        # if self.mass.hass.enabled and player_config.get("hass_power_entity"):
+        #     hass_state = self.mass.hass.get_state(player_configs["hass_power_entity"])
+        #     return hass_state != "off"
         # mute as power
         if player_config.get("mute_as_power"):
             return not player.muted
@@ -491,43 +499,43 @@ class PlayerManager:
     
 
     
-    def __update_player_settings(self):
-        """[PROTECTED] update player config settings"""
-        player_settings = self.mass.config["player_settings"].get(self.player_id, {})
-        # generate config for the player
-        config_entries = [  # default config entries for a player
-            ("enabled", True, "player_enabled"),
-            ("name", "", "player_name"),
-            ("mute_as_power", False, "player_mute_power"),
-            ("max_sample_rate", 96000, "max_sample_rate"),
-            ("volume_normalisation", True, "enable_r128_volume_normalisation"),
-            ("target_volume", "-23", "target_volume_lufs"),
-            ("fallback_gain_correct", "-12", "fallback_gain_correct"),
-            ("crossfade_duration", 0, "crossfade_duration"),
-            ("play_power_on", False, "player_power_play"),
-        ]
-        # append player specific settings
-        config_entries += self.mass.player_manager.providers[
-            self._prov_id
-        ].player_config_entries
-        # hass integration
-        if self.mass.config["base"].get("homeassistant", {}).get("enabled"):
-            # append hass specific config entries
-            config_entries += [
-                ("hass_power_entity", "", "hass_player_power"),
-                ("hass_power_entity_source", "", "hass_player_source"),
-                ("hass_volume_entity", "", "hass_player_volume"),
-            ]
-        # pylint: disable=unused-variable
-        for key, def_value, desc in config_entries:
-            if not key in player_settings:
-                if isinstance(def_value, str) and def_value.startswith("<"):
-                    player_settings[key] = None
-                else:
-                    player_settings[key] = def_value
-        # pylint: enable=unused-variable
-        self.mass.config["player_settings"][self.player_id] = player_settings
-        self.mass.config["player_settings"][self.player_id]["__desc__"] = config_entries
+    # def __update_player_settings(self):
+    #     """[PROTECTED] update player config settings"""
+    #     player_settings = self.mass.config["player_settings"].get(self.player_id, {})
+    #     # generate config for the player
+    #     config_entries = [  # default config entries for a player
+    #         ("enabled", True, "player_enabled"),
+    #         ("name", "", "player_name"),
+    #         ("mute_as_power", False, "player_mute_power"),
+    #         ("max_sample_rate", 96000, "max_sample_rate"),
+    #         ("volume_normalisation", True, "enable_r128_volume_normalisation"),
+    #         ("target_volume", "-23", "target_volume_lufs"),
+    #         ("fallback_gain_correct", "-12", "fallback_gain_correct"),
+    #         ("crossfade_duration", 0, "crossfade_duration"),
+    #         ("play_power_on", False, "player_power_play"),
+    #     ]
+    #     # append player specific settings
+    #     config_entries += self.mass.player_manager.providers[
+    #         self._prov_id
+    #     ].player_config_entries
+    #     # hass integration
+    #     if self.mass.config["base"].get("homeassistant", {}).get("enabled"):
+    #         # append hass specific config entries
+    #         config_entries += [
+    #             ("hass_power_entity", "", "hass_player_power"),
+    #             ("hass_power_entity_source", "", "hass_player_source"),
+    #             ("hass_volume_entity", "", "hass_player_volume"),
+    #         ]
+    #     # pylint: disable=unused-variable
+    #     for key, def_value, desc in config_entries:
+    #         if not key in player_settings:
+    #             if isinstance(def_value, str) and def_value.startswith("<"):
+    #                 player_settings[key] = None
+    #             else:
+    #                 player_settings[key] = def_value
+    #     # pylint: enable=unused-variable
+    #     self.mass.config["player_settings"][self.player_id] = player_settings
+    #     self.mass.config["player_settings"][self.player_id]["__desc__"] = config_entries
 
     # async def async_handle_mass_events(self, msg, msg_details=None):
     #     SHOULD BE MOVED TO HOMEASSISTANT PLUGIN
@@ -692,7 +700,7 @@ class PlayerManager:
     #             return group_player.queue
     #     return self._queue
 
-    # async def update(self, force=False):
+    # async def async_update(self, force=False):
     #     """[PROTECTED] signal player updated"""
     #     if not force and (not self.initialized or not self.enabled):
     #         return

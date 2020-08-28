@@ -4,7 +4,6 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional
 
-from music_assistant.mass import MusicAssistant
 from music_assistant.models.media_types import (
     Album,
     Artist,
@@ -15,7 +14,6 @@ from music_assistant.models.media_types import (
     StreamDetails,
     Track,
 )
-from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.provider import Provider, ProviderType
 
 
@@ -28,9 +26,14 @@ class MusicProvider(Provider):
     type: ProviderType = ProviderType.MUSIC_PROVIDER
 
     @abstractmethod
-    async def async_search(self, search_string: str, media_types=List[MediaType],
+    async def async_search(self, search_query: str, media_types=Optional[List[MediaType]],
                            limit: int = 5) -> SearchResult:
-        """Perform search on the provider."""
+        """
+            Perform search on musicprovider.
+                :param search_query: Search query.
+                :param media_types: A list of media_types to include. All types if None.
+                :param limit: Number of items to return in the search (per type).
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -104,12 +107,12 @@ class MusicProvider(Provider):
         raise NotImplementedError
 
     @abstractmethod
-    async def async_add_library(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def async_library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add item to provider's library. Return true on succes."""
         raise NotImplementedError
 
     @abstractmethod
-    async def async_remove_library(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def async_library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from provider's library. Return true on succes."""
         raise NotImplementedError
 

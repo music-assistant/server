@@ -10,7 +10,6 @@ CONF_TOKEN = "token"
 CONF_URL = "url"
 CONF_NAME = "name"
 
-CONF_TYPE_PASSWORD = "<password>"
 
 CONF_KEY_BASE = "base"
 CONF_KEY_PLAYERSETTINGS = "player_settings"

@@ -62,6 +62,7 @@ class MediaItemProviderId():
     provider: str
     item_id: str
     quality: TrackQuality
+    details: str
 
 
 class ExternalId(Enum):
@@ -74,10 +75,9 @@ class ExternalId(Enum):
 @dataclass
 class MediaItem(object):
     """Representation of a media item."""
-    media_type: MediaType
-    item_id: str
-    provider: str
-    name: str
+    item_id: str = ""
+    provider: str = ""
+    name: str = ""
     metadata: dict = field(default_factory=dict)
     tags: List[str] = field(default_factory=list)
     external_ids: dict = field(default_factory=dict)

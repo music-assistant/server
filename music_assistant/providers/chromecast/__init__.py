@@ -241,7 +241,7 @@ def chunks(l, n):
 #         )
 
 
-# async def __report_progress(self):
+# async def __async_report_progress(self):
     #     """report current progress while playing"""
     #     # chromecast does not send updates of the player's progress (cur_time)
     #     # so we need to send it in periodically
@@ -250,7 +250,7 @@ def chunks(l, n):
     #         await asyncio.sleep(1)
     #     self.__cc_report_progress_task = None
 
-    # async def handle_player_state(self, caststatus=None, mediastatus=None):
+    # async def async_handle_player_state(self, caststatus=None, mediastatus=None):
     #     """handle a player state message from the socket"""
     #     # handle generic cast status
     #     if caststatus:
@@ -312,7 +312,7 @@ def chunks(l, n):
     #         if player.cc.cast_type == "group":
     #             player.mz.update_members()
 
-# async def __handle_group_members_update(
+# async def __async_handle_group_members_update(
     #     self, mz, added_player=None, removed_player=None
     # ):
     #     """handle callback from multizone manager"""

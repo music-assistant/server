@@ -84,7 +84,7 @@ class HomeAssistant:
         if self.enabled:
             LOGGER.info("Homeassistant integration is enabled")
 
-    async def setup(self):
+    async def async_setup(self):
         """perform async setup"""
         if not self.enabled:
             return
@@ -96,7 +96,7 @@ class HomeAssistant:
         await self.mass.add_event_listener(self.mass_event, EVENT_PLAYER_ADDED)
         self.mass.loop.create_task(self.__get_sources())
 
-    async def get_state_async(self, entity_id, attribute="state"):
+    async def async_get_state_async(self, entity_id, attribute="state"):
         """get state of a hass entity (async)"""
         state = self.get_state(entity_id, attribute)
         if not state:
@@ -118,19 +118,19 @@ class HomeAssistant:
             self.mass.loop.create_task(self.__request_state(entity_id))
             return None
 
-    async def __request_state(self, entity_id):
+    async def __async_request_state(self, entity_id):
         """get state of a hass entity"""
         state_obj = await self.__get_data("states/%s" % entity_id)
         if "state" in state_obj:
             self._tracked_entities[entity_id] = state_obj
             await self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, state_obj)
 
-    async def mass_event(self, msg, msg_details):
+    async def async_mass_event(self, msg, msg_details):
         """received event from mass"""
         if msg in [EVENT_PLAYER_CHANGED, EVENT_PLAYER_ADDED]:
             await self.publish_player(msg_details)
 
-    async def hass_event(self, event_type, event_data):
+    async def async_hass_event(self, event_type, event_data):
         """received event from hass"""
         if event_type == "state_changed":
             if event_data["entity_id"] in self._tracked_entities:
@@ -145,7 +145,7 @@ class HomeAssistant:
                 event_data["service"], event_data["service_data"]
             )
 
-    async def __handle_player_command(self, service, service_data):
+    async def __async_handle_player_command(self, service, service_data):
         """handle forwarded service call for one of our players"""
         if isinstance(service_data["entity_id"], list):
             # can be a list of entity ids if action fired on multiple items
@@ -187,7 +187,7 @@ class HomeAssistant:
                 elif service == "play_media":
                     return await self.__handle_play_media(player_id, service_data)
 
-    async def __handle_play_media(self, player_id, service_data):
+    async def __async_handle_play_media(self, player_id, service_data):
         """handle play_media request from homeassistant"""
         media_content_type = service_data["media_content_type"].lower()
         media_content_id = service_data["media_content_id"]
@@ -215,7 +215,7 @@ class HomeAssistant:
             track.provider = "http"
             return await self.mass.player_manager.play_media(player_id, track, queue_opt)
 
-    async def publish_player(self, player_info):
+    async def async_publish_player(self, player_info):
         """publish player details to hass"""
         if not self.mass.config["base"]["homeassistant"]["publish_players"]:
             return False
@@ -262,7 +262,7 @@ class HomeAssistant:
         self._published_players[entity_id] = player_id
         await self.__set_state(entity_id, state, state_attributes)
 
-    async def call_service(self, domain, service, service_data=None):
+    async def async_call_service(self, domain, service, service_data=None):
         """call service on hass"""
         if not self.__send_ws:
             return False
@@ -272,7 +272,7 @@ class HomeAssistant:
         return await self.__send_ws(msg)
 
     @run_periodic(120)
-    async def __get_sources(self):
+    async def __async_get_sources(self):
         """we build a list of all playlists to use as player sources"""
         self._sources = [
             playlist.name async for playlist in self.mass.music_manager.library_playlists()
@@ -281,7 +281,7 @@ class HomeAssistant:
             playlist.name async for playlist in self.mass.music_manager.library_radios()
         ]
 
-    async def __set_state(self, entity_id, new_state, state_attributes={}):
+    async def __async_set_state(self, entity_id, new_state, state_attributes={}):
         """set state to hass entity"""
         data = {
             "state": new_state,
@@ -290,7 +290,7 @@ class HomeAssistant:
         }
         return await self.__post_data("states/%s" % entity_id, data)
 
-    async def __hass_websocket(self):
+    async def __async_hass_websocket(self):
         """Receive events from Hass through websockets"""
         while self.mass.loop.is_running():
             try:
@@ -299,7 +299,7 @@ class HomeAssistant:
                     "%s://%s/api/websocket" % (protocol, self._host), verify_ssl=False
                 ) as ws:
 
-                    async def send_msg(msg):
+                    async def async_send_msg(msg):
                         """callback to send message to the websockets client"""
                         self.__last_id += 1
                         msg["id"] = self.__last_id
@@ -357,7 +357,7 @@ class HomeAssistant:
                 LOGGER.exception(exc)
                 await asyncio.sleep(10)
 
-    async def __get_data(self, endpoint):
+    async def __async_get_data(self, endpoint):
         """get data from hass rest api"""
         url = "http://%s/api/%s" % (self._host, endpoint)
         if self._use_ssl:
@@ -371,7 +371,7 @@ class HomeAssistant:
         ) as response:
             return await response.json()
 
-    async def __post_data(self, endpoint, data):
+    async def __async_post_data(self, endpoint, data):
         """post data to hass rest api"""
         url = "http://%s/api/%s" % (self._host, endpoint)
         if self._use_ssl:

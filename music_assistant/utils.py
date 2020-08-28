@@ -41,12 +41,12 @@ def is_callback(func: Callable[..., Any]) -> bool:
 
 def run_periodic(period):
     def scheduler(fcn):
-        async def wrapper(*args, **kwargs):
+        async def async_wrapper(*args, **kwargs):
             while True:
                 asyncio.create_task(fcn(*args, **kwargs))
                 await asyncio.sleep(period)
 
-        return wrapper
+        return async_wrapper
 
     return scheduler
 
@@ -94,7 +94,7 @@ def try_parse_int(possible_int):
         return 0
 
 
-async def iter_items(items):
+async def async_iter_items(items):
     """fake async iterator for compatability reasons."""
     if not isinstance(items, list):
         yield items

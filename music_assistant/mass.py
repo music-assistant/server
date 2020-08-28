@@ -42,17 +42,17 @@ class MusicAssistant:
         # shared zeroconf instance
         self.zeroconf = zeroconf.Zeroconf()
 
-    async def start(self):
+    async def async_start(self):
         """start running the music assistant server"""
         self.loop = asyncio.get_event_loop()
         self.loop.set_exception_handler(self.__handle_exception)
-        await self.database.setup()
-        await self.cache.setup()
-        await self.metadata.setup()
-        await self.music_manager.setup()
+        await self.database.async_setup()
+        await self.cache.async_setup()
+        # await self.metadata.async_setup()
+        await self.music_manager.async_setup()
         await self.player_manager.async_setup()
-        await self.web.setup()
-        await self.http_streamer.setup()
+        await self.web.async_setup()
+        await self.http_streamer.async_setup()
         # wait for exit
         try:
             while True:
@@ -61,8 +61,9 @@ class MusicAssistant:
             LOGGER.info("Application shutdown")
             await self.signal_event(EVENT_SHUTDOWN)
             self.config.save()
-            await self.database.close()
-            await self.cache.close()
+            await self.player_manager.async_close()
+            await self.database.async_close()
+            await self.cache.async_close()
 
     def register_provider(self, provider: Provider):
         """Register a new Provider/Plugin."""
@@ -82,7 +83,9 @@ class MusicAssistant:
     @callback
     def get_provider(self, provider_id: str) -> Provider:
         """Return provider/plugin by id."""
-        return self._providers.get(provider_id)
+        if not provider_id in self._providers:
+            raise NameError(f"Invalid provider: {provider_id}")
+        return self._providers[provider_id]
 
     @callback
     def get_providers(self, filter_type: Optional[ProviderType]) -> List[Provider]:
@@ -111,7 +114,7 @@ class MusicAssistant:
     #                     provider_modules[module_name] = prov_mod
 
 
-    # async def load_provider_module(mass, module_name, prov_type):
+    # async def async_load_provider_module(mass, module_name, prov_type):
     #     """dynamically load music/player provider"""
     #     # pylint: disable=broad-except
     #     try:
@@ -150,7 +153,7 @@ class MusicAssistant:
         """
         for cb_func, event_filter in self._event_listeners:
             if not event_filter or event_filter in event_msg:
-                self.async_add_job(cb_func, event_msg, event_details)
+                self.add_job(cb_func, event_msg, event_details)
 
     async def async_signal_event(self, event_msg: str, event_details: Any = None):
         """
@@ -172,7 +175,7 @@ class MusicAssistant:
         self._event_listeners.append(listener)
 
         def remove_listener():
-            self._event_listeners.pop(listener)
+            self._event_listeners.remove(listener)
         return remove_listener
 
     def add_job(self, target: Callable[..., Any], *args: Any) -> None:

@@ -30,7 +30,7 @@ class TuneInProvider(MusicProvider):
     http_session = None
     throttler = None
 
-    async def setup(self, conf):
+    async def async_setup(self, conf):
         """perform async setup"""
         if not conf[CONF_USERNAME] or not conf[CONF_PASSWORD]:
             raise Exception("Username and password must not be empty")
@@ -41,7 +41,7 @@ class TuneInProvider(MusicProvider):
         )
         self.throttler = Throttler(rate_limit=1, period=1)
 
-    async def search(self, searchstring, media_types=List[MediaType], limit=5):
+    async def async_search(self, searchstring, media_types=List[MediaType], limit=5):
         """perform search on the provider"""
         result = {
             "artists": [],
@@ -52,7 +52,7 @@ class TuneInProvider(MusicProvider):
         }
         return result
 
-    async def get_radios(self):
+    async def async_get_radios(self):
         """get favorited/library radio stations"""
         params = {"c": "presets"}
         result = await self.__get_data("Browse.ashx", params)
@@ -63,7 +63,7 @@ class TuneInProvider(MusicProvider):
                     radio = await self.__parse_radio(item)
                     yield radio
 
-    async def get_radio(self, radio_id):
+    async def async_get_radio(self, radio_id):
         """get radio station details"""
         radio = None
         params = {"c": "composite", "detail": "listing", "id": radio_id}
@@ -73,7 +73,7 @@ class TuneInProvider(MusicProvider):
             radio = await self.__parse_radio(item)
         return radio
 
-    async def __parse_radio(self, details):
+    async def __async_parse_radio(self, details):
         """parse Radio object from json obj returned from api"""
         radio = Radio()
         radio.item_id = details["preset_id"]
@@ -111,13 +111,13 @@ class TuneInProvider(MusicProvider):
             radio.metadata["image"] = details["logo"]
         return radio
 
-    async def __get_stream_urls(self, radio_id):
+    async def __async_get_stream_urls(self, radio_id):
         """get the stream urls for the given radio id"""
         params = {"id": radio_id}
         res = await self.__get_data("Tune.ashx", params)
         return res
 
-    async def get_stream_details(self, stream_id):
+    async def async_get_stream_details(self, stream_id):
         """return the content details for the given track when it will be streamed"""
         radio_id = stream_id.split("--")[0]
         if len(stream_id.split("--")) > 1:
@@ -136,7 +136,7 @@ class TuneInProvider(MusicProvider):
                 }
         return {}
 
-    async def __get_data(self, endpoint, params={}):
+    async def __async_get_data(self, endpoint, params={}):
         """get data from api"""
         url = "https://opml.radiotime.com/%s" % endpoint
         params["render"] = "json"

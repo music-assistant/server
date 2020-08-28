@@ -1,13 +1,14 @@
 """Provides a simple stateless caching system."""
 
 import functools
+import inspect
 import os
 import pickle
 import time
 from functools import reduce
+
 import aiosqlite
 from music_assistant.utils import LOGGER, run_periodic
-import inspect
 
 
 class Cache(object):
@@ -104,37 +105,30 @@ class Cache(object):
         return reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
+async def async_cached_generator(cache, cache_key, coro_func, expires=(86400 * 30), checksum=None):
+    """Helper method to store results of a async generator in the cache."""
+    cache_result = await cache.get(cache_key, checksum)
+    if cache_result is not None:
+        for item in cache_result:
+            yield item
+    else:
+        # nothing in cache, yield from iterator and store in cache when complete
+        cache_result = []
+        async for item in coro_func:
+            yield item
+            cache_result.append(item)
+        # store results in cache
+        await cache.set(cache_key, cache_result, checksum, expires)
+
 async def async_cached(cache, cache_key, coro_func, expires=(86400 * 30), checksum=None):
     """Helper method to store results of a coroutine in the cache."""
     cache_result = await cache.get(cache_key, checksum)
-    if inspect.isasyncgenfunction(coro_func):
-        # async generator
-        if cache_result is not None:
-            for item in cache_result:
-                yield item
-        else:
-            # nothing in cache, yield from iterator and store in cache when complete
-            cache_result = []
-            async for item in coro_func:
-                yield item
-                cache_result.append(item)
-            # store results in cache
-            await cache.set(cache_key, cache_result, checksum, expires)
-    else:
-        # normal async function
-        if cache_result is not None:
-            return cache_result
-        result = await coro_func()
-        await cache.set(cache_key, cache_result, checksum, expires)
-        return result
-
-    cache_result = await cache.get(cache_key)
+    # normal async function
     if cache_result is not None:
         return cache_result
     result = await coro_func()
-    await cache.set(cache_key, result)
+    await cache.set(cache_key, cache_result, checksum, expires)
     return result
-
 
 def async_use_cache(cache_days=14, cache_checksum=None):
     """Decorator that can be used to cache a method's result."""

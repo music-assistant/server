@@ -6,7 +6,7 @@ from typing import Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
-from music_assistant.cache import use_cache
+from music_assistant.cache import async_use_cache
 from music_assistant.utils import LOGGER, compare_strings, get_compare_string
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
@@ -190,7 +190,7 @@ class MusicBrainz:
                                     return artist["id"]
         return ""
 
-    @use_cache(2)
+    @async_use_cache(2)
     async def async_get_data(self, endpoint: str, params: Optional[dict] = None):
         """Get data from api."""
         if params is None:
@@ -249,7 +249,7 @@ class FanartTv:
                 metadata["banner"] = data["musicbanner"][0]["url"]
         return metadata
 
-    @use_cache(30)
+    @async_use_cache(30)
     async def async_get_data(self, endpoint, params={}):
         """get data from api"""
         url = "http://webservice.fanart.tv/v3/%s" % endpoint
