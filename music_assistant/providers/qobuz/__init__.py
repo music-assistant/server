@@ -1,8 +1,9 @@
 """Qobuz musicprovider support for MusicAssistant."""
 import datetime
 import hashlib
+import logging
 import time
-from typing import List
+from typing import List, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -18,16 +19,20 @@ from music_assistant.models.media_types import (
     Album,
     AlbumType,
     Artist,
+    MediaItemProviderId,
     MediaType,
     Playlist,
+    SearchResult,
     Track,
     TrackQuality,
 )
 from music_assistant.models.musicprovider import MusicProvider
-from music_assistant.utils import LOGGER, parse_title_and_version
+from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
+from music_assistant.utils import parse_title_and_version
 
 PROV_ID = "qobuz"
 PROV_NAME = "Qobuz"
+LOGGER = logging.getLogger(PROV_ID)
 
 CONFIG_ENTRIES = [
     ConfigEntry(entry_key=CONF_USERNAME, entry_type=ConfigEntryType.STRING,
@@ -36,36 +41,65 @@ CONFIG_ENTRIES = [
                 description_key=CONF_PASSWORD)]
 
 
-class QobuzProvider(MusicProvider):
-    id: str = PROV_ID
-    name: str = PROV_NAME
-    config_entries = CONFIG_ENTRIES
+async def async_setup(mass):
+    """Perform async setup of this Plugin/Provider."""
+    prov = QobuzProvider()
+    await mass.async_register_provider(prov)
 
-    async def async_on_start(self):
+
+class QobuzProvider(MusicProvider):
+    """Provider for the Qobux music service."""
+    _http_session = None
+
+    @property
+    def id(self) -> str:
+        """Return provider ID for this provider."""
+        return PROV_ID
+
+    @property
+    def name(self) -> str:
+        """Return provider Name for this provider."""
+        return PROV_NAME
+
+    @property
+    def config_entries(self) -> List[ConfigEntry]:
+        """Return Config Entries for this provider."""
+        return CONFIG_ENTRIES
+
+    async def async_on_start(self) -> bool:
         """Called on startup. Handle initialization of the provider based on config."""
         # pylint: disable=attribute-defined-outside-init
+        self._http_session = aiohttp.ClientSession(
+            loop=self.mass.loop, connector=aiohttp.TCPConnector()
+        )
         config = self.mass.config.get_provider_config(self.id)
         self.__username = config[CONF_USERNAME]
         self.__password = config[CONF_PASSWORD]
         if not config[CONF_USERNAME] or not config[CONF_PASSWORD]:
-            raise Exception("Username and password must not be empty")
+            LOGGER.debug("Username and password not set. Abort load of provider.")
+            return False
         self.__user_auth_info = None
         self.__logged_in = False
-        self.http_session = aiohttp.ClientSession(
-            loop=self.mass.loop, connector=aiohttp.TCPConnector()
-        )
-        self.throttler = Throttler(rate_limit=4, period=1)
+        self._throttler = Throttler(rate_limit=4, period=1)
         self.mass.add_event_listener(self.async_mass_event, EVENT_STREAM_STARTED)
         self.mass.add_event_listener(self.async_mass_event, EVENT_PLAYBACK_STOPPED)
+        return True
 
     async def async_on_stop(self):
         """Called on shutdown. Handle correct close/cleanup of the provider on exit."""
-        await self.http_session.close()
+        if self._http_session:
+            await self._http_session.close()
 
-    async def async_search(self, searchstring, media_types=List[MediaType], limit=5):
-        """perform search on the provider"""
-        result = {"artists": [], "albums": [], "tracks": [], "playlists": []}
-        params = {"query": searchstring, "limit": limit}
+    async def async_search(self, search_query: str, media_types=Optional[List[MediaType]],
+                           limit: int = 5) -> SearchResult:
+        """
+            Perform search on musicprovider.
+                :param search_query: Search query.
+                :param media_types: A list of media_types to include. All types if None.
+                :param limit: Number of items to return in the search (per type).
+        """
+        result = SearchResult()
+        params = {"query": search_query, "limit": limit}
         if len(media_types) == 1:
             # qobuz does not support multiple searchtypes, falls back to all if no type given
             if media_types[0] == MediaType.Artist:
@@ -82,24 +116,24 @@ class QobuzProvider(MusicProvider):
                 for item in searchresult["artists"]["items"]:
                     artist = await self.__async_parse_artist(item)
                     if artist:
-                        result["artists"].append(artist)
+                        result.artists.append(artist)
             if "albums" in searchresult:
                 for item in searchresult["albums"]["items"]:
                     album = await self.__async_parse_album(item)
                     if album:
-                        result["albums"].append(album)
+                        result.albums.append(album)
             if "tracks" in searchresult:
                 for item in searchresult["tracks"]["items"]:
                     track = await self.__async_parse_track(item)
                     if track:
-                        result["tracks"].append(track)
+                        result.tracks.append(track)
             if "playlists" in searchresult:
                 for item in searchresult["playlists"]["items"]:
-                    result["playlists"].append(await self.__async_parse_playlist(item))
+                    result.playlists.append(await self.__async_parse_playlist(item))
         return result
 
     async def async_get_library_artists(self) -> List[Artist]:
-        """retrieve all library artists from qobuz"""
+        """Retrieve all library artists from Qobuz."""
         params = {"type": "artists"}
         endpoint = "favorite/getUserFavorites"
         async for item in self.__async_get_all_items(endpoint, params, key="artists"):
@@ -108,7 +142,7 @@ class QobuzProvider(MusicProvider):
                 yield artist
 
     async def async_get_library_albums(self) -> List[Album]:
-        """retrieve all library albums from qobuz"""
+        """Retrieve all library albums from Qobuz."""
         params = {"type": "albums"}
         endpoint = "favorite/getUserFavorites"
         async for item in self.__async_get_all_items(endpoint, params, key="albums"):
@@ -117,7 +151,7 @@ class QobuzProvider(MusicProvider):
                 yield album
 
     async def async_get_library_tracks(self) -> List[Track]:
-        """retrieve library tracks from qobuz"""
+        """Retrieve library tracks from Qobuz."""
         params = {"type": "tracks"}
         endpoint = "favorite/getUserFavorites"
         async for item in self.__async_get_all_items(endpoint, params, key="tracks"):
@@ -126,7 +160,7 @@ class QobuzProvider(MusicProvider):
                 yield track
 
     async def async_get_library_playlists(self) -> List[Playlist]:
-        """retrieve all library playlists from the provider"""
+        """Retrieve all library playlists from the provider."""
         endpoint = "playlist/getUserPlaylists"
         async for item in self.__async_get_all_items(endpoint, key="playlists"):
             playlist = await self.__async_parse_playlist(item)
@@ -134,7 +168,7 @@ class QobuzProvider(MusicProvider):
                 yield playlist
 
     async def async_get_artist(self, prov_artist_id) -> Artist:
-        """get full artist details by id"""
+        """Get full artist details by id."""
         params = {"artist_id": prov_artist_id}
         artist_obj = await self.__async_get_data("artist/get", params)
         return await self.__async_parse_artist(artist_obj)
@@ -185,7 +219,8 @@ class QobuzProvider(MusicProvider):
                     prov_playlist_id,
                     item["title"],
                 )
-                # TODO: should we look for an alternative track version if the original is marked unavailable ?
+                # TODO: should we look for an alternative
+                # track version if the original is marked unavailable ?
 
     async def async_get_artist_albums(self, prov_artist_id) -> List[Album]:
         """get a list of albums for the given artist"""
@@ -212,7 +247,7 @@ class QobuzProvider(MusicProvider):
                 if track:
                     yield track
 
-    async def async_add_library(self, prov_item_id, media_type: MediaType):
+    async def async_library_add(self, prov_item_id, media_type: MediaType):
         """add item to library"""
         result = None
         if media_type == MediaType.Artist:
@@ -233,7 +268,7 @@ class QobuzProvider(MusicProvider):
             )
         return result
 
-    async def async_remove_library(self, prov_item_id, media_type: MediaType):
+    async def async_library_remove(self, prov_item_id, media_type: MediaType):
         """remove item from library"""
         result = None
         if media_type == MediaType.Artist:
@@ -281,8 +316,8 @@ class QobuzProvider(MusicProvider):
         }
         return await self.__async_get_data("playlist/deleteTracks", params)
 
-    async def async_get_stream_details(self, track_id):
-        """return the content details for the given track when it will be streamed"""
+    async def async_get_stream_details(self, track_id: str) -> StreamDetails:
+        """Return the content details for the given track when it will be streamed."""
         streamdetails = None
         for format_id in [27, 7, 6, 5]:
             # it seems that simply requesting for highest available quality does not work
@@ -296,14 +331,16 @@ class QobuzProvider(MusicProvider):
         if not streamdetails or not streamdetails.get("url"):
             LOGGER.error("Unable to retrieve stream url for track %s", track_id)
             return None
-        return {
-            "type": "url",
-            "path": streamdetails["url"],
-            "content_type": streamdetails["mime_type"].split("/")[1],
-            "sample_rate": int(streamdetails["sampling_rate"] * 1000),
-            "bit_depth": streamdetails["bit_depth"],
-            "details": streamdetails,  # we need these details for reporting playback
-        }
+        return StreamDetails(
+            type=StreamType.URL,
+            item_id=str(track_id),
+            provider=PROV_ID,
+            path=streamdetails["url"],
+            content_type=ContentType(streamdetails["mime_type"].split("/")[1]),
+            sample_rate=int(streamdetails["sampling_rate"] * 1000),
+            bit_depth=streamdetails["bit_depth"],
+            details=streamdetails  # we need these details for reporting playback
+        )
 
     async def async_mass_event(self, msg, msg_details):
         """
@@ -313,7 +350,7 @@ class QobuzProvider(MusicProvider):
         if not self.__user_auth_info:
             return
         # TODO: need to figure out if the streamed track is purchased by user
-        if msg == EVENT_STREAM_STARTED and msg_details["provider"] == self.prov_id:
+        if msg == EVENT_STREAM_STARTED and msg_details["provider"] == PROV_ID:
             # report streaming started to qobuz
             device_id = self.__user_auth_info["user"]["device"]["id"]
             credential_id = self.__user_auth_info["user"]["credential"]["id"]
@@ -326,7 +363,7 @@ class QobuzProvider(MusicProvider):
                     "sample": False,
                     "intent": "stream",
                     "device_id": device_id,
-                    "track_id": msg_details["item_id"],
+                    "track_id": str(msg_details["item_id"]),
                     "purchase": False,
                     "date": timestamp,
                     "credential_id": credential_id,
@@ -336,14 +373,14 @@ class QobuzProvider(MusicProvider):
                 }
             ]
             await self.__async_post_data("track/reportStreamingStart", data=events)
-        elif msg == EVENT_PLAYBACK_STOPPED and msg_details["provider"] == self.prov_id:
+        elif msg == EVENT_PLAYBACK_STOPPED and msg_details["provider"] == PROV_ID:
             # report streaming ended to qobuz
             if msg_details.get("msg_details", 0) < 6:
                 return
             user_id = self.__user_auth_info["user"]["id"]
             params = {
                 "user_id": user_id,
-                "track_id": msg_details["item_id"],
+                "track_id": str(msg_details["item_id"]),
                 "duration": int(msg_details["seconds_played"]),
             }
             await self.__async_get_data("/track/reportStreamingEnd", params)
@@ -353,10 +390,10 @@ class QobuzProvider(MusicProvider):
         artist = Artist()
         if not artist_obj or not artist_obj.get("id"):
             return None
-        artist.item_id = artist_obj["id"]
-        artist.provider = self.prov_id
-        artist.ids.append(
-            {"provider": self.prov_id, "item_id": artist_obj["id"]}
+        artist.item_id = str(artist_obj["id"])
+        artist.provider = PROV_ID
+        artist.provider_ids.append(
+            MediaItemProviderId(provider=PROV_ID, item_id=str(artist_obj["id"]))
         )
         artist.name = artist_obj["name"]
         if artist_obj.get("image"):
@@ -385,8 +422,8 @@ class QobuzProvider(MusicProvider):
         ):
             # do not return unavailable items
             return None
-        album.item_id = album_obj["id"]
-        album.provider = self.prov_id
+        album.item_id = str(album_obj["id"])
+        album.provider = PROV_ID
         if album_obj["maximum_sampling_rate"] > 192:
             quality = TrackQuality.FLAC_LOSSLESS_HI_RES_4
         elif album_obj["maximum_sampling_rate"] > 96:
@@ -399,14 +436,14 @@ class QobuzProvider(MusicProvider):
             quality = TrackQuality.LOSSY_AAC
         else:
             quality = TrackQuality.FLAC_LOSSLESS
-        album.ids.append(
-            {
-                "provider": self.prov_id,
-                "item_id": album_obj["id"],
-                "quality": quality,
-                "details": "%skHz %sbit"
-                % (album_obj["maximum_sampling_rate"], album_obj["maximum_bit_depth"]),
-            }
+        album.provider_ids.append(
+            MediaItemProviderId(
+                provider=PROV_ID,
+                item_id=str(album_obj["id"]),
+                quality=quality,
+                details=f'{album_obj["maximum_sampling_rate"]}kHz \
+                    {album_obj["maximum_bit_depth"]}bit'
+            )
         )
         album.name, album.version = parse_title_and_version(
             album_obj["title"], album_obj.get("version")
@@ -430,10 +467,10 @@ class QobuzProvider(MusicProvider):
                     break
         if len(album_obj["upc"]) == 13:
             # qobuz writes ean as upc ?!
-            album.external_ids.append({"ean": album_obj["upc"]})
-            album.external_ids.append({"upc": album_obj["upc"][1:]})
+            album.external_ids["ean"] = album_obj["upc"]
+            album.external_ids["upc"] = album_obj["upc"][1:]
         else:
-            album.external_ids.append({"upc": album_obj["upc"]})
+            album.external_ids["upc"] = album_obj["upc"]
         if "label" in album_obj:
             album.labels = album_obj["label"]["name"].split("/")
         if album_obj.get("released_at"):
@@ -459,8 +496,8 @@ class QobuzProvider(MusicProvider):
         ):
             # do not return unavailable items
             return None
-        track.item_id = track_obj["id"]
-        track.provider = self.prov_id
+        track.item_id = str(track_obj["id"])
+        track.provider = PROV_ID
         if track_obj.get("performer") and not "Various " in track_obj["performer"]:
             artist = await self.__async_parse_artist(track_obj["performer"])
             if artist:
@@ -501,7 +538,7 @@ class QobuzProvider(MusicProvider):
         if track_obj.get("url"):
             track.metadata["qobuz_url"] = track_obj["url"]
         if track_obj.get("isrc"):
-            track.external_ids.append({"isrc": track_obj["isrc"]})
+            track.external_ids["isrc"] = track_obj["isrc"]
         if track_obj.get("performers"):
             track.metadata["performers"] = track_obj["performers"]
         if track_obj.get("copyright"):
@@ -519,14 +556,14 @@ class QobuzProvider(MusicProvider):
             quality = TrackQuality.LOSSY_AAC
         else:
             quality = TrackQuality.FLAC_LOSSLESS
-        track.ids.append(
-            {
-                "provider": self.prov_id,
-                "item_id": track_obj["id"],
-                "quality": quality,
-                "details": "%skHz %sbit"
-                % (track_obj["maximum_sampling_rate"], track_obj["maximum_bit_depth"]),
-            }
+        track.provider_ids.append(
+            MediaItemProviderId(
+                provider=PROV_ID,
+                item_id=str(track_obj["id"]),
+                quality=quality,
+                details=f'{track_obj["maximum_sampling_rate"]}kHz \
+                    {track_obj["maximum_bit_depth"]}bit'
+            )
         )
         return track
 
@@ -536,9 +573,12 @@ class QobuzProvider(MusicProvider):
         if not playlist_obj or not playlist_obj.get("id"):
             return None
         playlist.item_id = playlist_obj["id"]
-        playlist.provider = self.prov_id
-        playlist.ids.append(
-            {"provider": self.prov_id, "item_id": playlist_obj["id"]}
+        playlist.provider = PROV_ID
+        playlist.provider_ids.append(
+            MediaItemProviderId(
+                provider=PROV_ID,
+                item_id=str(playlist_obj["id"])
+            )
         )
         playlist.name = playlist_obj["name"]
         playlist.owner = playlist_obj["owner"]["name"]
@@ -613,8 +653,8 @@ class QobuzProvider(MusicProvider):
             params["request_sig"] = request_sig
             params["app_id"] = get_app_var(0)
             params["user_auth_token"] = await self.__async_auth_token()
-        async with self.throttler:
-            async with self.http_session.get(
+        async with self._throttler:
+            async with self._http_session.get(
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
                 result = await response.json()
@@ -634,7 +674,7 @@ class QobuzProvider(MusicProvider):
         url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
         params["app_id"] = get_app_var(0)
         params["user_auth_token"] = await self.__async_auth_token()
-        async with self.http_session.post(
+        async with self._http_session.post(
             url, params=params, json=data, verify_ssl=False
         ) as response:
             result = await response.json()

@@ -1,11 +1,11 @@
 """Models and helpers for media items."""
 
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
+from enum import Enum, Enum
 from typing import List, Optional
 
 
-class MediaType(IntEnum):
+class MediaType(int, Enum):
     """Enum for MediaType."""
     Artist = 1
     Album = 2
@@ -30,21 +30,21 @@ def media_type_from_string(media_type_str: str) -> MediaType:
     return None
 
 
-class ContributorRole(IntEnum):
+class ContributorRole(int, Enum):
     """Enum for Contributor Role."""
     Artist = 1
     Writer = 2
     Producer = 3
 
 
-class AlbumType(IntEnum):
+class AlbumType(int, Enum):
     """Enum for Album type."""
     Album = 1
     Single = 2
     Compilation = 3
 
 
-class TrackQuality(IntEnum):
+class TrackQuality(int, Enum):
     """Enum for Track Quality."""
     LOSSY_MP3 = 0
     LOSSY_OGG = 1
@@ -54,6 +54,7 @@ class TrackQuality(IntEnum):
     FLAC_LOSSLESS_HI_RES_2 = 8  # 88.2/96khz 24 bits HI-RES
     FLAC_LOSSLESS_HI_RES_3 = 9  # 176/192khz 24 bits HI-RES
     FLAC_LOSSLESS_HI_RES_4 = 10  # above 192khz 24 bits HI-RES
+    UNKNOWN = 99
 
 
 @dataclass
@@ -61,15 +62,16 @@ class MediaItemProviderId():
     """Model for a MediaItem's provider id."""
     provider: str
     item_id: str
-    quality: TrackQuality
-    details: str
+    quality: Optional[TrackQuality] = TrackQuality.UNKNOWN
+    details: Optional[str] = None
 
 
-class ExternalId(Enum):
+class ExternalId(str, Enum):
     """Enum with external id's."""
     MUSICBRAINZ = "musicbrainz"
     UPC = "upc"
     ISRC = "isrc"
+
 
 
 @dataclass
@@ -80,7 +82,7 @@ class MediaItem(object):
     name: str = ""
     metadata: dict = field(default_factory=dict)
     tags: List[str] = field(default_factory=list)
-    external_ids: dict = field(default_factory=dict)
+    external_ids: List[ExternalId] = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: List[str] = field(default_factory=list)
     is_lazy: bool = False
@@ -136,35 +138,8 @@ class Radio(MediaItem):
 @dataclass
 class SearchResult():
     """Model for Media Item Search result."""
-    artists: List[Artist]
-    albums: List[Album]
-    tracks: List[Track]
-    playlists: List[Playlist]
-    radios: List[Radio]
-
-
-class StreamType(Enum):
-    """Enum with stream types."""
-    EXECUTABLE = "executable"
-    URL = "url"
-    FILE = "file"
-
-
-class ContentType(Enum):
-    """Enum with stream content types."""
-    OGG = "ogg"
-    FLAC = "flac"
-    MP3 = "mp3"
-    RAW = "raw"
-
-
-@dataclass
-class StreamDetails():
-    """Model for streamdetails."""
-    type: StreamType
-    path: str
-    content_type: ContentType
-    sample_rate: int
-    bit_depth: int
-    provider: str
-    item_id: str
+    artists: List[Artist] = field(default_factory=list)
+    albums: List[Album] = field(default_factory=list)
+    tracks: List[Track] = field(default_factory=list)
+    playlists: List[Playlist] = field(default_factory=list)
+    radios: List[Radio] = field(default_factory=list)

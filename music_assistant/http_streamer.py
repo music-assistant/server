@@ -7,10 +7,13 @@ import asyncio
 import concurrent
 import gc
 import io
+import logging
 import operator
 import shlex
 import subprocess
 import threading
+from asyncio import CancelledError
+from contextlib import suppress
 
 import pyloudnorm
 import soundfile
@@ -18,7 +21,10 @@ from aiohttp import web
 from memory_tempfile import MemoryTempfile
 from music_assistant.constants import EVENT_STREAM_ENDED, EVENT_STREAM_STARTED
 from music_assistant.models.media_types import MediaType, TrackQuality
-from music_assistant.utils import LOGGER, get_ip, try_parse_int
+from music_assistant.models.streamdetails import StreamDetails, StreamType, ContentType
+from music_assistant.utils import get_ip, try_parse_int
+
+LOGGER = logging.getLogger("mass")
 
 
 class HTTPStreamer:
@@ -40,12 +46,12 @@ class HTTPStreamer:
         """
         # make sure we have valid params
         player_id = http_request.match_info.get("player_id", "")
-        player = self.mass.player_manager.get_player(player_id)
-        if not player:
-            return web.Response(status=404, reason="Player not found")
-        if not player.queue.use_queue_stream:
+        player_queue = self.mass.player_manager.get_player_queue(player_id)
+        if not player_queue:
+            return web.Response(status=404, reason="Player(queue) not found!")
+        if not player_queue.use_queue_stream:
             queue_item_id = http_request.match_info.get("queue_item_id")
-            queue_item = player.queue.by_item_id(queue_item_id)
+            queue_item = player_queue.by_item_id(queue_item_id)
             if not queue_item:
                 return web.Response(status=404, reason="Invalid Queue item Id")
         # prepare headers as audio/flac content
@@ -55,13 +61,13 @@ class HTTPStreamer:
         await resp.prepare(http_request)
         # run the streamer in executor to prevent the subprocess locking up our eventloop
         cancelled = threading.Event()
-        if player.queue.use_queue_stream:
+        if player_queue.use_queue_stream:
             bg_task = self.mass.loop.run_in_executor(
-                None, self.__get_queue_stream, player, resp, cancelled
+                None, self.__get_queue_stream, player_id, resp, cancelled
             )
         else:
             bg_task = self.mass.loop.run_in_executor(
-                None, self.__get_queue_item_stream, player, queue_item, resp, cancelled
+                None, self.__get_queue_item_stream, player_id, queue_item, resp, cancelled
             )
         # let the streaming begin!
         try:
@@ -71,47 +77,43 @@ class HTTPStreamer:
             raise asyncio.CancelledError()
         return resp
 
-    def __get_queue_item_stream(self, player, queue_item, buffer, cancelled):
+    def __get_queue_item_stream(self, player_id, queue_item, buffer, cancelled):
         """start streaming single queue track"""
         # pylint: disable=unused-variable
         LOGGER.debug(
             "stream single queue track started for track %s on player %s",
-            queue_item.name, player.name
+            queue_item.name, player_id
         )
         for is_last_chunk, audio_chunk in self.__get_audio_stream(
-            player, queue_item, cancelled
+            player_id, queue_item, cancelled
         ):
             if cancelled.is_set():
                 # http session ended
                 # we must consume the data to prevent hanging subprocess instances
                 continue
             # put chunk in buffer
-            self.mass.run_task(
-                buffer.write(audio_chunk),
-                wait_for_result=True,
-                ignore_exception=(BrokenPipeError, ConnectionResetError),
-            )
+            with suppress((BrokenPipeError, ConnectionResetError, CancelledError)):
+                self.mass.add_job(buffer.write(audio_chunk)).result()
         # all chunks received: streaming finished
         if cancelled.is_set():
             LOGGER.debug(
                 "stream single track interrupted for track %s on player %s",
-                queue_item.name, player.name
+                queue_item.name, player_id
             )
         else:
             # indicate EOF if no more data
-            self.mass.run_task(
-                buffer.write_eof(),
-                wait_for_result=True,
-                ignore_exception=(BrokenPipeError, ConnectionResetError),
-            )
+            with suppress((BrokenPipeError, ConnectionResetError, CancelledError)):
+                self.mass.add_job(buffer.write_eof()).result()
             LOGGER.debug(
                 "stream single track finished for track %s on player %s",
-                queue_item.name, player.name)
+                queue_item.name, player_id)
 
-    def __get_queue_stream(self, player, buffer, cancelled):
-        """start streaming all queue tracks"""
-        sample_rate = try_parse_int(player.settings["max_sample_rate"])
-        fade_length = try_parse_int(player.settings["crossfade_duration"])
+    def __get_queue_stream(self, player_id, buffer, cancelled):
+        """Start streaming all queue tracks."""
+        player_conf = self.mass.config.get_player_config(player_id)
+        player_queue = self.mass.player_manager.get_player_queue(player_id)
+        sample_rate = try_parse_int(player_conf["max_sample_rate"])
+        fade_length = try_parse_int(player_conf["crossfade_duration"])
         if not sample_rate or sample_rate < 44100 or sample_rate > 384000:
             sample_rate = 96000
         if fade_length:
@@ -132,37 +134,19 @@ class HTTPStreamer:
                 if not chunk:
                     break
                 if chunk and not cancelled.is_set():
-                    self.mass.run_task(
-                        buffer.write(chunk),
-                        wait_for_result=True,
-                        ignore_exception=(
-                            BrokenPipeError,
-                            ConnectionResetError,
-                            # pylint: disable=protected-access
-                            concurrent.futures._base.CancelledError,
-                            # pylint: enable=protected-access
-                        ),
-                    )
+                    with suppress((BrokenPipeError, ConnectionResetError, CancelledError)):
+                        self.mass.add_job(buffer.write(chunk)).result()
                 del chunk
             # indicate EOF if no more data
             if not cancelled.is_set():
-                self.mass.run_task(
-                    buffer.write_eof(),
-                    wait_for_result=True,
-                    ignore_exception=(
-                        BrokenPipeError,
-                        ConnectionResetError,
-                        # pylint: disable=protected-access
-                        concurrent.futures._base.CancelledError,
-                        # pylint: enable=protected-access
-                    ),
-                )
+                with suppress((BrokenPipeError, ConnectionResetError, CancelledError)):
+                    self.mass.add_job(buffer.write_eof()).result()
 
         # start fill buffer task in background
         fill_buffer_thread = threading.Thread(target=fill_buffer)
         fill_buffer_thread.start()
 
-        LOGGER.info("Start Queue Stream for player %s ", player.name)
+        LOGGER.info("Start Queue Stream for player %s ", player_id)
         is_start = True
         last_fadeout_data = b""
         while True:
@@ -171,18 +155,16 @@ class HTTPStreamer:
             # get the (next) track in queue
             if is_start:
                 # report start of queue playback so we can calculate current track/duration etc.
-                queue_track = asyncio.run_coroutine_threadsafe(
-                    player.queue.start_queue_stream(), self.mass.loop
-                ).result()
+                queue_track = self.mass.add_job(player_queue.async_start_queue_stream()).result()
                 is_start = False
             else:
-                queue_track = player.queue.next_item
+                queue_track = player_queue.next_item
             if not queue_track:
                 LOGGER.debug("no (more) tracks left in queue")
                 break
             LOGGER.debug(
                 "Start Streaming queue track: %s (%s) on player %s",
-                queue_track.item_id, queue_track.name, player.name
+                queue_track.item_id, queue_track.name, player_id
             )
             fade_in_part = b""
             cur_chunk = 0
@@ -190,7 +172,7 @@ class HTTPStreamer:
             bytes_written = 0
             # handle incoming audio chunks
             for is_last_chunk, chunk in self.__get_audio_stream(
-                player,
+                player_id,
                 queue_track,
                 cancelled,
                 chunksize=fade_bytes,
@@ -263,7 +245,7 @@ class HTTPStreamer:
                                 "Not enough data for crossfade: %s", len(last_part)
                             )
                     if (
-                        not player.queue.crossfade_enabled
+                        not player_queue.crossfade_enabled
                         or len(last_part) < fade_bytes
                     ):
                         # crossfading is not enabled so just pass the (stripped) audio data
@@ -285,7 +267,7 @@ class HTTPStreamer:
                 # MIDDLE PARTS OF TRACK
                 else:
                     # middle part of the track
-                    # keep previous chunk in memory so we have enough 
+                    # keep previous chunk in memory so we have enough
                     # samples to perform the crossfade
                     if prev_chunk:
                         sox_proc.stdin.write(prev_chunk)
@@ -304,7 +286,7 @@ class HTTPStreamer:
                 queue_track.duration = accurate_duration
                 LOGGER.debug(
                     "Finished Streaming queue track: %s (%s) on player %s",
-                    queue_track.item_id, queue_track.name, player.name)
+                    queue_track.item_id, queue_track.name, player_id)
                 # run garbage collect manually to avoid too much memory fragmentation
                 gc.collect()
         # end of queue reached, pass last fadeout bits to final output
@@ -319,77 +301,44 @@ class HTTPStreamer:
         # run garbage collect manually to avoid too much memory fragmentation
         gc.collect()
         if cancelled.is_set():
-            LOGGER.info("streaming of queue for player %s interrupted", player.name)
+            LOGGER.info("streaming of queue for player %s interrupted", player_id)
         else:
-            LOGGER.info("streaming of queue for player %s completed", player.name)
+            LOGGER.info("streaming of queue for player %s completed", player_id)
 
     def __get_audio_stream(
-        self, player, queue_item, cancelled, chunksize=128000, resample=None
+        self, player_id, queue_item, cancelled, chunksize=128000, resample=None
     ):
-        """get audio stream from provider and apply additional effects/processing where/if needed"""
-        streamdetails = None
-        # always request the full db track as there might be other qualities available
-        if queue_item.media_type == MediaType.Radio:
-            full_track = queue_item
-        else:
-            full_track = self.mass.run_task(
-                self.mass.music_manager.track(
-                    queue_item.item_id,
-                    queue_item.provider,
-                    lazy=True,
-                    track_details=queue_item,
-                ),
-                wait_for_result=True,
-            )
-        # sort by quality and check track availability
-        for prov_media in sorted(
-            full_track.ids, key=operator.itemgetter("quality"), reverse=True
-        ):
-            if not prov_media["provider"] in self.mass.music_manager.providers:
-                continue
-            # get stream details from provider
-            streamdetails = self.mass.run_task(
-                self.mass.music_manager.providers[prov_media["provider"]].get_stream_details(
-                    prov_media["item_id"]
-                ),
-                wait_for_result=True,
-            )
-            if streamdetails:
-                streamdetails["player_id"] = player.player_id
-                if not "item_id" in streamdetails:
-                    streamdetails["item_id"] = prov_media["item_id"]
-                if not "provider" in streamdetails:
-                    streamdetails["provider"] = prov_media["provider"]
-                if not "quality" in streamdetails:
-                    streamdetails["quality"] = prov_media["quality"]
-                queue_item.streamdetails = streamdetails
-                break
+        """Get audio stream from provider and apply additional effects/processing where/if needed."""
+        player_queue = self.mass.player_manager.get_player_queue(player_id)
+        streamdetails = self.mass.add_job(player_queue.async_get_stream_details(
+            player_id, queue_item)
+        ).result()
         if not streamdetails:
             LOGGER.warning("no stream details for %s", queue_item.name)
             yield (True, b"")
             return
         # get sox effects and resample options
-        sox_options = self.__get_player_sox_options(player, streamdetails)
+        sox_options = self.__get_player_sox_options(player_id, streamdetails)
         outputfmt = "flac -C 0"
         if resample:
             outputfmt = "raw -b 32 -c 2 -e signed-integer"
             sox_options += " rate -v %s" % resample
-        streamdetails["sox_options"] = sox_options
+        streamdetails.sox_options = sox_options
         # determine how to proceed based on input file type
-        if streamdetails["content_type"] == "aac":
+        if streamdetails.content_type == ContentType.AAC:
             # support for AAC created with ffmpeg in between
             args = 'ffmpeg -v quiet -i "%s" -f flac - | sox -t flac - -t %s - %s' % (
-                streamdetails["path"],
+                streamdetails.path,
                 outputfmt,
                 sox_options,
             )
             process = subprocess.Popen(
                 args, shell=True, stdout=subprocess.PIPE, bufsize=chunksize
             )
-        elif streamdetails["type"] in ["url", "file"]:
+        elif streamdetails.type in [StreamType.URL, StreamType.FILE]:
             args = 'sox -t %s "%s" -t %s - %s' % (
-                streamdetails["content_type"],
-                streamdetails["path"],
+                streamdetails.content_type.name,
+                streamdetails.path,
                 outputfmt,
                 sox_options,
             )
@@ -397,10 +346,10 @@ class HTTPStreamer:
             process = subprocess.Popen(
                 args, shell=False, stdout=subprocess.PIPE, bufsize=chunksize
             )
-        elif streamdetails["type"] == "executable":
+        elif streamdetails.type == StreamType.EXECUTABLE:
             args = "%s | sox -t %s - -t %s - %s" % (
-                streamdetails["path"],
-                streamdetails["content_type"],
+                streamdetails.path,
+                streamdetails.content_type.name,
                 outputfmt,
                 sox_options,
             )
@@ -412,7 +361,7 @@ class HTTPStreamer:
             yield (True, b"")
             return
         # fire event that streaming has started for this track
-        self.mass.run_task(self.mass.signal_event(EVENT_STREAM_STARTED, streamdetails))
+        self.mass.signal_event(EVENT_STREAM_STARTED, streamdetails)
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
         prev_chunk = b""
@@ -432,82 +381,66 @@ class HTTPStreamer:
                     yield (False, prev_chunk)
                 prev_chunk = chunk
         # fire event that streaming has ended
-        self.mass.run_task(self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails))
+        self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails)
         # send task to background to analyse the audio
         if queue_item.media_type == MediaType.Track:
             self.mass.loop.run_in_executor(
                 None, self.__analyze_audio, streamdetails
             )
 
-    def __get_player_sox_options(self, player, streamdetails):
-        """get player specific sox effect options"""
+    def __get_player_sox_options(self, player_id: str, streamdetails: StreamDetails) -> str:
+        """Get player specific sox effect options."""
         sox_options = []
+        player_conf = self.mass.config.get_player_config(player_id)
         # volume normalisation
-        gain_correct = self.mass.run_task(
-            self.mass.player_manager.get_gain_correct(
-                player.player_id, streamdetails["item_id"], streamdetails["provider"]
-            ),
-            wait_for_result=True,
-        )
+        gain_correct = self.mass.add_job(
+            self.mass.player_manager.async_get_gain_correct(
+                player_id, streamdetails.item_id, streamdetails.provider
+            )
+        ).result()
         if gain_correct != 0:
             sox_options.append("vol %s dB " % gain_correct)
         # downsample if needed
-        if player.settings["max_sample_rate"]:
-            max_sample_rate = try_parse_int(player.settings["max_sample_rate"])
-            if max_sample_rate:
-                quality = streamdetails["quality"]
-                if (
-                    quality > TrackQuality.FLAC_LOSSLESS_HI_RES_3
-                    and max_sample_rate == 192000
-                ):
-                    sox_options.append("rate -v 192000")
-                elif (
-                    quality > TrackQuality.FLAC_LOSSLESS_HI_RES_2
-                    and max_sample_rate == 96000
-                ):
-                    sox_options.append("rate -v 96000")
-                elif (
-                    quality > TrackQuality.FLAC_LOSSLESS_HI_RES_1
-                    and max_sample_rate == 48000
-                ):
-                    sox_options.append("rate -v 48000")
-        if player.settings.get("sox_options"):
-            sox_options.append(player.settings["sox_options"])
+        if player_conf["max_sample_rate"]:
+            max_sample_rate = try_parse_int(player_conf["max_sample_rate"])
+            if max_sample_rate < streamdetails.sample_rate:
+                sox_options.append(f"rate -v {max_sample_rate}")
+        if player_conf.get("sox_options"):
+            sox_options.append(player_conf["sox_options"])
         return " ".join(sox_options)
 
     def __analyze_audio(self, streamdetails):
-        """analyze track audio, for now we only calculate EBU R128 loudness"""
-        item_key = "%s%s" % (streamdetails["item_id"], streamdetails["provider"])
+        """Analyze track audio, for now we only calculate EBU R128 loudness."""
+        item_key = "%s%s" % (streamdetails.item_id, streamdetails.provider)
         if item_key in self.analyze_jobs:
             return  # prevent multiple analyze jobs for same track
         self.analyze_jobs[item_key] = True
-        track_loudness = self.mass.run_task(
-            self.mass.database.get_track_loudness(
-                streamdetails["item_id"], streamdetails["provider"]
-            ),
-            wait_for_result=True,
-        )
+        track_loudness = self.mass.add_job(
+            self.mass.database.async_get_track_loudness(
+                streamdetails.item_id, streamdetails.provider
+            )
+        ).result()
         if track_loudness is None:
             # only when needed we do the analyze stuff
             LOGGER.debug("Start analyzing track %s", item_key)
-            if streamdetails["type"] == "url":
+            if streamdetails.type == StreamType.URL:
                 import urllib
 
-                audio_data = urllib.request.urlopen(streamdetails["path"]).read()
-            elif streamdetails["type"] == "executable":
-                audio_data = subprocess.check_output(streamdetails["path"], shell=True)
-            elif streamdetails["type"] == "file":
-                with open(streamdetails["path"], "rb") as f:
-                    audio_data = f.read()
+                audio_data = urllib.request.urlopen(streamdetails.path).read()
+            elif streamdetails.type == StreamType.EXECUTABLE:
+                audio_data = subprocess.check_output(streamdetails.path, shell=True)
+            elif streamdetails.type == StreamType.FILE:
+                with open(streamdetails.path, "rb") as _file:
+                    audio_data = _file.read()
             # calculate BS.1770 R128 integrated loudness
             with io.BytesIO(audio_data) as tmpfile:
                 data, rate = soundfile.read(tmpfile)
             meter = pyloudnorm.Meter(rate)  # create BS.1770 meter
             loudness = meter.integrated_loudness(data)  # measure loudness
             del data
-            self.mass.run_task(
-                self.mass.database.set_track_loudness(
-                    streamdetails["item_id"], streamdetails["provider"], loudness
+            self.mass.add_job(
+                self.mass.database.async_set_track_loudness(
+                    streamdetails.item_id, streamdetails.provider, loudness
                 )
             )
             del audio_data

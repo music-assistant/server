@@ -215,8 +215,8 @@ export default {
     },
     async activePlayerChanged () {
       /// get queue details once when we have a new active player
-      let endpoint = 'players/' + this.$server.activePlayerId + '/queue'
-      let queueDetails = await this.$server.getData(endpoint)
+      const endpoint = 'players/' + this.$server.activePlayerId + '/queue'
+      const queueDetails = await this.$server.getData(endpoint)
       await this.onQueueDetailsEvent(queueDetails)
       await this.onQueueItemsEvent(queueDetails)
     },
@@ -229,12 +229,12 @@ export default {
     },
     async onQueueItemsEvent (data) {
       if (data.player_id === this.$server.activePlayerId) {
-        let endpoint = 'players/' + data.player_id + '/queue/items'
+        const endpoint = 'players/' + data.player_id + '/queue/items'
         await this.$server.getAllItems(endpoint, this.items)
       }
     },
     sendQueueCommand (cmd, cmd_args = null) {
-      let endpoint = 'players/' + this.$server.activePlayerId + '/queue/' + cmd
+      const endpoint = 'players/' + this.$server.activePlayerId + '/queue/' + cmd
       this.$server.putData(endpoint, cmd_args)
     }
   }

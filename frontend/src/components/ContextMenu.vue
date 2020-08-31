@@ -76,8 +76,8 @@ export default Vue.extend({
       this.playlists = []
       if (!mediaItem) return
       this.curItem = mediaItem
-      let curBrowseContext = this.$store.topBarContextItem
-      let menuItems = []
+      const curBrowseContext = this.$store.topBarContextItem
+      const menuItems = []
       // show info
       if (mediaItem !== curBrowseContext) {
         menuItems.push({
@@ -131,7 +131,7 @@ export default Vue.extend({
       this.playlists = []
       this.curItem = mediaItem
       if (!mediaItem) return
-      let menuItems = [
+      const menuItems = [
         {
           label: 'play_now',
           action: 'play',
@@ -155,18 +155,18 @@ export default Vue.extend({
     },
     async showPlaylistsMenu () {
       // get all editable playlists
-      let trackProviders = []
-      for (let item of this.curItem.provider_ids) {
+      const trackProviders = []
+      for (const item of this.curItem.provider_ids) {
         trackProviders.push(item.provider)
       }
-      let playlists = await this.$server.getData('library/playlists')
-      let items = []
-      for (var playlist of playlists['items']) {
+      const playlists = await this.$server.getData('library/playlists')
+      const items = []
+      for (var playlist of playlists.items) {
         if (
           playlist.is_editable &&
           (!this.curPlaylist || playlist.item_id !== this.curPlaylist.item_id)
         ) {
-          for (let item of playlist.provider_ids) {
+          for (const item of playlist.provider_ids) {
             if (trackProviders.includes(item.provider)) {
               items.push(playlist)
               break
@@ -216,7 +216,7 @@ export default Vue.extend({
     },
     addToPlaylist (playlistObj) {
       /// add track to playlist
-      let endpoint = 'playlists/' + playlistObj.item_id + '/tracks'
+      const endpoint = 'playlists/' + playlistObj.item_id + '/tracks'
       this.$server.putData(endpoint, this.curItem)
         .then(result => {
           this.visible = false
@@ -224,7 +224,7 @@ export default Vue.extend({
     },
     removeFromPlaylist (track, playlistId) {
       /// remove track from playlist
-      let endpoint = 'playlists/' + playlistId + '/tracks'
+      const endpoint = 'playlists/' + playlistId + '/tracks'
       this.$server.deleteData(endpoint, track)
         .then(result => {
           // reload listing

@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
+"""Helper and utility functions."""
 import asyncio
-import logging
+import dataclasses
+import functools
 import os
 import re
 import socket
+from enum import Enum, Enum
 from typing import Any, Callable, TypeVar
 
 import unidecode
@@ -16,9 +16,6 @@ except ImportError:
     import json
 
 
-LOGGER = logging.getLogger("music_assistant")
-
-
 IS_HASSIO = os.path.isfile("/data/options.json")
 
 # pylint: disable=invalid-name
@@ -27,6 +24,7 @@ _UNDEF: dict = {}
 CALLABLE_T = TypeVar("CALLABLE_T", bound=Callable)
 CALLBACK_TYPE = Callable[[], None]
 # pylint: enable=invalid-name
+
 
 def callback(func: CALLABLE_T) -> CALLABLE_T:
     """Annotation to mark method as safe to call from within the event loop."""
@@ -66,13 +64,11 @@ def run_async_background_task(executor, corofn, *args):
     """run async task in background"""
 
     def run_task(corofn, *args):
-        LOGGER.debug("running %s in background task", corofn.__name__)
         new_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(new_loop)
         coro = corofn(*args)
         res = new_loop.run_until_complete(coro)
         new_loop.close()
-        LOGGER.debug("completed %s in background task", corofn.__name__)
         return res
 
     return asyncio.get_event_loop().run_in_executor(executor, run_task, corofn, *args)
@@ -219,31 +215,48 @@ def get_folder_size(folderpath):
     return total_size_gb
 
 
-def serialize_values(obj):
-    """Recursively create serializable values for (custom) data types."""
+class EnhancedJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if dataclasses.is_dataclass(obj):
+            return dataclasses.asdict(obj)
+        if isinstance(obj, Enum):
+            return str(obj)
+        if isinstance(obj, Enum):
+            return int(obj)
+        if hasattr(obj, "to_dict"):
+            return obj.to_dict()
+        if hasattr(obj, "items"):
+            return obj.items()
+        return super().default(obj)
 
-    def get_val(val):
-        if isinstance(val, (int, str, bool, float, tuple)):
-            return val
-        elif isinstance(val, list):
-            new_list = []
-            for item in val:
-                new_list.append(get_val(item))
-            return new_list
-        elif hasattr(val, "to_dict"):
-            return get_val(val.to_dict())
-        elif isinstance(val, dict):
-            new_dict = {}
-            for key, value in val.items():
-                new_dict[key] = get_val(value)
-            return new_dict
-        elif hasattr(val, "__dict__"):
-            new_dict = {}
-            for key, value in val.__dict__.items():
-                new_dict[key] = get_val(value)
-            return new_dict
 
-    return get_val(obj)
+json_serializer = functools.partial(json.dumps, cls=EnhancedJSONEncoder)
+
+# def json_serializer(obj):
+#     """Recursively create serializable values for (custom) data types."""
+
+#     def get_val(val):
+#         if isinstance(val, (int, str, bool, float, tuple)):
+#             return val
+#         elif isinstance(val, list):
+#             new_list = []
+#             for item in val:
+#                 new_list.append(get_val(item))
+#             return new_list
+#         elif hasattr(val, "to_dict"):
+#             return get_val(val.to_dict())
+#         elif isinstance(val, dict):
+#             new_dict = {}
+#             for key, value in val.items():
+#                 new_dict[key] = get_val(value)
+#             return new_dict
+#         elif hasattr(val, "__dict__"):
+#             new_dict = {}
+#             for key, value in val.__dict__.items():
+#                 new_dict[key] = get_val(value)
+#             return new_dict
+
+#     return get_val(obj)
 
 
 def get_compare_string(input_str):
@@ -260,9 +273,9 @@ def compare_strings(str1, str2, strict=False):
     return match
 
 
-def json_serializer(obj):
-    """json serializer to recursively create serializable values for custom data types"""
-    return json.dumps(serialize_values(obj), skipkeys=True)
+# def json_serializer(obj):
+#     """json serializer to recursively create serializable values for custom data types"""
+#     return json.dumps(json_serializer(obj), skipkeys=True)
 
 
 def try_load_json_file(jsonfile):
@@ -275,6 +288,3 @@ def try_load_json_file(jsonfile):
         LOGGER.debug("Could not load json from file %s", jsonfile, exc_info=exc)
         return None
     # pylint: enable=broad-except
-
-
-

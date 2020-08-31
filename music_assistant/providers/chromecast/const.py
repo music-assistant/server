@@ -8,10 +8,7 @@ PROV_NAME = "Chromecast"
 CONF_GAPLESS = "gapless_enabled"
 
 
-PROVIDER_CONFIG_ENTRIES = [
-    ConfigEntry(entry_key=CONF_ENABLED,
-                entry_type=ConfigEntryType.BOOL,
-                default_value=True, description_key=CONF_ENABLED)]
+PROVIDER_CONFIG_ENTRIES = []
 
 PLAYER_CONFIG_ENTRIES = [
     ConfigEntry(entry_key=CONF_GAPLESS,

@@ -1,7 +1,7 @@
 """Models and helpers for a player."""
 
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
+from enum import Enum, Enum
 from typing import Awaitable, List, Optional
 
 from music_assistant.models.config_entry import ConfigEntry
@@ -23,7 +23,7 @@ class DeviceInfo():
     manufacturer: Optional[str]
 
 
-class PlayerFeature(IntEnum):
+class PlayerFeature(int, Enum):
     """Enum for player features."""
     QUEUE = 0
     GAPLESS = 1

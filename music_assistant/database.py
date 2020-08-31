@@ -3,31 +3,44 @@
 import asyncio
 import logging
 import os
+import sqlite3
+from enum import Enum
 from typing import List, Optional
 
 import aiosqlite
 from music_assistant.models.media_types import (
     Album,
     Artist,
+    ExternalId,
+    MediaItem,
+    MediaItemProviderId,
     MediaType,
     Playlist,
     Radio,
-    Track,
     SearchResult,
-    MediaItemProviderId
+    Track,
+    TrackQuality,
+    AlbumType
 )
-from music_assistant.utils import LOGGER, get_sort_name, try_parse_int
+from music_assistant.utils import get_sort_name, try_parse_int
+
+LOGGER = logging.getLogger("mass")
 
 
 def commit_guard(func):
     """Decorator to guard against multiple db writes."""
 
     async def async_wrapped(*args, **kwargs):
+        res = None
         method_class = args[0]
         while method_class.commit_guard_active:
             await asyncio.sleep(0.1)
         method_class.commit_guard_active = True
-        res = await func(*args, **kwargs)
+        try:
+            res = await func(*args, **kwargs)
+        except (sqlite3.InterfaceError, sqlite3.IntegrityError):
+            LOGGER.exception("error while executing %s", func.__name__)
+            raise
         method_class.commit_guard_active = False
         return res
     return async_wrapped
@@ -157,7 +170,7 @@ class Database:
         sql_query = """SELECT item_id FROM provider_mappings
             WHERE prov_item_id = ? AND provider = ? AND media_type = ?;"""
         async with self._db.execute(
-            sql_query, (prov_item_id, provider_id, media_type)
+            sql_query, (str(prov_item_id), provider_id, int(media_type))
         ) as cursor:
             item_id = await cursor.fetchone()
             if item_id:
@@ -198,12 +211,12 @@ class Database:
             sql_query = (
                 '''WHERE artist_id in (SELECT item_id FROM library_items WHERE
                 provider = "%s" AND media_type = %d)'''
-                % (provider_id, MediaType.Artist.real)
+                % (provider_id, MediaType.Artist)
             )
         else:
             sql_query = (
                 "WHERE artist_id in (SELECT item_id FROM library_items WHERE media_type = %d)"
-                % MediaType.Artist.real
+                % int(MediaType.Artist)
             )
         async for item in self.async_get_artists(sql_query, orderby=orderby):
             yield item
@@ -216,12 +229,12 @@ class Database:
             sql_query = (
                 '''' WHERE album_id in (SELECT item_id FROM library_items
                 WHERE provider = "%s" AND media_type = %d)'''
-                % (provider_id, MediaType.Album.real)
+                % (provider_id, int(MediaType.Album))
             )
         else:
             sql_query = (
                 " WHERE album_id in (SELECT item_id FROM library_items WHERE media_type = %d)"
-                % MediaType.Album
+                % int(MediaType.Album)
             )
         async for item in self.async_get_albums(sql_query, orderby=orderby):
             yield item
@@ -235,7 +248,7 @@ class Database:
                 WHERE track_id in (SELECT item_id FROM library_items WHERE provider = "%s" 
                 AND media_type = %d)""" % (
                 provider_id,
-                MediaType.Track.real,
+                int(MediaType.Track),
             )
         else:
             sql_query = (
@@ -256,7 +269,7 @@ class Database:
                 (SELECT item_id FROM library_items WHERE provider = "%s"
                 AND media_type = %d)""" % (
                 provider_id,
-                MediaType.Playlist.real,
+                int(MediaType.Playlist),
             )
         else:
             sql_query = (
@@ -276,13 +289,13 @@ class Database:
                 (SELECT item_id FROM library_items WHERE provider = "%s"
                 AND media_type = %d)""" % (
                 provider_id,
-                MediaType.Radio.real,
+                int(MediaType.Radio),
             )
         else:
             sql_query = (
                 """WHERE radio_id in
                 (SELECT item_id FROM library_items WHERE media_type = %d)"""
-                % MediaType.Radio
+                % int(MediaType.Radio)
             )
         async for item in self.async_get_radios(sql_query, orderby=orderby):
             yield item
@@ -511,11 +524,7 @@ class Database:
         artist_id = await self.__async_get_item_by_external_id(artist)
         if not artist_id:
             # insert artist
-            musicbrainz_id = None
-            for item in artist.external_ids:
-                if item.get("musicbrainz"):
-                    musicbrainz_id = item["musicbrainz"]
-                    break
+            musicbrainz_id = artist.external_ids.get(ExternalId.MUSICBRAINZ)
             assert musicbrainz_id  # musicbrainz id is required
             if not artist.sort_name:
                 artist.sort_name = get_sort_name(artist.name)
@@ -563,7 +572,7 @@ class Database:
                 album.provider = "database"
                 album.item_id = db_row[0]
                 album.name = db_row[2]
-                album.albumtype = db_row[3]
+                album.album_type = AlbumType(int(db_row[3]))
                 album.year = db_row[4]
                 album.version = db_row[5]
                 album.provider_ids = await self.__async_get_prov_ids(
@@ -613,7 +622,7 @@ class Database:
                     album.name,
                     album.version,
                     album.year,
-                    album.albumtype,
+                    album.album_type,
                 ),
             ) as cursor:
                 album_id = await cursor.fetchone()
@@ -639,7 +648,7 @@ class Database:
             query_params = (
                 album.artist.item_id,
                 album.name,
-                album.albumtype,
+                album.album_type,
                 album.year,
                 album.version,
             )
@@ -907,63 +916,58 @@ class Database:
         )
         return [item async for item in self.async_get_artists(sql_query, fulldata=fulldata)]
 
-    async def __async_add_external_ids(self, item_id, media_type, external_ids):
+    async def __async_add_external_ids(self, item_id, media_type: MediaType, external_ids: dict):
         """add or update external_ids"""
-        for external_id in external_ids:
-            for key, value in external_id.items():
-                sql_query = """INSERT or REPLACE INTO external_ids
-                    (item_id, media_type, key, value) VALUES(?,?,?,?);"""
-                await self._db.execute(sql_query, (item_id, media_type, key, value))
+        for key, value in external_ids.items():
+            sql_query = """INSERT or REPLACE INTO external_ids
+                (item_id, media_type, key, value) VALUES(?,?,?,?);"""
+            await self._db.execute(sql_query, (item_id, media_type, key, value))
 
-    async def __async_get_external_ids(self, item_id, media_type):
+    async def __async_get_external_ids(self, item_id, media_type) -> dict:
         """get external_ids for media item"""
-        external_ids = []
+        external_ids = {}
         sql_query = (
             "SELECT key, value FROM external_ids WHERE item_id = ? AND media_type = ?"
         )
         async with self._db.execute(sql_query, (item_id, media_type)) as cursor:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
-            external_id = {db_row[0]: db_row[1]}
-            external_ids.append(external_id)
+            external_ids[db_row[0]] = db_row[1]
         return external_ids
 
-    async def __async_add_prov_ids(self, item_id, media_type, ids):
-        """add provider ids for media item to db"""
-        for prov_mapping in ids:
-            prov_id = prov_mapping.provider
-            prov_item_id = prov_mapping.item_id
-            quality = prov_mapping.quality
-            details = prov_mapping.details
+    async def __async_add_prov_ids(self, item_id: str, media_type: MediaType, provider_ids: List[MediaItemProviderId]):
+        """Add provider ids for media item to db."""
+
+        for prov in provider_ids:
             sql_query = """INSERT OR REPLACE INTO provider_mappings
                 (item_id, media_type, prov_item_id, provider, quality, details)
                 VALUES(?,?,?,?,?,?);"""
             await self._db.execute(
                 sql_query,
-                (item_id, media_type, prov_item_id, prov_id, quality, details),
+                (item_id, int(media_type), str(prov.item_id), prov.provider, int(prov.quality), prov.details),
             )
 
-    async def __async_get_prov_ids(self, item_id, media_type: MediaType):
+    async def __async_get_prov_ids(self, item_id, media_type: MediaType) -> List[MediaItemProviderId]:
         """get all ids for media item"""
-        ids = []
+        provider_ids = []
         sql_query = "SELECT prov_item_id, provider, quality, details \
             FROM provider_mappings \
             WHERE item_id = ? AND media_type = ?"
 
-        async with self._db.execute(sql_query, (item_id, media_type)) as cursor:
+        async with self._db.execute(sql_query, (item_id, int(media_type))) as cursor:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
             prov_mapping = MediaItemProviderId(
                 provider=db_row[1],
                 item_id=db_row[0],
-                quality=db_row[2],
+                quality=TrackQuality(db_row[2]),
                 details=db_row[3]
             )
-            ids.append(prov_mapping)
-        return ids
+            provider_ids.append(prov_mapping)
+        return provider_ids
 
-    async def __async_get_library_providers(self, item_id, media_type: MediaType):
-        """get the providers that have this media_item added to the library"""
+    async def __async_get_library_providers(self, item_id, media_type: MediaType) -> List[str]:
+        """Get the providers that have this media_item added to the library."""
         providers = []
         sql_query = (
             "SELECT provider FROM library_items WHERE item_id = ? AND media_type = ?"
@@ -974,21 +978,14 @@ class Database:
             providers.append(db_row[0])
         return providers
 
-    async def __async_get_item_by_external_id(self, media_item):
+    async def __async_get_item_by_external_id(self, media_item: MediaItem) -> int:
         """Try to get existing item in db by matching the new item's external id's."""
-        item_id = None
-        for external_id in media_item.external_ids:
-            if item_id:
-                break
-            for key, value in external_id.items():
-                async with self._db.execute(
-                    "SELECT (item_id) FROM external_ids WHERE media_type=? AND key=? AND value=?;",
-                    (media_item.media_type, key, value),
-                ) as cursor:
-                    result = await cursor.fetchone()
-                    if result:
-                        item_id = result[0]
-                        break
-                if item_id:
-                    break
-        return item_id
+        for key, value, in media_item.external_ids.items():
+            async with self._db.execute(
+                "SELECT (item_id) FROM external_ids WHERE media_type=? AND key=? AND value=?;",
+                (media_item.media_type, key, value)
+            ) as cursor:
+                result = await cursor.fetchone()
+                if result:
+                    return result[0]
+        return None

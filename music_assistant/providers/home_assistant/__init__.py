@@ -21,6 +21,7 @@ from music_assistant.constants import (
     EVENT_PLAYER_ADDED,
     EVENT_PLAYER_CHANGED,
 )
+from music_assistant,models.provider import Provider
 from music_assistant.models.media_types import Track
 from music_assistant.utils import IS_HASSIO, LOGGER, run_periodic, try_parse_int
 import slugify as slug
@@ -91,10 +92,10 @@ class HomeAssistant:
         self.http_session = aiohttp.ClientSession(
             loop=self.mass.loop, connector=aiohttp.TCPConnector()
         )
-        self.mass.loop.create_task(self.__hass_websocket())
+        self.mass.add_job(self.__hass_websocket())
         await self.mass.add_event_listener(self.mass_event, EVENT_PLAYER_CHANGED)
         await self.mass.add_event_listener(self.mass_event, EVENT_PLAYER_ADDED)
-        self.mass.loop.create_task(self.__get_sources())
+        self.mass.add_job(self.__get_sources())
 
     async def async_get_state_async(self, entity_id, attribute="state"):
         """get state of a hass entity (async)"""
@@ -115,7 +116,7 @@ class HomeAssistant:
             else:
                 return state_obj
         else:
-            self.mass.loop.create_task(self.__request_state(entity_id))
+            self.mass.add_job(self.__request_state(entity_id))
             return None
 
     async def __async_request_state(self, entity_id):
@@ -123,7 +124,7 @@ class HomeAssistant:
         state_obj = await self.__get_data("states/%s" % entity_id)
         if "state" in state_obj:
             self._tracked_entities[entity_id] = state_obj
-            await self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, state_obj)
+            self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, state_obj)
 
     async def async_mass_event(self, msg, msg_details):
         """received event from mass"""
@@ -137,7 +138,7 @@ class HomeAssistant:
                 self._tracked_entities[event_data["entity_id"]] = event_data[
                     "new_state"
                 ]
-                self.mass.loop.create_task(
+                self.mass.add_job(
                     self.mass.signal_event(EVENT_HASS_ENTITY_CHANGED, event_data)
                 )
         elif event_type == "call_service" and event_data["domain"] == "media_player":

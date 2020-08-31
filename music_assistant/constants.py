@@ -18,7 +18,6 @@ CONF_KEY_PROVIDERS = "providers"
 EVENT_PLAYER_ADDED = "player added"
 EVENT_PLAYER_REMOVED = "player removed"
 EVENT_PLAYER_CHANGED = "player changed"
-EVENT_PLAYER_UPDATED = EVENT_PLAYER_CHANGED
 EVENT_STREAM_STARTED = "streaming started"
 EVENT_STREAM_ENDED = "streaming ended"
 EVENT_CONFIG_CHANGED = "config changed"

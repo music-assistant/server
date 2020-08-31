@@ -121,7 +121,7 @@ export default Vue.extend({
       this.filteredPlayerIds = []
       for (var playerId in this.$server.players) {
         // we're only interested in enabled players that are not group childs
-        if (this.$server.players[playerId].enabled && this.$server.players[playerId].group_parents.length === 0) {
+        if (this.$server.players[playerId].available) {
           this.filteredPlayerIds.push(playerId)
         }
       }

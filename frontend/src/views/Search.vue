@@ -122,8 +122,8 @@ export default {
       this.playlists = []
       if (this.searchQuery) {
         this.$store.loading = true
-        let params = { query: this.searchQuery, online: true, limit: 10 }
-        let result = await this.$server.getData('search', params)
+        const params = { query: this.searchQuery, online: true, limit: 10 }
+        const result = await this.$server.getData('search', params)
         this.artists = result.artists
         this.albums = result.albums
         this.tracks = result.tracks

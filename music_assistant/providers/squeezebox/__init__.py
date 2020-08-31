@@ -7,17 +7,16 @@ import decimal
 import os
 import random
 import socket
+import logging
 import struct
 import sys
 import time
 from typing import List
 
-from music_assistant.constants import CONF_ENABLED
-from music_assistant.models.player import Player, PlayerState
+from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
 from music_assistant.models.player_queue import PlayerQueue, QueueItem
 from music_assistant.models.playerprovider import PlayerProvider
 from music_assistant.utils import (
-    LOGGER,
     get_hostname,
     get_ip,
     run_periodic,
@@ -25,25 +24,44 @@ from music_assistant.utils import (
 )
 
 PROV_ID = "squeezebox"
-PROV_NAME = "Squeezebox"
-PROV_CLASS = "PySqueezeProvider"
+PROV_NAME = "Squeezebox emulation"
 
-CONFIG_ENTRIES = [(CONF_ENABLED, True, CONF_ENABLED)]
+CONFIG_ENTRIES = []
+PLAYER_FEATURES = [PlayerFeature.QUEUE, PlayerFeature.CROSSFADE, PlayerFeature.GAPLESS]
 
+LOGGER = logging.getLogger(PROV_ID)
+
+async def async_setup(mass):
+    """Perform async setup of this Plugin/Provider."""
+    prov = PySqueezeProvider()
+    await mass.async_register_provider(prov)
 
 class PySqueezeProvider(PlayerProvider):
     """Python implementation of SlimProto server"""
 
-    ### Provider specific implementation #####
+    @property
+    def id(self) -> str:
+        """Return provider ID for this provider."""
+        return PROV_ID
 
-    async def async_setup(self, conf):
-        """async initialize of module"""
+    @property
+    def name(self) -> str:
+        """Return provider Name for this provider."""
+        return PROV_NAME
+
+    @property
+    def config_entries(self) -> List[ConfigEntry]:
+        """Return Config Entries for this provider."""
+        return CONFIG_ENTRIES
+
+    async def async_on_start(self) -> bool:
+        """Called on startup. Handle initialization of the provider based on config."""
         # start slimproto server
-        self.mass.loop.create_task(
-            asyncio.start_server(self.__handle_socket_client, "0.0.0.0", 3483)
+        self.mass.add_job(
+            asyncio.start_server(self.__async_handle_socket_client, "0.0.0.0", 3483)
         )
         # setup discovery
-        self.mass.loop.create_task(self.start_discovery())
+        self.mass.add_job(self.async_start_discovery())
 
     async def async_start_discovery(self):
         transport, protocol = await self.mass.loop.create_datagram_endpoint(
@@ -83,7 +101,7 @@ class PySqueezeProvider(PlayerProvider):
                             player_id = str(device_mac).lower()
                             device_type = devices.get(dev_id, "unknown device")
                             player = PySqueezePlayer(
-                                self.mass, player_id, self.prov_id, device_type, writer
+                                self.mass, player_id, PROV_ID, device_type, writer
                             )
                             await self.mass.player_manager.add_player(player)
                         elif player != None:
@@ -100,14 +118,13 @@ class PySqueezeProvider(PlayerProvider):
                 self.mass.config.save()
 
 
-class PySqueezePlayer(Player):
+class PySqueezePlayer():
     """Squeezebox socket client"""
 
     def __init__(self, mass, player_id, prov_id, dev_type, writer):
-        super().__init__(mass, player_id, prov_id)
-        self.supports_queue = True
-        self.supports_gapless = True
-        self.supports_crossfade = True
+        """Initialize the player."""
+        self.player_id = player_id
+        self.mass = mass
         self._writer = writer
         self.buffer = b""
         self.name = "%s - %s" % (dev_type, player_id)
@@ -116,22 +133,22 @@ class PySqueezePlayer(Player):
         self._last_heartbeat = 0
         self._cur_time_milliseconds = 0
         # initialize player
-        self.mass.loop.create_task(self.initialize_player())
-        self._heartbeat_task = self.mass.loop.create_task(self.__send_heartbeat())
+        self.mass.add_job(self.async_initialize_player())
+        self._heartbeat_task = self.mass.add_job(self.__send_heartbeat())
 
     async def async_initialize_player(self):
         """set some startup settings for the player."""
         # send version
-        await self.__send_frame(b"vers", b"7.8")
-        await self.__send_frame(b"setd", struct.pack("B", 0))
-        await self.__send_frame(b"setd", struct.pack("B", 4))
+        await self.__async_send_frame(b"vers", b"7.8")
+        await self.__async_send_frame(b"setd", struct.pack("B", 0))
+        await self.__async_send_frame(b"setd", struct.pack("B", 4))
         # TODO: handle display stuff
         # await self.setBrightness()
         # restore last volume and power state
         if self.settings.get("last_volume"):
-            await self.volume_set(self.settings["last_volume"])
+            await self.async_volume_set(self.settings["last_volume"])
         else:
-            await self.volume_set(40)
+            await self.async_volume_set(40)
         if self.settings.get("last_power"):
             await self.power(self.settings["last_power"])
         else:
@@ -140,28 +157,28 @@ class PySqueezePlayer(Player):
     async def async_cmd_stop(self):
         """Send stop command to player."""
         data = await self.__pack_stream(b"q", autostart=b"0", flags=0)
-        await self.__send_frame(b"strm", data)
+        await self.__async_send_frame(b"strm", data)
 
     async def async_cmd_play(self):
         """Send play (unpause) command to player."""
         data = await self.__pack_stream(b"u", autostart=b"0", flags=0)
-        await self.__send_frame(b"strm", data)
+        await self.__async_send_frame(b"strm", data)
 
     async def async_cmd_pause(self):
         """Send pause command to player."""
         data = await self.__pack_stream(b"p", autostart=b"0", flags=0)
-        await self.__send_frame(b"strm", data)
+        await self.__async_send_frame(b"strm", data)
 
     async def async_cmd_power_on(self):
         """Send power ON command to player."""
-        await self.__send_frame(b"aude", struct.pack("2B", 1, 1))
+        await self.__async_send_frame(b"aude", struct.pack("2B", 1, 1))
         self.settings["last_power"] = True
         self.powered = True
 
     async def async_cmd_power_off(self):
         """Send power TOGGLE command to player."""
         await self.cmd_stop()
-        await self.__send_frame(b"aude", struct.pack("2B", 0, 0))
+        await self.__async_send_frame(b"aude", struct.pack("2B", 0, 0))
         self.settings["last_power"] = False
         self.powered = False
 
@@ -170,16 +187,16 @@ class PySqueezePlayer(Player):
         self._volume.volume = volume_level
         og = self._volume.old_gain()
         ng = self._volume.new_gain()
-        await self.__send_frame(b"audg", struct.pack("!LLBBLL", og, og, 1, 255, ng, ng))
+        await self.__async_send_frame(b"audg", struct.pack("!LLBBLL", og, og, 1, 255, ng, ng))
         self.settings["last_volume"] = volume_level
         self.volume_level = volume_level
 
     async def async_cmd_volume_mute(self, is_muted=False):
         """Send mute command to player."""
         if is_muted:
-            await self.__send_frame(b"aude", struct.pack("2B", 0, 0))
+            await self.__async_send_frame(b"aude", struct.pack("2B", 0, 0))
         else:
-            await self.__send_frame(b"aude", struct.pack("2B", 1, 1))
+            await self.__async_send_frame(b"aude", struct.pack("2B", 1, 1))
         self.muted = is_muted
 
     async def async_cmd_queue_play_index(self, index: int):
@@ -220,11 +237,11 @@ class PySqueezePlayer(Player):
 
     async def __async_send_flush(self):
         data = await self.__pack_stream(b"f", autostart=b"0", flags=0)
-        await self.__send_frame(b"strm", data)
+        await self.__async_send_frame(b"strm", data)
 
     async def __async_send_play(self, uri):
         """Play uri"""
-        self.cur_uri = uri
+        self.current_uri = uri
         self.powered = True
         enable_crossfade = self.settings["crossfade_duration"] > 0
         command = b"s"
@@ -249,7 +266,7 @@ class PySqueezePlayer(Player):
         )
         request = "GET %s HTTP/1.0\r\n%s\r\n" % (uri, headers)
         data = data + request.encode("utf-8")
-        await self.__send_frame(b"strm", data)
+        await self.__async_send_frame(b"strm", data)
 
     def __delete__(self, instance):
         """make sure the heartbeat task is deleted"""
@@ -261,7 +278,7 @@ class PySqueezePlayer(Player):
         """Send periodic heartbeat message to player."""
         timestamp = int(time.time())
         data = await self.__pack_stream(b"t", replayGain=timestamp, flags=0)
-        await self.__send_frame(b"strm", data)
+        await self.__async_send_frame(b"strm", data)
 
     async def __async_send_frame(self, command, data):
         """Send command to Squeeze player."""
@@ -308,10 +325,10 @@ class PySqueezePlayer(Player):
 
     async def async_setBrightness(self, level=4):
         assert 0 <= level <= 4
-        await self.__send_frame(b"grfb", struct.pack("!H", level))
+        await self.__async_send_frame(b"grfb", struct.pack("!H", level))
 
     async def async_set_visualisation(self, visualisation):
-        await self.__send_frame(b"visu", visualisation.pack())
+        await self.__async_send_frame(b"visu", visualisation.pack())
 
     async def async_render(self, text):
         # self.display.clear()
@@ -321,7 +338,7 @@ class PySqueezePlayer(Player):
 
     async def async_updateDisplay(self, bitmap, transition="c", offset=0, param=0):
         frame = struct.pack("!Hcb", offset, transition, param) + bitmap
-        await self.__send_frame(b"grfe", frame)
+        await self.__async_send_frame(b"grfe", frame)
 
     async def async_process_msg(self, operation, packet):
         handler = getattr(self, "process_%s" % operation, None)
@@ -414,7 +431,7 @@ class PySqueezePlayer(Player):
     async def async_process_RESP(self, data):
         """response received at player, send continue"""
         LOGGER.debug("RESP received")
-        await self.__send_frame(b"cont", b"0")
+        await self.__async_send_frame(b"cont", b"0")
 
     async def async_process_IR(self, data):
         """Slightly involved codepath here. This raises an event, which may

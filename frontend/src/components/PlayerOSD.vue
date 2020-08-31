@@ -340,7 +340,7 @@ export default Vue.extend({
     },
     async getQueueDetails () {
       if (this.$server.activePlayer) {
-        let endpoint = 'players/' + this.$server.activePlayerId + '/queue'
+        const endpoint = 'players/' + this.$server.activePlayerId + '/queue'
         this.playerQueueDetails = await this.$server.getData(endpoint)
       }
     }

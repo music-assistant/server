@@ -11,9 +11,9 @@ from music_assistant.models.media_types import (
     Playlist,
     Radio,
     SearchResult,
-    StreamDetails,
     Track,
 )
+from music_assistant.models.streamdetails import StreamDetails
 from music_assistant.models.provider import Provider, ProviderType
 
 
@@ -131,5 +131,5 @@ class MusicProvider(Provider):
     @abstractmethod
     async def async_get_stream_details(
             self, track_id: str) -> StreamDetails:
-        """Get streamdetails for a track"""
+        """Get streamdetails for a track."""
         raise NotImplementedError

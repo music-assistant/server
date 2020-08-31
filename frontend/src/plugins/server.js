@@ -33,7 +33,7 @@ const server = new Vue({
         serverAddress = serverAddress + '/'
       }
       this._address = serverAddress
-      let wsAddress = serverAddress.replace('http', 'ws') + 'ws'
+      const wsAddress = serverAddress.replace('http', 'ws') + 'ws'
       this._ws = new WebSocket(wsAddress)
       this._ws.onopen = this._onWsConnect
       this._ws.onmessage = this._onWsMessage
@@ -77,35 +77,35 @@ const server = new Vue({
 
     async getData (endpoint, params = {}) {
       // get data from the server
-      let url = this._address + 'api/' + endpoint
-      let result = await _axios.get(url, { params: params })
+      const url = this._address + 'api/' + endpoint
+      const result = await _axios.get(url, { params: params })
       Vue.$log.debug('getData', endpoint, result)
       return result.data
     },
 
     async postData (endpoint, data) {
       // post data to the server
-      let url = this._address + 'api/' + endpoint
+      const url = this._address + 'api/' + endpoint
       data = JSON.stringify(data)
-      let result = await _axios.post(url, data)
+      const result = await _axios.post(url, data)
       Vue.$log.debug('postData', endpoint, result)
       return result.data
     },
 
     async putData (endpoint, data) {
       // put data to the server
-      let url = this._address + 'api/' + endpoint
+      const url = this._address + 'api/' + endpoint
       data = JSON.stringify(data)
-      let result = await _axios.put(url, data)
+      const result = await _axios.put(url, data)
       Vue.$log.debug('putData', endpoint, result)
       return result.data
     },
 
     async deleteData (endpoint, dataObj) {
       // delete data on the server
-      let url = this._address + 'api/' + endpoint
+      const url = this._address + 'api/' + endpoint
       dataObj = JSON.stringify(dataObj)
-      let result = await _axios.delete(url, { data: dataObj })
+      const result = await _axios.delete(url, { data: dataObj })
       Vue.$log.debug('deleteData', endpoint, result)
       return result.data
     },
@@ -133,13 +133,13 @@ const server = new Vue({
     },
 
     playerCommand (cmd, cmd_opt = '', playerId = this.activePlayerId) {
-      let endpoint = 'players/' + playerId + '/cmd/' + cmd
+      const endpoint = 'players/' + playerId + '/cmd/' + cmd
       this.postData(endpoint, cmd_opt)
     },
 
     async playItem (item, queueOpt) {
       this.$store.loading = true
-      let endpoint = 'players/' + this.activePlayerId + '/play_media/' + queueOpt
+      const endpoint = 'players/' + this.activePlayerId + '/play_media/' + queueOpt
       await this.postData(endpoint, item)
       this.$store.loading = false
     },
@@ -157,8 +157,8 @@ const server = new Vue({
       Vue.$log.info('Connected to server ' + this._address)
       this.connected = true
       // retrieve all players once through api
-      let players = await this.getData('players')
-      for (let player of players) {
+      const players = await this.getData('players')
+      for (const player of players) {
         Vue.set(this.players, player.player_id, player)
       }
       this._selectActivePlayer()
@@ -201,12 +201,12 @@ const server = new Vue({
       // auto select new active player if we have none
       if (!this.activePlayer || !this.activePlayer.enabled || this.activePlayer.group_parents.length > 0) {
         // prefer last selected player
-        let lastPlayerId = localStorage.getItem('activePlayerId')
+        const lastPlayerId = localStorage.getItem('activePlayerId')
         if (lastPlayerId && this.players[lastPlayerId] && this.players[lastPlayerId].enabled) {
           this.switchPlayer(lastPlayerId)
         } else {
           // prefer the first playing player
-          for (let playerId in this.players) {
+          for (const playerId in this.players) {
             if (this.players[playerId].state === 'playing' && this.players[playerId].enabled && this.players[playerId].group_parents.length === 0) {
               this.switchPlayer(playerId)
               break
@@ -214,7 +214,7 @@ const server = new Vue({
           }
           // fallback to just the first player
           if (!this.activePlayer || !this.activePlayer.enabled) {
-            for (let playerId in this.players) {
+            for (const playerId in this.players) {
               if (this.players[playerId].enabled && this.players[playerId].group_parents.length === 0) {
                 this.switchPlayer(playerId)
                 break

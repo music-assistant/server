@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, List, Optional, Tuple
 
 
-class ConfigEntryType(Enum):
+class ConfigEntryType(str, Enum):
     """Enum for the type of a config entry."""
     BOOL = "boolean"
     STRING = "string"
@@ -28,3 +28,4 @@ class ConfigEntry():
     description_key: Optional[str] = None  # key in the translations file
     help_key: Optional[str] = None  # key in the translations file
     multi_value: bool = False  # allow multiple values from the list
+    value: Optional[Any] = None

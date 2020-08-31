@@ -1,28 +1,30 @@
 """All classes and helpers for the Configuration."""
 
+import logging
 import os
 import shutil
-
-from typing import List
 from enum import Enum
+from typing import List
 
 from music_assistant.constants import (
-    CONF_KEY_BASE,
-    CONF_KEY_PROVIDERS,
-    CONF_KEY_PLAYERSETTINGS,
-    EVENT_CONFIG_CHANGED,
     CONF_ENABLED,
-    CONF_NAME
+    CONF_KEY_BASE,
+    CONF_KEY_PLAYERSETTINGS,
+    CONF_KEY_PROVIDERS,
+    CONF_NAME,
+    EVENT_CONFIG_CHANGED,
 )
-from music_assistant.utils import LOGGER, json, try_load_json_file
 # from music_assistant.mass import MusicAssistant
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
+from music_assistant.utils import json, try_load_json_file
+
+LOGGER = logging.getLogger("mass")
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = [
     ConfigEntry(entry_key=CONF_ENABLED, entry_type=ConfigEntryType.BOOL,
                 default_value=True, description_key="player_enabled"),
-    ConfigEntry(entry_key=CONF_NAME, entry_type=ConfigEntryType.BOOL,
-                default_value=True, description_key="player_name"),
+    ConfigEntry(entry_key=CONF_NAME, entry_type=ConfigEntryType.STRING,
+                default_value=None, description_key="player_name"),
     ConfigEntry(entry_key="mute_as_power", entry_type=ConfigEntryType.BOOL,
                 default_value=True, description_key="player_mute_power"),
     ConfigEntry(entry_key="max_sample_rate", entry_type=ConfigEntryType.INT,
@@ -68,27 +70,50 @@ class ConfigItem():
     """
 
     def __init__(self, mass, parent_item_key: str, base_type: ConfigBaseType):
-        self.parent_item_key = parent_item_key
-        self.base_type = base_type
+        self._parent_item_key = parent_item_key
+        self._base_type = base_type
         self.mass = mass
         self.stored_config = dict()
 
+    def __repr__(self):
+        return f"{dict}({self.items()})"
+
+    def items(self) -> dict:
+        """Return entire config as dict."""
+        result = dict()
+        for entry in self.get_config_entries():
+            if entry.entry_key in self.stored_config:
+                # use saved value
+                entry.value = self.stored_config[entry.entry_key]
+            else:
+                # use default value for config entry
+                entry.value = entry.default_value
+            result[entry.entry_key] = entry
+        return result
+
     def get(self, key, default=None):
-        """Return value for specified key."""
+        """Return value if key exists, default if not."""
         try:
-            return self.__getitem__(key)
+            return self[key]
         except KeyError:
             return default
 
-    def __getitem__(self, key):
-        """Return default value from ConfigEntry if needed."""
-        if key in self.stored_config:
-            # TODO: validate value in stored config against config entry ?
-            return self.stored_config[key]
+    def get_entry(self, key):
+        """Return complete ConfigEntry for specified key."""
         for entry in self.get_config_entries():
             if entry.entry_key == key:
-                return entry.default_value
+                if key in self.stored_config:
+                    # use saved value
+                    entry.value = self.stored_config[key]
+                else:
+                    # use default value for config entry
+                    entry.value = entry.default_value
+                return entry
         raise KeyError
+
+    def __getitem__(self, key) -> ConfigEntry:
+        """Return default value from ConfigEntry if needed."""
+        return self.get_entry(key).value
 
     def __setitem__(self, key, value):
         """Store value and validate."""
@@ -96,48 +121,43 @@ class ConfigItem():
             if entry.entry_key != key:
                 continue
             # do some simple type checking
-            if entry.multi_value and not isinstance(value, list):
+            if entry.entry_type == ConfigEntryType.STRING and not isinstance(value, str):
                 raise ValueError
-            elif entry.entry_type == ConfigEntryType.STRING and not isinstance(value, str):
+            if entry.entry_type == ConfigEntryType.BOOL and not isinstance(value, bool):
                 raise ValueError
-            elif entry.entry_type == ConfigEntryType.BOOL and not isinstance(value, bool):
-                raise ValueError
-            elif entry.entry_type == ConfigEntryType.FLOAT and not isinstance(value, (float, int)):
+            if entry.entry_type == ConfigEntryType.FLOAT and not isinstance(value, (float, int)):
                 raise ValueError
             if value != entry.default_value:
                 self.stored_config[key] = value
-                self.mass.signal_event(EVENT_CONFIG_CHANGED, (self.base_type, self.parent_item_key))
+                self.mass.signal_event(EVENT_CONFIG_CHANGED,
+                                       (self._base_type, self._parent_item_key))
             return
         # raise KeyError if we're trying to set a value not defined as ConfigEntry
         raise KeyError
 
     def get_config_entries(self) -> List[ConfigEntry]:
         """Return config entries for this item."""
-        if self.base_type == ConfigBaseType.PLAYER:
-            return self.mass.config.get_player_config_entries(self.parent_item_key)
-        if self.base_type == ConfigBaseType.PROVIDER:
-            self.mass.config.get_provider_config_entries(self.parent_item_key)
+        if self._base_type == ConfigBaseType.PLAYER:
+            return self.mass.config.get_player_config_entries(self._parent_item_key)
+        if self._base_type == ConfigBaseType.PROVIDER:
+            return self.mass.config.get_provider_config_entries(self._parent_item_key)
         return self.mass.config.get_base_config_entries()
 
 
-class ConfigBase():
+class ConfigBase(dict):
     """Configuration class with ConfigItem items."""
 
     def __init__(self, mass, base_type=ConfigBaseType):
         self.mass = mass
-        self.base_type = base_type
-        self.stored_config = dict()
-
-    def get(self, key):
-        """Return configuration for specified item."""
-        if not key in self.stored_config:
-            # create new ConfigDictItem on the fly
-            self.stored_config[key] = ConfigItem(self.mass, key, self.base_type)
-        return self.stored_config[key]
+        self._base_type = base_type
+        super().__init__()
 
     def __getitem__(self, item_key):
         """Convenience method for get."""
-        return self.get(item_key)
+        if not item_key in self:
+            # create new ConfigDictItem on the fly
+            super().__setitem__(item_key, ConfigItem(self.mass, item_key, self._base_type))
+        return super().__getitem__(item_key)
 
 
 class MassConfig():
@@ -161,26 +181,26 @@ class MassConfig():
 
     @property
     def base(self):
-        """return base config"""
+        """Return base config."""
         return self._conf_base
 
     @property
     def players(self):
-        """return player settings"""
+        """Return all player configs."""
         return self._conf_players
 
     @property
     def providers(self):
-        """return playerprovider settings"""
+        """Return all provider configs."""
         return self._conf_providers
 
     def get_provider_config(self, provider_id):
         """Return config for given provider."""
-        return self.providers[provider_id]
+        return self._conf_providers[provider_id]
 
     def get_player_config(self, player_id):
         """Return config for given player."""
-        return self.players[player_id]
+        return self._conf_players[player_id]
 
     def get_provider_config_entries(self, provider_id: str) -> List[ConfigEntry]:
         """Return all config entries for the given provider."""
@@ -205,14 +225,14 @@ class MassConfig():
     def as_dict(self):
         """Return entire config as dict."""
         return {
-            CONF_KEY_BASE: self.base.stored_config,
-            CONF_KEY_PLAYERSETTINGS: self.players.stored_config,
-            CONF_KEY_PROVIDERS: self.providers.stored_config
+            CONF_KEY_BASE: self.base,
+            CONF_KEY_PLAYERSETTINGS: self.players,
+            CONF_KEY_PROVIDERS: self.providers
         }
 
     async def async_save(self):
         """Save config."""
-        await self.mass.async_run_job(self.save)
+        self.mass.add_job(self.save)
 
     def save(self):
         """Save config to file."""
@@ -225,9 +245,20 @@ class MassConfig():
         conf_file_backup = os.path.join(self.data_path, "config.json.backup")
         if os.path.isfile(conf_file):
             shutil.move(conf_file, conf_file_backup)
+        # create dict for stored config
+        stored_conf = {
+            CONF_KEY_BASE: self.base.stored_config,
+            CONF_KEY_PLAYERSETTINGS: {},
+            CONF_KEY_PROVIDERS: {}
+        }
+        for key, value in self.players.items():
+            stored_conf[CONF_KEY_PLAYERSETTINGS][key] = value.stored_config
+        for key, value in self.providers.items():
+            stored_conf[CONF_KEY_PROVIDERS][key] = value.stored_config
+
         # write current config to file
         with open(conf_file, "w") as _file:
-            _file.write(json.dumps(self.as_dict(), indent=4))
+            _file.write(json.dumps(stored_conf, indent=4))
         LOGGER.info("Config saved!")
         self.loading = False
 
@@ -241,35 +272,23 @@ class MassConfig():
             conf_file_backup = os.path.join(self.data_path, "config.json.backup")
             data = try_load_json_file(conf_file_backup)
         if data:
-            if CONF_KEY_BASE in data and not data[CONF_KEY_BASE].get("web"):
+
+            if data.get(CONF_KEY_BASE):
                 for key, value in data[CONF_KEY_BASE].items():
-                    if key == "__desc__":
-                        continue
+                    if key in ["__desc__", "web", "homeassistant"]:
+                        continue  # legacy - to be removed later
                     self.base.stored_config[key] = value
-            if CONF_KEY_PLAYERSETTINGS in data:
+            if data.get(CONF_KEY_PLAYERSETTINGS):
                 for player_id, player in data[CONF_KEY_PLAYERSETTINGS].items():
                     for key, value in player.items():
                         if key == "__desc__":
                             continue
                         self.players[player_id].stored_config[key] = value
-            if CONF_KEY_PROVIDERS in data:
+            if data.get(CONF_KEY_PROVIDERS):
                 for provider_id, provider in data[CONF_KEY_PROVIDERS].items():
                     for key, value in provider.items():
                         if key == "__desc__":
                             continue
                         self.providers[provider_id].stored_config[key] = value
-            # migrate from previous format
-            if CONF_KEY_BASE in data and data[CONF_KEY_BASE].get("web"):
-                for key, value in data[CONF_KEY_BASE]["web"].items():  # legacy
-                    if key == "__desc__":
-                        continue
-                    self.base.stored_config[key] = value
-            for legacy_key in ["musicproviders", "playerproviders"]:
-                if legacy_key in data:
-                    for provider_id, provider in data[legacy_key].items():
-                        for key, value in provider.items():
-                            if key == "__desc__":
-                                continue
-                            self.providers[provider_id].stored_config[key] = value
 
         self.loading = False

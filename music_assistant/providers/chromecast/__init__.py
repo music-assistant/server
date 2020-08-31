@@ -12,28 +12,24 @@ import aiohttp
 import attr
 import pychromecast
 import zeroconf
-from music_assistant.constants import (
-    CONF_ENABLED,
-    CONF_HOSTNAME,
-    CONF_PORT,
-)
+from music_assistant.constants import CONF_ENABLED, CONF_HOSTNAME, CONF_PORT
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import Player, PlayerState, DeviceInfo
+from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
+from music_assistant.models.player import DeviceInfo, Player, PlayerState
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.playerprovider import PlayerProvider
-from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
-from music_assistant.utils import LOGGER, try_parse_int
-
+from music_assistant.utils import try_parse_int
 from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
 from pychromecast.socket_client import (
     CONNECTION_STATUS_CONNECTED,
     CONNECTION_STATUS_DISCONNECTED,
 )
 
+from .const import PROV_ID, PROV_NAME, PROVIDER_CONFIG_ENTRIES
 from .models import ChromecastInfo
 from .player import ChromecastPlayer
-from .const import PROV_ID, PROV_NAME, PROVIDER_CONFIG_ENTRIES
 
+LOGGER = logging.getLogger(PROV_ID)
 
 
 async def async_setup(mass):
@@ -45,12 +41,23 @@ async def async_setup(mass):
 
 class ChromecastProvider(PlayerProvider):
     """Support for ChromeCast Audio PlayerProvider."""
-    id: str = PROV_ID
-    name: str = PROV_NAME
-    config_entries: List[ConfigEntry] = PROVIDER_CONFIG_ENTRIES
 
+    @property
+    def id(self) -> str:
+        """Return provider ID for this provider."""
+        return PROV_ID
 
-    async def async_on_start(self):
+    @property
+    def name(self) -> str:
+        """Return provider Name for this provider."""
+        return PROV_NAME
+
+    @property
+    def config_entries(self) -> List[ConfigEntry]:
+        """Return Config Entries for this provider."""
+        return PROVIDER_CONFIG_ENTRIES
+
+    async def async_on_start(self) -> bool:
         """Called on startup. Handle initialization of the provider based on config."""
         # pylint: disable=attribute-defined-outside-init
         self.mz_mgr = MultizoneManager()
@@ -60,72 +67,74 @@ class ChromecastProvider(PlayerProvider):
             self.__chromecast_remove_callback,
             self.__chromecast_add_update_callback)
         self._browser = pychromecast.discovery.start_discovery(self._listener, self.mass.zeroconf)
-        # pylint: enable=attribute-defined-outside-init
+        self.available = True
+        return True
 
     async def async_on_stop(self):
         """Called on shutdown. Handle correct close/cleanup of the provider on exit."""
+        if not self.available:
+            return
         # stop discovery
         pychromecast.stop_discovery(self._browser)
-        # stop cact socket clients
+        # stop cast socket clients
         for player in self._players.values():
-            await player._async_disconnect()
-
+            await player.async_disconnect()
 
     async def async_cmd_play_uri(self, player_id: str, uri: str):
         """
             Play the specified uri/url on the goven player.
                 :param player_id: player_id of the player to handle the command.
         """
-        await self.mass.async_run_job(self._players[player_id].play_uri, uri)
+        self.mass.add_job(self._players[player_id].play_uri, uri)
 
     async def async_cmd_stop(self, player_id: str):
         """
             Send STOP command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        await self.mass.async_run_job(self._players[player_id].stop)
+        self.mass.add_job(self._players[player_id].stop)
 
     async def async_cmd_play(self, player_id: str):
         """
             Send STOP command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        await self.mass.async_run_job(self._players[player_id].play)
+        self.mass.add_job(self._players[player_id].play)
 
     async def async_cmd_pause(self, player_id: str):
         """
             Send PAUSE command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        await self.mass.async_run_job(self._players[player_id].pause)
+        self.mass.add_job(self._players[player_id].pause)
 
     async def async_cmd_next(self, player_id: str):
         """
             Send NEXT TRACK command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        await self.mass.async_run_job(self._players[player_id].next)
+        self.mass.add_job(self._players[player_id].next)
 
     async def async_cmd_previous(self, player_id: str):
         """
             Send PREVIOUS TRACK command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        await self.mass.async_run_job(self._players[player_id].previous)
+        self.mass.add_job(self._players[player_id].previous)
 
     async def async_cmd_power_on(self, player_id: str):
         """
             Send POWER ON command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        await self.mass.async_run_job(self._players[player_id].power_on)
+        self.mass.add_job(self._players[player_id].power_on)
 
     async def async_cmd_power_off(self, player_id: str):
         """
             Send POWER OFF command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        await self.mass.async_run_job(self._players[player_id].power_off)
+        self.mass.add_job(self._players[player_id].power_off)
 
     async def async_cmd_volume_set(self, player_id: str, volume_level: int):
         """
@@ -133,7 +142,7 @@ class ChromecastProvider(PlayerProvider):
                 :param player_id: player_id of the player to handle the command.
                 :param volume_level: volume level to set (0..100).
         """
-        await self.mass.async_run_job(self._players[player_id].previous, volume_level / 100)
+        self.mass.add_job(self._players[player_id].volume_set, volume_level / 100)
 
     async def async_cmd_volume_mute(self, player_id: str, is_muted=False):
         """
@@ -141,15 +150,15 @@ class ChromecastProvider(PlayerProvider):
                 :param player_id: player_id of the player to handle the command.
                 :param is_muted: bool with new mute state.
         """
-        await self.mass.async_run_job(self._players[player_id].volume_mute, is_muted)
+        self.mass.add_job(self._players[player_id].volume_mute, is_muted)
 
-    async def async_queue_load(self, player_id: str, queue_items: List[QueueItem]):
+    async def async_cmd_queue_load(self, player_id: str, queue_items: List[QueueItem]):
         """
             Load/overwrite given items in the player's queue implementation
                 :param player_id: player_id of the player to handle the command.
                 :param queue_items: a list of QueueItems
         """
-        await self.mass.async_run_job(self._players[player_id].queue_load, queue_items)
+        self.mass.add_job(self._players[player_id].queue_load, queue_items)
 
     async def async_cmd_queue_append(self, player_id: str, queue_items: List[QueueItem]):
         """
@@ -157,7 +166,7 @@ class ChromecastProvider(PlayerProvider):
                 :param player_id: player_id of the player to handle the command.
                 :param queue_items: a list of QueueItems
         """
-        await self.mass.async_run_job(self._players[player_id].queue_append, queue_items)
+        self.mass.add_job(self._players[player_id].queue_append, queue_items)
 
     def __chromecast_add_update_callback(self, uuid, service_name):
         """Handle zeroconf discovery of a new or updated chromecast."""
@@ -177,21 +186,16 @@ class ChromecastProvider(PlayerProvider):
         if player_id in self._players:
             # player already added, the player will take care of reconnects itself.
             LOGGER.warning("Player is already added: %s", player_id)
-            self.mass.loop.create_task(self._players[player_id].async_set_cast_info(cast_info))
         else:
             player = ChromecastPlayer(self.mass, cast_info)
-            self.mass.run_task(self.mass.music_manager.add_player(player))
+            self._players[player_id] = player
+            self.mass.add_job(self.mass.player_manager.async_add_player(player))
+        self.mass.add_job(self._players[player_id].async_set_cast_info(cast_info))
 
     def __chromecast_remove_callback(self, uuid, service_name, service):
         player_id = str(service[1])
         friendly_name = service[3]
         LOGGER.debug("Chromecast removed: %s - %s", friendly_name, player_id)
-
-
-def chunks(l, n):
-    """Yield successive n-sized chunks from l."""
-    for i in range(0, len(l), n):
-        yield l[i : i + n]
 
 
 # class StatusListener:
@@ -241,7 +245,7 @@ def chunks(l, n):
 #         )
 
 
-# async def __async_report_progress(self):
+# async def async_ __report_progress(self):
     #     """report current progress while playing"""
     #     # chromecast does not send updates of the player's progress (cur_time)
     #     # so we need to send it in periodically
@@ -250,7 +254,7 @@ def chunks(l, n):
     #         await asyncio.sleep(1)
     #     self.__cc_report_progress_task = None
 
-    # async def async_handle_player_state(self, caststatus=None, mediastatus=None):
+    # async def async_ handle_player_state(self, caststatus=None, mediastatus=None):
     #     """handle a player state message from the socket"""
     #     # handle generic cast status
     #     if caststatus:
@@ -266,13 +270,13 @@ def chunks(l, n):
     #             self.state = PlayerState.Paused
     #         else:
     #             self.state = PlayerState.Stopped
-    #         self.cur_uri = mediastatus.content_id
+    #         self.current_uri = mediastatus.content_id
     #         self.cur_time = mediastatus.adjusted_current_time
     #     if (
     #         self._state == PlayerState.Playing
     #         and self.__cc_report_progress_task is None
     #     ):
-    #         self.__cc_report_progress_task = self.mass.loop.create_task(
+    #         self.__cc_report_progress_task = self.mass.add_job(
     #             self.__report_progress()
     #         )
 
@@ -283,7 +287,7 @@ def chunks(l, n):
     #     if self.mass.player_manager.get_player_sync(player_id):
     #         # player already added, the player will take care of reconnects itself.
     #         LOGGER.warning("Player is already added: %s", player_id)
-    #         self.mass.loop.create_task(player.async_set_cast_info(cast_info))
+    #         self.mass.add_job(player.async_set_cast_info(cast_info))
     #     else:
     #         player = ChromecastPlayer(self.mass, cast_info)
     #         # player.cc = chromecast
@@ -312,7 +316,7 @@ def chunks(l, n):
     #         if player.cc.cast_type == "group":
     #             player.mz.update_members()
 
-# async def __async_handle_group_members_update(
+# async def async_ __handle_group_members_update(
     #     self, mz, added_player=None, removed_player=None
     # ):
     #     """handle callback from multizone manager"""

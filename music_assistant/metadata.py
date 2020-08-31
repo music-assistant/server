@@ -1,5 +1,6 @@
 """All logic for metadata retrieval."""
 import json
+import logging
 # TODO: split up into (optional) providers
 import re
 from typing import Optional
@@ -7,9 +8,11 @@ from typing import Optional
 import aiohttp
 from asyncio_throttle import Throttler
 from music_assistant.cache import async_use_cache
-from music_assistant.utils import LOGGER, compare_strings, get_compare_string
+from music_assistant.utils import compare_strings, get_compare_string
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
+
+LOGGER = logging.getLogger("mass")
 
 
 class MetaData:
@@ -21,10 +24,10 @@ class MetaData:
         self.musicbrainz = MusicBrainz(mass)
         self.fanarttv = FanartTv(mass)
 
-    # async def async_setup(self):
-    #     """async initialize of metadata module"""
-    #     await self.musicbrainz.async_setup()
-    #     await self.fanarttv.async_setup()
+    async def async_setup(self):
+        """async initialize of metadata module"""
+        await self.musicbrainz.async_setup()
+        await self.fanarttv.async_setup()
 
     async def async_get_artist_metadata(self, mb_artist_id, cur_metadata):
         """get/update rich metadata for an artist by providing the musicbrainz artist id"""
@@ -45,7 +48,8 @@ class MetaData:
     ):
         """retrieve musicbrainz artist id for the given details"""
         LOGGER.debug(
-            "searching musicbrainz for %s (albumname: %s - album_upc: %s - trackname: %s - track_isrc: %s)",
+            "searching musicbrainz for %s \
+                (albumname: %s - album_upc: %s - trackname: %s - track_isrc: %s)",
             artistname,
             albumname,
             album_upc,
@@ -112,17 +116,15 @@ class MusicBrainz:
     def __init__(self, mass):
         self.mass = mass
         self.cache = mass.cache
-        self.throttler = Throttler(rate_limit=1, period=1)
-        self.http_session = aiohttp.ClientSession(
+        self.throttler = None
+        self._http_session = None
+
+    async def async_setup(self):
+        """perform async setup"""
+        self._http_session = aiohttp.ClientSession(
             loop=self.mass.loop, connector=aiohttp.TCPConnector()
         )
-
-    # async def async_setup(self):
-    #     """perform async setup"""
-    #     self.http_session = aiohttp.ClientSession(
-    #         loop=self.mass.loop, connector=aiohttp.TCPConnector()
-    #     )
-    #     self.throttler = Throttler(rate_limit=1, period=1)
+        self.throttler = Throttler(rate_limit=1, period=1)
 
     async def async_search_artist_by_album(self, artistname, albumname=None, album_upc=None):
         """retrieve musicbrainz artist id by providing the artist name and albumname or upc"""
@@ -199,14 +201,14 @@ class MusicBrainz:
         headers = {"User-Agent": "Music Assistant/1.0.0 https://github.com/marcelveldt"}
         params["fmt"] = "json"
         async with self.throttler:
-            async with self.http_session.get(
+            async with self._http_session.get(
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
                 try:
                     result = await response.json()
                 except Exception as exc:
                     msg = await response.text()
-                    LOGGER.exception("%s - %s" % (str(exc), msg))
+                    LOGGER.exception("%s - %s", str(exc), msg)
                     result = None
                 return result
 
@@ -215,17 +217,15 @@ class FanartTv:
     def __init__(self, mass):
         self.mass = mass
         self.cache = mass.cache
-        self.http_session = aiohttp.ClientSession(
+        self._http_session = None
+        self.throttler = None
+
+    async def async_setup(self):
+        """perform async setup"""
+        self._http_session = aiohttp.ClientSession(
             loop=self.mass.loop, connector=aiohttp.TCPConnector()
         )
         self.throttler = Throttler(rate_limit=1, period=2)
-
-    # async def async_setup(self):
-    #     """perform async setup"""
-    #     self.http_session = aiohttp.ClientSession(
-    #         loop=self.mass.loop, connector=aiohttp.TCPConnector()
-    #     )
-    #     self.throttler = Throttler(rate_limit=1, period=2)
 
     async def async_get_artist_images(self, mb_artist_id):
         """retrieve images by musicbrainz artist id"""
@@ -250,12 +250,14 @@ class FanartTv:
         return metadata
 
     @async_use_cache(30)
-    async def async_get_data(self, endpoint, params={}):
+    async def async_get_data(self, endpoint, params=None):
         """get data from api"""
+        if params is None:
+            params = {}
         url = "http://webservice.fanart.tv/v3/%s" % endpoint
         params["api_key"] = "639191cb0774661597f28a47e7e2bad5"
         async with self.throttler:
-            async with self.http_session.get(
+            async with self._http_session.get(
                 url, params=params, verify_ssl=False
             ) as response:
                 try:

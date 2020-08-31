@@ -7,14 +7,13 @@ from typing import List
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.provider import Provider, ProviderType
 
-
 @dataclass
 class PlayerProvider(Provider):
     """
         Base class for a Playerprovider
         Should be overridden/subclassed by provider specific implementation.
     """
-    type: ProviderType = ProviderType.MUSIC_PROVIDER
+    type: ProviderType = ProviderType.PLAYER_PROVIDER
 
     # SERVICE CALLS / PLAYER COMMANDS
 
@@ -111,7 +110,7 @@ class PlayerProvider(Provider):
         """
         raise NotImplementedError
 
-    async def async_queue_load(self, player_id: str, queue_items: List[QueueItem]):
+    async def async_cmd_queue_load(self, player_id: str, queue_items: List[QueueItem]):
         """
             Load/overwrite given items in the player's queue implementation
                 :param player_id: player_id of the player to handle the command.

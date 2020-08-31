@@ -2,53 +2,36 @@
 """Class to hold all data about a chromecast for creating connections.
     This also has the same attributes as the mDNS fields by zeroconf.
 """
-import asyncio
 import logging
-import time
-import types
-import uuid
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Optional, Tuple
 
-import aiohttp
-import attr
-import pychromecast
-import zeroconf
-from music_assistant.constants import (
-    CONF_ENABLED,
-    CONF_HOSTNAME,
-    CONF_PORT,
-    EVENT_SHUTDOWN,
-)
-from music_assistant.mass import MusicAssistant
-from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
-from music_assistant.models.player import DeviceInfo, Player, PlayerState
-from music_assistant.models.player_queue import QueueItem
-from music_assistant.models.playerprovider import PlayerProvider
-from music_assistant.utils import LOGGER, try_parse_int
 from pychromecast.const import CAST_MANUFACTURERS
-from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
-from pychromecast.socket_client import (
-    CONNECTION_STATUS_CONNECTED,
-    CONNECTION_STATUS_DISCONNECTED,
-)
+from pychromecast.controllers.multizone import MultizoneController
 
+
+from .const import PROV_ID
+
+LOGGER = logging.getLogger(PROV_ID)
 DEFAULT_PORT = 8009
 
 
-@attr.s(slots=True, frozen=True)
+@dataclass()
 class ChromecastInfo:
     """Class to hold all data about a chromecast for creating connections.
     This also has the same attributes as the mDNS fields by zeroconf.
     """
 
-    services: Optional[set] = attr.ib()
-    host: Optional[str] = attr.ib(default=None)
-    port: Optional[int] = attr.ib(default=0)
-    uuid: Optional[str] = attr.ib(
-        converter=attr.converters.optional(str), default=None
-    )  # always convert UUID to string if not None
-    model_name: str = attr.ib(default="")
-    friendly_name: Optional[str] = attr.ib(default=None)
+    services: Optional[set] = field(default_factory=set)
+    host: Optional[str] = ""
+    port: Optional[int] = 0
+    uuid: Optional[str] = ""
+    model_name: str = ""
+    friendly_name: Optional[str] = ""
+
+    def __post_init__(self):
+        """Always convert UUID to string."""
+        self.uuid = str(self.uuid)
 
     @property
     def is_audio_group(self) -> bool:

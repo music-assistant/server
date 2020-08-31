@@ -3,30 +3,37 @@
 import asyncio
 import functools
 import importlib
-from typing import Any, Awaitable, Callable, Coroutine, Union, Optional, List
+import logging
+import os
+import threading
+from typing import Any, Awaitable, Callable, List, Optional, Union
 
 import zeroconf
-
-from .cache import Cache
-from .config import MassConfig
-from .constants import EVENT_SHUTDOWN, CONF_ENABLED
-from .database import Database
-from .http_streamer import HTTPStreamer
-from .metadata import MetaData
-from .music_manager import MusicManager
-from .player_manager import PlayerManager
-from .utils import LOGGER, T, callback, is_callback, serialize_values
-from .web import Web
-
+from music_assistant.cache import Cache
+from music_assistant.config import MassConfig
+from music_assistant.constants import CONF_ENABLED, EVENT_SHUTDOWN
+from music_assistant.database import Database
+from music_assistant.http_streamer import HTTPStreamer
+from music_assistant.metadata import MetaData
 from music_assistant.models.provider import Provider, ProviderType
+from music_assistant.music_manager import MusicManager
+from music_assistant.player_manager import PlayerManager
+from music_assistant.utils import callback, is_callback
+from music_assistant.web import Web
+
+LOGGER = logging.getLogger("mass")
 
 
+#pylint: disable=too-many-instance-attributes
 class MusicAssistant:
+    """Main MusicAssistant object."""
+
     def __init__(self, datapath):
         """
             Create an instance of MusicAssistant
                 :param datapath: file location to store the data
         """
+
         self.loop = None
         self._event_listeners = []
         self._providers = {}
@@ -43,106 +50,92 @@ class MusicAssistant:
         self.zeroconf = zeroconf.Zeroconf()
 
     async def async_start(self):
-        """start running the music assistant server"""
+        """Start running the music assistant server."""
         self.loop = asyncio.get_event_loop()
         self.loop.set_exception_handler(self.__handle_exception)
+        self.loop.set_debug(True)
         await self.database.async_setup()
         await self.cache.async_setup()
-        # await self.metadata.async_setup()
+        await self.metadata.async_setup()
         await self.music_manager.async_setup()
         await self.player_manager.async_setup()
         await self.web.async_setup()
         await self.http_streamer.async_setup()
-        # wait for exit
-        try:
-            while True:
-                await asyncio.sleep(3600)
-        except asyncio.CancelledError:
-            LOGGER.info("Application shutdown")
-            await self.signal_event(EVENT_SHUTDOWN)
-            self.config.save()
-            await self.player_manager.async_close()
-            await self.database.async_close()
-            await self.cache.async_close()
+        await self.async_preload_providers()
 
-    def register_provider(self, provider: Provider):
-        """Register a new Provider/Plugin."""
-        assert provider.id not in self._providers  # provider id's must be unique!
-        provider.mass = self # make sure we have the mass object
-        self._providers[provider.id] = provider
-        if self.config.providers[provider.id][CONF_ENABLED]:
-            self.create_task(provider.async_on_start())
-            LOGGER.info("New provider registered: %s", provider.name)
-        else:
-            LOGGER.debug("Not loading provider %s as it is disabled:", provider.name)
+    async def async_stop(self):
+        """stop running the music assistant server"""
+        LOGGER.info("Application shutdown")
+        self.signal_event(EVENT_SHUTDOWN)
+        await self.config.async_save()
+        for prov in self._providers.values():
+            await prov.async_on_stop()
+        await self.player_manager.async_close()
+        await self.database.async_close()
+        await self.cache.async_close()
 
     async def async_register_provider(self, provider: Provider):
         """Register a new Provider/Plugin."""
-        await self.async_run_job(self.register_provider, provider)
+        assert provider.id and provider.name
+        assert provider.id not in self._providers  # provider id's must be unique!
+        provider.mass = self  # make sure we have the mass object
+        provider.available = False
+        self._providers[provider.id] = provider
+        if self.config.providers[provider.id][CONF_ENABLED]:
+            if await provider.async_on_start():
+                provider.available = True
+                LOGGER.info("New provider registered: %s", provider.name)
+        else:
+            LOGGER.debug("Not loading provider %s as it is disabled:", provider.name)
+
+    async def register_provider(self, provider: Provider):
+        """Register a new Provider/Plugin."""
+        self.add_job(self.async_register_provider(provider))
 
     @callback
     def get_provider(self, provider_id: str) -> Provider:
         """Return provider/plugin by id."""
         if not provider_id in self._providers:
-            raise NameError(f"Invalid provider: {provider_id}")
+            raise KeyError("Provider %s is not available" % provider_id)
         return self._providers[provider_id]
 
     @callback
-    def get_providers(self, filter_type: Optional[ProviderType]) -> List[Provider]:
+    def get_providers(self, filter_type: Optional[ProviderType] = None) -> List[Provider]:
         """Return all providers, optionally filtered by type."""
         return [item for item in self._providers.values()
-                if filter_type is None or item.type == filter_type]
+                if (filter_type is None or item.type == filter_type)
+                and item.available]
 
-    async def async_load_providers(self):
+    async def async_preload_providers(self):
         """Dynamically load all providermodules."""
-        pass
-
-    #     base_dir = os.path.dirname(os.path.abspath(__file__))
-    #     modules_path = os.path.join(base_dir, prov_type)
-    #     # load modules
-    #     for item in os.listdir(modules_path):
-    #         if (
-    #             os.path.isfile(os.path.join(modules_path, item))
-    #             and not item.startswith("_")
-    #             and item.endswith(".py")
-    #             and not item.startswith(".")
-    #         ):
-    #             module_name = item.replace(".py", "")
-    #             if module_name not in provider_modules:
-    #                 prov_mod = await load_provider_module(mass, module_name, prov_type)
-    #                 if prov_mod:
-    #                     provider_modules[module_name] = prov_mod
-
-
-    # async def async_load_provider_module(mass, module_name, prov_type):
-    #     """dynamically load music/player provider"""
-    #     # pylint: disable=broad-except
-    #     try:
-    #         prov_mod = importlib.import_module(
-    #             f".{module_name}", f"music_assistant.{prov_type}"
-    #         )
-    #         prov_conf_entries = prov_mod.CONFIG_ENTRIES
-    #         prov_id = module_name
-    #         prov_name = prov_mod.PROV_NAME
-    #         prov_class = prov_mod.PROV_CLASS
-    #         # get/create config for the module
-    #         prov_config = mass.config.create_module_config(
-    #             prov_id, prov_conf_entries, prov_type
-    #         )
-    #         if prov_config[CONF_ENABLED]:
-    #             prov_mod_cls = getattr(prov_mod, prov_class)
-    #             provider = prov_mod_cls(mass)
-    #             provider.prov_id = prov_id
-    #             provider.name = prov_name
-    #             await provider.setup(prov_config)
-    #             LOGGER.info("Successfully initialized module %s", provider.name)
-    #             return provider
-    #         else:
-    #             return None
-    #     except Exception as exc:
-    #         LOGGER.error("Error loading module %s: %s", module_name, exc)
-    #         LOGGER.debug("Error loading module", exc_info=exc)
-        # pylint: enable=broad-except
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        modules_path = os.path.join(base_dir, "providers")
+        # load modules
+        for dir_str in os.listdir(modules_path):
+            dir_path = os.path.join(modules_path, dir_str)
+            if not os.path.isdir(dir_path):
+                continue
+            # get files in directory
+            for file_str in os.listdir(dir_path):
+                file_path = os.path.join(dir_path, file_str)
+                if not os.path.isfile(file_path):
+                    continue
+                if not file_str == "__init__.py":
+                    continue
+                module_name = dir_str
+                if module_name in [i.id for i in self._providers.values()]:
+                    continue
+                # try to load the module
+                try:
+                    prov_mod = importlib.import_module(
+                        f".{module_name}", "music_assistant.providers"
+                    )
+                    await prov_mod.async_setup(self)
+                # pylint: disable=broad-except
+                except Exception as exc:
+                    LOGGER.exception("Error preloading module %s: %s", module_name, exc)
+                else:
+                    LOGGER.info("Successfully preloaded module %s", module_name)
 
     @callback
     def signal_event(self, event_msg: str, event_details: Any = None):
@@ -161,10 +154,11 @@ class MusicAssistant:
                 :param event_msg: the eventmessage to signal
                 :param event_details: optional details to send with the event.
         """
-        await self.async_add_job(self.signal_event, event_msg, event_details)
+        self.add_job(self.signal_event, event_msg, event_details)
 
     @callback
-    def add_event_listener(self, cb_func: Callable[..., Union[None, Awaitable]], event_filter: Union[None, str, List] = None) -> Callable:
+    def add_event_listener(self, cb_func: Callable[..., Union[None, Awaitable]],
+                           event_filter: Union[None, str, List] = None) -> Callable:
         """
             Add callback to event listeners.
             Returns function to remove the listener.
@@ -178,20 +172,12 @@ class MusicAssistant:
             self._event_listeners.remove(listener)
         return remove_listener
 
-    def add_job(self, target: Callable[..., Any], *args: Any) -> None:
-        """Add job to the executor pool.
-        target: target to call.
-        args: parameters for method to call.
-        """
-        self.loop.call_soon_threadsafe(self.async_add_job, target, *args)
-
-    async def async_add_job(
+    def add_job(
         self, target: Callable[..., Any], *args: Any
     ) -> Optional[asyncio.Future]:
-        """Add a job from within the event loop.
-        This method must be run in the event loop.
-        target: target to call.
-        args: parameters for method to call.
+        """Add a job/task to the event loop.
+            target: target to call.
+            args: parameters for method to call.
         """
         task = None
 
@@ -200,44 +186,31 @@ class MusicAssistant:
         while isinstance(check_target, functools.partial):
             check_target = check_target.func
 
-        if asyncio.iscoroutine(check_target):
-            task = self.loop.create_task(target)  # type: ignore
-        elif asyncio.iscoroutinefunction(check_target):
-            task = self.loop.create_task(target(*args))
-        elif is_callback(check_target):
-            self.loop.call_soon(target, *args)
+        if threading.current_thread() is not threading.main_thread():
+            # called from other thread
+            if asyncio.iscoroutine(check_target):
+                task = asyncio.run_coroutine_threadsafe(target, self.loop)  # type: ignore
+            elif asyncio.iscoroutinefunction(check_target):
+                task = asyncio.run_coroutine_threadsafe(target(*args), self.loop)
+            elif is_callback(check_target):
+                task = self.loop.call_soon_threadsafe(target, *args)
+            else:
+                task = self.loop.run_in_executor(  # type: ignore
+                    None, target, *args
+                )
         else:
-            task = self.loop.run_in_executor(  # type: ignore
-                None, target, *args
-            )
+            # called from mainthread
+            if asyncio.iscoroutine(check_target):
+                task = self.loop.create_task(target)  # type: ignore
+            elif asyncio.iscoroutinefunction(check_target):
+                task = self.loop.create_task(target(*args))
+            elif is_callback(check_target):
+                task = self.loop.call_soon(target, *args)
+            else:
+                task = self.loop.run_in_executor(  # type: ignore
+                    None, target, *args
+                )
         return task
-
-    @callback
-    def create_task(self, target: Coroutine) -> asyncio.tasks.Task:
-        """Create a task from within the eventloop.
-        This method must be run in the event loop.
-        target: target to call.
-        """
-        task: asyncio.tasks.Task = self.loop.create_task(target)
-        return task
-
-    async def async_run_job(
-        self, target: Callable[..., Union[None, Awaitable]], *args: Any
-    ) -> None:
-        """
-            Run a job from within the event loop.
-            This method must be run in the event loop.
-                :param target: target to call.
-                :param args: parameters for method to call.
-        """
-        if (
-            not asyncio.iscoroutine(target)
-            and not asyncio.iscoroutinefunction(target)
-            and is_callback(target)
-        ):
-            target(*args)
-        else:
-            await self.async_add_job(target, *args)
 
     def __handle_exception(self, loop, context):
         """Global exception handler."""

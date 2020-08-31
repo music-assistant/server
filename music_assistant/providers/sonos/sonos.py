@@ -131,7 +131,7 @@ class SonosPlayer(Player):
         new_state = self.__convert_state(current_transport_state)
         self.state = new_state
         track_info = self.soco.get_current_track_info()
-        self.cur_uri = track_info["uri"]
+        self.current_uri = track_info["uri"]
         position_info = self.soco.avTransport.GetPositionInfo(
             [("InstanceID", 0), ("Channel", "Master")]
         )
@@ -141,7 +141,7 @@ class SonosPlayer(Player):
             self._state == PlayerState.Playing
             and self.__sonos_report_progress_task == None
         ):
-            self.__sonos_report_progress_task = self.mass.loop.create_task(
+            self.__sonos_report_progress_task = self.mass.add_job(
                 self.__report_progress()
             )
 
@@ -172,7 +172,7 @@ class SonosProvider(PlayerProvider):
 
     async def async_setup(self, conf):
         """perform async setup"""
-        self.mass.loop.create_task(self.__periodic_discovery())
+        self.mass.add_job(self.__periodic_discovery())
 
     @run_periodic(1800)
     async def __async_periodic_discovery(self):

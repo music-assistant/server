@@ -8,7 +8,7 @@ from typing import Awaitable, Callable, List, Optional, Union, Any
 from music_assistant.models.config_entry import ConfigEntry
 
 
-class ProviderType(Enum):
+class ProviderType(str, Enum):
     """Enum with plugin types."""
     POWER_CONTROL = "power_control"
     VOLUME_CONTROL = "volume_control"
@@ -20,15 +20,30 @@ class ProviderType(Enum):
 @dataclass
 class Provider:
     """Base model for a provider/plugin."""
-    id: str
-    name: str
     type: ProviderType = ProviderType.GENERIC
-    config_entries: List[ConfigEntry] = field(default_factory=list)  # custom config entries for this provider
     mass: Optional[Any] = None
+    available: bool = False
+
+    @property
+    @abstractmethod
+    def id(self) -> str:
+        """Return provider ID for this provider."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Return provider Name for this provider."""
+
+    @property
+    @abstractmethod
+    def config_entries(self) -> List[ConfigEntry]:
+        """Return Config Entries for this provider."""
 
     @abstractmethod
-    async def async_on_start(self):
-        """Called on startup. Handle initialization of the provider based on config."""
+    async def async_on_start(self) -> bool:
+        """Called on startup.
+            Handle initialization of the provider based on config.
+            Return bool if start was succesfull"""
         raise NotImplementedError
 
     @abstractmethod

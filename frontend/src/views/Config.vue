@@ -296,8 +296,8 @@ export default {
       this.conf = await this.$server.getData('config')
     },
     async confChanged (key, subkey, newvalue) {
-      let endpoint = 'config/' + key + '/' + subkey
-      let result = await this.$server.putData(endpoint, newvalue)
+      const endpoint = 'config/' + key + '/' + subkey
+      const result = await this.$server.putData(endpoint, newvalue)
       if (result.restart_required) {
         this.restart_message = true
       }

@@ -53,7 +53,7 @@ class WebPlayerProvider(PlayerProvider):
         await self.mass.add_event_listener(
             self.handle_mass_event, EVENT_WEBPLAYER_REGISTER
         )
-        self.mass.loop.create_task(self.check_players())
+        self.mass.add_job(self.check_players())
 
     async def async_handle_mass_event(self, msg, msg_details):
         """received event for the webplayer component"""
@@ -94,23 +94,23 @@ class WebPlayer(Player):
     async def async_cmd_stop(self):
         """Send stop command to player."""
         data = {"player_id": self.player_id, "cmd": "stop"}
-        await self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
 
     async def async_cmd_play(self):
         """Send play command to player."""
         data = {"player_id": self.player_id, "cmd": "play"}
-        await self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
 
     async def async_cmd_pause(self):
         """Send pause command to player."""
         data = {"player_id": self.player_id, "cmd": "pause"}
-        await self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
 
     async def async_cmd_power_on(self):
         """Send power ON command to player."""
         self.powered = True  # not supported on webplayer
         data = {"player_id": self.player_id, "cmd": "stop"}
-        await self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
 
     async def async_cmd_power_off(self):
         """Send power OFF command to player."""
@@ -123,17 +123,17 @@ class WebPlayer(Player):
             "cmd": "volume_set",
             "volume_level": volume_level,
         }
-        await self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
 
     async def async_cmd_volume_mute(self, is_muted=False):
         """Send mute command to player."""
         data = {"player_id": self.player_id, "cmd": "volume_mute", "is_muted": is_muted}
-        await self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
 
     async def async_cmd_play_uri(self, uri: str):
         """Play single uri on player."""
         data = {"player_id": self.player_id, "cmd": "play_uri", "uri": uri}
-        await self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
 
     async def async_handle_state(self, data):
         """handle state event from player."""
@@ -145,8 +145,8 @@ class WebPlayer(Player):
             self.state = PlayerState(data["state"])
         if "cur_time" in data:
             self.cur_time = data["cur_time"]
-        if "cur_uri" in data:
-            self.cur_uri = data["cur_uri"]
+        if "current_uri" in data:
+            self.current_uri = data["current_uri"]
         if "powered" in data:
             self.powered = data["powered"]
         if "name" in data:

@@ -1,27 +1,34 @@
 """The web module handles serving the frontend and the rest/websocket api's"""
 import asyncio
 import inspect
+import json
+import logging
 import os
 import ssl
 
 import aiohttp
 from aiohttp import web
-from music_assistant.models.media_types import (
-    MediaType,
-    media_type_from_string,
+from music_assistant.constants import (
+    CONF_KEY_BASE,
+    CONF_KEY_PLAYERSETTINGS,
+    CONF_KEY_PROVIDERS,
 )
+from music_assistant.models.media_types import MediaType, media_type_from_string
 from music_assistant.utils import (
     IS_HASSIO,
-    LOGGER,
+    EnhancedJSONEncoder,
     get_ip,
-    json_serializer
+    json_serializer,
 )
 
 import aiohttp_cors
 
+LOGGER = logging.getLogger("mass")
+
 
 class ClassRouteTableDef(web.RouteTableDef):
     """Helper class to add class based routing tables."""
+
     def __repr__(self) -> str:
         return "<ClassRouteTableDef count={}>".format(len(self._items))
 
@@ -366,8 +373,8 @@ class Web:
     async def async_players(self, request):
         # pylint: disable=unused-argument
         """get all players"""
-        players = list(self.mass.player_manager.players)
-        players.sort(key=lambda x: x.name, reverse=False)
+        players = self.mass.player_manager.players
+        players.sort(key=lambda x: str(x.name), reverse=False)
         return web.json_response(players, dumps=json_serializer)
 
     @routes.post("/api/players/{player_id}/cmd/{cmd}")
@@ -375,16 +382,13 @@ class Web:
         """issue player command"""
         result = False
         player_id = request.match_info.get("player_id")
-        player = await self.mass.player_manager.get_player(player_id)
-        if not player:
-            return web.Response(text="invalid player", status=404)
         cmd = request.match_info.get("cmd")
         cmd_args = await request.json()
-        player_cmd = getattr(player, cmd, None)
+        player_cmd = getattr(self.mass.player_manager, f"async_cmd_{cmd}", None)
         if player_cmd and cmd_args is not None:
-            result = await player_cmd(cmd_args)
+            result = await player_cmd(player_id, cmd_args)
         elif player_cmd:
-            result = await player_cmd()
+            result = await player_cmd(player_id)
         else:
             return web.Response(text="invalid command", status=501)
         return web.json_response(result, dumps=json_serializer)
@@ -393,36 +397,36 @@ class Web:
     async def async_player_play_media(self, request):
         """issue player play_media command"""
         player_id = request.match_info.get("player_id")
-        player = await self.mass.player_manager.get_player(player_id)
+        player = self.mass.player_manager.get_player(player_id)
         if not player:
             return web.Response(status=404)
         queue_opt = request.match_info.get("queue_opt", "play")
         body = await request.json()
         media_items = await self.__async_media_items_from_body(body)
-        result = await self.mass.player_manager.play_media(player_id, media_items, queue_opt)
+        result = await self.mass.player_manager.async_play_media(player_id, media_items, queue_opt)
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/players/{player_id}/queue/items/{queue_item}")
     async def async_player_queue_item(self, request):
-        """return item (by index or queue item id) from the player's queue"""
+        """Return item (by index or queue item id) from the player's queue."""
         player_id = request.match_info.get("player_id")
         item_id = request.match_info.get("queue_item")
-        player = await self.mass.player_manager.get_player(player_id)
+        player_queue = self.mass.player_manager.get_player_queue(player_id)
         try:
             item_id = int(item_id)
-            queue_item = await player.queue.get_item(item_id)
+            queue_item = player_queue.get_item(item_id)
         except ValueError:
-            queue_item = await player.queue.by_item_id(item_id)
+            queue_item = player_queue.by_item_id(item_id)
         return web.json_response(queue_item, dumps=json_serializer)
 
     @routes.get("/api/players/{player_id}/queue/items")
     async def async_player_queue_items(self, request):
-        """return the items in the player's queue"""
+        """Return the items in the player's queue."""
         player_id = request.match_info.get("player_id")
-        player = await self.mass.player_manager.get_player(player_id)
+        player_queue = self.mass.player_manager.get_player_queue(player_id)
 
         async def async_queue_tracks_iter():
-            for item in player.queue.items:
+            for item in player_queue.items:
                 yield item
 
         return await self.__async_stream_json(request, async_queue_tracks_iter())
@@ -431,46 +435,55 @@ class Web:
     async def async_player_queue(self, request):
         """return the player queue details"""
         player_id = request.match_info.get("player_id")
-        player = await self.mass.player_manager.get_player(player_id)
-        return web.json_response(player.queue, dumps=json_serializer)
+        player_queue = self.mass.player_manager.get_player_queue(player_id)
+        return web.json_response(player_queue, dumps=json_serializer)
 
     @routes.put("/api/players/{player_id}/queue/{cmd}")
     async def async_player_queue_cmd(self, request):
         """change the player queue details"""
         player_id = request.match_info.get("player_id")
-        player = await self.mass.player_manager.get_player(player_id)
+        player_queue = self.mass.player_manager.get_player_queue(player_id)
         cmd = request.match_info.get("cmd")
         cmd_args = await request.json()
         if cmd == "repeat_enabled":
-            player.queue.repeat_enabled = cmd_args
+            player_queue.repeat_enabled = cmd_args
         elif cmd == "shuffle_enabled":
-            player.queue.shuffle_enabled = cmd_args
+            player_queue.shuffle_enabled = cmd_args
         elif cmd == "clear":
-            await player.queue.clear()
+            await player_queue.async_clear()
         elif cmd == "index":
-            await player.queue.play_index(cmd_args)
+            await player_queue.async_play_index(cmd_args)
         elif cmd == "move_up":
-            await player.queue.move_item(cmd_args, -1)
+            await player_queue.async_move_item(cmd_args, -1)
         elif cmd == "move_down":
-            await player.queue.move_item(cmd_args, 1)
+            await player_queue.async_move_item(cmd_args, 1)
         elif cmd == "next":
-            await player.queue.move_item(cmd_args, 0)
-        return web.json_response(player.queue, dumps=json_serializer)
+            await player_queue.async_move_item(cmd_args, 0)
+        return web.json_response(player_queue, dumps=json_serializer)
 
     @routes.get("/api/players/{player_id}")
     async def async_player(self, request):
         """get single player."""
         player_id = request.match_info.get("player_id")
-        player = await self.mass.player_manager.get_player(player_id)
+        player = self.mass.player_manager.get_player(player_id)
         if not player:
             return web.Response(text="invalid player", status=404)
         return web.json_response(player, dumps=json_serializer)
 
-    @routes.get("/api/config")
+    @routes.get("/api/config/{base}")
     async def async_get_config(self, request):
         # pylint: disable=unused-argument
         """get the config"""
-        return web.json_response(self.mass.config)
+        conf_base = request.match_info.get("base")
+        if conf_base == CONF_KEY_PLAYERSETTINGS:
+            conf = self.mass.config.players
+        elif conf_base == CONF_KEY_PROVIDERS:
+            conf = self.mass.config.providers
+        elif conf_base == CONF_KEY_BASE:
+            conf = self.mass.config.base
+        else:
+            raise NotImplementedError("Invalid config path supplied.")
+        return web.json_response(conf, dumps=json_serializer)
 
     @routes.put("/api/config/{base}/{key}")
     async def async_put_config(self, request):
@@ -490,17 +503,17 @@ class Web:
         #     self.mass.config[conf_key][conf_subkey] = new_values
         #     if conf_key == CONF_KEY_PLAYERSETTINGS:
         #         # player settings: force update of player
-        #         self.mass.loop.create_task(
+        #         self.mass.add_job(
         #             self.mass.player_manager.trigger_update(conf_subkey)
         #         )
         #     elif conf_key == CONF_KEY_MUSICPROVIDERS:
         #         # (re)load music provider module
-        #         self.mass.loop.create_task(
+        #         self.mass.add_job(
         #             self.mass.music_manager.load_modules(conf_subkey)
         #         )
         #     elif conf_key == CONF_KEY_PLAYERPROVIDERS:
         #         # (re)load player provider module
-        #         self.mass.loop.create_task(
+        #         self.mass.add_job(
         #             self.mass.player_manager.load_modules(conf_subkey)
         #         )
         #     else:
@@ -520,7 +533,7 @@ class Web:
             async def async_send_event(msg, msg_details):
                 ws_msg = {"message": msg, "message_details": msg_details}
                 try:
-                    await ws.send_json(ws_msg)
+                    await ws.send_json(ws_msg, dumps=json_serializer)
                 except (AssertionError, asyncio.CancelledError):
                     remove_callback()
 
@@ -537,7 +550,7 @@ class Web:
                     data = msg.json()
                     # echo the websocket message on event bus
                     # can be picked up by other modules, e.g. the webplayer
-                    await self.mass.signal_event(
+                    self.mass.signal_event(
                         data["message"], data["message_details"]
                     )
         except (AssertionError, asyncio.CancelledError) as exc:
@@ -559,44 +572,44 @@ class Web:
         player_id = params[0]
         cmds = params[1]
         cmd_str = " ".join(cmds)
-        player = await self.mass.player_manager.get_player(player_id)
+        player = self.mass.player_manager.get_player(player_id)
         if not player:
             return web.Response(status=404)
         if cmd_str == "play":
-            await player.play()
+            await player.async_cmd_play()
         elif cmd_str == "pause":
-            await player.pause()
+            await player.async_cmd_pause()
         elif cmd_str == "stop":
-            await player.stop()
+            await player.async_cmd_stop()
         elif cmd_str == "next":
-            await player.next()
+            await player.async_cmd_next()
         elif cmd_str == "previous":
-            await player.previous()
+            await player.async_cmd_previous()
         elif "power" in cmd_str:
             args = cmds[1] if len(cmds) > 1 else None
-            await player.power(args)
+            await player.async_cmd_power(args)
         elif cmd_str == "playlist index +1":
-            await player.next()
+            await player.async_cmd_next()
         elif cmd_str == "playlist index -1":
-            await player.previous()
+            await player.async_cmd_previous()
         elif "mixer volume" in cmd_str and "+" in cmds[2]:
             volume_level = player.volume_level + int(cmds[2].split("+")[1])
-            await player.volume_set(volume_level)
+            await player.async_cmd_volume_set(volume_level)
         elif "mixer volume" in cmd_str and "-" in cmds[2]:
             volume_level = player.volume_level - int(cmds[2].split("-")[1])
-            await player.volume_set(volume_level)
+            await player.async_cmd_volume_set(volume_level)
         elif "mixer volume" in cmd_str:
-            await player.volume_set(cmds[2])
+            await player.async_cmd_volume_set(cmds[2])
         elif cmd_str == "mixer muting 1":
-            await player.volume_mute(True)
+            await player.async_cmd_volume_mute(True)
         elif cmd_str == "mixer muting 0":
-            await player.volume_mute(False)
+            await player.async_cmd_volume_mute(False)
         elif cmd_str == "button volup":
-            await player.volume_up()
+            await player.async_cmd_volume_up()
         elif cmd_str == "button voldown":
-            await player.volume_down()
+            await player.async_cmd_volume_down()
         elif cmd_str == "button power":
-            await player.power_toggle()
+            await player.async_cmd_power_toggle()
         else:
             return web.Response(text="command not supported")
         return web.Response(text="success")
@@ -607,8 +620,8 @@ class Web:
             data = [data]
         media_items = []
         for item in data:
-            media_item = await self.mass.music_manager.item(
-                item["item_id"], item["media_type"], item["provider"], lazy=True
+            media_item = await self.mass.music_manager.async_get_item(
+                item["item_id"], item["provider"], item["media_type"], lazy=True
             )
             media_items.append(media_item)
         return media_items
@@ -626,9 +639,9 @@ class Web:
         async for item in iterator:
             # write each item into the items object of the json
             if count:
-                json_response = "," + json_serializer(item)
+                json_response = "," + json.dumps(item, cls=EnhancedJSONEncoder)
             else:
-                json_response = json_serializer(item)
+                json_response = json.dumps(item, cls=EnhancedJSONEncoder)
             await resp.write(json_response.encode("utf-8"))
             count += 1
         # write json close tag

@@ -1,23 +1,23 @@
 self.__precacheManifest = (self.__precacheManifest || []).concat([
   {
-    "revision": "b9b6460c2eab20d98abb",
-    "url": "css/app.46b4bddf.css"
+    "revision": "1929c9adddc324745d02",
+    "url": "css/app.d412b74d.css"
   },
   {
-    "revision": "d9ce270ec187902c1d1e",
-    "url": "css/chunk-vendors.63ab44a5.css"
+    "revision": "70f25100c93e47c72d71",
+    "url": "css/chunk-vendors.f9907851.css"
   },
   {
-    "revision": "0f2ddd7c8d770c10e567",
-    "url": "css/config.9c069878.css"
+    "revision": "d15a02198c45fa2935a9",
+    "url": "css/config.93db0c66.css"
   },
   {
-    "revision": "da259d53af0e11f059bf",
-    "url": "css/itemdetails.d16bd55e.css"
+    "revision": "58fabceeefe4389effc5",
+    "url": "css/itemdetails.28909c9e.css"
   },
   {
-    "revision": "ac3e228e7e0e41e17424",
-    "url": "css/itemdetails~playerqueue~search.93e2919b.css"
+    "revision": "9bd66517467185f0366d",
+    "url": "css/itemdetails~playerqueue~search.133d2876.css"
   },
   {
     "revision": "0509ab09c1b0d2200a4135803c91d6ce",
@@ -188,39 +188,39 @@ self.__precacheManifest = (self.__precacheManifest || []).concat([
     "url": "img/webplayer.8e1a0da9.png"
   },
   {
-    "revision": "68b273291a2c4350396a8ec675fcdf47",
+    "revision": "80ade9f6656010fd2e2ee003333c4170",
     "url": "index.html"
   },
   {
-    "revision": "b9b6460c2eab20d98abb",
-    "url": "js/app.ae6509d8.js"
+    "revision": "1929c9adddc324745d02",
+    "url": "js/app.378e10c8.js"
   },
   {
-    "revision": "d9ce270ec187902c1d1e",
-    "url": "js/chunk-vendors.0d5ed3c8.js"
+    "revision": "70f25100c93e47c72d71",
+    "url": "js/chunk-vendors.afecc6cb.js"
   },
   {
-    "revision": "0f2ddd7c8d770c10e567",
-    "url": "js/config.94f92cc8.js"
+    "revision": "d15a02198c45fa2935a9",
+    "url": "js/config.ad87e410.js"
   },
   {
-    "revision": "da259d53af0e11f059bf",
-    "url": "js/itemdetails.aa9c6242.js"
+    "revision": "58fabceeefe4389effc5",
+    "url": "js/itemdetails.79b5fa05.js"
   },
   {
-    "revision": "ac3e228e7e0e41e17424",
-    "url": "js/itemdetails~playerqueue~search.2949924d.js"
+    "revision": "9bd66517467185f0366d",
+    "url": "js/itemdetails~playerqueue~search.3c623cdf.js"
   },
   {
-    "revision": "2067da991c7172496be6",
-    "url": "js/playerqueue.5bd65be6.js"
+    "revision": "b9d320b56b5e0a72037f",
+    "url": "js/playerqueue.84a8618a.js"
   },
   {
-    "revision": "ed64cfbe03fa41ca5a7c",
-    "url": "js/search.1953c63a.js"
+    "revision": "4ccb2a5caa6ea57ee3b0",
+    "url": "js/search.31a9bea8.js"
   },
   {
-    "revision": "a69fc7789e4488064e5e6c87b668ce90",
+    "revision": "c93d318ec22138832730289be28caa77",
     "url": "manifest.json"
   },
   {
