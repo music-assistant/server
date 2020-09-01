@@ -25,21 +25,16 @@ class Cache(object):
 
     async def async_setup(self):
         """Async initialize of cache module."""
-        self._db = await aiosqlite.connect(self._dbfile, timeout=30)
-        self._db.row_factory = aiosqlite.Row
-        await self._db.execute(
-            """CREATE TABLE IF NOT EXISTS simplecache(
-            id TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
-        )
-        await self._db.commit()
-        await self._db.execute("VACUUM;")
-        await self._db.commit()
+        async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
+            await db_conn.execute(
+                """CREATE TABLE IF NOT EXISTS simplecache(
+                id TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
+            )
+            await db_conn.commit()
+            await db_conn.execute("VACUUM;")
+            await db_conn.commit()
         self.mass.add_job(self.async_auto_cleanup())
 
-    async def async_close(self):
-        """Handle shutdown event, close db connection."""
-        await self._db.close()
-        LOGGER.info("cache db connection closed")
 
     async def async_get(self, cache_key, checksum=""):
         """
@@ -52,18 +47,20 @@ class Cache(object):
         cur_time = int(time.time())
         checksum = self._get_checksum(checksum)
         sql_query = "SELECT expires, data, checksum FROM simplecache WHERE id = ?"
-        async with self._db.execute(sql_query, (cache_key,)) as cursor:
-            cache_data = await cursor.fetchone()
-            if not cache_data:
-                LOGGER.debug("no cache data for %s", cache_key)
-            elif cache_data["expires"] < cur_time:
-                LOGGER.debug("cache expired for %s", cache_key)
-            elif checksum and cache_data["checksum"] != checksum:
-                LOGGER.debug("cache checksum mismatch for %s", cache_key)
-            if cache_data and cache_data["expires"] > cur_time:
-                if checksum is None or cache_data["checksum"] == checksum:
-                    LOGGER.debug("return cache data for %s", cache_key)
-                    result = pickle.loads(cache_data[1])
+        async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
+            db_conn.row_factory = aiosqlite.Row
+            async with db_conn.execute(sql_query, (cache_key,)) as cursor:
+                cache_data = await cursor.fetchone()
+                if not cache_data:
+                    LOGGER.debug("no cache data for %s", cache_key)
+                elif cache_data["expires"] < cur_time:
+                    LOGGER.debug("cache expired for %s", cache_key)
+                elif checksum and cache_data["checksum"] != checksum:
+                    LOGGER.debug("cache checksum mismatch for %s", cache_key)
+                if cache_data and cache_data["expires"] > cur_time:
+                    if checksum is None or cache_data["checksum"] == checksum:
+                        LOGGER.debug("return cache data for %s", cache_key)
+                        result = pickle.loads(cache_data[1])
         return result
 
     async def async_set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
@@ -75,8 +72,9 @@ class Cache(object):
         data = pickle.dumps(data)
         sql_query = """INSERT OR REPLACE INTO simplecache
             (id, expires, data, checksum) VALUES (?, ?, ?, ?)"""
-        await self._db.execute(sql_query, (cache_key, expires, data, checksum))
-        await self._db.commit()
+        async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
+            await db_conn.execute(sql_query, (cache_key, expires, data, checksum))
+            await db_conn.commit()
 
     @run_periodic(3600)
     async def async_auto_cleanup(self):
@@ -84,17 +82,19 @@ class Cache(object):
         cur_timestamp = int(time.time())
         LOGGER.debug("Running cleanup...")
         sql_query = "SELECT id, expires FROM simplecache"
-        async with self._db.execute(sql_query) as cursor:
-            cache_objects = await cursor.fetchall()
-        for cache_data in cache_objects:
-            cache_id = cache_data["id"]
-            # clean up db cache object only if expired
-            if cache_data["expires"] < cur_timestamp:
-                sql_query = "DELETE FROM simplecache WHERE id = ?"
-                await self._db.execute(sql_query, (cache_id,))
-                LOGGER.debug("delete from db %s", cache_id)
-        # compact db
-        await self._db.commit()
+        async with aiosqlite.connect(self._dbfile, timeout=600) as db_conn:
+            db_conn.row_factory = aiosqlite.Row
+            async with db_conn.execute(sql_query) as cursor:
+                cache_objects = await cursor.fetchall()
+            for cache_data in cache_objects:
+                cache_id = cache_data["id"]
+                # clean up db cache object only if expired
+                if cache_data["expires"] < cur_timestamp:
+                    sql_query = "DELETE FROM simplecache WHERE id = ?"
+                    await db_conn.execute(sql_query, (cache_id,))
+                    LOGGER.debug("delete from db %s", cache_id)
+            # compact db
+            await db_conn.commit()
         LOGGER.debug("Auto cleanup done")
 
     @staticmethod

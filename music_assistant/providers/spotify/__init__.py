@@ -16,12 +16,13 @@ from music_assistant.models.media_types import (
     Album,
     AlbumType,
     Artist,
+    MediaItemProviderId,
     MediaType,
     Playlist,
+    Radio,
     SearchResult,
     Track,
     TrackQuality,
-    MediaItemProviderId
 )
 from music_assistant.models.musicprovider import MusicProvider
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
@@ -33,10 +34,13 @@ PROV_NAME = "Spotify"
 LOGGER = logging.getLogger(PROV_ID)
 
 CONFIG_ENTRIES = [
-    ConfigEntry(entry_key=CONF_USERNAME, entry_type=ConfigEntryType.STRING,
-                description_key=CONF_USERNAME),
-    ConfigEntry(entry_key=CONF_PASSWORD, entry_type=ConfigEntryType.PASSWORD,
-                description_key=CONF_PASSWORD)]
+    ConfigEntry(
+        entry_key=CONF_USERNAME, entry_type=ConfigEntryType.STRING, description_key=CONF_USERNAME
+    ),
+    ConfigEntry(
+        entry_key=CONF_PASSWORD, entry_type=ConfigEntryType.PASSWORD, description_key=CONF_PASSWORD
+    ),
+]
 
 
 async def async_setup(mass):
@@ -47,6 +51,7 @@ async def async_setup(mass):
 
 class SpotifyProvider(MusicProvider):
     """Implementation for the Spotify MusicProvider."""
+
     _http_session = None
     __auth_token = None
     sp_user = None
@@ -82,21 +87,23 @@ class SpotifyProvider(MusicProvider):
         self._password = config[CONF_PASSWORD]
         self.__auth_token = {}
         self._throttler = Throttler(rate_limit=4, period=1)
+        token = await self.async_get_token()
 
-        return True
+        return token is not None
 
     async def async_on_stop(self):
         """Called on shutdown. Handle correct close/cleanup of the provider on exit."""
         if self._http_session:
             await self._http_session.close()
 
-    async def async_search(self, search_query: str, media_types=Optional[List[MediaType]],
-                           limit: int = 5) -> SearchResult:
+    async def async_search(
+        self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
+    ) -> SearchResult:
         """
-            Perform search on musicprovider.
-                :param search_query: Search query.
-                :param media_types: A list of media_types to include. All types if None.
-                :param limit: Number of items to return in the search (per type).
+        Perform search on musicprovider.
+            :param search_query: Search query.
+            :param media_types: A list of media_types to include. All types if None.
+            :param limit: Number of items to return in the search (per type).
         """
         result = SearchResult()
         searchtypes = []
@@ -163,6 +170,10 @@ class SpotifyProvider(MusicProvider):
             playlist = await self.__async_parse_playlist(item)
             if playlist:
                 yield playlist
+
+    async def async_get_radios(self) -> List[Radio]:
+        """Retrieve library/subscribed radio stations from the provider."""
+        yield None  # TODO: Return spotify radio
 
     async def async_get_artist(self, prov_artist_id) -> Artist:
         """get full artist details by id"""
@@ -272,9 +283,7 @@ class SpotifyProvider(MusicProvider):
         for track_id in prov_track_ids:
             track_uris.append({"uri": "spotify:track:%s" % track_id})
         data = {"tracks": track_uris}
-        return await self.__async_delete_data(
-            f"playlists/{prov_playlist_id}/tracks", data=data
-        )
+        return await self.__async_delete_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
     async def async_get_stream_details(self, track_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -297,7 +306,7 @@ class SpotifyProvider(MusicProvider):
             path=spotty_exec,
             content_type=ContentType.OGG,
             sample_rate=44100,
-            bit_depth=16
+            bit_depth=16,
         )
 
     async def __async_parse_artist(self, artist_obj):
@@ -307,12 +316,7 @@ class SpotifyProvider(MusicProvider):
         artist = Artist()
         artist.item_id = artist_obj["id"]
         artist.provider = self.id
-        artist.provider_ids.append(
-            MediaItemProviderId(
-                provider=PROV_ID,
-                item_id=artist_obj["id"]
-            )
-        )
+        artist.provider_ids.append(MediaItemProviderId(provider=PROV_ID, item_id=artist_obj["id"]))
         artist.name = artist_obj["name"]
         if "genres" in artist_obj:
             artist.tags = artist_obj["genres"]
@@ -366,9 +370,7 @@ class SpotifyProvider(MusicProvider):
             album.metadata["explicit"] = str(album_obj["explicit"]).lower()
         album.provider_ids.append(
             MediaItemProviderId(
-                provider=PROV_ID,
-                item_id=album_obj["id"],
-                quality=TrackQuality.LOSSY_OGG
+                provider=PROV_ID, item_id=album_obj["id"], quality=TrackQuality.LOSSY_OGG
             )
         )
         return album
@@ -406,9 +408,7 @@ class SpotifyProvider(MusicProvider):
             track.metadata["spotify_url"] = track_obj["external_urls"]["spotify"]
         track.provider_ids.append(
             MediaItemProviderId(
-                provider=PROV_ID,
-                item_id=track_obj["id"],
-                quality=TrackQuality.LOSSY_OGG
+                provider=PROV_ID, item_id=track_obj["id"], quality=TrackQuality.LOSSY_OGG
             )
         )
         return track
@@ -422,16 +422,12 @@ class SpotifyProvider(MusicProvider):
         playlist.item_id = playlist_obj["id"]
         playlist.provider = self.id
         playlist.provider_ids.append(
-            MediaItemProviderId(
-                provider=PROV_ID,
-                item_id=playlist_obj["id"]
-            )
+            MediaItemProviderId(provider=PROV_ID, item_id=playlist_obj["id"])
         )
         playlist.name = playlist_obj["name"]
         playlist.owner = playlist_obj["owner"]["display_name"]
         playlist.is_editable = (
-            playlist_obj["owner"]["id"] == self.sp_user["id"]
-            or playlist_obj["collaborative"]
+            playlist_obj["owner"]["id"] == self.sp_user["id"] or playlist_obj["collaborative"]
         )
         if playlist_obj.get("images"):
             playlist.metadata["image"] = playlist_obj["images"][0]["url"]
@@ -443,15 +439,14 @@ class SpotifyProvider(MusicProvider):
     async def async_get_token(self):
         """get auth token on spotify"""
         # return existing token if we have one in memory
-        if self.__auth_token and (
-            self.__auth_token["expiresAt"] > int(time.time()) + 20
-        ):
+        if self.__auth_token and (self.__auth_token["expiresAt"] > int(time.time()) + 20):
             return self.__auth_token
         tokeninfo = {}
         if not self._username or not self._password:
             return tokeninfo
         # retrieve token with spotty
-        tokeninfo = await self.mass.loop.run_in_executor(None, self.__get_token)
+        task = self.mass.add_job(self.__get_token)
+        tokeninfo = await task
         if tokeninfo:
             self.__auth_token = tokeninfo
             self.sp_user = await self.__async_get_data("me")
@@ -588,14 +583,10 @@ class SpotifyProvider(MusicProvider):
         """find the correct spotty binary belonging to the platform"""
         sp_binary = None
         if platform.system() == "Windows":
-            sp_binary = os.path.join(
-                os.path.dirname(__file__), "spotty", "windows", "spotty.exe"
-            )
+            sp_binary = os.path.join(os.path.dirname(__file__), "spotty", "windows", "spotty.exe")
         elif platform.system() == "Darwin":
             # macos binary is x86_64 intel
-            sp_binary = os.path.join(
-                os.path.dirname(__file__), "spotty", "darwin", "spotty"
-            )
+            sp_binary = os.path.join(os.path.dirname(__file__), "spotty", "darwin", "spotty")
         elif platform.system() == "Linux":
             # try to find out the correct architecture by trial and error
             architecture = platform.machine()

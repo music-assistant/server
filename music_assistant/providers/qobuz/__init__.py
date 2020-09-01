@@ -22,6 +22,7 @@ from music_assistant.models.media_types import (
     MediaItemProviderId,
     MediaType,
     Playlist,
+    Radio,
     SearchResult,
     Track,
     TrackQuality,
@@ -35,10 +36,13 @@ PROV_NAME = "Qobuz"
 LOGGER = logging.getLogger(PROV_ID)
 
 CONFIG_ENTRIES = [
-    ConfigEntry(entry_key=CONF_USERNAME, entry_type=ConfigEntryType.STRING,
-                description_key=CONF_USERNAME),
-    ConfigEntry(entry_key=CONF_PASSWORD, entry_type=ConfigEntryType.PASSWORD,
-                description_key=CONF_PASSWORD)]
+    ConfigEntry(
+        entry_key=CONF_USERNAME, entry_type=ConfigEntryType.STRING, description_key=CONF_USERNAME
+    ),
+    ConfigEntry(
+        entry_key=CONF_PASSWORD, entry_type=ConfigEntryType.PASSWORD, description_key=CONF_PASSWORD
+    ),
+]
 
 
 async def async_setup(mass):
@@ -49,6 +53,7 @@ async def async_setup(mass):
 
 class QobuzProvider(MusicProvider):
     """Provider for the Qobux music service."""
+
     _http_session = None
 
     @property
@@ -90,13 +95,14 @@ class QobuzProvider(MusicProvider):
         if self._http_session:
             await self._http_session.close()
 
-    async def async_search(self, search_query: str, media_types=Optional[List[MediaType]],
-                           limit: int = 5) -> SearchResult:
+    async def async_search(
+        self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
+    ) -> SearchResult:
         """
-            Perform search on musicprovider.
-                :param search_query: Search query.
-                :param media_types: A list of media_types to include. All types if None.
-                :param limit: Number of items to return in the search (per type).
+        Perform search on musicprovider.
+            :param search_query: Search query.
+            :param media_types: A list of media_types to include. All types if None.
+            :param limit: Number of items to return in the search (per type).
         """
         result = SearchResult()
         params = {"query": search_query, "limit": limit}
@@ -129,7 +135,9 @@ class QobuzProvider(MusicProvider):
                         result.tracks.append(track)
             if "playlists" in searchresult:
                 for item in searchresult["playlists"]["items"]:
-                    result.playlists.append(await self.__async_parse_playlist(item))
+                    playlist = await self.__async_parse_playlist(item)
+                    if playlist:
+                        result.playlists.append(playlist)
         return result
 
     async def async_get_library_artists(self) -> List[Artist]:
@@ -166,6 +174,10 @@ class QobuzProvider(MusicProvider):
             playlist = await self.__async_parse_playlist(item)
             if playlist:
                 yield playlist
+
+    async def async_get_radios(self) -> List[Radio]:
+        """Retrieve library/subscribed radio stations from the provider."""
+        yield None  # TODO
 
     async def async_get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
@@ -240,9 +252,7 @@ class QobuzProvider(MusicProvider):
         params = {"query": artist.name, "limit": 25, "type": "tracks"}
         searchresult = await self.__async_get_data("catalog/search", params)
         for item in searchresult["tracks"]["items"]:
-            if "performer" in item and str(item["performer"]["id"]) == str(
-                prov_artist_id
-            ):
+            if "performer" in item and str(item["performer"]["id"]) == str(prov_artist_id):
                 track = await self.__async_parse_track(item)
                 if track:
                     yield track
@@ -251,17 +261,11 @@ class QobuzProvider(MusicProvider):
         """add item to library"""
         result = None
         if media_type == MediaType.Artist:
-            result = await self.__async_get_data(
-                "favorite/create", {"artist_ids": prov_item_id}
-            )
+            result = await self.__async_get_data("favorite/create", {"artist_ids": prov_item_id})
         elif media_type == MediaType.Album:
-            result = await self.__async_get_data(
-                "favorite/create", {"album_ids": prov_item_id}
-            )
+            result = await self.__async_get_data("favorite/create", {"album_ids": prov_item_id})
         elif media_type == MediaType.Track:
-            result = await self.__async_get_data(
-                "favorite/create", {"track_ids": prov_item_id}
-            )
+            result = await self.__async_get_data("favorite/create", {"track_ids": prov_item_id})
         elif media_type == MediaType.Playlist:
             result = await self.__async_get_data(
                 "playlist/subscribe", {"playlist_id": prov_item_id}
@@ -272,17 +276,11 @@ class QobuzProvider(MusicProvider):
         """remove item from library"""
         result = None
         if media_type == MediaType.Artist:
-            result = await self.__async_get_data(
-                "favorite/delete", {"artist_ids": prov_item_id}
-            )
+            result = await self.__async_get_data("favorite/delete", {"artist_ids": prov_item_id})
         elif media_type == MediaType.Album:
-            result = await self.__async_get_data(
-                "favorite/delete", {"album_ids": prov_item_id}
-            )
+            result = await self.__async_get_data("favorite/delete", {"album_ids": prov_item_id})
         elif media_type == MediaType.Track:
-            result = await self.__async_get_data(
-                "favorite/delete", {"track_ids": prov_item_id}
-            )
+            result = await self.__async_get_data("favorite/delete", {"track_ids": prov_item_id})
         elif media_type == MediaType.Playlist:
             playlist = await self.async_get_playlist(prov_item_id)
             if playlist.is_editable:
@@ -339,13 +337,13 @@ class QobuzProvider(MusicProvider):
             content_type=ContentType(streamdetails["mime_type"].split("/")[1]),
             sample_rate=int(streamdetails["sampling_rate"] * 1000),
             bit_depth=streamdetails["bit_depth"],
-            details=streamdetails  # we need these details for reporting playback
+            details=streamdetails,  # we need these details for reporting playback
         )
 
     async def async_mass_event(self, msg, msg_details):
         """
-            received event from mass
-            we use this to report playback start/stop to qobuz
+        received event from mass
+        we use this to report playback start/stop to qobuz
         """
         if not self.__user_auth_info:
             return
@@ -399,10 +397,7 @@ class QobuzProvider(MusicProvider):
         if artist_obj.get("image"):
             for key in ["extralarge", "large", "medium", "small"]:
                 if artist_obj["image"].get(key):
-                    if (
-                        not "2a96cbd8b46e442fc41c2b86b821562f"
-                        in artist_obj["image"][key]
-                    ):
+                    if not "2a96cbd8b46e442fc41c2b86b821562f" in artist_obj["image"][key]:
                         artist.metadata["image"] = artist_obj["image"][key]
                         break
         if artist_obj.get("biography"):
@@ -442,7 +437,7 @@ class QobuzProvider(MusicProvider):
                 item_id=str(album_obj["id"]),
                 quality=quality,
                 details=f'{album_obj["maximum_sampling_rate"]}kHz \
-                    {album_obj["maximum_bit_depth"]}bit'
+                    {album_obj["maximum_bit_depth"]}bit',
             )
         )
         album.name, album.version = parse_title_and_version(
@@ -562,7 +557,7 @@ class QobuzProvider(MusicProvider):
                 item_id=str(track_obj["id"]),
                 quality=quality,
                 details=f'{track_obj["maximum_sampling_rate"]}kHz \
-                    {track_obj["maximum_bit_depth"]}bit'
+                    {track_obj["maximum_bit_depth"]}bit',
             )
         )
         return track
@@ -575,10 +570,7 @@ class QobuzProvider(MusicProvider):
         playlist.item_id = playlist_obj["id"]
         playlist.provider = PROV_ID
         playlist.provider_ids.append(
-            MediaItemProviderId(
-                provider=PROV_ID,
-                item_id=str(playlist_obj["id"])
-            )
+            MediaItemProviderId(provider=PROV_ID, item_id=str(playlist_obj["id"]))
         )
         playlist.name = playlist_obj["name"]
         playlist.owner = playlist_obj["owner"]["name"]
@@ -605,9 +597,7 @@ class QobuzProvider(MusicProvider):
         details = await self.__async_get_data("user/login", params)
         if details and "user" in details:
             self.__user_auth_info = details
-            LOGGER.info(
-                "Succesfully logged in to Qobuz as %s", details["user"]["display_name"]
-            )
+            LOGGER.info("Succesfully logged in to Qobuz as %s", details["user"]["display_name"])
             return details["user_auth_token"]
 
     async def __async_get_all_items(self, endpoint, params=None, key="tracks"):
@@ -658,9 +648,7 @@ class QobuzProvider(MusicProvider):
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
                 result = await response.json()
-                if "error" in result or (
-                    "status" in result and "error" in result["status"]
-                ):
+                if "error" in result or ("status" in result and "error" in result["status"]):
                     LOGGER.error("%s - %s", endpoint, result)
                     return None
                 return result
@@ -678,9 +666,7 @@ class QobuzProvider(MusicProvider):
             url, params=params, json=data, verify_ssl=False
         ) as response:
             result = await response.json()
-            if "error" in result or (
-                "status" in result and "error" in result["status"]
-            ):
+            if "error" in result or ("status" in result and "error" in result["status"]):
                 LOGGER.error("%s - %s", endpoint, result)
                 return None
             return result

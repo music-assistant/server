@@ -71,8 +71,6 @@ class MusicAssistant:
         for prov in self._providers.values():
             await prov.async_on_stop()
         await self.player_manager.async_close()
-        await self.database.async_close()
-        await self.cache.async_close()
 
     async def async_register_provider(self, provider: Provider):
         """Register a new Provider/Plugin."""

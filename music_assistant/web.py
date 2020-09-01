@@ -41,9 +41,7 @@ class ClassRouteTableDef(web.RouteTableDef):
 
     def add_class_routes(self, instance) -> None:
         def predicate(member) -> bool:
-            return all(
-                (inspect.iscoroutinefunction(member), hasattr(member, "route_info"))
-            )
+            return all((inspect.iscoroutinefunction(member), hasattr(member, "route_info")))
 
         for _, handler in inspect.getmembers(instance, predicate):
             method, path, kwargs = handler.route_info
@@ -76,9 +74,7 @@ class Web:
         enable_ssl = self.config["ssl_certificate"] and self.config["ssl_key"]
         if self.config["ssl_certificate"] and not os.path.isfile(self.config["ssl_certificate"]):
             enable_ssl = False
-            LOGGER.warning(
-                "SSL certificate file not found: %s", self.config["ssl_certificate"]
-            )
+            LOGGER.warning("SSL certificate file not found: %s", self.config["ssl_certificate"])
         if self.config["ssl_key"] and not os.path.isfile(self.config["ssl_key"]):
             enable_ssl = False
             LOGGER.warning("SSL certificate key file not found: %s", self.config["ssl_key"])
@@ -132,9 +128,7 @@ class Web:
         LOGGER.info("Started HTTP webserver on port %s", self.http_port)
         if self._enable_ssl:
             ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(
-                self.config["ssl_certificate"], self.config["ssl_key"]
-            )
+            ssl_context.load_cert_chain(self.config["ssl_certificate"], self.config["ssl_key"])
             https_site = web.TCPSite(
                 self.runner,
                 "0.0.0.0",
@@ -146,9 +140,7 @@ class Web:
 
     async def async_index(self, request):
         # pylint: disable=unused-argument
-        index_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "web/index.html"
-        )
+        index_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web/index.html")
         return web.FileResponse(index_file)
 
     @routes.get("/api/library/artists")
@@ -492,8 +484,7 @@ class Web:
         conf_base = request.match_info.get("base")
         new_values = await request.json()
         LOGGER.debug(
-            "save config called for %s/%s - new values: %s",
-            conf_base, conf_key, new_values
+            "save config called for %s/%s - new values: %s", conf_base, conf_key, new_values
         )
         # cur_values = self.mass.config[conf_key][conf_subkey]
         # result = {"success": True, "restart_required": False, "settings_changed": False}
@@ -541,18 +532,14 @@ class Web:
             # process incoming messages
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.ERROR:
-                    LOGGER.debug(
-                        "ws connection closed with exception %s", ws.exception()
-                    )
+                    LOGGER.debug("ws connection closed with exception %s", ws.exception())
                 elif msg.type != aiohttp.WSMsgType.TEXT:
                     LOGGER.warning(msg.data)
                 else:
                     data = msg.json()
                     # echo the websocket message on event bus
                     # can be picked up by other modules, e.g. the webplayer
-                    self.mass.signal_event(
-                        data["message"], data["message_details"]
-                    )
+                    self.mass.signal_event(data["message"], data["message_details"])
         except (AssertionError, asyncio.CancelledError) as exc:
             LOGGER.warning("Websocket disconnected - %s", str(exc))
         finally:
@@ -562,9 +549,9 @@ class Web:
 
     async def async_json_rpc(self, request):
         """
-            implement LMS jsonrpc interface 
-            for some compatability with tools that talk to lms
-            only support for basic commands
+        implement LMS jsonrpc interface
+        for some compatability with tools that talk to lms
+        only support for basic commands
         """
         data = await request.json()
         LOGGER.debug("jsonrpc: %s", data)

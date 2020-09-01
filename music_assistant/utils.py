@@ -7,6 +7,7 @@ import re
 import socket
 from enum import Enum, Enum
 from typing import Any, Callable, TypeVar
+import logging
 
 import unidecode
 
@@ -280,11 +281,9 @@ def compare_strings(str1, str2, strict=False):
 
 def try_load_json_file(jsonfile):
     """try to load json from file"""
-    # pylint: disable=broad-except
     try:
         with open(jsonfile) as f:
             return json.loads(f.read())
-    except Exception as exc:
-        LOGGER.debug("Could not load json from file %s", jsonfile, exc_info=exc)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        logging.getLogger().debug("Could not load json from file %s", jsonfile, exc_info=exc)
         return None
-    # pylint: enable=broad-except
