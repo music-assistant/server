@@ -2,13 +2,16 @@
 import asyncio
 import dataclasses
 import functools
+import logging
 import os
+import platform
 import re
 import socket
-from enum import Enum, Enum
+import tempfile
+from enum import Enum
 from typing import Any, Callable, TypeVar
-import logging
 
+import memory_tempfile
 import unidecode
 
 try:
@@ -16,8 +19,6 @@ try:
 except ImportError:
     import json
 
-
-IS_HASSIO = os.path.isfile("/data/options.json")
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -287,3 +288,10 @@ def try_load_json_file(jsonfile):
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         logging.getLogger().debug("Could not load json from file %s", jsonfile, exc_info=exc)
         return None
+
+
+def create_tempfile():
+    """Return a (named) temporary file."""
+    if platform.system() == "Linux":
+        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
+    return tempfile.NamedTemporaryFile(buffering=0)

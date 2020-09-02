@@ -7,19 +7,19 @@ from typing import Any, List, Optional, Tuple
 
 class ConfigEntryType(str, Enum):
     """Enum for the type of a config entry."""
+
     BOOL = "boolean"
     STRING = "string"
     PASSWORD = "password"
     INT = "integer"
     FLOAT = "float"
     PLAYER_ID = "player_id"
-    VOLUME_CONTROL = "volume_control"
-    POWER_CONTROL = "power_control"
 
 
 @dataclass
-class ConfigEntry():
+class ConfigEntry:
     """Model for a Config Entry."""
+
     entry_key: str
     entry_type: ConfigEntryType
     default_value: Optional[Any] = None

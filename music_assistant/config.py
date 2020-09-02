@@ -5,6 +5,7 @@ import os
 import shutil
 from enum import Enum
 from typing import List
+from collections import OrderedDict
 
 from music_assistant.constants import (
     CONF_ENABLED,
@@ -14,6 +15,7 @@ from music_assistant.constants import (
     CONF_NAME,
     EVENT_CONFIG_CHANGED,
 )
+
 # from music_assistant.mass import MusicAssistant
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.utils import json, try_load_json_file
@@ -21,66 +23,119 @@ from music_assistant.utils import json, try_load_json_file
 LOGGER = logging.getLogger("mass")
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = [
-    ConfigEntry(entry_key=CONF_ENABLED, entry_type=ConfigEntryType.BOOL,
-                default_value=True, description_key="player_enabled"),
-    ConfigEntry(entry_key=CONF_NAME, entry_type=ConfigEntryType.STRING,
-                default_value=None, description_key="player_name"),
-    ConfigEntry(entry_key="mute_as_power", entry_type=ConfigEntryType.BOOL,
-                default_value=True, description_key="player_mute_power"),
-    ConfigEntry(entry_key="max_sample_rate", entry_type=ConfigEntryType.INT,
-                values=[41000, 48000, 96000, 176000, 192000, 384000],
-                default_value=96000, description_key="max_sample_rate"),
-    ConfigEntry(entry_key="volume_normalisation", entry_type=ConfigEntryType.BOOL,
-                default_value=True, description_key="enable_r128_volume_normalisation"),
-    ConfigEntry(entry_key="target_volume", entry_type=ConfigEntryType.INT, range=(-30, 0),
-                default_value=-23, description_key="target_volume_lufs"),
-    ConfigEntry(entry_key="fallback_gain_correct", entry_type=ConfigEntryType.INT, range=(-20, 0),
-                default_value=-12, description_key="fallback_gain_correct"),
-    ConfigEntry(entry_key="crossfade_duration", entry_type=ConfigEntryType.INT, range=(0, 10),
-                default_value=0, description_key="fallback_gain_correct"),
+    ConfigEntry(
+        entry_key=CONF_ENABLED,
+        entry_type=ConfigEntryType.BOOL,
+        default_value=True,
+        description_key="player_enabled",
+    ),
+    ConfigEntry(
+        entry_key=CONF_NAME,
+        entry_type=ConfigEntryType.STRING,
+        default_value=None,
+        description_key="player_name",
+    ),
+    ConfigEntry(
+        entry_key="max_sample_rate",
+        entry_type=ConfigEntryType.INT,
+        values=[41000, 48000, 96000, 176000, 192000, 384000],
+        default_value=96000,
+        description_key="max_sample_rate",
+    ),
+    ConfigEntry(
+        entry_key="volume_normalisation",
+        entry_type=ConfigEntryType.BOOL,
+        default_value=True,
+        description_key="enable_r128_volume_normalisation",
+    ),
+    ConfigEntry(
+        entry_key="target_volume",
+        entry_type=ConfigEntryType.INT,
+        range=(-30, 0),
+        default_value=-23,
+        description_key="target_volume_lufs",
+    ),
+    ConfigEntry(
+        entry_key="fallback_gain_correct",
+        entry_type=ConfigEntryType.INT,
+        range=(-20, 0),
+        default_value=-12,
+        description_key="fallback_gain_correct",
+    ),
+    ConfigEntry(
+        entry_key="crossfade_duration",
+        entry_type=ConfigEntryType.INT,
+        range=(0, 10),
+        default_value=0,
+        description_key="fallback_gain_correct",
+    ),
 ]
 
 DEFAULT_PROVIDER_CONFIG_ENTRIES = [
-    ConfigEntry(entry_key=CONF_ENABLED, entry_type=ConfigEntryType.BOOL,
-                default_value=True, description_key="enabled")]
-
-DEFAULT_BASE_CONFIG_ENTRIES = [
-    ConfigEntry(entry_key="http_port", entry_type=ConfigEntryType.INT,
-                default_value=8095, description_key="web_http_port"),
-    ConfigEntry(entry_key="https_port", entry_type=ConfigEntryType.INT,
-                default_value=8096, description_key="web_https_port"),
-    ConfigEntry(entry_key="ssl_certificate", entry_type=ConfigEntryType.STRING,
-                default_value="", description_key="web_ssl_cert"),
-    ConfigEntry(entry_key="ssl_key", entry_type=ConfigEntryType.STRING,
-                default_value="", description_key="ssl_key")
+    ConfigEntry(
+        entry_key=CONF_ENABLED,
+        entry_type=ConfigEntryType.BOOL,
+        default_value=True,
+        description_key="enabled",
+    )
 ]
+
+DEFAULT_BASE_CONFIG_ENTRIES = {
+    "web": [
+        ConfigEntry(
+            entry_key="http_port",
+            entry_type=ConfigEntryType.INT,
+            default_value=8095,
+            description_key="web_http_port",
+        ),
+        ConfigEntry(
+            entry_key="https_port",
+            entry_type=ConfigEntryType.INT,
+            default_value=8096,
+            description_key="web_https_port",
+        ),
+        ConfigEntry(
+            entry_key="ssl_certificate",
+            entry_type=ConfigEntryType.STRING,
+            default_value="",
+            description_key="web_ssl_cert",
+        ),
+        ConfigEntry(
+            entry_key="ssl_key",
+            entry_type=ConfigEntryType.STRING,
+            default_value="",
+            description_key="ssl_key",
+        ),
+    ]
+}
 
 
 class ConfigBaseType(Enum):
     """Enum with config base types."""
+
     BASE = CONF_KEY_BASE
     PLAYER = CONF_KEY_PLAYERSETTINGS
     PROVIDER = CONF_KEY_PROVIDERS
 
 
-class ConfigItem():
+class ConfigItem:
     """
-        Configuration Item connected to Config Entries.
-        Returns default value from config entry if no value present.
+    Configuration Item connected to Config Entries.
+    Returns default value from config entry if no value present.
     """
 
     def __init__(self, mass, parent_item_key: str, base_type: ConfigBaseType):
         self._parent_item_key = parent_item_key
         self._base_type = base_type
         self.mass = mass
-        self.stored_config = dict()
+        self.stored_config = OrderedDict()
 
     def __repr__(self):
-        return f"{dict}({self.items()})"
+        return f"{OrderedDict}({self.items()})"
 
     def items(self) -> dict:
         """Return entire config as dict."""
-        result = dict()
+        result = OrderedDict()
         for entry in self.get_config_entries():
             if entry.entry_key in self.stored_config:
                 # use saved value
@@ -129,8 +184,9 @@ class ConfigItem():
                 raise ValueError
             if value != entry.default_value:
                 self.stored_config[key] = value
-                self.mass.signal_event(EVENT_CONFIG_CHANGED,
-                                       (self._base_type, self._parent_item_key))
+                self.mass.signal_event(
+                    EVENT_CONFIG_CHANGED, (self._base_type, self._parent_item_key)
+                )
             return
         # raise KeyError if we're trying to set a value not defined as ConfigEntry
         raise KeyError
@@ -141,10 +197,10 @@ class ConfigItem():
             return self.mass.config.get_player_config_entries(self._parent_item_key)
         if self._base_type == ConfigBaseType.PROVIDER:
             return self.mass.config.get_provider_config_entries(self._parent_item_key)
-        return self.mass.config.get_base_config_entries()
+        return self.mass.config.get_base_config_entries(self._parent_item_key)
 
 
-class ConfigBase(dict):
+class ConfigBase(OrderedDict):
     """Configuration class with ConfigItem items."""
 
     def __init__(self, mass, base_type=ConfigBaseType):
@@ -160,14 +216,14 @@ class ConfigBase(dict):
         return super().__getitem__(item_key)
 
 
-class MassConfig():
+class MassConfig:
     """Class which holds our configuration"""
 
     def __init__(self, mass, data_path: str):
         self._data_path = data_path
         self.loading = False
         self.mass = mass
-        self._conf_base = ConfigItem(mass, "base", ConfigBaseType.BASE)
+        self._conf_base = ConfigBase(mass, ConfigBaseType.BASE)
         self._conf_players = ConfigBase(mass, ConfigBaseType.PLAYER)
         self._conf_providers = ConfigBase(mass, ConfigBaseType.PROVIDER)
         if not os.path.isdir(data_path):
@@ -185,7 +241,7 @@ class MassConfig():
         return self._conf_base
 
     @property
-    def players(self):
+    def player_settings(self):
         """Return all player configs."""
         return self._conf_players
 
@@ -218,17 +274,21 @@ class MassConfig():
             conf_entries += player.config_entries
         return conf_entries
 
-    def get_base_config_entries(self) -> List[ConfigEntry]:
+    def get_base_config_entries(self, base_key) -> List[ConfigEntry]:
         """Return all base config entries."""
-        return DEFAULT_BASE_CONFIG_ENTRIES
+        return DEFAULT_BASE_CONFIG_ENTRIES[base_key]
 
     def as_dict(self):
         """Return entire config as dict."""
         return {
             CONF_KEY_BASE: self.base,
-            CONF_KEY_PLAYERSETTINGS: self.players,
-            CONF_KEY_PROVIDERS: self.providers
+            CONF_KEY_PLAYERSETTINGS: self.player_settings,
+            CONF_KEY_PROVIDERS: self.providers,
         }
+
+    def __getitem__(self, item_key):
+        """Convenience method for get."""
+        return getattr(self, item_key)
 
     async def async_save(self):
         """Save config."""
@@ -246,15 +306,10 @@ class MassConfig():
         if os.path.isfile(conf_file):
             shutil.move(conf_file, conf_file_backup)
         # create dict for stored config
-        stored_conf = {
-            CONF_KEY_BASE: self.base.stored_config,
-            CONF_KEY_PLAYERSETTINGS: {},
-            CONF_KEY_PROVIDERS: {}
-        }
-        for key, value in self.players.items():
-            stored_conf[CONF_KEY_PLAYERSETTINGS][key] = value.stored_config
-        for key, value in self.providers.items():
-            stored_conf[CONF_KEY_PROVIDERS][key] = value.stored_config
+        stored_conf = {CONF_KEY_BASE: {}, CONF_KEY_PLAYERSETTINGS: {}, CONF_KEY_PROVIDERS: {}}
+        for conf_key in stored_conf:
+            for key, value in self[conf_key].items():
+                stored_conf[conf_key][key] = value.stored_config
 
         # write current config to file
         with open(conf_file, "w") as _file:
@@ -274,16 +329,19 @@ class MassConfig():
         if data:
 
             if data.get(CONF_KEY_BASE):
-                for key, value in data[CONF_KEY_BASE].items():
-                    if key in ["__desc__", "web", "homeassistant"]:
+                for base_key, base_value in data[CONF_KEY_BASE].items():
+                    if base_key in ["homeassistant"]:
                         continue  # legacy - to be removed later
-                    self.base.stored_config[key] = value
+                    for key, value in base_value.items():
+                        if key == "__desc__":
+                            continue
+                        self.base[base_key].stored_config[key] = value
             if data.get(CONF_KEY_PLAYERSETTINGS):
                 for player_id, player in data[CONF_KEY_PLAYERSETTINGS].items():
                     for key, value in player.items():
                         if key == "__desc__":
                             continue
-                        self.players[player_id].stored_config[key] = value
+                        self.player_settings[player_id].stored_config[key] = value
             if data.get(CONF_KEY_PROVIDERS):
                 for provider_id, provider in data[CONF_KEY_PROVIDERS].items():
                     for key, value in provider.items():

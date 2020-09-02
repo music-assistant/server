@@ -128,12 +128,12 @@ class PlayerQueue:
     @property
     def crossfade_enabled(self):
         """Returns if crossfade is enabled for this player's queue."""
-        return self.mass.config.players[self.player_id]["crossfade_duration"] > 0
+        return self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
 
     @property
     def gapless_enabled(self):
         """Returns if gapless support is enabled for this player."""
-        return self.mass.config.players[self.player_id]["gapless_enabled"]
+        return self.mass.config.player_settings[self.player_id]["gapless_enabled"]
 
     @property
     def cur_index(self):
@@ -244,7 +244,7 @@ class PlayerQueue:
         if self.use_queue_stream:
             return await self.async_play_index(self.cur_index + 1)
         else:
-            return await self.mass.player_manager.async_cmd_next(self.player_id)
+            return await self.mass.player_manager.get_player_provider(self.player_id).async_cmd_next(self.player_id)
 
     async def async_previous(self):
         """Play the previous track in the queue."""
@@ -345,7 +345,8 @@ class PlayerQueue:
         if (
             not self.items
             or self.cur_index is None
-            or self.cur_index + offset > len(self.items)
+            or self.cur_index == 0
+            or (self.cur_index + offset > len(self.items))
         ):
             return await self.async_load(queue_items)
         insert_at_index = self.cur_index + offset
@@ -363,14 +364,13 @@ class PlayerQueue:
             # send queue to player's own implementation
             player_prov = self.mass.player_manager.get_player_provider(self.player_id)
             try:
-
                 await player_prov.async_cmd_queue_insert(self.player_id, queue_items, insert_at_index)
             except NotImplementedError:
                 # not supported by player, use load queue instead
                 LOGGER.debug(
                     "cmd_queue_insert not supported by player, fallback to cmd_queue_load "
                 )
-                self._items = self._items[self.cur_index :]
+                self._items = self._items[self.cur_index:]
                 await player_prov.async_cmd_queue_load(self.player_id, self._items)
         self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
         self.mass.add_job(self.__async_save_state())
@@ -443,7 +443,7 @@ class PlayerQueue:
         self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
 
     async def async_update_state(self):
-        """update queue details, called when player updates"""
+        """Update queue details, called when player updates."""
         cur_index = self._cur_index
         track_time = self._cur_item_time
         # handle queue stream
@@ -482,7 +482,7 @@ class PlayerQueue:
                     queue_item.item_id,
                     queue_item.provider,
                     lazy=True,
-                    # track_details=queue_item,
+                    refresh=True
                 )
         # sort by quality and check track availability
         for prov_media in sorted(
@@ -513,9 +513,9 @@ class PlayerQueue:
             "cur_item_id": self.cur_item_id,
             "cur_index": self.cur_index,
             "next_index": self.next_index,
-            "cur_item": json_serializer(self.cur_item),
+            "cur_item": self.cur_item,
             "cur_item_time": self.cur_item_time,
-            "next_item": json_serializer(self.next_item),
+            "next_item": self.next_item,
             "queue_stream_enabled": self.use_queue_stream,
         }
 
@@ -549,7 +549,7 @@ class PlayerQueue:
             # queue track updated
             # account for track changing state so trigger track change after 1 second
             if self._last_track and self._last_track.streamdetails:
-                self._last_track.streamdetails["seconds_played"] = self._last_item_time
+                self._last_track.streamdetails.seconds_played = self._last_item_time
                 self.mass.signal_event(
                     EVENT_PLAYBACK_STOPPED, self._last_track.streamdetails
                 )

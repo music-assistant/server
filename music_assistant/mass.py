@@ -48,6 +48,7 @@ class MusicAssistant:
         self.http_streamer = HTTPStreamer(self)
         # shared zeroconf instance
         self.zeroconf = zeroconf.Zeroconf()
+        self._exit = False
 
     async def async_start(self):
         """Start running the music assistant server."""
@@ -67,6 +68,7 @@ class MusicAssistant:
         """stop running the music assistant server"""
         LOGGER.info("Application shutdown")
         self.signal_event(EVENT_SHUTDOWN)
+        self._exit = True
         await self.config.async_save()
         for prov in self._providers.values():
             await prov.async_on_stop()
@@ -94,7 +96,8 @@ class MusicAssistant:
     def get_provider(self, provider_id: str) -> Provider:
         """Return provider/plugin by id."""
         if not provider_id in self._providers:
-            raise KeyError("Provider %s is not available" % provider_id)
+            LOGGER.warning("Provider %s is not available", provider_id)
+            return None
         return self._providers[provider_id]
 
     @callback
@@ -142,6 +145,8 @@ class MusicAssistant:
                 :param event_msg: the eventmessage to signal
                 :param event_details: optional details to send with the event.
         """
+        if self._exit:
+            return
         for cb_func, event_filter in self._event_listeners:
             if not event_filter or event_filter in event_msg:
                 self.add_job(cb_func, event_msg, event_details)
@@ -178,6 +183,9 @@ class MusicAssistant:
             args: parameters for method to call.
         """
         task = None
+
+        if self._exit:
+            return
 
         # Check for partials to properly determine if coroutine function
         check_target = target

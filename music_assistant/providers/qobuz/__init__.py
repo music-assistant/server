@@ -353,7 +353,7 @@ class QobuzProvider(MusicProvider):
             device_id = self.__user_auth_info["user"]["device"]["id"]
             credential_id = self.__user_auth_info["user"]["credential"]["id"]
             user_id = self.__user_auth_info["user"]["id"]
-            format_id = msg_details["details"]["format_id"]
+            format_id = msg_details.details["format_id"]
             timestamp = int(time.time())
             events = [
                 {
@@ -361,7 +361,7 @@ class QobuzProvider(MusicProvider):
                     "sample": False,
                     "intent": "stream",
                     "device_id": device_id,
-                    "track_id": str(msg_details["item_id"]),
+                    "track_id": str(msg_details.item_id),
                     "purchase": False,
                     "date": timestamp,
                     "credential_id": credential_id,
@@ -371,15 +371,15 @@ class QobuzProvider(MusicProvider):
                 }
             ]
             await self.__async_post_data("track/reportStreamingStart", data=events)
-        elif msg == EVENT_PLAYBACK_STOPPED and msg_details["provider"] == PROV_ID:
+        elif msg == EVENT_PLAYBACK_STOPPED and msg_details.provider == PROV_ID:
             # report streaming ended to qobuz
-            if msg_details.get("msg_details", 0) < 6:
-                return
+            # if msg_details.details < 6:
+            #     return ????????????? TODO
             user_id = self.__user_auth_info["user"]["id"]
             params = {
                 "user_id": user_id,
-                "track_id": str(msg_details["item_id"]),
-                "duration": int(msg_details["seconds_played"]),
+                "track_id": str(msg_details.item_id),
+                "duration": int(msg_details.seconds_played),
             }
             await self.__async_get_data("/track/reportStreamingEnd", params)
 

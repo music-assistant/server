@@ -15,7 +15,6 @@ from music_assistant.constants import (
 )
 from music_assistant.models.media_types import MediaType, media_type_from_string
 from music_assistant.utils import (
-    IS_HASSIO,
     EnhancedJSONEncoder,
     get_ip,
     json_serializer,
@@ -58,19 +57,18 @@ class Web:
         self.mass = mass
         # load/create/update config
         self.local_ip = get_ip()
-        self.config = mass.config.base
+        self.config = mass.config.base["web"]
         self.runner = None
-        if IS_HASSIO:
-            # retrieve ingress http port
-            import requests
+        # if IS_HASSIO:
+        #     # retrieve ingress http port
+        #     import requests
 
-            url = "http://hassio/addons/self/info"
-            headers = {"X-HASSIO-KEY": os.environ["HASSIO_TOKEN"]}
-            response = requests.get(url, headers=headers).json()
-            self.http_port = response["data"]["ingress_port"]
-        else:
-            # use settings from config
-            self.http_port = self.config["http_port"]
+        #     url = "http://hassio/addons/self/info"
+        #     headers = {"X-HASSIO-KEY": os.environ["HASSIO_TOKEN"]}
+        #     response = requests.get(url, headers=headers).json()
+        #     self.http_port = response["data"]["ingress_port"]
+
+        self.http_port = self.config["http_port"]
         enable_ssl = self.config["ssl_certificate"] and self.config["ssl_key"]
         if self.config["ssl_certificate"] and not os.path.isfile(self.config["ssl_certificate"]):
             enable_ssl = False
@@ -105,7 +103,7 @@ class Web:
             ]
         )
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web/")
-        app.router.add_static("/", webdir)
+        app.router.add_static("/", webdir, append_version=True)
 
         # Add CORS support to all routes
         cors = aiohttp_cors.setup(
@@ -214,7 +212,7 @@ class Web:
         """get full artist details"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
-        lazy = request.rel_url.query.get("lazy", "true") != "false"
+        lazy = request.rel_url.query.get("lazy", "false") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
         result = await self.mass.music_manager.async_get_artist(item_id, provider, lazy=lazy)
@@ -225,7 +223,7 @@ class Web:
         """get full album details"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
-        lazy = request.rel_url.query.get("lazy", "true") != "false"
+        lazy = request.rel_url.query.get("lazy", "false") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
         result = await self.mass.music_manager.async_get_album(item_id, provider, lazy=lazy)
@@ -236,10 +234,12 @@ class Web:
         """get full track details"""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
-        lazy = request.rel_url.query.get("lazy", "true") != "false"
+        lazy = request.rel_url.query.get("lazy", "false") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
-        result = await self.mass.music_manager.async_get_track(item_id, provider, lazy=lazy)
+        result = await self.mass.music_manager.async_get_track(
+            item_id, provider, lazy=lazy, refresh=True
+        )
         return web.json_response(result, dumps=json_serializer)
 
     @routes.get("/api/playlists/{item_id}")
@@ -462,13 +462,23 @@ class Web:
             return web.Response(text="invalid player", status=404)
         return web.json_response(player, dumps=json_serializer)
 
-    @routes.get("/api/config/{base}")
+    @routes.get("/api/config")
     async def async_get_config(self, request):
         # pylint: disable=unused-argument
         """get the config"""
+        conf = {
+            CONF_KEY_BASE: self.mass.config.base,
+            CONF_KEY_PROVIDERS: self.mass.config.providers,
+            CONF_KEY_PLAYERSETTINGS: self.mass.config.player_settings,
+        }
+        return web.json_response(conf, dumps=json_serializer)
+
+    @routes.get("/api/config/{base}")
+    async def async_get_config_item(self, request):
+        """get the config"""
         conf_base = request.match_info.get("base")
         if conf_base == CONF_KEY_PLAYERSETTINGS:
-            conf = self.mass.config.players
+            conf = self.mass.config.player_settings
         elif conf_base == CONF_KEY_PROVIDERS:
             conf = self.mass.config.providers
         elif conf_base == CONF_KEY_BASE:
@@ -477,15 +487,18 @@ class Web:
             raise NotImplementedError("Invalid config path supplied.")
         return web.json_response(conf, dumps=json_serializer)
 
-    @routes.put("/api/config/{base}/{key}")
+    @routes.put("/api/config/{base}/{key}/{entry_key}")
     async def async_put_config(self, request):
         """save (partial) config"""
         conf_key = request.match_info.get("key")
         conf_base = request.match_info.get("base")
-        new_values = await request.json()
+        entry_key = request.match_info.get("entry_key")
+        new_value = await request.json()
         LOGGER.debug(
-            "save config called for %s/%s - new values: %s", conf_base, conf_key, new_values
+            "save config called for %s/%s/%s - new value: %s", conf_base, conf_key, entry_key, new_value
         )
+        self.mass.config[conf_base][conf_key][entry_key] = new_value
+        return web.json_response(True)
         # cur_values = self.mass.config[conf_key][conf_subkey]
         # result = {"success": True, "restart_required": False, "settings_changed": False}
         # if cur_values != new_values:

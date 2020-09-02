@@ -20,6 +20,7 @@ from music_assistant.utils import (
     async_iter_items,
     callback,
     try_parse_int,
+    run_periodic
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,16 +35,26 @@ class PlayerManager:
     def __init__(self, mass):
         self.mass = mass
         self._players = {}
+        self._org_players = {}
         self._providers = {}
         self._player_queues = {}
 
     async def async_setup(self):
         """Async initialize of module"""
+        self.mass.add_job(self.poll_task())
 
     async def async_close(self):
         """Handle stop/shutdown."""
         for player_queue in self._player_queues.values():
             await player_queue.async_close()
+
+    @run_periodic(1)
+    async def poll_task(self):
+        """Check for updates on players that need to be polled."""
+        for player in self._org_players.values():
+            if player.should_poll:
+                # TODO: compare values ?
+                await self.async_update_player(player)
 
     @property
     def players(self) -> List[Player]:
@@ -76,6 +87,7 @@ class PlayerManager:
     async def async_add_player(self, player: Player) -> None:
         """Register a new player or update an existing one."""
         assert player.player_id and player.player_id
+        self._org_players[player.player_id] = player
         is_new_player = player.player_id not in self._players
         player_state = await self.__async_create_player_state(player)
         self._players[player.player_id] = player_state
@@ -95,6 +107,7 @@ class PlayerManager:
         if player:
             await player.async_on_remove()
         self._players.pop(player_id, None)
+        self._org_players.pop(player_id, None)
         LOGGER.info("Player removed: %s", player_id)
         await self.mass.async_signal_event(EVENT_PLAYER_REMOVED, {"player_id": player_id})
 
@@ -104,8 +117,10 @@ class PlayerManager:
             return await self.async_add_player(player)
         player_state = await self.__async_create_player_state(player)
         self._players[player.player_id] = player_state
+        self._org_players[player.player_id] = player
         # TODO: update player queue
         await self.mass.async_signal_event(EVENT_PLAYER_CHANGED, self._players[player.player_id])
+        self.mass.add_job(self._player_queues[player.player_id].async_update_state())
         LOGGER.info("Player updated: %s", player_state.name)
 
     # SERVICE CALLS / PLAYER COMMANDS
@@ -161,11 +176,11 @@ class PlayerManager:
             len(queue_items) > 10 and queue_opt in [QueueOption.Play, QueueOption.Next]
         ):
             return await player_queue.async_load(queue_items)
-        elif queue_opt == QueueOption.Next:
+        if queue_opt == QueueOption.Next:
             return await player_queue.async_insert(queue_items, 1)
-        elif queue_opt == QueueOption.Play:
+        if queue_opt == QueueOption.Play:
             return await player_queue.async_insert(queue_items, 0)
-        elif queue_opt == QueueOption.Add:
+        if queue_opt == QueueOption.Add:
             return await player_queue.async_append(queue_items)
 
     async def async_cmd_stop(self, player_id: str):
@@ -182,10 +197,17 @@ class PlayerManager:
 
     async def async_cmd_play(self, player_id: str):
         """
-            Send STOP command to given player.
+            Send PLAY command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        return await self.get_player_provider(player_id).async_cmd_play(player_id)
+        # power on at play request
+        await self.get_player_provider(player_id).async_cmd_power_on(player_id)
+        player = self.get_player(player_id)
+        if player.state == PlayerState.Paused:
+            return await self.get_player_provider(player_id).async_cmd_play(player_id)
+        return await self._player_queues[player_id].async_resume()
+
+        
         # TODO: redirect playback related commands to parent player ?
         # for group_id in self.group_parents:
         #     group_player = self.mass.player_manager.get_player_sync(group_id)
@@ -224,7 +246,7 @@ class PlayerManager:
             Send NEXT TRACK command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        return await self.get_player_provider(player_id).async_cmd_next(player_id)
+        return await self._player_queues[player_id].async_next()
         # TODO: handle queue support and parent player command redirects
         # return await self.queue.play_index(self.queue.cur_index + 1)
         # return await player.async_play()
@@ -239,7 +261,7 @@ class PlayerManager:
             Send PREVIOUS TRACK command to given player.
                 :param player_id: player_id of the player to handle the command.
         """
-        return await self.get_player_provider(player_id).async_cmd_previous(player_id)
+        return await self._player_queues[player_id].async_previous()
         # TODO: handle queue support and parent player command redirects
         # return await self.queue.play_index(self.queue.cur_index - 1)
         # for group_id in self.group_parents:
@@ -254,12 +276,10 @@ class PlayerManager:
                 :param player_id: player_id of the player to handle the command.
         """
         player = self._players[player_id]
-        player_config = self.mass.config.players[player.player_id]
+        player_config = self.mass.config.player_settings[player.player_id]
         # turn on player
         await self.get_player_provider(player_id).async_cmd_power_on(player_id)
-        # handle mute as power
-        if player_config["mute_as_power"]:
-            await self.async_cmd_volume_mute(player_id, False)
+
         # handle hass integration
         # TODO: move to plugin construction
         # if (
@@ -292,10 +312,7 @@ class PlayerManager:
                 :param player_id: player_id of the player to handle the command.
         """
         player = self._players[player_id]
-        player_config = self.mass.config.players[player.player_id]
-        # handle mute as power
-        if player_config["mute_as_power"]:
-            await self.async_cmd_volume_mute(player_id, True)
+        player_config = self.mass.config.player_settings[player.player_id]
 
         await self.get_player_provider(player_id).async_cmd_power_off(player_id)
         # handle hass integration
@@ -356,7 +373,7 @@ class PlayerManager:
         """
         player = self.get_player(player_id)
         player_prov = self.get_player_provider(player_id)
-        player_config = self.mass.config.players[player.player_id]
+        player_config = self.mass.config.player_settings[player.player_id]
         volume_level = try_parse_int(volume_level)
         if volume_level < 0:
             volume_level = 0
@@ -457,7 +474,8 @@ class PlayerManager:
         """Get final/calculated player's power state."""
         if not player.available:
             return False
-        player_config = self.mass.config.players[player.player_id]
+        return player.powered
+        # player_config = self.mass.config.player_settings[player.player_id]
         # homeassistant integration
         # TODO: move to plugin-like structure (volume_controls and power_controls)
         # if (
@@ -473,16 +491,14 @@ class PlayerManager:
         #     hass_state = self.mass.hass.get_state(player_configs["hass_power_entity"])
         #     return hass_state != "off"
         # mute as power
-        if player_config["mute_as_power"]:
-            return not player.muted
-        return player.powered
+        # return player.powered
 
     @callback
     def __get_player_volume_level(self, player: Player):
         """Get final/calculated player's volume_level."""
         if not player.available:
             return 0
-        player_config = self.mass.config.players[player.player_id]
+        player_config = self.mass.config.player_settings[player.player_id]
         # handle group volume
         if player.is_group_player:
             group_volume = 0

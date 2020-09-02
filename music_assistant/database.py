@@ -1030,7 +1030,7 @@ class Database:
             sql_query = (
                 "SELECT (item_id) FROM external_ids WHERE media_type=? AND key=? AND value=?;"
             )
-            for db_row in await db_conn.execute_fetchone(
+            for db_row in await db_conn.execute_fetchall(
                 sql_query, (media_item.media_type, key, value)
             ):
                 if db_row:

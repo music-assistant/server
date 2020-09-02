@@ -35,3 +35,4 @@ class StreamDetails():
     bit_depth: int
     player_id: str = ""
     details: Optional[Any] = None
+    seconds_played: int = None

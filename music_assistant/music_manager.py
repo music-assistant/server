@@ -70,7 +70,7 @@ class MusicManager:
     async def async_setup(self):
         """Async initialize of module."""
         # schedule sync task
-        # self.mass.add_job(self.__async_music_providers_sync())
+        self.mass.add_job(self.__async_music_providers_sync())
 
     @property
     def providers(self) -> List[MusicProvider]:
@@ -150,19 +150,23 @@ class MusicManager:
         provider_id: str,
         lazy: bool = False,
         track_details: Track = None,
-        ignore_db: bool = False,
+        refresh: bool = False,
     ) -> Track:
         """Return track details for the given provider track id."""
         assert item_id and provider_id
         db_id = await self.mass.database.async_get_database_id(
             provider_id, item_id, MediaType.Track
         )
-        # ignore_db:
-        # in some cases (e.g. playback time or requesting full track info)
-        # it's useful to have the track pulled from the provided instead of the database cache
-        # this is to make sure that the track is available and perhaps
-        # another or a higher quality version is available.
-        if db_id is None or ignore_db:
+        if db_id and refresh:
+            # in some cases (e.g. at playback time or requesting full track info)
+            # it's useful to have the track refreshed from the provider instead of the database cache
+            # this is to make sure that the track is available and perhaps
+            # another or a higher quality version is available.
+            if lazy:
+                self.mass.add_job(self.__async_match_track(db_id))
+            else:
+                await self.__async_match_track(db_id)
+        if not db_id:
             # track not yet in local database so fetch details
             if not track_details:
                 provider = self.mass.get_provider(provider_id)
@@ -179,7 +183,7 @@ class MusicManager:
                 track_details.is_lazy = True
                 return track_details
             db_id = await self.__async_add_track(track_details)
-        return await self.mass.database.async_get_track(db_id)
+        return await self.mass.database.async_get_track(db_id, fulldata=True)
 
     async def async_get_playlist(self, item_id: str, provider_id: str) -> Playlist:
         """Return playlist details for the given provider playlist id."""
@@ -785,7 +789,7 @@ class MusicManager:
         if not playlist or not playlist.is_editable:
             return False
         # playlist can only have one provider (for now)
-        playlist_prov = playlist.provider_ids[0].provider
+        playlist_prov = playlist.provider_ids[0]
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = []
         async for item in self.async_get_playlist_tracks(
