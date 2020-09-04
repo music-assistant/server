@@ -89,7 +89,7 @@ export default {
       // get the full details for the mediaitem
       this.$store.loading = true
       const endpoint = this.media_type + '/' + this.media_id
-      let result = await this.$server.getData(endpoint, { provider: this.provider })
+      const result = await this.$server.getData(endpoint, { provider: this.provider })
       this.itemDetails = result
       this.$store.windowtitle = result.name
       this.$store.loading = false

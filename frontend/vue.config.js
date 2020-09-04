@@ -15,11 +15,9 @@ module.exports = {
     appleMobileWebAppCapable: 'yes',
     appleMobileWebAppStatusBarStyle: 'black'
   },
-
   transpileDependencies: [
     'vuetify'
   ],
-
   outputDir: '../music_assistant/web',
   publicPath: ''
 }

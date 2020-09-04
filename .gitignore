@@ -9,3 +9,4 @@ music_assistant/testrun.sh
 build/
 dist/
 venv/
+.venv

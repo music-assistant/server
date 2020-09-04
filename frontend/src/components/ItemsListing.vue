@@ -155,7 +155,7 @@ export default {
       this.viewMode = 'list'
     }
     // get stored viewMode for this endpoint
-    let viewMode = localStorage.getItem('viewMode' + this.mediatype + this.endpoint)
+    const viewMode = localStorage.getItem('viewMode' + this.mediatype + this.endpoint)
     if (viewMode !== null) {
       this.viewMode = viewMode
     }
@@ -183,8 +183,8 @@ export default {
     filteredItems (items, search) {
       if (!search) return items
       search = search.toLowerCase()
-      let newLst = []
-      for (let item of items) {
+      const newLst = []
+      for (const item of items) {
         if (item.name.toLowerCase().includes(search)) {
           newLst.push(item)
         } else if (item.artist && item.artist.name.toLowerCase().includes(search)) {

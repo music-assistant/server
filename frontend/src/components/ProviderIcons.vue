@@ -28,7 +28,7 @@ export default Vue.extend({
       var keys = []
       if (!this.providerIds) return []
       this.providerIds.forEach(function (prov) {
-        var key = prov['provider']
+        var key = prov.provider
         if (keys.indexOf(key) === -1) {
           keys.push(key)
           output.push(prov)

@@ -43,7 +43,6 @@
           <v-slider
             lazy
             :disabled="!players[child_id].powered"
-            v-if="!players[child_id].disable_volume"
             :value="Math.round(players[child_id].volume_level)"
             prepend-icon="volume_down"
             append-icon="volume_up"

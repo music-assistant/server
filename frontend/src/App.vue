@@ -2,9 +2,9 @@
   <v-app>
     <TopBar />
     <NavigationMenu></NavigationMenu>
-    <v-content>
+    <v-main>
       <router-view app :key="$route.path"></router-view>
-    </v-content>
+    </v-main>
     <PlayerOSD :showPlayerSelect="showPlayerSelect" />
     <ContextMenu/>
     <PlayerSelect/>
@@ -45,10 +45,10 @@ export default Vue.extend({
     // TODO: retrieve serveraddress through discovery and/or user settings
     let serverAddress = ''
     if (process.env.NODE_ENV === 'production') {
-      let loc = window.location
+      const loc = window.location
       serverAddress = loc.origin + loc.pathname
     } else {
-      serverAddress = 'http://192.168.1.79:8095/'
+      serverAddress = 'http://localhost:8095/'
     }
     this.$server.connect(serverAddress)
   }

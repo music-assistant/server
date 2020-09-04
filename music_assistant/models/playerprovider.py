@@ -1,57 +1,155 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
+"""Models and helpers for a player provider."""
 
-import asyncio
-from enum import Enum
+from abc import abstractmethod
+from dataclasses import dataclass
 from typing import List
 
-from music_assistant.constants import CONF_ENABLED
-from music_assistant.models.media_types import Track
-from music_assistant.models.player import Player
-from music_assistant.models.player_queue import PlayerQueue
-from music_assistant.utils import LOGGER, run_periodic
+from music_assistant.models.player_queue import QueueItem
+from music_assistant.models.provider import Provider, ProviderType
 
-
-class PlayerProvider:
-    """ 
-        Model for a Playerprovider
-        Common methods usable for every provider
-        Provider specific methods should be overriden in the provider specific implementation
+@dataclass
+class PlayerProvider(Provider):
     """
+        Base class for a Playerprovider
+        Should be overridden/subclassed by provider specific implementation.
+    """
+    type: ProviderType = ProviderType.PLAYER_PROVIDER
 
-    def __init__(self, mass):
-        """[DO NOT OVERRIDE]"""
-        self.prov_id = ""
-        self.name = ""
-        self.mass = mass
-        self.cache = mass.cache
-        self.player_config_entries = []
+    # SERVICE CALLS / PLAYER COMMANDS
 
-    async def setup(self, conf):
-        """[SHOULD OVERRIDE] Setup the provider"""
-        return False
+    @abstractmethod
+    async def async_cmd_play_uri(self, player_id: str, uri: str):
+        """
+            Play the specified uri/url on the goven player.
+                :param player_id: player_id of the player to handle the command.
+        """
+        raise NotImplementedError
 
-    ### Common methods and properties ####
+    @abstractmethod
+    async def async_cmd_stop(self, player_id: str):
+        """
+            Send STOP command to given player.
+                :param player_id: player_id of the player to handle the command.
+        """
+        raise NotImplementedError
 
-    @property
-    def players(self):
-        """ return all players for this provider """
-        return [
-            item
-            for item in self.mass.players.players
-            if item.player_provider == self.prov_id
-        ]
+    @abstractmethod
+    async def async_cmd_play(self, player_id: str):
+        """
+            Send STOP command to given player.
+                :param player_id: player_id of the player to handle the command.
+        """
+        raise NotImplementedError
 
-    async def get_player(self, player_id: str):
-        """ return player by id """
-        return await self.mass.players.get_player(player_id)
+    @abstractmethod
+    async def async_cmd_pause(self, player_id: str):
+        """
+            Send PAUSE command to given player.
+                :param player_id: player_id of the player to handle the command.
+        """
+        raise NotImplementedError
 
-    async def add_player(self, player: Player):
-        """ register a new player """
-        return await self.mass.players.add_player(player)
+    @abstractmethod
+    async def async_cmd_next(self, player_id: str):
+        """
+            Send NEXT TRACK command to given player.
+                :param player_id: player_id of the player to handle the command.
+        """
+        raise NotImplementedError
 
-    async def remove_player(self, player_id: str):
-        """ remove a player """
-        return await self.mass.players.remove_player(player_id)
+    @abstractmethod
+    async def async_cmd_previous(self, player_id: str):
+        """
+            Send PREVIOUS TRACK command to given player.
+                :param player_id: player_id of the player to handle the command.
+        """
+        raise NotImplementedError
 
-    ### Provider specific implementation #####
+    @abstractmethod
+    async def async_cmd_power_on(self, player_id: str):
+        """
+            Send POWER ON command to given player.
+                :param player_id: player_id of the player to handle the command.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def async_cmd_power_off(self, player_id: str):
+        """
+            Send POWER OFF command to given player.
+                :param player_id: player_id of the player to handle the command.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def async_cmd_volume_set(self, player_id: str, volume_level: int):
+        """
+            Send volume level command to given player.
+                :param player_id: player_id of the player to handle the command.
+                :param volume_level: volume level to set (0..100).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def async_cmd_volume_mute(self, player_id: str, is_muted=False):
+        """
+            Send volume MUTE command to given player.
+                :param player_id: player_id of the player to handle the command.
+                :param is_muted: bool with new mute state.
+        """
+        raise NotImplementedError
+
+    # OPTIONAL: QUEUE SERVICE CALLS/COMMANDS - OVERRIDE ONLY IF SUPPORTED BY PROVIDER
+    # pylint: disable=abstract-method
+
+    async def async_cmd_queue_play_index(self, player_id: str, index: int):
+        """
+            Play item at index X on player's queue
+                :param player_id: player_id of the player to handle the command.
+                :param index: (int) index of the queue item that should start playing
+        """
+        raise NotImplementedError
+
+    async def async_cmd_queue_load(self, player_id: str, queue_items: List[QueueItem]):
+        """
+            Load/overwrite given items in the player's queue implementation
+                :param player_id: player_id of the player to handle the command.
+                :param queue_items: a list of QueueItems
+        """
+        raise NotImplementedError
+
+    async def async_cmd_queue_insert(self,
+                                     player_id: str,
+                                     queue_items: List[QueueItem],
+                                     insert_at_index: int):
+        """
+            Insert new items at position X into existing queue.
+            If insert_at_index 0 or None, will start playing newly added item(s)
+                :param player_id: player_id of the player to handle the command.
+                :param queue_items: a list of QueueItems
+                :param insert_at_index: queue position to insert new items
+        """
+        raise NotImplementedError
+
+    async def async_cmd_queue_append(self, player_id: str, queue_items: List[QueueItem]):
+        """
+            Append new items at the end of the queue.
+                :param player_id: player_id of the player to handle the command.
+                :param queue_items: a list of QueueItems
+        """
+        raise NotImplementedError
+
+    async def async_cmd_queue_update(self, player_id: str, queue_items: List[QueueItem]):
+        """
+            Overwrite the existing items in the queue, used for reordering.
+                :param player_id: player_id of the player to handle the command.
+                :param queue_items: a list of QueueItems
+        """
+        raise NotImplementedError
+
+    async def async_cmd_queue_clear(self, player_id: str):
+        """
+            Clear the player's queue.
+                :param player_id: player_id of the player to handle the command.
+        """
+        raise NotImplementedError

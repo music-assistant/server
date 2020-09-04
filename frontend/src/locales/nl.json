@@ -31,8 +31,7 @@
   "conf"            : {
     "enabled"                          : "Ingeschakeld",
     "base"                             : "Algemene instellingen",
-    "musicproviders"                   : "Muziek providers",
-    "playerproviders"                  : "Speler providers",
+    "providers"                        : "Providers / Plugins",
     "player_settings"                  : "Speler instellingen",
     "homeassistant"                    : "Home Assistant integratie",
     "web"                              : "Webserver",

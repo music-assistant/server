@@ -1,67 +1,85 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
+"""Helper and utility functions."""
 import asyncio
-import importlib
+import dataclasses
+import functools
 import logging
 import os
+import platform
 import re
 import socket
+import tempfile
+from enum import Enum
+from typing import Any, Callable, TypeVar
+from types import FunctionType, MethodType
+from datetime import datetime
 
-from music_assistant.constants import CONF_ENABLED, CONF_KEY_MUSICPROVIDERS
+import memory_tempfile
 import unidecode
 
 try:
     import simplejson as json
 except ImportError:
     import json
-LOGGER = logging.getLogger("music_assistant")
 
 
-IS_HASSIO = os.path.isfile("/data/options.json")
+# pylint: disable=invalid-name
+T = TypeVar("T")
+_UNDEF: dict = {}
+CALLABLE_T = TypeVar("CALLABLE_T", bound=Callable)
+CALLBACK_TYPE = Callable[[], None]
+# pylint: enable=invalid-name
+
+
+def callback(func: CALLABLE_T) -> CALLABLE_T:
+    """Annotation to mark method as safe to call from within the event loop."""
+    setattr(func, "_mass_callback", True)
+    return func
+
+
+def is_callback(func: Callable[..., Any]) -> bool:
+    """Check if function is safe to be called in the event loop."""
+    return getattr(func, "_mass_callback", False) is True
 
 
 def run_periodic(period):
     def scheduler(fcn):
-        async def wrapper(*args, **kwargs):
+        async def async_wrapper(*args, **kwargs):
             while True:
                 asyncio.create_task(fcn(*args, **kwargs))
                 await asyncio.sleep(period)
 
-        return wrapper
+        return async_wrapper
 
     return scheduler
 
 
 def filename_from_string(string):
-    """ create filename from unsafe string """
+    """create filename from unsafe string"""
     keepcharacters = (" ", ".", "_")
     return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
 
 
 def run_background_task(corofn, *args, executor=None):
-    """ run non-async task in background """
+    """run non-async task in background"""
     return asyncio.get_event_loop().run_in_executor(executor, corofn, *args)
 
 
 def run_async_background_task(executor, corofn, *args):
-    """ run async task in background """
+    """run async task in background"""
 
     def run_task(corofn, *args):
-        LOGGER.debug("running %s in background task", corofn.__name__)
         new_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(new_loop)
         coro = corofn(*args)
         res = new_loop.run_until_complete(coro)
         new_loop.close()
-        LOGGER.debug("completed %s in background task", corofn.__name__)
         return res
 
     return asyncio.get_event_loop().run_in_executor(executor, run_task, corofn, *args)
 
 
 def get_sort_name(name):
-    """ create a sort name for an artist/title """
+    """create a sort name for an artist/title"""
     sort_name = name
     for item in ["The ", "De ", "de ", "Les "]:
         if name.startswith(item):
@@ -76,7 +94,7 @@ def try_parse_int(possible_int):
         return 0
 
 
-async def iter_items(items):
+async def async_iter_items(items):
     """fake async iterator for compatability reasons."""
     if not isinstance(items, list):
         yield items
@@ -100,7 +118,7 @@ def try_parse_bool(possible_bool):
 
 
 def parse_title_and_version(track_title, track_version=None):
-    """ try to parse clean track title and version from the title """
+    """try to parse clean track title and version from the title"""
     title = track_title.lower()
     version = ""
     for splitter in [" (", " [", " - ", " (", " [", "-"]:
@@ -147,7 +165,7 @@ def parse_title_and_version(track_title, track_version=None):
 
 
 def get_version_substitute(version_str):
-    """ transform provider version str to universal version type """
+    """transform provider version str to universal version type"""
     version_str = version_str.lower()
     # substitute edit and edition with version
     if "edition" in version_str or "edit" in version_str:
@@ -189,7 +207,7 @@ def get_hostname():
 
 
 def get_folder_size(folderpath):
-    """ get folder size in gb"""
+    """get folder size in gb"""
     total_size = 0
     # pylint: disable=unused-variable
     for dirpath, dirnames, filenames in os.walk(folderpath):
@@ -201,111 +219,83 @@ def get_folder_size(folderpath):
     return total_size_gb
 
 
-def serialize_values(obj):
-    """Recursively create serializable values for (custom) data types."""
+class EnhancedJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if dataclasses.is_dataclass(obj):
+            return dataclasses.asdict(obj)
+        if isinstance(obj, Enum):
+            return str(obj)
+        if isinstance(obj, Enum):
+            return int(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if hasattr(obj, "to_dict"):
+            return obj.to_dict()
+        if hasattr(obj, "items"):
+            return obj.items()
+        return super().default(obj)
 
-    def get_val(val):
-        if isinstance(val, (int, str, bool, float, tuple)):
-            return val
-        elif isinstance(val, list):
-            new_list = []
-            for item in val:
-                new_list.append(get_val(item))
-            return new_list
-        elif hasattr(val, "to_dict"):
-            return get_val(val.to_dict())
-        elif isinstance(val, dict):
-            new_dict = {}
-            for key, value in val.items():
-                new_dict[key] = get_val(value)
-            return new_dict
-        elif hasattr(val, "__dict__"):
-            new_dict = {}
-            for key, value in val.__dict__.items():
-                new_dict[key] = get_val(value)
-            return new_dict
 
-    return get_val(obj)
+json_serializer = functools.partial(json.dumps, cls=EnhancedJSONEncoder)
+
+# def json_serializer(obj):
+#     """Recursively create serializable values for (custom) data types."""
+
+#     def get_val(val):
+#         if isinstance(val, (int, str, bool, float, tuple)):
+#             return val
+#         elif isinstance(val, list):
+#             new_list = []
+#             for item in val:
+#                 new_list.append(get_val(item))
+#             return new_list
+#         elif hasattr(val, "to_dict"):
+#             return get_val(val.to_dict())
+#         elif isinstance(val, dict):
+#             new_dict = {}
+#             for key, value in val.items():
+#                 new_dict[key] = get_val(value)
+#             return new_dict
+#         elif hasattr(val, "__dict__"):
+#             new_dict = {}
+#             for key, value in val.__dict__.items():
+#                 new_dict[key] = get_val(value)
+#             return new_dict
+
+#     return get_val(obj)
 
 
 def get_compare_string(input_str):
-    """ get clean lowered string for compare actions """
+    """get clean lowered string for compare actions"""
     unaccented_string = unidecode.unidecode(input_str)
     return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string).lower()
 
 
 def compare_strings(str1, str2, strict=False):
-    """ compare strings and return True if we have an (almost) perfect match """
+    """compare strings and return True if we have an (almost) perfect match"""
     match = str1.lower() == str2.lower()
     if not match and not strict:
         match = get_compare_string(str1) == get_compare_string(str2)
     return match
 
 
-def json_serializer(obj):
-    """ json serializer to recursively create serializable values for custom data types """
-    return json.dumps(serialize_values(obj), skipkeys=True)
+# def json_serializer(obj):
+#     """json serializer to recursively create serializable values for custom data types"""
+#     return json.dumps(json_serializer(obj), skipkeys=True)
 
 
 def try_load_json_file(jsonfile):
-    """ try to load json from file """
-    # pylint: disable=broad-except
+    """try to load json from file"""
     try:
         with open(jsonfile) as f:
             return json.loads(f.read())
-    except Exception as exc:
-        LOGGER.debug("Could not load json from file %s", jsonfile, exc_info=exc)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        logging.getLogger().debug("Could not load json from file %s", jsonfile, exc_info=exc)
         return None
-    # pylint: enable=broad-except
 
 
-async def load_provider_modules(
-    mass, provider_modules, prov_type=CONF_KEY_MUSICPROVIDERS
-):
-    """ dynamically load music/player providers """
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    modules_path = os.path.join(base_dir, prov_type)
-    # load modules
-    for item in os.listdir(modules_path):
-        if (
-            os.path.isfile(os.path.join(modules_path, item))
-            and not item.startswith("_")
-            and item.endswith(".py")
-            and not item.startswith(".")
-        ):
-            module_name = item.replace(".py", "")
-            if module_name not in provider_modules:
-                prov_mod = await load_provider_module(mass, module_name, prov_type)
-                if prov_mod:
-                    provider_modules[module_name] = prov_mod
-
-
-async def load_provider_module(mass, module_name, prov_type):
-    """ dynamically load music/player provider """
-    # pylint: disable=broad-except
-    try:
-        prov_mod = importlib.import_module(
-            f".{module_name}", f"music_assistant.{prov_type}"
-        )
-        prov_conf_entries = prov_mod.CONFIG_ENTRIES
-        prov_id = module_name
-        prov_name = prov_mod.PROV_NAME
-        prov_class = prov_mod.PROV_CLASS
-        # get/create config for the module
-        prov_config = mass.config.create_module_config(
-            prov_id, prov_conf_entries, prov_type
-        )
-        if prov_config[CONF_ENABLED]:
-            prov_mod_cls = getattr(prov_mod, prov_class)
-            provider = prov_mod_cls(mass)
-            provider.prov_id = prov_id
-            provider.name = prov_name
-            await provider.setup(prov_config)
-            LOGGER.info("Successfully initialized module %s", provider.name)
-            return provider
-        else:
-            return None
-    except Exception as exc:
-        LOGGER.error("Error loading module %s: %s", module_name, exc)
-        LOGGER.debug("Error loading module", exc_info=exc)
-    # pylint: enable=broad-except
+def create_tempfile():
+    """Return a (named) temporary file."""
+    if platform.system() == "Linux":
+        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
+    return tempfile.NamedTemporaryFile(buffering=0)

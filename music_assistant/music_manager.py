@@ -1,337 +1,808 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
+"""MusicManager: Orchestrates all data from music providers and sync to internal database."""
+# pylint: disable=too-many-lines
+import asyncio
 import base64
 import functools
-import operator
+import logging
 import os
 import time
-from typing import List
+from typing import List, Optional
 
-from PIL import Image
 import aiohttp
-from music_assistant.constants import CONF_KEY_MUSICPROVIDERS, EVENT_MUSIC_SYNC_STATUS
+from PIL import Image
+from music_assistant.cache import async_cached, async_cached_generator
+from music_assistant.constants import EVENT_MUSIC_SYNC_STATUS
 from music_assistant.models.media_types import (
     Album,
     Artist,
+    ExternalId,
     MediaItem,
     MediaType,
     Playlist,
     Radio,
+    SearchResult,
     Track,
 )
-from music_assistant.utils import LOGGER, load_provider_modules, run_periodic
-import toolz
+from music_assistant.models.musicprovider import MusicProvider
+from music_assistant.models.provider import ProviderType
+from music_assistant.utils import compare_strings, run_periodic
+
+
+LOGGER = logging.getLogger("mass")
 
 
 def sync_task(desc):
-    """ decorator to report a sync task """
+    """Decorator to report a sync task."""
 
     def wrapper(func):
         @functools.wraps(func)
-        async def wrapped(*args):
+        async def async_wrapped(*args):
             method_class = args[0]
             prov_id = args[1]
             # check if this sync task is not already running
             for sync_prov_id, sync_desc in method_class.running_sync_jobs:
                 if sync_prov_id == prov_id and sync_desc == desc:
-                    LOGGER.warning(
-                        "Syncjob %s for provider %s is already running!", desc, prov_id
-                    )
+                    LOGGER.debug("Syncjob %s for provider %s is already running!", desc, prov_id)
                     return
+            LOGGER.info("Start syncjob %s for provider %s.", desc, prov_id)
             sync_job = (prov_id, desc)
             method_class.running_sync_jobs.append(sync_job)
-            await method_class.mass.signal_event(
-                EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs
-            )
+            method_class.mass.signal_event(EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs)
             await func(*args)
             LOGGER.info("Finished syncing %s for provider %s", desc, prov_id)
             method_class.running_sync_jobs.remove(sync_job)
-            await method_class.mass.signal_event(
-                EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs
-            )
+            method_class.mass.signal_event(EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs)
 
-        return wrapped
+        return async_wrapped
 
     return wrapper
 
 
 class MusicManager:
-    """ several helpers around the musicproviders """
+    """Several helpers around the musicproviders."""
 
     def __init__(self, mass):
         self.running_sync_jobs = []
         self.mass = mass
-        self.providers = {}
+        self.cache = mass.cache
+        self._match_jobs = []
 
-    async def setup(self):
-        """ async initialize of module """
-        # load providers
-        await self.load_modules()
+    async def async_setup(self):
+        """Async initialize of module."""
         # schedule sync task
-        self.mass.event_loop.create_task(self.__sync_music_providers())
+        self.mass.add_job(self.__async_music_providers_sync())
 
-    async def load_modules(self, reload_module=None):
-        """Dynamically (un)load musicprovider modules."""
-        if reload_module and reload_module in self.providers:
-            # unload existing module
-            for player in self.providers[reload_module].players:
-                await self.mass.players.remove_player(player.player_id)
-            self.providers.pop(reload_module, None)
-            LOGGER.info("Unloaded %s module", reload_module)
-        # load all modules (that are not already loaded)
-        await load_provider_modules(self.mass, self.providers, CONF_KEY_MUSICPROVIDERS)
+    @property
+    def providers(self) -> List[MusicProvider]:
+        """Return all providers of type musicprovider."""
+        return self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
 
-    async def item(
-        self, item_id, media_type: MediaType, provider="database", lazy=True
+    ################ GET MediaItem(s) by id and provider #################
+
+    async def async_get_item(
+        self, item_id: str, provider_id: str, media_type: MediaType, lazy: bool = False
     ):
-        """ get single music item by id and media type"""
+        """Get single music item by id and media type."""
         if media_type == MediaType.Artist:
-            return await self.artist(item_id, provider, lazy=lazy)
-        elif media_type == MediaType.Album:
-            return await self.album(item_id, provider, lazy=lazy)
-        elif media_type == MediaType.Track:
-            return await self.track(item_id, provider, lazy=lazy)
-        elif media_type == MediaType.Playlist:
-            return await self.playlist(item_id, provider)
-        elif media_type == MediaType.Radio:
-            return await self.radio(item_id, provider)
-        else:
-            return None
+            return await self.async_get_artist(item_id, provider_id, lazy)
+        if media_type == MediaType.Album:
+            return await self.async_get_album(item_id, provider_id, lazy)
+        if media_type == MediaType.Track:
+            return await self.async_get_track(item_id, provider_id, lazy)
+        if media_type == MediaType.Playlist:
+            return await self.async_get_playlist(item_id, provider_id)
+        if media_type == MediaType.Radio:
+            return await self.async_get_radio(item_id, provider_id)
+        return None
 
-    async def library_artists(
-        self, orderby="name", provider_filter=None
-    ) -> List[Artist]:
-        """ return all library artists, optionally filtered by provider """
-        async for item in self.mass.db.library_artists(
-            provider=provider_filter, orderby=orderby
-        ):
-            yield item
-
-    async def library_albums(self, orderby="name", provider_filter=None) -> List[Album]:
-        """ return all library albums, optionally filtered by provider """
-        async for item in self.mass.db.library_albums(
-            provider=provider_filter, orderby=orderby
-        ):
-            yield item
-
-    async def library_tracks(self, orderby="name", provider_filter=None) -> List[Track]:
-        """ return all library tracks, optionally filtered by provider """
-        async for item in self.mass.db.library_tracks(
-            provider=provider_filter, orderby=orderby
-        ):
-            yield item
-
-    async def library_playlists(
-        self, orderby="name", provider_filter=None
-    ) -> List[Playlist]:
-        """ return all library playlists, optionally filtered by provider """
-        async for item in self.mass.db.library_playlists(
-            provider=provider_filter, orderby=orderby
-        ):
-            yield item
-
-    async def library_radios(
-        self, orderby="name", provider_filter=None
-    ) -> List[Playlist]:
-        """ return all library radios, optionally filtered by provider """
-        async for item in self.mass.db.library_radios(
-            provider=provider_filter, orderby=orderby
-        ):
-            yield item
-
-    async def artist(self, item_id, provider="database", lazy=True) -> Artist:
-        """ get artist by id """
-        if not provider or provider == "database":
-            return await self.mass.db.artist(item_id)
-        return await self.providers[provider].artist(item_id, lazy=lazy)
-
-    async def album(self, item_id, provider="database", lazy=True) -> Album:
-        """ get album by id """
-        if not provider or provider == "database":
-            return await self.mass.db.album(item_id)
-        return await self.providers[provider].album(item_id, lazy=lazy)
-
-    async def track(
-        self, item_id, provider="database", lazy=True, track_details=None
-    ) -> Track:
-        """ get track by id """
-        if not provider or provider == "database":
-            return await self.mass.db.track(item_id)
-        return await self.providers[provider].track(
-            item_id, lazy=lazy, track_details=track_details
+    async def async_get_artist(self, item_id: str, provider_id: str, lazy: bool = True) -> Artist:
+        """Return artist details for the given provider artist id."""
+        assert item_id and provider_id
+        db_id = await self.mass.database.async_get_database_id(
+            provider_id, item_id, MediaType.Artist
         )
+        if db_id is None:
+            # artist not yet in local database so fetch details
+            provider = self.mass.get_provider(provider_id)
+            if not provider.available:
+                return None
+            cache_key = f"{provider_id}.get_artist.{item_id}"
+            artist = await async_cached(self.cache, cache_key, provider.async_get_artist(item_id))
+            if not artist:
+                raise Exception("Artist %s not found on provider %s" % (item_id, provider_id))
+            if lazy:
+                self.mass.add_job(self.__async_add_artist(artist))
+                artist.is_lazy = True
+                return artist
+            db_id = await self.__async_add_artist(artist)
+        return await self.mass.database.async_get_artist(db_id)
 
-    async def playlist(self, item_id, provider="database") -> Playlist:
-        """ get playlist by id """
-        if not provider or provider == "database":
-            return await self.mass.db.playlist(item_id)
-        return await self.providers[provider].playlist(item_id)
+    async def async_get_album(
+        self, item_id: str, provider_id: str, lazy=True, album_details: Optional[Album] = None
+    ) -> Album:
+        """Return album details for the given provider album id."""
+        assert item_id and provider_id
+        db_id = await self.mass.database.async_get_database_id(
+            provider_id, item_id, MediaType.Album
+        )
+        if db_id is None:
+            # album not yet in local database so fetch details
+            if not album_details:
+                provider = self.mass.get_provider(provider_id)
+                if not provider.available:
+                    return None
+                cache_key = f"{provider_id}.get_album.{item_id}"
+                album_details = await async_cached(
+                    self.cache, cache_key, provider.async_get_album(item_id)
+                )
+            if not album_details:
+                raise Exception("Album %s not found on provider %s" % (item_id, provider_id))
+            if lazy:
+                self.mass.add_job(self.__async_add_album(album_details))
+                album_details.is_lazy = True
+                return album_details
+            db_id = await self.__async_add_album(album_details)
+        return await self.mass.database.async_get_album(db_id)
 
-    async def radio(self, item_id, provider="database") -> Radio:
-        """ get radio by id """
-        if not provider or provider == "database":
-            return await self.mass.db.radio(item_id)
-        return await self.providers[provider].radio(item_id)
+    async def async_get_track(
+        self,
+        item_id: str,
+        provider_id: str,
+        lazy: bool = False,
+        track_details: Track = None,
+        refresh: bool = False,
+    ) -> Track:
+        """Return track details for the given provider track id."""
+        assert item_id and provider_id
+        db_id = await self.mass.database.async_get_database_id(
+            provider_id, item_id, MediaType.Track
+        )
+        if db_id and refresh:
+            # in some cases (e.g. at playback time or requesting full track info)
+            # it's useful to have the track refreshed from the provider instead of the database cache
+            # this is to make sure that the track is available and perhaps
+            # another or a higher quality version is available.
+            if lazy:
+                self.mass.add_job(self.__async_match_track(db_id))
+            else:
+                await self.__async_match_track(db_id)
+        if not db_id:
+            # track not yet in local database so fetch details
+            if not track_details:
+                provider = self.mass.get_provider(provider_id)
+                if not provider.available:
+                    return None
+                cache_key = f"{provider_id}.get_track.{item_id}"
+                track_details = await async_cached(
+                    self.cache, cache_key, provider.async_get_track(item_id)
+                )
+            if not track_details:
+                raise Exception("Track %s not found on provider %s" % (item_id, provider_id))
+            if lazy:
+                self.mass.add_job(self.__async_add_track(track_details))
+                track_details.is_lazy = True
+                return track_details
+            db_id = await self.__async_add_track(track_details)
+        return await self.mass.database.async_get_track(db_id, fulldata=True)
 
-    async def playlist_by_name(self, name) -> Playlist:
-        """ get playlist by name """
-        async for playlist in self.library_playlists():
+    async def async_get_playlist(self, item_id: str, provider_id: str) -> Playlist:
+        """Return playlist details for the given provider playlist id."""
+        assert item_id and provider_id
+        db_id = await self.mass.database.async_get_database_id(
+            provider_id, item_id, MediaType.Playlist
+        )
+        if db_id is None:
+            # item not yet in local database so fetch and store details
+            provider = self.mass.get_provider(provider_id)
+            if not provider.available:
+                return None
+            item_details = await provider.async_get_playlist(item_id)
+            db_id = await self.mass.database.async_add_playlist(item_details)
+        return await self.mass.database.async_get_playlist(db_id)
+
+    async def async_get_radio(self, item_id: str, provider_id: str) -> Radio:
+        """Return radio details for the given provider playlist id."""
+        assert item_id and provider_id
+        db_id = await self.mass.database.async_get_database_id(
+            provider_id, item_id, MediaType.Radio
+        )
+        if db_id is None:
+            # item not yet in local database so fetch and store details
+            provider = self.mass.get_provider(provider_id)
+            if not provider.available:
+                return None
+            item_details = await provider.async_get_radio(item_id)
+            db_id = await self.mass.database.async_add_radio(item_details)
+        return await self.mass.database.async_get_radio(db_id)
+
+    async def async_get_album_tracks(self, item_id: str, provider_id: str) -> List[Track]:
+        """Return album tracks for the given provider album id. Generator!"""
+        assert item_id and provider_id
+        if provider_id == "database":
+            # album tracks are not stored in db, we always fetch them (cached) from the provider.
+            db_item = await self.mass.database.async_get_album(item_id)
+            provider_id = db_item.provider_ids[0].provider
+            item_id = db_item.provider_ids[0].item_id
+        provider = self.mass.get_provider(provider_id)
+        cache_key = f"{provider_id}.album_tracks.{item_id}"
+        async for item in async_cached_generator(
+            self.cache, cache_key, provider.async_get_album_tracks(item_id)
+        ):
+            if not item:
+                continue
+            assert item.item_id and item.provider
+            db_id = await self.mass.database.async_get_database_id(
+                item.provider, item.item_id, MediaType.Track
+            )
+            if db_id:
+                # return database track instead if we have a match
+                db_item = await self.mass.database.async_get_track(db_id, fulldata=False)
+                db_item.disc_number = item.disc_number
+                db_item.track_number = item.track_number
+                yield db_item
+            else:
+                yield item
+
+    async def async_get_playlist_tracks(self, item_id: str, provider_id: str) -> List[Track]:
+        """Return playlist tracks for the given provider playlist id. Generator!"""
+        assert item_id and provider_id
+        if provider_id == "database":
+            # playlist tracks are not stored in db, we always fetch them (cached) from the provider.
+            db_item = await self.mass.database.async_get_playlist(item_id)
+            provider_id = db_item.provider_ids[0].provider
+            item_id = db_item.provider_ids[0].item_id
+        provider = self.mass.get_provider(provider_id)
+        playlist = await provider.async_get_playlist(item_id)
+        cache_checksum = playlist.checksum
+        cache_key = f"{provider_id}.playlist_tracks.{item_id}"
+        pos = 0
+        async with self.mass.database.db_conn() as db_conn:
+            async for item in async_cached_generator(
+                self.cache,
+                cache_key,
+                provider.async_get_playlist_tracks(item_id),
+                checksum=cache_checksum,
+            ):
+                if not item:
+                    continue
+                assert item.item_id and item.provider
+                db_id = await self.mass.database.async_get_database_id(
+                    item.provider, item.item_id, MediaType.Track, db_conn=db_conn
+                )
+                if db_id:
+                    # return database track instead if we have a match
+                    item = await self.mass.database.async_get_track(
+                        db_id, fulldata=False, db_conn=db_conn
+                    )
+                item.position = pos
+                pos += 1
+                yield item
+
+    async def async_get_artist_toptracks(self, artist_id: str, provider_id: str) -> List[Track]:
+        """Return top tracks for an artist. Generator!"""
+        async with self.mass.database.db_conn() as db_conn:
+            if provider_id == "database":
+                # tracks from all providers
+                item_ids = []
+                artist = await self.mass.database.async_get_artist(
+                    artist_id, False, db_conn=db_conn
+                )
+                for prov_id in artist.provider_ids:
+                    async for item in self.async_get_artist_toptracks(
+                        prov_id.item_id, prov_id.provider
+                    ):
+                        if not item.item_id in item_ids:
+                            yield item
+                            item_ids.append(item.item_id)
+            else:
+                # items from provider
+                provider = self.mass.get_provider(provider_id)
+                cache_key = f"{provider_id}.artist_toptracks.{artist_id}"
+                async for item in async_cached_generator(
+                    self.cache, cache_key, provider.async_get_artist_toptracks(artist_id)
+                ):
+                    if item:
+                        assert item.item_id and item.provider
+                        db_id = await self.mass.database.async_get_database_id(
+                            item.provider, item.item_id, MediaType.Track, db_conn=db_conn
+                        )
+                        if db_id:
+                            # return database track instead if we have a match
+                            yield await self.mass.database.async_get_track(db_id, db_conn=db_conn)
+                        else:
+                            yield item
+
+    async def async_get_artist_albums(self, artist_id: str, provider_id: str) -> List[Album]:
+        """Return (all) albums for an artist. Generator!"""
+        async with self.mass.database.db_conn() as db_conn:
+            if provider_id == "database":
+                # albums from all providers
+                item_ids = []
+                artist = await self.mass.database.async_get_artist(artist_id, True, db_conn=db_conn)
+                for prov_id in artist.provider_ids:
+                    async for item in self.async_get_artist_albums(
+                        prov_id.item_id, prov_id.provider
+                    ):
+                        if not item.item_id in item_ids:
+                            yield item
+                            item_ids.append(item.item_id)
+            else:
+                # items from provider
+                provider = self.mass.get_provider(provider_id)
+                cache_key = f"{provider_id}.artist_albums.{artist_id}"
+                async for item in async_cached_generator(
+                    self.cache, cache_key, provider.async_get_artist_albums(artist_id)
+                ):
+                    assert item.item_id and item.provider
+                    db_id = await self.mass.database.async_get_database_id(
+                        item.provider, item.item_id, MediaType.Album, db_conn=db_conn
+                    )
+                    if db_id:
+                        # return database album instead if we have a match
+                        yield await self.mass.database.async_get_album(db_id, db_conn=db_conn)
+                    else:
+                        yield item
+
+    ################ GET MediaItems that are added in the library ################
+
+    async def async_get_library_artists(
+        self, orderby: str = "name", provider_filter: str = None
+    ) -> List[Artist]:
+        """Return all library artists, optionally filtered by provider. Generator!"""
+        async for item in self.mass.database.async_get_library_artists(
+            provider_id=provider_filter, orderby=orderby
+        ):
+            yield item
+
+    async def async_get_library_albums(
+        self, orderby: str = "name", provider_filter: str = None
+    ) -> List[Album]:
+        """Return all library albums, optionally filtered by provider. Generator!"""
+        async for item in self.mass.database.async_get_library_albums(
+            provider_id=provider_filter, orderby=orderby
+        ):
+            yield item
+
+    async def async_get_library_tracks(
+        self, orderby: str = "name", provider_filter: str = None
+    ) -> List[Track]:
+        """Return all library tracks, optionally filtered by provider. Generator!"""
+        async for item in self.mass.database.async_get_library_tracks(
+            provider_id=provider_filter, orderby=orderby
+        ):
+            yield item
+
+    async def async_get_library_playlists(
+        self, orderby: str = "name", provider_filter: str = None
+    ) -> List[Playlist]:
+        """Return all library playlists, optionally filtered by provider. Generator!"""
+        async for item in self.mass.database.async_get_library_playlists(
+            provider_id=provider_filter, orderby=orderby
+        ):
+            yield item
+
+    async def async_get_library_radios(
+        self, orderby: str = "name", provider_filter: str = None
+    ) -> List[Playlist]:
+        """Return all library radios, optionally filtered by provider. Generator!"""
+        async for item in self.mass.database.async_get_library_radios(
+            provider_id=provider_filter, orderby=orderby
+        ):
+            yield item
+
+    ################ ADD MediaItem(s) to database helpers ################
+
+    async def __async_add_artist(self, artist: Artist) -> int:
+        """Add artist to local db and return the new database id."""
+        musicbrainz_id = artist.external_ids.get(ExternalId.MUSICBRAINZ)
+        if not musicbrainz_id:
+            musicbrainz_id = await self.__async_get_artist_musicbrainz_id(artist)
+        # grab additional metadata
+        artist.external_ids[ExternalId.MUSICBRAINZ] = musicbrainz_id
+        artist.metadata = await self.mass.metadata.async_get_artist_metadata(
+            musicbrainz_id, artist.metadata
+        )
+        db_id = await self.mass.database.async_add_artist(artist)
+        # also fetch same artist on all providers
+        await self.__async_match_artist(db_id)
+        return db_id
+
+    async def __async_add_album(self, album: Album) -> int:
+        """Add album to local db and return the new database id."""
+        # we need to fetch album artist too
+        album.artist = await self.async_get_artist(
+            album.artist.item_id, album.artist.provider, lazy=False
+        )
+        db_id = await self.mass.database.async_add_album(album)
+        # also fetch same album on all providers
+        await self.__async_match_album(db_id)
+        return db_id
+
+    async def __async_add_track(self, track: Track, album_id: Optional[str] = None) -> int:
+        """Add track to local db and return the new database id."""
+        track_artists = []
+        # we need to fetch track artists too
+        for track_artist in track.artists:
+            db_track_artist = await self.async_get_artist(
+                track_artist.item_id, track_artist.provider, lazy=False
+            )
+            if db_track_artist:
+                track_artists.append(db_track_artist)
+        track.artists = track_artists
+        # fetch album details - prefer optional provided album_id
+        if album_id:
+            album_details = await self.async_get_album(album_id, track.provider, lazy=False)
+            if album_details:
+                track.album = album_details
+        # make sure we have a database album
+        assert track.album
+        if track.album.provider != "database":
+            track.album = await self.async_get_album(
+                track.album.item_id, track.provider, lazy=False
+            )
+        db_id = await self.mass.database.async_add_track(track)
+        # also fetch same track on all providers (will also get other quality versions)
+        await self.__async_match_track(db_id)
+        return db_id
+
+    async def __async_get_artist_musicbrainz_id(self, artist: Artist):
+        """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
+        # try with album first
+        async for lookup_album in self.async_get_artist_albums(artist.item_id, artist.provider):
+            if not lookup_album:
+                continue
+            musicbrainz_id = await self.mass.metadata.async_get_mb_artist_id(
+                artist.name,
+                albumname=lookup_album.name,
+                album_upc=lookup_album.external_ids.get(ExternalId.UPC),
+            )
+            if musicbrainz_id:
+                return musicbrainz_id
+        # fallback to track
+        async for lookup_track in self.async_get_artist_toptracks(artist.item_id, artist.provider):
+            if not lookup_track:
+                continue
+            musicbrainz_id = await self.mass.metadata.async_get_mb_artist_id(
+                artist.name,
+                trackname=lookup_track.name,
+                track_isrc=lookup_track.external_ids.get(ExternalId.ISRC),
+            )
+            if musicbrainz_id:
+                return musicbrainz_id
+        # lookup failed, use the shitty workaround to use the name as id.
+        LOGGER.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
+        return artist.name
+
+    async def __async_match_artist(self, db_artist_id: int):
+        """
+        Try to find matching artists on all providers for the provided (database) artist_id.
+        This is used to link objects of different providers together.
+            :attrib db_artist_id: Database artist_id.
+        """
+        match_job_id = f"artist.{db_artist_id}"
+        if match_job_id in self._match_jobs:
+            return
+        self._match_jobs.append(match_job_id)
+        artist = await self.mass.database.async_get_artist(db_artist_id)
+        cur_providers = [item.provider for item in artist.provider_ids]
+        for provider in self.mass.get_providers(ProviderType.MUSIC_PROVIDER):
+            if provider.id in cur_providers:
+                continue
+            LOGGER.debug("Trying to match artist %s on provider %s", artist.name, provider.name)
+            match_found = False
+            # try to get a match with some reference albums of this artist
+            async for ref_album in self.async_get_artist_albums(artist.item_id, artist.provider):
+                if match_found:
+                    break
+                searchstr = "%s - %s" % (artist.name, ref_album.name)
+                search_result = await self.async_search_provider(
+                    searchstr, provider.id, [MediaType.Album], limit=5
+                )
+                for strictness in [True, False]:
+                    if match_found:
+                        break
+                    for search_result_item in search_result.albums:
+                        if not search_result_item:
+                            continue
+                        if not compare_strings(
+                            search_result_item.name, ref_album.name, strict=strictness
+                        ):
+                            continue
+                        # double safety check - artist must match exactly !
+                        if not compare_strings(
+                            search_result_item.artist.name, artist.name, strict=strictness
+                        ):
+                            continue
+                        # just load this item in the database where it will be strictly matched
+                        await self.async_get_artist(
+                            search_result_item.artist.item_id,
+                            search_result_item.artist.provider,
+                            lazy=False,
+                        )
+                        match_found = True
+                        break
+            # try to get a match with some reference tracks of this artist
+            if not match_found:
+                async for search_track in self.async_get_artist_toptracks(
+                    artist.item_id, artist.provider
+                ):
+                    if match_found:
+                        break
+                    searchstr = "%s - %s" % (artist.name, search_track.name)
+                    search_results = await self.async_search_provider(
+                        searchstr, provider.id, [MediaType.Track], limit=5
+                    )
+                    for strictness in [True, False]:
+                        if match_found:
+                            break
+                        for search_result_item in search_results.tracks:
+                            if match_found:
+                                break
+                            if not search_result_item:
+                                continue
+                            if not compare_strings(
+                                search_result_item.name, search_track.name, strict=strictness
+                            ):
+                                continue
+                            # double safety check - artist must match exactly !
+                            for match_artist in search_result_item.artists:
+                                if not compare_strings(
+                                    match_artist.name, artist.name, strict=strictness
+                                ):
+                                    continue
+                                # load this item in the database where it will be strictly matched
+                                await self.async_get_artist(
+                                    match_artist.item_id, match_artist.provider, lazy=False
+                                )
+                                match_found = True
+                                break
+            if match_found:
+                LOGGER.debug("Found match for Artist %s on provider %s", artist.name, provider.name)
+            else:
+                LOGGER.warning(
+                    "Could not find match for Artist %s on provider %s", artist.name, provider.name
+                )
+
+    async def __async_match_album(self, db_album_id: int):
+        """
+        Try to find matching album on all providers for the provided (database) album_id.
+        This is used to link objects of different providers/qualities together.
+            :attrib db_album_id: Database album_id.
+        """
+        match_job_id = f"album.{db_album_id}"
+        if match_job_id in self._match_jobs:
+            return
+        self._match_jobs.append(match_job_id)
+        album = await self.mass.database.async_get_album(db_album_id)
+        cur_providers = [item.provider for item in album.provider_ids]
+        providers = self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
+        for provider in providers:
+            if provider.id in cur_providers:
+                continue
+            LOGGER.debug("Trying to match album %s on provider %s", album.name, provider.name)
+            match_found = False
+            searchstr = "%s - %s" % (album.artist.name, album.name)
+            if album.version:
+                searchstr += " " + album.version
+            search_result = await self.async_search_provider(
+                searchstr, provider.id, [MediaType.Album], limit=5
+            )
+            for search_result_item in search_result.albums:
+                if not search_result_item:
+                    continue
+                if search_result_item.album_type != album.album_type:
+                    continue
+                if not (
+                    compare_strings(search_result_item.name, album.name)
+                    and compare_strings(search_result_item.version, album.version)
+                ):
+                    continue
+                if not compare_strings(
+                    search_result_item.artist.name, album.artist.name, strict=False
+                ):
+                    continue
+                # just load this item in the database where it will be strictly matched
+                await self.async_get_album(
+                    search_result_item.item_id,
+                    provider.id,
+                    lazy=False,
+                    album_details=search_result_item,
+                )
+                match_found = True
+            if match_found:
+                LOGGER.debug("Found match for Album %s on provider %s", album.name, provider.name)
+            else:
+                LOGGER.warning(
+                    "Could not find match for Album %s on provider %s", album.name, provider.name
+                )
+
+    async def __async_match_track(self, db_track_id: int):
+        """
+        Try to find matching track on all providers for the provided (database) track_id.
+        This is used to link objects of different providers/qualities together.
+            :attrib db_track_id: Database track_id.
+        """
+        match_job_id = f"track.{db_track_id}"
+        if match_job_id in self._match_jobs:
+            return
+        self._match_jobs.append(match_job_id)
+        track = await self.mass.database.async_get_track(db_track_id, fulldata=False)
+        for provider in self.mass.get_providers(ProviderType.MUSIC_PROVIDER):
+            LOGGER.debug("Trying to match track %s on provider %s", track.name, provider.name)
+            match_found = False
+            searchstr = "%s - %s" % (track.artists[0].name, track.name)
+            if track.version:
+                searchstr += " " + track.version
+            search_result = await self.async_search_provider(
+                searchstr, provider.id, [MediaType.Track], limit=10
+            )
+            for search_result_item in search_result.tracks:
+                if (
+                    not search_result_item
+                    or not search_result_item.name
+                    or not search_result_item.album
+                ):
+                    continue
+                if not (
+                    compare_strings(search_result_item.name, track.name)
+                    and compare_strings(search_result_item.version, track.version)
+                ):
+                    continue
+                # double safety check - artist must match exactly !
+                artist_match_found = False
+                for artist in track.artists:
+                    if artist_match_found:
+                        break
+                    for search_item_artist in search_result_item.artists:
+                        if not compare_strings(artist.name, search_item_artist.name, strict=False):
+                            continue
+                        # just load this item in the database where it will be strictly matched
+                        await self.async_get_track(
+                            search_item_artist.item_id,
+                            provider.id,
+                            lazy=False,
+                            track_details=search_result_item,
+                        )
+                        match_found = True
+                        artist_match_found = True
+                        break
+            if match_found:
+                LOGGER.debug("Found match for Track %s on provider %s", track.name, provider.name)
+            else:
+                LOGGER.warning(
+                    "Could not find match for Track %s on provider %s", track.name, provider.name
+                )
+
+    ################ Various convenience/helper methods ################
+
+    async def async_get_library_playlist_by_name(self, name: str) -> Playlist:
+        """Get in-library playlist by name."""
+        async for playlist in self.async_get_library_playlists():
             if playlist.name == name:
                 return playlist
         return None
 
-    async def radio_by_name(self, name) -> Radio:
-        """ get radio by name """
-        async for radio in self.library_radios():
+    async def async_get_radio_by_name(self, name: str) -> Radio:
+        """Get in-library radio by name."""
+        async for radio in self.async_get_library_radios():
             if radio.name == name:
                 return radio
         return None
 
-    async def artist_toptracks(self, artist_id, provider="database") -> List[Track]:
-        """ get top tracks for given artist """
-        track_names = []
-        artist = await self.artist(artist_id, provider, lazy=False)
-        # always append database tracks
-        async for item in self.mass.db.artist_tracks(artist.item_id):
-            if (item.name + item.version) not in track_names:
-                yield item
-                track_names.append(item.name + item.version)
-        for prov_mapping in artist.provider_ids:
-            prov_id = prov_mapping["provider"]
-            prov_item_id = prov_mapping["item_id"]
-            prov_obj = self.providers[prov_id]
-            async for item in prov_obj.artist_toptracks(prov_item_id):
-                if (item.name + item.version) not in track_names:
-                    yield item
-                    track_names.append(item.name + item.version)
+    async def async_search_provider(
+        self,
+        search_query: str,
+        provider_id: str,
+        media_types: List[MediaType],
+        limit: int = 10,
+    ) -> SearchResult:
+        """
+        Perform search on given provider.
+            :param search_query: Search query
+            :param provider_id: provider_id of the provider to perform the search on.
+            :param media_types: A list of media_types to include. All types if None.
+            :param limit: number of items to return in the search (per type).
+        """
+        if provider_id == "database":
+            # get results from database
+            return await self.mass.database.async_search(search_query, media_types)
+        provider = self.mass.get_provider(provider_id)
+        cache_key = f"{provider_id}.search.{search_query}.{media_types}.{limit}"
+        return await async_cached(
+            self.cache, cache_key, provider.async_search(search_query, media_types, limit)
+        )
 
-    async def artist_albums(self, artist_id, provider="database") -> List[Album]:
-        """ get (all) albums for given artist """
-        album_names = []
-        artist = await self.artist(artist_id, provider, lazy=False)
-        # always append database tracks (if db artist)
-        async for item in self.mass.db.artist_albums(artist.item_id):
-            if (item.name + item.version) not in album_names:
-                yield item
-                album_names.append(item.name + item.version)
-        for prov_mapping in artist.provider_ids:
-            prov_id = prov_mapping["provider"]
-            prov_item_id = prov_mapping["item_id"]
-            prov_obj = self.providers[prov_id]
-            async for item in prov_obj.artist_albums(prov_item_id):
-                if (item.name + item.version) not in album_names:
-                    yield item
-                    album_names.append(item.name + item.version)
-
-    async def album_tracks(self, album_id, provider="database") -> List[Track]:
-        """ get the album tracks for given album """
-        album = await self.album(album_id, provider)
-        # collect the tracks from the first provider
-        prov = album.provider_ids[0]
-        prov_obj = self.providers[prov["provider"]]
-        async for item in prov_obj.album_tracks(prov["item_id"]):
-            yield item
-
-    async def playlist_tracks(self, playlist_id, provider="database") -> List[Track]:
-        """ get the tracks for given playlist """
-        playlist = await self.playlist(playlist_id, provider)
-        # return playlist tracks from provider
-        prov = playlist.provider_ids[0]
-        async for item in self.providers[prov["provider"]].playlist_tracks(
-            prov["item_id"]
-        ):
-            yield item
-
-    async def search(
-        self, searchquery, media_types: List[MediaType], limit=10, online=False
-    ) -> dict:
-        """ search database or providers """
-        # get results from database
-        result = await self.mass.db.search(searchquery, media_types)
-        if online:
-            # include results from music providers
-            for prov in self.providers.values():
-                prov_results = await prov.search(searchquery, media_types, limit)
-                for item_type, items in prov_results.items():
-                    if not item_type in result:
-                        result[item_type] = items
-                    else:
-                        result[item_type] += items
-            # filter out duplicates
-            for item_type, items in result.items():
-                items = list(toolz.unique(items, key=operator.attrgetter("item_id")))
+    async def async_global_search(
+        self, search_query, media_types: List[MediaType], limit: int = 10
+    ) -> SearchResult:
+        """
+        Perform global search for media items on all providers.
+            :param search_query: Search query.
+            :param media_types: A list of media_types to include. All types if None.
+            :param limit: number of items to return in the search (per type).
+        """
+        result = SearchResult([], [], [], [], [])
+        # include results from all music providers, filter out duplicates
+        provider_ids = ["database"] + [
+            item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
+        ]
+        for provider_id in provider_ids:
+            provider_result = await self.async_search_provider(
+                search_query, provider_id, media_types, limit
+            )
+            result.artists += provider_result.artists
+            result.albums += provider_result.albums
+            result.tracks += provider_result.tracks
+            result.playlists += provider_result.playlists
+            result.radios += provider_result.radios
+            # TODO: sort by name and filter out duplicates ?
         return result
 
-    async def library_add(self, media_items: List[MediaItem]):
-        """Add media item(s) to the library"""
+    async def async_library_add(self, media_items: List[MediaItem]):
+        """Add media item(s) to the library."""
         result = False
-        for item in media_items:
+        for media_item in media_items:
             # make sure we have a database item
-            media_item = await self.item(
-                item.item_id, item.media_type, item.provider, lazy=False
+            db_item = await self.async_get_item(
+                media_item.item_id, media_item.provider, media_item.media_type, lazy=False
             )
-            if not media_item:
+            if not db_item:
                 continue
             # add to provider's libraries
-            for prov in item.provider_ids:
-                prov_id = prov["provider"]
-                prov_item_id = prov["item_id"]
-                if prov_id in self.providers:
-                    result = await self.providers[prov_id].add_library(
-                        prov_item_id, media_item.media_type
-                    )
+            for prov in db_item.provider_ids:
+                provider = self.mass.get_provider(prov.provider)
+                if provider:
+                    result = await provider.async_library_add(prov.item_id, media_item.media_type)
                 # mark as library item in internal db
-                await self.mass.db.add_to_library(
-                    media_item.item_id, media_item.media_type, prov_id
+                await self.mass.database.async_add_to_library(
+                    db_item.item_id, db_item.media_type, prov.provider
                 )
         return result
 
-    async def library_remove(self, media_items: List[MediaItem]):
-        """Remove media item(s) from the library"""
+    async def async_library_remove(self, media_items: List[MediaItem]):
+        """Remove media item(s) from the library."""
         result = False
-        for item in media_items:
+        for media_item in media_items:
             # make sure we have a database item
-            media_item = await self.item(
-                item.item_id, item.media_type, item.provider, lazy=False
+            db_item = await self.async_get_item(
+                media_item.item_id, media_item.provider, media_item.media_type, lazy=False
             )
-            if not media_item:
+            if not db_item:
                 continue
             # remove from provider's libraries
-            for prov in item.provider_ids:
-                prov_id = prov["provider"]
-                prov_item_id = prov["item_id"]
-                if prov_id in self.providers:
-                    result = await self.providers[prov_id].remove_library(
-                        prov_item_id, media_item.media_type
+            for prov in db_item.provider_ids:
+                provider = self.mass.get_provider(prov.provider)
+                if provider:
+                    result = await provider.async_library_remove(
+                        prov.item_id, media_item.media_type
                     )
                 # mark as library item in internal db
-                await self.mass.db.remove_from_library(
-                    media_item.item_id, media_item.media_type, prov_id
+                await self.mass.database.async_remove_from_library(
+                    db_item.item_id, db_item.media_type, prov.provider
                 )
         return result
 
-    async def add_playlist_tracks(self, db_playlist_id, tracks: List[Track]):
-        """ add tracks to playlist - make sure we dont add dupes """
+    async def async_add_playlist_tracks(self, db_playlist_id: int, tracks: List[Track]):
+        """Add tracks to playlist - make sure we dont add duplicates."""
         # we can only edit playlists that are in the database (marked as editable)
-        playlist = await self.playlist(db_playlist_id, "database")
+        playlist = await self.async_get_playlist(db_playlist_id, "database")
         if not playlist or not playlist.is_editable:
             return False
         # playlist can only have one provider (for now)
         playlist_prov = playlist.provider_ids[0]
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = []
-        async for item in self.providers[playlist_prov["provider"]].playlist_tracks(
-            playlist_prov["item_id"]
+        async for item in self.async_get_playlist_tracks(
+            playlist_prov.item_id, playlist_prov.provider
         ):
             cur_playlist_track_ids.append(item.item_id)
-            cur_playlist_track_ids += [i["item_id"] for i in item.provider_ids]
+            cur_playlist_track_ids += [i.item_id for i in item.provider_ids]
         track_ids_to_add = []
         for track in tracks:
             # check for duplicates
             already_exists = track.item_id in cur_playlist_track_ids
             for track_prov in track.provider_ids:
-                if track_prov["item_id"] in cur_playlist_track_ids:
+                if track_prov.item_id in cur_playlist_track_ids:
                     already_exists = True
             if already_exists:
                 continue
@@ -339,191 +810,58 @@ class MusicManager:
             # this should all be handled in the frontend but these checks are here just to be safe
             # a track can contain multiple versions on the same provider
             # simply sort by quality and just add the first one (assuming track is still available)
-            for track_version in sorted(
-                track.provider_ids, key=operator.itemgetter("quality"), reverse=True
-            ):
-                if track_version["provider"] == playlist_prov["provider"]:
-                    track_ids_to_add.append(track_version["item_id"])
+            for track_version in sorted(track.provider_ids, key=lambda x: x.quality, reverse=True):
+                if track_version.provider == playlist_prov.provider:
+                    track_ids_to_add.append(track_version.item_id)
                     break
-                elif playlist_prov["provider"] == "file":
+                elif playlist_prov.provider == "file":
                     # the file provider can handle uri's from all providers so simply add the uri
-                    uri = f'{track_version["provider"]}://{track_version["item_id"]}'
+                    uri = f"{track_version.provider}://{track_version.item_id}"
                     track_ids_to_add.append(uri)
                     break
         # actually add the tracks to the playlist on the provider
         if track_ids_to_add:
             # invalidate cache
-            await self.mass.db.update_playlist(
+            await self.mass.database.async_update_playlist(
                 playlist.item_id, "checksum", str(time.time())
             )
-            # return result of the action on the provioer
-            return await self.providers[playlist_prov["provider"]].add_playlist_tracks(
-                playlist_prov["item_id"], track_ids_to_add
-            )
+            # return result of the action on the provider
+            provider = self.mass.get_provider(playlist_prov.provider)
+            return await provider.async_add_playlist_tracks(playlist_prov.item_id, track_ids_to_add)
         return False
 
-    async def remove_playlist_tracks(self, db_playlist_id, tracks: List[Track]):
-        """ remove tracks from playlist """
+    async def async_remove_playlist_tracks(self, db_playlist_id, tracks: List[Track]):
+        """Remove tracks from playlist."""
         # we can only edit playlists that are in the database (marked as editable)
-        playlist = await self.playlist(db_playlist_id, "database")
+        playlist = await self.async_get_playlist(db_playlist_id, "database")
         if not playlist or not playlist.is_editable:
             return False
         # playlist can only have one provider (for now)
         prov_playlist = playlist.provider_ids[0]
-        prov_playlist_playlist_id = prov_playlist["item_id"]
-        prov_playlist_provider_id = prov_playlist["provider"]
         track_ids_to_remove = []
         for track in tracks:
             # a track can contain multiple versions on the same provider, remove all
             for track_provider in track.provider_ids:
-                if track_provider["provider"] == prov_playlist_provider_id:
-                    track_ids_to_remove.append(track_provider["item_id"])
+                if track_provider.provider == prov_playlist.provider:
+                    track_ids_to_remove.append(track_provider.item_id)
         # actually remove the tracks from the playlist on the provider
         if track_ids_to_remove:
             # invalidate cache
-            await self.mass.db.update_playlist(
+            await self.mass.database.async_update_playlist(
                 playlist.item_id, "checksum", str(time.time())
             )
-            return await self.providers[
-                prov_playlist_provider_id
-            ].remove_playlist_tracks(prov_playlist_playlist_id, track_ids_to_remove)
-
-    @run_periodic(3600 * 3)
-    async def __sync_music_providers(self):
-        """ periodic sync of all music providers """
-        for prov_id in self.providers:
-            self.mass.event_loop.create_task(self.sync_music_provider(prov_id))
-
-    async def sync_music_provider(self, prov_id: str):
-        """
-            Sync a music provider.
-            param prov_id: {string} -- provider id to sync
-        """
-        await self.sync_library_albums(prov_id)
-        await self.sync_library_tracks(prov_id)
-        await self.sync_library_artists(prov_id)
-        await self.sync_library_playlists(prov_id)
-        await self.sync_library_radios(prov_id)
-
-    @sync_task("artists")
-    async def sync_library_artists(self, prov_id):
-        """ sync library artists for given provider"""
-        music_provider = self.providers[prov_id]
-        prev_db_ids = [
-            item.item_id async for item in self.library_artists(provider_filter=prov_id)
-        ]
-        cur_db_ids = []
-        async for item in music_provider.get_library_artists():
-            db_item = await music_provider.artist(item.item_id, lazy=False)
-            cur_db_ids.append(db_item.item_id)
-            if not db_item.item_id in prev_db_ids:
-                await self.mass.db.add_to_library(
-                    db_item.item_id, MediaType.Artist, prov_id
-                )
-        # process deletions
-        for db_id in prev_db_ids:
-            if db_id not in cur_db_ids:
-                await self.mass.db.remove_from_library(db_id, MediaType.Artist, prov_id)
-
-    @sync_task("albums")
-    async def sync_library_albums(self, prov_id):
-        """ sync library albums for given provider"""
-        music_provider = self.providers[prov_id]
-        prev_db_ids = [
-            item.item_id async for item in self.library_albums(provider_filter=prov_id)
-        ]
-        cur_db_ids = []
-        async for item in music_provider.get_library_albums():
-
-            db_album = await music_provider.album(
-                item.item_id, album_details=item, lazy=False
+            provider = self.mass.get_provider(prov_playlist.provider)
+            return await provider.async_remove_playlist_tracks(
+                prov_playlist.item_id, track_ids_to_remove
             )
-            if not db_album:
-                LOGGER.error("provider %s album: %s", prov_id, item.__dict__)
-            cur_db_ids.append(db_album.item_id)
-            if not db_album.item_id in prev_db_ids:
-                await self.mass.db.add_to_library(
-                    db_album.item_id, MediaType.Album, prov_id
-                )
-            # precache album tracks
-            async for item in music_provider.album_tracks(item.item_id):
-                pass
-        # process deletions
-        for db_id in prev_db_ids:
-            if db_id not in cur_db_ids:
-                await self.mass.db.remove_from_library(db_id, MediaType.Album, prov_id)
 
-    @sync_task("tracks")
-    async def sync_library_tracks(self, prov_id):
-        """ sync library tracks for given provider"""
-        music_provider = self.providers[prov_id]
-        prev_db_ids = [
-            item.item_id async for item in self.library_tracks(provider_filter=prov_id)
-        ]
-        cur_db_ids = []
-        async for item in music_provider.get_library_tracks():
-            db_item = await music_provider.track(item.item_id, lazy=False)
-            cur_db_ids.append(db_item.item_id)
-            if not db_item.item_id in prev_db_ids:
-                await self.mass.db.add_to_library(
-                    db_item.item_id, MediaType.Track, prov_id
-                )
-        # process deletions
-        for db_id in prev_db_ids:
-            if db_id not in cur_db_ids:
-                await self.mass.db.remove_from_library(db_id, MediaType.Track, prov_id)
-
-    @sync_task("playlists")
-    async def sync_library_playlists(self, prov_id):
-        """ sync library playlists for given provider"""
-        music_provider = self.providers[prov_id]
-        prev_db_ids = [
-            item.item_id
-            async for item in self.library_playlists(provider_filter=prov_id)
-        ]
-        cur_db_ids = []
-        async for item in music_provider.get_library_playlists():
-            # always add to db because playlist attributes could have changed
-            db_id = await self.mass.db.add_playlist(item)
-            cur_db_ids.append(db_id)
-            if not db_id in prev_db_ids:
-                await self.mass.db.add_to_library(db_id, MediaType.Playlist, prov_id)
-            # precache playlist tracks
-            async for item in music_provider.playlist_tracks(item.item_id):
-                pass
-        # process playlist deletions
-        for db_id in prev_db_ids:
-            if db_id not in cur_db_ids:
-                await self.mass.db.remove_from_library(
-                    db_id, MediaType.Playlist, prov_id
-                )
-
-    @sync_task("radios")
-    async def sync_library_radios(self, prov_id):
-        """ sync library radios for given provider"""
-        music_provider = self.providers[prov_id]
-        prev_db_ids = [
-            item.item_id async for item in self.library_radios(provider_filter=prov_id)
-        ]
-        cur_db_ids = []
-        async for item in music_provider.get_radios():
-            db_id = await self.mass.db.get_database_id(
-                prov_id, item.item_id, MediaType.Radio
-            )
-            if not db_id:
-                db_id = await self.mass.db.add_radio(item)
-            cur_db_ids.append(db_id)
-            if not db_id in prev_db_ids:
-                await self.mass.db.add_to_library(db_id, MediaType.Radio, prov_id)
-        # process deletions
-        for db_id in prev_db_ids:
-            if db_id not in cur_db_ids:
-                await self.mass.db.remove_from_library(db_id, MediaType.Radio, prov_id)
-
-    async def get_image_thumb(self, item_id, media_type: MediaType, provider, size=50):
-        """ get path to (resized) thumb image for given media item """
-        cache_folder = os.path.join(self.mass.datapath, ".thumbs")
-        cache_id = f"{item_id}{media_type}{provider}"
+    async def async_get_image_thumb(
+        self, item_id: str, provider_id: str, media_type: MediaType, size: int = 50
+    ):
+        """Get path to (resized) thumb image for given media item."""
+        assert item_id and provider_id and media_type
+        cache_folder = os.path.join(self.mass.config.data_path, ".thumbs")
+        cache_id = f"{item_id}{media_type}{provider_id}"
         cache_id = base64.b64encode(cache_id.encode("utf-8")).decode("utf-8")
         cache_file_org = os.path.join(cache_folder, f"{cache_id}0.png")
         cache_file_sized = os.path.join(cache_folder, f"{cache_id}{size}.png")
@@ -534,21 +872,21 @@ class MusicManager:
         img_url = ""
         # we only retrieve items that we already have in cache
         item = None
-        if await self.mass.db.get_database_id(provider, item_id, media_type):
-            item = await self.item(item_id, media_type, provider)
+        if await self.mass.database.async_get_database_id(provider_id, item_id, media_type):
+            item = await self.async_get_item(item_id, provider_id, media_type)
         if not item:
             return ""
         if item and item.metadata.get("image"):
             img_url = item.metadata["image"]
         elif media_type == MediaType.Track and item.album:
             # try album image instead for tracks
-            return await self.get_image_thumb(
-                item.album.item_id, MediaType.Album, item.album.provider, size
+            return await self.async_get_image_thumb(
+                item.album.item_id, item.album.provider, MediaType.Album, size
             )
         elif media_type == MediaType.Album and item.artist:
             # try artist image instead for albums
-            return await self.get_image_thumb(
-                item.artist.item_id, MediaType.Artist, item.artist.provider, size
+            return await self.async_get_image_thumb(
+                item.artist.item_id, item.artist.provider, MediaType.Artist, size
             )
         if not img_url:
             return None
@@ -573,3 +911,151 @@ class MusicManager:
         img.save(cache_file_sized)
         # return file from cache
         return cache_file_sized
+
+    ################ Library synchronization logic ################
+
+    @run_periodic(3600 * 3)
+    async def __async_music_providers_sync(self):
+        """Periodic sync of all music providers."""
+        await asyncio.sleep(10)
+        for prov in self.mass.get_providers(ProviderType.MUSIC_PROVIDER):
+            await self.async_music_provider_sync(prov.id)
+
+    async def async_music_provider_sync(self, prov_id: str):
+        """
+        Sync a music provider.
+        param prov_id: {string} -- provider id to sync
+        """
+        await self.async_library_albums_sync(prov_id)
+        await self.async_library_tracks_sync(prov_id)
+        await self.async_library_artists_sync(prov_id)
+        await self.async_library_playlists_sync(prov_id)
+        await self.async_library_radios_sync(prov_id)
+
+    @sync_task("artists")
+    async def async_library_artists_sync(self, provider_id: str):
+        """Sync library artists for given provider."""
+        music_provider = self.mass.get_provider(provider_id)
+        prev_db_ids = [
+            item.item_id
+            async for item in self.async_get_library_artists(provider_filter=provider_id)
+        ]
+        cur_db_ids = []
+        async for item in music_provider.async_get_library_artists():
+            db_item = await self.async_get_artist(item.item_id, provider_id, lazy=False)
+            cur_db_ids.append(db_item.item_id)
+            if not db_item.item_id in prev_db_ids:
+                await self.mass.database.async_add_to_library(
+                    db_item.item_id, MediaType.Artist, provider_id
+                )
+        # process deletions
+        for db_id in prev_db_ids:
+            if db_id not in cur_db_ids:
+                await self.mass.database.async_remove_from_library(
+                    db_id, MediaType.Artist, provider_id
+                )
+
+    @sync_task("albums")
+    async def async_library_albums_sync(self, provider_id: str):
+        """Sync library albums for given provider."""
+        music_provider = self.mass.get_provider(provider_id)
+        prev_db_ids = [
+            item.item_id
+            async for item in self.async_get_library_albums(provider_filter=provider_id)
+        ]
+        cur_db_ids = []
+        async for item in music_provider.async_get_library_albums():
+
+            db_album = await self.async_get_album(
+                item.item_id, provider_id, album_details=item, lazy=False
+            )
+            if not db_album:
+                LOGGER.error("provider %s album: %s", provider_id, str(item))
+            cur_db_ids.append(db_album.item_id)
+            if not db_album.item_id in prev_db_ids:
+                await self.mass.database.async_add_to_library(
+                    db_album.item_id, MediaType.Album, provider_id
+                )
+        # process deletions
+        for db_id in prev_db_ids:
+            if db_id not in cur_db_ids:
+                await self.mass.database.async_remove_from_library(
+                    db_id, MediaType.Album, provider_id
+                )
+
+    @sync_task("tracks")
+    async def async_library_tracks_sync(self, provider_id: str):
+        """Sync library tracks for given provider."""
+        music_provider = self.mass.get_provider(provider_id)
+        prev_db_ids = [
+            item.item_id
+            async for item in self.async_get_library_tracks(provider_filter=provider_id)
+        ]
+        cur_db_ids = []
+        async for item in music_provider.async_get_library_tracks():
+            db_item = await self.async_get_track(item.item_id, provider_id=provider_id, lazy=False)
+            cur_db_ids.append(db_item.item_id)
+            if not db_item.item_id in prev_db_ids:
+                await self.mass.database.async_add_to_library(
+                    db_item.item_id, MediaType.Track, provider_id
+                )
+        # process deletions
+        for db_id in prev_db_ids:
+            if db_id not in cur_db_ids:
+                await self.mass.database.async_remove_from_library(
+                    db_id, MediaType.Track, provider_id
+                )
+
+    @sync_task("playlists")
+    async def async_library_playlists_sync(self, provider_id: str):
+        """Sync library playlists for given provider."""
+        music_provider = self.mass.get_provider(provider_id)
+        prev_db_ids = [
+            item.item_id
+            async for item in self.async_get_library_playlists(provider_filter=provider_id)
+        ]
+        cur_db_ids = []
+        async for playlist in music_provider.async_get_library_playlists():
+            if playlist is None:
+                continue
+            # always add to db because playlist attributes could have changed
+            db_id = await self.mass.database.async_add_playlist(playlist)
+            cur_db_ids.append(db_id)
+            if not db_id in prev_db_ids:
+                await self.mass.database.async_add_to_library(
+                    db_id, MediaType.Playlist, playlist.provider
+                )
+            # We do not precache/store playlist tracks, these will be retrieved on request only
+        # process playlist deletions
+        for db_id in prev_db_ids:
+            if db_id not in cur_db_ids:
+                await self.mass.database.async_remove_from_library(
+                    db_id, MediaType.Playlist, provider_id
+                )
+
+    @sync_task("radios")
+    async def async_library_radios_sync(self, provider_id: str):
+        """sync library radios for given provider"""
+        music_provider = self.mass.get_provider(provider_id)
+        prev_db_ids = [
+            item.item_id
+            async for item in self.async_get_library_radios(provider_filter=provider_id)
+        ]
+        cur_db_ids = []
+        async for item in music_provider.async_get_radios():
+            if not item:
+                continue
+            db_id = await self.mass.database.async_get_database_id(
+                item.provider, item.item_id, MediaType.Radio
+            )
+            if not db_id:
+                db_id = await self.mass.database.async_add_radio(item)
+            cur_db_ids.append(db_id)
+            if not db_id in prev_db_ids:
+                await self.mass.database.async_add_to_library(db_id, MediaType.Radio, provider_id)
+        # process deletions
+        for db_id in prev_db_ids:
+            if db_id not in cur_db_ids:
+                await self.mass.database.async_remove_from_library(
+                    db_id, MediaType.Radio, provider_id
+                )

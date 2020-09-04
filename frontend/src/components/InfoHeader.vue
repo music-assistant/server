@@ -267,7 +267,7 @@ export default Vue.extend({
       var keys = []
       var qualities = []
       if (!this.providerIds) return []
-      let sortedItemIds = this.providerIds.slice()
+      const sortedItemIds = this.providerIds.slice()
       sortedItemIds.sort((a, b) =>
         a.quality < b.quality ? 1 : b.quality < a.quality ? -1 : 0
       )

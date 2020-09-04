@@ -47,34 +47,26 @@ def main():
     # parse arguments
     args = get_arguments()
     data_dir = args.config
-    # create event_loop with uvloop
-    event_loop = asyncio.get_event_loop()
-    try:
-        import uvloop
-
-        uvloop.install()
-    except ImportError:
-        # uvloop is not available on Windows so safe to ignore this
-        logger.warning("uvloop support is disabled")
     # config debug settings if needed
     if args.debug:
-        event_loop.set_debug(True)
         logger.setLevel(logging.DEBUG)
         logging.getLogger("aiosqlite").setLevel(logging.INFO)
         logging.getLogger("asyncio").setLevel(logging.WARNING)
     else:
         logger.setLevel(logging.INFO)
 
-    mass = MusicAssistant(data_dir, event_loop)
+    mass = MusicAssistant(data_dir)
 
     # run UI in browser on windows and macos only
-    if platform.system() in ["Windows", "Darwin"]:
-        import webbrowser
+    # if platform.system() in ["Windows", "Darwin"]:
+    #     import webbrowser
+    #     webbrowser.open(f"http://localhost:{mass.web.http_port}")
 
-        webbrowser.open(f"http://localhost:{mass.web.http_port}")
-
-    run(mass.start(), loop=event_loop)
-
+    def on_shutdown(loop):
+        logger.info("shutdown requested!")
+        loop.run_until_complete(mass.async_stop())
+        
+    run(mass.async_start(), use_uvloop=True, shutdown_callback=on_shutdown)
 
 if __name__ == "__main__":
     main()

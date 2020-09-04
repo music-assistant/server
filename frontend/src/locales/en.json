@@ -31,8 +31,7 @@
   "conf"            : {
     "enabled"                          : "Enabled",
     "base"                             : "Generic settings",
-    "musicproviders"                   : "Music providers",
-    "playerproviders"                  : "Player providers",
+    "providers"                        : "Providers / Plugins",
     "player_settings"                  : "Player settings",
     "homeassistant"                    : "Home Assistant integration",
     "web"                              : "Webserver",
