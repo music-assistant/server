@@ -21,8 +21,8 @@ PLAYER_FEATURES = [PlayerFeature.QUEUE]
 
 class ChromecastPlayer:
     """Representation of a Cast device on the network.
-    This class is the holder of the pychromecast.Chromecast object and its
-    socket client. It therefore handles all reconnects and audio group changing
+    This class is the holder of the pychromecast.Chromecast object and
+    handles all reconnects and audio group changing
     "elected leader" itself.
     """
 
@@ -201,20 +201,19 @@ class ChromecastPlayer:
 
     def new_cast_status(self, cast_status):
         """Handle updates of the cast status."""
-        LOGGER.info("received cast status for %s", self.name)
+        LOGGER.debug("received cast status for %s", self.name)
         self.cast_status = cast_status
-        if (
+        self._is_speaker_group = (
             self._cast_info.is_audio_group
             and self._chromecast.mz_controller
             and self._chromecast.mz_controller.members
             and compare_strings(self._chromecast.mz_controller.members[0], self.player_id)
-        ):
-            self._is_speaker_group = True
+        )
         self.mass.add_job(self.mass.player_manager.async_update_player(self))
 
     def new_media_status(self, media_status):
         """Handle updates of the media status."""
-        LOGGER.info("received media_status for %s", self.name)
+        LOGGER.debug("received media_status for %s", self.name)
         self.media_status = media_status
         self.mass.add_job(self.mass.player_manager.async_update_player(self))
         if media_status.player_is_playing:
@@ -222,7 +221,7 @@ class ChromecastPlayer:
 
     def new_connection_status(self, connection_status):
         """Handle updates of connection status."""
-        LOGGER.info("received connection_status for %s", self._cast_info.friendly_name)
+        LOGGER.debug("received connection_status for %s", self._cast_info.friendly_name)
         if connection_status.status == CONNECTION_STATUS_DISCONNECTED:
             self._available = False
             self._invalidate()
@@ -244,45 +243,27 @@ class ChromecastPlayer:
             if self._cast_info.is_audio_group and new_available:
                 self._chromecast.mz_controller.update_members()
 
-    @property
-    def media_controller(self):
-        """
-        Return media controller.
-        First try from our own cast, then groups which our cast is a member in.
-        """
-        media_status = self.media_status
-        media_controller = self._chromecast.media_controller
-
-        # if media_status is None or media_status.player_state == "UNKNOWN":
-        #     groups = self.mz_media_status
-        #     for k, val in groups.items():
-        #         if val and val.player_state != "UNKNOWN":
-        #             media_controller = self.mz_mgr.get_multizone_mediacontroller(k)
-        #             break
-
-        return media_controller
-
     # ========== Service Calls ==========
 
     def stop(self):
         """Send stop command to player."""
-        self.media_controller.stop()
+        self._chromecast.media_controller.stop()
 
     def play(self):
         """Send play command to player."""
-        self.media_controller.play()
+        self._chromecast.media_controller.play()
 
     def pause(self):
         """Send pause command to player."""
-        self.media_controller.pause()
+        self._chromecast.media_controller.pause()
 
     def next(self):
         """Send next track command to player."""
-        self.media_controller.queue_next()
+        self._chromecast.media_controller.queue_next()
 
     def previous(self):
         """Send previous track command to player."""
-        self.media_controller.queue_prev()
+        self._chromecast.media_controller.queue_prev()
 
     def power_on(self):
         """Send power ON command to player."""
@@ -291,8 +272,11 @@ class ChromecastPlayer:
 
     def power_off(self):
         """Send power OFF command to player."""
-        if self.media_status and self.media_status.player_is_playing:
-            self.media_controller.stop()
+        if self.media_status and (
+            self.media_status.player_is_playing or self.media_status.player_is_paused
+        ):
+            self._chromecast.media_controller.stop()
+            self._chromecast.quit_app()
         self._powered = False
         # chromecast has no real poweroff so we send mute instead
         self._chromecast.set_volume_muted(True)
@@ -381,7 +365,7 @@ class ChromecastPlayer:
 
     def __send_player_queue(self, queuedata):
         """Send new data to the CC queue"""
-        media_controller = self.media_controller
+        media_controller = self._chromecast.media_controller
         receiver_ctrl = media_controller._socket_client.receiver_controller
 
         def send_queue():

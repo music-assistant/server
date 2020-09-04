@@ -475,16 +475,9 @@ class Web:
 
     @routes.get("/api/config/{base}")
     async def async_get_config_item(self, request):
-        """get the config"""
+        """Get the config."""
         conf_base = request.match_info.get("base")
-        if conf_base == CONF_KEY_PLAYERSETTINGS:
-            conf = self.mass.config.player_settings
-        elif conf_base == CONF_KEY_PROVIDERS:
-            conf = self.mass.config.providers
-        elif conf_base == CONF_KEY_BASE:
-            conf = self.mass.config.base
-        else:
-            raise NotImplementedError("Invalid config path supplied.")
+        conf = self.mass.config[conf_base]
         return web.json_response(conf, dumps=json_serializer)
 
     @routes.put("/api/config/{base}/{key}/{entry_key}")
@@ -493,38 +486,12 @@ class Web:
         conf_key = request.match_info.get("key")
         conf_base = request.match_info.get("base")
         entry_key = request.match_info.get("entry_key")
-        new_value = await request.json()
-        LOGGER.debug(
-            "save config called for %s/%s/%s - new value: %s", conf_base, conf_key, entry_key, new_value
-        )
+        try:
+            new_value = await request.json()
+        except json.decoder.JSONDecodeError:
+            new_value = self.mass.config[conf_base][conf_key].get_entry(entry_key).default_value
         self.mass.config[conf_base][conf_key][entry_key] = new_value
         return web.json_response(True)
-        # cur_values = self.mass.config[conf_key][conf_subkey]
-        # result = {"success": True, "restart_required": False, "settings_changed": False}
-        # if cur_values != new_values:
-        #     # config changed
-        #     result["settings_changed"] = True
-        #     self.mass.config[conf_key][conf_subkey] = new_values
-        #     if conf_key == CONF_KEY_PLAYERSETTINGS:
-        #         # player settings: force update of player
-        #         self.mass.add_job(
-        #             self.mass.player_manager.trigger_update(conf_subkey)
-        #         )
-        #     elif conf_key == CONF_KEY_MUSICPROVIDERS:
-        #         # (re)load music provider module
-        #         self.mass.add_job(
-        #             self.mass.music_manager.load_modules(conf_subkey)
-        #         )
-        #     elif conf_key == CONF_KEY_PLAYERPROVIDERS:
-        #         # (re)load player provider module
-        #         self.mass.add_job(
-        #             self.mass.player_manager.load_modules(conf_subkey)
-        #         )
-        #     else:
-        #         # other settings need restart
-        #         result["restart_required"] = True
-        #     self.mass.config.save()
-        # return web.json_response(result)
 
     async def async_websocket_handler(self, request):
         """websockets handler"""

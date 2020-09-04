@@ -105,7 +105,7 @@
                 filled
               ></v-text-field>
               <!-- value with dropdown -->
-              <v-select
+              <v-select chips clearable
                 :multiple="conf_item_value['multi_value']"
                 v-if="
               conf_item_value['values'].length &&

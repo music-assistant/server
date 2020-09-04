@@ -185,7 +185,7 @@
           >
             <v-flex xs12 class="vertical-btn">
               <v-icon>queue_music</v-icon>
-              <span class="overline">{{ $t("queue") }}</span>
+              <span class="caption">{{ $t("queue") }}</span>
             </v-flex>
           </v-btn>
         </v-list-item-action>
@@ -203,7 +203,7 @@
               <v-btn small icon v-on="on">
                 <v-flex xs12 class="vertical-btn">
                   <v-icon>volume_up</v-icon>
-                  <span class="overline">{{
+                  <span class="caption">{{
                     Math.round($server.activePlayer.volume_level)
                   }}</span>
                 </v-flex>
@@ -221,10 +221,10 @@
           <v-btn small text icon @click="$server.$emit('showPlayersMenu')">
             <v-flex xs12 class="vertical-btn">
               <v-icon>speaker</v-icon>
-              <span class="overline" v-if="$server.activePlayer">{{
+              <span class="caption" v-if="$server.activePlayer">{{
                 $server.activePlayer.name
               }}</span>
-              <span class="overline" v-else> </span>
+              <span class="caption" v-else> </span>
             </v-flex>
           </v-btn>
         </v-list-item-action>

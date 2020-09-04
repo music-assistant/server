@@ -1,12 +1,13 @@
-"""Plugin for Music Assistant that enables integration with Home Assistant."""
+"""Plugin that enables integration with Home Assistant."""
 
 import asyncio
 import logging
 import os
 from typing import List
+import functools
 
 import slugify as slug
-from hass_client import HomeAssistant
+from hass_client import HomeAssistant, EVENT_CONNECTED, EVENT_STATE_CHANGED
 from music_assistant.constants import (
     CONF_TOKEN,
     CONF_URL,
@@ -16,15 +17,18 @@ from music_assistant.constants import (
     EVENT_PLAYER_REMOVED,
 )
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
-from music_assistant.models.player import Player
+from music_assistant.models.player import Player, PlayerControl, PlayerControlType
 from music_assistant.models.provider import Provider
-from music_assistant.utils import run_periodic
+from music_assistant.utils import run_periodic, callback
 
 PROV_ID = "homeassistant"
 PROV_NAME = "Home Assistant integration"
 
 IS_HASSIO = os.path.isfile("/data/options.json")
-CONF_PUBLISH_PLAYERS = "publish_players"
+CONF_PUBLISH_PLAYERS = "hass_publish_players"
+CONF_POWER_ENTITIES = "hass_power_entities"
+CONF_VOLUME_ENTITIES = "hass_volume_entities"
+
 LOGGER = logging.getLogger(PROV_ID)
 
 CONFIG_ENTRIES = [
@@ -56,9 +60,11 @@ class HomeAssistantPlugin(Provider):
 
     _hass = None
     _tasks = []
-    _tracked_entities = []
+    _tracked_entities = {}
     _sources = []
     _published_players = {}
+    _power_entities = []
+    _volume_entities = []
 
     @property
     def id(self) -> str:
@@ -73,7 +79,16 @@ class HomeAssistantPlugin(Provider):
     @property
     def config_entries(self) -> List[ConfigEntry]:
         """Return Config Entries for this provider."""
-        return CONFIG_ENTRIES
+        return CONFIG_ENTRIES + [
+            ConfigEntry(
+                entry_key=CONF_POWER_ENTITIES,
+                entry_type=ConfigEntryType.STRING,
+                description_key=CONF_POWER_ENTITIES,
+                default_value=[],
+                values=self.__get_power_control_entities(),
+                multi_value=True,
+            ),
+        ]
 
     async def async_on_start(self) -> bool:
         """Called on startup. Handle initialization of the provider based on config."""
@@ -110,17 +125,22 @@ class HomeAssistantPlugin(Provider):
 
     async def __async_hass_event(self, event_type, event_data):
         """Received event from Home Assistant"""
-        if event_type == "state_changed":
+        if event_type == EVENT_STATE_CHANGED:
             if event_data["entity_id"] in self._tracked_entities:
                 new_state = event_data["new_state"]
                 LOGGER.info(
                     "Received new state for %s: %s", event_data["entity_id"], new_state["state"]
                 )
-                # TODO
+                control = self.mass.player_manager.get_player_control(
+                    self._tracked_entities[event_data["entity_id"]])
+                control.state = new_state["state"] != "off"
         elif event_type == "call_service" and event_data["domain"] == "media_player":
             await self.__async_handle_player_command(
                 event_data["service"], event_data["service_data"]
             )
+        elif event_type == EVENT_CONNECTED:
+            # register player controls on connect
+            self.mass.add_job(self.__async_register_power_controls())
 
     async def __async_handle_player_command(self, service, service_data):
         """Handle forwarded service call for one of our players."""
@@ -197,7 +217,7 @@ class HomeAssistantPlugin(Provider):
 
     async def __async_publish_player(self, player: Player):
         """Publish player details to Home Assistant."""
-        if not self.mass.config.providers[PROV_ID]["publish_players"]:
+        if not self.mass.config.providers[PROV_ID][CONF_PUBLISH_PLAYERS]:
             return False
         # TODO: throttle updates to home assistant ?
         player_id = player.player_id
@@ -248,3 +268,83 @@ class HomeAssistantPlugin(Provider):
         self._sources += [
             playlist.name async for playlist in self.mass.music_manager.async_get_library_radios()
         ]
+
+    @callback
+    def __get_power_control_entities(self):
+        """Return list of entities that can be used as power control."""
+        if not self._hass or not self._hass.states:
+            return []
+        result = []
+        for entity in self._hass.media_players + self._hass.switches:
+            entity_id = entity["entity_id"]
+            entity_name = entity["attributes"].get("friendly_name", entity_id)
+            if entity_id.startswith("media_player.mass_"):
+                continue
+            source_list = entity["attributes"].get("source_list")
+            if source_list:
+                # media_player with source support
+                for source in source_list:
+                    result.append(
+                        {
+                            "value": f"{entity_id}|{source}",
+                            "text": f"{entity_name}: {source}",
+                            "entity_id": entity_id,
+                            "source": source,
+                        }
+                    )
+            else:
+                # media_player/switch without source support
+                result.append(
+                    {
+                        "value": f"{entity_id}", 
+                        "text": f"{entity_name}",
+                        "entity_id": entity_id,
+                        "source": None
+                    })
+
+        return result
+
+    async def __async_register_power_controls(self):
+        """Register all (enabled) power controls."""
+        conf = self.mass.config.providers[PROV_ID]
+        for control_entity in self.__get_power_control_entities():
+            enabled_controls = conf[CONF_POWER_ENTITIES]
+            if not control_entity["value"] in enabled_controls:
+                continue
+            entity_id = control_entity["entity_id"]
+            state_obj = self._hass.states[entity_id]
+            cur_state = state_obj["state"] != "off"
+            source = control_entity.get("source")
+            if source:
+                cur_state = state_obj["attributes"].get("source") == control_entity["source"]
+
+            control = PlayerControl(
+                type=PlayerControlType.POWER,
+                id=control_entity["value"],
+                name=control_entity["text"],
+                state=cur_state,
+                set_state=functools.partial(self.async_power_control_set_state, control_entity["value"]),
+            )
+            # store some vars on the control object for convenience
+            control.entity_id = entity_id
+            control.source = source
+            await self.mass.player_manager.async_register_player_control(control)
+            self._tracked_entities[entity_id] = control_entity["value"]
+
+    async def async_power_control_set_state(self, control_id:str, new_state: bool):
+        """Set state callback for power control."""
+        control = self.mass.player_manager.get_player_control(control_id)
+        if new_state and control.source:
+            await self._hass.async_call_service(
+                "media_player",
+                "select_source",
+                {"source": control.source, "entity_id": control.entity_id},
+            )
+        elif new_state and not control.source:
+            await self._hass.async_call_service(
+                "homeassistant", "turn_on", {"entity_id": control.entity_id}
+            )
+        else:
+            await self._hass.async_call_service(
+                "homeassistant", "turn_off", {"entity_id": control.entity_id}
+            )

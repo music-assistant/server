@@ -2,9 +2,9 @@
   <v-app>
     <TopBar />
     <NavigationMenu></NavigationMenu>
-    <v-content>
+    <v-main>
       <router-view app :key="$route.path"></router-view>
-    </v-content>
+    </v-main>
     <PlayerOSD :showPlayerSelect="showPlayerSelect" />
     <ContextMenu/>
     <PlayerSelect/>

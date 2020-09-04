@@ -1,4 +1,4 @@
-"""Playermanager: Orchestrates all data from music providers and sync to internal database."""
+"""MusicManager: Orchestrates all data from music providers and sync to internal database."""
 # pylint: disable=too-many-lines
 import asyncio
 import base64

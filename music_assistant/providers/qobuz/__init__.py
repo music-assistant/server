@@ -29,7 +29,7 @@ from music_assistant.models.media_types import (
 )
 from music_assistant.models.musicprovider import MusicProvider
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
-from music_assistant.utils import parse_title_and_version
+from music_assistant.utils import parse_title_and_version, try_parse_int
 
 PROV_ID = "qobuz"
 PROV_NAME = "Qobuz"
@@ -379,7 +379,7 @@ class QobuzProvider(MusicProvider):
             params = {
                 "user_id": user_id,
                 "track_id": str(msg_details.item_id),
-                "duration": int(msg_details.seconds_played),
+                "duration": try_parse_int(msg_details.seconds_played),
             }
             await self.__async_get_data("/track/reportStreamingEnd", params)
 

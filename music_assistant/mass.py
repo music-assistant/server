@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable, List, Optional, Union
 import zeroconf
 from music_assistant.cache import Cache
 from music_assistant.config import MassConfig
-from music_assistant.constants import CONF_ENABLED, EVENT_SHUTDOWN
+from music_assistant.constants import CONF_ENABLED, EVENT_SHUTDOWN, EVENT_PROVIDER_REGISTERED
 from music_assistant.database import Database
 from music_assistant.http_streamer import HTTPStreamer
 from music_assistant.metadata import MetaData
@@ -24,14 +24,14 @@ from music_assistant.web import Web
 LOGGER = logging.getLogger("mass")
 
 
-#pylint: disable=too-many-instance-attributes
+# pylint: disable=too-many-instance-attributes
 class MusicAssistant:
     """Main MusicAssistant object."""
 
     def __init__(self, datapath):
         """
-            Create an instance of MusicAssistant
-                :param datapath: file location to store the data
+        Create an instance of MusicAssistant
+            :param datapath: file location to store the data
         """
 
         self.loop = None
@@ -69,7 +69,7 @@ class MusicAssistant:
         LOGGER.info("Application shutdown")
         self.signal_event(EVENT_SHUTDOWN)
         self._exit = True
-        await self.config.async_save()
+        await self.config.async_close()
         for prov in self._providers.values():
             await prov.async_on_stop()
         await self.player_manager.async_close()
@@ -84,7 +84,8 @@ class MusicAssistant:
         if self.config.providers[provider.id][CONF_ENABLED]:
             if await provider.async_on_start():
                 provider.available = True
-                LOGGER.info("New provider registered: %s", provider.name)
+                LOGGER.debug("New provider registered: %s", provider.name)
+                self.signal_event(EVENT_PROVIDER_REGISTERED, provider.id)
         else:
             LOGGER.debug("Not loading provider %s as it is disabled:", provider.name)
 
@@ -103,9 +104,11 @@ class MusicAssistant:
     @callback
     def get_providers(self, filter_type: Optional[ProviderType] = None) -> List[Provider]:
         """Return all providers, optionally filtered by type."""
-        return [item for item in self._providers.values()
-                if (filter_type is None or item.type == filter_type)
-                and item.available]
+        return [
+            item
+            for item in self._providers.values()
+            if (filter_type is None or item.type == filter_type) and item.available
+        ]
 
     async def async_preload_providers(self):
         """Dynamically load all providermodules."""
@@ -141,9 +144,9 @@ class MusicAssistant:
     @callback
     def signal_event(self, event_msg: str, event_details: Any = None):
         """
-            Signal (systemwide) event.
-                :param event_msg: the eventmessage to signal
-                :param event_details: optional details to send with the event.
+        Signal (systemwide) event.
+            :param event_msg: the eventmessage to signal
+            :param event_details: optional details to send with the event.
         """
         if self._exit:
             return
@@ -151,36 +154,30 @@ class MusicAssistant:
             if not event_filter or event_filter in event_msg:
                 self.add_job(cb_func, event_msg, event_details)
 
-    async def async_signal_event(self, event_msg: str, event_details: Any = None):
-        """
-            Signal (systemwide) event.
-                :param event_msg: the eventmessage to signal
-                :param event_details: optional details to send with the event.
-        """
-        self.add_job(self.signal_event, event_msg, event_details)
-
     @callback
-    def add_event_listener(self, cb_func: Callable[..., Union[None, Awaitable]],
-                           event_filter: Union[None, str, List] = None) -> Callable:
+    def add_event_listener(
+        self,
+        cb_func: Callable[..., Union[None, Awaitable]],
+        event_filter: Union[None, str, List] = None,
+    ) -> Callable:
         """
-            Add callback to event listeners.
-            Returns function to remove the listener.
-                :param cb_func: callback function or coroutine
-                :param event_filter: Optionally only listen for these events
+        Add callback to event listeners.
+        Returns function to remove the listener.
+            :param cb_func: callback function or coroutine
+            :param event_filter: Optionally only listen for these events
         """
         listener = (cb_func, event_filter)
         self._event_listeners.append(listener)
 
         def remove_listener():
             self._event_listeners.remove(listener)
+
         return remove_listener
 
-    def add_job(
-        self, target: Callable[..., Any], *args: Any
-    ) -> Optional[asyncio.Future]:
+    def add_job(self, target: Callable[..., Any], *args: Any) -> Optional[asyncio.Future]:
         """Add a job/task to the event loop.
-            target: target to call.
-            args: parameters for method to call.
+        target: target to call.
+        args: parameters for method to call.
         """
         task = None
 
@@ -201,9 +198,7 @@ class MusicAssistant:
             elif is_callback(check_target):
                 task = self.loop.call_soon_threadsafe(target, *args)
             else:
-                task = self.loop.run_in_executor(  # type: ignore
-                    None, target, *args
-                )
+                task = self.loop.run_in_executor(None, target, *args)  # type: ignore
         else:
             # called from mainthread
             if asyncio.iscoroutine(check_target):
@@ -213,9 +208,7 @@ class MusicAssistant:
             elif is_callback(check_target):
                 task = self.loop.call_soon(target, *args)
             else:
-                task = self.loop.run_in_executor(  # type: ignore
-                    None, target, *args
-                )
+                task = self.loop.run_in_executor(None, target, *args)  # type: ignore
         return task
 
     def __handle_exception(self, loop, context):

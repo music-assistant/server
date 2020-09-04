@@ -10,6 +10,8 @@ import socket
 import tempfile
 from enum import Enum
 from typing import Any, Callable, TypeVar
+from types import FunctionType, MethodType
+from datetime import datetime
 
 import memory_tempfile
 import unidecode
@@ -225,6 +227,8 @@ class EnhancedJSONEncoder(json.JSONEncoder):
             return str(obj)
         if isinstance(obj, Enum):
             return int(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
         if hasattr(obj, "to_dict"):
             return obj.to_dict()
         if hasattr(obj, "items"):

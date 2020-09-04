@@ -131,11 +131,6 @@ class PlayerQueue:
         return self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
 
     @property
-    def gapless_enabled(self):
-        """Returns if gapless support is enabled for this player."""
-        return self.mass.config.player_settings[self.player_id]["gapless_enabled"]
-
-    @property
     def cur_index(self):
         """
             Returns the current index of the queue.
@@ -216,9 +211,7 @@ class PlayerQueue:
             it will send a constant stream of audio to the player and all tracks
         """
         supports_crossfade = PlayerFeature.CROSSFADE in self.player.features
-        return (self.crossfade_enabled and not supports_crossfade) or (
-            self.gapless_enabled and not supports_crossfade
-        )
+        return self.crossfade_enabled and not supports_crossfade
 
     @callback
     def get_item(self, index):
@@ -508,7 +501,6 @@ class PlayerQueue:
             "shuffle_enabled": self.shuffle_enabled,
             "repeat_enabled": self.repeat_enabled,
             "crossfade_enabled": self.crossfade_enabled,
-            "gapless_enabled": self.gapless_enabled,
             "items": len(self.items),
             "cur_item_id": self.cur_item_id,
             "cur_index": self.cur_index,
@@ -606,7 +598,7 @@ class PlayerQueue:
 
     async def __async_save_state(self):
         """save current queue settings to file"""
-        cache_str = "queue_%s" % self.player.player_id
+        cache_str = "queue_%s" % self.player_id
         cache_data = {
             "shuffle_enabled": self._shuffle_enabled,
             "repeat_enabled": self._repeat_enabled,
@@ -615,4 +607,4 @@ class PlayerQueue:
             "next_queue_index": self._next_queue_startindex,
         }
         await self.mass.cache.async_set(cache_str, cache_data)
-        LOGGER.info("queue state saved to file for player %s", self.player.player_id)
+        LOGGER.info("queue state saved to file for player %s", self.player_id)

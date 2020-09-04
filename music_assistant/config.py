@@ -176,17 +176,35 @@ class ConfigItem:
             if entry.entry_key != key:
                 continue
             # do some simple type checking
-            if entry.entry_type == ConfigEntryType.STRING and not isinstance(value, str):
-                raise ValueError
-            if entry.entry_type == ConfigEntryType.BOOL and not isinstance(value, bool):
-                raise ValueError
-            if entry.entry_type == ConfigEntryType.FLOAT and not isinstance(value, (float, int)):
-                raise ValueError
-            if value != entry.default_value:
+            if entry.multi_value:
+                # multi value item
+                if not isinstance(value, list):
+                    raise ValueError
+            else:
+                # single value item
+                if entry.entry_type == ConfigEntryType.STRING and not isinstance(value, str):
+                    raise ValueError
+                if entry.entry_type == ConfigEntryType.BOOL and not isinstance(value, bool):
+                    raise ValueError
+                if entry.entry_type == ConfigEntryType.FLOAT and not isinstance(
+                    value, (float, int)
+                ):
+                    raise ValueError
+            if value != self[key]:
                 self.stored_config[key] = value
                 self.mass.signal_event(
                     EVENT_CONFIG_CHANGED, (self._base_type, self._parent_item_key)
                 )
+                # reload provider if value changed
+                if self._base_type == ConfigBaseType.PROVIDER:
+                    self.mass.add_job(
+                        self.mass.get_provider(self._parent_item_key).async_on_reload()
+                    )
+                if self._base_type == ConfigBaseType.PLAYER:
+
+                    player = self.mass.player_manager.get_player(self._parent_item_key)
+                    if player:
+                        self.mass.add_job(self.mass.player_manager.async_update_player(player))
             return
         # raise KeyError if we're trying to set a value not defined as ConfigEntry
         raise KeyError
@@ -260,39 +278,29 @@ class MassConfig:
 
     def get_provider_config_entries(self, provider_id: str) -> List[ConfigEntry]:
         """Return all config entries for the given provider."""
-        conf_entries = DEFAULT_PROVIDER_CONFIG_ENTRIES
         provider = self.mass.get_provider(provider_id)
         if provider:
-            conf_entries += provider.config_entries
-        return conf_entries
+            return DEFAULT_PROVIDER_CONFIG_ENTRIES + provider.config_entries
+        return DEFAULT_PROVIDER_CONFIG_ENTRIES
 
     def get_player_config_entries(self, player_id: str) -> List[ConfigEntry]:
         """Return all config entries for the given player."""
-        conf_entries = DEFAULT_PLAYER_CONFIG_ENTRIES
         player = self.mass.player_manager.get_player(player_id)
         if player:
-            conf_entries += player.config_entries
-        return conf_entries
+            return DEFAULT_PLAYER_CONFIG_ENTRIES + player.config_entries
+        return DEFAULT_PLAYER_CONFIG_ENTRIES
 
     def get_base_config_entries(self, base_key) -> List[ConfigEntry]:
         """Return all base config entries."""
         return DEFAULT_BASE_CONFIG_ENTRIES[base_key]
 
-    def as_dict(self):
-        """Return entire config as dict."""
-        return {
-            CONF_KEY_BASE: self.base,
-            CONF_KEY_PLAYERSETTINGS: self.player_settings,
-            CONF_KEY_PROVIDERS: self.providers,
-        }
-
     def __getitem__(self, item_key):
         """Convenience method for get."""
         return getattr(self, item_key)
 
-    async def async_save(self):
-        """Save config."""
-        self.mass.add_job(self.save)
+    async def async_close(self):
+        """Save config on exit."""
+        self.save()
 
     def save(self):
         """Save config to file."""
