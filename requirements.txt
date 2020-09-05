@@ -15,4 +15,4 @@ soco==0.19
 pillow==7.2.0
 aiohttp_cors==0.7.0
 unidecode==1.1.1
-hass-client==0.0.5
+hass-client==0.0.6
