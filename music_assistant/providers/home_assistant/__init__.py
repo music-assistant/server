@@ -88,7 +88,7 @@ class HomeAssistantPlugin(Provider):
                 entry_type=ConfigEntryType.STRING,
                 description_key=CONF_POWER_ENTITIES,
                 default_value=[],
-                values=self.__get_power_control_entities(),
+                values=self._power_entities,
                 multi_value=True,
             ),
             ConfigEntry(
@@ -96,7 +96,7 @@ class HomeAssistantPlugin(Provider):
                 entry_type=ConfigEntryType.STRING,
                 description_key=CONF_VOLUME_ENTITIES,
                 default_value=[],
-                values=self.__get_volume_control_entities(),
+                values=self._volume_entities,
                 multi_value=True,
             ),
         ]
@@ -146,8 +146,7 @@ class HomeAssistantPlugin(Provider):
             )
         elif event_type == EVENT_CONNECTED:
             # register player controls on connect
-            # await self.__async_register_power_controls()
-            await self.__async_register_volume_controls()
+            self.mass.add_job(self.__async_register_player_controls())
 
     async def __async_handle_player_command(self, service, service_data):
         """Handle forwarded service call for one of our players."""
@@ -241,11 +240,17 @@ class HomeAssistantPlugin(Provider):
             "media_duration": cur_item.duration if cur_item else None,
             "media_position": player_queue.cur_item_time if player_queue else None,
             "media_title": cur_item.name if cur_item else None,
-            "media_artist": cur_item.artists[0].name if cur_item else None,
-            "media_album_name": cur_item.album.name if cur_item else None,
-            "entity_picture": cur_item.album.metadata.get("image") if cur_item else None,
+            "media_artist": cur_item.artists[0].name if cur_item and cur_item.artists else None,
+            "media_album_name": cur_item.album.name if cur_item and cur_item.album else None,
+            "entity_picture": "",
             "mass_player_id": player_id,
         }
+        if cur_item:
+            host = f"{self.mass.web.local_ip}:{self.mass.web.http_port}"
+            img_url = (
+                f"http://{host}/api/track/{cur_item.item_id}/thumb?provider={cur_item.provider}"
+            )
+            state_attributes["entity_picture"] = img_url
         self._published_players[entity_id] = player.player_id
         await self._hass.async_set_state(entity_id, player.state, state_attributes)
 
@@ -319,14 +324,25 @@ class HomeAssistantPlugin(Provider):
                 control_entity["value"], cur_state
             )
 
+    async def __async_register_player_controls(self):
+        """Register all (enabled) player controls."""
+        self._volume_entities = self.__get_volume_control_entities()
+        self._power_entities = self.__get_power_control_entities()
+        await self.__async_register_power_controls()
+        await self.__async_register_volume_controls()
+
     async def __async_register_power_controls(self):
         """Register all (enabled) power controls."""
         conf = self.mass.config.providers[PROV_ID]
-        for control_entity in self.__get_power_control_entities():
+        enabled_controls = conf[CONF_POWER_ENTITIES]
+        for control_entity in self._power_entities:
             enabled_controls = conf[CONF_POWER_ENTITIES]
             if not control_entity["value"] in enabled_controls:
                 continue
             entity_id = control_entity["entity_id"]
+            if not entity_id in self._hass.states:
+                LOGGER.warning("entity not found: %s", entity_id)
+                continue
             state_obj = self._hass.states[entity_id]
             cur_state = state_obj["state"] != "off"
             source = control_entity.get("source")
@@ -350,13 +366,15 @@ class HomeAssistantPlugin(Provider):
     async def __async_register_volume_controls(self):
         """Register all (enabled) power controls."""
         conf = self.mass.config.providers[PROV_ID]
-        for control_entity in self.__get_volume_control_entities():
-            enabled_controls = conf[CONF_VOLUME_ENTITIES]
+        enabled_controls = conf[CONF_VOLUME_ENTITIES]
+        for control_entity in self._volume_entities:
             if not control_entity["value"] in enabled_controls:
                 continue
             entity_id = control_entity["entity_id"]
-            # cur_volume = try_parse_float(self._hass.get_state(entity_id, "volume_level")) * 100
-            cur_volume = 10
+            if not entity_id in self._hass.states:
+                LOGGER.warning("entity not found: %s", entity_id)
+                continue
+            cur_volume = try_parse_float(self._hass.get_state(entity_id, "volume_level")) * 100
             control = PlayerControl(
                 type=PlayerControlType.VOLUME,
                 id=control_entity["value"],

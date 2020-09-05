@@ -285,7 +285,7 @@ class MusicManager:
                 # tracks from all providers
                 item_ids = []
                 artist = await self.mass.database.async_get_artist(
-                    artist_id, False, db_conn=db_conn
+                    artist_id, True, db_conn=db_conn
                 )
                 for prov_id in artist.provider_ids:
                     async for item in self.async_get_artist_toptracks(
@@ -308,7 +308,7 @@ class MusicManager:
                         )
                         if db_id:
                             # return database track instead if we have a match
-                            yield await self.mass.database.async_get_track(db_id, db_conn=db_conn)
+                            yield await self.mass.database.async_get_track(db_id, fulldata=False, db_conn=db_conn)
                         else:
                             yield item
 

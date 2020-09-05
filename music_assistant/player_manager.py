@@ -129,6 +129,8 @@ class PlayerManager:
 
     async def async_add_player(self, player: Player) -> None:
         """Register a new player or update an existing one."""
+        if not player:
+            return
         is_new_player = player.player_id not in self._players
         await self.__async_create_player_state(player)
         if is_new_player:
@@ -150,6 +152,8 @@ class PlayerManager:
 
     async def async_update_player(self, player: Player):
         """Update an existing player (or register as new if non existing)."""
+        if not player:
+            return
         if not player.player_id in self._players:
             return await self.async_add_player(player)
         await self.__async_create_player_state(player)

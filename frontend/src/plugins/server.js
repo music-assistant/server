@@ -199,15 +199,15 @@ const server = new Vue({
 
     _selectActivePlayer () {
       // auto select new active player if we have none
-      if (!this.activePlayer || !this.activePlayer.enabled || this.activePlayer.group_parents.length > 0) {
+      if (!this.activePlayer || !this.activePlayer.available) {
         // prefer last selected player
         const lastPlayerId = localStorage.getItem('activePlayerId')
-        if (lastPlayerId && this.players[lastPlayerId] && this.players[lastPlayerId].enabled) {
+        if (lastPlayerId && this.players[lastPlayerId] && this.players[lastPlayerId].available) {
           this.switchPlayer(lastPlayerId)
         } else {
           // prefer the first playing player
           for (const playerId in this.players) {
-            if (this.players[playerId].state === 'playing' && this.players[playerId].enabled && this.players[playerId].group_parents.length === 0) {
+            if (this.players[playerId].state === 'playing' && this.players[playerId].available) {
               this.switchPlayer(playerId)
               break
             }
@@ -215,7 +215,7 @@ const server = new Vue({
           // fallback to just the first player
           if (!this.activePlayer || !this.activePlayer.enabled) {
             for (const playerId in this.players) {
-              if (this.players[playerId].enabled && this.players[playerId].group_parents.length === 0) {
+              if (this.players[playerId].available) {
                 this.switchPlayer(playerId)
                 break
               }

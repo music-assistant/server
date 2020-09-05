@@ -176,7 +176,7 @@
         <v-list-item-content> </v-list-item-content>
 
         <!-- active player queue button -->
-        <v-list-item-action style="padding:28px;" v-if="$server.activePlayer">
+        <v-list-item-action style="padding:16px;" v-if="$server.activePlayer">
           <v-btn
             text
             icon
@@ -190,7 +190,7 @@
         </v-list-item-action>
 
         <!-- active player volume -->
-        <v-list-item-action style="padding:20px;" v-if="$server.activePlayer && !$store.isMobile">
+        <v-list-item-action style="padding:16px;" v-if="$server.activePlayer && !$store.isMobile">
           <v-menu
             :close-on-content-click="false"
             :nudge-width="250"
@@ -216,12 +216,12 @@
         </v-list-item-action>
 
         <!-- active player btn -->
-        <v-list-item-action style="padding:30px;margin-right:15px">
+        <v-list-item-action style="padding:15px;margin-right:15px">
           <v-btn text icon @click="$server.$emit('showPlayersMenu')">
             <v-flex xs12 class="vertical-btn">
               <v-icon>speaker</v-icon>
               <span class="caption" v-if="$server.activePlayer" style="padding-top: 5px">{{
-                truncateString($server.activePlayer.name, 18)
+                truncateString($server.activePlayer.name, 12)
               }}</span>
               <span class="caption" v-else> </span>
             </v-flex>

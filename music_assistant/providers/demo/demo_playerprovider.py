@@ -109,7 +109,6 @@ class DemoPlayerProvider(PlayerProvider):
 
     def player_event(self, player_id, event):
         """Called on vlc player events."""
-        print(event)
         vlc_player: vlc.MediaPlayer = self._players[player_id].vlc_player
         self._players[player_id].muted = vlc_player.audio_get_mute()
         self._players[player_id].volume_level = vlc_player.audio_get_volume()

@@ -177,8 +177,6 @@ class ChromecastPlayer:
 
     async def async_disconnect(self):
         """Disconnect Chromecast object if it is set."""
-        # if self.__cc_report_progress_task:
-        #     self.__cc_report_progress_task.cancel()
         if self._chromecast is None:
             return
         LOGGER.warning("[%s] Disconnecting from chromecast socket", self._cast_info.friendly_name)
@@ -248,31 +246,52 @@ class ChromecastPlayer:
 
     def stop(self):
         """Send stop command to player."""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         self._chromecast.media_controller.stop()
 
     def play(self):
         """Send play command to player."""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         self._chromecast.media_controller.play()
 
     def pause(self):
         """Send pause command to player."""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         self._chromecast.media_controller.pause()
 
     def next(self):
         """Send next track command to player."""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         self._chromecast.media_controller.queue_next()
 
     def previous(self):
         """Send previous track command to player."""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         self._chromecast.media_controller.queue_prev()
 
     def power_on(self):
         """Send power ON command to player."""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         self._powered = True
         self._chromecast.set_volume_muted(False)
 
     def power_off(self):
         """Send power OFF command to player."""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         if self.media_status and (
             self.media_status.player_is_playing or self.media_status.player_is_paused
         ):
@@ -284,15 +303,24 @@ class ChromecastPlayer:
 
     def volume_set(self, volume_level):
         """Send new volume level command to player."""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         self._chromecast.set_volume(volume_level)
         # self.volume_level = volume_level
 
     def volume_mute(self, is_muted=False):
         """Send mute command to player."""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         self._chromecast.set_volume_muted(is_muted)
 
     def play_uri(self, uri: str):
         """Play single uri on player."""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         player_queue = self.mass.player_manager.get_player_queue(self.player_id)
         if player_queue.use_queue_stream:
             # create CC queue so that skip and previous will work
@@ -305,6 +333,9 @@ class ChromecastPlayer:
 
     def queue_load(self, queue_items: List[QueueItem]):
         """load (overwrite) queue with new items"""
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         player_queue = self.mass.player_manager.get_player_queue(self.player_id)
         cc_queue_items = self.__create_queue_items(queue_items[:50])
         repeat_enabled = player_queue.use_queue_stream or player_queue.repeat_enabled
@@ -324,6 +355,9 @@ class ChromecastPlayer:
         """
         append new items at the end of the queue
         """
+        if not self._chromecast.socket_client.is_connected:
+            LOGGER.warning("Ignore player command: Socket client is not connected.")
+            return
         cc_queue_items = self.__create_queue_items(queue_items)
         for chunk in chunks(cc_queue_items, 50):
             queuedata = {"type": "QUEUE_INSERT", "insertBefore": None, "items": chunk}
