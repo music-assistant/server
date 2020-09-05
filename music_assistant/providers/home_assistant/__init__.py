@@ -21,6 +21,7 @@ from music_assistant.constants import (
     EVENT_PLAYER_REMOVED,
 )
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
+from music_assistant.models.media_types import MediaType
 from music_assistant.models.player import Player, PlayerControl, PlayerControlType
 from music_assistant.models.provider import Provider
 from music_assistant.utils import callback, run_periodic, try_parse_float
@@ -48,6 +49,7 @@ CONFIG_ENTRY_PUBLISH_PLAYERS = ConfigEntry(
     default_value=True,
 )
 
+# TODO: handle player removals and renames in publishing to hass
 
 async def async_setup(mass):
     """Perform async setup of this Plugin/Provider."""
@@ -229,6 +231,8 @@ class HomeAssistantPlugin(Provider):
         """Publish player details to Home Assistant."""
         if not self.mass.config.providers[PROV_ID][CONF_PUBLISH_PLAYERS]:
             return False
+        if not player.available:
+            return
         player_id = player.player_id
         entity_id = "media_player.mass_" + slug.slugify(player.name, separator="_").lower()
         player_queue = self.mass.player_manager.get_player_queue(player_id)
@@ -251,9 +255,8 @@ class HomeAssistantPlugin(Provider):
         }
         if cur_item:
             host = f"{self.mass.web.local_ip}:{self.mass.web.http_port}"
-            img_url = (
-                f"http://{host}/api/track/{cur_item.item_id}/thumb?provider={cur_item.provider}"
-            )
+            item_type = "radio" if cur_item.media_type == MediaType.Radio else "track"
+            img_url = f"http://{host}/api/{item_type}/{cur_item.item_id}/thumb?provider={cur_item.provider}"
             state_attributes["entity_picture"] = img_url
         self._published_players[entity_id] = player.player_id
         await self._hass.async_set_state(entity_id, player.state, state_attributes)

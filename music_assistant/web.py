@@ -59,14 +59,6 @@ class Web:
         self.local_ip = get_ip()
         self.config = mass.config.base["web"]
         self.runner = None
-        # if IS_HASSIO:
-        #     # retrieve ingress http port
-        #     import requests
-
-        #     url = "http://hassio/addons/self/info"
-        #     headers = {"X-HASSIO-KEY": os.environ["HASSIO_TOKEN"]}
-        #     response = requests.get(url, headers=headers).json()
-        #     self.http_port = response["data"]["ingress_port"]
 
         self.http_port = self.config["http_port"]
         enable_ssl = self.config["ssl_certificate"] and self.config["ssl_key"]

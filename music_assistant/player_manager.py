@@ -231,7 +231,8 @@ class PlayerManager:
                     queue_item.queue_item_id,
                 )
                 queue_items.append(queue_item)
-
+        # turn on player
+        await self.async_cmd_power_on(player_id)
         # load items into the queue
         player_queue = self.get_player_queue(player_id)
         if queue_opt == QueueOption.Replace or (
@@ -250,11 +251,7 @@ class PlayerManager:
         Send STOP command to given player.
             :param player_id: player_id of the player to handle the command.
         """
-        # TODO: redirect playback related commands to parent player
-        # for group_id in self.group_parents:
-        #     group_player = self.mass.player_manager.get_player_sync(group_id)
-        #     if group_player.state != PlayerState.Off:
-        #         return await group_player.stop()
+        # TODO: redirect playback related commands to parent player?
         return await self.get_player_provider(player_id).async_cmd_stop(player_id)
 
     async def async_cmd_play(self, player_id: str):
@@ -263,22 +260,13 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
         """
         # power on at play request
-        await self.get_player_provider(player_id).async_cmd_power_on(player_id)
+        await self.async_cmd_power_on(player_id)
         player = self.get_player(player_id)
         # unpause if paused else resume queue
         if player.state == PlayerState.Paused:
             return await self.get_player_provider(player_id).async_cmd_play(player_id)
         return await self._player_queues[player_id].async_resume()
-
-        # TODO: redirect playback related commands to parent player ?
-        # for group_id in self.group_parents:
-        #     group_player = self.mass.player_manager.get_player_sync(group_id)
-        #     if group_player.state != PlayerState.Off:
-        #         return await group_player.play()
-        # if self.state == PlayerState.Paused:
-        #     return await self.cmd_play()
-        # elif self.state != PlayerState.Playing:
-        #     return await self.queue.resume()
+        # TODO: redirect playback related commands to parent player?
 
     async def async_cmd_pause(self, player_id: str):
         """
@@ -286,12 +274,7 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
         """
         return await self.get_player_provider(player_id).async_cmd_pause(player_id)
-        # TODO: redirect playback related commands to parent player
-        # for group_id in self.group_parents:
-        #     group_player = self.mass.player_manager.get_player_sync(group_id)
-        #     if group_player.state != PlayerState.Off:
-        #         return await group_player.pause()
-        # return await self.cmd_pause()
+        # TODO: redirect playback related commands to parent player?
 
     async def async_cmd_play_pause(self, player_id: str):
         """

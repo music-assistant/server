@@ -4,10 +4,13 @@
     of music with crossfade/gapless support (queue stream).
 """
 import asyncio
+import concurrent
 import gc
 import io
 import logging
+import os
 import shlex
+import signal
 import subprocess
 import threading
 from asyncio import CancelledError
@@ -86,8 +89,8 @@ class HTTPStreamer:
                 # we must consume the data to prevent hanging subprocess instances
                 continue
             # put chunk in buffer
-            with suppress((BrokenPipeError, ConnectionResetError, CancelledError)):
-                self.mass.add_job(buffer.write(audio_chunk)).result()
+            with suppress((BrokenPipeError, ConnectionResetError)):
+                asyncio.run_coroutine_threadsafe(buffer.write(audio_chunk), self.mass.loop).result()
         # all chunks received: streaming finished
         if cancelled.is_set():
             LOGGER.debug(
@@ -97,8 +100,9 @@ class HTTPStreamer:
             )
         else:
             # indicate EOF if no more data
-            with suppress((BrokenPipeError, ConnectionResetError, CancelledError)):
-                self.mass.add_job(buffer.write_eof()).result()
+            with suppress((BrokenPipeError, ConnectionResetError)):
+                asyncio.run_coroutine_threadsafe(buffer.write_eof(), self.mass.loop).result()
+
             LOGGER.debug(
                 "stream single track finished for track %s on player %s", queue_item.name, player_id
             )
@@ -129,13 +133,20 @@ class HTTPStreamer:
                 if not chunk:
                     break
                 if chunk and not cancelled.is_set():
-                    with suppress((BrokenPipeError, ConnectionResetError, CancelledError)):
-                        self.mass.add_job(buffer.write(chunk)).result()
+                    with suppress(
+                        (
+                            BrokenPipeError,
+                            ConnectionResetError,
+                        )
+                    ):
+                        asyncio.run_coroutine_threadsafe(
+                            buffer.write(chunk), self.mass.loop
+                        ).result()
                 del chunk
             # indicate EOF if no more data
             if not cancelled.is_set():
-                with suppress((BrokenPipeError, ConnectionResetError, CancelledError)):
-                    self.mass.add_job(buffer.write_eof()).result()
+                with suppress((BrokenPipeError, ConnectionResetError)):
+                    asyncio.run_coroutine_threadsafe(buffer.write_eof(), self.mass.loop).result()
 
         # start fill buffer task in background
         fill_buffer_thread = threading.Thread(target=fill_buffer)
@@ -325,7 +336,9 @@ class HTTPStreamer:
                 outputfmt,
                 sox_options,
             )
-            process = subprocess.Popen(args, shell=True, stdout=subprocess.PIPE, bufsize=chunksize)
+            process = subprocess.Popen(
+                args, shell=True, stdout=subprocess.PIPE, bufsize=chunksize, preexec_fn=os.setsid
+            )
         elif streamdetails.type in [StreamType.URL, StreamType.FILE]:
             args = 'sox -t %s "%s" -t %s - %s' % (
                 streamdetails.content_type.name,
@@ -334,7 +347,9 @@ class HTTPStreamer:
                 sox_options,
             )
             args = shlex.split(args)
-            process = subprocess.Popen(args, shell=False, stdout=subprocess.PIPE, bufsize=chunksize)
+            process = subprocess.Popen(
+                args, shell=False, stdout=subprocess.PIPE, bufsize=chunksize, preexec_fn=os.setsid
+            )
         elif streamdetails.type == StreamType.EXECUTABLE:
             args = "%s | sox -t %s - -t %s - %s" % (
                 streamdetails.path,
@@ -342,7 +357,9 @@ class HTTPStreamer:
                 outputfmt,
                 sox_options,
             )
-            process = subprocess.Popen(args, shell=True, stdout=subprocess.PIPE, bufsize=chunksize)
+            process = subprocess.Popen(
+                args, shell=True, stdout=subprocess.PIPE, bufsize=chunksize, preexec_fn=os.setsid
+            )
         else:
             LOGGER.warning("no streaming options for %s", queue_item.name)
             yield (True, b"")
@@ -356,7 +373,9 @@ class HTTPStreamer:
             if cancelled.is_set():
                 # http session ended
                 # send terminate and pick up left over bytes
-                process.terminate()
+                # process.terminate()
+                os.killpg(os.getpgid(process.pid), signal.SIGHUP)
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
             # read exactly chunksize of data
             chunk = process.stdout.read(chunksize)
             if len(chunk) < chunksize:
