@@ -288,7 +288,7 @@ class MusicManager:
                     artist_id, True, db_conn=db_conn
                 )
                 for prov_id in artist.provider_ids:
-                    provider = self.mass.get_provider(prov_id)
+                    provider = self.mass.get_provider(prov_id.provider)
                     if not provider or not MediaType.Track in provider.supported_mediatypes:
                         continue
                     async for item in self.async_get_artist_toptracks(
@@ -323,7 +323,7 @@ class MusicManager:
                 item_ids = []
                 artist = await self.mass.database.async_get_artist(artist_id, True, db_conn=db_conn)
                 for prov_id in artist.provider_ids:
-                    provider = self.mass.get_provider(prov_id)
+                    provider = self.mass.get_provider(prov_id.provider)
                     if not provider or not MediaType.Album in provider.supported_mediatypes:
                         continue
                     async for item in self.async_get_artist_albums(
