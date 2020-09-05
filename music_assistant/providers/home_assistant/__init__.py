@@ -144,9 +144,10 @@ class HomeAssistantPlugin(Provider):
             await self.__async_handle_player_command(
                 event_data["service"], event_data["service_data"]
             )
-        elif event_type == EVENT_CONNECTED:
+        # elif event_type == EVENT_CONNECTED:
             # register player controls on connect
-            self.mass.add_job(self.__async_register_player_controls())
+            # TODO: this crashes the entire app
+            # self.mass.add_job(self.__async_register_player_controls())
 
     async def __async_handle_player_command(self, service, service_data):
         """Handle forwarded service call for one of our players."""
