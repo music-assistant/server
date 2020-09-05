@@ -44,7 +44,7 @@ def sync_task(desc):
                 if sync_prov_id == prov_id and sync_desc == desc:
                     LOGGER.debug("Syncjob %s for provider %s is already running!", desc, prov_id)
                     return
-            LOGGER.info("Start syncjob %s for provider %s.", desc, prov_id)
+            LOGGER.debug("Start syncjob %s for provider %s.", desc, prov_id)
             sync_job = (prov_id, desc)
             method_class.running_sync_jobs.append(sync_job)
             method_class.mass.signal_event(EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs)

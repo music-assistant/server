@@ -42,6 +42,14 @@ async def async_setup(mass):
 class ChromecastProvider(PlayerProvider):
     """Support for ChromeCast Audio PlayerProvider."""
 
+    def __init__(self, *args, **kwargs):
+        """Initialize."""
+        self.mz_mgr = MultizoneManager()
+        self._players = {}
+        self._listener = None
+        self._browser = None
+        super().__init__(*args, **kwargs)
+
     @property
     def id(self) -> str:
         """Return provider ID for this provider."""
@@ -59,21 +67,17 @@ class ChromecastProvider(PlayerProvider):
 
     async def async_on_start(self) -> bool:
         """Called on startup. Handle initialization of the provider based on config."""
-        # pylint: disable=attribute-defined-outside-init
-        self.mz_mgr = MultizoneManager()
-        self._players = {}
         self._listener = pychromecast.CastListener(
             self.__chromecast_add_update_callback,
             self.__chromecast_remove_callback,
             self.__chromecast_add_update_callback,
         )
         self._browser = pychromecast.discovery.start_discovery(self._listener, self.mass.zeroconf)
-        self.available = True
         return True
 
     async def async_on_stop(self):
         """Called on shutdown. Handle correct close/cleanup of the provider on exit."""
-        if not self.available:
+        if not self._browser:
             return
         # stop discovery
         pychromecast.stop_discovery(self._browser)
@@ -192,7 +196,7 @@ class ChromecastProvider(PlayerProvider):
             player = ChromecastPlayer(self.mass, cast_info)
             self._players[player_id] = player
             self.mass.add_job(self.mass.player_manager.async_add_player(player))
-        self.mass.add_job(self._players[player_id].async_set_cast_info, cast_info)
+        self.mass.add_job(self._players[player_id].set_cast_info, cast_info)
 
     def __chromecast_remove_callback(self, cast_uuid, cast_service_name, cast_service):
         # pylint: disable=unused-argument

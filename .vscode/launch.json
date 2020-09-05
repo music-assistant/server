@@ -10,7 +10,7 @@
             "type": "python",
             "request": "launch",
             "module": "music_assistant",
-            //"args": ["--debug"]
+            "args": ["--debug"]
         },
         {
             "name": "Python: Huidige bestand",
@@ -18,7 +18,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            //"args": ["--debug"]
+            "args": ["--debug"]
         },
         {
             "name": "Python: Attach using Process Id",

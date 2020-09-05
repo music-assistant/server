@@ -67,7 +67,7 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = [
         entry_type=ConfigEntryType.INT,
         range=(0, 10),
         default_value=0,
-        description_key="fallback_gain_correct",
+        description_key="crossfade_duration",
     ),
 ]
 
@@ -195,6 +195,7 @@ class ConfigItem:
                 self.mass.signal_event(
                     EVENT_CONFIG_CHANGED, (self._base_type, self._parent_item_key)
                 )
+                self.mass.add_job(self.mass.config.save)
                 # reload provider if value changed
                 if self._base_type == ConfigBaseType.PROVIDER:
                     self.mass.add_job(

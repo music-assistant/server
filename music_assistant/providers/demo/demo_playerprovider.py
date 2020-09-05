@@ -20,6 +20,11 @@ class DemoPlayerProvider(PlayerProvider):
     Demo PlayerProvider which provides fake players.
     """
 
+    def __init__(self, *args, **kwargs):
+        """Initialize."""
+        self._players = {}
+        super().__init__(*args, **kwargs)
+
     @property
     def id(self) -> str:
         """Return provider ID for this provider."""
@@ -37,7 +42,6 @@ class DemoPlayerProvider(PlayerProvider):
 
     async def async_on_start(self) -> bool:
         """Called on startup. Handle initialization of the provider based on config."""
-        self._players = {}
         # create some fake players
         for count in range(11)[1:]:
             player_id = f"demo_{count}"

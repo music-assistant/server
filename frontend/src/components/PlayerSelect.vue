@@ -24,8 +24,8 @@
           style="margin-left: -5px; margin-right: -15px"
           @click="$server.switchPlayer($server.players[playerId].player_id)"
         >
-          <v-list-item-avatar>
-            <v-icon size="45">{{ $server.players[playerId].is_group ? 'speaker_group' : 'speaker' }}</v-icon>
+          <v-list-item-avatar tile>
+            <v-icon size="45">{{ $server.players[playerId].is_group_player ? 'speaker_group' : 'speaker' }}</v-icon>
           </v-list-item-avatar>
           <v-list-item-content style="margin-left:-15px;">
             <v-list-item-title class="subtitle-1">{{ $server.players[playerId].name }}</v-list-item-title>

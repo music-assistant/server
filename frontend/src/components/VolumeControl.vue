@@ -76,14 +76,21 @@ export default Vue.extend({
   mounted () { },
   methods: {
     setPlayerVolume: function (playerId, newVolume) {
-      this.players[playerId].volume_level = newVolume
+      // if (newVolume === 'up') {
+      //   this.$server.playerCommand('volume_up', null, playerId)
+      // } else if (newVolume === 'down') {
+      //   this.$server.playerCommand('volume_down', null, playerId)
+      // } else {
+      //   this.$server.playerCommand('volume_set', newVolume, playerId)
+      //   this.players[playerId].volume_level = newVolume
+      // }
       if (newVolume === 'up') {
-        this.$server.playerCommand('volume_up', null, playerId)
+        newVolume = this.$server.players[playerId].volume_level + 1
       } else if (newVolume === 'down') {
-        this.$server.playerCommand('volume_down', null, playerId)
-      } else {
-        this.$server.playerCommand('volume_set', newVolume, playerId)
+        newVolume = this.$server.players[playerId].volume_level - 1
       }
+      this.$server.playerCommand('volume_set', newVolume, playerId)
+      this.players[playerId].volume_level = newVolume
     },
     togglePlayerPower: function (playerId) {
       this.$server.playerCommand('power_toggle', null, playerId)

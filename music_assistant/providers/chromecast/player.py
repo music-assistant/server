@@ -3,6 +3,7 @@ import logging
 from typing import List, Optional
 from datetime import datetime
 import pychromecast
+import uuid
 from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.utils import compare_strings
@@ -126,7 +127,7 @@ class ChromecastPlayer:
     def group_childs(self):
         """Return group_childs."""
         if self._cast_info.is_audio_group and self._chromecast and not self._is_speaker_group:
-            return self._chromecast.mz_controller.members
+            return [str(uuid.UUID(item)) for item in self._chromecast.mz_controller.members]
         return []
 
     @property
@@ -138,7 +139,7 @@ class ChromecastPlayer:
             manufacturer=self._cast_info.manufacturer,
         )
 
-    async def async_set_cast_info(self, cast_info: ChromecastInfo):
+    async def set_cast_info(self, cast_info: ChromecastInfo):
         """Set the cast information and set up the chromecast object."""
         self._cast_info = cast_info
         if self._chromecast is not None:

@@ -54,7 +54,8 @@ class MusicAssistant:
         """Start running the music assistant server."""
         self.loop = asyncio.get_event_loop()
         self.loop.set_exception_handler(self.__handle_exception)
-        self.loop.set_debug(True)
+        if LOGGER.level == logging.DEBUG:
+            self.loop.set_debug(True)
         await self.database.async_setup()
         await self.cache.async_setup()
         await self.metadata.async_setup()
@@ -151,7 +152,7 @@ class MusicAssistant:
         if self._exit:
             return
         for cb_func, event_filter in self._event_listeners:
-            if not event_filter or event_filter in event_msg:
+            if not event_filter or event_msg in event_filter:
                 self.add_job(cb_func, event_msg, event_details)
 
     @callback

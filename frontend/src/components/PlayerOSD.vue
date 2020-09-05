@@ -150,7 +150,7 @@
       <v-list-item
         dark
         dense
-        style="height:44px;margin-bottom:5px;margin-top:-4px;background-color:black;"
+        style="height:62px;margin-bottom:5px;margin-top:-4px;background-color:black;"
       >
         <v-list-item-action v-if="$server.activePlayer" style="margin-top:15px">
           <v-btn small icon @click="playerCommand('previous')">
@@ -178,14 +178,13 @@
         <!-- active player queue button -->
         <v-list-item-action style="padding:28px;" v-if="$server.activePlayer">
           <v-btn
-            small
             text
             icon
             @click="$router.push('/playerqueue/')"
           >
             <v-flex xs12 class="vertical-btn">
               <v-icon>queue_music</v-icon>
-              <span class="caption">{{ $t("queue") }}</span>
+              <span class="caption" style="padding-top: 5px">{{ $t("queue") }}</span>
             </v-flex>
           </v-btn>
         </v-list-item-action>
@@ -200,10 +199,10 @@
             @click.native.prevent
           >
             <template v-slot:activator="{ on }">
-              <v-btn small icon v-on="on">
+              <v-btn icon v-on="on">
                 <v-flex xs12 class="vertical-btn">
                   <v-icon>volume_up</v-icon>
-                  <span class="caption">{{
+                  <span class="caption" style="padding-top: 5px">{{
                     Math.round($server.activePlayer.volume_level)
                   }}</span>
                 </v-flex>
@@ -217,12 +216,12 @@
         </v-list-item-action>
 
         <!-- active player btn -->
-        <v-list-item-action style="padding:20px;margin-right:15px">
-          <v-btn small text icon @click="$server.$emit('showPlayersMenu')">
+        <v-list-item-action style="padding:30px;margin-right:15px">
+          <v-btn text icon @click="$server.$emit('showPlayersMenu')">
             <v-flex xs12 class="vertical-btn">
               <v-icon>speaker</v-icon>
-              <span class="caption" v-if="$server.activePlayer">{{
-                $server.activePlayer.name
+              <span class="caption" v-if="$server.activePlayer" style="padding-top: 5px">{{
+                truncateString($server.activePlayer.name, 18)
               }}</span>
               <span class="caption" v-else> </span>
             </v-flex>
@@ -332,7 +331,8 @@ export default Vue.extend({
       this.$router.push({ path: url, query: { provider: item.provider } })
     },
     queueUpdatedMsg (data) {
-      if (data.player_id === this.$server.activePlayerId) {
+      const queueId = this.$server.players[this.$server.activePlayerId].active_queue
+      if (data.player_id === queueId) {
         for (const [key, value] of Object.entries(data)) {
           Vue.set(this.playerQueueDetails, key, value)
         }
@@ -340,9 +340,19 @@ export default Vue.extend({
     },
     async getQueueDetails () {
       if (this.$server.activePlayer) {
-        const endpoint = 'players/' + this.$server.activePlayerId + '/queue'
+        const queueId = this.$server.players[this.$server.activePlayerId].active_queue
+        const endpoint = 'players/' + queueId + '/queue'
         this.playerQueueDetails = await this.$server.getData(endpoint)
       }
+    },
+    truncateString (str, num) {
+      // If the length of str is less than or equal to num
+      // just return str--don't truncate it.
+      if (str.length <= num) {
+        return str
+      }
+      // Return str truncated with '...' concatenated to the end of str.
+      return str.slice(0, num) + '...'
     }
   }
 })

@@ -208,7 +208,7 @@ class PlayerQueue:
         """
             bool to indicate that we need to use the queue stream
             for example if crossfading is requested but a player doesn't natively support it
-            it will send a constant stream of audio to the player and all tracks
+            it will send a constant stream of audio to the player with all tracks
         """
         supports_crossfade = PlayerFeature.CROSSFADE in self.player.features
         return self.crossfade_enabled and not supports_crossfade
@@ -258,7 +258,8 @@ class PlayerQueue:
             else:
                 # at this point we don't know if the queue is synced with the player
                 # so just to be safe we send the queue_items to the player
-                await self.mass.player_manager.async_cmd_queue_load(self.player_id, self.items)
+                player_provider = self.mass.player_manager.get_player_provider(self.player_id)
+                await player_provider.async_cmd_queue_load(self.player_id, self.items)
                 await self.async_play_index(prev_index)
         else:
             LOGGER.warning(

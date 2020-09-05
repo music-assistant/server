@@ -55,16 +55,24 @@ class Player:
     should_poll: bool = False
     features: List[PlayerFeature] = field(default_factory=list)
     config_entries: List[ConfigEntry] = field(default_factory=list)
-    updated_at: datetime = datetime.utcnow()
+    updated_at: datetime = datetime.utcnow()  # managed by playermanager!
+    active_queue: str = ""  # managed by playermanager!
+    group_parents: List[str] = field(default_factory=list) # managed by playermanager!
+    cur_queue_item_id: str = None # managed by playermanager!
 
     def __setattr__(self, name, value):
         """Event when control is updated. Do not override"""
+        if name == "updated_at":
+            # updated at is set by the on_update callback
+            # make sure we do not hit an endless loop
+            super().__setattr__(name, value)
+            return
         value_changed = hasattr(self, name) and getattr(self, name) != value
         super().__setattr__(name, value)
-        super().__setattr__('updated_at', datetime.utcnow())       
-        if value_changed and hasattr(self, '_on_update'):
+        if value_changed and hasattr(self, "_on_update"):
             # pylint: disable=no-member
             self._on_update(self.player_id, name)
+
 
 class PlayerControlType(int, Enum):
     """Enum with different player control types."""
@@ -84,13 +92,3 @@ class PlayerControl:
     name: str = ""
     state: Optional[Any] = None
     set_state: Callable[..., Union[None, Awaitable]] = None
-
-    def __setattr__(self, name, value):
-        """Event when control is updated. Do not override"""
-        if hasattr(self, '_on_update') and getattr(self, name, None) != value:
-            super().__setattr__(name, value)
-            # pylint: disable=no-member
-            self._on_update(self)
-        else:
-            super().__setattr__(name, value)
-        

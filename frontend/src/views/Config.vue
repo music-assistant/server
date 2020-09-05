@@ -51,7 +51,7 @@
                 <v-list-item-title>{{ $t("conf." + conf_key) }}</v-list-item-title>
               </v-list-item-content>
             </v-list-item>
-            <v-list-item v-if="configKey == 'player_settings'">>
+            <v-list-item v-if="configKey == 'player_settings'">
               <v-list-item-avatar
                 tile
                 style="margin-left:-15px"
@@ -86,7 +86,7 @@
               (conf_item_value['entry_type'] == 'string' ||
                 conf_item_value['entry_type'] == 'integer' ||
                 conf_item_value['entry_type'] == 'float') &&
-                !conf_item_value['values'].length
+                !conf_item_value['values'].length && !conf_item_value['range'].length
             "
                 v-model="conf_item_value['value']"
                 :placeholder="conf_item_value['default_value'] ? conf_item_value['default_value'].toString() : ''"
@@ -105,7 +105,9 @@
                 filled
               ></v-text-field>
               <!-- value with dropdown -->
-              <v-select chips clearable
+              <v-select
+                :chips="conf_item_value['multi_value']"
+                clearable
                 :multiple="conf_item_value['multi_value']"
                 v-if="
               conf_item_value['values'].length &&
@@ -118,6 +120,19 @@
                 filled
                 @change="saveConfig(configKey, conf_key, conf_item_key, conf_item_value['value'])"
               ></v-select>
+              <!-- value with range -->
+              <v-slider
+                style="margin-top:28px;"
+                v-if="conf_item_value['range'].length"
+                :placeholder="conf_item_value['default_value'].toString()"
+                v-model="conf_item_value['value']"
+                :label="$t('conf.' + conf_item_value['description_key'])"
+                @change="saveConfig(configKey, conf_key, conf_item_key, conf_item_value['value'])"
+                :min="conf_item_value['range'][0]"
+                :max="conf_item_value['range'][1]"
+                :thumb-size="25"
+                thumb-label="always"
+              ></v-slider>
             </v-list-item>
           </v-list>
           <v-divider></v-divider>

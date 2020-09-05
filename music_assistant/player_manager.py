@@ -3,10 +3,9 @@
     Orchestrates all players from player providers and forwarding of commands and states.
 """
 
-import logging
 from datetime import datetime
-from typing import List, Optional
-from types import MethodType
+import logging
+from typing import List, Optional, Any
 
 from music_assistant.constants import (
     CONF_ENABLED,
@@ -14,8 +13,8 @@ from music_assistant.constants import (
     EVENT_PLAYER_ADDED,
     EVENT_PLAYER_CHANGED,
     EVENT_PLAYER_CONTROL_REGISTERED,
-    EVENT_PLAYER_REMOVED,
     EVENT_PLAYER_CONTROL_UPDATED,
+    EVENT_PLAYER_REMOVED,
 )
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.media_types import MediaItem, MediaType
@@ -23,7 +22,6 @@ from music_assistant.models.player import (
     Player,
     PlayerControl,
     PlayerControlType,
-    PlayerFeature,
     PlayerState,
 )
 from music_assistant.models.player_queue import PlayerQueue, QueueItem, QueueOption
@@ -69,10 +67,10 @@ class PlayerManager:
     async def poll_task(self):
         """Check for updates on players that need to be polled."""
         for player in self._org_players.values():
-            if player.should_poll and (
-                self._poll_ticks >= POLL_INTERVAL or player.state == PlayerState.Playing
+            if (player.should_poll
+                and (self._poll_ticks >= POLL_INTERVAL or player.state == PlayerState.Playing)
             ):
-                # TODO: compare values ?
+                # Just request update, value checking for changes is handled
                 await self.async_update_player(player)
         if self._poll_ticks >= POLL_INTERVAL:
             self._poll_ticks = 0
@@ -103,7 +101,10 @@ class PlayerManager:
     @callback
     def get_player_queue(self, player_id: str) -> PlayerQueue:
         """Return player's queue by player_id or None if player does not exist."""
-        return self._player_queues.get(player_id)
+        if not player_id in self._players:
+            return None
+        player = self._players[player_id]
+        return self._player_queues.get(player.active_queue)
 
     @callback
     def get_player_control(self, control_id: str) -> PlayerControl:
@@ -156,10 +157,21 @@ class PlayerManager:
     async def async_register_player_control(self, control: PlayerControl):
         """Register a playercontrol with the player manager."""
         self._controls[control.id] = control
-        setattr(control, "_on_update", self.__player_control_updated)
         LOGGER.info("New %s PlayerControl registered: %s", control.type, control.name)
         self.mass.signal_event(EVENT_PLAYER_CONTROL_REGISTERED, control.id)
         await self.__async_create_playercontrol_config_entries()
+        # update all players as they may want to use this control
+        for player in self._players.values():
+            self.mass.add_job(self.async_update_player(player))
+
+    async def async_update_player_control(self, control_id: str, new_state: Any):
+        """Update a playercontrol's state on the player manager."""
+        control = self._controls.get(control_id)
+        if not control or control.state == new_state:
+            return
+        LOGGER.info("PlayerControl %s updated - new state: %s", control.name, new_state)
+        control.state = new_state
+        self.mass.signal_event(EVENT_PLAYER_CONTROL_UPDATED, control.id)
         # update all players using this playercontrol
         for player_id, player in self._players.items():
             conf = self.mass.config.player_settings[player_id]
@@ -292,29 +304,14 @@ class PlayerManager:
         Send NEXT TRACK command to given player.
             :param player_id: player_id of the player to handle the command.
         """
-        return await self._player_queues[player_id].async_next()
-        # TODO: handle queue support and parent player command redirects
-        # return await self.queue.play_index(self.queue.cur_index + 1)
-        # return await player.async_play()
-        # for group_id in self.group_parents:
-        #     group_player = self.mass.player_manager.get_player_sync(group_id)
-        #     if group_player.state != PlayerState.Off:
-        #         return await group_player.next()
-        # return await self.queue.next()
+        return await self.get_player_queue(player_id).async_next()
 
     async def async_cmd_previous(self, player_id: str):
         """
         Send PREVIOUS TRACK command to given player.
             :param player_id: player_id of the player to handle the command.
         """
-        return await self._player_queues[player_id].async_previous()
-        # TODO: handle queue support and parent player command redirects
-        # return await self.queue.play_index(self.queue.cur_index - 1)
-        # for group_id in self.group_parents:
-        #     group_player = self.mass.player_manager.get_player_sync(group_id)
-        #     if group_player.state != PlayerState.Off:
-        #         return await group_player.previous()
-        # return await self.queue.previous()
+        return await self.get_player_queue(player_id).async_previous()
 
     async def async_cmd_power_on(self, player_id: str):
         """
@@ -329,7 +326,7 @@ class PlayerManager:
         if player_config.get(CONF_POWER_CONTROL):
             control = self.get_player_control(player_config[CONF_POWER_CONTROL])
             if control:
-                self.mass.add_job(control.set_state, True)
+                self.mass.add_job(control.set_state, control.id, True)
 
     async def async_cmd_power_off(self, player_id: str):
         """
@@ -344,7 +341,7 @@ class PlayerManager:
         if player_config.get(CONF_POWER_CONTROL):
             control = self.get_player_control(player_config[CONF_POWER_CONTROL])
             if control:
-                self.mass.add_job(control.set_state, False)
+                self.mass.add_job(control.set_state, control.id, False)
         # handle group power
         if player.is_group_player:
             # player is group, turn off all childs
@@ -381,7 +378,7 @@ class PlayerManager:
         if player_config.get(CONF_VOLUME_CONTROL):
             control = self.get_player_control(player_config[CONF_VOLUME_CONTROL])
             if control:
-                self.mass.add_job(control.set_state, volume_level)
+                self.mass.add_job(control.set_state, control.id, volume_level)
                 # just force full volume on actual player if volume is outsourced to volumecontrol
                 await player_prov.async_cmd_volume_set(player_id, 100)
         # handle group volume
@@ -439,7 +436,6 @@ class PlayerManager:
 
     async def async_get_gain_correct(self, player_id: str, item_id: str, provider_id: str):
         """Get gain correction for given player / track combination."""
-        player = self._players[player_id]
         player_conf = self.mass.config.get_player_config(player_id)
         if not player_conf["volume_normalisation"]:
             return 0
@@ -470,12 +466,18 @@ class PlayerManager:
             player_state = Player(player.player_id, player.provider_id)
             self._players[player.player_id] = player_state
             setattr(player_state, "_on_update", self.__player_updated)
+        group_parents = self.__get_player_group_parents(player)
+        active_queue = self.__get_player_active_queue(player, group_parents)
         player_state.name = self.__get_player_name(player)
         player_state.powered = self.__get_player_power_state(player)
-        player_state.elapsed_time = int(player.elapsed_time)
-        player_state.state = self.__get_player_state(player)
+        if active_queue != player.player_id:
+            player_state.elapsed_time = self._players[active_queue].elapsed_time
+            player_state.current_uri = self._players[active_queue].current_uri
+        else:
+            player_state.elapsed_time = int(player.elapsed_time)
+            player_state.current_uri = player.current_uri
+        player_state.state = self.__get_player_state(player, active_queue)
         player_state.available = False if not player_enabled else player.available
-        player_state.current_uri = player.current_uri
         player_state.volume_level = self.__get_player_volume_level(player)
         player_state.muted = self.__get_player_mute_state(player)
         player_state.is_group_player = player.is_group_player
@@ -484,6 +486,9 @@ class PlayerManager:
         player_state.should_poll = player.should_poll
         player_state.features = player.features
         player_state.config_entries = self.__get_player_config_entries(player)
+        player_state.active_queue = active_queue
+        if active_queue in self._player_queues:
+            player_state.cur_queue_item_id = self._player_queues[active_queue].cur_item_id
 
     @callback
     def __get_player_name(self, player: Player):
@@ -528,15 +533,13 @@ class PlayerManager:
         return player.volume_level
 
     @callback
-    def __get_player_state(self, player: Player):
+    def __get_player_state(self, player: Player, active_parent: str):
         """Get final/calculated player's state."""
         if not player.available or not player.powered:
             return PlayerState.Off
-        # TODO: prefer group player state
-        # for group_parent_id in self.group_parents:
-        #     group_player = self.mass.player_manager.get_player_sync(group_parent_id)
-        #     if group_player and group_player.state != PlayerState.Off:
-        #         return group_player.state
+        if active_parent != player.player_id:
+            # use group state
+            return self._players[active_parent].state
         return player.state
 
     @callback
@@ -544,6 +547,31 @@ class PlayerManager:
         """Get final/calculated player's mute state."""
         # TODO: Handle VolumeControl plugin for mute state?
         return player.muted
+
+    @callback
+    def __get_player_group_parents(self, player: Player):
+        """Return all group players this player belongs to."""
+        if player.is_group_player:
+            return []
+        result = []
+        for group_player in self._players.values():
+            if not group_player.is_group_player:
+                continue
+            if not player.player_id in group_player.group_childs:
+                continue
+            result.append(group_player.player_id)
+        return result
+
+    @callback
+    def __get_player_active_queue(self, player: Player, group_parents: List[str]):
+        """Return the active parent player/queue for a player."""
+        # if a group is playing, all of it's childs will have/use
+        # the parent's player's queue.
+        for group_player_id in group_parents:
+            group_player = self.get_player(group_player_id)
+            if group_player and group_player.powered:
+                return group_player_id
+        return player.player_id
 
     @callback
     def __get_player_config_entries(self, player: Player):
@@ -566,9 +594,9 @@ class PlayerManager:
                 )
             )
         # append volume control config entries
-        power_controls = self.get_player_controls(PlayerControlType.VOLUME)
-        if power_controls:
-            controls = [item.name for item in power_controls]
+        volume_controls = self.get_player_controls(PlayerControlType.VOLUME)
+        if volume_controls:
+            controls = [{"text": item.name, "value": item.id} for item in volume_controls]
             entries.append(
                 ConfigEntry(
                     entry_key=CONF_VOLUME_CONTROL,
@@ -588,114 +616,19 @@ class PlayerManager:
         if not player.available and changed_value != "available":
             # ignore updates from unavailable players
             return
-        LOGGER.info("Player %s updated value %s", player_id, changed_value)
-        # TODO: throttle elapsed time ?
-        if not changed_value in ["elapsed_time", "current_uri", "config_entries"]:
+        if changed_value == "config_entries":
+            return  # we can ignore this too
+        # store datetime the player was last updated
+        player.updated_at = datetime.utcnow()
+        # signal player_updated on all state changes except elapsed time
+        if not changed_value == "elapsed_time":
             self.mass.signal_event(EVENT_PLAYER_CHANGED, self._players[player_id])
-        if player_id in self._player_queues:
+            # signal child players
+            if player.is_group_player:
+                for child_player_id in player.group_childs:
+                    child_player = self.get_player(child_player_id)
+                    self.mass.add_job(self.async_update_player(child_player))
+        if player_id in self._player_queues and player.active_queue == player_id:
             self.mass.add_job(self._player_queues[player_id].async_update_state())
+        
 
-    @callback
-    def __player_control_updated(self, control: PlayerControl):
-        """Call when player control is updated."""
-        LOGGER.info("PlayerControl %s updated!", control.name)
-        self.mass.signal_event(EVENT_PLAYER_CONTROL_UPDATED, control.id)
-        # update all players using this playercontrol
-        for player_id, player in self._players.items():
-            conf = self.mass.config.player_settings[player_id]
-            if control.id in [conf.get(CONF_POWER_CONTROL), conf.get(CONF_VOLUME_CONTROL)]:
-                self.mass.add_job(self.async_update_player(player))
-
-
-# @property
-# def group_parents(self):
-#     """[PROTECTED] player ids of all groups this player belongs to"""
-#     player_ids = []
-#     for item in self.mass.player_manager.players:
-#         if self.player_id in item.group_childs:
-#             player_ids.append(item.player_id)
-#     return player_ids
-
-# @property
-# def group_childs(self) -> list:
-#     """
-#         [PROTECTED]
-#         return all child player ids for this group player as list
-#         empty list if this player is not a group player
-#     """
-#     return self._group_childs
-
-# @group_childs.setter
-# def group_childs(self, group_childs: list):
-#     """[PROTECTED] set group_childs property of this player."""
-#     if group_childs != self._group_childs:
-#         self._group_childs = group_childs
-#         self.mass.add_job(self.update())
-#         for child_player_id in group_childs:
-#             self.mass.add_job(
-#                 self.mass.player_manager.trigger_update(child_player_id)
-#             )
-
-# def add_group_child(self, child_player_id):
-#     """add player as child to this group player."""
-#     if not child_player_id in self._group_childs:
-#         self._group_childs.append(child_player_id)
-#         self.mass.add_job(self.update())
-#         self.mass.add_job(
-#             self.mass.player_manager.trigger_update(child_player_id)
-#         )
-
-# def remove_group_child(self, child_player_id):
-#     """remove player as child from this group player."""
-#     if child_player_id in self._group_childs:
-#         self._group_childs.remove(child_player_id)
-#         self.mass.add_job(self.update())
-#         self.mass.add_job(
-#             self.mass.player_manager.trigger_update(child_player_id)
-#         )
-
-# @property
-# def elapsed_time(self):
-#     """[PROTECTED] elapsed_time (player's elapsed time) property of this player."""
-#     # prefer group player state
-#     for group_id in self.group_parents:
-#         group_player = self.mass.player_manager.get_player_sync(group_id)
-#         if group_player.state != PlayerState.Off:
-#             return group_player.elapsed_time
-#     return self._elapsed_time
-
-# @elapsed_time.setter
-# def elapsed_time(self, elapsed_time: int):
-#     """[PROTECTED] set elapsed_time (player's elapsed time) property of this player."""
-#     if elapsed_time is None:
-#         elapsed_time = 0
-#     if elapsed_time != self._elapsed_time:
-#         self._elapsed_time = elapsed_time
-#         self._media_position_updated_at = time.time()
-#         self.mass.add_job(self.update())
-
-# @property
-# def media_position_updated_at(self):
-#     """[PROTECTED] When was the position of the current playing media valid."""
-#     return self._media_position_updated_at
-
-# def to_dict(self):
-#     """instance attributes as dict so it can be serialized to json"""
-#     return {
-#         "player_id": self.player_id,
-#         "player_provider": self.player_provider,
-#         "name": self.name,
-#         "is_group_player": self.is_group_player,
-#         "state": self.state,
-#         "powered": self.powered,
-#         "elapsed_time": self.elapsed_time,
-#         "media_position_updated_at": self.media_position_updated_at,
-#         "current_uri": self.current_uri,
-#         "volume_level": self.volume_level,
-#         "muted": self.muted,
-#         "group_parents": self.group_parents,
-#         "group_childs": self.group_childs,
-#         "enabled": self.enabled,
-#         "supports_queue": self.supports_queue,
-#         "supports_gapless": self.supports_gapless,
-#     }
