@@ -51,6 +51,7 @@ CONFIG_ENTRY_PUBLISH_PLAYERS = ConfigEntry(
 
 # TODO: handle player removals and renames in publishing to hass
 
+
 async def async_setup(mass):
     """Perform async setup of this Plugin/Provider."""
     prov = HomeAssistantPlugin()
@@ -116,7 +117,10 @@ class HomeAssistantPlugin(Provider):
     async def async_on_start(self) -> bool:
         """Called on startup. Handle initialization of the provider based on config."""
         config = self.mass.config.get_provider_config(PROV_ID)
-        self._hass = HomeAssistant(config.get(CONF_URL), config.get(CONF_TOKEN))
+        if IS_SUPERVISOR:
+            self._hass = HomeAssistant(loop=self.mass.loop)
+        else:
+            self._hass = HomeAssistant(config[CONF_URL], config[CONF_TOKEN], loop=self.mass.loop)
         # register callbacks
         self._hass.register_event_callback(self.__async_hass_event)
         self.mass.add_event_listener(
