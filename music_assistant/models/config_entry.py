@@ -28,4 +28,5 @@ class ConfigEntry:
     description_key: Optional[str] = None  # key in the translations file
     help_key: Optional[str] = None  # key in the translations file
     multi_value: bool = False  # allow multiple values from the list
-    value: Optional[Any] = None
+    depends_on: str = ""  # entry_key that needs to be set before this setting shows up in frontend
+    value: Optional[Any] = None  # set by the configuration manager

@@ -54,6 +54,7 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = [
         range=(-30, 0),
         default_value=-23,
         description_key="target_volume_lufs",
+        depends_on="volume_normalisation"
     ),
     ConfigEntry(
         entry_key="fallback_gain_correct",
@@ -61,6 +62,7 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = [
         range=(-20, 0),
         default_value=-12,
         description_key="fallback_gain_correct",
+        depends_on="volume_normalisation"
     ),
     ConfigEntry(
         entry_key="crossfade_duration",
@@ -183,7 +185,10 @@ class ConfigItem:
             else:
                 # single value item
                 if entry.entry_type == ConfigEntryType.STRING and not isinstance(value, str):
-                    raise ValueError
+                    if not value:
+                        value = ""
+                    else:
+                        raise ValueError
                 if entry.entry_type == ConfigEntryType.BOOL and not isinstance(value, bool):
                     raise ValueError
                 if entry.entry_type == ConfigEntryType.FLOAT and not isinstance(

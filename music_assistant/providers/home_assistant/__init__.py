@@ -1,13 +1,18 @@
 """Plugin that enables integration with Home Assistant."""
 
 import asyncio
+import functools
 import logging
 import os
 from typing import List
-import functools
 
 import slugify as slug
-from hass_client import HomeAssistant, EVENT_CONNECTED, EVENT_STATE_CHANGED
+from hass_client import (
+    EVENT_CONNECTED,
+    EVENT_STATE_CHANGED,
+    IS_SUPERVISOR,
+    HomeAssistant,
+)
 from music_assistant.constants import (
     CONF_URL,
     EVENT_HASS_ENTITY_CHANGED,
@@ -18,12 +23,11 @@ from music_assistant.constants import (
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import Player, PlayerControl, PlayerControlType
 from music_assistant.models.provider import Provider
-from music_assistant.utils import run_periodic, callback, try_parse_float
+from music_assistant.utils import callback, run_periodic, try_parse_float
 
 PROV_ID = "homeassistant"
 PROV_NAME = "Home Assistant integration"
 
-IS_HASSIO = os.path.isfile("/data/options.json")
 CONF_PUBLISH_PLAYERS = "hass_publish_players"
 CONF_POWER_ENTITIES = "hass_power_entities"
 CONF_VOLUME_ENTITIES = "hass_volume_entities"
@@ -31,18 +35,18 @@ CONF_TOKEN = "hass_token"
 
 LOGGER = logging.getLogger(PROV_ID)
 
-CONFIG_ENTRIES = [
-    ConfigEntry(entry_key=CONF_URL, entry_type=ConfigEntryType.STRING, description_key=CONF_URL),
-    ConfigEntry(
-        entry_key=CONF_TOKEN, entry_type=ConfigEntryType.PASSWORD, description_key=CONF_TOKEN
-    ),
-    ConfigEntry(
-        entry_key=CONF_PUBLISH_PLAYERS,
-        entry_type=ConfigEntryType.BOOL,
-        description_key=CONF_PUBLISH_PLAYERS,
-        default_value=True,
-    ),
-]
+CONFIG_ENTRY_URL = ConfigEntry(
+    entry_key=CONF_URL, entry_type=ConfigEntryType.STRING, description_key="hass_url"
+)
+CONFIG_ENTRY_TOKEN = ConfigEntry(
+    entry_key=CONF_TOKEN, entry_type=ConfigEntryType.PASSWORD, description_key="hass_token"
+)
+CONFIG_ENTRY_PUBLISH_PLAYERS = ConfigEntry(
+    entry_key=CONF_PUBLISH_PLAYERS,
+    entry_type=ConfigEntryType.BOOL,
+    description_key=CONF_PUBLISH_PLAYERS,
+    default_value=True,
+)
 
 
 async def async_setup(mass):
@@ -82,7 +86,12 @@ class HomeAssistantPlugin(Provider):
     @property
     def config_entries(self) -> List[ConfigEntry]:
         """Return Config Entries for this provider."""
-        return CONFIG_ENTRIES + [
+        entries = []
+        if not IS_SUPERVISOR:
+            entries.append(CONFIG_ENTRY_URL)
+            entries.append(CONFIG_ENTRY_TOKEN)
+        entries += [
+            CONFIG_ENTRY_PUBLISH_PLAYERS,
             ConfigEntry(
                 entry_key=CONF_POWER_ENTITIES,
                 entry_type=ConfigEntryType.STRING,
@@ -100,17 +109,12 @@ class HomeAssistantPlugin(Provider):
                 multi_value=True,
             ),
         ]
+        return entries
 
     async def async_on_start(self) -> bool:
         """Called on startup. Handle initialization of the provider based on config."""
         config = self.mass.config.get_provider_config(PROV_ID)
-        if IS_HASSIO:
-            config[CONF_TOKEN] = os.environ["HASSIO_TOKEN"]
-            config[CONF_URL] = "hassio/homeassistant"
-        if not (config[CONF_URL] and config[CONF_TOKEN]):
-            LOGGER.warning("Invalid configuration for Home Assistant")
-            return False
-        self._hass = HomeAssistant(config[CONF_URL], config[CONF_TOKEN])
+        self._hass = HomeAssistant(config.get(CONF_URL), config.get(CONF_TOKEN))
         # register callbacks
         self._hass.register_event_callback(self.__async_hass_event)
         self.mass.add_event_listener(
@@ -144,10 +148,9 @@ class HomeAssistantPlugin(Provider):
             await self.__async_handle_player_command(
                 event_data["service"], event_data["service_data"]
             )
-        # elif event_type == EVENT_CONNECTED:
+        elif event_type == EVENT_CONNECTED:
             # register player controls on connect
-            # TODO: this crashes the entire app
-            # self.mass.add_job(self.__async_register_player_controls())
+            self.mass.add_job(self.__async_register_player_controls())
 
     async def __async_handle_player_command(self, service, service_data):
         """Handle forwarded service call for one of our players."""

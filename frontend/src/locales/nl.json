@@ -44,6 +44,7 @@
     "squeezebox"                       : "Squeezebox ondersteuning",
     "sonos"                            : "Sonos",
     "webplayer"                        : "Web Player (alleen Chrome browser)",
+    "demo_player"                      : "Demo/Test player provider",
     "username"                         : "Gebruikersnaam",
     "password"                         : "Wachtwoord",
     "hostname"                         : "Hostnaam (of IP)",

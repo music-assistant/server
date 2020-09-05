@@ -78,6 +78,7 @@
                 v-model="conf_item_value['value']"
                 :placeholder="conf_item_value['default_value']"
                 :label="$t('conf.' + conf_item_value['description_key'])"
+                :disabled="getDisabledState(conf_value, conf_item_value)"
                 @change="saveConfig(configKey, conf_key, conf_item_key, conf_item_value['value'])"
               ></v-switch>
               <!-- textbox with single value -->
@@ -91,6 +92,7 @@
                 v-model="conf_item_value['value']"
                 :placeholder="conf_item_value['default_value'] ? conf_item_value['default_value'].toString() : ''"
                 :label="$t('conf.' + conf_item_value['description_key'])"
+                :disabled="getDisabledState(conf_value, conf_item_value)"
                 @change="saveConfig(configKey, conf_key, conf_item_key, conf_item_value['value'])"
                 filled
               ></v-text-field>
@@ -100,6 +102,7 @@
                 v-model="conf_item_value['value']"
                 :placeholder="conf_item_value['default_value']"
                 :label="$t('conf.' + conf_item_value['description_key'])"
+                :disabled="getDisabledState(conf_value, conf_item_value)"
                 type="password"
                 @change="saveConfig(configKey, conf_key, conf_item_key, conf_item_value['value'])"
                 filled
@@ -117,6 +120,7 @@
                 :items="conf_item_value['values']"
                 :placeholder="conf_item_value['default_value'] ? conf_item_value['default_value'].toString() : ''"
                 :label="$t('conf.' + conf_item_value['description_key'])"
+                :disabled="getDisabledState(conf_value, conf_item_value)"
                 filled
                 @change="saveConfig(configKey, conf_key, conf_item_key, conf_item_value['value'])"
               ></v-select>
@@ -127,6 +131,7 @@
                 :placeholder="conf_item_value['default_value'].toString()"
                 v-model="conf_item_value['value']"
                 :label="$t('conf.' + conf_item_value['description_key'])"
+                :disabled="getDisabledState(conf_value, conf_item_value)"
                 @change="saveConfig(configKey, conf_key, conf_item_key, conf_item_value['value'])"
                 :min="conf_item_value['range'][0]"
                 :max="conf_item_value['range'][1]"
@@ -190,7 +195,17 @@ export default {
     async saveConfig (baseKey, key, entryKey, newvalue) {
       const endpoint = 'config/' + baseKey + '/' + key + '/' + entryKey
       await this.$server.putData(endpoint, newvalue)
+    },
+    getDisabledState (confValues, confItemValue) {
+      // disable UI elements if main item is disabled or depends_on is set
+      if (confItemValue.entry_key === 'enabled') {
+        return false
+      }
+      if (confValues.enabled && !confValues.enabled.value) { return true }
+      if (confItemValue.depends_on && !confValues[confItemValue.depends_on].value) { return true }
+      return false
     }
+
   }
 }
 </script>
