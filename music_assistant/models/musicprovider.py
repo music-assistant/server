@@ -20,19 +20,32 @@ from music_assistant.models.provider import Provider, ProviderType
 @dataclass
 class MusicProvider(Provider):
     """
-        Base class for a Musicprovider.
-        Should be overriden in the provider specific implementation.
+    Base class for a Musicprovider.
+    Should be overriden in the provider specific implementation.
     """
+
     type: ProviderType = ProviderType.MUSIC_PROVIDER
 
+    @property
+    def supported_mediatypes(self) -> List[MediaType]:
+        """Return MediaTypes the provider supports."""
+        return [
+            MediaType.Album,
+            MediaType.Artist,
+            MediaType.Playlist,
+            MediaType.Radio,
+            MediaType.Track,
+        ]
+
     @abstractmethod
-    async def async_search(self, search_query: str, media_types=Optional[List[MediaType]],
-                           limit: int = 5) -> SearchResult:
+    async def async_search(
+        self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
+    ) -> SearchResult:
         """
-            Perform search on musicprovider.
-                :param search_query: Search query.
-                :param media_types: A list of media_types to include. All types if None.
-                :param limit: Number of items to return in the search (per type).
+        Perform search on musicprovider.
+            :param search_query: Search query.
+            :param media_types: A list of media_types to include. All types if None.
+            :param limit: Number of items to return in the search (per type).
         """
         raise NotImplementedError
 
@@ -118,18 +131,19 @@ class MusicProvider(Provider):
 
     @abstractmethod
     async def async_add_playlist_tracks(
-            self, prov_playlist_id: str, prov_track_ids: List[str]) -> bool:
+        self, prov_playlist_id: str, prov_track_ids: List[str]
+    ) -> bool:
         """Add track(s) to playlist. Return true on succes."""
         raise NotImplementedError
 
     @abstractmethod
     async def async_remove_playlist_tracks(
-            self, prov_playlist_id: str, prov_track_ids: List[str]) -> bool:
+        self, prov_playlist_id: str, prov_track_ids: List[str]
+    ) -> bool:
         """Remove track(s) from playlist. Return true on succes."""
         raise NotImplementedError
 
     @abstractmethod
-    async def async_get_stream_details(
-            self, track_id: str) -> StreamDetails:
-        """Get streamdetails for a track."""
+    async def async_get_stream_details(self, item_id: str) -> StreamDetails:
+        """Get streamdetails for a track/radio."""
         raise NotImplementedError

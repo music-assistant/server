@@ -71,6 +71,16 @@ class QobuzProvider(MusicProvider):
         """Return Config Entries for this provider."""
         return CONFIG_ENTRIES
 
+    @property
+    def supported_mediatypes(self) -> List[MediaType]:
+        """Return MediaTypes the provider supports."""
+        return [
+            MediaType.Album,
+            MediaType.Artist,
+            MediaType.Playlist,
+            MediaType.Track,
+        ]
+
     async def async_on_start(self) -> bool:
         """Called on startup. Handle initialization of the provider based on config."""
         # pylint: disable=attribute-defined-outside-init
@@ -78,11 +88,12 @@ class QobuzProvider(MusicProvider):
             loop=self.mass.loop, connector=aiohttp.TCPConnector()
         )
         config = self.mass.config.get_provider_config(self.id)
-        self.__username = config[CONF_USERNAME]
-        self.__password = config[CONF_PASSWORD]
         if not config[CONF_USERNAME] or not config[CONF_PASSWORD]:
             LOGGER.debug("Username and password not set. Abort load of provider.")
             return False
+        self.__username = config[CONF_USERNAME]
+        self.__password = config[CONF_PASSWORD]
+        
         self.__user_auth_info = None
         self.__logged_in = False
         self._throttler = Throttler(rate_limit=4, period=1)

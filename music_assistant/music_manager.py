@@ -288,6 +288,9 @@ class MusicManager:
                     artist_id, True, db_conn=db_conn
                 )
                 for prov_id in artist.provider_ids:
+                    provider = self.mass.get_provider(prov_id)
+                    if not provider or not MediaType.Track in provider.supported_mediatypes:
+                        continue
                     async for item in self.async_get_artist_toptracks(
                         prov_id.item_id, prov_id.provider
                     ):
@@ -320,6 +323,9 @@ class MusicManager:
                 item_ids = []
                 artist = await self.mass.database.async_get_artist(artist_id, True, db_conn=db_conn)
                 for prov_id in artist.provider_ids:
+                    provider = self.mass.get_provider(prov_id)
+                    if not provider or not MediaType.Album in provider.supported_mediatypes:
+                        continue
                     async for item in self.async_get_artist_albums(
                         prov_id.item_id, prov_id.provider
                     ):
@@ -926,11 +932,19 @@ class MusicManager:
         Sync a music provider.
         param prov_id: {string} -- provider id to sync
         """
-        await self.async_library_albums_sync(prov_id)
-        await self.async_library_tracks_sync(prov_id)
-        await self.async_library_artists_sync(prov_id)
-        await self.async_library_playlists_sync(prov_id)
-        await self.async_library_radios_sync(prov_id)
+        provider = self.mass.get_provider(prov_id)
+        if not provider:
+            return
+        if MediaType.Album in provider.supported_mediatypes:
+            await self.async_library_albums_sync(prov_id)
+        if MediaType.Track in provider.supported_mediatypes:
+            await self.async_library_tracks_sync(prov_id)
+        if MediaType.Artist in provider.supported_mediatypes:
+            await self.async_library_artists_sync(prov_id)
+        if MediaType.Playlist in provider.supported_mediatypes:
+            await self.async_library_playlists_sync(prov_id)
+        if MediaType.Radio in provider.supported_mediatypes:
+            await self.async_library_radios_sync(prov_id)
 
     @sync_task("artists")
     async def async_library_artists_sync(self, provider_id: str):

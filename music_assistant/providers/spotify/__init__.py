@@ -71,6 +71,17 @@ class SpotifyProvider(MusicProvider):
         """Return Config Entries for this provider."""
         return CONFIG_ENTRIES
 
+    @property
+    def supported_mediatypes(self) -> List[MediaType]:
+        """Return MediaTypes the provider supports."""
+        return [
+            MediaType.Album,
+            MediaType.Artist,
+            MediaType.Playlist,
+            # MediaType.Radio, # TODO!
+            MediaType.Track,
+        ]
+
     async def async_on_start(self) -> bool:
         """Called on startup. Handle initialization of the provider based on config."""
         config = self.mass.config.get_provider_config(self.id)
