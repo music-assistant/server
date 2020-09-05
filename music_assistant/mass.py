@@ -62,7 +62,6 @@ class MusicAssistant:
         await self.music_manager.async_setup()
         await self.player_manager.async_setup()
         await self.web.async_setup()
-        await self.http_streamer.async_setup()
         await self.async_preload_providers()
 
     async def async_stop(self):

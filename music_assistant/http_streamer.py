@@ -36,10 +36,6 @@ class HTTPStreamer:
         self.analyze_jobs = {}
         self.stream_clients = []
 
-    async def async_setup(self):
-        """async initialize of module"""
-        # we have nothing to initialize
-
     async def async_stream(self, http_request):
         """
         start stream for a player

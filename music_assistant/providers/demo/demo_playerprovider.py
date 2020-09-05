@@ -43,7 +43,7 @@ class DemoPlayerProvider(PlayerProvider):
     async def async_on_start(self) -> bool:
         """Called on startup. Handle initialization of the provider based on config."""
         # create some fake players
-        for count in range(11)[1:]:
+        for count in range(5)[1:]:
             player_id = f"demo_{count}"
             player = Player(
                 player_id=player_id,
@@ -53,27 +53,22 @@ class DemoPlayerProvider(PlayerProvider):
                 available=True,
             )
             model_name = "Base"
-            if count == 5:
-                # player 5 has queue support feature
+            if count == 1:
+                # player 1 has no support for special features
+                model_name = "Basic"
+            if count == 2:
+                # player 2 has QUEUE support feature but no crossfade
                 player.features = [PlayerFeature.QUEUE]
-                model_name = "Queue support"
-            if count == 6:
-                # player 6 has gapless support feature
-                player.features = [PlayerFeature.GAPLESS]
-                model_name = "Gapless support"
-            if count == 7:
-                # player 7 has crossfade support feature
-                player.features = [PlayerFeature.CROSSFADE]
-                model_name = "Crossfade support"
-            if count == 8:
-                # player 8 has support for all features
+                model_name = "QUEUE support"
+            if count == 3:
+                # player 3 has support for all features
                 player.features = [
                     PlayerFeature.QUEUE,
                     PlayerFeature.GAPLESS,
                     PlayerFeature.CROSSFADE,
                 ]
-            if count == 10:
-                # player 10 is a group player
+            if count == 4:
+                # player 4 is a group player
                 player.is_group_player = True
                 player.group_childs = ["demo_1", "demo_2", "demo_8"]
                 player.blaat = True
