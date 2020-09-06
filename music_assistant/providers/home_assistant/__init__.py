@@ -72,8 +72,6 @@ class HomeAssistantPlugin(Provider):
         self._tracked_entities = []
         self._sources = []
         self._published_players = {}
-        self._power_entities = []
-        self._volume_entities = []
         super().__init__(*args, **kwargs)
 
     @property
@@ -100,7 +98,7 @@ class HomeAssistantPlugin(Provider):
                 entry_type=ConfigEntryType.STRING,
                 description_key=CONF_POWER_ENTITIES,
                 default_value=[],
-                values=self._power_entities,
+                values=self.__get_power_control_entities(),
                 multi_value=True,
             ),
             ConfigEntry(
@@ -108,7 +106,7 @@ class HomeAssistantPlugin(Provider):
                 entry_type=ConfigEntryType.STRING,
                 description_key=CONF_VOLUME_ENTITIES,
                 default_value=[],
-                values=self._volume_entities,
+                values=self.__get_volume_control_entities(),
                 multi_value=True,
             ),
         ]
@@ -284,6 +282,8 @@ class HomeAssistantPlugin(Provider):
             return []
         result = []
         for entity in self._hass.media_players + self._hass.switches:
+            if not entity:
+                continue
             entity_id = entity["entity_id"]
             entity_name = entity["attributes"].get("friendly_name", entity_id)
             if entity_id.startswith("media_player.mass_"):
@@ -307,6 +307,8 @@ class HomeAssistantPlugin(Provider):
             return []
         result = []
         for entity in self._hass.media_players:
+            if not entity:
+                continue
             entity_id = entity["entity_id"]
             entity_name = entity["attributes"].get("friendly_name", entity_id)
             if entity_id.startswith("media_player.mass_"):
@@ -337,8 +339,6 @@ class HomeAssistantPlugin(Provider):
 
     async def __async_register_player_controls(self):
         """Register all (enabled) player controls."""
-        self._volume_entities = self.__get_volume_control_entities()
-        self._power_entities = self.__get_power_control_entities()
         await self.__async_register_power_controls()
         await self.__async_register_volume_controls()
 
@@ -346,7 +346,7 @@ class HomeAssistantPlugin(Provider):
         """Register all (enabled) power controls."""
         conf = self.mass.config.providers[PROV_ID]
         enabled_controls = conf[CONF_POWER_ENTITIES]
-        for control_entity in self._power_entities:
+        for control_entity in self.__get_power_control_entities():
             enabled_controls = conf[CONF_POWER_ENTITIES]
             if not control_entity["value"] in enabled_controls:
                 continue
@@ -378,7 +378,7 @@ class HomeAssistantPlugin(Provider):
         """Register all (enabled) power controls."""
         conf = self.mass.config.providers[PROV_ID]
         enabled_controls = conf[CONF_VOLUME_ENTITIES]
-        for control_entity in self._volume_entities:
+        for control_entity in self.__get_volume_control_entities():
             if not control_entity["value"] in enabled_controls:
                 continue
             entity_id = control_entity["entity_id"]
