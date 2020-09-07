@@ -22,9 +22,9 @@ class PlayerState(str, Enum):
 class DeviceInfo:
     """Model for a player's deviceinfo."""
 
-    model: Optional[str]
-    address: Optional[str]
-    manufacturer: Optional[str]
+    model: Optional[str] = ""
+    address: Optional[str] = ""
+    manufacturer: Optional[str] = ""
 
 
 class PlayerFeature(int, Enum):

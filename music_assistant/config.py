@@ -14,6 +14,8 @@ from music_assistant.constants import (
     CONF_KEY_PROVIDERS,
     CONF_NAME,
     EVENT_CONFIG_CHANGED,
+    CONF_CROSSFADE_DURATION,
+    CONF_FALLBACK_GAIN_CORRECT
 )
 
 # from music_assistant.mass import MusicAssistant
@@ -57,19 +59,19 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = [
         depends_on="volume_normalisation"
     ),
     ConfigEntry(
-        entry_key="fallback_gain_correct",
+        entry_key=CONF_FALLBACK_GAIN_CORRECT,
         entry_type=ConfigEntryType.INT,
         range=(-20, 0),
         default_value=-12,
-        description_key="fallback_gain_correct",
+        description_key=CONF_FALLBACK_GAIN_CORRECT,
         depends_on="volume_normalisation"
     ),
     ConfigEntry(
-        entry_key="crossfade_duration",
+        entry_key=CONF_CROSSFADE_DURATION,
         entry_type=ConfigEntryType.INT,
         range=(0, 10),
         default_value=0,
-        description_key="crossfade_duration",
+        description_key=CONF_CROSSFADE_DURATION,
     ),
 ]
 

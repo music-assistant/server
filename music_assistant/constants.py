@@ -9,6 +9,9 @@ CONF_PORT = "port"
 CONF_TOKEN = "token"
 CONF_URL = "url"
 CONF_NAME = "name"
+CONF_CROSSFADE_DURATION = "crossfade_duration"
+CONF_FALLBACK_GAIN_CORRECT = "fallback_gain_correct"
+
 
 
 CONF_KEY_BASE = "base"
