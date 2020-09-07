@@ -437,10 +437,14 @@ class PlayerQueue:
             # send queue cmd to player's own implementation
             player_prov = self.mass.player_manager.get_player_provider(self.player_id)
             try:
-                await player_prov.async_cmd_queue_update(self.player_id, self._items)
+                await player_prov.async_cmd_queue_clear(self.player_id)
             except NotImplementedError:
-                # not supported by player, ignore
-                pass
+                # not supported by player, try update instead
+                try:
+                    await player_prov.async_cmd_queue_update(self.player_id, [])
+                except NotImplementedError:
+                    # not supported by player, ignore
+                    pass
         self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
 
     async def async_update_state(self):
@@ -582,7 +586,7 @@ class PlayerQueue:
 
     async def __async_restore_saved_state(self):
         """try to load the saved queue for this player from cache file"""
-        cache_str = "queue_%s" % self.player.player_id
+        cache_str = "queue_state_%s" % self.player.player_id
         cache_data = await self.mass.cache.async_get(cache_str)
         if cache_data:
             self._shuffle_enabled = cache_data["shuffle_enabled"]
@@ -595,7 +599,7 @@ class PlayerQueue:
 
     async def __async_save_state(self):
         """save current queue settings to file"""
-        cache_str = "queue_%s" % self.player_id
+        cache_str = "queue_state_%s" % self.player_id
         cache_data = {
             "shuffle_enabled": self._shuffle_enabled,
             "repeat_enabled": self._repeat_enabled,

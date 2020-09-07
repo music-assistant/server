@@ -443,6 +443,7 @@ class SqueezeSocketClient:
             # received player name
             data = data[1:].decode()
             self._device_name = data
+        asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
 
 class PySqueezeVolume(object):
