@@ -28,12 +28,9 @@ CONF_LAST_VOLUME = "last_volume"
 
 LOGGER = logging.getLogger(PROV_ID)
 
-CONFIG_ENTRIES = []
+CONFIG_ENTRIES = []  # we don't have any provider config entries (for now)
 PLAYER_FEATURES = [PlayerFeature.QUEUE, PlayerFeature.CROSSFADE, PlayerFeature.GAPLESS]
-PLAYER_CONFIG_ENTRIES = [
-    ConfigEntry(entry_key=CONF_LAST_POWER, entry_type=ConfigEntryType.BOOL, hidden=True),
-    ConfigEntry(entry_key=CONF_LAST_VOLUME, entry_type=ConfigEntryType.INT, hidden=True),
-]
+PLAYER_CONFIG_ENTRIES = []  # we don't have any player config entries (for now)
 
 
 async def async_setup(mass):
@@ -156,8 +153,9 @@ class PySqueezeProvider(PlayerProvider):
         socket_client = self._socket_clients.get(player_id)
         if socket_client:
             await socket_client.async_cmd_power(True)
-            # store last power state as we need it when the player (re)connects
-            self.mass.config.player_settings[player_id][CONF_LAST_POWER] = True
+            # save power and volume state in cache
+            cache_str = f"squeezebox_player_state_{player_id}"
+            await self.mass.cache.async_set(cache_str, (True, socket_client.volume_level))
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -170,7 +168,9 @@ class PySqueezeProvider(PlayerProvider):
         if socket_client:
             await socket_client.async_cmd_power(False)
             # store last power state as we need it when the player (re)connects
-            self.mass.config.player_settings[player_id][CONF_LAST_POWER] = False
+            # save power and volume state in cache
+            cache_str = f"squeezebox_player_state_{player_id}"
+            await self.mass.cache.async_set(cache_str, (False, socket_client.volume_level))
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -183,8 +183,9 @@ class PySqueezeProvider(PlayerProvider):
         socket_client = self._socket_clients.get(player_id)
         if socket_client:
             await socket_client.async_cmd_volume_set(volume_level)
-            # store last volume state as we need it when the player (re)connects
-            self.mass.config.player_settings[player_id][CONF_LAST_VOLUME] = volume_level
+            # save power and volume state in cache
+            cache_str = f"squeezebox_player_state_{player_id}"
+            await self.mass.cache.async_set(cache_str, (socket_client.powered, volume_level))
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -293,10 +294,10 @@ class PySqueezeProvider(PlayerProvider):
             socket_client.features = PLAYER_FEATURES
             socket_client.config_entries = PLAYER_CONFIG_ENTRIES
             # restore power/volume states
-            conf = self.mass.config.player_settings[socket_client.player_id]
-            last_volume = conf.get(CONF_LAST_VOLUME, 40)
+            cache_str = f"squeezebox_player_state_{socket_client.player_id}"
+            cache_data = await self.mass.cache.async_get(cache_str)
+            last_power, last_volume = cache_data if cache_data else (False, 40)
             await socket_client.async_cmd_volume_set(last_volume)
-            last_power = conf.get(CONF_LAST_POWER, False)
             await socket_client.async_cmd_power(last_power)
             await self.mass.player_manager.async_add_player(socket_client)
             self._socket_clients[socket_client.player_id] = socket_client
@@ -305,6 +306,7 @@ class PySqueezeProvider(PlayerProvider):
         elif event == Event.EVENT_DISCONNECTED:
             await self.mass.player_manager.async_remove_player(socket_client.player_id)
             self._socket_clients.pop(socket_client.player_id)
+            del socket_client
         elif event == Event.EVENT_DECODER_READY:
             # player is ready for the next track (if any)
             player_id = socket_client.player_id

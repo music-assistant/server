@@ -1,26 +1,14 @@
 """Socketclient implementation for Squeezebox emulated player provider."""
 
 import asyncio
-import decimal
 import logging
-import os
-import random
 import re
-import socket
 import struct
-import sys
 import time
-from collections import OrderedDict
 from enum import Enum
-from typing import Awaitable, List, Tuple
+from typing import Awaitable
 
-from music_assistant.utils import (
-    callback,
-    get_hostname,
-    get_ip,
-    run_periodic,
-    try_parse_int,
-)
+from music_assistant.utils import callback, run_periodic
 
 from .constants import PROV_ID
 
@@ -95,6 +83,7 @@ class SqueezeSocketClient:
         for task in self._tasks:
             if not task.cancelled():
                 task.cancel()
+        asyncio.create_task(self._event_callback(Event.EVENT_DISCONNECTED, self))
 
     @property
     def player_id(self) -> str:
@@ -182,9 +171,11 @@ class SqueezeSocketClient:
     async def async_cmd_volume_set(self, volume_level: int):
         """Send new volume level command to player."""
         self._volume_control.volume = volume_level
-        og = self._volume_control.old_gain()
-        ng = self._volume_control.new_gain()
-        await self.__async_send_frame(b"audg", struct.pack("!LLBBLL", og, og, 1, 255, ng, ng))
+        old_gain = self._volume_control.old_gain()
+        new_gain = self._volume_control.new_gain()
+        await self.__async_send_frame(
+            b"audg", struct.pack("!LLBBLL", old_gain, old_gain, 1, 255, new_gain, new_gain)
+        )
         self._volume_level = volume_level
 
     async def async_cmd_mute(self, muted: bool = False):
@@ -241,6 +232,9 @@ class SqueezeSocketClient:
 
     async def __async_send_frame(self, command, data):
         """Send command to Squeeze player."""
+        if self._reader.at_eof() or self._writer.is_closing():
+            LOGGER.debug("Socket is disconnected.")
+            return self.close()
         packet = struct.pack("!H", len(data) + 4) + command + data
         self._writer.write(packet)
         await self._writer.drain()
@@ -249,7 +243,7 @@ class SqueezeSocketClient:
         """Handle incoming data from socket."""
         buffer = b""
         # keep reading bytes from the socket
-        while not self._reader.at_eof():
+        while not (self._reader.at_eof() or self._writer.is_closing()):
             data = await self._reader.read(64)
             # handle incoming data from socket
             buffer = buffer + data
@@ -263,13 +257,12 @@ class SqueezeSocketClient:
                     operation = operation.strip(b"!").strip().decode().lower()
                     handler = getattr(self, f"_process_{operation}", None)
                     if handler is None:
-                        LOGGER.warning("No handler for %s" % operation)
+                        LOGGER.warning("No handler for %s", operation)
                     else:
                         handler(packet)
         # EOF reached: socket is disconnected
         LOGGER.info("Socket disconnected: %s", self._writer.get_extra_info("peername"))
         self.close()
-        asyncio.create_task(self._event_callback(Event.EVENT_DISCONNECTED, self))
 
     @callback
     def __pack_stream(
@@ -310,6 +303,7 @@ class SqueezeSocketClient:
     @callback
     def _process_helo(self, data):
         """Process incoming HELO event from player (player connected)."""
+        # pylint: disable=unused-variable
         # player connected
         (dev_id, rev, mac) = struct.unpack("BB6s", data[:8])
         device_mac = ":".join("%02x" % x for x in mac)
@@ -336,7 +330,6 @@ class SqueezeSocketClient:
     @callback
     def _process_stat_aude(self, data):
         """Process incoming stat AUDe message (power level and mute)."""
-        LOGGER.debug("AUDe received (spdif_enable, dac_enable): %s", data)
         (spdif_enable, dac_enable) = struct.unpack("2B", data[:4])
         powered = spdif_enable or dac_enable
         self._powered = powered
@@ -354,13 +347,15 @@ class SqueezeSocketClient:
     @callback
     def _process_stat_stmd(self, data):
         """Process incoming stat STMd message (decoder ready)."""
-        LOGGER.debug("STMu received - Decoder Ready for next track: %s", data)
+        #pylint: disable=unused-argument
+        LOGGER.debug("STMu received - Decoder Ready for next track.")
         asyncio.create_task(self._event_callback(Event.EVENT_DECODER_READY, self))
-        
+
     @callback
     def _process_stat_stmf(self, data):
         """Process incoming stat STMf message (connection closed)."""
-        LOGGER.debug("STMf received - connection closed: %s", data)
+        #pylint: disable=unused-argument
+        LOGGER.debug("STMf received - connection closed.")
         self._state = State.Stopped
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
@@ -368,27 +363,31 @@ class SqueezeSocketClient:
     def _process_stat_stmo(self, data):
         """Process incoming stat STMo message:
         No more decoded (uncompressed) data to play; triggers rebuffering."""
-        LOGGER.debug("STMo received - output underrun: %s", data)
+        #pylint: disable=unused-argument
+        LOGGER.debug("STMo received - output underrun.")
         LOGGER.debug("Output Underrun")
 
     @callback
     def _process_stat_stmp(self, data):
         """Process incoming stat STMp message: Pause confirmed."""
-        LOGGER.debug("STMp received - pause confirmed: %s", data)
+        #pylint: disable=unused-argument
+        LOGGER.debug("STMp received - pause confirmed.")
         self._state = State.Paused
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
     def _process_stat_stmr(self, data):
         """Process incoming stat STMr message: Resume confirmed."""
-        LOGGER.debug("STMr received - resume confirmed: %s", data)
+        #pylint: disable=unused-argument
+        LOGGER.debug("STMr received - resume confirmed.")
         self._state = State.Playing
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
     def _process_stat_stms(self, data):
         """Process incoming stat STMs message: Playback of new track has started."""
-        LOGGER.debug("STMs received - playback of new track has started: %s", data)
+        LOGGER.debug("STMs received - playback of new track has started.")
+        #pylint: disable=unused-argument
         self._state = State.Playing
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
@@ -423,21 +422,21 @@ class SqueezeSocketClient:
     @callback
     def _process_stat_stmu(self, data):
         """Process incoming stat STMu message: Buffer underrun: Normal end of playback."""
-        LOGGER.debug("STMu received - end of playback: %s", data)
+        #pylint: disable=unused-argument
+        LOGGER.debug("STMu received - end of playback.")
         self.state = State.Stopped
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
     def _process_resp(self, data):
         """Process incoming RESP message: Response received at player."""
-        LOGGER.debug("RESP received: %s", data)
+        #pylint: disable=unused-argument
         # send continue
         asyncio.create_task(self.__async_send_frame(b"cont", b"0"))
 
     @callback
     def _process_setd(self, data):
         """Process incoming SETD message: Get/set player firmware settings."""
-        LOGGER.debug("SETD received %s", data)
         cmd_id = data[0]
         if cmd_id == 0:
             # received player name

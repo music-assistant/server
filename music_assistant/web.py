@@ -531,44 +531,46 @@ class Web:
         player_id = params[0]
         cmds = params[1]
         cmd_str = " ".join(cmds)
-        player = self.mass.player_manager.get_player(player_id)
-        if not player:
-            return web.Response(status=404)
         if cmd_str == "play":
-            await player.async_cmd_play()
+            await self.mass.player_manager.async_cmd_play(player_id)
         elif cmd_str == "pause":
-            await player.async_cmd_pause()
+            await self.mass.player_manager.async_cmd_pause(player_id)
         elif cmd_str == "stop":
-            await player.async_cmd_stop()
+            await self.mass.player_manager.async_cmd_stop(player_id)
         elif cmd_str == "next":
-            await player.async_cmd_next()
+            await self.mass.player_manager.async_cmd_next(player_id)
         elif cmd_str == "previous":
-            await player.async_cmd_previous()
+            await self.mass.player_manager.async_cmd_previous(player_id)
         elif "power" in cmd_str:
-            args = cmds[1] if len(cmds) > 1 else None
-            await player.async_cmd_power(args)
+            powered = cmds[1] if len(cmds) > 1 else False
+            if powered:
+                await self.mass.player_manager.async_cmd_power_on(player_id)
+            else:
+                await self.mass.player_manager.async_cmd_power_off(player_id)
         elif cmd_str == "playlist index +1":
-            await player.async_cmd_next()
+            await self.mass.player_manager.async_cmd_next(player_id)
         elif cmd_str == "playlist index -1":
-            await player.async_cmd_previous()
+            await self.mass.player_manager.async_cmd_previous(player_id)
         elif "mixer volume" in cmd_str and "+" in cmds[2]:
+            player = self.mass.player_manager.get_player(player_id)
             volume_level = player.volume_level + int(cmds[2].split("+")[1])
-            await player.async_cmd_volume_set(volume_level)
+            await self.mass.player_manager.async_cmd_volume_set(player_id, volume_level)
         elif "mixer volume" in cmd_str and "-" in cmds[2]:
+            player = self.mass.player_manager.get_player(player_id)
             volume_level = player.volume_level - int(cmds[2].split("-")[1])
-            await player.async_cmd_volume_set(volume_level)
+            await self.mass.player_manager.async_cmd_volume_set(player_id, volume_level)
         elif "mixer volume" in cmd_str:
-            await player.async_cmd_volume_set(cmds[2])
+            await self.mass.player_manager.async_cmd_volume_set(player_id, cmds[2])
         elif cmd_str == "mixer muting 1":
-            await player.async_cmd_volume_mute(True)
+            await self.mass.player_manager.async_cmd_volume_mute(player_id, True)
         elif cmd_str == "mixer muting 0":
-            await player.async_cmd_volume_mute(False)
+            await self.mass.player_manager.async_cmd_volume_mute(player_id, False)
         elif cmd_str == "button volup":
-            await player.async_cmd_volume_up()
+            await self.mass.player_manager.async_cmd_volume_up(player_id)
         elif cmd_str == "button voldown":
-            await player.async_cmd_volume_down()
+            await self.mass.player_manager.async_cmd_volume_down(player_id)
         elif cmd_str == "button power":
-            await player.async_cmd_power_toggle()
+            await self.mass.player_manager.async_cmd_power_toggle(player_id)
         else:
             return web.Response(text="command not supported")
         return web.Response(text="success")
