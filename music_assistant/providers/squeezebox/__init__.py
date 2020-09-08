@@ -305,7 +305,7 @@ class PySqueezeProvider(PlayerProvider):
             await self.mass.player_manager.async_update_player(socket_client)
         elif event == Event.EVENT_DISCONNECTED:
             await self.mass.player_manager.async_remove_player(socket_client.player_id)
-            self._socket_clients.pop(socket_client.player_id)
+            self._socket_clients.pop(socket_client.player_id, None)
             del socket_client
         elif event == Event.EVENT_DECODER_READY:
             # player is ready for the next track (if any)
