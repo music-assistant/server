@@ -323,7 +323,7 @@ class HomeAssistantPlugin(Provider):
         for control_entity in self.__get_power_control_entities():
             if control_entity["entity_id"] != entity_obj["entity_id"]:
                 continue
-            cur_state = entity_obj["state"] != "off"
+            cur_state = entity_obj["state"] not in ["off", "unavailable"]
             if control_entity.get("source"):
                 cur_state = entity_obj["attributes"].get("source") == control_entity["source"]
             await self.mass.player_manager.async_update_player_control(
@@ -355,7 +355,7 @@ class HomeAssistantPlugin(Provider):
                 LOGGER.warning("entity not found: %s", entity_id)
                 continue
             state_obj = self._hass.states[entity_id]
-            cur_state = state_obj["state"] != "off"
+            cur_state = state_obj["state"] not in ["off", "unavailable"]
             source = control_entity.get("source")
             if source:
                 cur_state = state_obj["attributes"].get("source") == control_entity["source"]
