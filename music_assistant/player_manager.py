@@ -332,7 +332,8 @@ class PlayerManager:
         if player.is_group_player:
             # player is group, turn off all childs
             for child_player_id in player.group_childs:
-                await self.async_cmd_power_off(child_player_id)
+                if self._players.get(child_player_id):
+                    await self.async_cmd_power_off(child_player_id)
 
     async def async_cmd_power_toggle(self, player_id: str):
         """
@@ -613,7 +614,8 @@ class PlayerManager:
             if player.is_group_player:
                 for child_player_id in player.group_childs:
                     child_player = self.get_player(child_player_id)
-                    self.mass.add_job(self.async_update_player(child_player))
+                    if child_player and child_player.available:
+                        self.mass.add_job(self.async_update_player(child_player))
         if player_id in self._player_queues and player.active_queue == player_id:
             self.mass.add_job(self._player_queues[player_id].async_update_state())
         
