@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "/Users/marcelvanderveldt/Workdir/test"
+		},
+		{
+			"path": "../python-musicassistant-client"
 		}
 	],
 	"settings": {

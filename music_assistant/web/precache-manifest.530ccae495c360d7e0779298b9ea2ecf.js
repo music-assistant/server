@@ -1,18 +1,18 @@
 self.__precacheManifest = (self.__precacheManifest || []).concat([
   {
-    "revision": "715baffd9a627b4da725",
-    "url": "css/app.e388fe44.css"
+    "revision": "a3836fbfcd7f576bc255",
+    "url": "css/app.497620e9.css"
   },
   {
-    "revision": "4f3c65b5f0369a230d8b",
-    "url": "css/chunk-vendors.f9907851.css"
+    "revision": "b6da410add260227835a",
+    "url": "css/chunk-vendors.a33c7f56.css"
   },
   {
-    "revision": "4d8895f57c28fb7fcdc9",
-    "url": "css/config.2956469c.css"
+    "revision": "aa0183ca984c10a2f069",
+    "url": "css/config.559607c5.css"
   },
   {
-    "revision": "b7c328f0c7e87e35a243",
+    "revision": "446e9146807b428b5aa8",
     "url": "css/itemdetails.28909c9e.css"
   },
   {
@@ -192,36 +192,36 @@ self.__precacheManifest = (self.__precacheManifest || []).concat([
     "url": "img/webplayer.8e1a0da9.png"
   },
   {
-    "revision": "dee50e2b2e4494ce2a189da99d1c1adb",
+    "revision": "c0666342cd5b2500fa2242993cad9e97",
     "url": "index.html"
   },
   {
-    "revision": "715baffd9a627b4da725",
-    "url": "js/app.8a8a6120.js"
+    "revision": "a3836fbfcd7f576bc255",
+    "url": "js/app.b0321f96.js"
   },
   {
-    "revision": "4f3c65b5f0369a230d8b",
-    "url": "js/chunk-vendors.31828971.js"
+    "revision": "b6da410add260227835a",
+    "url": "js/chunk-vendors.5b46ae16.js"
   },
   {
-    "revision": "4d8895f57c28fb7fcdc9",
-    "url": "js/config.fd766267.js"
+    "revision": "aa0183ca984c10a2f069",
+    "url": "js/config.05cc937c.js"
   },
   {
-    "revision": "b7c328f0c7e87e35a243",
-    "url": "js/itemdetails.0e1b1b04.js"
+    "revision": "446e9146807b428b5aa8",
+    "url": "js/itemdetails.24972b4b.js"
   },
   {
     "revision": "9bd66517467185f0366d",
     "url": "js/itemdetails~playerqueue~search.3c623cdf.js"
   },
   {
-    "revision": "fc054ec85774fe5d74f1",
-    "url": "js/playerqueue.30178d85.js"
+    "revision": "298f56ba5663464ff611",
+    "url": "js/playerqueue.a84387d6.js"
   },
   {
-    "revision": "5978571204ded9211a87",
-    "url": "js/search.582de1a7.js"
+    "revision": "f7b1ad3e3fb64da19005",
+    "url": "js/search.8b499c19.js"
   },
   {
     "revision": "c93d318ec22138832730289be28caa77",

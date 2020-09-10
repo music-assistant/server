@@ -23,12 +23,13 @@ from music_assistant.constants import EVENT_STREAM_ENDED, EVENT_STREAM_STARTED
 from music_assistant.models.media_types import MediaType
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 from music_assistant.utils import create_tempfile, get_ip, try_parse_int
+from music_assistant.web import require_local_subnet
 
 LOGGER = logging.getLogger("mass")
 
 
 class HTTPStreamer:
-    """Built-in streamer using sox and webserver"""
+    """Built-in streamer using sox and webserver."""
 
     def __init__(self, mass):
         self.mass = mass
@@ -36,6 +37,7 @@ class HTTPStreamer:
         self.analyze_jobs = {}
         self.stream_clients = []
 
+    @require_local_subnet
     async def async_stream(self, http_request):
         """
         start stream for a player

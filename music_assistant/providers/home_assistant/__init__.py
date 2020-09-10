@@ -15,7 +15,6 @@ from hass_client import (
 )
 from music_assistant.constants import (
     CONF_URL,
-    EVENT_HASS_ENTITY_CHANGED,
     EVENT_PLAYER_ADDED,
     EVENT_PLAYER_CHANGED,
     EVENT_PLAYER_REMOVED,
@@ -198,6 +197,8 @@ class HomeAssistantPlugin(Provider):
                     await self.mass.player_manager.async_cmd_play_pause(player_id)
                 elif service in ["play_media", "select_source"]:
                     return await self.__async_handle_play_media(player_id, service_data)
+                else:
+                    LOGGER.error("%s service is unhandled. Service data: %s", service, service_data)
 
     async def __async_handle_play_media(self, player_id, service_data):
         """Handle play media request from homeassistant."""
@@ -240,7 +241,7 @@ class HomeAssistantPlugin(Provider):
         player_queue = self.mass.player_manager.get_player_queue(player_id)
         cur_item = player_queue.cur_item if player_queue else None
         state_attributes = {
-            "supported_features": 65471,
+            "supported_features": 196541, # https://github.com/home-assistant/core/blob/dev/homeassistant/components/media_player/const.py#L59
             "friendly_name": player.name,
             "source_list": self._sources,
             "source": "unknown",

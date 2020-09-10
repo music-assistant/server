@@ -159,7 +159,9 @@ export default {
     if (viewMode !== null) {
       this.viewMode = viewMode
     }
-    this.getItems()
+    if (this.$server.connected) {
+      this.getItems()
+    }
     this.$server.$on('refresh_listing', this.getItems)
   },
   computed: {

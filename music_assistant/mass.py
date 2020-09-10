@@ -8,18 +8,32 @@ import os
 import threading
 from typing import Any, Awaitable, Callable, List, Optional, Union
 
-import zeroconf
 from music_assistant.cache import Cache
 from music_assistant.config import MassConfig
-from music_assistant.constants import CONF_ENABLED, EVENT_SHUTDOWN, EVENT_PROVIDER_REGISTERED
+from music_assistant.constants import (
+    CONF_ENABLED,
+    EVENT_PROVIDER_REGISTERED,
+    EVENT_SHUTDOWN,
+)
 from music_assistant.database import Database
 from music_assistant.http_streamer import HTTPStreamer
 from music_assistant.metadata import MetaData
 from music_assistant.models.provider import Provider, ProviderType
 from music_assistant.music_manager import MusicManager
 from music_assistant.player_manager import PlayerManager
-from music_assistant.utils import callback, is_callback
+from music_assistant.utils import callback, get_hostname, get_ip_pton, is_callback
 from music_assistant.web import Web
+from zeroconf import DNSPointer, DNSRecord
+from zeroconf import Error as ZeroconfError
+from zeroconf import (
+    InterfaceChoice,
+    IPVersion,
+    NonUniqueNameException,
+    ServiceBrowser,
+    ServiceInfo,
+    ServiceStateChange,
+    Zeroconf,
+)
 
 LOGGER = logging.getLogger("mass")
 
@@ -47,7 +61,7 @@ class MusicAssistant:
         self.player_manager = PlayerManager(self)
         self.http_streamer = HTTPStreamer(self)
         # shared zeroconf instance
-        self.zeroconf = zeroconf.Zeroconf()
+        self.zeroconf = Zeroconf()
         self._exit = False
 
     async def async_start(self):
@@ -63,6 +77,7 @@ class MusicAssistant:
         await self.player_manager.async_setup()
         await self.web.async_setup()
         await self.async_preload_providers()
+        await self.__async_setup_discovery()
 
     async def async_stop(self):
         """stop running the music assistant server"""
@@ -215,3 +230,22 @@ class MusicAssistant:
         """Global exception handler."""
         LOGGER.error("Caught exception: %s", context)
         loop.default_exception_handler(context)
+
+    async def __async_setup_discovery(self):
+        """Make this Music Assistant instance discoverable on the network."""
+        zeroconf_type = "_music-assistant._tcp.local."
+        info = ServiceInfo(
+            zeroconf_type,
+            name=f"{self.web.internal_url}.{zeroconf_type}",
+            server=f"{get_hostname()}.local.",
+            addresses=[get_ip_pton()],
+            port=self.web.http_port,
+            properties=self.web.discovery_info,
+        )
+        LOGGER.debug("Starting Zeroconf broadcast...")
+        try:
+            self.zeroconf.register_service(info)
+        except NonUniqueNameException:
+            LOGGER.error(
+                "Music Assistant instance with identical name present in the local network"
+            )

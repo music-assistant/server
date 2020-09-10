@@ -185,10 +185,11 @@ export default {
       this.$store.windowtitle += ' | ' + this.$t('conf.' + this.configKey)
     }
     this.getConfig()
+    this.$server.$on('refresh_listing', this.getConfig)
   },
   methods: {
     async getConfig () {
-      if (!this.configKey) return
+      if (!this.configKey || !this.$server.connected) return
       const conf = await this.$server.getData('config/' + this.configKey)
       Vue.set(this.conf, this.configKey, conf)
     },

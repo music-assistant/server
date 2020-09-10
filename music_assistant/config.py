@@ -1,26 +1,30 @@
 """All classes and helpers for the Configuration."""
 
+import base64
 import logging
 import os
 import shutil
+from collections import OrderedDict
 from enum import Enum
 from typing import List
-from collections import OrderedDict
 
+from cryptography.fernet import Fernet, InvalidToken
+from music_assistant.app_vars import get_app_var
 from music_assistant.constants import (
+    CONF_CROSSFADE_DURATION,
     CONF_ENABLED,
+    CONF_FALLBACK_GAIN_CORRECT,
     CONF_KEY_BASE,
     CONF_KEY_PLAYERSETTINGS,
     CONF_KEY_PROVIDERS,
     CONF_NAME,
     EVENT_CONFIG_CHANGED,
-    CONF_CROSSFADE_DURATION,
-    CONF_FALLBACK_GAIN_CORRECT
 )
 
 # from music_assistant.mass import MusicAssistant
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
-from music_assistant.utils import json, try_load_json_file
+from music_assistant.utils import get_external_ip, json, try_load_json_file
+from passlib.hash import pbkdf2_sha256
 
 LOGGER = logging.getLogger("mass")
 
@@ -56,7 +60,7 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = [
         range=(-30, 0),
         default_value=-23,
         description_key="target_volume_lufs",
-        depends_on="volume_normalisation"
+        depends_on="volume_normalisation",
     ),
     ConfigEntry(
         entry_key=CONF_FALLBACK_GAIN_CORRECT,
@@ -64,7 +68,7 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = [
         range=(-20, 0),
         default_value=-12,
         description_key=CONF_FALLBACK_GAIN_CORRECT,
-        depends_on="volume_normalisation"
+        depends_on="volume_normalisation",
     ),
     ConfigEntry(
         entry_key=CONF_CROSSFADE_DURATION,
@@ -108,9 +112,30 @@ DEFAULT_BASE_CONFIG_ENTRIES = {
             entry_key="ssl_key",
             entry_type=ConfigEntryType.STRING,
             default_value="",
-            description_key="ssl_key",
+            description_key="web_ssl_key",
         ),
-    ]
+        ConfigEntry(
+            entry_key="external_url",
+            entry_type=ConfigEntryType.STRING,
+            default_value=f"http://{get_external_ip()}:8095",
+            description_key="web_external_url",
+        ),
+    ],
+    "security": [
+        ConfigEntry(
+            entry_key="username",
+            entry_type=ConfigEntryType.STRING,
+            default_value="admin",
+            description_key="security_username",
+        ),
+        ConfigEntry(
+            entry_key="password",
+            entry_type=ConfigEntryType.PASSWORD,
+            default_value="",
+            description_key="security_password",
+            store_hashed=True,
+        ),
+    ],
 }
 
 
@@ -172,7 +197,14 @@ class ConfigItem:
 
     def __getitem__(self, key) -> ConfigEntry:
         """Return default value from ConfigEntry if needed."""
-        return self.get_entry(key).value
+        entry = self.get_entry(key)
+        if entry.entry_type == ConfigEntryType.PASSWORD:
+            # decrypted password is only returned if explicitly asked for this key
+            try:
+                return Fernet(get_app_var(3)).decrypt(entry.value.encode()).decode()
+            except InvalidToken:
+                pass
+        return entry.value
 
     def __setitem__(self, key, value):
         """Store value and validate."""
@@ -198,6 +230,10 @@ class ConfigItem:
                 ):
                     raise ValueError
             if value != self[key]:
+                if entry.store_hashed:
+                    value = pbkdf2_sha256.hash(value)
+                if entry.entry_type == ConfigEntryType.PASSWORD:
+                    value = Fernet(get_app_var(3)).encrypt(value.encode()).decode()
                 self.stored_config[key] = value
                 self.mass.signal_event(
                     EVENT_CONFIG_CHANGED, (self._base_type, self._parent_item_key)
@@ -243,7 +279,7 @@ class ConfigBase(OrderedDict):
 
 
 class MassConfig:
-    """Class which holds our configuration"""
+    """Class which holds our configuration."""
 
     def __init__(self, mass, data_path: str):
         self._data_path = data_path
@@ -301,6 +337,14 @@ class MassConfig:
     def get_base_config_entries(self, base_key) -> List[ConfigEntry]:
         """Return all base config entries."""
         return DEFAULT_BASE_CONFIG_ENTRIES[base_key]
+
+    def validate_credentials(self, username, password):
+        """Check if credentials matches."""
+        if username != self.base["security"]["username"]:
+            return False
+        if not password and not self.base["security"]["password"]:
+            return True
+        return pbkdf2_sha256.verify(password, self.base["security"]["password"])
 
     def __getitem__(self, item_key):
         """Convenience method for get."""

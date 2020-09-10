@@ -5,7 +5,7 @@ import axios from 'axios'
 import oboe from 'oboe'
 
 const axiosConfig = {
-  timeout: 60 * 1000
+  timeout: 5 * 1000
   // withCredentials: true, // Check cross-site Access-Control
 }
 const _axios = axios.create(axiosConfig)
@@ -16,22 +16,41 @@ const server = new Vue({
 
   _address: '',
   _ws: null,
+  _serverAddress: null,
+  _username: null,
+  _password: null,
 
   data () {
     return {
       connected: false,
       players: {},
       activePlayerId: null,
-      syncStatus: []
+      syncStatus: [],
+      tokenInfo: {}
     }
   },
   methods: {
 
-    async connect (serverAddress) {
+    async reconnect () {
+      // Reconnect to the server with stored creds
+      return this.connect(this._serverAddress, this._username, this._password)
+    },
+    async connect (serverAddress, username, password) {
       // Connect to the server
-      if (!serverAddress.endsWith('/')) {
+      if (serverAddress && !serverAddress.endsWith('/')) {
         serverAddress = serverAddress + '/'
       }
+      const url = serverAddress + 'login'
+      const data = JSON.stringify({ username: username, password: password })
+      try {
+        Vue.$log.info('Connecting to ' + serverAddress)
+        const result = await _axios.post(url, data)
+        this.tokenInfo = result.data
+      } catch {
+        Vue.$log.error('login failed for ' + serverAddress)
+        return false
+      }
+      _axios.defaults.headers.common.Authorization = 'Bearer ' + this.tokenInfo.token
       this._address = serverAddress
       const wsAddress = serverAddress.replace('http', 'ws') + 'ws'
       this._ws = new WebSocket(wsAddress)
@@ -39,6 +58,10 @@ const server = new Vue({
       this._ws.onmessage = this._onWsMessage
       this._ws.onclose = this._onWsClose
       this._ws.onerror = this._onWsError
+      this._serverAddress = serverAddress
+      this._username = username
+      this._password = password
+      return true
     },
 
     async toggleLibrary (item) {
@@ -118,8 +141,8 @@ const server = new Vue({
         url += '?' + urlParams.toString()
       }
       let index = 0
-      Vue.$log.debug('getAllItems', url)
-      oboe(url)
+      const headers = { Authorization: 'Bearer ' + this.tokenInfo.token }
+      oboe({ url: url, headers: headers })
         .node('items.*', function (item) {
           Vue.set(list, index, item)
           index += 1
@@ -154,8 +177,7 @@ const server = new Vue({
 
     async _onWsConnect () {
       // Websockets connection established
-      Vue.$log.info('Connected to server ' + this._address)
-      this.connected = true
+      this._ws.send(JSON.stringify({ message: 'login', message_details: this.tokenInfo.token }))
       // retrieve all players once through api
       const players = await this.getData('players')
       for (const player of players) {
@@ -168,7 +190,14 @@ const server = new Vue({
     async _onWsMessage (e) {
       // Message retrieved on the websocket
       var msg = JSON.parse(e.data)
-      if (msg.message === 'player changed') {
+      if (msg.message === 'login') {
+        // login was successfull
+        Vue.$log.info('Connected to websocket ' + this._address)
+        this.connected = true
+        this.$emit('refresh_listing')
+        // register callbacks
+        this._ws.send(JSON.stringify({ message: 'add_event_listener' }))
+      } else if (msg.message === 'player changed') {
         Vue.set(this.players, msg.message_details.player_id, msg.message_details)
       } else if (msg.message === 'player added') {
         Vue.set(this.players, msg.message_details.player_id, msg.message_details)
@@ -189,7 +218,7 @@ const server = new Vue({
       this.connected = false
       Vue.$log.error('Socket is closed. Reconnect will be attempted in 5 seconds.', e.reason)
       setTimeout(function () {
-        this.connect(this._address)
+        this.reconnect()
       }.bind(this), 5000)
     },
 

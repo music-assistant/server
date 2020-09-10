@@ -5,20 +5,30 @@
       clearable
       :label="$t('type_to_search')"
       append-icon="search"
-      v-model="searchQuery"
-      v-on:keyup.enter="Search"
-      @click:append="Search"
+      v-model="searchInput"
+      v-on:keyup.enter="$router.push({ path: 'search', query: { searchQuery: searchInput } })"
+      @click:append="$router.push({ path: 'search', query: { searchQuery: searchInput } })"
       style="margin-left:15px; margin-right:15px; margin-top:18px;margin-bottom:-8px"
     >
     </v-text-field>
 
-    <v-tabs show-arrows v-model="activeTab" grow
-    background-color="rgba(0,0,0,.75)"
-    dark>
-      <v-tab ripple v-if="tracks.length">{{ $t("tracks") }}</v-tab>
+    <v-tabs
+      show-arrows
+      :v-model="activeTab"
+      grow
+      background-color="rgba(0,0,0,.75)"
+      dark
+    >
+      <v-tab
+        ripple
+        v-if="tracks.length"
+      >{{ $t("tracks") }}</v-tab>
       <v-tab-item v-if="tracks.length">
         <v-card flat>
-          <v-list two-line style="margin-left:15px; margin-right:15px">
+          <v-list
+            two-line
+            style="margin-left:15px; margin-right:15px"
+          >
             <listviewItem
               v-for="(item, index) in tracks"
               v-bind:item="item"
@@ -36,7 +46,10 @@
         </v-card>
       </v-tab-item>
 
-      <v-tab ripple v-if="artists.length">{{ $t("artists") }}</v-tab>
+      <v-tab
+        ripple
+        v-if="artists.length"
+      >{{ $t("artists") }}</v-tab>
       <v-tab-item v-if="artists.length">
         <v-card flat>
           <v-list two-line>
@@ -53,7 +66,10 @@
         </v-card>
       </v-tab-item>
 
-      <v-tab ripple v-if="albums.length">{{ $t("albums") }}</v-tab>
+      <v-tab
+        ripple
+        v-if="albums.length"
+      >{{ $t("albums") }}</v-tab>
       <v-tab-item v-if="albums.length">
         <v-card flat>
           <v-list two-line>
@@ -70,7 +86,10 @@
         </v-card>
       </v-tab-item>
 
-      <v-tab ripple v-if="playlists.length">{{ $t("playlists") }}</v-tab>
+      <v-tab
+        ripple
+        v-if="playlists.length"
+      >{{ $t("playlists") }}</v-tab>
       <v-tab-item v-if="playlists.length">
         <v-card flat>
           <v-list two-line>
@@ -98,29 +117,33 @@ export default {
   components: {
     ListviewItem
   },
-  props: { },
+  props: [
+    'searchQuery', 'activeTab'
+  ],
   data () {
     return {
+      searchInput: '',
       selected: [2],
       artists: [],
       albums: [],
       tracks: [],
       playlists: [],
-      timeout: null,
-      active: 0,
-      searchQuery: ''
+      timeout: null
+    }
+  },
+  watch: {
+    searchQuery: function (val) {
+      this.Search()
     }
   },
   created () {
+    this.$server.$on('refresh_listing', this.Search)
     this.$store.windowtitle = this.$t('search')
+    this.Search()
   },
   methods: {
     async Search () {
-      this.artists = []
-      this.albums = []
-      this.tracks = []
-      this.playlists = []
-      if (this.searchQuery) {
+      if (this.searchQuery && this.$server.connected) {
         this.$store.loading = true
         const params = { query: this.searchQuery, online: true, limit: 10 }
         const result = await this.$server.getData('search', params)
@@ -129,6 +152,12 @@ export default {
         this.tracks = result.tracks
         this.playlists = result.playlists
         this.$store.loading = false
+        this.searchInput = this.searchQuery
+      } else {
+        this.artists = []
+        this.albums = []
+        this.tracks = []
+        this.playlists = []
       }
     }
   }

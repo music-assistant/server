@@ -11,6 +11,7 @@
     <v-overlay :value="$store.loading">
       <v-progress-circular indeterminate size="64"></v-progress-circular>
     </v-overlay>
+    <Login />
   </v-app>
 </template>
 
@@ -28,6 +29,7 @@ import TopBar from './components/TopBar.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import PlayerOSD from './components/PlayerOSD.vue'
 import PlayerSelect from './components/PlayerSelect.vue'
+import Login from './components/Login.vue'
 
 export default Vue.extend({
   name: 'App',
@@ -36,21 +38,11 @@ export default Vue.extend({
     TopBar,
     ContextMenu,
     PlayerOSD,
-    PlayerSelect
+    PlayerSelect,
+    Login
   },
   data: () => ({
     showPlayerSelect: false
-  }),
-  created () {
-    // TODO: retrieve serveraddress through discovery and/or user settings
-    let serverAddress = ''
-    if (process.env.NODE_ENV === 'production') {
-      const loc = window.location
-      serverAddress = loc.origin + loc.pathname
-    } else {
-      serverAddress = 'http://localhost:8095/'
-    }
-    this.$server.connect(serverAddress)
-  }
+  })
 })
 </script>

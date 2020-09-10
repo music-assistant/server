@@ -8,10 +8,11 @@ import platform
 import re
 import socket
 import tempfile
-from enum import Enum
-from typing import Any, Callable, TypeVar
-from types import FunctionType, MethodType
+import urllib.request
 from datetime import datetime
+from enum import Enum
+from types import FunctionType, MethodType
+from typing import Any, Callable, TypeVar
 
 import memory_tempfile
 import unidecode
@@ -51,6 +52,14 @@ def run_periodic(period):
         return async_wrapper
 
     return scheduler
+
+
+def get_external_ip():
+    """Try to get the external (WAN) IP address."""
+    try:
+        return urllib.request.urlopen("https://ident.me").read().decode("utf8")
+    except:
+        return None
 
 
 def filename_from_string(string):
@@ -196,6 +205,14 @@ def get_ip():
     finally:
         s.close()
     return IP
+
+
+def get_ip_pton():
+    """Return socket pton for local ip"""
+    try:
+        return socket.inet_pton(socket.AF_INET, get_ip())
+    except OSError:
+        return socket.inet_pton(socket.AF_INET6, get_ip())
 
 
 # pylint: enable=broad-except

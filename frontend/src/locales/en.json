@@ -56,6 +56,7 @@
     "hass_volume_entities"             : "Enable entities to be used as Volume Control for players.",
     "web_ssl_cert"                     : "Path to ssl certificate file",
     "web_ssl_key"                      : "Path to ssl keyfile",
+    "web_external_url"                 : "External URL (if port forwarding enabled)",
     "player_enabled"                   : "Enable player",
     "player_name"                      : "Custom name for this player",
     "file_prov_playlists_path"         : "Path to playlists (.m3u)",
@@ -104,5 +105,18 @@
     "stopped" : "stopped",
     "paused"  : "paused",
     "off"     : "off"
+  },
+  "login"           : {
+    "header" : "Connect to Music Assistant",
+    "server": "Server address",
+    "username": "Username",
+    "password": "Password",
+    "save_creds": "Remember my credentials on this browser.",
+    "login": "Login",
+    "reset_form": "reset form",
+    "server_empty": "The server address can not be empty.",
+    "username_empty": "The username can not be empty.",
+    "password_empty": "The password can not be empty.",
+    "login_failed": "Could not login, please verify the credentials and that the server is available."
   }
 }

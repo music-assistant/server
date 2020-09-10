@@ -56,6 +56,7 @@
     "hass_volume_entities"             : "Entities die gebruikt mogen worden als volume Control voor spelers.",
     "web_ssl_cert"                     : "Pad naar ssl certificaat bestand",
     "web_ssl_key"                      : "Pad naar ssl certificaat key bestand",
+    "web_external_url"                 : "Externe URL (indien port forwarding ingeschakeld)",
     "player_enabled"                   : "Speler inschakelen",
     "player_name"                      : "Aangepaste naam voor deze speler",
     "file_prov_music_path"             : "Pad naar muziek bestanden",
@@ -105,5 +106,18 @@
     "stopped" : "gestopt",
     "paused"  : "gepauzeerd",
     "off"     : "uitgeschakeld"
+  },
+  "login"           : {
+    "header" : "Verbind met Music Assistant",
+    "server": "Serveradres",
+    "username": "Gebruikersnaam",
+    "password": "Wachtwoord",
+    "save_creds": "Inloggegevens onthouden in deze browser.",
+    "login": "Inloggen",
+    "reset_form": "Reset formulier",
+    "server_empty": "Het serveradres kan niet leeg zijn.",
+    "username_empty": "De gebruikersnaam kan niet leeg zijn.",
+    "password_empty": "Het wachtwoord kan niet leeg zijn.",
+    "login_failed": "Kon niet inloggen, controleer of de server bereikbaar is en de inloggegevens juist zijn."
   }
 }
