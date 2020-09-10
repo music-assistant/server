@@ -99,6 +99,8 @@ class Web:
         if self.config["ssl_key"] and not os.path.isfile(self.config["ssl_key"]):
             enable_ssl = False
             LOGGER.warning("SSL certificate key file not found: %s", self.config["ssl_key"])
+        if not self.config.get("external_url"):
+            enable_ssl = False
         self._enable_ssl = enable_ssl
         self._jwt_shared_secret = f"mass_{self._local_ip}_{self.http_port}"
 
@@ -161,7 +163,11 @@ class Web:
                 ssl_context=ssl_context,
             )
             await https_site.start()
-            LOGGER.info("Started HTTPS webserver on port %s", self.https_port)
+            LOGGER.info(
+                "Started HTTPS webserver on port %s - serving at FQDN %s",
+                self.https_port,
+                self.external_url,
+            )
 
     @property
     def internal_ip(self):
@@ -176,21 +182,19 @@ class Web:
     @property
     def https_port(self):
         """Return the HTTPS port for this Music Assistant instance."""
-        if self._enable_ssl:
-            return self.config.get("https_port", 8096)
-        return None
+        return self.config.get("https_port", 8096)
 
     @property
     def internal_url(self):
         """Return the internal URL for this Music Assistant instance."""
-        if self._enable_ssl:
-            return f"https://{self._local_ip}:{self.https_port}"
         return f"http://{self._local_ip}:{self.http_port}"
 
     @property
     def external_url(self):
         """Return the internal URL for this Music Assistant instance."""
-        return self.config.get("external_url", "")
+        if self._enable_ssl and self.config.get("external_url"):
+            return self.config["external_url"]
+        return f"http://{get_external_ip()}:{self.http_port}"
 
     @property
     def discovery_info(self):
