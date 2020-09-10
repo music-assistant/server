@@ -118,9 +118,9 @@ export default {
       const serverInfo = await this.getServerInfo(this.serverAddress)
       if (serverInfo !== false) {
         // prefer external url, check if it's alive
-        if (await this.getServerInfo(serverInfo.external_url)) {
+        if (await this.getServerInfo(serverInfo.external_url) !== false) {
           this.serverAddress = serverInfo.external_url
-        } else if (await this.getServerInfo(serverInfo.internal_url)) {
+        } else if (await this.getServerInfo(serverInfo.internal_url) !== false) {
           this.serverAddress = serverInfo.internal_url
         }
       }
@@ -171,7 +171,7 @@ export default {
       localServerAddress = localServerAddress.replace(':8080', ':8095')
       const serverInfo = await this.getServerInfo(localServerAddress)
       if (serverInfo !== false) {
-        return serverInfo.internal_url
+        return localServerAddress
       }
       return null
     }

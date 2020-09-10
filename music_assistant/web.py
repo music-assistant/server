@@ -190,7 +190,7 @@ class Web:
     @property
     def external_url(self):
         """Return the internal URL for this Music Assistant instance."""
-        return self.config.get("external_url","")
+        return self.config.get("external_url", "")
 
     @property
     def discovery_info(self):
@@ -199,7 +199,7 @@ class Web:
             "id": f"musicassistant_{get_hostname()}",
             "external_url": self.external_url,
             "internal_url": self.internal_url,
-            "version": 1
+            "version": 1,
         }
 
     @routes.post("/login")
