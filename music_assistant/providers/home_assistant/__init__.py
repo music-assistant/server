@@ -257,9 +257,9 @@ class HomeAssistantPlugin(Provider):
             "mass_player_id": player_id,
         }
         if cur_item:
-            host = f"{self.mass.web.local_ip}:{self.mass.web.http_port}"
+            host = self.mass.web.internal_url
             item_type = "radio" if cur_item.media_type == MediaType.Radio else "track"
-            img_url = f"http://{host}/api/{item_type}/{cur_item.item_id}/thumb?provider={cur_item.provider}"
+            img_url = f"{host}/api/{item_type}/{cur_item.item_id}/thumb?provider={cur_item.provider}"
             state_attributes["entity_picture"] = img_url
         self._published_players[entity_id] = player.player_id
         await self._hass.async_set_state(entity_id, player.state, state_attributes)

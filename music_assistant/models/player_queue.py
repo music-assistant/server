@@ -275,9 +275,8 @@ class PlayerQueue:
             return
         if self.use_queue_stream:
             self._next_queue_startindex = index
-            queue_stream_uri = "http://%s:%s/stream/%s" % (
-                self.mass.web.local_ip,
-                self.mass.web.http_port,
+            queue_stream_uri = "%s/stream/%s" % (
+                self.mass.web.internal_url,
                 self.player.player_id,
             )
             return await player_prov.async_cmd_play_uri(self.player_id, queue_stream_uri)

@@ -224,9 +224,8 @@ class PlayerManager:
             async for track in tracks:
                 queue_item = QueueItem(track)
                 # generate uri for this queue item
-                queue_item.uri = "http://%s:%s/stream/%s/%s" % (
-                    self.mass.web.local_ip,
-                    self.mass.web.http_port,
+                queue_item.uri = "%s/stream/%s/%s" % (
+                    self.mass.web.internal_url,
                     player_id,
                     queue_item.queue_item_id,
                 )
