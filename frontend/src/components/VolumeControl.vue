@@ -69,7 +69,11 @@ export default Vue.extend({
   computed: {
     volumePlayerIds () {
       var allIds = [this.player_id]
-      allIds.push(...this.players[this.player_id].group_childs)
+      for (const groupChildId of this.players[this.player_id].group_childs) {
+        if (this.players[groupChildId]) {
+          allIds.push(groupChildId)
+        }
+      }
       return allIds
     }
   },

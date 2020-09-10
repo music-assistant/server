@@ -109,20 +109,10 @@ export default {
         // add default scheme if ommitted
         this.serverAddress = 'http://' + this.serverAddress
       }
-      const host = this.serverAddress.split('http://')[1]
+      const host = this.serverAddress.split('://')[1]
       if (!host.includes(':')) {
         // add default port if ommitted
         this.serverAddress = this.serverAddress + ':8095'
-      }
-      // Grab server info
-      const serverInfo = await this.getServerInfo(this.serverAddress)
-      if (serverInfo !== false) {
-        // prefer external url, check if it's alive
-        if (await this.getServerInfo(serverInfo.external_url) !== false) {
-          this.serverAddress = serverInfo.external_url
-        } else if (await this.getServerInfo(serverInfo.internal_url) !== false) {
-          this.serverAddress = serverInfo.internal_url
-        }
       }
       // connect to server
       if (await this.$server.connect(this.serverAddress, this.username, this.password)) {

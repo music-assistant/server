@@ -304,7 +304,7 @@ export default Vue.extend({
       return window.innerWidth - 160
     },
     streamDetails () {
-      if (!this.playerQueueDetails.cur_item || !this.playerQueueDetails.cur_item || !this.playerQueueDetails.cur_item.streamdetails.provider || !this.playerQueueDetails.cur_item.streamdetails.content_type) return {}
+      if (!this.playerQueueDetails.cur_item || !this.playerQueueDetails.cur_item || !this.playerQueueDetails.cur_item.streamdetails || !this.playerQueueDetails.cur_item.streamdetails.provider || !this.playerQueueDetails.cur_item.streamdetails.content_type) return {}
       return this.playerQueueDetails.cur_item.streamdetails
     },
     streamVolumeLevelAdjustment () {
