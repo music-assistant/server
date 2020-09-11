@@ -1,5 +1,6 @@
-# musicassistant
+# Music Assistant
 Music Assistant - A library manager for (streaming) media
 
-work in progress !!
-More info soon
+This repository hosts the code for the server, which is the "core" of Music Assistant and must be installed on a always-on device like a NAS or Raspberry Pi.
+
+
