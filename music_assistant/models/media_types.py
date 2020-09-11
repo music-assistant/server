@@ -88,7 +88,7 @@ class MediaItem(object):
     name: str = ""
     metadata: dict = field(default_factory=dict)
     tags: List[str] = field(default_factory=list)
-    external_ids: List[ExternalId] = field(default_factory=dict)
+    external_ids: dict = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: List[str] = field(default_factory=list)
     is_lazy: bool = False
