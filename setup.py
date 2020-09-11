@@ -1,47 +1,52 @@
-from pathlib import Path
-import os
+"""Music Assistant setup."""
+from datetime import datetime as dt
 
-from setuptools import setup, glob, find_packages
+from setuptools import find_packages, setup
 
-PROJECT_DIR = Path(__file__).parent.resolve()
-README_FILE = PROJECT_DIR / "README.md"
-VERSION = "0.0.20"
+import music_assistant.const as mass_const
+
+PROJECT_NAME = "Music Assistant"
+PROJECT_PACKAGE_NAME = "music_assistant"
+PROJECT_LICENSE = "Apache License 2.0"
+PROJECT_AUTHOR = "Marcel van der Veldt"
+PROJECT_COPYRIGHT = f" 2019-{dt.now().year}, {PROJECT_AUTHOR}"
+PROJECT_URL = "https://music-assistant.github.io/"
+PROJECT_EMAIL = "marcelveldt@users.noreply.github.com"
+
+PROJECT_GITHUB_USERNAME = "music-assistant"
+PROJECT_GITHUB_REPOSITORY = "server"
+
+PYPI_URL = f"https://pypi.python.org/pypi/{PROJECT_PACKAGE_NAME}"
+GITHUB_PATH = f"{PROJECT_GITHUB_USERNAME}/{PROJECT_GITHUB_REPOSITORY}"
+GITHUB_URL = f"https://github.com/{GITHUB_PATH}"
+
+DOWNLOAD_URL = f"{GITHUB_URL}/archive/{mass_const.__version__}.zip"
+PROJECT_URLS = {
+    "Bug Reports": f"{GITHUB_URL}/issues",
+    "Website": "https://music-assistant.github.io/",
+    "Discord": "https://discord.gg/9xHYFY"
+}
+
+PACKAGES = find_packages(exclude=["tests", "tests.*"])
 
 with open("requirements.txt") as f:
-    INSTALL_REQUIRES = f.read().splitlines()
+    REQUIRES = f.read().splitlines()
 if os.name != "nt":
-    INSTALL_REQUIRES.append("uvloop")
-
-PACKAGE_FILES = []
-for (path, directories, filenames) in os.walk('music_assistant/'):
-    for filename in filenames:
-        PACKAGE_FILES.append(os.path.join('..', path, filename))
+    REQUIRES.append("uvloop")
 
 setup(
-    name="music_assistant",
-    version=VERSION,
-    url="https://github.com/marcelveldt/musicassistant",
-    download_url="https://github.com/marcelveldt/musicassistant",
-    author="Marcel van der Veldt",
-    author_email="m.vanderveldt@outlook.com",
-    description="Music library manager and player based on sox.",
-    long_description=README_FILE.read_text(encoding="utf-8"),
-    long_description_content_type="text/markdown",
-    packages=find_packages(exclude=["test.*", "test", "frontend", "frontend.*", ".vscode", ".vscode*"]),
-    python_requires=">=3.7",
+    name=PROJECT_PACKAGE_NAME,
+    version=mass_const.__version__,
+    url=PROJECT_URL,
+    download_url=DOWNLOAD_URL,
+    project_urls=PROJECT_URLS,
+    author=PROJECT_AUTHOR,
+    author_email=PROJECT_EMAIL,
+    packages=PACKAGES,
     include_package_data=True,
-    install_requires=INSTALL_REQUIRES,
-    package_data={
-        'music_assistant': PACKAGE_FILES,
-    },
     zip_safe=False,
-    classifiers=[
-        "Development Status :: 4 - Beta",
-        "Intended Audience :: Developers",
-        "Natural Language :: English",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
-        "Topic :: Home Automation",
-    ],
+    install_requires=REQUIRES,
+    python_requires=f">={MIN_PY_VERSION}",
+    test_suite="tests",
+    entry_points={"console_scripts": ["mass = music_assistant.__main__:main", "musicassistant = music_assistant.__main__:main"]},
 )
