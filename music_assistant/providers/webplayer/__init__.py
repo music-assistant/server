@@ -61,6 +61,10 @@ class WebPlayerProvider(PlayerProvider):
         )
         self.mass.add_job(self.async_check_players())
 
+    async def async_on_stop(self):
+        """Handle correct close/cleanup of the provider on exit. Called on shutdown."""
+        # nothing to do ?
+
     async def async_handle_mass_event(self, msg, msg_details):
         """Handle received event for the webplayer component."""
         if msg == EVENT_WEBPLAYER_REGISTER:
