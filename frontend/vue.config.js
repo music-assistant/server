@@ -8,6 +8,9 @@ module.exports = {
     },
     cordovaPath: 'src-cordova'
   },
+  devServer: {
+    https: false
+  },
   pwa: {
     name: 'Music Assistant',
     themeColor: '#424242',
@@ -19,5 +22,5 @@ module.exports = {
     'vuetify'
   ],
   outputDir: '../music_assistant/web',
-  publicPath: ''
+  publicPath: './'
 }

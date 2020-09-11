@@ -1,7 +1,5 @@
 import Vue from 'vue'
 import VueRouter from 'vue-router'
-import Home from '../views/Home.vue'
-import Browse from '../views/Browse.vue'
 
 Vue.use(VueRouter)
 
@@ -9,7 +7,7 @@ const routes = [
   {
     path: '/',
     name: 'home',
-    component: Home
+    component: () => import(/* webpackChunkName: "home" */ '../views/Home.vue')
   },
   {
     path: '/config',
@@ -44,7 +42,7 @@ const routes = [
   {
     path: '/:mediatype',
     name: 'browse',
-    component: Browse,
+    component: () => import(/* webpackChunkName: "browse" */ '../views/Browse.vue'),
     props: route => ({ ...route.params, ...route.query })
   }
 ]
