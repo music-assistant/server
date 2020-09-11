@@ -10,3 +10,5 @@ build/
 dist/
 venv/
 .venv
+.mypy_cache/
+.tox/
