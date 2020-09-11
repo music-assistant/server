@@ -132,7 +132,8 @@ class Web:
             ]
         )
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web/")
-        app.router.add_static("/", webdir, append_version=True)
+        if os.path.isdir(webdir):
+            app.router.add_static("/", webdir, append_version=True)
 
         # Add CORS support to all routes
         cors = aiohttp_cors.setup(
@@ -224,8 +225,10 @@ class Web:
 
     async def async_index(self, request):
         # pylint: disable=unused-argument
-        index_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web/index.html")
-        return web.FileResponse(index_file)
+        webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web/")
+        if not os.path.isdir(webdir):
+            raise web.HTTPFound('https://music-assistant.github.io/app')
+        return web.FileResponse(os.path.join(webdir, "index.html"))
 
     @login_required
     @routes.get("/api/library/artists")

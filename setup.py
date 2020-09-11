@@ -1,9 +1,10 @@
 """Music Assistant setup."""
+import os
 from datetime import datetime as dt
 
 from setuptools import find_packages, setup
 
-import music_assistant.const as mass_const
+import music_assistant.constants as mass_const
 
 PROJECT_NAME = "Music Assistant"
 PROJECT_PACKAGE_NAME = "music_assistant"
@@ -28,6 +29,10 @@ PROJECT_URLS = {
 }
 
 PACKAGES = find_packages(exclude=["tests", "tests.*"])
+PACKAGE_FILES = []
+for (path, directories, filenames) in os.walk('music_assistant/'):
+    for filename in filenames:
+        PACKAGE_FILES.append(os.path.join('..', path, filename))
 
 with open("requirements.txt") as f:
     REQUIRES = f.read().splitlines()
@@ -46,7 +51,10 @@ setup(
     include_package_data=True,
     zip_safe=False,
     install_requires=REQUIRES,
-    python_requires=f">={MIN_PY_VERSION}",
+    python_requires=f">={mass_const.REQUIRED_PYTHON_VER}",
     test_suite="tests",
     entry_points={"console_scripts": ["mass = music_assistant.__main__:main", "musicassistant = music_assistant.__main__:main"]},
+    package_data={
+        'music_assistant': PACKAGE_FILES,
+    },
 )

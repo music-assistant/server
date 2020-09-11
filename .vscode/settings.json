@@ -1,5 +1,5 @@
 {
     "python.linting.pylintEnabled": true,
     "python.linting.enabled": true,
-    "python.pythonPath": "/Users/marcelvanderveldt/Workdir/musicassistant/venv/bin/python3"
+    "python.pythonPath": "venv/bin/python3"
 }

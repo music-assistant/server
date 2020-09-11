@@ -1,0 +1,27 @@
+name: Publish releases to PyPI
+
+on:
+  release:
+    types: [published, prereleased]
+
+jobs:
+  build-and-publish:
+    name: Builds and publishes releases to PyPI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      - name: Set up Python 3.7
+        uses: actions/setup-python@v1
+        with:
+          python-version: 3.7
+      - name: Install wheel
+        run: >-
+          pip install wheel
+      - name: Build
+        run: >-
+          python3 setup.py sdist bdist_wheel
+      - name: Publish release to PyPI
+        uses: pypa/gh-action-pypi-publish@master
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_TOKEN }}
