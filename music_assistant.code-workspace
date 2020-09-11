@@ -1,10 +1,10 @@
 {
 	"folders": [
 		{
-			"path": "."
+			"path": "../music-assistant-app"
 		},
 		{
-			"path": "/Users/marcelvanderveldt/Workdir/test"
+			"path": "../music-assistant.github.io"
 		},
 		{
 			"path": "../python-musicassistant-client"
