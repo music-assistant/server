@@ -24,7 +24,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
-          apt-get install -y --no-install-recommends libsndfile1 libtag1v5 libtag1-dev
+          sudo apt-get install -y --no-install-recommends libsndfile1 libtag1v5 libtag1-dev
           python -m pip install --upgrade pip
           pip install tox tox-gh-actions pre-commit
           pre-commit install-hooks
