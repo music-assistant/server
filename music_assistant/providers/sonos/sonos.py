@@ -22,7 +22,9 @@ PLAYER_CONFIG_ENTRIES = []  # we don't have any player config entries (for now)
 
 
 class SonosProvider(PlayerProvider):
-    """Support for Sonos speakers"""
+    """Support for Sonos speakers."""
+
+    # pylint: disable=abstract-method
 
     _discovery_running = False
     _tasks = []
@@ -45,17 +47,18 @@ class SonosProvider(PlayerProvider):
         return CONFIG_ENTRIES
 
     async def async_on_start(self) -> bool:
-        """Called on startup. Handle initialization of the provider."""
+        """Handle initialization of the provider."""
         self._tasks.append(self.mass.add_job(self.__async_periodic_discovery()))
 
     async def async_on_stop(self):
-        """Called on shutdown. Handle correct close/cleanup of the provider on exit."""
+        """Handle correct close/cleanup of the provider on exit."""
         for task in self._tasks:
             task.cancel()
 
     async def async_cmd_play_uri(self, player_id: str, uri: str):
         """
         Play the specified uri/url on the goven player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players.get(player_id)
@@ -67,6 +70,7 @@ class SonosProvider(PlayerProvider):
     async def async_cmd_stop(self, player_id: str):
         """
         Send STOP command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players.get(player_id)
@@ -78,6 +82,7 @@ class SonosProvider(PlayerProvider):
     async def async_cmd_play(self, player_id: str):
         """
         Send STOP command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players.get(player_id)
@@ -89,6 +94,7 @@ class SonosProvider(PlayerProvider):
     async def async_cmd_pause(self, player_id: str):
         """
         Send PAUSE command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players.get(player_id)
@@ -100,6 +106,7 @@ class SonosProvider(PlayerProvider):
     async def async_cmd_next(self, player_id: str):
         """
         Send NEXT TRACK command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players.get(player_id)
@@ -111,6 +118,7 @@ class SonosProvider(PlayerProvider):
     async def async_cmd_previous(self, player_id: str):
         """
         Send PREVIOUS TRACK command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players.get(player_id)
@@ -122,6 +130,7 @@ class SonosProvider(PlayerProvider):
     async def async_cmd_power_on(self, player_id: str):
         """
         Send POWER ON command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players.get(player_id)
@@ -135,6 +144,7 @@ class SonosProvider(PlayerProvider):
     async def async_cmd_power_off(self, player_id: str):
         """
         Send POWER OFF command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players.get(player_id)
@@ -149,6 +159,7 @@ class SonosProvider(PlayerProvider):
     async def async_cmd_volume_set(self, player_id: str, volume_level: int):
         """
         Send volume level command to given player.
+
             :param player_id: player_id of the player to handle the command.
             :param volume_level: volume level to set (0..100).
         """
@@ -161,6 +172,7 @@ class SonosProvider(PlayerProvider):
     async def async_cmd_volume_mute(self, player_id: str, is_muted=False):
         """
         Send volume MUTE command to given player.
+
             :param player_id: player_id of the player to handle the command.
             :param is_muted: bool with new mute state.
         """
@@ -172,7 +184,8 @@ class SonosProvider(PlayerProvider):
 
     async def async_cmd_queue_play_index(self, player_id: str, index: int):
         """
-        Play item at index X on player's queue
+        Play item at index X on player's queue.
+
             :param player_id: player_id of the player to handle the command.
             :param index: (int) index of the queue item that should start playing
         """
@@ -184,7 +197,8 @@ class SonosProvider(PlayerProvider):
 
     async def async_cmd_queue_load(self, player_id: str, queue_items: List[QueueItem]):
         """
-        Load/overwrite given items in the player's queue implementation
+        Load/overwrite given items in the player's queue implementation.
+
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
@@ -201,6 +215,7 @@ class SonosProvider(PlayerProvider):
     ):
         """
         Insert new items at position X into existing queue.
+
         If insert_at_index 0 or None, will start playing newly added item(s)
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
@@ -209,13 +224,18 @@ class SonosProvider(PlayerProvider):
         player = self._players.get(player_id)
         if player:
             for pos, item in enumerate(queue_items):
-                self.mass.add_job(player.soco.add_uri_to_queue, item.uri, insert_at_index + pos)
+                self.mass.add_job(
+                    player.soco.add_uri_to_queue, item.uri, insert_at_index + pos
+                )
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
-    async def async_cmd_queue_append(self, player_id: str, queue_items: List[QueueItem]):
+    async def async_cmd_queue_append(
+        self, player_id: str, queue_items: List[QueueItem]
+    ):
         """
         Append new items at the end of the queue.
+
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
@@ -230,6 +250,7 @@ class SonosProvider(PlayerProvider):
     async def async_cmd_queue_clear(self, player_id: str):
         """
         Clear the player's queue.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players.get(player_id)
@@ -256,8 +277,10 @@ class SonosProvider(PlayerProvider):
         cur_player_ids = [item.player_id for item in self._players.values()]
         # remove any disconnected players...
         for player in list(self._players.values()):
-            if not player.is_group and not player.soco.uid in new_device_ids:
-                self.mass.add_job(self.mass.player_manager.async_remove_player(player.player_id))
+            if not player.is_group and player.soco.uid not in new_device_ids:
+                self.mass.add_job(
+                    self.mass.player_manager.async_remove_player(player.player_id)
+                )
                 for sub in player.subscriptions:
                     sub.unsubscribe()
                 self._players.pop(player, None)
@@ -349,14 +372,14 @@ class SonosProvider(PlayerProvider):
             group_player.is_group_player = True
             group_player.name = group.label
             group_player.group_childs = [item.uid for item in group.members]
-            self.mass.run_task(self.mass.player_manager.async_update_player(group_player))
+            self.mass.run_task(
+                self.mass.player_manager.async_update_player(group_player)
+            )
 
     async def __topology_changed(self, player_id, event=None):
-        """
-        Received topology changed event
-        from one of the sonos players.
-        Schedule discovery to work out the changes.
-        """
+        """Received topology changed event from one of the sonos players."""
+        # pylint: disable=unused-argument
+        # Schedule discovery to work out the changes.
         self.mass.add_job(self.__run_discovery)
 
     async def __async_report_progress(self, player_id: str):
@@ -404,4 +427,5 @@ class ProcessSonosEventQueue:
 
     def put(self, item, block=True, timeout=None):
         """Process event."""
+        # pylint: disable=unused-argument
         self._callback_handler(self._player_id, item)

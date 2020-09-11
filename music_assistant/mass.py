@@ -23,17 +23,7 @@ from music_assistant.music_manager import MusicManager
 from music_assistant.player_manager import PlayerManager
 from music_assistant.utils import callback, get_hostname, get_ip_pton, is_callback
 from music_assistant.web import Web
-from zeroconf import DNSPointer, DNSRecord
-from zeroconf import Error as ZeroconfError
-from zeroconf import (
-    InterfaceChoice,
-    IPVersion,
-    NonUniqueNameException,
-    ServiceBrowser,
-    ServiceInfo,
-    ServiceStateChange,
-    Zeroconf,
-)
+from zeroconf import NonUniqueNameException, ServiceInfo, Zeroconf
 
 LOGGER = logging.getLogger("mass")
 
@@ -44,7 +34,8 @@ class MusicAssistant:
 
     def __init__(self, datapath):
         """
-        Create an instance of MusicAssistant
+        Create an instance of MusicAssistant.
+
             :param datapath: file location to store the data
         """
 
@@ -80,7 +71,7 @@ class MusicAssistant:
         await self.__async_setup_discovery()
 
     async def async_stop(self):
-        """stop running the music assistant server"""
+        """Stop running the music assistant server."""
         LOGGER.info("Application shutdown")
         self.signal_event(EVENT_SHUTDOWN)
         self._exit = True
@@ -111,13 +102,15 @@ class MusicAssistant:
     @callback
     def get_provider(self, provider_id: str) -> Provider:
         """Return provider/plugin by id."""
-        if not provider_id in self._providers:
+        if provider_id not in self._providers:
             LOGGER.warning("Provider %s is not available", provider_id)
             return None
         return self._providers[provider_id]
 
     @callback
-    def get_providers(self, filter_type: Optional[ProviderType] = None) -> List[Provider]:
+    def get_providers(
+        self, filter_type: Optional[ProviderType] = None
+    ) -> List[Provider]:
         """Return all providers, optionally filtered by type."""
         return [
             item
@@ -160,6 +153,7 @@ class MusicAssistant:
     def signal_event(self, event_msg: str, event_details: Any = None):
         """
         Signal (systemwide) event.
+
             :param event_msg: the eventmessage to signal
             :param event_details: optional details to send with the event.
         """
@@ -177,6 +171,7 @@ class MusicAssistant:
     ) -> Callable:
         """
         Add callback to event listeners.
+
         Returns function to remove the listener.
             :param cb_func: callback function or coroutine
             :param event_filter: Optionally only listen for these events
@@ -189,8 +184,11 @@ class MusicAssistant:
 
         return remove_listener
 
-    def add_job(self, target: Callable[..., Any], *args: Any) -> Optional[asyncio.Future]:
+    def add_job(
+        self, target: Callable[..., Any], *args: Any
+    ) -> Optional[asyncio.Future]:
         """Add a job/task to the event loop.
+
         target: target to call.
         args: parameters for method to call.
         """
@@ -207,7 +205,9 @@ class MusicAssistant:
         if threading.current_thread() is not threading.main_thread():
             # called from other thread
             if asyncio.iscoroutine(check_target):
-                task = asyncio.run_coroutine_threadsafe(target, self.loop)  # type: ignore
+                task = asyncio.run_coroutine_threadsafe(
+                    target, self.loop
+                )  # type: ignore
             elif asyncio.iscoroutinefunction(check_target):
                 task = asyncio.run_coroutine_threadsafe(target(*args), self.loop)
             elif is_callback(check_target):

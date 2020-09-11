@@ -1,34 +1,20 @@
-"""Tunein musicprovider support for MusicAssistant."""
-import datetime
-import hashlib
+"""Tune-In musicprovider support for MusicAssistant."""
 import logging
-import time
 from typing import List, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
-from music_assistant.constants import (
-    CONF_PASSWORD,
-    CONF_USERNAME,
-    EVENT_PLAYBACK_STOPPED,
-    EVENT_STREAM_STARTED,
-)
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.media_types import (
-    Album,
-    AlbumType,
-    Artist,
     MediaItemProviderId,
     MediaType,
-    Playlist,
     Radio,
     SearchResult,
-    Track,
     TrackQuality,
 )
 from music_assistant.models.musicprovider import MusicProvider
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
-from music_assistant.utils import parse_title_and_version, try_parse_int
 
 PROV_ID = "tunein"
 PROV_NAME = "TuneIn Radio"
@@ -36,10 +22,14 @@ LOGGER = logging.getLogger(PROV_ID)
 
 CONFIG_ENTRIES = [
     ConfigEntry(
-        entry_key=CONF_USERNAME, entry_type=ConfigEntryType.STRING, description_key=CONF_USERNAME
+        entry_key=CONF_USERNAME,
+        entry_type=ConfigEntryType.STRING,
+        description_key=CONF_USERNAME,
     ),
     ConfigEntry(
-        entry_key=CONF_PASSWORD, entry_type=ConfigEntryType.PASSWORD, description_key=CONF_PASSWORD
+        entry_key=CONF_PASSWORD,
+        entry_type=ConfigEntryType.PASSWORD,
+        description_key=CONF_PASSWORD,
     ),
 ]
 
@@ -51,6 +41,9 @@ async def async_setup(mass):
 
 
 class TuneInProvider(MusicProvider):
+    """Provider implementation for Tune In."""
+
+    # pylint: disable=abstract-method
 
     _username = None
     _password = None
@@ -78,7 +71,7 @@ class TuneInProvider(MusicProvider):
         return [MediaType.Radio]
 
     async def async_on_start(self) -> bool:
-        """Called on startup. Handle initialization of the provider based on config."""
+        """Handle initialization of the provider based on config."""
         # pylint: disable=attribute-defined-outside-init
         self._http_session = aiohttp.ClientSession(
             loop=self.mass.loop, connector=aiohttp.TCPConnector()
@@ -92,7 +85,7 @@ class TuneInProvider(MusicProvider):
         self._throttler = Throttler(rate_limit=1, period=1)
 
     async def async_on_stop(self):
-        """Called on shutdown. Handle correct close/cleanup of the provider on exit."""
+        """Handle correct close/cleanup of the provider on exit."""
         if self._http_session:
             await self._http_session.close()
 
@@ -101,6 +94,7 @@ class TuneInProvider(MusicProvider):
     ) -> SearchResult:
         """
         Perform search on musicprovider.
+
             :param search_query: Search query.
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
@@ -120,10 +114,10 @@ class TuneInProvider(MusicProvider):
                     radio = await self.__async_parse_radio(item)
                     yield radio
 
-    async def async_get_radio(self, radio_id: str) -> Radio:
+    async def async_get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
         radio = None
-        params = {"c": "composite", "detail": "listing", "id": radio_id}
+        params = {"c": "composite", "detail": "listing", "id": prov_radio_id}
         result = await self.__async_get_data("Describe.ashx", params)
         if result and result.get("body") and result["body"][0].get("children"):
             item = result["body"][0]["children"][0]
@@ -131,7 +125,7 @@ class TuneInProvider(MusicProvider):
         return radio
 
     async def __async_parse_radio(self, details: dict) -> Radio:
-        """parse Radio object from json obj returned from api"""
+        """Parse Radio object from json obj returned from api."""
         radio = Radio(item_id=details["preset_id"], provider=PROV_ID)
         if "name" in details:
             radio.name = details["name"]
@@ -187,22 +181,26 @@ class TuneInProvider(MusicProvider):
                     item_id=item_id,
                     provider=PROV_ID,
                     path=stream["url"],
-                    content_type=stream["media_type"],
+                    content_type=ContentType(stream["media_type"]),
                     sample_rate=44100,
                     bit_depth=16,
                     details=stream,
                 )
         return None
 
-    async def __async_get_data(self, endpoint, params={}):
-        """get data from api"""
+    async def __async_get_data(self, endpoint, params=None):
+        """Get data from api."""
+        if not params:
+            params = {}
         url = "https://opml.radiotime.com/%s" % endpoint
         params["render"] = "json"
         params["formats"] = "ogg,aac,wma,mp3"
         params["username"] = self._username
         params["partnerId"] = "1"
         async with self._throttler:
-            async with self._http_session.get(url, params=params, verify_ssl=False) as response:
+            async with self._http_session.get(
+                url, params=params, verify_ssl=False
+            ) as response:
                 result = await response.json()
                 if not result or "error" in result:
                     LOGGER.error(url)

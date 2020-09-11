@@ -6,7 +6,6 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, List, Optional, Union
 
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.constants import EVENT_PLAYER_CONTROL_UPDATED, EVENT_PLAYER_CHANGED
 
 
 class PlayerState(str, Enum):
@@ -57,11 +56,11 @@ class Player:
     config_entries: List[ConfigEntry] = field(default_factory=list)
     updated_at: datetime = datetime.utcnow()  # managed by playermanager!
     active_queue: str = ""  # managed by playermanager!
-    group_parents: List[str] = field(default_factory=list) # managed by playermanager!
-    cur_queue_item_id: str = None # managed by playermanager!
+    group_parents: List[str] = field(default_factory=list)  # managed by playermanager!
+    cur_queue_item_id: str = None  # managed by playermanager!
 
     def __setattr__(self, name, value):
-        """Event when control is updated. Do not override"""
+        """Event when control is updated. Do not override."""
         if name == "updated_at":
             # updated at is set by the on_update callback
             # make sure we do not hit an endless loop
@@ -84,8 +83,12 @@ class PlayerControlType(int, Enum):
 
 @dataclass
 class PlayerControl:
-    """Model for a player control which allows for a
-    plugin-like structure to override common player commands."""
+    """
+    Model for a player control.
+
+    Allows for a plugin-like
+    structure to override common player commands.
+    """
 
     type: PlayerControlType = PlayerControlType.UNKNOWN
     id: str = ""

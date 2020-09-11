@@ -1,23 +1,14 @@
 """Squeezebox emulated player provider."""
 
 import asyncio
-import decimal
 import logging
-import os
-import random
-import socket
-import struct
-import sys
-import time
-from collections import OrderedDict
 from typing import List
 
 from music_assistant.constants import CONF_CROSSFADE_DURATION
-from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
-from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
+from music_assistant.models.config_entry import ConfigEntry
+from music_assistant.models.player import DeviceInfo, PlayerFeature
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.playerprovider import PlayerProvider
-from music_assistant.utils import get_hostname, get_ip, run_periodic, try_parse_int
 
 from .constants import PROV_ID, PROV_NAME
 from .discovery import DiscoveryProtocol
@@ -40,7 +31,7 @@ async def async_setup(mass):
 
 
 class PySqueezeProvider(PlayerProvider):
-    """Python implementation of SlimProto server"""
+    """Python implementation of SlimProto server."""
 
     _socket_clients = {}
     _tasks = []
@@ -61,16 +52,18 @@ class PySqueezeProvider(PlayerProvider):
         return CONFIG_ENTRIES
 
     async def async_on_start(self) -> bool:
-        """Called on startup. Handle initialization of the provider."""
+        """Handle initialization of the provider. Called on startup."""
         # start slimproto server
         self._tasks.append(
-            self.mass.add_job(asyncio.start_server(self.__async_client_connected, "0.0.0.0", 3483))
+            self.mass.add_job(
+                asyncio.start_server(self.__async_client_connected, "0.0.0.0", 3483)
+            )
         )
         # setup discovery
         self._tasks.append(self.mass.add_job(self.async_start_discovery()))
 
     async def async_on_stop(self):
-        """Called on shutdown. Handle correct close/cleanup of the provider on exit."""
+        """Handle correct close/cleanup of the provider on exit."""
         for task in self._tasks:
             task.cancel()
         for client in self._socket_clients.values():
@@ -78,12 +71,15 @@ class PySqueezeProvider(PlayerProvider):
 
     async def async_cmd_play_uri(self, player_id: str, uri: str):
         """
-        Play the specified uri/url on the goven player.
+        Play the specified uri/url on the given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         socket_client = self._socket_clients.get(player_id)
         if socket_client:
-            crossfade = self.mass.config.player_settings[player_id][CONF_CROSSFADE_DURATION]
+            crossfade = self.mass.config.player_settings[player_id][
+                CONF_CROSSFADE_DURATION
+            ]
             await socket_client.async_cmd_play_uri(
                 uri, send_flush=True, crossfade_duration=crossfade
             )
@@ -93,6 +89,7 @@ class PySqueezeProvider(PlayerProvider):
     async def async_cmd_stop(self, player_id: str):
         """
         Send STOP command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         socket_client = self._socket_clients.get(player_id)
@@ -103,7 +100,8 @@ class PySqueezeProvider(PlayerProvider):
 
     async def async_cmd_play(self, player_id: str):
         """
-        Send STOP command to given player.
+        Send PLAY command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         socket_client = self._socket_clients.get(player_id)
@@ -115,6 +113,7 @@ class PySqueezeProvider(PlayerProvider):
     async def async_cmd_pause(self, player_id: str):
         """
         Send PAUSE command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         socket_client = self._socket_clients.get(player_id)
@@ -126,6 +125,7 @@ class PySqueezeProvider(PlayerProvider):
     async def async_cmd_next(self, player_id: str):
         """
         Send NEXT TRACK command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         queue = self.mass.player_manager.get_player_queue(player_id)
@@ -137,6 +137,7 @@ class PySqueezeProvider(PlayerProvider):
     async def async_cmd_previous(self, player_id: str):
         """
         Send PREVIOUS TRACK command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         queue = self.mass.player_manager.get_player_queue(player_id)
@@ -148,6 +149,7 @@ class PySqueezeProvider(PlayerProvider):
     async def async_cmd_power_on(self, player_id: str):
         """
         Send POWER ON command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         socket_client = self._socket_clients.get(player_id)
@@ -155,13 +157,16 @@ class PySqueezeProvider(PlayerProvider):
             await socket_client.async_cmd_power(True)
             # save power and volume state in cache
             cache_str = f"squeezebox_player_state_{player_id}"
-            await self.mass.cache.async_set(cache_str, (True, socket_client.volume_level))
+            await self.mass.cache.async_set(
+                cache_str, (True, socket_client.volume_level)
+            )
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
     async def async_cmd_power_off(self, player_id: str):
         """
         Send POWER OFF command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         socket_client = self._socket_clients.get(player_id)
@@ -170,13 +175,16 @@ class PySqueezeProvider(PlayerProvider):
             # store last power state as we need it when the player (re)connects
             # save power and volume state in cache
             cache_str = f"squeezebox_player_state_{player_id}"
-            await self.mass.cache.async_set(cache_str, (False, socket_client.volume_level))
+            await self.mass.cache.async_set(
+                cache_str, (False, socket_client.volume_level)
+            )
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
     async def async_cmd_volume_set(self, player_id: str, volume_level: int):
         """
         Send volume level command to given player.
+
             :param player_id: player_id of the player to handle the command.
             :param volume_level: volume level to set (0..100).
         """
@@ -185,13 +193,16 @@ class PySqueezeProvider(PlayerProvider):
             await socket_client.async_cmd_volume_set(volume_level)
             # save power and volume state in cache
             cache_str = f"squeezebox_player_state_{player_id}"
-            await self.mass.cache.async_set(cache_str, (socket_client.powered, volume_level))
+            await self.mass.cache.async_set(
+                cache_str, (socket_client.powered, volume_level)
+            )
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
     async def async_cmd_volume_mute(self, player_id: str, is_muted=False):
         """
         Send volume MUTE command to given player.
+
             :param player_id: player_id of the player to handle the command.
             :param is_muted: bool with new mute state.
         """
@@ -203,7 +214,8 @@ class PySqueezeProvider(PlayerProvider):
 
     async def async_cmd_queue_play_index(self, player_id: str, index: int):
         """
-        Play item at index X on player's queue
+        Play item at index X on player's queue.
+
             :param player_id: player_id of the player to handle the command.
             :param index: (int) index of the queue item that should start playing
         """
@@ -215,7 +227,8 @@ class PySqueezeProvider(PlayerProvider):
 
     async def async_cmd_queue_load(self, player_id: str, queue_items: List[QueueItem]):
         """
-        Load/overwrite given items in the player's queue implementation
+        Load/overwrite given items in the player's queue implementation.
+
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
@@ -227,6 +240,7 @@ class PySqueezeProvider(PlayerProvider):
     ):
         """
         Insert new items at position X into existing queue.
+
         If insert_at_index 0 or None, will start playing newly added item(s)
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
@@ -238,17 +252,23 @@ class PySqueezeProvider(PlayerProvider):
         if queue and insert_at_index == queue.cur_index:
             return await self.async_cmd_queue_play_index(player_id, insert_at_index)
 
-    async def async_cmd_queue_append(self, player_id: str, queue_items: List[QueueItem]):
+    async def async_cmd_queue_append(
+        self, player_id: str, queue_items: List[QueueItem]
+    ):
         """
         Append new items at the end of the queue.
+
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
         pass  # automagically handled by built-in queue controller
 
-    async def async_cmd_queue_update(self, player_id: str, queue_items: List[QueueItem]):
+    async def async_cmd_queue_update(
+        self, player_id: str, queue_items: List[QueueItem]
+    ):
         """
         Overwrite the existing items in the queue, used for reordering.
+
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
@@ -257,12 +277,14 @@ class PySqueezeProvider(PlayerProvider):
     async def async_cmd_queue_clear(self, player_id: str):
         """
         Clear the player's queue.
+
             :param player_id: player_id of the player to handle the command.
         """
         # queue is handled by built-in queue controller but send stop
         return await self.async_cmd_stop(player_id)
 
     async def async_start_discovery(self):
+        """Start discovery for players."""
         transport, protocol = await self.mass.loop.create_datagram_endpoint(
             lambda: DiscoveryProtocol(self.mass.web.http_port),
             local_addr=("0.0.0.0", 3483),
@@ -314,7 +336,9 @@ class PySqueezeProvider(PlayerProvider):
             if queue:
                 next_item = queue.next_item
                 if next_item:
-                    crossfade = self.mass.config.player_settings[player_id][CONF_CROSSFADE_DURATION]
+                    crossfade = self.mass.config.player_settings[player_id][
+                        CONF_CROSSFADE_DURATION
+                    ]
                     await self._socket_clients[player_id].async_cmd_play_uri(
                         next_item.uri, send_flush=False, crossfade_duration=crossfade
                     )

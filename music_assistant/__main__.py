@@ -1,10 +1,7 @@
 """Start Music Assistant."""
 import argparse
-import asyncio
 import logging
 import os
-import platform
-import sys
 
 from aiorun import run
 from music_assistant.mass import MusicAssistant
@@ -27,7 +24,9 @@ def get_arguments():
         help="Directory that contains the MusicAssistant configuration",
     )
     parser.add_argument(
-        "--debug", action="store_true", help="Start MusicAssistant with verbose debug logging"
+        "--debug",
+        action="store_true",
+        help="Start MusicAssistant with verbose debug logging",
     )
     arguments = parser.parse_args()
     return arguments
@@ -65,8 +64,9 @@ def main():
     def on_shutdown(loop):
         logger.info("shutdown requested!")
         loop.run_until_complete(mass.async_stop())
-        
+
     run(mass.async_start(), use_uvloop=True, shutdown_callback=on_shutdown)
+
 
 if __name__ == "__main__":
     main()

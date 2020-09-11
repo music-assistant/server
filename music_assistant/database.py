@@ -1,11 +1,10 @@
 """Database logic."""
 # pylint: disable=too-many-lines
-import asyncio
 import logging
 import os
 import sqlite3
-from typing import List
 from functools import partial
+from typing import List
 
 import aiosqlite
 from music_assistant.models.media_types import (
@@ -22,25 +21,28 @@ from music_assistant.models.media_types import (
     Track,
     TrackQuality,
 )
-from music_assistant.utils import get_sort_name, try_parse_int, compare_strings
+from music_assistant.utils import compare_strings, get_sort_name, try_parse_int
 
 LOGGER = logging.getLogger("mass")
 
-import contextlib
-
 
 class DbConnect:
+    """Helper to initialize the db connection or utilize an existing one."""
+
     def __init__(self, dbfile: str, db_conn: sqlite3.Connection = None):
+        """Initialize class."""
         self._db_conn_provided = db_conn is not None
         self._db_conn = db_conn
         self._dbfile = dbfile
 
     async def __aenter__(self):
+        """Enter."""
         if not self._db_conn_provided:
             self._db_conn = await aiosqlite.connect(self._dbfile, timeout=120)
         return self._db_conn
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        """Exit."""
         if not self._db_conn_provided:
             await self._db_conn.close()
         return False
@@ -50,6 +52,7 @@ class Database:
     """Class that holds the (logic to the) database."""
 
     def __init__(self, mass):
+        """Initialize class."""
         self.mass = mass
         self._dbfile = os.path.join(mass.config.data_path, "database.db")
         self.db_conn = partial(DbConnect, self._dbfile)
@@ -177,7 +180,9 @@ class Database:
                 return item_id[0]
         return None
 
-    async def async_search(self, searchquery: str, media_types: List[MediaType]) -> SearchResult:
+    async def async_search(
+        self, searchquery: str, media_types: List[MediaType]
+    ) -> SearchResult:
         """Search library for the given searchphrase."""
         async with DbConnect(self._dbfile) as db_conn:
             result = SearchResult([], [], [], [], [])
@@ -185,27 +190,34 @@ class Database:
             if media_types is None or MediaType.Artist in media_types:
                 sql_query = ' WHERE name LIKE "%s"' % searchquery
                 result.artists = [
-                    item async for item in self.async_get_artists(sql_query, db_conn=db_conn)
+                    item
+                    async for item in self.async_get_artists(sql_query, db_conn=db_conn)
                 ]
             if media_types is None or MediaType.Album in media_types:
                 sql_query = ' WHERE name LIKE "%s"' % searchquery
                 result.albums = [
-                    item async for item in self.async_get_albums(sql_query, db_conn=db_conn)
+                    item
+                    async for item in self.async_get_albums(sql_query, db_conn=db_conn)
                 ]
             if media_types is None or MediaType.Track in media_types:
                 sql_query = ' WHERE name LIKE "%s"' % searchquery
                 result.tracks = [
-                    item async for item in self.async_get_tracks(sql_query, db_conn=db_conn)
+                    item
+                    async for item in self.async_get_tracks(sql_query, db_conn=db_conn)
                 ]
             if media_types is None or MediaType.Playlist in media_types:
                 sql_query = ' WHERE name LIKE "%s"' % searchquery
                 result.playlists = [
-                    item async for item in self.async_get_playlists(sql_query, db_conn=db_conn)
+                    item
+                    async for item in self.async_get_playlists(
+                        sql_query, db_conn=db_conn
+                    )
                 ]
             if media_types is None or MediaType.Radio in media_types:
                 sql_query = ' WHERE name LIKE "%s"' % searchquery
                 result.radios = [
-                    item async for item in self.async_get_radios(sql_query, db_conn=db_conn)
+                    item
+                    async for item in self.async_get_radios(sql_query, db_conn=db_conn)
                 ]
             return result
 
@@ -218,9 +230,11 @@ class Database:
                 provider = "{provider_id}" AND media_type = {int(MediaType.Artist)})"""
         else:
             sql_query = f"""WHERE artist_id in
-                    (SELECT item_id FROM library_items 
+                    (SELECT item_id FROM library_items
                     WHERE media_type = {int(MediaType.Artist)})"""
-        async for item in self.async_get_artists(sql_query, orderby=orderby, fulldata=True):
+        async for item in self.async_get_artists(
+            sql_query, orderby=orderby, fulldata=True
+        ):
             yield item
 
     async def async_get_library_albums(
@@ -233,7 +247,9 @@ class Database:
         else:
             sql_query = f"""WHERE album_id in
                 (SELECT item_id FROM library_items WHERE media_type = {int(MediaType.Album)})"""
-        async for item in self.async_get_albums(sql_query, orderby=orderby, fulldata=True):
+        async for item in self.async_get_albums(
+            sql_query, orderby=orderby, fulldata=True
+        ):
             yield item
 
     async def async_get_library_tracks(
@@ -242,7 +258,7 @@ class Database:
         """Get all library tracks, optionally filtered by provider."""
         if provider_id is not None:
             sql_query = f"""WHERE track_id in
-                (SELECT item_id FROM library_items WHERE provider = "{provider_id}" 
+                (SELECT item_id FROM library_items WHERE provider = "{provider_id}"
                 AND media_type = {int(MediaType.Track)})"""
         else:
             sql_query = f"""WHERE track_id in
@@ -279,7 +295,10 @@ class Database:
             yield item
 
     async def async_get_playlists(
-        self, filter_query: str = None, orderby: str = "name", db_conn: sqlite3.Connection = None
+        self,
+        filter_query: str = None,
+        orderby: str = "name",
+        db_conn: sqlite3.Connection = None,
     ) -> List[Playlist]:
         """Get all playlists from database."""
         async with DbConnect(self._dbfile, db_conn) as db_conn:
@@ -321,12 +340,17 @@ class Database:
     async def async_get_playlist(self, playlist_id: int) -> Playlist:
         """Get playlist record by id."""
         playlist_id = try_parse_int(playlist_id)
-        async for item in self.async_get_playlists(f"WHERE playlist_id = {playlist_id}"):
+        async for item in self.async_get_playlists(
+            f"WHERE playlist_id = {playlist_id}"
+        ):
             return item
         return None
 
     async def async_get_radios(
-        self, filter_query: str = None, orderby: str = "name", db_conn: sqlite3.Connection = None
+        self,
+        filter_query: str = None,
+        orderby: str = "name",
+        db_conn: sqlite3.Connection = None,
     ) -> List[Radio]:
         """Fetch radio records from database."""
         sql_query = "SELECT * FROM radios"
@@ -345,7 +369,9 @@ class Database:
                     metadata=await self.__async_get_metadata(
                         db_row["radio_id"], MediaType.Radio, db_conn
                     ),
-                    tags=await self.__async_get_tags(db_row["radio_id"], MediaType.Radio, db_conn),
+                    tags=await self.__async_get_tags(
+                        db_row["radio_id"], MediaType.Radio, db_conn
+                    ),
                     external_ids=await self.__async_get_external_ids(
                         db_row["radio_id"], MediaType.Radio, db_conn
                     ),
@@ -402,7 +428,9 @@ class Database:
                 async with db_conn.execute(sql_query, (last_row_id,)) as cursor:
                     playlist_id = await cursor.fetchone()
                     playlist_id = playlist_id[0]
-                LOGGER.debug("added playlist %s to database: %s", playlist.name, playlist_id)
+                LOGGER.debug(
+                    "added playlist %s to database: %s", playlist.name, playlist_id
+                )
             # add/update metadata
             await self.__async_add_prov_ids(
                 playlist_id, MediaType.Playlist, playlist.provider_ids, db_conn
@@ -415,7 +443,7 @@ class Database:
         return playlist_id
 
     async def async_add_radio(self, radio: Radio):
-        """add a new radio record to the database."""
+        """Add a new radio record to the database."""
         assert radio.name
         async with DbConnect(self._dbfile) as db_conn:
             async with db_conn.execute(
@@ -435,15 +463,23 @@ class Database:
                 async with db_conn.execute(sql_query, (last_row_id,)) as cursor:
                     radio_id = await cursor.fetchone()
                     radio_id = radio_id[0]
-                LOGGER.debug("added radio station %s to database: %s", radio.name, radio_id)
+                LOGGER.debug(
+                    "added radio station %s to database: %s", radio.name, radio_id
+                )
             # add/update metadata
-            await self.__async_add_prov_ids(radio_id, MediaType.Radio, radio.provider_ids, db_conn)
-            await self.__async_add_metadata(radio_id, MediaType.Radio, radio.metadata, db_conn)
+            await self.__async_add_prov_ids(
+                radio_id, MediaType.Radio, radio.provider_ids, db_conn
+            )
+            await self.__async_add_metadata(
+                radio_id, MediaType.Radio, radio.metadata, db_conn
+            )
             # save
             await db_conn.commit()
         return radio_id
 
-    async def async_add_to_library(self, item_id: int, media_type: MediaType, provider: str):
+    async def async_add_to_library(
+        self, item_id: int, media_type: MediaType, provider: str
+    ):
         """Add an item to the library (item must already be present in the db!)."""
         async with DbConnect(self._dbfile) as db_conn:
             item_id = try_parse_int(item_id)
@@ -452,7 +488,9 @@ class Database:
             await db_conn.execute(sql_query, (item_id, provider, media_type))
             await db_conn.commit()
 
-    async def async_remove_from_library(self, item_id: int, media_type: MediaType, provider: str):
+    async def async_remove_from_library(
+        self, item_id: int, media_type: MediaType, provider: str
+    ):
         """Remove item from the library."""
         async with DbConnect(self._dbfile) as db_conn:
             item_id = try_parse_int(item_id)
@@ -545,8 +583,12 @@ class Database:
             await self.__async_add_prov_ids(
                 artist_id, MediaType.Artist, artist.provider_ids, db_conn
             )
-            await self.__async_add_metadata(artist_id, MediaType.Artist, artist.metadata, db_conn)
-            await self.__async_add_tags(artist_id, MediaType.Artist, artist.tags, db_conn)
+            await self.__async_add_metadata(
+                artist_id, MediaType.Artist, artist.metadata, db_conn
+            )
+            await self.__async_add_tags(
+                artist_id, MediaType.Artist, artist.tags, db_conn
+            )
             await self.__async_add_external_ids(
                 artist_id, MediaType.Artist, artist.external_ids, db_conn
             )
@@ -602,13 +644,15 @@ class Database:
                     album.tags = await self.__async_get_tags(
                         album.item_id, MediaType.Album, db_conn
                     )
-                    album.labels = await self.__async_get_album_labels(album.item_id, db_conn)
+                    album.labels = await self.__async_get_album_labels(
+                        album.item_id, db_conn
+                    )
                 yield album
 
     async def async_get_album(
         self, album_id: int, fulldata=True, db_conn: sqlite3.Connection = None
     ) -> Album:
-        """get album record by id"""
+        """Get album record by id."""
         album_id = try_parse_int(album_id)
         async for item in self.async_get_albums(
             "WHERE album_id = %d" % album_id, fulldata=fulldata, db_conn=db_conn
@@ -646,7 +690,9 @@ class Database:
             if not album_id:
                 sql_query = """SELECT album_id, year, version, albumtype FROM
                     albums WHERE artist_id=? AND name=?"""
-                async with db_conn.execute(sql_query, (album.artist.item_id, album.name)) as cursor:
+                async with db_conn.execute(
+                    sql_query, (album.artist.item_id, album.name)
+                ) as cursor:
                     albums = await cursor.fetchall()
                 for result in albums:
                     if (not album.version and result["year"] == album.year) or (
@@ -675,8 +721,12 @@ class Database:
                 await db_conn.commit()
             # always add metadata and tags etc. because we might have received
             # additional info or a match from other provider
-            await self.__async_add_prov_ids(album_id, MediaType.Album, album.provider_ids, db_conn)
-            await self.__async_add_metadata(album_id, MediaType.Album, album.metadata, db_conn)
+            await self.__async_add_prov_ids(
+                album_id, MediaType.Album, album.provider_ids, db_conn
+            )
+            await self.__async_add_metadata(
+                album_id, MediaType.Album, album.metadata, db_conn
+            )
             await self.__async_add_tags(album_id, MediaType.Album, album.tags, db_conn)
             await self.__async_add_album_labels(album_id, album.labels, db_conn)
             await self.__async_add_external_ids(
@@ -738,7 +788,9 @@ class Database:
                     )
                 yield track
 
-    async def async_get_track(self, track_id: int, fulldata=True, db_conn: sqlite3.Connection = None) -> Track:
+    async def async_get_track(
+        self, track_id: int, fulldata=True, db_conn: sqlite3.Connection = None
+    ) -> Track:
         """Get track record by id."""
         track_id = try_parse_int(track_id)
         async for item in self.async_get_tracks(
@@ -760,14 +812,18 @@ class Database:
             track_id = await self.__async_get_item_by_external_id(track, db_conn)
             # fallback to matching on album_id, name and version
             if not track_id:
-                sql_query = (
-                    "SELECT track_id, duration, version FROM tracks WHERE album_id=? AND name=?"
-                )
-                async with db_conn.execute(sql_query, (track.album.item_id, track.name)) as cursor:
+                sql_query = "SELECT track_id, duration, version \
+                    FROM tracks WHERE album_id=? AND name=?"
+                async with db_conn.execute(
+                    sql_query, (track.album.item_id, track.name)
+                ) as cursor:
                     results = await cursor.fetchall()
                 for result in results:
                     # we perform an additional safety check on the duration or version
-                    if (track.version and compare_strings(result["version"], track.version)) or (
+                    if (
+                        track.version
+                        and compare_strings(result["version"], track.version)
+                    ) or (
                         (
                             not track.version
                             and not result["version"]
@@ -779,9 +835,8 @@ class Database:
             # no match found: insert track
             if not track_id:
                 assert track.name and track.album.item_id
-                sql_query = (
-                    "INSERT INTO tracks (name, album_id, duration, version) VALUES(?,?,?,?);"
-                )
+                sql_query = "INSERT INTO tracks (name, album_id, duration, version) \
+                        VALUES(?,?,?,?);"
                 query_params = (
                     track.name,
                     track.album.item_id,
@@ -802,8 +857,12 @@ class Database:
             for artist in track.artists:
                 sql_query = "INSERT or IGNORE INTO track_artists (track_id, artist_id) VALUES(?,?);"
                 await db_conn.execute(sql_query, (track_id, artist.item_id))
-            await self.__async_add_prov_ids(track_id, MediaType.Track, track.provider_ids, db_conn)
-            await self.__async_add_metadata(track_id, MediaType.Track, track.metadata, db_conn)
+            await self.__async_add_prov_ids(
+                track_id, MediaType.Track, track.provider_ids, db_conn
+            )
+            await self.__async_add_metadata(
+                track_id, MediaType.Track, track.metadata, db_conn
+            )
             await self.__async_add_tags(track_id, MediaType.Track, track.tags, db_conn)
             await self.__async_add_external_ids(
                 track_id, MediaType.Track, track.external_ids, db_conn
@@ -818,28 +877,40 @@ class Database:
             )
         return track_id
 
-    async def async_update_playlist(self, playlist_id: int, column_key: str, column_value: str):
+    async def async_update_playlist(
+        self, playlist_id: int, column_key: str, column_value: str
+    ):
         """Update column of existing playlist."""
         async with DbConnect(self._dbfile) as db_conn:
             sql_query = f"UPDATE playlists SET {column_key}=? WHERE playlist_id=?;"
             await db_conn.execute(sql_query, (column_value, playlist_id))
             await db_conn.commit()
 
-    async def async_get_artist_tracks(self, artist_id: int, orderby: str = "name") -> List[Track]:
-        """get all library tracks for the given artist"""
+    async def async_get_artist_tracks(
+        self, artist_id: int, orderby: str = "name"
+    ) -> List[Track]:
+        """Get all library tracks for the given artist."""
         artist_id = try_parse_int(artist_id)
         sql_query = f"""WHERE track_id in
             (SELECT track_id FROM track_artists WHERE artist_id = {artist_id})"""
-        async for item in self.async_get_tracks(sql_query, orderby=orderby, fulldata=False):
+        async for item in self.async_get_tracks(
+            sql_query, orderby=orderby, fulldata=False
+        ):
             yield item
 
-    async def async_get_artist_albums(self, artist_id: int, orderby: str = "name") -> List[Album]:
-        """get all library albums for the given artist"""
+    async def async_get_artist_albums(
+        self, artist_id: int, orderby: str = "name"
+    ) -> List[Album]:
+        """Get all library albums for the given artist."""
         sql_query = " WHERE artist_id = %s" % artist_id
-        async for item in self.async_get_albums(sql_query, orderby=orderby, fulldata=False):
+        async for item in self.async_get_albums(
+            sql_query, orderby=orderby, fulldata=False
+        ):
             yield item
 
-    async def async_set_track_loudness(self, provider_track_id: str, provider: str, loudness: int):
+    async def async_set_track_loudness(
+        self, provider_track_id: str, provider: str, loudness: int
+    ):
         """Set integrated loudness for a track in db."""
         async with DbConnect(self._dbfile) as db_conn:
             sql_query = """INSERT or REPLACE INTO track_loudness
@@ -852,14 +923,20 @@ class Database:
         async with DbConnect(self._dbfile) as db_conn:
             sql_query = """SELECT loudness FROM track_loudness WHERE
                 provider_track_id = ? AND provider = ?"""
-            async with db_conn.execute(sql_query, (provider_track_id, provider)) as cursor:
+            async with db_conn.execute(
+                sql_query, (provider_track_id, provider)
+            ) as cursor:
                 result = await cursor.fetchone()
             if result:
                 return result[0]
         return None
 
     async def __async_add_metadata(
-        self, item_id: int, media_type: MediaType, metadata: dict, db_conn: sqlite3.Connection
+        self,
+        item_id: int,
+        media_type: MediaType,
+        metadata: dict,
+        db_conn: sqlite3.Connection,
     ):
         """Add or update metadata."""
         for key, value in metadata.items():
@@ -877,7 +954,9 @@ class Database:
     ) -> dict:
         """Get metadata for media item."""
         metadata = {}
-        sql_query = "SELECT key, value FROM metadata WHERE item_id = ? AND media_type = ?"
+        sql_query = (
+            "SELECT key, value FROM metadata WHERE item_id = ? AND media_type = ?"
+        )
         if filter_key:
             sql_query += ' AND key = "%s"' % filter_key
         async with db_conn.execute(sql_query, (item_id, media_type)) as cursor:
@@ -889,9 +968,13 @@ class Database:
         return metadata
 
     async def __async_add_tags(
-        self, item_id: int, media_type: MediaType, tags: List[str], db_conn: sqlite3.Connection
+        self,
+        item_id: int,
+        media_type: MediaType,
+        tags: List[str],
+        db_conn: sqlite3.Connection,
     ):
-        """add tags to db"""
+        """Add tags to db."""
         for tag in tags:
             sql_query = "INSERT or IGNORE INTO tags (name) VALUES(?);"
             async with db_conn.execute(sql_query, (tag,)) as cursor:
@@ -903,7 +986,7 @@ class Database:
     async def __async_get_tags(
         self, item_id: int, media_type: MediaType, db_conn: sqlite3.Connection
     ) -> List[str]:
-        """get tags for media item"""
+        """Get tags for media item."""
         tags = []
         sql_query = """SELECT name FROM tags INNER JOIN media_tags ON
             tags.tag_id = media_tags.tag_id WHERE item_id = ? AND media_type = ?"""
@@ -916,18 +999,20 @@ class Database:
     async def __async_add_album_labels(
         self, album_id: int, labels: List[str], db_conn: sqlite3.Connection
     ):
-        """add labels to album in db"""
+        """Add labels to album in db."""
         for label in labels:
             sql_query = "INSERT or IGNORE INTO labels (name) VALUES(?);"
             async with db_conn.execute(sql_query, (label,)) as cursor:
                 label_id = cursor.lastrowid
-            sql_query = "INSERT or IGNORE INTO album_labels (album_id, label_id) VALUES(?,?);"
+            sql_query = (
+                "INSERT or IGNORE INTO album_labels (album_id, label_id) VALUES(?,?);"
+            )
             await db_conn.execute(sql_query, (album_id, label_id))
 
     async def __async_get_album_labels(
         self, album_id: int, db_conn: sqlite3.Connection
     ) -> List[str]:
-        """get labels for album item"""
+        """Get labels for album item."""
         labels = []
         sql_query = """SELECT name FROM labels INNER JOIN album_labels
             ON labels.label_id = album_labels.label_id WHERE album_id = ?"""
@@ -940,20 +1025,26 @@ class Database:
     async def __async_get_track_artists(
         self, track_id: int, db_conn: sqlite3.Connection, fulldata: bool = False
     ) -> List[Artist]:
-        """get artists for track"""
+        """Get artists for track."""
         sql_query = (
             "WHERE artist_id in (SELECT artist_id FROM track_artists WHERE track_id = %s)"
             % track_id
         )
         return [
             item
-            async for item in self.async_get_artists(sql_query, fulldata=fulldata, db_conn=db_conn)
+            async for item in self.async_get_artists(
+                sql_query, fulldata=fulldata, db_conn=db_conn
+            )
         ]
 
     async def __async_add_external_ids(
-        self, item_id: int, media_type: MediaType, external_ids: dict, db_conn: sqlite3.Connection
+        self,
+        item_id: int,
+        media_type: MediaType,
+        external_ids: dict,
+        db_conn: sqlite3.Connection,
     ):
-        """add or update external_ids"""
+        """Add or update external_ids."""
         for key, value in external_ids.items():
             sql_query = """INSERT or REPLACE INTO external_ids
                 (item_id, media_type, key, value) VALUES(?,?,?,?);"""
@@ -962,9 +1053,11 @@ class Database:
     async def __async_get_external_ids(
         self, item_id: int, media_type: MediaType, db_conn: sqlite3.Connection
     ) -> dict:
-        """get external_ids for media item"""
+        """Get external_ids for media item."""
         external_ids = {}
-        sql_query = "SELECT key, value FROM external_ids WHERE item_id = ? AND media_type = ?"
+        sql_query = (
+            "SELECT key, value FROM external_ids WHERE item_id = ? AND media_type = ?"
+        )
         for db_row in await db_conn.execute_fetchall(sql_query, (item_id, media_type)):
             external_ids[db_row[0]] = db_row[1]
         return external_ids
@@ -1017,8 +1110,12 @@ class Database:
     ) -> List[str]:
         """Get the providers that have this media_item added to the library."""
         providers = []
-        sql_query = "SELECT provider FROM library_items WHERE item_id = ? AND media_type = ?"
-        for db_row in await db_conn.execute_fetchall(sql_query, (db_item_id, media_type)):
+        sql_query = (
+            "SELECT provider FROM library_items WHERE item_id = ? AND media_type = ?"
+        )
+        for db_row in await db_conn.execute_fetchall(
+            sql_query, (db_item_id, media_type)
+        ):
             providers.append(db_row[0])
         return providers
 
@@ -1027,9 +1124,8 @@ class Database:
     ) -> int:
         """Try to get existing item in db by matching the new item's external id's."""
         for key, value in media_item.external_ids.items():
-            sql_query = (
-                "SELECT (item_id) FROM external_ids WHERE media_type=? AND key=? AND value=?;"
-            )
+            sql_query = "SELECT (item_id) FROM external_ids \
+                    WHERE media_type=? AND key=? AND value=?;"
             for db_row in await db_conn.execute_fetchall(
                 sql_query, (media_item.media_type, key, value)
             ):

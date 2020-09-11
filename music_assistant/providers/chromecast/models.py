@@ -1,14 +1,13 @@
+"""
+Class to hold all data about a chromecast for creating connections.
 
-"""Class to hold all data about a chromecast for creating connections.
-    This also has the same attributes as the mDNS fields by zeroconf.
+This also has the same attributes as the mDNS fields by zeroconf.
 """
 import logging
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 from pychromecast.const import CAST_MANUFACTURERS
-from pychromecast.controllers.multizone import MultizoneController
-
 
 from .const import PROV_ID
 
@@ -19,6 +18,7 @@ DEFAULT_PORT = 8009
 @dataclass()
 class ChromecastInfo:
     """Class to hold all data about a chromecast for creating connections.
+
     This also has the same attributes as the mDNS fields by zeroconf.
     """
 
@@ -30,7 +30,7 @@ class ChromecastInfo:
     friendly_name: Optional[str] = ""
 
     def __post_init__(self):
-        """Always convert UUID to string."""
+        """Convert UUID to string."""
         self.uuid = str(self.uuid)
 
     @property
@@ -53,6 +53,7 @@ class ChromecastInfo:
 
 class CastStatusListener:
     """Helper class to handle pychromecast status callbacks.
+
     Necessary because a CastDevice entity can create a new socket client
     and therefore callbacks from multiple chromecast connections can
     potentially arrive. This class allows invalidating past chromecast objects.
@@ -90,7 +91,9 @@ class CastStatusListener:
 
     def added_to_multizone(self, group_uuid):
         """Handle the cast added to a group."""
-        LOGGER.debug("Player %s is added to group %s", self._cast_device.name, group_uuid)
+        LOGGER.debug(
+            "Player %s is added to group %s", self._cast_device.name, group_uuid
+        )
 
     def removed_from_multizone(self, group_uuid):
         """Handle the cast removed from a group."""
@@ -107,6 +110,7 @@ class CastStatusListener:
 
     def invalidate(self):
         """Invalidate this status listener.
+
         All following callbacks won't be forwarded.
         """
         # pylint: disable=protected-access

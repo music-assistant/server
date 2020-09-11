@@ -1,11 +1,8 @@
-"""
-    PlayerManager:
-    Orchestrates all players from player providers and forwarding of commands and states.
-"""
+"""PlayerManager: Orchestrates all players from player providers."""
 
-from datetime import datetime
 import logging
-from typing import List, Optional, Any
+from datetime import datetime
+from typing import Any, List, Optional
 
 from music_assistant.constants import (
     CONF_ENABLED,
@@ -42,9 +39,10 @@ LOGGER = logging.getLogger("mass")
 
 
 class PlayerManager:
-    """several helpers to handle playback through player providers"""
+    """Several helpers to handle playback through player providers."""
 
     def __init__(self, mass):
+        """Initialize class."""
         self.mass = mass
         self._players = {}
         self._org_players = {}
@@ -55,7 +53,7 @@ class PlayerManager:
         self._player_controls_config_entries = []
 
     async def async_setup(self):
-        """Async initialize of module"""
+        """Async initialize of module."""
         self.mass.add_job(self.poll_task())
 
     async def async_close(self):
@@ -67,8 +65,8 @@ class PlayerManager:
     async def poll_task(self):
         """Check for updates on players that need to be polled."""
         for player in self._org_players.values():
-            if (player.should_poll
-                and (self._poll_ticks >= POLL_INTERVAL or player.state == PlayerState.Playing)
+            if player.should_poll and (
+                self._poll_ticks >= POLL_INTERVAL or player.state == PlayerState.Playing
             ):
                 # Just request update, value checking for changes is handled
                 await self.async_update_player(player)
@@ -101,7 +99,7 @@ class PlayerManager:
     @callback
     def get_player_queue(self, player_id: str) -> PlayerQueue:
         """Return player's queue by player_id or None if player does not exist."""
-        if not player_id in self._players:
+        if player_id not in self._players:
             return None
         player = self._players[player_id]
         return self._player_queues.get(player.active_queue)
@@ -109,7 +107,7 @@ class PlayerManager:
     @callback
     def get_player_control(self, control_id: str) -> PlayerControl:
         """Return PlayerControl by id."""
-        if not control_id in self._controls:
+        if control_id not in self._controls:
             LOGGER.warning("PlayerControl %s is not available", control_id)
             return None
         return self._controls[control_id]
@@ -135,11 +133,15 @@ class PlayerManager:
         await self.__async_create_player_state(player)
         if is_new_player:
             # create player queue
-            if not player.player_id in self._player_queues:
-                self._player_queues[player.player_id] = PlayerQueue(self.mass, player.player_id)
+            if player.player_id not in self._player_queues:
+                self._player_queues[player.player_id] = PlayerQueue(
+                    self.mass, player.player_id
+                )
             # TODO: turn on player if it was previously turned on ?
             LOGGER.info(
-                "New player added: %s/%s", player.provider_id, self._players[player.player_id].name
+                "New player added: %s/%s",
+                player.provider_id,
+                self._players[player.player_id].name,
             )
             self.mass.signal_event(EVENT_PLAYER_ADDED, self._players[player.player_id])
 
@@ -154,7 +156,7 @@ class PlayerManager:
         """Update an existing player (or register as new if non existing)."""
         if not player:
             return
-        if not player.player_id in self._players:
+        if player.player_id not in self._players:
             return await self.async_add_player(player)
         await self.__async_create_player_state(player)
 
@@ -179,7 +181,10 @@ class PlayerManager:
         # update all players using this playercontrol
         for player_id, player in self._players.items():
             conf = self.mass.config.player_settings[player_id]
-            if control.id in [conf.get(CONF_POWER_CONTROL), conf.get(CONF_VOLUME_CONTROL)]:
+            if control.id in [
+                conf.get(CONF_POWER_CONTROL),
+                conf.get(CONF_VOLUME_CONTROL),
+            ]:
                 self.mass.add_job(self.async_update_player(player))
 
     # SERVICE CALLS / PLAYER COMMANDS
@@ -191,7 +196,8 @@ class PlayerManager:
         queue_opt: QueueOption = QueueOption.Play,
     ):
         """
-        Play media item(s) on the given player
+        Play media item(s) on the given player.
+
             :param player_id: player_id of the player to handle the command.
             :param media_item: media item(s) that should be played (single item or list of items)
             :param queue_opt:
@@ -248,6 +254,7 @@ class PlayerManager:
     async def async_cmd_stop(self, player_id: str):
         """
         Send STOP command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         # TODO: redirect playback related commands to parent player?
@@ -256,6 +263,7 @@ class PlayerManager:
     async def async_cmd_play(self, player_id: str):
         """
         Send PLAY command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         # power on at play request
@@ -270,6 +278,7 @@ class PlayerManager:
     async def async_cmd_pause(self, player_id: str):
         """
         Send PAUSE command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         return await self.get_player_provider(player_id).async_cmd_pause(player_id)
@@ -278,6 +287,7 @@ class PlayerManager:
     async def async_cmd_play_pause(self, player_id: str):
         """
         Toggle play/pause on given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self.get_player(player_id)
@@ -288,6 +298,7 @@ class PlayerManager:
     async def async_cmd_next(self, player_id: str):
         """
         Send NEXT TRACK command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         return await self.get_player_queue(player_id).async_next()
@@ -295,6 +306,7 @@ class PlayerManager:
     async def async_cmd_previous(self, player_id: str):
         """
         Send PREVIOUS TRACK command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         return await self.get_player_queue(player_id).async_previous()
@@ -302,6 +314,7 @@ class PlayerManager:
     async def async_cmd_power_on(self, player_id: str):
         """
         Send POWER ON command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players[player_id]
@@ -317,6 +330,7 @@ class PlayerManager:
     async def async_cmd_power_off(self, player_id: str):
         """
         Send POWER OFF command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players[player_id]
@@ -338,6 +352,7 @@ class PlayerManager:
     async def async_cmd_power_toggle(self, player_id: str):
         """
         Send POWER TOGGLE command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players[player_id]
@@ -348,6 +363,7 @@ class PlayerManager:
     async def async_cmd_volume_set(self, player_id: str, volume_level: int):
         """
         Send volume level command to given player.
+
             :param player_id: player_id of the player to handle the command.
             :param volume_level: volume level to set (0..100).
         """
@@ -381,7 +397,9 @@ class PlayerManager:
                 child_player = self._players.get(child_player_id)
                 if child_player and child_player.available and child_player.powered:
                     cur_child_volume = child_player.volume_level
-                    new_child_volume = cur_child_volume + (cur_child_volume * volume_dif_percent)
+                    new_child_volume = cur_child_volume + (
+                        cur_child_volume * volume_dif_percent
+                    )
                     await self.async_cmd_volume_set(child_player_id, new_child_volume)
         # regular volume command
         else:
@@ -390,6 +408,7 @@ class PlayerManager:
     async def async_cmd_volume_up(self, player_id: str):
         """
         Send volume UP command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players[player_id]
@@ -401,6 +420,7 @@ class PlayerManager:
     async def async_cmd_volume_down(self, player_id: str):
         """
         Send volume DOWN command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         player = self._players[player_id]
@@ -412,6 +432,7 @@ class PlayerManager:
     async def async_cmd_volume_mute(self, player_id: str, is_muted=False):
         """
         Send MUTE command to given player.
+
             :param player_id: player_id of the player to handle the command.
             :param is_muted: bool with the new mute state.
         """
@@ -421,14 +442,18 @@ class PlayerManager:
 
     # OTHER/HELPER FUNCTIONS
 
-    async def async_get_gain_correct(self, player_id: str, item_id: str, provider_id: str):
+    async def async_get_gain_correct(
+        self, player_id: str, item_id: str, provider_id: str
+    ):
         """Get gain correction for given player / track combination."""
         player_conf = self.mass.config.get_player_config(player_id)
         if not player_conf["volume_normalisation"]:
             return 0
         target_gain = int(player_conf["target_volume"])
         fallback_gain = int(player_conf["fallback_gain_correct"])
-        track_loudness = await self.mass.database.async_get_track_loudness(item_id, provider_id)
+        track_loudness = await self.mass.database.async_get_track_loudness(
+            item_id, provider_id
+        )
         if track_loudness is None:
             gain_correct = fallback_gain
         else:
@@ -446,7 +471,9 @@ class PlayerManager:
     async def __async_create_player_state(self, player: Player):
         """Create/update internal Player object with all calculated properties."""
         self._org_players[player.player_id] = player
-        player_enabled = bool(self.mass.config.get_player_config(player.player_id)[CONF_ENABLED])
+        player_enabled = bool(
+            self.mass.config.get_player_config(player.player_id)[CONF_ENABLED]
+        )
         if player.player_id in self._players:
             player_state = self._players[player.player_id]
         else:
@@ -475,7 +502,9 @@ class PlayerManager:
         player_state.config_entries = self.__get_player_config_entries(player)
         player_state.active_queue = active_queue
         if active_queue in self._player_queues:
-            player_state.cur_queue_item_id = self._player_queues[active_queue].cur_item_id
+            player_state.cur_queue_item_id = self._player_queues[
+                active_queue
+            ].cur_item_id
 
     @callback
     def __get_player_name(self, player: Player):
@@ -544,7 +573,7 @@ class PlayerManager:
         for group_player in self._players.values():
             if not group_player.is_group_player:
                 continue
-            if not player.player_id in group_player.group_childs:
+            if player.player_id not in group_player.group_childs:
                 continue
             result.append(group_player.player_id)
         return result
@@ -571,7 +600,9 @@ class PlayerManager:
         # append power control config entries
         power_controls = self.get_player_controls(PlayerControlType.POWER)
         if power_controls:
-            controls = [{"text": item.name, "value": item.id} for item in power_controls]
+            controls = [
+                {"text": item.name, "value": item.id} for item in power_controls
+            ]
             entries.append(
                 ConfigEntry(
                     entry_key=CONF_POWER_CONTROL,
@@ -583,7 +614,9 @@ class PlayerManager:
         # append volume control config entries
         volume_controls = self.get_player_controls(PlayerControlType.VOLUME)
         if volume_controls:
-            controls = [{"text": item.name, "value": item.id} for item in volume_controls]
+            controls = [
+                {"text": item.name, "value": item.id} for item in volume_controls
+            ]
             entries.append(
                 ConfigEntry(
                     entry_key=CONF_VOLUME_CONTROL,
@@ -597,7 +630,7 @@ class PlayerManager:
     @callback
     def __player_updated(self, player_id: str, changed_value: str):
         """Call when player is updated."""
-        if not player_id in self._players:
+        if player_id not in self._players:
             return
         player = self._players[player_id]
         if not player.available and changed_value != "available":
@@ -618,5 +651,3 @@ class PlayerManager:
                         self.mass.add_job(self.async_update_player(child_player))
         if player_id in self._player_queues and player.active_queue == player_id:
             self.mass.add_job(self._player_queues[player_id].async_update_state())
-        
-

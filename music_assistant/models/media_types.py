@@ -1,12 +1,13 @@
 """Models and helpers for media items."""
 
 from dataclasses import dataclass, field
-from enum import Enum, Enum
+from enum import Enum
 from typing import List, Optional
 
 
 class MediaType(int, Enum):
     """Enum for MediaType."""
+
     Artist = 1
     Album = 2
     Track = 3
@@ -32,6 +33,7 @@ def media_type_from_string(media_type_str: str) -> MediaType:
 
 class ContributorRole(int, Enum):
     """Enum for Contributor Role."""
+
     Artist = 1
     Writer = 2
     Producer = 3
@@ -39,6 +41,7 @@ class ContributorRole(int, Enum):
 
 class AlbumType(int, Enum):
     """Enum for Album type."""
+
     Album = 1
     Single = 2
     Compilation = 3
@@ -46,6 +49,7 @@ class AlbumType(int, Enum):
 
 class TrackQuality(int, Enum):
     """Enum for Track Quality."""
+
     LOSSY_MP3 = 0
     LOSSY_OGG = 1
     LOSSY_AAC = 2
@@ -58,8 +62,9 @@ class TrackQuality(int, Enum):
 
 
 @dataclass
-class MediaItemProviderId():
+class MediaItemProviderId:
     """Model for a MediaItem's provider id."""
+
     provider: str
     item_id: str
     quality: Optional[TrackQuality] = TrackQuality.UNKNOWN
@@ -68,15 +73,16 @@ class MediaItemProviderId():
 
 class ExternalId(str, Enum):
     """Enum with external id's."""
+
     MUSICBRAINZ = "musicbrainz"
     UPC = "upc"
     ISRC = "isrc"
 
 
-
 @dataclass
 class MediaItem(object):
     """Representation of a media item."""
+
     item_id: str = ""
     provider: str = ""
     name: str = ""
@@ -91,14 +97,16 @@ class MediaItem(object):
 
 @dataclass
 class Artist(MediaItem):
-    """Model for an artist"""
+    """Model for an artist."""
+
     media_type: MediaType = MediaType.Artist
     sort_name: str = ""
 
 
 @dataclass
 class Album(MediaItem):
-    """Model for an album"""
+    """Model for an album."""
+
     media_type: MediaType = MediaType.Album
     version: str = ""
     year: int = 0
@@ -109,7 +117,8 @@ class Album(MediaItem):
 
 @dataclass
 class Track(MediaItem):
-    """Model for a track"""
+    """Model for a track."""
+
     media_type: MediaType = MediaType.Track
     duration: int = 0
     version: str = ""
@@ -121,7 +130,8 @@ class Track(MediaItem):
 
 @dataclass
 class Playlist(MediaItem):
-    """Model for a playlist"""
+    """Model for a playlist."""
+
     media_type: MediaType = MediaType.Playlist
     owner: str = ""
     checksum: [Optional[str]] = None  # some value to detect playlist track changes
@@ -130,14 +140,16 @@ class Playlist(MediaItem):
 
 @dataclass
 class Radio(MediaItem):
-    """Model for a radio station"""
+    """Model for a radio station."""
+
     media_type: MediaType = MediaType.Radio
     duration: int = 86400
 
 
 @dataclass
-class SearchResult():
+class SearchResult:
     """Model for Media Item Search result."""
+
     artists: List[Artist] = field(default_factory=list)
     albums: List[Album] = field(default_factory=list)
     tracks: List[Track] = field(default_factory=list)

@@ -1,7 +1,7 @@
 """All logic for metadata retrieval."""
+# TODO: split up into (optional) providers
 import json
 import logging
-# TODO: split up into (optional) providers
 import re
 from typing import Optional
 
@@ -16,23 +16,24 @@ LOGGER = logging.getLogger("mass")
 
 
 class MetaData:
-    """several helpers to search and store metadata for mediaitems"""
+    """Several helpers to search and store metadata for mediaitems."""
 
     # TODO: create periodic task to search for missing metadata
     def __init__(self, mass):
+        """Initialize class."""
         self.mass = mass
         self.musicbrainz = MusicBrainz(mass)
         self.fanarttv = FanartTv(mass)
 
     async def async_setup(self):
-        """async initialize of metadata module"""
+        """Async setup of metadata module."""
         await self.musicbrainz.async_setup()
         await self.fanarttv.async_setup()
 
     async def async_get_artist_metadata(self, mb_artist_id, cur_metadata):
-        """get/update rich metadata for an artist by providing the musicbrainz artist id"""
+        """Get/update rich metadata for an artist by providing the musicbrainz artist id."""
         metadata = cur_metadata
-        if not "fanart" in metadata:
+        if "fanart" not in metadata:
             res = await self.fanarttv.async_get_artist_images(mb_artist_id)
             if res:
                 self.merge_metadata(cur_metadata, res)
@@ -46,7 +47,7 @@ class MetaData:
         trackname=None,
         track_isrc=None,
     ):
-        """retrieve musicbrainz artist id for the given details"""
+        """Retrieve musicbrainz artist id for the given details."""
         LOGGER.debug(
             "searching musicbrainz for %s \
                 (albumname: %s - album_upc: %s - trackname: %s - track_isrc: %s)",
@@ -105,7 +106,7 @@ class MetaData:
 
     @staticmethod
     def merge_metadata(cur_metadata, new_values):
-        """merge new info into the metadata dict without overwiteing existing values"""
+        """Merge new info into the metadata dict without overwriting existing values."""
         for key, value in new_values.items():
             if not cur_metadata.get(key):
                 cur_metadata[key] = value
@@ -113,21 +114,26 @@ class MetaData:
 
 
 class MusicBrainz:
+    """Handle getting Id's from MusicBrainz."""
+
     def __init__(self, mass):
+        """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
         self.throttler = None
         self._http_session = None
 
     async def async_setup(self):
-        """perform async setup"""
+        """Perform async setup."""
         self._http_session = aiohttp.ClientSession(
             loop=self.mass.loop, connector=aiohttp.TCPConnector()
         )
         self.throttler = Throttler(rate_limit=1, period=1)
 
-    async def async_search_artist_by_album(self, artistname, albumname=None, album_upc=None):
-        """retrieve musicbrainz artist id by providing the artist name and albumname or upc"""
+    async def async_search_artist_by_album(
+        self, artistname, albumname=None, album_upc=None
+    ):
+        """Retrieve musicbrainz artist id by providing the artist name and albumname or upc."""
         for searchartist in [
             re.sub(LUCENE_SPECIAL, r"\\\1", artistname),
             get_compare_string(artistname),
@@ -161,8 +167,10 @@ class MusicBrainz:
                                         return artist["id"]
         return ""
 
-    async def async_search_artist_by_track(self, artistname, trackname=None, track_isrc=None):
-        """retrieve artist id by providing the artist name and trackname or track isrc"""
+    async def async_search_artist_by_track(
+        self, artistname, trackname=None, track_isrc=None
+    ):
+        """Retrieve artist id by providing the artist name and trackname or track isrc."""
         endpoint = "recording"
         searchartist = re.sub(LUCENE_SPECIAL, r"\\\1", artistname)
         # searchartist = searchartist.replace('/','').replace('\\','').replace('-', '')
@@ -206,7 +214,10 @@ class MusicBrainz:
             ) as response:
                 try:
                     result = await response.json()
-                except Exception as exc:
+                except (
+                    aiohttp.client_exceptions.ContentTypeError,
+                    json.decoder.JSONDecodeError,
+                ) as exc:
                     msg = await response.text()
                     LOGGER.exception("%s - %s", str(exc), msg)
                     result = None
@@ -214,21 +225,24 @@ class MusicBrainz:
 
 
 class FanartTv:
+    """FanartTv support for metadata retrieval."""
+
     def __init__(self, mass):
+        """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
         self._http_session = None
         self.throttler = None
 
     async def async_setup(self):
-        """perform async setup"""
+        """Perform async setup."""
         self._http_session = aiohttp.ClientSession(
             loop=self.mass.loop, connector=aiohttp.TCPConnector()
         )
         self.throttler = Throttler(rate_limit=1, period=2)
 
     async def async_get_artist_images(self, mb_artist_id):
-        """retrieve images by musicbrainz artist id"""
+        """Retrieve images by musicbrainz artist id."""
         metadata = {}
         data = await self.async_get_data("music/%s" % mb_artist_id)
         if data:
@@ -243,7 +257,7 @@ class FanartTv:
                     metadata[key] = item["url"]
             if data.get("artistthumb"):
                 url = data["artistthumb"][0]["url"]
-                if not "2a96cbd8b46e442fc41c2b86b821562f" in url:
+                if "2a96cbd8b46e442fc41c2b86b821562f" not in url:
                     metadata["image"] = url
             if data.get("musicbanner"):
                 metadata["banner"] = data["musicbanner"][0]["url"]
@@ -251,7 +265,7 @@ class FanartTv:
 
     @async_use_cache(30)
     async def async_get_data(self, endpoint, params=None):
-        """get data from api"""
+        """Get data from api."""
         if params is None:
             params = {}
         url = "http://webservice.fanart.tv/v3/%s" % endpoint
@@ -262,7 +276,10 @@ class FanartTv:
             ) as response:
                 try:
                     result = await response.json()
-                except (aiohttp.client_exceptions.ContentTypeError, json.decoder.JSONDecodeError):
+                except (
+                    aiohttp.client_exceptions.ContentTypeError,
+                    json.decoder.JSONDecodeError,
+                ):
                     LOGGER.error("Failed to retrieve %s", endpoint)
                     text_result = await response.text()
                     LOGGER.debug(text_result)

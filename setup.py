@@ -25,14 +25,14 @@ DOWNLOAD_URL = f"{GITHUB_URL}/archive/{mass_const.__version__}.zip"
 PROJECT_URLS = {
     "Bug Reports": f"{GITHUB_URL}/issues",
     "Website": "https://music-assistant.github.io/",
-    "Discord": "https://discord.gg/9xHYFY"
+    "Discord": "https://discord.gg/9xHYFY",
 }
 
 PACKAGES = find_packages(exclude=["tests", "tests.*"])
 PACKAGE_FILES = []
-for (path, directories, filenames) in os.walk('music_assistant/'):
+for (path, directories, filenames) in os.walk("music_assistant/"):
     for filename in filenames:
-        PACKAGE_FILES.append(os.path.join('..', path, filename))
+        PACKAGE_FILES.append(os.path.join("..", path, filename))
 
 with open("requirements.txt") as f:
     REQUIRES = f.read().splitlines()
@@ -53,8 +53,11 @@ setup(
     install_requires=REQUIRES,
     python_requires=f">={mass_const.REQUIRED_PYTHON_VER}",
     test_suite="tests",
-    entry_points={"console_scripts": ["mass = music_assistant.__main__:main", "musicassistant = music_assistant.__main__:main"]},
-    package_data={
-        'music_assistant': PACKAGE_FILES,
+    entry_points={
+        "console_scripts": [
+            "mass = music_assistant.__main__:main",
+            "musicassistant = music_assistant.__main__:main",
+        ]
     },
+    package_data={"music_assistant": PACKAGE_FILES},
 )

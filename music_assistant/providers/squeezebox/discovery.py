@@ -1,21 +1,21 @@
 """Squeezebox emulation discovery implementation."""
 
-from collections import OrderedDict
-import socket
 import logging
+import socket
 import struct
+from collections import OrderedDict
 
-from music_assistant.utils import (
-    get_hostname,
-    get_ip
-)
+from music_assistant.utils import get_hostname, get_ip
 
 LOGGER = logging.getLogger("squeezebox")
 
-class Datagram():
+
+class Datagram:
     """Description of a discovery datagram."""
+
     @classmethod
-    def decode(self, data):
+    def decode(cls, data):
+        """Decode a datagram message."""
         if data[0] == "e":
             return TLVDiscoveryRequestDatagram(data)
         elif data[0] == "E":
@@ -40,13 +40,15 @@ class ClientDiscoveryDatagram(Datagram):
     client = None
 
     def __init__(self, data):
-        s = struct.unpack("!cxBB8x6B", data.encode())
-        assert s[0] == "d"
-        self.device = s[1]
-        self.firmware = hex(s[2])
-        self.client = ":".join(["%02x" % (x,) for x in s[3:]])
+        """Initialize class."""
+        msg = struct.unpack("!cxBB8x6B", data.encode())
+        assert msg[0] == "d"
+        self.device = msg[1]
+        self.firmware = hex(msg[2])
+        self.client = ":".join(["%02x" % (x,) for x in msg[3:]])
 
     def __repr__(self):
+        """Print the class contents."""
         return "<%s device=%r firmware=%r client=%r>" % (
             self.__class__.__name__,
             self.device,
@@ -57,7 +59,10 @@ class ClientDiscoveryDatagram(Datagram):
 
 class DiscoveryResponseDatagram(Datagram):
     """Description of a discovery response datagram."""
+
     def __init__(self, hostname, port):
+        """Initialize class."""
+        # pylint: disable=unused-argument
         hostname = hostname[:16].encode("UTF-8")
         hostname += (16 - len(hostname)) * "\x00"
         self.packet = struct.pack("!c16s", "D", hostname).decode()
@@ -65,16 +70,18 @@ class DiscoveryResponseDatagram(Datagram):
 
 class TLVDiscoveryRequestDatagram(Datagram):
     """Description of a discovery request datagram."""
+
     def __init__(self, data):
+        """Initialize class."""
         requestdata = OrderedDict()
         assert data[0] == "e"
         idx = 1
         length = len(data) - 5
         while idx <= length:
-            typ, l = struct.unpack_from("4sB", data.encode(), idx)
-            if l:
-                val = data[idx + 5 : idx + 5 + l]
-                idx += 5 + l
+            typ, _len = struct.unpack_from("4sB", data.encode(), idx)
+            if _len:
+                val = data[idx + 5 : idx + 5 + _len]
+                idx += 5 + _len
             else:
                 val = None
                 idx += 5
@@ -83,12 +90,15 @@ class TLVDiscoveryRequestDatagram(Datagram):
         self.data = requestdata
 
     def __repr__(self):
+        """Pretty print class."""
         return "<%s data=%r>" % (self.__class__.__name__, self.data.items())
 
 
 class TLVDiscoveryResponseDatagram(Datagram):
     """Description of a TLV discovery response datagram."""
+
     def __init__(self, responsedata):
+        """Initialize class."""
         parts = ["E"]  # new discovery format
         for typ, value in responsedata.items():
             if value is None:
@@ -102,10 +112,14 @@ class TLVDiscoveryResponseDatagram(Datagram):
 
 class DiscoveryProtocol:
     """Description of a discovery protocol."""
+
     def __init__(self, web_port):
+        """Initialze class."""
         self.web_port = web_port
+        self.transport = None
 
     def connection_made(self, transport):
+        """Call on connection."""
         self.transport = transport
         # Allow receiving multicast broadcasts
         sock = self.transport.get_extra_info("socket")
@@ -114,12 +128,16 @@ class DiscoveryProtocol:
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
     def error_received(self, exc):
+        """Call on Error."""
         LOGGER.error(exc)
 
     def connection_lost(self, *args, **kwargs):
+        """Call on Connection lost."""
+        # pylint: disable=unused-argument
         LOGGER.debug("Connection lost to discovery")
 
-    def build_TLV_response(self, requestdata):
+    def build_tlv_response(self, requestdata):
+        """Build TLV Response message."""
         responsedata = OrderedDict()
         for typ, value in requestdata.items():
             if typ == "NAME":
@@ -150,21 +168,25 @@ class DiscoveryProtocol:
         return responsedata
 
     def datagram_received(self, data, addr):
+        """Datagram received callback."""
+        # pylint: disable=broad-except
         try:
             data = data.decode()
             dgram = Datagram.decode(data)
             if isinstance(dgram, ClientDiscoveryDatagram):
-                self.sendDiscoveryResponse(addr)
+                self.send_discovery_response(addr)
             elif isinstance(dgram, TLVDiscoveryRequestDatagram):
-                resonsedata = self.build_TLV_response(dgram.data)
-                self.sendTLVDiscoveryResponse(resonsedata, addr)
+                resonsedata = self.build_tlv_response(dgram.data)
+                self.send_tlv_discovery_response(resonsedata, addr)
         except Exception as exc:
             LOGGER.exception(exc)
 
-    def sendDiscoveryResponse(self, addr):
+    def send_discovery_response(self, addr):
+        """Send discovery response message."""
         dgram = DiscoveryResponseDatagram(get_hostname(), 3483)
         self.transport.sendto(dgram.packet.encode(), addr)
 
-    def sendTLVDiscoveryResponse(self, resonsedata, addr):
+    def send_tlv_discovery_response(self, resonsedata, addr):
+        """Send TLV discovery response message."""
         dgram = TLVDiscoveryResponseDatagram(resonsedata)
         self.transport.sendto(dgram.packet.encode(), addr)

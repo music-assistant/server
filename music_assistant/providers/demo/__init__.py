@@ -2,6 +2,7 @@
 
 from .demo_playerprovider import DemoPlayerProvider
 
+
 async def async_setup(mass):
     """Perform async setup of this Plugin/Provider."""
     prov = DemoPlayerProvider()

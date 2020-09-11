@@ -1,24 +1,20 @@
 """Demo/test providers."""
 
-from abc import abstractmethod
-from dataclasses import dataclass
-from typing import List
 import functools
+from typing import List
 
+import vlc
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.playerprovider import PlayerProvider
-import vlc
 
 PROV_ID = "demo_player"
 PROV_NAME = "Demo/Test players"
 
 
 class DemoPlayerProvider(PlayerProvider):
-    """
-    Demo PlayerProvider which provides fake players.
-    """
+    """Demo PlayerProvider which provides fake players."""
 
     def __init__(self, *args, **kwargs):
         """Initialize."""
@@ -41,7 +37,7 @@ class DemoPlayerProvider(PlayerProvider):
         return []
 
     async def async_on_start(self) -> bool:
-        """Called on startup. Handle initialization of the provider based on config."""
+        """Handle initialization of the provider based on config."""
         # create some fake players
         for count in range(5)[1:]:
             player_id = f"demo_{count}"
@@ -94,7 +90,7 @@ class DemoPlayerProvider(PlayerProvider):
         return True
 
     async def async_on_stop(self):
-        """Called on shutdown. Handle correct close/cleanup of the provider on exit."""
+        """Handle correct close/cleanup of the provider on exit."""
         for player_id, player in self._players.items():
             player.vlc_player.release()
             player.vlc_instance.release()
@@ -103,7 +99,8 @@ class DemoPlayerProvider(PlayerProvider):
         self._players = {}
 
     def player_event(self, player_id, event):
-        """Called on vlc player events."""
+        """Call on vlc player events."""
+        # pylint: disable = unused-argument
         vlc_player: vlc.MediaPlayer = self._players[player_id].vlc_player
         self._players[player_id].muted = vlc_player.audio_get_mute()
         self._players[player_id].volume_level = vlc_player.audio_get_volume()
@@ -115,13 +112,16 @@ class DemoPlayerProvider(PlayerProvider):
         else:
             self._players[player_id].state = PlayerState.Stopped
         self._players[player_id].elapsed_time = int(vlc_player.get_time() / 1000)
-        self.mass.add_job(self.mass.player_manager.async_update_player(self._players[player_id]))
+        self.mass.add_job(
+            self.mass.player_manager.async_update_player(self._players[player_id])
+        )
 
     # SERVICE CALLS / PLAYER COMMANDS
 
     async def async_cmd_play_uri(self, player_id: str, uri: str):
         """
         Play the specified uri/url on the given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         # self._players[player_id].current_uri = uri
@@ -132,13 +132,15 @@ class DemoPlayerProvider(PlayerProvider):
     async def async_cmd_stop(self, player_id: str):
         """
         Send STOP command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         self.mass.add_job(self._players[player_id].vlc_player.stop)
 
     async def async_cmd_play(self, player_id: str):
         """
-        Send STOP command to given player.
+        Send PLAY command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         if self._players[player_id].vlc_player.get_media():
@@ -147,6 +149,7 @@ class DemoPlayerProvider(PlayerProvider):
     async def async_cmd_pause(self, player_id: str):
         """
         Send PAUSE command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         self.mass.add_job(self._players[player_id].vlc_player.pause)
@@ -154,6 +157,7 @@ class DemoPlayerProvider(PlayerProvider):
     async def async_cmd_next(self, player_id: str):
         """
         Send NEXT TRACK command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         self.mass.add_job(self._players[player_id].vlc_player.next_chapter)
@@ -161,6 +165,7 @@ class DemoPlayerProvider(PlayerProvider):
     async def async_cmd_previous(self, player_id: str):
         """
         Send PREVIOUS TRACK command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         self.mass.add_job(self._players[player_id].vlc_player.previous_chapter)
@@ -168,31 +173,41 @@ class DemoPlayerProvider(PlayerProvider):
     async def async_cmd_power_on(self, player_id: str):
         """
         Send POWER ON command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         self._players[player_id].powered = True
-        self.mass.add_job(self.mass.player_manager.async_update_player(self._players[player_id]))
+        self.mass.add_job(
+            self.mass.player_manager.async_update_player(self._players[player_id])
+        )
 
     async def async_cmd_power_off(self, player_id: str):
         """
         Send POWER OFF command to given player.
+
             :param player_id: player_id of the player to handle the command.
         """
         self.mass.add_job(self._players[player_id].vlc_player.stop)
         self._players[player_id].powered = False
-        self.mass.add_job(self.mass.player_manager.async_update_player(self._players[player_id]))
+        self.mass.add_job(
+            self.mass.player_manager.async_update_player(self._players[player_id])
+        )
 
     async def async_cmd_volume_set(self, player_id: str, volume_level: int):
         """
         Send volume level command to given player.
+
             :param player_id: player_id of the player to handle the command.
             :param volume_level: volume level to set (0..100).
         """
-        self.mass.add_job(self._players[player_id].vlc_player.audio_set_volume, volume_level)
+        self.mass.add_job(
+            self._players[player_id].vlc_player.audio_set_volume, volume_level
+        )
 
     async def async_cmd_volume_mute(self, player_id: str, is_muted=False):
         """
         Send volume MUTE command to given player.
+
             :param player_id: player_id of the player to handle the command.
             :param is_muted: bool with new mute state.
         """
@@ -203,7 +218,8 @@ class DemoPlayerProvider(PlayerProvider):
 
     async def async_cmd_queue_play_index(self, player_id: str, index: int):
         """
-        Play item at index X on player's queue
+        Play item at index X on player's queue.
+
             :param player_id: player_id of the player to handle the command.
             :param index: (int) index of the queue item that should start playing
         """
@@ -211,7 +227,8 @@ class DemoPlayerProvider(PlayerProvider):
 
     async def async_cmd_queue_load(self, player_id: str, queue_items: List[QueueItem]):
         """
-        Load/overwrite given items in the player's queue implementation
+        Load/overwrite given items in the player's queue implementation.
+
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
@@ -222,6 +239,7 @@ class DemoPlayerProvider(PlayerProvider):
     ):
         """
         Insert new items at position X into existing queue.
+
         If insert_at_index 0 or None, will start playing newly added item(s)
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
@@ -229,17 +247,23 @@ class DemoPlayerProvider(PlayerProvider):
         """
         raise NotImplementedError
 
-    async def async_cmd_queue_append(self, player_id: str, queue_items: List[QueueItem]):
+    async def async_cmd_queue_append(
+        self, player_id: str, queue_items: List[QueueItem]
+    ):
         """
         Append new items at the end of the queue.
+
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
         raise NotImplementedError
 
-    async def async_cmd_queue_update(self, player_id: str, queue_items: List[QueueItem]):
+    async def async_cmd_queue_update(
+        self, player_id: str, queue_items: List[QueueItem]
+    ):
         """
         Overwrite the existing items in the queue, used for reordering.
+
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
@@ -248,6 +272,7 @@ class DemoPlayerProvider(PlayerProvider):
     async def async_cmd_queue_clear(self, player_id: str):
         """
         Clear the player's queue.
+
             :param player_id: player_id of the player to handle the command.
         """
         raise NotImplementedError

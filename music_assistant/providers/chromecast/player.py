@@ -1,10 +1,11 @@
 """Representation of a Cast device on the network."""
 import logging
-from typing import List, Optional
-from datetime import datetime
-import pychromecast
 import uuid
-from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
+from datetime import datetime
+from typing import List, Optional
+
+import pychromecast
+from music_assistant.models.player import DeviceInfo, PlayerFeature, PlayerState
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.utils import compare_strings
 from pychromecast.controllers.multizone import MultizoneController
@@ -13,7 +14,7 @@ from pychromecast.socket_client import (
     CONNECTION_STATUS_DISCONNECTED,
 )
 
-from .const import PLAYER_CONFIG_ENTRIES, PROV_ID, PROVIDER_CONFIG_ENTRIES
+from .const import PLAYER_CONFIG_ENTRIES, PROV_ID
 from .models import CastStatusListener, ChromecastInfo
 
 LOGGER = logging.getLogger(PROV_ID)
@@ -22,6 +23,7 @@ PLAYER_FEATURES = [PlayerFeature.QUEUE]
 
 class ChromecastPlayer:
     """Representation of a Cast device on the network.
+
     This class is the holder of the pychromecast.Chromecast object and
     handles all reconnects and audio group changing
     "elected leader" itself.
@@ -40,6 +42,7 @@ class ChromecastPlayer:
         self.media_status = None
         self.media_status_received = None
         self.mz_mgr = None
+        self.mz_manager = None
         self._available = False
         self._powered = False
         self._status_listener: Optional[CastStatusListener] = None
@@ -54,7 +57,9 @@ class ChromecastPlayer:
     @property
     def name(self):
         """Return name of this player."""
-        return self._chromecast.name if self._chromecast else self._cast_info.friendly_name
+        return (
+            self._chromecast.name if self._chromecast else self._cast_info.friendly_name
+        )
 
     @property
     def powered(self):
@@ -126,8 +131,14 @@ class ChromecastPlayer:
     @property
     def group_childs(self):
         """Return group_childs."""
-        if self._cast_info.is_audio_group and self._chromecast and not self._is_speaker_group:
-            return [str(uuid.UUID(item)) for item in self._chromecast.mz_controller.members]
+        if (
+            self._cast_info.is_audio_group
+            and self._chromecast
+            and not self._is_speaker_group
+        ):
+            return [
+                str(uuid.UUID(item)) for item in self._chromecast.mz_controller.members
+            ]
         return []
 
     @property
@@ -179,7 +190,9 @@ class ChromecastPlayer:
         """Disconnect Chromecast object if it is set."""
         if self._chromecast is None:
             return
-        LOGGER.warning("[%s] Disconnecting from chromecast socket", self._cast_info.friendly_name)
+        LOGGER.warning(
+            "[%s] Disconnecting from chromecast socket", self._cast_info.friendly_name
+        )
         self._available = False
         self.mass.add_job(self._chromecast.disconnect)
         self._invalidate()
@@ -191,7 +204,6 @@ class ChromecastPlayer:
         self.media_status = None
         self.media_status_received = None
         self.mz_mgr = None
-        self.mz_controller = None
         if self._status_listener is not None:
             self._status_listener.invalidate()
             self._status_listener = None
@@ -206,7 +218,9 @@ class ChromecastPlayer:
             self._cast_info.is_audio_group
             and self._chromecast.mz_controller
             and self._chromecast.mz_controller.members
-            and compare_strings(self._chromecast.mz_controller.members[0], self.player_id)
+            and compare_strings(
+                self._chromecast.mz_controller.members[0], self.player_id
+            )
         )
         self.mass.add_job(self.mass.player_manager.async_update_player(self))
 
@@ -332,7 +346,7 @@ class ChromecastPlayer:
             self._chromecast.play_media(uri, "audio/flac")
 
     def queue_load(self, queue_items: List[QueueItem]):
-        """load (overwrite) queue with new items"""
+        """Load (overwrite) queue with new items."""
         if not self._chromecast.socket_client.is_connected:
             LOGGER.warning("Ignore player command: Socket client is not connected.")
             return
@@ -352,9 +366,7 @@ class ChromecastPlayer:
             self.queue_append(queue_items[51:])
 
     def queue_append(self, queue_items: List[QueueItem]):
-        """
-        append new items at the end of the queue
-        """
+        """Append new items at the end of the queue."""
         if not self._chromecast.socket_client.is_connected:
             LOGGER.warning("Ignore player command: Socket client is not connected.")
             return
@@ -364,7 +376,7 @@ class ChromecastPlayer:
             self.__send_player_queue(queuedata)
 
     def __create_queue_items(self, tracks):
-        """create list of CC queue items from tracks"""
+        """Create list of CC queue items from tracks."""
         queue_items = []
         for track in tracks:
             queue_item = self.__create_queue_item(track)
@@ -372,7 +384,7 @@ class ChromecastPlayer:
         return queue_items
 
     def __create_queue_item(self, track):
-        """create CC queue item from track info"""
+        """Create CC queue item from track info."""
         player_queue = self.mass.player_manager.get_player_queue(self.player_id)
         return {
             "opt_itemId": track.queue_item_id,
@@ -399,8 +411,9 @@ class ChromecastPlayer:
         }
 
     def __send_player_queue(self, queuedata):
-        """Send new data to the CC queue"""
+        """Send new data to the CC queue."""
         media_controller = self._chromecast.media_controller
+        # pylint: disable=protected-access
         receiver_ctrl = media_controller._socket_client.receiver_controller
 
         def send_queue():
@@ -409,12 +422,14 @@ class ChromecastPlayer:
             media_controller.send_message(queuedata, inc_session_id=False)
 
         if not media_controller.status.media_session_id:
-            receiver_ctrl.launch_app(media_controller.app_id, callback_function=send_queue)
+            receiver_ctrl.launch_app(
+                media_controller.app_id, callback_function=send_queue
+            )
         else:
             send_queue()
 
 
-def chunks(l, n):
-    """Yield successive n-sized chunks from l."""
-    for i in range(0, len(l), n):
-        yield l[i : i + n]
+def chunks(_list, chunk_size):
+    """Yield successive n-sized chunks from list."""
+    for i in range(0, len(_list), chunk_size):
+        yield _list[i : i + chunk_size]

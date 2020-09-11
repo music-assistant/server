@@ -48,7 +48,7 @@ class Event(Enum):
 
 
 class SqueezeSocketClient:
-    """Squeezebox socket client"""
+    """Squeezebox socket client."""
 
     def __init__(
         self,
@@ -87,7 +87,7 @@ class SqueezeSocketClient:
 
     @property
     def player_id(self) -> str:
-        """Return player_id (=mac address) of the player."""
+        """Return player id (=mac address) of the player."""
         return self._player_id
 
     @property
@@ -97,7 +97,7 @@ class SqueezeSocketClient:
 
     @property
     def device_address(self) -> str:
-        """Return device IP address of the player"""
+        """Return device IP address of the player."""
         dev_address = self._writer.get_extra_info("peername")
         return dev_address[0] if dev_address else ""
 
@@ -174,7 +174,8 @@ class SqueezeSocketClient:
         old_gain = self._volume_control.old_gain()
         new_gain = self._volume_control.new_gain()
         await self.__async_send_frame(
-            b"audg", struct.pack("!LLBBLL", old_gain, old_gain, 1, 255, new_gain, new_gain)
+            b"audg",
+            struct.pack("!LLBBLL", old_gain, old_gain, 1, 255, new_gain, new_gain),
         )
         self._volume_level = volume_level
 
@@ -195,9 +196,8 @@ class SqueezeSocketClient:
         self._powered = True
         enable_crossfade = crossfade_duration > 0
         command = b"s"
-        autostart = (
-            b"3"  # we use direct stream for now so let the player do the messy work with buffers
-        )
+        # we use direct stream for now so let the player do the messy work with buffers
+        autostart = b"3"
         trans_type = b"1" if enable_crossfade else b"0"
         formatbyte = b"f"  # fixed to flac
         uri = "/stream" + uri.split("/stream")[1]
@@ -206,8 +206,8 @@ class SqueezeSocketClient:
             autostart=autostart,
             flags=0x00,
             formatbyte=formatbyte,
-            transType=trans_type,
-            transDuration=crossfade_duration,
+            trans_type=trans_type,
+            trans_duration=crossfade_duration,
         )
         # extract host and port from uri
         regex = "(?:http.*://)?(?P<host>[^:/ ]+).?(?P<port>[0-9]*).*"
@@ -227,7 +227,7 @@ class SqueezeSocketClient:
     async def __async_send_heartbeat(self):
         """Send periodic heartbeat message to player."""
         timestamp = int(time.time())
-        data = self.__pack_stream(b"t", replayGain=timestamp, flags=0)
+        data = self.__pack_stream(b"t", replay_gain=timestamp, flags=0)
         await self.__async_send_frame(b"strm", data)
 
     async def __async_send_frame(self, command, data):
@@ -273,13 +273,13 @@ class SqueezeSocketClient:
         pcmargs=(b"?", b"?", b"?", b"?"),
         threshold=200,
         spdif=b"0",
-        transDuration=0,
-        transType=b"0",
+        trans_duration=0,
+        trans_type=b"0",
         flags=0x40,
-        outputThreshold=0,
-        replayGain=0,
-        serverPort=8095,
-        serverIp=0,
+        output_threshold=0,
+        replay_gain=0,
+        server_port=8095,
+        server_ip=0,
     ):
         """Create stream request message based on given arguments."""
         return struct.pack(
@@ -290,14 +290,14 @@ class SqueezeSocketClient:
             *pcmargs,
             threshold,
             spdif,
-            transDuration,
-            transType,
+            trans_duration,
+            trans_type,
             flags,
-            outputThreshold,
+            output_threshold,
             0,
-            replayGain,
-            serverPort,
-            serverIp,
+            replay_gain,
+            server_port,
+            server_ip,
         )
 
     @callback
@@ -347,30 +347,33 @@ class SqueezeSocketClient:
     @callback
     def _process_stat_stmd(self, data):
         """Process incoming stat STMd message (decoder ready)."""
-        #pylint: disable=unused-argument
+        # pylint: disable=unused-argument
         LOGGER.debug("STMu received - Decoder Ready for next track.")
         asyncio.create_task(self._event_callback(Event.EVENT_DECODER_READY, self))
 
     @callback
     def _process_stat_stmf(self, data):
         """Process incoming stat STMf message (connection closed)."""
-        #pylint: disable=unused-argument
+        # pylint: disable=unused-argument
         LOGGER.debug("STMf received - connection closed.")
         self._state = State.Stopped
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
     def _process_stat_stmo(self, data):
-        """Process incoming stat STMo message:
-        No more decoded (uncompressed) data to play; triggers rebuffering."""
-        #pylint: disable=unused-argument
+        """
+        Process incoming stat STMo message.
+
+        No more decoded (uncompressed) data to play; triggers rebuffering.
+        """
+        # pylint: disable=unused-argument
         LOGGER.debug("STMo received - output underrun.")
         LOGGER.debug("Output Underrun")
 
     @callback
     def _process_stat_stmp(self, data):
         """Process incoming stat STMp message: Pause confirmed."""
-        #pylint: disable=unused-argument
+        # pylint: disable=unused-argument
         LOGGER.debug("STMp received - pause confirmed.")
         self._state = State.Paused
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
@@ -378,22 +381,22 @@ class SqueezeSocketClient:
     @callback
     def _process_stat_stmr(self, data):
         """Process incoming stat STMr message: Resume confirmed."""
-        #pylint: disable=unused-argument
+        # pylint: disable=unused-argument
         LOGGER.debug("STMr received - resume confirmed.")
         self._state = State.Playing
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
     def _process_stat_stms(self, data):
+        # pylint: disable=unused-argument
         """Process incoming stat STMs message: Playback of new track has started."""
         LOGGER.debug("STMs received - playback of new track has started.")
-        #pylint: disable=unused-argument
         self._state = State.Playing
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
     def _process_stat_stmt(self, data):
-        """Process incoming stat STMt message: heartbeat from client"""
+        """Process incoming stat STMt message: heartbeat from client."""
         # pylint: disable=unused-variable
         timestamp = time.time()
         self._last_heartbeat = timestamp
@@ -422,7 +425,7 @@ class SqueezeSocketClient:
     @callback
     def _process_stat_stmu(self, data):
         """Process incoming stat STMu message: Buffer underrun: Normal end of playback."""
-        #pylint: disable=unused-argument
+        # pylint: disable=unused-argument
         LOGGER.debug("STMu received - end of playback.")
         self.state = State.Stopped
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
@@ -430,7 +433,7 @@ class SqueezeSocketClient:
     @callback
     def _process_resp(self, data):
         """Process incoming RESP message: Response received at player."""
-        #pylint: disable=unused-argument
+        # pylint: disable=unused-argument
         # send continue
         asyncio.create_task(self.__async_send_frame(b"cont", b"0"))
 
@@ -446,9 +449,7 @@ class SqueezeSocketClient:
 
 
 class PySqueezeVolume(object):
-
-    """Represents a sound volume. This is an awful lot more complex than it
-    sounds."""
+    """Represents a sound volume. This is an awful lot more complex than it sounds."""
 
     minimum = 0
     maximum = 100
@@ -562,30 +563,36 @@ class PySqueezeVolume(object):
 
     # new gain parameters, from the same place
     total_volume_range = -50  # dB
-    step_point = -1  # Number of steps, up from the bottom, where a 2nd volume ramp kicks in.
-    step_fraction = 1  # fraction of totalVolumeRange where alternate volume ramp kicks in.
+    step_point = (
+        -1
+    )  # Number of steps, up from the bottom, where a 2nd volume ramp kicks in.
+    step_fraction = (
+        1  # fraction of totalVolumeRange where alternate volume ramp kicks in.
+    )
 
     def __init__(self):
+        """Initialize class."""
         self.volume = 50
 
     def increment(self):
-        """Increment the volume"""
+        """Increment the volume."""
         self.volume += self.step
         if self.volume > self.maximum:
             self.volume = self.maximum
 
     def decrement(self):
-        """Decrement the volume"""
+        """Decrement the volume."""
         self.volume -= self.step
         if self.volume < self.minimum:
             self.volume = self.minimum
 
     def old_gain(self):
-        """Return the "Old" gain value as required by the squeezebox"""
+        """Return the "Old" gain value as required by the squeezebox."""
         return self.old_map[self.volume]
 
     def decibels(self):
         """Return the "new" gain value."""
+        # pylint: disable=invalid-name
 
         step_db = self.total_volume_range * self.step_fraction
         max_volume_db = 0  # different on the boom?
@@ -609,10 +616,10 @@ class PySqueezeVolume(object):
         return m * (x2 - x1) + y1
 
     def new_gain(self):
-        db = self.decibels()
-        floatmult = 10 ** (db / 20.0)
+        """Return new gainvalue of the volume control."""
+        decibel = self.decibels()
+        floatmult = 10 ** (decibel / 20.0)
         # avoid rounding errors somehow
-        if -30 <= db <= 0:
+        if -30 <= decibel <= 0:
             return int(floatmult * (1 << 8) + 0.5) * (1 << 8)
-        else:
-            return int((floatmult * (1 << 16)) + 0.5)
+        return int((floatmult * (1 << 16)) + 0.5)

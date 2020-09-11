@@ -1,6 +1,4 @@
-"""
-    Models and helpers for the streamdetails of a MediaItem.
-"""
+"""Models and helpers for the streamdetails of a MediaItem."""
 
 from dataclasses import dataclass
 from enum import Enum
@@ -9,6 +7,7 @@ from typing import Any, Optional
 
 class StreamType(str, Enum):
     """Enum with stream types."""
+
     EXECUTABLE = "executable"
     URL = "url"
     FILE = "file"
@@ -16,6 +15,7 @@ class StreamType(str, Enum):
 
 class ContentType(str, Enum):
     """Enum with stream content types."""
+
     OGG = "ogg"
     FLAC = "flac"
     MP3 = "mp3"
@@ -24,8 +24,9 @@ class ContentType(str, Enum):
 
 
 @dataclass
-class StreamDetails():
+class StreamDetails:
     """Model for streamdetails."""
+
     type: StreamType
     provider: str
     item_id: str

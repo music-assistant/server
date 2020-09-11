@@ -1,10 +1,10 @@
 """
-    HTTPStreamer: handles all audio streaming to players,
-    either by sending tracks one by one or send one continuous stream
-    of music with crossfade/gapless support (queue stream).
+HTTPStreamer: handles all audio streaming to players.
+
+Either by sending tracks one by one or send one continuous stream
+of music with crossfade/gapless support (queue stream).
 """
 import asyncio
-import concurrent
 import gc
 import io
 import logging
@@ -13,7 +13,6 @@ import shlex
 import signal
 import subprocess
 import threading
-from asyncio import CancelledError
 from contextlib import suppress
 
 import pyloudnorm
@@ -32,6 +31,7 @@ class HTTPStreamer:
     """Built-in streamer using sox and webserver."""
 
     def __init__(self, mass):
+        """Initialize class."""
         self.mass = mass
         self.local_ip = get_ip()
         self.analyze_jobs = {}
@@ -39,9 +39,7 @@ class HTTPStreamer:
 
     @require_local_subnet
     async def async_stream(self, http_request):
-        """
-        start stream for a player
-        """
+        """Start stream for a player."""
         # make sure we have valid params
         player_id = http_request.match_info.get("player_id", "")
         player_queue = self.mass.player_manager.get_player_queue(player_id)
@@ -53,7 +51,9 @@ class HTTPStreamer:
             if not queue_item:
                 return web.Response(status=404, reason="Invalid Queue item Id")
         # prepare headers as audio/flac content
-        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/flac"})
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": "audio/flac"}
+        )
         await resp.prepare(http_request)
         # run the streamer in executor to prevent the subprocess locking up our eventloop
         cancelled = threading.Event()
@@ -63,7 +63,12 @@ class HTTPStreamer:
             )
         else:
             bg_task = self.mass.loop.run_in_executor(
-                None, self.__get_queue_item_stream, player_id, queue_item, resp, cancelled
+                None,
+                self.__get_queue_item_stream,
+                player_id,
+                queue_item,
+                resp,
+                cancelled,
             )
         # let the streaming begin!
         try:
@@ -74,21 +79,25 @@ class HTTPStreamer:
         return resp
 
     def __get_queue_item_stream(self, player_id, queue_item, buffer, cancelled):
-        """start streaming single queue track"""
+        """Start streaming single queue track."""
         # pylint: disable=unused-variable
         LOGGER.debug(
             "stream single queue track started for track %s on player %s",
             queue_item.name,
             player_id,
         )
-        for is_last_chunk, audio_chunk in self.__get_audio_stream(player_id, queue_item, cancelled):
+        for is_last_chunk, audio_chunk in self.__get_audio_stream(
+            player_id, queue_item, cancelled
+        ):
             if cancelled.is_set():
                 # http session ended
                 # we must consume the data to prevent hanging subprocess instances
                 continue
             # put chunk in buffer
             with suppress((BrokenPipeError, ConnectionResetError)):
-                asyncio.run_coroutine_threadsafe(buffer.write(audio_chunk), self.mass.loop).result()
+                asyncio.run_coroutine_threadsafe(
+                    buffer.write(audio_chunk), self.mass.loop
+                ).result()
         # all chunks received: streaming finished
         if cancelled.is_set():
             LOGGER.debug(
@@ -99,10 +108,14 @@ class HTTPStreamer:
         else:
             # indicate EOF if no more data
             with suppress((BrokenPipeError, ConnectionResetError)):
-                asyncio.run_coroutine_threadsafe(buffer.write_eof(), self.mass.loop).result()
+                asyncio.run_coroutine_threadsafe(
+                    buffer.write_eof(), self.mass.loop
+                ).result()
 
             LOGGER.debug(
-                "stream single track finished for track %s on player %s", queue_item.name, player_id
+                "stream single track finished for track %s on player %s",
+                queue_item.name,
+                player_id,
             )
 
     def __get_queue_stream(self, player_id, buffer, cancelled):
@@ -127,16 +140,11 @@ class HTTPStreamer:
 
         def fill_buffer():
             while True:
-                chunk = sox_proc.stdout.read(128000)
+                chunk = sox_proc.stdout.read(128000)  # noqa
                 if not chunk:
                     break
                 if chunk and not cancelled.is_set():
-                    with suppress(
-                        (
-                            BrokenPipeError,
-                            ConnectionResetError,
-                        )
-                    ):
+                    with suppress((BrokenPipeError, ConnectionResetError)):
                         asyncio.run_coroutine_threadsafe(
                             buffer.write(chunk), self.mass.loop
                         ).result()
@@ -144,7 +152,9 @@ class HTTPStreamer:
             # indicate EOF if no more data
             if not cancelled.is_set():
                 with suppress((BrokenPipeError, ConnectionResetError)):
-                    asyncio.run_coroutine_threadsafe(buffer.write_eof(), self.mass.loop).result()
+                    asyncio.run_coroutine_threadsafe(
+                        buffer.write_eof(), self.mass.loop
+                    ).result()
 
         # start fill buffer task in background
         fill_buffer_thread = threading.Thread(target=fill_buffer)
@@ -159,7 +169,9 @@ class HTTPStreamer:
             # get the (next) track in queue
             if is_start:
                 # report start of queue playback so we can calculate current track/duration etc.
-                queue_track = self.mass.add_job(player_queue.async_start_queue_stream()).result()
+                queue_track = self.mass.add_job(
+                    player_queue.async_start_queue_stream()
+                ).result()
                 is_start = False
             else:
                 queue_track = player_queue.next_item
@@ -247,8 +259,13 @@ class HTTPStreamer:
                         # so we just use the entire original data
                         last_part = prev_chunk + chunk
                         if len(last_part) < fade_bytes:
-                            LOGGER.warning("Not enough data for crossfade: %s", len(last_part))
-                    if not player_queue.crossfade_enabled or len(last_part) < fade_bytes:
+                            LOGGER.warning(
+                                "Not enough data for crossfade: %s", len(last_part)
+                            )
+                    if (
+                        not player_queue.crossfade_enabled
+                        or len(last_part) < fade_bytes
+                    ):
                         # crossfading is not enabled so just pass the (stripped) audio data
                         sox_proc.stdin.write(last_part)
                         bytes_written += len(last_part)
@@ -309,8 +326,11 @@ class HTTPStreamer:
         else:
             LOGGER.info("streaming of queue for player %s completed", player_id)
 
-    def __get_audio_stream(self, player_id, queue_item, cancelled, chunksize=128000, resample=None):
+    def __get_audio_stream(
+        self, player_id, queue_item, cancelled, chunksize=128000, resample=None
+    ):
         """Get audio stream from provider and apply additional effects/processing if needed."""
+        # pylint: disable=subprocess-popen-preexec-fn
         player_queue = self.mass.player_manager.get_player_queue(player_id)
         streamdetails = self.mass.add_job(
             player_queue.async_get_stream_details(player_id, queue_item)
@@ -335,7 +355,11 @@ class HTTPStreamer:
                 sox_options,
             )
             process = subprocess.Popen(
-                args, shell=True, stdout=subprocess.PIPE, bufsize=chunksize, preexec_fn=os.setsid
+                args,
+                shell=True,
+                stdout=subprocess.PIPE,
+                bufsize=chunksize,
+                preexec_fn=os.setsid,
             )
         elif streamdetails.type in [StreamType.URL, StreamType.FILE]:
             args = 'sox -t %s "%s" -t %s - %s' % (
@@ -346,7 +370,11 @@ class HTTPStreamer:
             )
             args = shlex.split(args)
             process = subprocess.Popen(
-                args, shell=False, stdout=subprocess.PIPE, bufsize=chunksize, preexec_fn=os.setsid
+                args,
+                shell=False,
+                stdout=subprocess.PIPE,
+                bufsize=chunksize,
+                preexec_fn=os.setsid,
             )
         elif streamdetails.type == StreamType.EXECUTABLE:
             args = "%s | sox -t %s - -t %s - %s" % (
@@ -356,7 +384,11 @@ class HTTPStreamer:
                 sox_options,
             )
             process = subprocess.Popen(
-                args, shell=True, stdout=subprocess.PIPE, bufsize=chunksize, preexec_fn=os.setsid
+                args,
+                shell=True,
+                stdout=subprocess.PIPE,
+                bufsize=chunksize,
+                preexec_fn=os.setsid,
             )
         else:
             LOGGER.warning("no streaming options for %s", queue_item.name)
@@ -390,7 +422,9 @@ class HTTPStreamer:
         if queue_item.media_type == MediaType.Track:
             self.mass.loop.run_in_executor(None, self.__analyze_audio, streamdetails)
 
-    def __get_player_sox_options(self, player_id: str, streamdetails: StreamDetails) -> str:
+    def __get_player_sox_options(
+        self, player_id: str, streamdetails: StreamDetails
+    ) -> str:
         """Get player specific sox effect options."""
         sox_options = []
         player_conf = self.mass.config.get_player_config(player_id)
@@ -451,7 +485,7 @@ class HTTPStreamer:
 
     @staticmethod
     def __crossfade_pcm_parts(fade_in_part, fade_out_part, pcm_args, fade_length):
-        """crossfade two chunks of audio using sox"""
+        """Crossfade two chunks of audio using sox."""
         # create fade-in part
         fadeinfile = create_tempfile()
         args = "sox --ignore-length -t %s - -t %s %s fade t %s" % (
@@ -472,7 +506,9 @@ class HTTPStreamer:
             fade_length,
         )
         args = shlex.split(args)
-        process = subprocess.Popen(args, shell=False, stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+        process = subprocess.Popen(
+            args, shell=False, stdout=subprocess.PIPE, stdin=subprocess.PIPE
+        )
         process.communicate(fade_out_part)
         # create crossfade using sox and some temp files
         # TODO: figure out how to make this less complex and without the tempfiles
@@ -484,7 +520,9 @@ class HTTPStreamer:
             pcm_args,
         )
         args = shlex.split(args)
-        process = subprocess.Popen(args, shell=False, stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+        process = subprocess.Popen(
+            args, shell=False, stdout=subprocess.PIPE, stdin=subprocess.PIPE
+        )
         crossfade_part, _ = process.communicate()
         fadeinfile.close()
         fadeoutfile.close()

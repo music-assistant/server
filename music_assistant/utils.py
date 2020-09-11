@@ -11,7 +11,6 @@ import tempfile
 import urllib.request
 from datetime import datetime
 from enum import Enum
-from types import FunctionType, MethodType
 from typing import Any, Callable, TypeVar
 
 import memory_tempfile
@@ -43,6 +42,8 @@ def is_callback(func: Callable[..., Any]) -> bool:
 
 
 def run_periodic(period):
+    """Run a coroutine at interval."""
+
     def scheduler(fcn):
         async def async_wrapper(*args, **kwargs):
             while True:
@@ -56,25 +57,26 @@ def run_periodic(period):
 
 def get_external_ip():
     """Try to get the external (WAN) IP address."""
+    # pylint: disable=broad-except
     try:
         return urllib.request.urlopen("https://ident.me").read().decode("utf8")
-    except:
+    except Exception:
         return None
 
 
 def filename_from_string(string):
-    """create filename from unsafe string"""
+    """Create filename from unsafe string."""
     keepcharacters = (" ", ".", "_")
     return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
 
 
 def run_background_task(corofn, *args, executor=None):
-    """run non-async task in background"""
+    """Run non-async task in background."""
     return asyncio.get_event_loop().run_in_executor(executor, corofn, *args)
 
 
 def run_async_background_task(executor, corofn, *args):
-    """run async task in background"""
+    """Run async task in background."""
 
     def run_task(corofn, *args):
         new_loop = asyncio.new_event_loop()
@@ -88,7 +90,7 @@ def run_async_background_task(executor, corofn, *args):
 
 
 def get_sort_name(name):
-    """create a sort name for an artist/title"""
+    """Create a sort name for an artist/title."""
     sort_name = name
     for item in ["The ", "De ", "de ", "Les "]:
         if name.startswith(item):
@@ -97,6 +99,7 @@ def get_sort_name(name):
 
 
 def try_parse_int(possible_int):
+    """Try to parse an int."""
     try:
         return int(possible_int)
     except (TypeError, ValueError):
@@ -104,7 +107,7 @@ def try_parse_int(possible_int):
 
 
 async def async_iter_items(items):
-    """fake async iterator for compatability reasons."""
+    """Fake async iterator for compatability reasons."""
     if not isinstance(items, list):
         yield items
     else:
@@ -113,6 +116,7 @@ async def async_iter_items(items):
 
 
 def try_parse_float(possible_float):
+    """Try to parse a float."""
     try:
         return float(possible_float)
     except (TypeError, ValueError):
@@ -120,6 +124,7 @@ def try_parse_float(possible_float):
 
 
 def try_parse_bool(possible_bool):
+    """Try to parse a bool."""
     if isinstance(possible_bool, bool):
         return possible_bool
     else:
@@ -127,7 +132,7 @@ def try_parse_bool(possible_bool):
 
 
 def parse_title_and_version(track_title, track_version=None):
-    """try to parse clean track title and version from the title"""
+    """Try to parse clean track title and version from the title."""
     title = track_title.lower()
     version = ""
     for splitter in [" (", " [", " - ", " (", " [", "-"]:
@@ -174,7 +179,7 @@ def parse_title_and_version(track_title, track_version=None):
 
 
 def get_version_substitute(version_str):
-    """transform provider version str to universal version type"""
+    """Transform provider version str to universal version type."""
     version_str = version_str.lower()
     # substitute edit and edition with version
     if "edition" in version_str or "edit" in version_str:
@@ -193,22 +198,23 @@ def get_version_substitute(version_str):
     return version_str.strip()
 
 
-# pylint: disable=broad-except
 def get_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    """Get primary IP-address for this host."""
+    # pylint: disable=broad-except
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         # doesn't even have to be reachable
-        s.connect(("10.255.255.255", 1))
-        IP = s.getsockname()[0]
+        sock.connect(("10.255.255.255", 1))
+        _ip = sock.getsockname()[0]
     except Exception:
-        IP = "127.0.0.1"
+        _ip = "127.0.0.1"
     finally:
-        s.close()
-    return IP
+        sock.close()
+    return _ip
 
 
 def get_ip_pton():
-    """Return socket pton for local ip"""
+    """Return socket pton for local ip."""
     try:
         return socket.inet_pton(socket.AF_INET, get_ip())
     except OSError:
@@ -224,20 +230,24 @@ def get_hostname():
 
 
 def get_folder_size(folderpath):
-    """get folder size in gb"""
+    """Return folder size in gb."""
     total_size = 0
     # pylint: disable=unused-variable
     for dirpath, dirnames, filenames in os.walk(folderpath):
-        for f in filenames:
-            fp = os.path.join(dirpath, f)
-            total_size += os.path.getsize(fp)
+        for _file in filenames:
+            _fp = os.path.join(dirpath, _file)
+            total_size += os.path.getsize(_fp)
     # pylint: enable=unused-variable
     total_size_gb = total_size / float(1 << 30)
     return total_size_gb
 
 
 class EnhancedJSONEncoder(json.JSONEncoder):
+    """Custom JSON decoder."""
+
     def default(self, obj):
+        """Return default handler."""
+        # pylint: disable=method-hidden
         if dataclasses.is_dataclass(obj):
             return dataclasses.asdict(obj)
         if isinstance(obj, Enum):
@@ -253,66 +263,41 @@ class EnhancedJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+# pylint: disable=invalid-name
 json_serializer = functools.partial(json.dumps, cls=EnhancedJSONEncoder)
-
-# def json_serializer(obj):
-#     """Recursively create serializable values for (custom) data types."""
-
-#     def get_val(val):
-#         if isinstance(val, (int, str, bool, float, tuple)):
-#             return val
-#         elif isinstance(val, list):
-#             new_list = []
-#             for item in val:
-#                 new_list.append(get_val(item))
-#             return new_list
-#         elif hasattr(val, "to_dict"):
-#             return get_val(val.to_dict())
-#         elif isinstance(val, dict):
-#             new_dict = {}
-#             for key, value in val.items():
-#                 new_dict[key] = get_val(value)
-#             return new_dict
-#         elif hasattr(val, "__dict__"):
-#             new_dict = {}
-#             for key, value in val.__dict__.items():
-#                 new_dict[key] = get_val(value)
-#             return new_dict
-
-#     return get_val(obj)
+# pylint: enable=invalid-name
 
 
 def get_compare_string(input_str):
-    """get clean lowered string for compare actions"""
+    """Return clean lowered string for compare actions."""
     unaccented_string = unidecode.unidecode(input_str)
     return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string).lower()
 
 
 def compare_strings(str1, str2, strict=False):
-    """compare strings and return True if we have an (almost) perfect match"""
+    """Compare strings and return True if we have an (almost) perfect match."""
     match = str1.lower() == str2.lower()
     if not match and not strict:
         match = get_compare_string(str1) == get_compare_string(str2)
     return match
 
 
-# def json_serializer(obj):
-#     """json serializer to recursively create serializable values for custom data types"""
-#     return json.dumps(json_serializer(obj), skipkeys=True)
-
-
 def try_load_json_file(jsonfile):
-    """try to load json from file"""
+    """Try to load json from file."""
     try:
-        with open(jsonfile) as f:
-            return json.loads(f.read())
+        with open(jsonfile) as _file:
+            return json.loads(_file.read())
     except (FileNotFoundError, json.JSONDecodeError) as exc:
-        logging.getLogger().debug("Could not load json from file %s", jsonfile, exc_info=exc)
+        logging.getLogger().debug(
+            "Could not load json from file %s", jsonfile, exc_info=exc
+        )
         return None
 
 
 def create_tempfile():
     """Return a (named) temporary file."""
     if platform.system() == "Linux":
-        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
+        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(
+            buffering=0
+        )
     return tempfile.NamedTemporaryFile(buffering=0)

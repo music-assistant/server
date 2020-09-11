@@ -17,7 +17,6 @@ class ConfigEntryType(str, Enum):
     HEADER = "header"
 
 
-
 @dataclass
 class ConfigEntry:
     """Model for a Config Entry."""
@@ -33,4 +32,4 @@ class ConfigEntry:
     depends_on: str = ""  # entry_key that needs to be set before this setting shows up in frontend
     hidden: bool = False  # hide from UI
     value: Optional[Any] = None  # set by the configuration manager
-    store_hashed: bool = False # value will be hashed, non reversible
+    store_hashed: bool = False  # value will be hashed, non reversible

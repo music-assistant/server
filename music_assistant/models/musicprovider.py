@@ -13,14 +13,15 @@ from music_assistant.models.media_types import (
     SearchResult,
     Track,
 )
-from music_assistant.models.streamdetails import StreamDetails
 from music_assistant.models.provider import Provider, ProviderType
+from music_assistant.models.streamdetails import StreamDetails
 
 
 @dataclass
 class MusicProvider(Provider):
     """
     Base class for a Musicprovider.
+
     Should be overriden in the provider specific implementation.
     """
 
@@ -43,6 +44,7 @@ class MusicProvider(Provider):
     ) -> SearchResult:
         """
         Perform search on musicprovider.
+
             :param search_query: Search query.
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
@@ -76,7 +78,7 @@ class MusicProvider(Provider):
 
     @abstractmethod
     async def async_get_artist(self, prov_artist_id: str) -> Artist:
-        """Get full artist details by id"""
+        """Get full artist details by id."""
         raise NotImplementedError
 
     @abstractmethod
@@ -101,12 +103,12 @@ class MusicProvider(Provider):
 
     @abstractmethod
     async def async_get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get full playlist details by id"""
+        """Get full playlist details by id."""
         raise NotImplementedError
 
     @abstractmethod
     async def async_get_radio(self, prov_radio_id: str) -> Radio:
-        """Get full radio details by id"""
+        """Get full radio details by id."""
         raise NotImplementedError
 
     @abstractmethod
@@ -125,7 +127,9 @@ class MusicProvider(Provider):
         raise NotImplementedError
 
     @abstractmethod
-    async def async_library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def async_library_remove(
+        self, prov_item_id: str, media_type: MediaType
+    ) -> bool:
         """Remove item from provider's library. Return true on succes."""
         raise NotImplementedError
 

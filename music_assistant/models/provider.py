@@ -3,7 +3,7 @@
 from abc import abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, List
 
 from music_assistant.models.config_entry import ConfigEntry
 
@@ -44,17 +44,19 @@ class Provider:
 
     @abstractmethod
     async def async_on_start(self) -> bool:
-        """Called on startup.
+        """
         Handle initialization of the provider based on config.
-        Return bool if start was succesfull"""
+
+        Return bool if start was succesfull. Called on startup.
+        """
         raise NotImplementedError
 
     @abstractmethod
     async def async_on_stop(self):
-        """Called on shutdown. Handle correct close/cleanup of the provider on exit."""
+        """Handle correct close/cleanup of the provider on exit. Called on shutdown."""
         raise NotImplementedError
 
     async def async_on_reload(self):
-        """Called on reload. Handle configuration changes for this provider."""
+        """Handle configuration changes for this provider. Called on reload."""
         await self.async_on_stop()
         await self.async_on_start()

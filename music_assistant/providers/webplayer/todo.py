@@ -1,8 +1,6 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
+# pylint: skip-file
+# flake8: noqa
 import asyncio
-from collections import OrderedDict
 import decimal
 import os
 import random
@@ -10,6 +8,7 @@ import socket
 import struct
 import sys
 import time
+from collections import OrderedDict
 from typing import List
 
 from music_assistant.constants import CONF_ENABLED

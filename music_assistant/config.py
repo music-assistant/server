@@ -1,6 +1,5 @@
 """All classes and helpers for the Configuration."""
 
-import base64
 import logging
 import os
 import shutil
@@ -9,7 +8,7 @@ from enum import Enum
 from typing import List
 
 from cryptography.fernet import Fernet, InvalidToken
-from music_assistant.app_vars import get_app_var
+from music_assistant.app_vars import get_app_var  # noqa
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENABLED,
@@ -20,8 +19,6 @@ from music_assistant.constants import (
     CONF_NAME,
     EVENT_CONFIG_CHANGED,
 )
-
-# from music_assistant.mass import MusicAssistant
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.utils import get_external_ip, json, try_load_json_file
 from passlib.hash import pbkdf2_sha256
@@ -150,16 +147,19 @@ class ConfigBaseType(Enum):
 class ConfigItem:
     """
     Configuration Item connected to Config Entries.
+
     Returns default value from config entry if no value present.
     """
 
     def __init__(self, mass, parent_item_key: str, base_type: ConfigBaseType):
+        """Initialize class."""
         self._parent_item_key = parent_item_key
         self._base_type = base_type
         self.mass = mass
         self.stored_config = OrderedDict()
 
     def __repr__(self):
+        """Print class."""
         return f"{OrderedDict}({self.items()})"
 
     def items(self) -> dict:
@@ -218,12 +218,16 @@ class ConfigItem:
                     raise ValueError
             else:
                 # single value item
-                if entry.entry_type == ConfigEntryType.STRING and not isinstance(value, str):
+                if entry.entry_type == ConfigEntryType.STRING and not isinstance(
+                    value, str
+                ):
                     if not value:
                         value = ""
                     else:
                         raise ValueError
-                if entry.entry_type == ConfigEntryType.BOOL and not isinstance(value, bool):
+                if entry.entry_type == ConfigEntryType.BOOL and not isinstance(
+                    value, bool
+                ):
                     raise ValueError
                 if entry.entry_type == ConfigEntryType.FLOAT and not isinstance(
                     value, (float, int)
@@ -248,7 +252,9 @@ class ConfigItem:
 
                     player = self.mass.player_manager.get_player(self._parent_item_key)
                     if player:
-                        self.mass.add_job(self.mass.player_manager.async_update_player(player))
+                        self.mass.add_job(
+                            self.mass.player_manager.async_update_player(player)
+                        )
             return
         # raise KeyError if we're trying to set a value not defined as ConfigEntry
         raise KeyError
@@ -266,15 +272,18 @@ class ConfigBase(OrderedDict):
     """Configuration class with ConfigItem items."""
 
     def __init__(self, mass, base_type=ConfigBaseType):
+        """Initialize class."""
         self.mass = mass
         self._base_type = base_type
         super().__init__()
 
     def __getitem__(self, item_key):
-        """Convenience method for get."""
-        if not item_key in self:
+        """Return convenience method for get."""
+        if item_key not in self:
             # create new ConfigDictItem on the fly
-            super().__setitem__(item_key, ConfigItem(self.mass, item_key, self._base_type))
+            super().__setitem__(
+                item_key, ConfigItem(self.mass, item_key, self._base_type)
+            )
         return super().__getitem__(item_key)
 
 
@@ -282,6 +291,7 @@ class MassConfig:
     """Class which holds our configuration."""
 
     def __init__(self, mass, data_path: str):
+        """Initialize class."""
         self._data_path = data_path
         self.loading = False
         self.mass = mass
@@ -347,7 +357,7 @@ class MassConfig:
         return pbkdf2_sha256.verify(password, self.base["security"]["password"])
 
     def __getitem__(self, item_key):
-        """Convenience method for get."""
+        """Return item value by key."""
         return getattr(self, item_key)
 
     async def async_close(self):
@@ -366,7 +376,11 @@ class MassConfig:
         if os.path.isfile(conf_file):
             shutil.move(conf_file, conf_file_backup)
         # create dict for stored config
-        stored_conf = {CONF_KEY_BASE: {}, CONF_KEY_PLAYERSETTINGS: {}, CONF_KEY_PROVIDERS: {}}
+        stored_conf = {
+            CONF_KEY_BASE: {},
+            CONF_KEY_PLAYERSETTINGS: {},
+            CONF_KEY_PROVIDERS: {},
+        }
         for conf_key in stored_conf:
             for key, value in self[conf_key].items():
                 stored_conf[conf_key][key] = value.stored_config
@@ -378,7 +392,7 @@ class MassConfig:
         self.loading = False
 
     def __load(self):
-        """load config from file"""
+        """Load config from file."""
         self.loading = True
         conf_file = os.path.join(self.data_path, "config.json")
         data = try_load_json_file(conf_file)

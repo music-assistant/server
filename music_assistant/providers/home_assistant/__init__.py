@@ -1,9 +1,6 @@
 """Plugin that enables integration with Home Assistant."""
 
-import asyncio
-import functools
 import logging
-import os
 from typing import List
 
 import slugify as slug
@@ -39,7 +36,9 @@ CONFIG_ENTRY_URL = ConfigEntry(
     entry_key=CONF_URL, entry_type=ConfigEntryType.STRING, description_key="hass_url"
 )
 CONFIG_ENTRY_TOKEN = ConfigEntry(
-    entry_key=CONF_TOKEN, entry_type=ConfigEntryType.PASSWORD, description_key="hass_token"
+    entry_key=CONF_TOKEN,
+    entry_type=ConfigEntryType.PASSWORD,
+    description_key="hass_token",
 )
 CONFIG_ENTRY_PUBLISH_PLAYERS = ConfigEntry(
     entry_key=CONF_PUBLISH_PLAYERS,
@@ -58,8 +57,8 @@ async def async_setup(mass):
 
 
 class HomeAssistantPlugin(Provider):
-    """
-    Homeassistant plugin
+    """Homeassistant plugin.
+
     allows publishing of our players to hass
     allows using hass entities (like switches, media_players or gui inputs) to be triggered
     """
@@ -112,12 +111,14 @@ class HomeAssistantPlugin(Provider):
         return entries
 
     async def async_on_start(self) -> bool:
-        """Called on startup. Handle initialization of the provider based on config."""
+        """Handle initialization of the provider based on config."""
         config = self.mass.config.get_provider_config(PROV_ID)
         if IS_SUPERVISOR:
             self._hass = HomeAssistant(loop=self.mass.loop)
         else:
-            self._hass = HomeAssistant(config[CONF_URL], config[CONF_TOKEN], loop=self.mass.loop)
+            self._hass = HomeAssistant(
+                config[CONF_URL], config[CONF_TOKEN], loop=self.mass.loop
+            )
         # register callbacks
         self._hass.register_event_callback(self.__async_hass_event)
         self.mass.add_event_listener(
@@ -129,20 +130,20 @@ class HomeAssistantPlugin(Provider):
         return True
 
     async def async_on_stop(self):
-        """Called on shutdown. Handle correct close/cleanup of the provider on exit."""
+        """Handle correct close/cleanup of the provider on exit."""
         for task in self._tasks:
             task.cancel()
         if self._hass:
             await self._hass.async_close()
 
     async def __async_mass_event(self, event, event_data):
-        """Received event from Music Assistant"""
+        """Receive event from Music Assistant."""
         if event in [EVENT_PLAYER_CHANGED, EVENT_PLAYER_ADDED]:
             await self.__async_publish_player(event_data)
         # TODO: player removals
 
     async def __async_hass_event(self, event_type, event_data):
-        """Received event from Home Assistant"""
+        """Receive event from Home Assistant."""
         if event_type == EVENT_STATE_CHANGED:
             if event_data["entity_id"] in self._tracked_entities:
                 new_state = event_data["new_state"]
@@ -184,7 +185,9 @@ class HomeAssistantPlugin(Provider):
                     await self.mass.player_manager.async_cmd_volume_down(player_id)
                 elif service == "volume_set":
                     volume_level = service_data["volume_level"] * 100
-                    await self.mass.player_manager.async_cmd_volume_set(player_id, volume_level)
+                    await self.mass.player_manager.async_cmd_volume_set(
+                        player_id, volume_level
+                    )
                 elif service == "media_play":
                     await self.mass.player_manager.async_cmd_play(player_id)
                 elif service == "media_pause":
@@ -198,7 +201,11 @@ class HomeAssistantPlugin(Provider):
                 elif service in ["play_media", "select_source"]:
                     return await self.__async_handle_play_media(player_id, service_data)
                 else:
-                    LOGGER.error("%s service is unhandled. Service data: %s", service, service_data)
+                    LOGGER.error(
+                        "%s service is unhandled. Service data: %s",
+                        service,
+                        service_data,
+                    )
 
     async def __async_handle_play_media(self, player_id, service_data):
         """Handle play media request from homeassistant."""
@@ -206,7 +213,7 @@ class HomeAssistantPlugin(Provider):
         if not media_content_id:
             media_content_id = service_data.get("source")
         queue_opt = "add" if service_data.get("enqueue") else "play"
-        if not "://" in media_content_id:
+        if "://" not in media_content_id:
             media_items = []
             for playlist_str in media_content_id.split(","):
                 playlist_str = playlist_str.strip()
@@ -216,7 +223,9 @@ class HomeAssistantPlugin(Provider):
                 if playlist:
                     media_items.append(playlist)
                 else:
-                    radio = await self.mass.music_manager.async_get_radio_by_name(playlist_str)
+                    radio = await self.mass.music_manager.async_get_radio_by_name(
+                        playlist_str
+                    )
                     if radio:
                         media_items.append(radio)
                         queue_opt = "play"
@@ -228,7 +237,9 @@ class HomeAssistantPlugin(Provider):
             playlist = await self.mass.music_manager.async_getplaylist(
                 "spotify", media_content_id.split(":")[-1]
             )
-            return await self.mass.player_manager.async_play_media(player_id, playlist, queue_opt)
+            return await self.mass.player_manager.async_play_media(
+                player_id, playlist, queue_opt
+            )
 
     async def __async_publish_player(self, player: Player):
         """Publish player details to Home Assistant."""
@@ -237,11 +248,13 @@ class HomeAssistantPlugin(Provider):
         if not player.available:
             return
         player_id = player.player_id
-        entity_id = "media_player.mass_" + slug.slugify(player.name, separator="_").lower()
+        entity_id = (
+            "media_player.mass_" + slug.slugify(player.name, separator="_").lower()
+        )
         player_queue = self.mass.player_manager.get_player_queue(player_id)
         cur_item = player_queue.cur_item if player_queue else None
         state_attributes = {
-            "supported_features": 196541, # https://github.com/home-assistant/core/blob/dev/homeassistant/components/media_player/const.py#L59
+            "supported_features": 196541,
             "friendly_name": player.name,
             "source_list": self._sources,
             "source": "unknown",
@@ -251,14 +264,19 @@ class HomeAssistantPlugin(Provider):
             "media_duration": cur_item.duration if cur_item else None,
             "media_position": player_queue.cur_item_time if player_queue else None,
             "media_title": cur_item.name if cur_item else None,
-            "media_artist": cur_item.artists[0].name if cur_item and cur_item.artists else None,
-            "media_album_name": cur_item.album.name if cur_item and cur_item.album else None,
+            "media_artist": cur_item.artists[0].name
+            if cur_item and cur_item.artists
+            else None,
+            "media_album_name": cur_item.album.name
+            if cur_item and cur_item.album
+            else None,
             "entity_picture": "",
             "mass_player_id": player_id,
         }
         if cur_item:
             host = self.mass.web.internal_url
             item_type = "radio" if cur_item.media_type == MediaType.Radio else "track"
+            # pylint: disable=line-too-long
             img_url = f"{host}/api/{item_type}/{cur_item.item_id}/thumb?provider={cur_item.provider}"
             state_attributes["entity_picture"] = img_url
         self._published_players[entity_id] = player.player_id
@@ -273,7 +291,8 @@ class HomeAssistantPlugin(Provider):
             async for playlist in self.mass.music_manager.async_get_library_playlists()
         ]
         self._sources += [
-            playlist.name async for playlist in self.mass.music_manager.async_get_library_radios()
+            playlist.name
+            async for playlist in self.mass.music_manager.async_get_library_radios()
         ]
 
     @callback
@@ -315,7 +334,11 @@ class HomeAssistantPlugin(Provider):
             if entity_id.startswith("media_player.mass_"):
                 continue
             result.append(
-                {"value": f"volume_{entity_id}", "text": entity_name, "entity_id": entity_id}
+                {
+                    "value": f"volume_{entity_id}",
+                    "text": entity_name,
+                    "entity_id": entity_id,
+                }
             )
         return result
 
@@ -326,14 +349,18 @@ class HomeAssistantPlugin(Provider):
                 continue
             cur_state = entity_obj["state"] not in ["off", "unavailable"]
             if control_entity.get("source"):
-                cur_state = entity_obj["attributes"].get("source") == control_entity["source"]
+                cur_state = (
+                    entity_obj["attributes"].get("source") == control_entity["source"]
+                )
             await self.mass.player_manager.async_update_player_control(
                 control_entity["value"], cur_state
             )
         for control_entity in self.__get_volume_control_entities():
             if control_entity["entity_id"] != entity_obj["entity_id"]:
                 continue
-            cur_state = int(try_parse_float(entity_obj["attributes"].get("volume_level")) * 100)
+            cur_state = int(
+                try_parse_float(entity_obj["attributes"].get("volume_level")) * 100
+            )
             await self.mass.player_manager.async_update_player_control(
                 control_entity["value"], cur_state
             )
@@ -352,14 +379,16 @@ class HomeAssistantPlugin(Provider):
             if not control_entity["value"] in enabled_controls:
                 continue
             entity_id = control_entity["entity_id"]
-            if not entity_id in self._hass.states:
+            if entity_id not in self._hass.states:
                 LOGGER.warning("entity not found: %s", entity_id)
                 continue
             state_obj = self._hass.states[entity_id]
             cur_state = state_obj["state"] not in ["off", "unavailable"]
             source = control_entity.get("source")
             if source:
-                cur_state = state_obj["attributes"].get("source") == control_entity["source"]
+                cur_state = (
+                    state_obj["attributes"].get("source") == control_entity["source"]
+                )
 
             control = PlayerControl(
                 type=PlayerControlType.POWER,
@@ -372,7 +401,7 @@ class HomeAssistantPlugin(Provider):
             control.entity_id = entity_id
             control.source = source
             await self.mass.player_manager.async_register_player_control(control)
-            if not entity_id in self._tracked_entities:
+            if entity_id not in self._tracked_entities:
                 self._tracked_entities.append(entity_id)
 
     async def __async_register_volume_controls(self):
@@ -383,10 +412,12 @@ class HomeAssistantPlugin(Provider):
             if not control_entity["value"] in enabled_controls:
                 continue
             entity_id = control_entity["entity_id"]
-            if not entity_id in self._hass.states:
+            if entity_id not in self._hass.states:
                 LOGGER.warning("entity not found: %s", entity_id)
                 continue
-            cur_volume = try_parse_float(self._hass.get_state(entity_id, "volume_level")) * 100
+            cur_volume = (
+                try_parse_float(self._hass.get_state(entity_id, "volume_level")) * 100
+            )
             control = PlayerControl(
                 type=PlayerControlType.VOLUME,
                 id=control_entity["value"],
@@ -397,7 +428,7 @@ class HomeAssistantPlugin(Provider):
             # store some vars on the control object for convenience
             control.entity_id = entity_id
             await self.mass.player_manager.async_register_player_control(control)
-            if not entity_id in self._tracked_entities:
+            if entity_id not in self._tracked_entities:
                 self._tracked_entities.append(entity_id)
 
     async def async_power_control_set_state(self, control_id: str, new_state: bool):

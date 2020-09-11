@@ -14,7 +14,7 @@ LOGGER = logging.getLogger("mass")
 
 
 class Cache(object):
-    """basic stateless caching system."""
+    """Basic stateless caching system."""
 
     _db = None
 
@@ -35,13 +35,13 @@ class Cache(object):
             await db_conn.commit()
         self.mass.add_job(self.async_auto_cleanup())
 
-
     async def async_get(self, cache_key, checksum=""):
         """
-            get object from cache and return the results
-            cache_key: the (unique) name of the cache object as reference
-            checkum: optional argument to check if the checksum in the
-                     cacheobject matches the checkum provided
+        Get object from cache and return the results.
+
+        cache_key: the (unique) name of the cache object as reference
+        checkum: optional argument to check if the checksum in the
+                    cacheobject matches the checkum provided
         """
         result = None
         cur_time = int(time.time())
@@ -64,9 +64,7 @@ class Cache(object):
         return result
 
     async def async_set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
-        """
-            set data in cache
-        """
+        """Set data in cache."""
         checksum = self._get_checksum(checksum)
         expires = int(time.time() + expiration)
         data = pickle.dumps(data)
@@ -78,7 +76,7 @@ class Cache(object):
 
     @run_periodic(3600)
     async def async_auto_cleanup(self):
-        """(scheduled) auto cleanup task"""
+        """Sceduled auto cleanup task."""
         cur_timestamp = int(time.time())
         LOGGER.debug("Running cleanup...")
         sql_query = "SELECT id, expires FROM simplecache"
@@ -99,7 +97,7 @@ class Cache(object):
 
     @staticmethod
     def _get_checksum(stringinput):
-        """get int checksum from string"""
+        """Get int checksum from string."""
         if not stringinput:
             return 0
         else:
@@ -107,8 +105,10 @@ class Cache(object):
         return reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
-async def async_cached_generator(cache, cache_key, coro_func, expires=(86400 * 30), checksum=None):
-    """Helper method to store results of a async generator in the cache."""
+async def async_cached_generator(
+    cache, cache_key, coro_func, expires=(86400 * 30), checksum=None
+):
+    """Return helper method to store results of a async generator in the cache."""
     cache_result = await cache.async_get(cache_key, checksum)
     if cache_result is not None:
         for item in cache_result:
@@ -123,8 +123,10 @@ async def async_cached_generator(cache, cache_key, coro_func, expires=(86400 * 3
         await cache.async_set(cache_key, cache_result, checksum, expires)
 
 
-async def async_cached(cache, cache_key, coro_func, expires=(86400 * 30), checksum=None):
-    """Helper method to store results of a coroutine in the cache."""
+async def async_cached(
+    cache, cache_key, coro_func, expires=(86400 * 30), checksum=None
+):
+    """Return helper method to store results of a coroutine in the cache."""
     cache_result = await cache.async_get(cache_key, checksum)
     # normal async function
     if cache_result is not None:
@@ -135,7 +137,7 @@ async def async_cached(cache, cache_key, coro_func, expires=(86400 * 30), checks
 
 
 def async_use_cache(cache_days=14, cache_checksum=None):
-    """Decorator that can be used to cache a method's result."""
+    """Return decorator that can be used to cache a method's result."""
 
     def wrapper(func):
         @functools.wraps(func)

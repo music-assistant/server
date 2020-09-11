@@ -1,17 +1,19 @@
-"""The web module handles serving the frontend and the rest/websocket api's"""
+"""The web module handles serving the frontend and the rest/websocket api's."""
 import asyncio
-import base64
 import datetime
+import functools
 import inspect
 import ipaddress
-import functools
 import json
 import logging
 import os
 import ssl
 
 import aiohttp
+import aiohttp_cors
+import jwt
 from aiohttp import web
+from aiohttp_jwt import JWTMiddleware, login_required
 from music_assistant.constants import (
     CONF_KEY_BASE,
     CONF_KEY_PLAYERSETTINGS,
@@ -20,16 +22,11 @@ from music_assistant.constants import (
 from music_assistant.models.media_types import MediaType, media_type_from_string
 from music_assistant.utils import (
     EnhancedJSONEncoder,
-    get_ip,
-    json_serializer,
     get_external_ip,
     get_hostname,
+    get_ip,
+    json_serializer,
 )
-
-import aiohttp_cors
-import jwt
-from aiohttp_jwt import JWTMiddleware, login_required, check_permissions, match_any
-
 
 LOGGER = logging.getLogger("mass")
 
@@ -38,9 +35,12 @@ class ClassRouteTableDef(web.RouteTableDef):
     """Helper class to add class based routing tables."""
 
     def __repr__(self) -> str:
+        """Print the class contents."""
         return "<ClassRouteTableDef count={}>".format(len(self._items))
 
     def route(self, method: str, path: str, **kwargs):
+        """Return the route."""
+        # pylint: disable=missing-function-docstring
         def inner(handler):
             handler.route_info = (method, path, kwargs)
             return handler
@@ -48,19 +48,25 @@ class ClassRouteTableDef(web.RouteTableDef):
         return inner
 
     def add_class_routes(self, instance) -> None:
+        """Add class routes."""
+        # pylint: disable=missing-function-docstring
         def predicate(member) -> bool:
-            return all((inspect.iscoroutinefunction(member), hasattr(member, "route_info")))
+            return all(
+                (inspect.iscoroutinefunction(member), hasattr(member, "route_info"))
+            )
 
         for _, handler in inspect.getmembers(instance, predicate):
             method, path, kwargs = handler.route_info
             super().route(method, path, **kwargs)(handler)
 
 
+# pylint: disable=invalid-name
 routes = ClassRouteTableDef()
+# pylint: enable=invalid-name
 
 
 def require_local_subnet(func):
-    """Decorator to specify web method as available locally only."""
+    """Return decorator to specify web method as available locally only."""
 
     @functools.wraps(func)
     async def wrapped(*args, **kwargs):
@@ -83,9 +89,10 @@ def require_local_subnet(func):
 
 
 class Web:
-    """webserver and json/websocket api"""
+    """Webserver and json/websocket api."""
 
     def __init__(self, mass):
+        """Initialize class."""
         self.mass = mass
         # load/create/update config
         self._local_ip = get_ip()
@@ -93,19 +100,25 @@ class Web:
         self.runner = None
 
         enable_ssl = self.config["ssl_certificate"] and self.config["ssl_key"]
-        if self.config["ssl_certificate"] and not os.path.isfile(self.config["ssl_certificate"]):
+        if self.config["ssl_certificate"] and not os.path.isfile(
+            self.config["ssl_certificate"]
+        ):
             enable_ssl = False
-            LOGGER.warning("SSL certificate file not found: %s", self.config["ssl_certificate"])
+            LOGGER.warning(
+                "SSL certificate file not found: %s", self.config["ssl_certificate"]
+            )
         if self.config["ssl_key"] and not os.path.isfile(self.config["ssl_key"]):
             enable_ssl = False
-            LOGGER.warning("SSL certificate key file not found: %s", self.config["ssl_key"])
+            LOGGER.warning(
+                "SSL certificate key file not found: %s", self.config["ssl_key"]
+            )
         if not self.config.get("external_url"):
             enable_ssl = False
         self._enable_ssl = enable_ssl
         self._jwt_shared_secret = f"mass_{self._local_ip}_{self.http_port}"
 
     async def async_setup(self):
-        """perform async setup"""
+        """Perform async setup."""
         routes.add_class_routes(self)
         jwt_middleware = JWTMiddleware(
             self._jwt_shared_secret, request_property="user", credentials_required=False
@@ -156,12 +169,11 @@ class Web:
         LOGGER.info("Started HTTP webserver on port %s", self.http_port)
         if self._enable_ssl:
             ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(self.config["ssl_certificate"], self.config["ssl_key"])
+            ssl_context.load_cert_chain(
+                self.config["ssl_certificate"], self.config["ssl_key"]
+            )
             https_site = web.TCPSite(
-                self.runner,
-                "0.0.0.0",
-                self.https_port,
-                ssl_context=ssl_context,
+                self.runner, "0.0.0.0", self.https_port, ssl_context=ssl_context
             )
             await https_site.start()
             LOGGER.info(
@@ -209,7 +221,7 @@ class Web:
 
     @routes.post("/login")
     async def async_login(self, request):
-        """Handler to retrieve a JWT token."""
+        """Handle the retrieval of a JWT token."""
         form = await request.json()
         username = form.get("username")
         password = form.get("password")
@@ -220,14 +232,16 @@ class Web:
 
     @routes.get("/info")
     async def async_info(self, request):
+        # pylint: disable=unused-argument
         """Return (discovery) info about this instance."""
         return web.json_response(self.discovery_info, dumps=json_serializer)
 
     async def async_index(self, request):
+        """Get the index page, redirect if we do not have a web directory."""
         # pylint: disable=unused-argument
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web/")
         if not os.path.isdir(webdir):
-            raise web.HTTPFound('https://music-assistant.github.io/app')
+            raise web.HTTPFound("https://music-assistant.github.io/app")
         return web.FileResponse(os.path.join(webdir, "index.html"))
 
     @login_required
@@ -288,7 +302,7 @@ class Web:
     @login_required
     @routes.put("/api/library")
     async def async_library_add(self, request):
-        """Add item(s) to the library"""
+        """Add item(s) to the library."""
         body = await request.json()
         media_items = await self.__async_media_items_from_body(body)
         result = await self.mass.music_manager.async_library_add(media_items)
@@ -297,7 +311,7 @@ class Web:
     @login_required
     @routes.delete("/api/library")
     async def async_library_remove(self, request):
-        """R remove item(s) from the library"""
+        """Remove item(s) from the library."""
         body = await request.json()
         media_items = await self.__async_media_items_from_body(body)
         result = await self.mass.music_manager.async_library_remove(media_items)
@@ -306,31 +320,35 @@ class Web:
     @login_required
     @routes.get("/api/artists/{item_id}")
     async def async_artist(self, request):
-        """get full artist details"""
+        """Get full artist details."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         lazy = request.rel_url.query.get("lazy", "false") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
-        result = await self.mass.music_manager.async_get_artist(item_id, provider, lazy=lazy)
+        result = await self.mass.music_manager.async_get_artist(
+            item_id, provider, lazy=lazy
+        )
         return web.json_response(result, dumps=json_serializer)
 
     @login_required
     @routes.get("/api/albums/{item_id}")
     async def async_album(self, request):
-        """get full album details"""
+        """Get full album details."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         lazy = request.rel_url.query.get("lazy", "false") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
-        result = await self.mass.music_manager.async_get_album(item_id, provider, lazy=lazy)
+        result = await self.mass.music_manager.async_get_album(
+            item_id, provider, lazy=lazy
+        )
         return web.json_response(result, dumps=json_serializer)
 
     @login_required
     @routes.get("/api/tracks/{item_id}")
     async def async_track(self, request):
-        """get full track details"""
+        """Get full track details."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         lazy = request.rel_url.query.get("lazy", "false") != "false"
@@ -344,7 +362,7 @@ class Web:
     @login_required
     @routes.get("/api/playlists/{item_id}")
     async def async_playlist(self, request):
-        """get full playlist details"""
+        """Get full playlist details."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
@@ -355,7 +373,7 @@ class Web:
     @login_required
     @routes.get("/api/radios/{item_id}")
     async def async_radio(self, request):
-        """get full radio details"""
+        """Get full radio details."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
@@ -365,7 +383,7 @@ class Web:
 
     @routes.get("/api/{media_type}/{media_id}/thumb")
     async def async_get_image(self, request):
-        """get (resized) thumb image"""
+        """Get (resized) thumb image."""
         media_type_str = request.match_info.get("media_type")
         media_type = media_type_from_string(media_type_str)
         media_id = request.match_info.get("media_id")
@@ -384,7 +402,7 @@ class Web:
     @login_required
     @routes.get("/api/artists/{item_id}/toptracks")
     async def async_artist_toptracks(self, request):
-        """get top tracks for given artist"""
+        """Get top tracks for given artist."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
@@ -395,7 +413,7 @@ class Web:
     @login_required
     @routes.get("/api/artists/{item_id}/albums")
     async def async_artist_albums(self, request):
-        """get (all) albums for given artist"""
+        """Get (all) albums for given artist."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
@@ -406,7 +424,7 @@ class Web:
     @login_required
     @routes.get("/api/playlists/{item_id}/tracks")
     async def async_playlist_tracks(self, request):
-        """get playlist tracks from provider"""
+        """Get playlist tracks from provider."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
         if item_id is None or provider is None:
@@ -421,7 +439,9 @@ class Web:
         item_id = request.match_info.get("item_id")
         body = await request.json()
         tracks = await self.__async_media_items_from_body(body)
-        result = await self.mass.music_manager.async_add_playlist_tracks(item_id, tracks)
+        result = await self.mass.music_manager.async_add_playlist_tracks(
+            item_id, tracks
+        )
         return web.json_response(result, dumps=json_serializer)
 
     @login_required
@@ -431,7 +451,9 @@ class Web:
         item_id = request.match_info.get("item_id")
         body = await request.json()
         tracks = await self.__async_media_items_from_body(body)
-        result = await self.mass.music_manager.async_remove_playlist_tracks(item_id, tracks)
+        result = await self.mass.music_manager.async_remove_playlist_tracks(
+            item_id, tracks
+        )
         return web.json_response(result, dumps=json_serializer)
 
     @login_required
@@ -501,7 +523,7 @@ class Web:
     @login_required
     @routes.post("/api/players/{player_id}/play_media/{queue_opt}")
     async def async_player_play_media(self, request):
-        """issue player play_media command"""
+        """Issue player play media command."""
         player_id = request.match_info.get("player_id")
         player = self.mass.player_manager.get_player(player_id)
         if not player:
@@ -509,7 +531,9 @@ class Web:
         queue_opt = request.match_info.get("queue_opt", "play")
         body = await request.json()
         media_items = await self.__async_media_items_from_body(body)
-        result = await self.mass.player_manager.async_play_media(player_id, media_items, queue_opt)
+        result = await self.mass.player_manager.async_play_media(
+            player_id, media_items, queue_opt
+        )
         return web.json_response(result, dumps=json_serializer)
 
     @login_required
@@ -542,7 +566,7 @@ class Web:
     @login_required
     @routes.get("/api/players/{player_id}/queue")
     async def async_player_queue(self, request):
-        """return the player queue details"""
+        """Return the player queue details."""
         player_id = request.match_info.get("player_id")
         player_queue = self.mass.player_manager.get_player_queue(player_id)
         return web.json_response(player_queue, dumps=json_serializer)
@@ -550,7 +574,7 @@ class Web:
     @login_required
     @routes.put("/api/players/{player_id}/queue/{cmd}")
     async def async_player_queue_cmd(self, request):
-        """change the player queue details"""
+        """Change the player queue details."""
         player_id = request.match_info.get("player_id")
         player_queue = self.mass.player_manager.get_player_queue(player_id)
         cmd = request.match_info.get("cmd")
@@ -574,7 +598,7 @@ class Web:
     @login_required
     @routes.get("/api/players/{player_id}")
     async def async_player(self, request):
-        """get single player."""
+        """Get single player."""
         player_id = request.match_info.get("player_id")
         player = self.mass.player_manager.get_player(player_id)
         if not player:
@@ -585,7 +609,7 @@ class Web:
     @routes.get("/api/config")
     async def async_get_config(self, request):
         # pylint: disable=unused-argument
-        """get the config"""
+        """Get the full config."""
         conf = {
             CONF_KEY_BASE: self.mass.config.base,
             CONF_KEY_PROVIDERS: self.mass.config.providers,
@@ -596,7 +620,7 @@ class Web:
     @login_required
     @routes.get("/api/config/{base}")
     async def async_get_config_item(self, request):
-        """Get the config."""
+        """Get the config by base type."""
         conf_base = request.match_info.get("base")
         conf = self.mass.config[conf_base]
         return web.json_response(conf, dumps=json_serializer)
@@ -604,19 +628,21 @@ class Web:
     @login_required
     @routes.put("/api/config/{base}/{key}/{entry_key}")
     async def async_put_config(self, request):
-        """save (partial) config"""
+        """Save the given config item."""
         conf_key = request.match_info.get("key")
         conf_base = request.match_info.get("base")
         entry_key = request.match_info.get("entry_key")
         try:
             new_value = await request.json()
         except json.decoder.JSONDecodeError:
-            new_value = self.mass.config[conf_base][conf_key].get_entry(entry_key).default_value
+            new_value = (
+                self.mass.config[conf_base][conf_key].get_entry(entry_key).default_value
+            )
         self.mass.config[conf_base][conf_key][entry_key] = new_value
         return web.json_response(True)
 
     async def async_websocket_handler(self, request):
-        """websockets handler"""
+        """Handle websockets connection."""
         ws_response = None
         authenticated = False
         remove_callbacks = []
@@ -671,7 +697,9 @@ class Web:
                     player_id = msg_details.get("player_id")
                     cmd = msg_details.get("cmd")
                     cmd_args = msg_details.get("cmd_args")
-                    player_cmd = getattr(self.mass.player_manager, f"async_cmd_{cmd}", None)
+                    player_cmd = getattr(
+                        self.mass.player_manager, f"async_cmd_{cmd}", None
+                    )
                     if player_cmd and cmd_args is not None:
                         result = await player_cmd(player_id, cmd_args)
                     elif player_cmd:
@@ -692,7 +720,8 @@ class Web:
     @require_local_subnet
     async def async_json_rpc(self, request):
         """
-        implement LMS jsonrpc interface
+        Implement LMS jsonrpc interface.
+
         for some compatability with tools that talk to lms
         only support for basic commands
         """
@@ -748,7 +777,7 @@ class Web:
         return web.Response(text="success")
 
     async def __async_media_items_from_body(self, data):
-        """Helper to turn posted body data into media items."""
+        """Convert posted body data into media items."""
         if not isinstance(data, list):
             data = [data]
         media_items = []
@@ -760,7 +789,7 @@ class Web:
         return media_items
 
     async def __async_stream_json(self, request, iterator):
-        """stream items from async iterator as json object"""
+        """Stream items from async iterator as json object."""
         resp = web.StreamResponse(
             status=200, reason="OK", headers={"Content-Type": "application/json"}
         )

@@ -1,8 +1,11 @@
 """Filesystem musicprovider support for MusicAssistant."""
+# pylint: skip-file
+# flake8: noqa
 import base64
 import os
 from typing import List
 
+import taglib
 from music_assistant.constants import CONF_ENABLED
 from music_assistant.models.media_types import (
     Album,
@@ -14,7 +17,6 @@ from music_assistant.models.media_types import (
 )
 from music_assistant.models.musicprovider import MusicProvider
 from music_assistant.utils import LOGGER, parse_title_and_version
-import taglib
 
 PROV_NAME = "Local files and playlists"
 PROV_CLASS = "FileProvider"
@@ -111,9 +113,7 @@ class FileProvider(MusicProvider):
         artist.item_id = prov_item_id
         artist.provider = self.prov_id
         artist.name = name
-        artist.ids.append(
-            {"provider": self.prov_id, "item_id": artist.item_id}
-        )
+        artist.ids.append({"provider": self.prov_id, "item_id": artist.item_id})
         return artist
 
     async def async_get_album(self, prov_item_id) -> Album:
@@ -164,9 +164,7 @@ class FileProvider(MusicProvider):
         playlist.provider = self.prov_id
         playlist.name = itempath.split(os.sep)[-1].replace(".m3u", "")
         playlist.is_editable = True
-        playlist.ids.append(
-            {"provider": self.prov_id, "item_id": prov_item_id}
-        )
+        playlist.ids.append({"provider": self.prov_id, "item_id": prov_item_id})
         playlist.owner = "disk"
         playlist.checksum = os.path.getmtime(itempath)
         return playlist
