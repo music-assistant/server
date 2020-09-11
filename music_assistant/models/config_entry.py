@@ -13,7 +13,9 @@ class ConfigEntryType(str, Enum):
     PASSWORD = "password"
     INT = "integer"
     FLOAT = "float"
-    PLAYER_ID = "player_id"
+    LABEL = "label"
+    HEADER = "header"
+
 
 
 @dataclass
