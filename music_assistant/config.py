@@ -8,7 +8,7 @@ from enum import Enum
 from typing import List
 
 from cryptography.fernet import Fernet, InvalidToken
-from music_assistant.app_vars import get_app_var  # noqa
+from music_assistant.app_vars import get_app_var  # noqa # pylint: disable=all
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENABLED,

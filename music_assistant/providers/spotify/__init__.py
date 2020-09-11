@@ -9,7 +9,7 @@ from typing import List, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
-from music_assistant.app_vars import get_app_var  # noqa
+from music_assistant.app_vars import get_app_var  # noqa # pylint: disable=all
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.media_types import (

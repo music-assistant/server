@@ -226,7 +226,8 @@ class MusicAssistant:
                 task = self.loop.run_in_executor(None, target, *args)  # type: ignore
         return task
 
-    def __handle_exception(self, loop, context):
+    @staticmethod
+    def __handle_exception(loop, context):
         """Global exception handler."""
         LOGGER.error("Caught exception: %s", context)
         loop.default_exception_handler(context)

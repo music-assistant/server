@@ -13,6 +13,7 @@ import shlex
 import signal
 import subprocess
 import threading
+import urllib
 from contextlib import suppress
 
 import pyloudnorm
@@ -298,18 +299,17 @@ class HTTPStreamer:
             if cancelled.is_set():
                 # break out the loop if the http session is cancelled
                 break
-            else:
-                # update actual duration to the queue for more accurate now playing info
-                accurate_duration = bytes_written / int(sample_rate * 4 * 2)
-                queue_track.duration = accurate_duration
-                LOGGER.debug(
-                    "Finished Streaming queue track: %s (%s) on player %s",
-                    queue_track.item_id,
-                    queue_track.name,
-                    player_id,
-                )
-                # run garbage collect manually to avoid too much memory fragmentation
-                gc.collect()
+            # update actual duration to the queue for more accurate now playing info
+            accurate_duration = bytes_written / int(sample_rate * 4 * 2)
+            queue_track.duration = accurate_duration
+            LOGGER.debug(
+                "Finished Streaming queue track: %s (%s) on player %s",
+                queue_track.item_id,
+                queue_track.name,
+                player_id,
+            )
+            # run garbage collect manually to avoid too much memory fragmentation
+            gc.collect()
         # end of queue reached, pass last fadeout bits to final output
         if last_fadeout_data and not cancelled.is_set():
             sox_proc.stdin.write(last_fadeout_data)
@@ -412,10 +412,9 @@ class HTTPStreamer:
                 # last chunk
                 yield (True, prev_chunk + chunk)
                 break
-            else:
-                if prev_chunk:
-                    yield (False, prev_chunk)
-                prev_chunk = chunk
+            if prev_chunk:
+                yield (False, prev_chunk)
+            prev_chunk = chunk
         # fire event that streaming has ended
         self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails)
         # send task to background to analyse the audio
@@ -460,8 +459,6 @@ class HTTPStreamer:
             # only when needed we do the analyze stuff
             LOGGER.debug("Start analyzing track %s", item_key)
             if streamdetails.type == StreamType.URL:
-                import urllib
-
                 audio_data = urllib.request.urlopen(streamdetails.path).read()
             elif streamdetails.type == StreamType.EXECUTABLE:
                 audio_data = subprocess.check_output(streamdetails.path, shell=True)

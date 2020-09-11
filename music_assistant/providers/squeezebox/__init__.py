@@ -86,7 +86,7 @@ class PySqueezeProvider(PlayerProvider):
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
-    async def async_cmd_stop(self, player_id: str):
+    async def async_cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
 
@@ -98,7 +98,7 @@ class PySqueezeProvider(PlayerProvider):
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
-    async def async_cmd_play(self, player_id: str):
+    async def async_cmd_play(self, player_id: str) -> None:
         """
         Send PLAY command to given player.
 
@@ -146,7 +146,7 @@ class PySqueezeProvider(PlayerProvider):
             if new_track:
                 await self.async_cmd_play_uri(player_id, new_track.uri)
 
-    async def async_cmd_power_on(self, player_id: str):
+    async def async_cmd_power_on(self, player_id: str) -> None:
         """
         Send POWER ON command to given player.
 
@@ -163,7 +163,7 @@ class PySqueezeProvider(PlayerProvider):
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
-    async def async_cmd_power_off(self, player_id: str):
+    async def async_cmd_power_off(self, player_id: str) -> None:
         """
         Send POWER OFF command to given player.
 
@@ -181,7 +181,7 @@ class PySqueezeProvider(PlayerProvider):
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
-    async def async_cmd_volume_set(self, player_id: str, volume_level: int):
+    async def async_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
         Send volume level command to given player.
 
@@ -261,7 +261,7 @@ class PySqueezeProvider(PlayerProvider):
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
-        pass  # automagically handled by built-in queue controller
+        # automagically handled by built-in queue controller
 
     async def async_cmd_queue_update(
         self, player_id: str, queue_items: List[QueueItem]
@@ -272,7 +272,7 @@ class PySqueezeProvider(PlayerProvider):
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
-        pass  # automagically handled by built-in queue controller
+        # automagically handled by built-in queue controller
 
     async def async_cmd_queue_clear(self, player_id: str):
         """
@@ -285,7 +285,7 @@ class PySqueezeProvider(PlayerProvider):
 
     async def async_start_discovery(self):
         """Start discovery for players."""
-        transport, protocol = await self.mass.loop.create_datagram_endpoint(
+        transport, _ = await self.mass.loop.create_datagram_endpoint(
             lambda: DiscoveryProtocol(self.mass.web.http_port),
             local_addr=("0.0.0.0", 3483),
         )

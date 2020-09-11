@@ -82,7 +82,7 @@ class ChromecastProvider(PlayerProvider):
         """
         self.mass.add_job(self._players[player_id].play_uri, uri)
 
-    async def async_cmd_stop(self, player_id: str):
+    async def async_cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
 
@@ -90,7 +90,7 @@ class ChromecastProvider(PlayerProvider):
         """
         self.mass.add_job(self._players[player_id].stop)
 
-    async def async_cmd_play(self, player_id: str):
+    async def async_cmd_play(self, player_id: str) -> None:
         """
         Send STOP command to given player.
 
@@ -122,7 +122,7 @@ class ChromecastProvider(PlayerProvider):
         """
         self.mass.add_job(self._players[player_id].previous)
 
-    async def async_cmd_power_on(self, player_id: str):
+    async def async_cmd_power_on(self, player_id: str) -> None:
         """
         Send POWER ON command to given player.
 
@@ -130,7 +130,7 @@ class ChromecastProvider(PlayerProvider):
         """
         self.mass.add_job(self._players[player_id].power_on)
 
-    async def async_cmd_power_off(self, player_id: str):
+    async def async_cmd_power_off(self, player_id: str) -> None:
         """
         Send POWER OFF command to given player.
 
@@ -138,7 +138,7 @@ class ChromecastProvider(PlayerProvider):
         """
         self.mass.add_job(self._players[player_id].power_off)
 
-    async def async_cmd_volume_set(self, player_id: str, volume_level: int):
+    async def async_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
         Send volume level command to given player.
 

@@ -80,7 +80,7 @@ class ExternalId(str, Enum):
 
 
 @dataclass
-class MediaItem(object):
+class MediaItem:
     """Representation of a media item."""
 
     item_id: str = ""

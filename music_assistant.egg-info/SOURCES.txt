@@ -133,7 +133,7 @@ music_assistant/providers/chromecast/player.py
 music_assistant/providers/demo/__init__.py
 music_assistant/providers/demo/demo_musicprovider.py
 music_assistant/providers/demo/demo_playerprovider.py
-music_assistant/providers/file/file.py
+music_assistant/providers/file/__init__.py
 music_assistant/providers/home_assistant/__init__.py
 music_assistant/providers/qobuz/__init__.py
 music_assistant/providers/sonos/__init__.py
@@ -149,7 +149,7 @@ music_assistant/providers/squeezebox/constants.py
 music_assistant/providers/squeezebox/discovery.py
 music_assistant/providers/squeezebox/socket_client.py
 music_assistant/providers/tunein/__init__.py
-music_assistant/providers/webplayer/todo.py
+music_assistant/providers/webplayer/__init__.py
 venv/lib/python3.7/site-packages/Pillow-7.2.0.dist-info/top_level.txt
 venv/lib/python3.7/site-packages/PyChromecast-7.2.1.dist-info/top_level.txt
 venv/lib/python3.7/site-packages/PyJWT-1.7.1.dist-info/entry_points.txt
@@ -214,11 +214,6 @@ venv/lib/python3.7/site-packages/mccabe-0.6.1.dist-info/top_level.txt
 venv/lib/python3.7/site-packages/memory_tempfile-2.2.3.dist-info/LICENSE.txt
 venv/lib/python3.7/site-packages/more_itertools-8.5.0.dist-info/top_level.txt
 venv/lib/python3.7/site-packages/multidict-4.7.6.dist-info/top_level.txt
-venv/lib/python3.7/site-packages/music_assistant-1.0.0-py3.7.egg/EGG-INFO/SOURCES.txt
-venv/lib/python3.7/site-packages/music_assistant-1.0.0-py3.7.egg/EGG-INFO/dependency_links.txt
-venv/lib/python3.7/site-packages/music_assistant-1.0.0-py3.7.egg/EGG-INFO/entry_points.txt
-venv/lib/python3.7/site-packages/music_assistant-1.0.0-py3.7.egg/EGG-INFO/requires.txt
-venv/lib/python3.7/site-packages/music_assistant-1.0.0-py3.7.egg/EGG-INFO/top_level.txt
 venv/lib/python3.7/site-packages/mypy-0.770.dist-info/entry_points.txt
 venv/lib/python3.7/site-packages/mypy-0.770.dist-info/top_level.txt
 venv/lib/python3.7/site-packages/mypy_extensions-0.4.3.dist-info/top_level.txt

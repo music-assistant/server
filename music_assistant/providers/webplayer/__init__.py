@@ -79,26 +79,26 @@ class WebPlayerProvider(PlayerProvider):
             await self.mass.player_manager.async_add_player(player)
 
         elif msg == EVENT_WEBPLAYER_STATE:
-            await self.__handle_player_state(msg_details)
+            await self.__async_handle_player_state(msg_details)
 
     @run_periodic(30)
-    async def async_check_players(self):
+    async def async_check_players(self) -> None:
         """Invalidate players that did not send a heartbeat message in a while."""
         cur_time = time.time()
         offline_players = []
         for player in self._players.values():
-            if cur_time - player._last_message > 30:
+            if cur_time - player.last_message > 30:
                 offline_players.append(player.player_id)
         for player_id in offline_players:
             await self.mass.player_manager.async_remove_player(player_id)
             self._players.pop(player_id, None)
 
-    async def async_cmd_stop(self, player_id: str):
+    async def async_cmd_stop(self, player_id: str) -> None:
         """Send stop command to player."""
         data = {"player_id": player_id, "cmd": "stop"}
         self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
 
-    async def async_cmd_play(self, player_id: str):
+    async def async_cmd_play(self, player_id: str) -> None:
         """Send play command to player."""
         data = {"player_id": player_id, "cmd": "play"}
         self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
@@ -108,18 +108,18 @@ class WebPlayerProvider(PlayerProvider):
         data = {"player_id": player_id, "cmd": "pause"}
         self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
 
-    async def async_cmd_power_on(self, player_id: str):
+    async def async_cmd_power_on(self, player_id: str) -> None:
         """Send power ON command to player."""
         self._players[player_id].powered = True  # not supported on webplayer
         data = {"player_id": player_id, "cmd": "stop"}
         self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
 
-    async def async_cmd_power_off(self, player_id: str):
+    async def async_cmd_power_off(self, player_id: str) -> None:
         """Send power OFF command to player."""
         await self.async_cmd_stop(player_id)
         self._players[player_id].powered = False
 
-    async def async_cmd_volume_set(self, volume_level, player_id: str):
+    async def async_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send new volume level command to player."""
         data = {
             "player_id": player_id,
@@ -156,5 +156,5 @@ class WebPlayerProvider(PlayerProvider):
             player.powered = data["powered"]
         if "name" in data:
             player.name = data["name"]
-        player._last_message = time.time()
+        player.last_message = time.time()
         self.mass.add_job(self.mass.player_manager.async_update_player(player))

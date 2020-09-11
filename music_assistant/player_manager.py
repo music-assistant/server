@@ -251,7 +251,7 @@ class PlayerManager:
         if queue_opt == QueueOption.Add:
             return await player_queue.async_append(queue_items)
 
-    async def async_cmd_stop(self, player_id: str):
+    async def async_cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
 
@@ -260,7 +260,7 @@ class PlayerManager:
         # TODO: redirect playback related commands to parent player?
         return await self.get_player_provider(player_id).async_cmd_stop(player_id)
 
-    async def async_cmd_play(self, player_id: str):
+    async def async_cmd_play(self, player_id: str) -> None:
         """
         Send PLAY command to given player.
 
@@ -311,7 +311,7 @@ class PlayerManager:
         """
         return await self.get_player_queue(player_id).async_previous()
 
-    async def async_cmd_power_on(self, player_id: str):
+    async def async_cmd_power_on(self, player_id: str) -> None:
         """
         Send POWER ON command to given player.
 
@@ -327,7 +327,7 @@ class PlayerManager:
             if control:
                 self.mass.add_job(control.set_state, control.id, True)
 
-    async def async_cmd_power_off(self, player_id: str):
+    async def async_cmd_power_off(self, player_id: str) -> None:
         """
         Send POWER OFF command to given player.
 
@@ -360,7 +360,7 @@ class PlayerManager:
             return await self.async_cmd_power_off(player_id)
         return await self.async_cmd_power_on(player_id)
 
-    async def async_cmd_volume_set(self, player_id: str, volume_level: int):
+    async def async_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
         Send volume level command to given player.
 
@@ -559,7 +559,8 @@ class PlayerManager:
         return player.state
 
     @callback
-    def __get_player_mute_state(self, player: Player):
+    @classmethod
+    def __get_player_mute_state(cls, player: Player):
         """Get final/calculated player's mute state."""
         # TODO: Handle VolumeControl plugin for mute state?
         return player.muted

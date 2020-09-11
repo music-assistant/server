@@ -18,17 +18,17 @@ class Datagram:
         """Decode a datagram message."""
         if data[0] == "e":
             return TLVDiscoveryRequestDatagram(data)
-        elif data[0] == "E":
+        if data[0] == "E":
             return TLVDiscoveryResponseDatagram(data)
-        elif data[0] == "d":
+        if data[0] == "d":
             return ClientDiscoveryDatagram(data)
-        elif data[0] == "h":
+        if data[0] == "h":
             pass  # Hello!
-        elif data[0] == "i":
+        if data[0] == "i":
             pass  # IR
-        elif data[0] == "2":
+        if data[0] == "2":
             pass  # i2c?
-        elif data[0] == "a":
+        if data[0] == "a":
             pass  # ack!
 
 
@@ -127,11 +127,13 @@ class DiscoveryProtocol:
         mreq = struct.pack("4sL", group, socket.INADDR_ANY)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
-    def error_received(self, exc):
+    @classmethod
+    def error_received(cls, exc):
         """Call on Error."""
         LOGGER.error(exc)
 
-    def connection_lost(self, *args, **kwargs):
+    @classmethod
+    def connection_lost(cls, *args, **kwargs):
         """Call on Connection lost."""
         # pylint: disable=unused-argument
         LOGGER.debug("Connection lost to discovery")

@@ -13,7 +13,7 @@ from music_assistant.utils import run_periodic
 LOGGER = logging.getLogger("mass")
 
 
-class Cache(object):
+class Cache:
     """Basic stateless caching system."""
 
     _db = None
@@ -100,8 +100,7 @@ class Cache(object):
         """Get int checksum from string."""
         if not stringinput:
             return 0
-        else:
-            stringinput = str(stringinput)
+        stringinput = str(stringinput)
         return reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
@@ -150,15 +149,14 @@ def async_use_cache(cache_days=14, cache_checksum=None):
             cachedata = await method_class.cache.async_get(cache_str)
             if cachedata is not None:
                 return cachedata
-            else:
-                result = await func(*args, **kwargs)
-                await method_class.cache.async_set(
-                    cache_str,
-                    result,
-                    checksum=cache_checksum,
-                    expiration=(86400 * cache_days),
-                )
-                return result
+            result = await func(*args, **kwargs)
+            await method_class.cache.async_set(
+                cache_str,
+                result,
+                checksum=cache_checksum,
+                expiration=(86400 * cache_days),
+            )
+            return result
 
         return async_wrapped
 

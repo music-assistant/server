@@ -265,8 +265,8 @@ class SqueezeSocketClient:
         self.close()
 
     @callback
+    @staticmethod
     def __pack_stream(
-        self,
         command,
         autostart=b"1",
         formatbyte=b"o",
@@ -360,7 +360,8 @@ class SqueezeSocketClient:
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
-    def _process_stat_stmo(self, data):
+    @classmethod
+    def _process_stat_stmo(cls, data):
         """
         Process incoming stat STMo message.
 
@@ -448,7 +449,7 @@ class SqueezeSocketClient:
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
 
-class PySqueezeVolume(object):
+class PySqueezeVolume:
     """Represents a sound volume. This is an awful lot more complex than it sounds."""
 
     minimum = 0

@@ -127,8 +127,7 @@ def try_parse_bool(possible_bool):
     """Try to parse a bool."""
     if isinstance(possible_bool, bool):
         return possible_bool
-    else:
-        return possible_bool in ["true", "True", "1", "on", "ON", 1]
+    return possible_bool in ["true", "True", "1", "on", "ON", 1]
 
 
 def parse_title_and_version(track_title, track_version=None):

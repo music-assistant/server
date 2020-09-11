@@ -342,8 +342,7 @@ class ChromecastPlayer:
             queue_item.name = "Music Assistant"
             queue_item.uri = uri
             return self.queue_load([queue_item, queue_item])
-        else:
-            self._chromecast.play_media(uri, "audio/flac")
+        self._chromecast.play_media(uri, "audio/flac")
 
     def queue_load(self, queue_items: List[QueueItem]):
         """Load (overwrite) queue with new items."""

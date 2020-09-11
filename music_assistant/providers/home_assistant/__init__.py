@@ -232,7 +232,7 @@ class HomeAssistantPlugin(Provider):
             return await self.mass.player_manager.async_play_media(
                 player_id, media_items, queue_opt
             )
-        elif "spotify://playlist" in media_content_id:
+        if "spotify://playlist" in media_content_id:
             # TODO: handle parsing of other uri's here
             playlist = await self.mass.music_manager.async_getplaylist(
                 "spotify", media_content_id.split(":")[-1]

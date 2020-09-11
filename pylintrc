@@ -1,9 +1,12 @@
 [MASTER]
 ignore=tests
+ignore-patterns=app_vars
 # Use a conservative default here; 2 should speed up most setups and not hurt
 # any too bad. Override on command line as appropriate.
 jobs=2
 persistent=no
+suggestion-mode=yes
+extension-pkg-whitelist=taglib
 
 [BASIC]
 good-names=id,i,j,k,ex,Run,_,fp,T,ev
@@ -22,6 +25,7 @@ good-names=id,i,j,k,ex,Run,_,fp,T,ev
 # inconsistent-return-statements - doesn't handle raise
 # too-many-ancestors - it's too strict.
 # wrong-import-order - isort guards this
+# fixme - project is in development phase
 disable=
   format,
   abstract-class-little-used,
@@ -43,13 +47,19 @@ disable=
   too-many-statements,
   too-many-boolean-expressions,
   unused-argument,
-  wrong-import-order
+  wrong-import-order,
+  fixme
 # enable useless-suppression temporarily every now and then to clean them up
 enable=
   use-symbolic-message-instead
 
 [REPORTS]
 score=no
+
+[REFACTORING]
+
+# Maximum number of nested blocks for function / method body
+max-nested-blocks=15
 
 [TYPECHECK]
 # For attrs

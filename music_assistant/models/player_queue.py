@@ -179,13 +179,12 @@ class PlayerQueue:
         if self.cur_index is None:
             # playback started
             return 0
-        else:
-            # player already playing (or paused) so return the next item
-            if len(self.items) > (self.cur_index + 1):
-                return self.cur_index + 1
-            if self._repeat_enabled:
-                # repeat enabled, start queue at beginning
-                return 0
+        # player already playing (or paused) so return the next item
+        if len(self.items) > (self.cur_index + 1):
+            return self.cur_index + 1
+        if self._repeat_enabled:
+            # repeat enabled, start queue at beginning
+            return 0
         return None
 
     @property
@@ -237,10 +236,9 @@ class PlayerQueue:
             return
         if self.use_queue_stream:
             return await self.async_play_index(self.cur_index + 1)
-        else:
-            return await self.mass.player_manager.get_player_provider(
-                self.player_id
-            ).async_cmd_next(self.player_id)
+        return await self.mass.player_manager.get_player_provider(
+            self.player_id
+        ).async_cmd_next(self.player_id)
 
     async def async_previous(self):
         """Play the previous track in the queue."""
@@ -248,8 +246,7 @@ class PlayerQueue:
             return
         if self.use_queue_stream:
             return await self.async_play_index(self.cur_index - 1)
-        else:
-            return await self.mass.player_manager.async_cmd_previous(self.player_id)
+        return await self.mass.player_manager.async_cmd_previous(self.player_id)
 
     async def async_resume(self):
         """Resume previous queue."""
@@ -288,7 +285,7 @@ class PlayerQueue:
             return await player_prov.async_cmd_play_uri(
                 self.player_id, queue_stream_uri
             )
-        elif supports_queue:
+        if supports_queue:
             try:
                 return await player_prov.async_cmd_queue_play_index(
                     self.player_id, index
@@ -507,11 +504,12 @@ class PlayerQueue:
             if not music_prov:
                 continue  # provider temporary unavailable ?
 
-            streamdetails = await music_prov.async_get_stream_details(
+            streamdetails: StreamDetails = await music_prov.async_get_stream_details(
                 prov_media.item_id
             )
 
             if streamdetails:
+                streamdetails.player_id = player_id
                 # set streamdetails as attribute on the queue_item
                 queue_item.streamdetails = streamdetails
                 return streamdetails

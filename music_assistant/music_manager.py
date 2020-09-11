@@ -922,7 +922,7 @@ class MusicManager:
                 if track_version.provider == playlist_prov.provider:
                     track_ids_to_add.append(track_version.item_id)
                     break
-                elif playlist_prov.provider == "file":
+                if playlist_prov.provider == "file":
                     # the file provider can handle uri's from all providers so simply add the uri
                     uri = f"{track_version.provider}://{track_version.item_id}"
                     track_ids_to_add.append(uri)

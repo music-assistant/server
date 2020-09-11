@@ -30,7 +30,7 @@ class PlayerProvider(Provider):
         raise NotImplementedError
 
     @abstractmethod
-    async def async_cmd_stop(self, player_id: str):
+    async def async_cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
 
@@ -39,7 +39,7 @@ class PlayerProvider(Provider):
         raise NotImplementedError
 
     @abstractmethod
-    async def async_cmd_play(self, player_id: str):
+    async def async_cmd_play(self, player_id: str) -> None:
         """
         Send PLAY command to given player.
 
@@ -75,7 +75,7 @@ class PlayerProvider(Provider):
         raise NotImplementedError
 
     @abstractmethod
-    async def async_cmd_power_on(self, player_id: str):
+    async def async_cmd_power_on(self, player_id: str) -> None:
         """
         Send POWER ON command to given player.
 
@@ -84,7 +84,7 @@ class PlayerProvider(Provider):
         raise NotImplementedError
 
     @abstractmethod
-    async def async_cmd_power_off(self, player_id: str):
+    async def async_cmd_power_off(self, player_id: str) -> None:
         """
         Send POWER OFF command to given player.
 
@@ -93,7 +93,7 @@ class PlayerProvider(Provider):
         raise NotImplementedError
 
     @abstractmethod
-    async def async_cmd_volume_set(self, player_id: str, volume_level: int):
+    async def async_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
         Send volume level command to given player.
 
