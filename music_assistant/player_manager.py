@@ -58,7 +58,7 @@ class PlayerManager:
 
     async def async_close(self):
         """Handle stop/shutdown."""
-        for player_queue in self._player_queues.values():
+        for player_queue in list(self._player_queues.values()):
             await player_queue.async_close()
 
     @run_periodic(1)

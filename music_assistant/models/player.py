@@ -54,13 +54,14 @@ class Player:
     should_poll: bool = False
     features: List[PlayerFeature] = field(default_factory=list)
     config_entries: List[ConfigEntry] = field(default_factory=list)
-    updated_at: datetime = datetime.utcnow()  # managed by playermanager!
-    active_queue: str = ""  # managed by playermanager!
-    group_parents: List[str] = field(default_factory=list)  # managed by playermanager!
-    cur_queue_item_id: str = None  # managed by playermanager!
+    # below attributes are handled by the player manager. No need to set/override them.
+    updated_at: datetime = field(default=datetime.utcnow(), init=False)
+    active_queue: str = field(default="", init=False)
+    group_parents: List[str] = field(init=False, default_factory=list)
+    cur_queue_item_id: str = field(default="", init=False)
 
     def __setattr__(self, name, value):
-        """Event when control is updated. Do not override."""
+        """Watch for attribute updates. Do not override."""
         if name == "updated_at":
             # updated at is set by the on_update callback
             # make sure we do not hit an endless loop

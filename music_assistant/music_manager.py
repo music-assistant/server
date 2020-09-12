@@ -86,7 +86,7 @@ class MusicManager:
     ################ GET MediaItem(s) by id and provider #################
 
     async def async_get_item(
-        self, item_id: str, provider_id: str, media_type: MediaType, lazy: bool = False
+        self, item_id: str, provider_id: str, media_type: MediaType, lazy: bool = True
     ):
         """Get single music item by id and media type."""
         if media_type == MediaType.Artist:
@@ -166,7 +166,7 @@ class MusicManager:
         self,
         item_id: str,
         provider_id: str,
-        lazy: bool = False,
+        lazy: bool = True,
         track_details: Track = None,
         refresh: bool = False,
     ) -> Track:
@@ -240,32 +240,73 @@ class MusicManager:
     ) -> List[Track]:
         """Return album tracks for the given provider album id. Generator."""
         assert item_id and provider_id
-        if provider_id == "database":
+        album = await self.async_get_album(item_id, provider_id)
+        if album.provider == "database":
             # album tracks are not stored in db, we always fetch them (cached) from the provider.
-            db_item = await self.mass.database.async_get_album(item_id)
-            provider_id = db_item.provider_ids[0].provider
-            item_id = db_item.provider_ids[0].item_id
+            provider_id = album.provider_ids[0].provider
+            item_id = album.provider_ids[0].item_id
         provider = self.mass.get_provider(provider_id)
         cache_key = f"{provider_id}.album_tracks.{item_id}"
-        async for item in async_cached_generator(
-            self.cache, cache_key, provider.async_get_album_tracks(item_id)
-        ):
-            if not item:
-                continue
-            assert item.item_id and item.provider
-            db_id = await self.mass.database.async_get_database_id(
-                item.provider, item.item_id, MediaType.Track
-            )
-            if db_id:
-                # return database track instead if we have a match
-                db_item = await self.mass.database.async_get_track(
-                    db_id, fulldata=False
+        async with self.mass.database.db_conn() as db_conn:
+            async for item in async_cached_generator(
+                self.cache, cache_key, provider.async_get_album_tracks(item_id)
+            ):
+                if not item:
+                    continue
+                db_id = await self.mass.database.async_get_database_id(
+                    item.provider, item.item_id, MediaType.Track, db_conn
                 )
-                db_item.disc_number = item.disc_number
-                db_item.track_number = item.track_number
-                yield db_item
-            else:
-                yield item
+                if db_id:
+                    # return database track instead if we have a match
+                    track = await self.mass.database.async_get_track(
+                        db_id, fulldata=False, db_conn=db_conn
+                    )
+                    track.disc_number = item.disc_number
+                    track.track_number = item.track_number
+                else:
+                    track = item
+                if not track.album:
+                    track.album = album
+                yield track
+
+    async def async_get_album_versions(
+        self, item_id: str, provider_id: str
+    ) -> List[Album]:
+        """Return all versions of an album we can find on all providers. Generator."""
+        album = await self.async_get_album(item_id, provider_id)
+        provider_ids = [
+            item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
+        ]
+        search_query = f"{album.artist.name} - {album.name}"
+        for provider_id in provider_ids:
+            provider_result = await self.async_search_provider(
+                search_query, provider_id, [MediaType.Album], 25
+            )
+            for item in provider_result.albums:
+                if compare_strings(item.artist.name, album.artist.name):
+                    yield item
+
+    async def async_get_track_versions(
+        self, item_id: str, provider_id: str
+    ) -> List[Track]:
+        """Return all versions of a track we can find on all providers. Generator."""
+        track = await self.async_get_track(item_id, provider_id)
+        provider_ids = [
+            item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
+        ]
+        search_query = f"{track.artists[0].name} - {track.name}"
+        for provider_id in provider_ids:
+            provider_result = await self.async_search_provider(
+                search_query, provider_id, [MediaType.Track], 25
+            )
+            for item in provider_result.tracks:
+                if not compare_strings(item.name, track.name):
+                    continue
+                for artist in item.artists:
+                    # artist must match
+                    if compare_strings(artist.name, track.artists[0].name):
+                        yield item
+                        break
 
     async def async_get_playlist_tracks(
         self, item_id: str, provider_id: str
@@ -820,7 +861,7 @@ class MusicManager:
             :param limit: number of items to return in the search (per type).
         """
         result = SearchResult([], [], [], [], [])
-        # include results from all music providers, filter out duplicates
+        # include results from all music providers
         provider_ids = ["database"] + [
             item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
         ]

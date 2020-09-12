@@ -323,7 +323,7 @@ class Web:
         """Get full artist details."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
-        lazy = request.rel_url.query.get("lazy", "false") != "false"
+        lazy = request.rel_url.query.get("lazy", "true") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
         result = await self.mass.music_manager.async_get_artist(
@@ -337,7 +337,7 @@ class Web:
         """Get full album details."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
-        lazy = request.rel_url.query.get("lazy", "false") != "false"
+        lazy = request.rel_url.query.get("lazy", "true") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
         result = await self.mass.music_manager.async_get_album(
@@ -351,11 +351,11 @@ class Web:
         """Get full track details."""
         item_id = request.match_info.get("item_id")
         provider = request.rel_url.query.get("provider")
-        lazy = request.rel_url.query.get("lazy", "false") != "false"
+        lazy = request.rel_url.query.get("lazy", "true") != "false"
         if item_id is None or provider is None:
             return web.Response(text="invalid item or provider", status=501)
         result = await self.mass.music_manager.async_get_track(
-            item_id, provider, lazy=lazy, refresh=True
+            item_id, provider, lazy=lazy
         )
         return web.json_response(result, dumps=json_serializer)
 
@@ -465,6 +465,28 @@ class Web:
         if item_id is None or provider is None:
             return web.Response(text="invalid item_id or provider", status=501)
         iterator = self.mass.music_manager.async_get_album_tracks(item_id, provider)
+        return await self.__async_stream_json(request, iterator)
+
+    @login_required
+    @routes.get("/api/albums/{item_id}/versions")
+    async def async_album_versions(self, request):
+        """Get all versions of an album."""
+        item_id = request.match_info.get("item_id")
+        provider = request.rel_url.query.get("provider")
+        if item_id is None or provider is None:
+            return web.Response(text="invalid item_id or provider", status=501)
+        iterator = self.mass.music_manager.async_get_album_versions(item_id, provider)
+        return await self.__async_stream_json(request, iterator)
+
+    @login_required
+    @routes.get("/api/tracks/{item_id}/versions")
+    async def async_track_versions(self, request):
+        """Get all versions of an track."""
+        item_id = request.match_info.get("item_id")
+        provider = request.rel_url.query.get("provider")
+        if item_id is None or provider is None:
+            return web.Response(text="invalid item_id or provider", status=501)
+        iterator = self.mass.music_manager.async_get_track_versions(item_id, provider)
         return await self.__async_stream_json(request, iterator)
 
     @login_required
