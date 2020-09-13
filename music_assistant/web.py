@@ -147,6 +147,9 @@ class Web:
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web/")
         if os.path.isdir(webdir):
             app.router.add_static("/", webdir, append_version=True)
+        else:
+            # The (minified) build of the frontend(app) is included in the pypi releases
+            LOGGER.warning("Loaded without frontend support.")
 
         # Add CORS support to all routes
         cors = aiohttp_cors.setup(

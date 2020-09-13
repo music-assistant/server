@@ -1,6 +1,5 @@
 """Music Assistant setup."""
 import os
-from datetime import datetime as dt
 
 from setuptools import find_packages, setup
 
@@ -10,7 +9,6 @@ PROJECT_NAME = "Music Assistant"
 PROJECT_PACKAGE_NAME = "music_assistant"
 PROJECT_LICENSE = "Apache License 2.0"
 PROJECT_AUTHOR = "Marcel van der Veldt"
-PROJECT_COPYRIGHT = f" 2019-{dt.now().year}, {PROJECT_AUTHOR}"
 PROJECT_URL = "https://music-assistant.github.io/"
 PROJECT_EMAIL = "marcelveldt@users.noreply.github.com"
 
