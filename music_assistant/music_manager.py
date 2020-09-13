@@ -278,9 +278,9 @@ class MusicManager:
             item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
         ]
         search_query = f"{album.artist.name} - {album.name}"
-        for provider_id in provider_ids:
+        for prov_id in provider_ids:
             provider_result = await self.async_search_provider(
-                search_query, provider_id, [MediaType.Album], 25
+                search_query, prov_id, [MediaType.Album], 25
             )
             for item in provider_result.albums:
                 if compare_strings(item.artist.name, album.artist.name):
@@ -295,9 +295,9 @@ class MusicManager:
             item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
         ]
         search_query = f"{track.artists[0].name} - {track.name}"
-        for provider_id in provider_ids:
+        for prov_id in provider_ids:
             provider_result = await self.async_search_provider(
-                search_query, provider_id, [MediaType.Track], 25
+                search_query, prov_id, [MediaType.Track], 25
             )
             for item in provider_result.tracks:
                 if not compare_strings(item.name, track.name):
