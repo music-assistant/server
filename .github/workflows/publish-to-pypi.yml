@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: 3.7
       - name: Include frontend-app in the release package
-        run:
+        run: |
           cd /tmp
           curl https://github.com/music-assistant/app/archive/master.zip -LOk
           unzip master.zip
