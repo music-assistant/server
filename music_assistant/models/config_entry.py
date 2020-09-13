@@ -29,7 +29,7 @@ class ConfigEntry:
     description_key: Optional[str] = None  # key in the translations file
     help_key: Optional[str] = None  # key in the translations file
     multi_value: bool = False  # allow multiple values from the list
-    depends_on: str = ""  # entry_key that needs to be set before this setting shows up in frontend
+    depends_on: str = ""  # needs to be set before this setting shows up in frontend
     hidden: bool = False  # hide from UI
     value: Optional[Any] = None  # set by the configuration manager
     store_hashed: bool = False  # value will be hashed, non reversible
