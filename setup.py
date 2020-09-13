@@ -1,5 +1,6 @@
 """Music Assistant setup."""
 import os
+from pathlib import Path
 
 from setuptools import find_packages, setup
 
@@ -25,7 +26,8 @@ PROJECT_URLS = {
     "Website": "https://music-assistant.github.io/",
     "Discord": "https://discord.gg/9xHYFY",
 }
-
+PROJECT_DIR = Path(__file__).parent.resolve()
+README_FILE = PROJECT_DIR / "README.md"
 PACKAGES = find_packages(exclude=["tests", "tests.*"])
 PACKAGE_FILES = []
 for (path, directories, filenames) in os.walk("music_assistant/"):
@@ -45,6 +47,8 @@ setup(
     project_urls=PROJECT_URLS,
     author=PROJECT_AUTHOR,
     author_email=PROJECT_EMAIL,
+    long_description=README_FILE.read_text(encoding="utf-8"),
+    long_description_content_type="text/markdown",
     packages=PACKAGES,
     include_package_data=True,
     zip_safe=False,
