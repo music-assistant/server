@@ -74,9 +74,9 @@ class HTTPStreamer:
         # let the streaming begin!
         try:
             await asyncio.gather(bg_task)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except (asyncio.CancelledError, asyncio.TimeoutError) as exc:
             cancelled.set()
-            raise asyncio.CancelledError()
+            raise exc  # re-raise
         return resp
 
     def __get_queue_item_stream(self, player_id, queue_item, buffer, cancelled):
