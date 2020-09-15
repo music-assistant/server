@@ -1048,7 +1048,9 @@ class Database:
         for key, value in external_ids.items():
             sql_query = """INSERT or REPLACE INTO external_ids
                 (item_id, media_type, key, value) VALUES(?,?,?,?);"""
-            await db_conn.execute(sql_query, (item_id, int(media_type), key, value))
+            await db_conn.execute(
+                sql_query, (item_id, int(media_type), str(key), value)
+            )
 
     async def __async_get_external_ids(
         self, item_id: int, media_type: MediaType, db_conn: sqlite3.Connection
@@ -1131,7 +1133,7 @@ class Database:
             sql_query = "SELECT (item_id) FROM external_ids \
                     WHERE media_type=? AND key=? AND value=?;"
             for db_row in await db_conn.execute_fetchall(
-                sql_query, (int(media_item.media_type), key, value)
+                sql_query, (int(media_item.media_type), str(key), value)
             ):
                 if db_row:
                     return db_row[0]

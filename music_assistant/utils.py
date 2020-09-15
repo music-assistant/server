@@ -298,7 +298,7 @@ def create_tempfile():
     return tempfile.NamedTemporaryFile(buffering=0)
 
 
-class CustomIntEnum(Enum):
+class CustomIntEnum(int, Enum):
     """Base for IntEnum with some helpers."""
 
     # when serializing we prefer the string (name) representation

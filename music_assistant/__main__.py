@@ -2,6 +2,8 @@
 import argparse
 import logging
 import os
+import platform
+import webbrowser
 
 from aiorun import run
 from music_assistant.mass import MusicAssistant
@@ -57,15 +59,19 @@ def main():
     mass = MusicAssistant(data_dir)
 
     # run UI in browser on windows and macos only
-    # if platform.system() in ["Windows", "Darwin"]:
-    #     import webbrowser
-    #     webbrowser.open(f"http://localhost:{mass.web.http_port}")
+    if platform.system() in ["Windows", "Darwin"]:
+        webbrowser.open(mass.web.internal_url)
 
     def on_shutdown(loop):
         logger.info("shutdown requested!")
         loop.run_until_complete(mass.async_stop())
 
-    run(mass.async_start(), use_uvloop=True, shutdown_callback=on_shutdown)
+    run(
+        mass.async_start(),
+        use_uvloop=True,
+        shutdown_callback=on_shutdown,
+        executor_workers=32,
+    )
 
 
 if __name__ == "__main__":

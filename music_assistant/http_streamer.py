@@ -16,6 +16,7 @@ import threading
 import urllib
 from contextlib import suppress
 
+import aiohttp
 import pyloudnorm
 import soundfile
 from aiohttp import web
@@ -71,7 +72,11 @@ class HTTPStreamer:
         # let the streaming begin!
         try:
             await asyncio.gather(bg_task)
-        except (asyncio.CancelledError, asyncio.TimeoutError) as exc:
+        except (
+            asyncio.CancelledError,
+            aiohttp.ClientConnectionError,
+            asyncio.TimeoutError,
+        ) as exc:
             cancelled.set()
             raise exc  # re-raise
         return resp
@@ -112,7 +117,11 @@ class HTTPStreamer:
         # let the streaming begin!
         try:
             await asyncio.gather(bg_task)
-        except (asyncio.CancelledError, asyncio.TimeoutError) as exc:
+        except (
+            asyncio.CancelledError,
+            aiohttp.ClientConnectionError,
+            asyncio.TimeoutError,
+        ) as exc:
             cancelled.set()
             raise exc  # re-raise
         return resp

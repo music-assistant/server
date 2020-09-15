@@ -72,7 +72,7 @@ class ChromecastProvider(PlayerProvider):
         pychromecast.stop_discovery(self._browser)
         # stop cast socket clients
         for player in self._players.values():
-            await player.async_disconnect()
+            player.disconnect()
 
     async def async_cmd_play_uri(self, player_id: str, uri: str):
         """

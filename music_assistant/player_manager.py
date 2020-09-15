@@ -461,7 +461,7 @@ class PlayerManager:
         gain_correct = round(gain_correct, 2)
         LOGGER.debug(
             "Loudness level for track %s/%s is %s - calculated replayGain is %s",
-            id,
+            provider_id,
             item_id,
             track_loudness,
             gain_correct,

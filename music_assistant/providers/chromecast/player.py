@@ -186,7 +186,7 @@ class ChromecastPlayer:
         chromecast.mz_controller = mz_controller
         self._chromecast.start()
 
-    async def async_disconnect(self):
+    def disconnect(self):
         """Disconnect Chromecast object if it is set."""
         if self._chromecast is None:
             return
@@ -194,7 +194,7 @@ class ChromecastPlayer:
             "[%s] Disconnecting from chromecast socket", self._cast_info.friendly_name
         )
         self._available = False
-        self.mass.add_job(self._chromecast.disconnect)
+        self._chromecast.disconnect()
         self._invalidate()
 
     def _invalidate(self):
