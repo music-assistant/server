@@ -2,8 +2,6 @@
 import argparse
 import logging
 import os
-import platform
-import webbrowser
 
 from aiorun import run
 from music_assistant.mass import MusicAssistant
@@ -57,10 +55,6 @@ def main():
         logger.setLevel(logging.INFO)
 
     mass = MusicAssistant(data_dir)
-
-    # run UI in browser on windows and macos only
-    if platform.system() in ["Windows", "Darwin"]:
-        webbrowser.open(mass.web.internal_url)
 
     def on_shutdown(loop):
         logger.info("shutdown requested!")

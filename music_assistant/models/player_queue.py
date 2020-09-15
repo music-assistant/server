@@ -483,7 +483,7 @@ class PlayerQueue:
             "shuffle_enabled": self.shuffle_enabled,
             "repeat_enabled": self.repeat_enabled,
             "crossfade_enabled": self.crossfade_enabled,
-            "items": len(self.items),
+            "items": len(self._items),
             "cur_item_id": self.cur_item_id,
             "cur_index": self.cur_index,
             "next_index": self.next_index,

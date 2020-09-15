@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from mashumaro import DataClassDictMixin
 
@@ -37,5 +37,6 @@ class StreamDetails(DataClassDictMixin):
     sample_rate: int
     bit_depth: int
     player_id: str = ""
-    details: Optional[Any] = None
-    seconds_played: int = None
+    details: Any = None
+    seconds_played: int = 0
+    sox_options: str = None

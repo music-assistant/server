@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, List
 
 from mashumaro import DataClassDictMixin
 from music_assistant.utils import CustomIntEnum
@@ -54,8 +54,8 @@ class MediaItemProviderId(DataClassDictMixin):
 
     provider: str
     item_id: str
-    quality: Optional[TrackQuality] = TrackQuality.UNKNOWN
-    details: Optional[str] = None
+    quality: TrackQuality = TrackQuality.UNKNOWN
+    details: str = None
 
 
 class ExternalId(Enum):
@@ -97,7 +97,7 @@ class Album(MediaItem):
     media_type: MediaType = MediaType.Album
     version: str = ""
     year: int = 0
-    artist: Optional[Artist] = None
+    artist: Artist = None
     labels: List[str] = field(default_factory=list)
     album_type: AlbumType = AlbumType.Album
 
@@ -110,7 +110,7 @@ class Track(MediaItem):
     duration: int = 0
     version: str = ""
     artists: List[Artist] = field(default_factory=list)
-    album: Optional[Album] = None
+    album: Album = None
     disc_number: int = 1
     track_number: int = 1
 

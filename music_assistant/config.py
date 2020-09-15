@@ -160,9 +160,9 @@ class ConfigItem:
 
     def __repr__(self):
         """Print class."""
-        return f"{OrderedDict}({self.items()})"
+        return f"{OrderedDict}({self.to_dict()})"
 
-    def items(self) -> dict:
+    def to_dict(self) -> dict:
         """Return entire config as dict."""
         result = OrderedDict()
         for entry in self.get_config_entries():

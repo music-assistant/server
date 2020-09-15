@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, List
 
 from mashumaro import DataClassDictMixin
 from music_assistant.models.config_entry import ConfigEntry
@@ -23,9 +23,9 @@ class PlayerState(Enum):
 class DeviceInfo(DataClassDictMixin):
     """Model for a player's deviceinfo."""
 
-    model: Optional[str] = ""
-    address: Optional[str] = ""
-    manufacturer: Optional[str] = ""
+    model: str = ""
+    address: str = ""
+    manufacturer: str = ""
 
 
 class PlayerFeature(CustomIntEnum):
@@ -96,5 +96,5 @@ class PlayerControl(DataClassDictMixin):
     type: PlayerControlType = PlayerControlType.UNKNOWN
     id: str = ""
     name: str = ""
-    state: Optional[Any] = None
+    state: Any = None
     set_state: Any = None
