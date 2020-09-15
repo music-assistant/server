@@ -2,10 +2,13 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import Any, List, Optional
+
+from mashumaro import DataClassDictMixin
+from music_assistant.utils import CustomIntEnum
 
 
-class MediaType(int, Enum):
+class MediaType(CustomIntEnum):
     """Enum for MediaType."""
 
     Artist = 1
@@ -15,23 +18,7 @@ class MediaType(int, Enum):
     Radio = 5
 
 
-def media_type_from_string(media_type_str: str) -> MediaType:
-    """Convert a string to a MediaType."""
-    media_type_str = media_type_str.lower()
-    if "artist" in media_type_str or media_type_str == "1":
-        return MediaType.Artist
-    if "album" in media_type_str or media_type_str == "2":
-        return MediaType.Album
-    if "track" in media_type_str or media_type_str == "3":
-        return MediaType.Track
-    if "playlist" in media_type_str or media_type_str == "4":
-        return MediaType.Playlist
-    if "radio" in media_type_str or media_type_str == "5":
-        return MediaType.Radio
-    return None
-
-
-class ContributorRole(int, Enum):
+class ContributorRole(CustomIntEnum):
     """Enum for Contributor Role."""
 
     Artist = 1
@@ -39,7 +26,7 @@ class ContributorRole(int, Enum):
     Producer = 3
 
 
-class AlbumType(int, Enum):
+class AlbumType(CustomIntEnum):
     """Enum for Album type."""
 
     Album = 1
@@ -47,7 +34,7 @@ class AlbumType(int, Enum):
     Compilation = 3
 
 
-class TrackQuality(int, Enum):
+class TrackQuality(CustomIntEnum):
     """Enum for Track Quality."""
 
     LOSSY_MP3 = 0
@@ -62,7 +49,7 @@ class TrackQuality(int, Enum):
 
 
 @dataclass
-class MediaItemProviderId:
+class MediaItemProviderId(DataClassDictMixin):
     """Model for a MediaItem's provider id."""
 
     provider: str
@@ -71,7 +58,7 @@ class MediaItemProviderId:
     details: Optional[str] = None
 
 
-class ExternalId(str, Enum):
+class ExternalId(Enum):
     """Enum with external id's."""
 
     MUSICBRAINZ = "musicbrainz"
@@ -80,15 +67,15 @@ class ExternalId(str, Enum):
 
 
 @dataclass
-class MediaItem:
+class MediaItem(DataClassDictMixin):
     """Representation of a media item."""
 
     item_id: str = ""
     provider: str = ""
     name: str = ""
-    metadata: dict = field(default_factory=dict)
+    metadata: Any = field(default_factory=dict)
     tags: List[str] = field(default_factory=list)
-    external_ids: dict = field(default_factory=dict)
+    external_ids: Any = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: List[str] = field(default_factory=list)
     is_lazy: bool = False
@@ -134,7 +121,7 @@ class Playlist(MediaItem):
 
     media_type: MediaType = MediaType.Playlist
     owner: str = ""
-    checksum: [Optional[str]] = None  # some value to detect playlist track changes
+    checksum: str = ""  # some value to detect playlist track changes
     is_editable: bool = False
 
 
@@ -147,7 +134,7 @@ class Radio(MediaItem):
 
 
 @dataclass
-class SearchResult:
+class SearchResult(DataClassDictMixin):
     """Model for Media Item Search result."""
 
     artists: List[Artist] = field(default_factory=list)

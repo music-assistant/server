@@ -173,7 +173,7 @@ class Database:
             sql_query = """SELECT item_id FROM provider_mappings
                 WHERE prov_item_id = ? AND provider = ? AND media_type = ?;"""
             async with db_conn.execute(
-                sql_query, (prov_item_id, provider_id, media_type)
+                sql_query, (prov_item_id, provider_id, int(media_type))
             ) as cursor:
                 item_id = await cursor.fetchone()
             if item_id:
@@ -318,7 +318,7 @@ class Database:
                         db_row["playlist_id"], MediaType.Playlist, db_conn
                     ),
                     tags=await self.__async_get_tags(
-                        db_row["playlist_id"], MediaType.Playlist, db_conn
+                        db_row["playlist_id"], int(MediaType.Playlist), db_conn
                     ),
                     external_ids=await self.__async_get_external_ids(
                         db_row["playlist_id"], MediaType.Playlist, db_conn
@@ -485,7 +485,7 @@ class Database:
             item_id = try_parse_int(item_id)
             sql_query = """INSERT or REPLACE INTO library_items
                 (item_id, provider, media_type) VALUES(?,?,?);"""
-            await db_conn.execute(sql_query, (item_id, provider, media_type))
+            await db_conn.execute(sql_query, (item_id, provider, int(media_type)))
             await db_conn.commit()
 
     async def async_remove_from_library(
@@ -495,13 +495,13 @@ class Database:
         async with DbConnect(self._dbfile) as db_conn:
             item_id = try_parse_int(item_id)
             sql_query = "DELETE FROM library_items WHERE item_id=? AND provider=? AND media_type=?;"
-            await db_conn.execute(sql_query, (item_id, provider, media_type))
+            await db_conn.execute(sql_query, (item_id, provider, int(media_type)))
             if media_type == MediaType.Playlist:
                 sql_query = "DELETE FROM playlists WHERE playlist_id=?;"
                 await db_conn.execute(sql_query, (item_id,))
                 sql_query = """DELETE FROM provider_mappings WHERE
                     item_id=? AND media_type=? AND provider=?;"""
-                await db_conn.execute(sql_query, (item_id, media_type, provider))
+                await db_conn.execute(sql_query, (item_id, int(media_type), provider))
                 await db_conn.commit()
 
     async def async_get_artists(
@@ -679,8 +679,8 @@ class Database:
                         album.artist.item_id,
                         album.name,
                         album.version,
-                        album.year,
-                        album.album_type,
+                        int(album.year),
+                        int(album.album_type),
                     ),
                 ) as cursor:
                     res = await cursor.fetchone()
@@ -707,7 +707,7 @@ class Database:
                 query_params = (
                     album.artist.item_id,
                     album.name,
-                    album.album_type,
+                    int(album.album_type),
                     album.year,
                     album.version,
                 )
@@ -943,7 +943,7 @@ class Database:
             if value:
                 sql_query = """INSERT or REPLACE INTO metadata
                     (item_id, media_type, key, value) VALUES(?,?,?,?);"""
-                await db_conn.execute(sql_query, (item_id, media_type, key, value))
+                await db_conn.execute(sql_query, (item_id, int(media_type), key, value))
 
     async def __async_get_metadata(
         self,
@@ -959,7 +959,7 @@ class Database:
         )
         if filter_key:
             sql_query += ' AND key = "%s"' % filter_key
-        async with db_conn.execute(sql_query, (item_id, media_type)) as cursor:
+        async with db_conn.execute(sql_query, (item_id, int(media_type))) as cursor:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
             key = db_row[0]
@@ -981,7 +981,7 @@ class Database:
                 tag_id = cursor.lastrowid
             sql_query = """INSERT or IGNORE INTO media_tags
                 (item_id, media_type, tag_id) VALUES(?,?,?);"""
-            await db_conn.execute(sql_query, (item_id, media_type, tag_id))
+            await db_conn.execute(sql_query, (item_id, int(media_type), tag_id))
 
     async def __async_get_tags(
         self, item_id: int, media_type: MediaType, db_conn: sqlite3.Connection
@@ -990,7 +990,7 @@ class Database:
         tags = []
         sql_query = """SELECT name FROM tags INNER JOIN media_tags ON
             tags.tag_id = media_tags.tag_id WHERE item_id = ? AND media_type = ?"""
-        async with db_conn.execute(sql_query, (item_id, media_type)) as cursor:
+        async with db_conn.execute(sql_query, (item_id, int(media_type))) as cursor:
             db_rows = await cursor.fetchall()
         for db_row in db_rows:
             tags.append(db_row[0])
@@ -1048,7 +1048,7 @@ class Database:
         for key, value in external_ids.items():
             sql_query = """INSERT or REPLACE INTO external_ids
                 (item_id, media_type, key, value) VALUES(?,?,?,?);"""
-            await db_conn.execute(sql_query, (item_id, media_type, key, value))
+            await db_conn.execute(sql_query, (item_id, int(media_type), key, value))
 
     async def __async_get_external_ids(
         self, item_id: int, media_type: MediaType, db_conn: sqlite3.Connection
@@ -1058,7 +1058,9 @@ class Database:
         sql_query = (
             "SELECT key, value FROM external_ids WHERE item_id = ? AND media_type = ?"
         )
-        for db_row in await db_conn.execute_fetchall(sql_query, (item_id, media_type)):
+        for db_row in await db_conn.execute_fetchall(
+            sql_query, (item_id, int(media_type))
+        ):
             external_ids[db_row[0]] = db_row[1]
         return external_ids
 
@@ -1079,10 +1081,10 @@ class Database:
                 sql_query,
                 (
                     item_id,
-                    media_type,
+                    int(media_type),
                     prov.item_id,
                     prov.provider,
-                    prov.quality,
+                    int(prov.quality),
                     prov.details,
                 ),
             )
@@ -1095,7 +1097,9 @@ class Database:
         sql_query = "SELECT prov_item_id, provider, quality, details \
             FROM provider_mappings \
             WHERE item_id = ? AND media_type = ?"
-        for db_row in await db_conn.execute_fetchall(sql_query, (item_id, media_type)):
+        for db_row in await db_conn.execute_fetchall(
+            sql_query, (item_id, int(media_type))
+        ):
             prov_mapping = MediaItemProviderId(
                 provider=db_row["provider"],
                 item_id=db_row["prov_item_id"],
@@ -1114,7 +1118,7 @@ class Database:
             "SELECT provider FROM library_items WHERE item_id = ? AND media_type = ?"
         )
         for db_row in await db_conn.execute_fetchall(
-            sql_query, (db_item_id, media_type)
+            sql_query, (db_item_id, int(media_type))
         ):
             providers.append(db_row[0])
         return providers
@@ -1127,7 +1131,7 @@ class Database:
             sql_query = "SELECT (item_id) FROM external_ids \
                     WHERE media_type=? AND key=? AND value=?;"
             for db_row in await db_conn.execute_fetchall(
-                sql_query, (media_item.media_type, key, value)
+                sql_query, (int(media_item.media_type), key, value)
             ):
                 if db_row:
                     return db_row[0]

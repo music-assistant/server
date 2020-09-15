@@ -21,6 +21,7 @@ import soundfile
 from aiohttp import web
 from music_assistant.constants import EVENT_STREAM_ENDED, EVENT_STREAM_STARTED
 from music_assistant.models.media_types import MediaType
+from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 from music_assistant.utils import create_tempfile, get_ip, try_parse_int
 from music_assistant.web import require_local_subnet
@@ -37,6 +38,43 @@ class HTTPStreamer:
         self.local_ip = get_ip()
         self.analyze_jobs = {}
         self.stream_clients = []
+
+    async def async_stream_media_item(self, http_request):
+        """Start stream for a single media item, player independent."""
+        # make sure we have valid params
+        media_type = MediaType.from_string(http_request.match_info["media_type"])
+        if media_type not in [MediaType.Track, MediaType.Radio]:
+            return web.Response(status=404, reason="Media item is not playable!")
+        provider = http_request.match_info["provider"]
+        item_id = http_request.match_info["item_id"]
+        player_id = http_request.remote  # fake player id
+        # prepare headers as audio/flac content
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": "audio/flac"}
+        )
+        await resp.prepare(http_request)
+        # collect tracks to play
+        media_item = await self.mass.music_manager.async_get_item(
+            item_id, provider, media_type
+        )
+        queue_item = QueueItem(media_item)
+        # run the streamer in executor to prevent the subprocess locking up our eventloop
+        cancelled = threading.Event()
+        bg_task = self.mass.loop.run_in_executor(
+            None,
+            self.__get_queue_item_stream,
+            player_id,
+            queue_item,
+            resp,
+            cancelled,
+        )
+        # let the streaming begin!
+        try:
+            await asyncio.gather(bg_task)
+        except (asyncio.CancelledError, asyncio.TimeoutError) as exc:
+            cancelled.set()
+            raise exc  # re-raise
+        return resp
 
     @require_local_subnet
     async def async_stream(self, http_request):
@@ -331,9 +369,8 @@ class HTTPStreamer:
     ):
         """Get audio stream from provider and apply additional effects/processing if needed."""
         # pylint: disable=subprocess-popen-preexec-fn
-        player_queue = self.mass.player_manager.get_player_queue(player_id)
         streamdetails = self.mass.add_job(
-            player_queue.async_get_stream_details(player_id, queue_item)
+            self.mass.music_manager.async_get_stream_details(queue_item, player_id)
         ).result()
         if not streamdetails:
             LOGGER.warning("no stream details for %s", queue_item.name)

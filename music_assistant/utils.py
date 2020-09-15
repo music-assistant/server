@@ -1,6 +1,5 @@
 """Helper and utility functions."""
 import asyncio
-import dataclasses
 import functools
 import logging
 import os
@@ -247,18 +246,15 @@ class EnhancedJSONEncoder(json.JSONEncoder):
     def default(self, obj):
         """Return default handler."""
         # pylint: disable=method-hidden
-        if dataclasses.is_dataclass(obj):
-            return dataclasses.asdict(obj)
-        if isinstance(obj, Enum):
-            return str(obj)
-        if isinstance(obj, Enum):
-            return int(obj)
+        try:
+            # as most of our objects are dataclass, we just try this first
+            return obj.to_dict()
+        except AttributeError:
+            pass
         if isinstance(obj, datetime):
             return obj.isoformat()
-        if hasattr(obj, "to_dict"):
-            return obj.to_dict()
-        if hasattr(obj, "items"):
-            return obj.items()
+        if isinstance(obj, Enum):
+            return str(obj)
         return super().default(obj)
 
 
@@ -300,3 +296,32 @@ def create_tempfile():
             buffering=0
         )
     return tempfile.NamedTemporaryFile(buffering=0)
+
+
+class CustomIntEnum(Enum):
+    """Base for IntEnum with some helpers."""
+
+    # when serializing we prefer the string (name) representation
+    # internally (database) we use the int value
+
+    def __int__(self):
+        """Return integer value."""
+        return super().value
+
+    def __str__(self):
+        """Return string value."""
+        # pylint: disable=no-member
+        return self._name_.lower()
+
+    @property
+    def value(self):
+        """Return the (json friendly) string name."""
+        return self.__str__()
+
+    @classmethod
+    def from_string(cls, string):
+        """Create IntEnum from it's string equivalent."""
+        for key, value in cls.__dict__.items():
+            if key.lower() == string or value == try_parse_int(string):
+                return value
+        return KeyError

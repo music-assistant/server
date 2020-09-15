@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-class ProviderType(str, Enum):
+class ProviderType(Enum):
     """Enum with plugin types."""
 
     MUSIC_PROVIDER = "music_provider"

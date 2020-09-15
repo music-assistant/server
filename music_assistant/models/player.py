@@ -3,12 +3,14 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Awaitable, Callable, List, Optional, Union
+from typing import Any, List, Optional
 
+from mashumaro import DataClassDictMixin
 from music_assistant.models.config_entry import ConfigEntry
+from music_assistant.utils import CustomIntEnum
 
 
-class PlayerState(str, Enum):
+class PlayerState(Enum):
     """Enum for the playstate of a player."""
 
     Off = "off"
@@ -18,7 +20,7 @@ class PlayerState(str, Enum):
 
 
 @dataclass
-class DeviceInfo:
+class DeviceInfo(DataClassDictMixin):
     """Model for a player's deviceinfo."""
 
     model: Optional[str] = ""
@@ -26,7 +28,7 @@ class DeviceInfo:
     manufacturer: Optional[str] = ""
 
 
-class PlayerFeature(int, Enum):
+class PlayerFeature(CustomIntEnum):
     """Enum for player features."""
 
     QUEUE = 0
@@ -35,7 +37,7 @@ class PlayerFeature(int, Enum):
 
 
 @dataclass
-class Player:
+class Player(DataClassDictMixin):
     """Model for a MusicPlayer."""
 
     player_id: str
@@ -50,7 +52,7 @@ class Player:
     muted: bool = False
     is_group_player: bool = False
     group_childs: List[str] = field(default_factory=list)
-    device_info: Optional[DeviceInfo] = None
+    device_info: DeviceInfo = None
     should_poll: bool = False
     features: List[PlayerFeature] = field(default_factory=list)
     config_entries: List[ConfigEntry] = field(default_factory=list)
@@ -74,7 +76,7 @@ class Player:
             self._on_update(self.player_id, name)
 
 
-class PlayerControlType(int, Enum):
+class PlayerControlType(CustomIntEnum):
     """Enum with different player control types."""
 
     POWER = 0
@@ -83,7 +85,7 @@ class PlayerControlType(int, Enum):
 
 
 @dataclass
-class PlayerControl:
+class PlayerControl(DataClassDictMixin):
     """
     Model for a player control.
 
@@ -95,4 +97,4 @@ class PlayerControl:
     id: str = ""
     name: str = ""
     state: Optional[Any] = None
-    set_state: Callable[..., Union[None, Awaitable]] = None
+    set_state: Any = None

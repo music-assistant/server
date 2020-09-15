@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
+from mashumaro import DataClassDictMixin
 
-class StreamType(str, Enum):
+
+class StreamType(Enum):
     """Enum with stream types."""
 
     EXECUTABLE = "executable"
@@ -13,7 +15,7 @@ class StreamType(str, Enum):
     FILE = "file"
 
 
-class ContentType(str, Enum):
+class ContentType(Enum):
     """Enum with stream content types."""
 
     OGG = "ogg"
@@ -24,7 +26,7 @@ class ContentType(str, Enum):
 
 
 @dataclass
-class StreamDetails:
+class StreamDetails(DataClassDictMixin):
     """Model for streamdetails."""
 
     type: StreamType

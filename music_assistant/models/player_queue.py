@@ -13,7 +13,7 @@ from music_assistant.constants import (
     EVENT_QUEUE_ITEMS_UPDATED,
     EVENT_QUEUE_UPDATED,
 )
-from music_assistant.models.media_types import MediaType, Track
+from music_assistant.models.media_types import Track
 from music_assistant.models.player import PlayerFeature, PlayerState
 from music_assistant.models.streamdetails import StreamDetails
 from music_assistant.utils import callback
@@ -25,7 +25,7 @@ from music_assistant.utils import callback
 LOGGER = logging.getLogger("mass")
 
 
-class QueueOption(str, Enum):
+class QueueOption(Enum):
     """Enum representation of the queue (play) options."""
 
     Play = "play"
@@ -475,45 +475,6 @@ class PlayerQueue:
         """Call when queue_streamer starts playing the queue stream."""
         self._last_queue_startindex = self._next_queue_startindex
         return self.get_item(self._next_queue_startindex)
-
-    async def async_get_stream_details(
-        self, player_id: str, queue_item: QueueItem
-    ) -> StreamDetails:
-        """
-        Get streamdetails for the given queue_item.
-
-        This is called just-in-time when a player/queue wants a QueueItem to be played.
-        Do not try to request streamdetails in advance as this is expiring data.
-            param player_id: The id of the player that will be playing the stream.
-            param queue_item: The QueueItem for which to request the streamdetails for.
-        """
-        # always request the full db track as there might be other qualities available
-        # except for radio
-        if queue_item.media_type == MediaType.Radio:
-            full_track = queue_item
-        else:
-            full_track = await self.mass.music_manager.async_get_track(
-                queue_item.item_id, queue_item.provider, lazy=True, refresh=True
-            )
-        # sort by quality and check track availability
-        for prov_media in sorted(
-            full_track.provider_ids, key=lambda x: x.quality, reverse=True
-        ):
-            # get streamdetails from provider
-            music_prov = self.mass.get_provider(prov_media.provider)
-            if not music_prov:
-                continue  # provider temporary unavailable ?
-
-            streamdetails: StreamDetails = await music_prov.async_get_stream_details(
-                prov_media.item_id
-            )
-
-            if streamdetails:
-                streamdetails.player_id = player_id
-                # set streamdetails as attribute on the queue_item
-                queue_item.streamdetails = streamdetails
-                return streamdetails
-        return None
 
     def to_dict(self):
         """Instance attributes as dict so it can be serialized to json."""

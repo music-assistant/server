@@ -346,28 +346,28 @@ class QobuzProvider(MusicProvider):
 
     async def async_get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        streamdetails = None
+        streamdata = None
         for format_id in [27, 7, 6, 5]:
             # it seems that simply requesting for highest available quality does not work
             # from time to time the api response is empty for this request ?!
             params = {"format_id": format_id, "track_id": item_id, "intent": "stream"}
-            streamdetails = await self.__async_get_data(
+            streamdata = await self.__async_get_data(
                 "track/getFileUrl", params, sign_request=True
             )
-            if streamdetails and streamdetails.get("url"):
+            if streamdata and streamdata.get("url"):
                 break
-        if not streamdetails or not streamdetails.get("url"):
+        if not streamdata or not streamdata.get("url"):
             LOGGER.error("Unable to retrieve stream url for track %s", item_id)
             return None
         return StreamDetails(
             type=StreamType.URL,
             item_id=str(item_id),
             provider=PROV_ID,
-            path=streamdetails["url"],
-            content_type=ContentType(streamdetails["mime_type"].split("/")[1]),
-            sample_rate=int(streamdetails["sampling_rate"] * 1000),
-            bit_depth=streamdetails["bit_depth"],
-            details=streamdetails,  # we need these details for reporting playback
+            path=streamdata["url"],
+            content_type=ContentType(streamdata["mime_type"].split("/")[1]),
+            sample_rate=int(streamdata["sampling_rate"] * 1000),
+            bit_depth=streamdata["bit_depth"],
+            details=streamdata,  # we need these details for reporting playback
         )
 
     async def async_mass_event(self, msg, msg_details):

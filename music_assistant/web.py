@@ -19,14 +19,9 @@ from music_assistant.constants import (
     CONF_KEY_PLAYERSETTINGS,
     CONF_KEY_PROVIDERS,
 )
-from music_assistant.models.media_types import MediaType, media_type_from_string
-from music_assistant.utils import (
-    EnhancedJSONEncoder,
-    get_external_ip,
-    get_hostname,
-    get_ip,
-    json_serializer,
-)
+from music_assistant.models.media_types import MediaType
+from music_assistant.models.player_queue import QueueOption
+from music_assistant.utils import get_external_ip, get_hostname, get_ip, json_serializer
 
 LOGGER = logging.getLogger("mass")
 
@@ -138,7 +133,13 @@ class Web:
                     self.mass.http_streamer.async_stream,
                     allow_head=False,
                 ),
+                web.get(
+                    "/stream_media/{media_type}/{provider}/{item_id}",
+                    self.mass.http_streamer.async_stream_media_item,
+                    allow_head=False,
+                ),
                 web.get("/", self.async_index),
+                web.post("/login", self.async_login),
                 web.get("/jsonrpc.js", self.async_json_rpc),
                 web.post("/jsonrpc.js", self.async_json_rpc),
                 web.get("/ws", self.async_websocket_handler),
@@ -222,7 +223,7 @@ class Web:
             "version": 1,
         }
 
-    @routes.post("/login")
+    @routes.post("/api/login")
     async def async_login(self, request):
         """Handle the retrieval of a JWT token."""
         form = await request.json()
@@ -388,7 +389,7 @@ class Web:
     async def async_get_image(self, request):
         """Get (resized) thumb image."""
         media_type_str = request.match_info.get("media_type")
-        media_type = media_type_from_string(media_type_str)
+        media_type = MediaType.from_string(media_type_str)
         media_id = request.match_info.get("media_id")
         provider = request.rel_url.query.get("provider")
         if media_id is None or provider is None:
@@ -529,7 +530,7 @@ class Web:
     @routes.post("/api/players/{player_id}/cmd/{cmd}")
     async def async_player_command(self, request):
         """Issue player command."""
-        result = False
+        success = False
         player_id = request.match_info.get("player_id")
         cmd = request.match_info.get("cmd")
         try:
@@ -538,11 +539,12 @@ class Web:
             cmd_args = None
         player_cmd = getattr(self.mass.player_manager, f"async_cmd_{cmd}", None)
         if player_cmd and cmd_args is not None:
-            result = await player_cmd(player_id, cmd_args)
+            success = await player_cmd(player_id, cmd_args)
         elif player_cmd:
-            result = await player_cmd(player_id)
+            success = await player_cmd(player_id)
         else:
             return web.Response(text="invalid command", status=501)
+        result = {"success": success in [True, None]}
         return web.json_response(result, dumps=json_serializer)
 
     @login_required
@@ -553,12 +555,13 @@ class Web:
         player = self.mass.player_manager.get_player(player_id)
         if not player:
             return web.Response(status=404)
-        queue_opt = request.match_info.get("queue_opt", "play")
+        queue_opt = QueueOption(request.match_info.get("queue_opt", "play"))
         body = await request.json()
         media_items = await self.__async_media_items_from_body(body)
-        result = await self.mass.player_manager.async_play_media(
+        success = await self.mass.player_manager.async_play_media(
             player_id, media_items, queue_opt
         )
+        result = {"success": success in [True, None]}
         return web.json_response(result, dumps=json_serializer)
 
     @login_required
@@ -808,7 +811,10 @@ class Web:
         media_items = []
         for item in data:
             media_item = await self.mass.music_manager.async_get_item(
-                item["item_id"], item["provider"], item["media_type"], lazy=True
+                item["item_id"],
+                item["provider"],
+                MediaType.from_string(item["media_type"]),
+                lazy=True,
             )
             media_items.append(media_item)
         return media_items
@@ -826,9 +832,9 @@ class Web:
         async for item in iterator:
             # write each item into the items object of the json
             if count:
-                json_response = "," + json.dumps(item, cls=EnhancedJSONEncoder)
+                json_response = "," + json_serializer(item)
             else:
-                json_response = json.dumps(item, cls=EnhancedJSONEncoder)
+                json_response = json_serializer(item)
             await resp.write(json_response.encode("utf-8"))
             count += 1
         # write json close tag
