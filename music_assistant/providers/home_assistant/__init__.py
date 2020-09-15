@@ -217,8 +217,10 @@ class HomeAssistantPlugin(Provider):
             media_items = []
             for playlist_str in media_content_id.split(","):
                 playlist_str = playlist_str.strip()
-                playlist = await self.mass.music_manager.async_get_library_playlist_by_name(
-                    playlist_str
+                playlist = (
+                    await self.mass.music_manager.async_get_library_playlist_by_name(
+                        playlist_str
+                    )
                 )
                 if playlist:
                     media_items.append(playlist)
