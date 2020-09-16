@@ -22,7 +22,7 @@ from music_assistant.metadata import MetaData
 from music_assistant.models.provider import Provider, ProviderType
 from music_assistant.music_manager import MusicManager
 from music_assistant.player_manager import PlayerManager
-from music_assistant.utils import callback, get_hostname, get_ip_pton, is_callback
+from music_assistant.utils import callback, get_ip_pton, is_callback
 from music_assistant.web import Web
 from zeroconf import NonUniqueNameException, ServiceInfo, Zeroconf
 
@@ -248,13 +248,14 @@ class MusicAssistant:
     async def __async_setup_discovery(self):
         """Make this Music Assistant instance discoverable on the network."""
         zeroconf_type = "_music-assistant._tcp.local."
+        discovery_info = self.web.discovery_info
+        name = discovery_info["id"].lower()
         info = ServiceInfo(
             zeroconf_type,
-            name=f"{self.web.internal_url}.{zeroconf_type}",
-            server=f"{get_hostname()}.local.",
+            name=f"{name}.{zeroconf_type}",
             addresses=[get_ip_pton()],
-            port=self.web.http_port,
-            properties=self.web.discovery_info,
+            port=discovery_info["http_port"],
+            properties=discovery_info,
         )
         LOGGER.debug("Starting Zeroconf broadcast...")
         try:

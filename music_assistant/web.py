@@ -19,6 +19,7 @@ from music_assistant.constants import (
     CONF_KEY_PLAYERSETTINGS,
     CONF_KEY_PROVIDERS,
 )
+from music_assistant.constants import __version__ as MASS_VERSION
 from music_assistant.models.media_types import MediaType
 from music_assistant.models.player_queue import QueueOption
 from music_assistant.utils import get_external_ip, get_hostname, get_ip, json_serializer
@@ -143,6 +144,7 @@ class Web:
                 web.get("/jsonrpc.js", self.async_json_rpc),
                 web.post("/jsonrpc.js", self.async_json_rpc),
                 web.get("/ws", self.async_websocket_handler),
+                web.get("/info", self.async_info),
             ]
         )
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web/")
@@ -217,10 +219,14 @@ class Web:
     def discovery_info(self):
         """Return (discovery) info about this instance."""
         return {
-            "id": f"musicassistant_{get_hostname()}",
+            "id": f"{get_hostname()}",
             "external_url": self.external_url,
             "internal_url": self.internal_url,
-            "version": 1,
+            "host": self.internal_ip,
+            "http_port": self.http_port,
+            "https_port": self.https_port,
+            "ssl_enabled": self._enable_ssl,
+            "version": MASS_VERSION,
         }
 
     @routes.post("/api/login")
@@ -234,7 +240,7 @@ class Web:
             return web.json_response(token_info, dumps=json_serializer)
         return web.HTTPUnauthorized(body="Invalid username and/or password provided!")
 
-    @routes.get("/info")
+    @routes.get("/api/info")
     async def async_info(self, request):
         # pylint: disable=unused-argument
         """Return (discovery) info about this instance."""
