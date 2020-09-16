@@ -7,7 +7,6 @@ import subprocess
 import time
 from typing import List, Optional
 
-import aiohttp
 from asyncio_throttle import Throttler
 from music_assistant.app_vars import get_app_var  # noqa # pylint: disable=all
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
@@ -58,7 +57,6 @@ class SpotifyProvider(MusicProvider):
 
     # pylint: disable=abstract-method
 
-    _http_session = None
     __auth_token = None
     sp_user = None
 
@@ -93,9 +91,6 @@ class SpotifyProvider(MusicProvider):
         config = self.mass.config.get_provider_config(self.id)
         # pylint: disable=attribute-defined-outside-init
         self._cur_user = None
-        self._http_session = aiohttp.ClientSession(
-            loop=self.mass.loop, connector=aiohttp.TCPConnector()
-        )
         self.sp_user = None
         if not config[CONF_USERNAME] or not config[CONF_PASSWORD]:
             LOGGER.debug("Username and password not set. Abort load of provider.")
@@ -107,11 +102,6 @@ class SpotifyProvider(MusicProvider):
         token = await self.async_get_token()
 
         return token is not None
-
-    async def async_on_stop(self):
-        """Handle correct close/cleanup of the provider on exit."""
-        if self._http_session:
-            await self._http_session.close()
 
     async def async_search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
@@ -568,7 +558,7 @@ class SpotifyProvider(MusicProvider):
         token = await self.async_get_token()
         headers = {"Authorization": "Bearer %s" % token["accessToken"]}
         async with self._throttler:
-            async with self._http_session.get(
+            async with self.mass.http_session.get(
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
                 result = await response.json()
@@ -584,7 +574,7 @@ class SpotifyProvider(MusicProvider):
         url = "https://api.spotify.com/v1/%s" % endpoint
         token = await self.async_get_token()
         headers = {"Authorization": "Bearer %s" % token["accessToken"]}
-        async with self._http_session.delete(
+        async with self.mass.http_session.delete(
             url, headers=headers, params=params, json=data, verify_ssl=False
         ) as response:
             return await response.text()
@@ -596,7 +586,7 @@ class SpotifyProvider(MusicProvider):
         url = "https://api.spotify.com/v1/%s" % endpoint
         token = await self.async_get_token()
         headers = {"Authorization": "Bearer %s" % token["accessToken"]}
-        async with self._http_session.put(
+        async with self.mass.http_session.put(
             url, headers=headers, params=params, json=data, verify_ssl=False
         ) as response:
             return await response.text()
@@ -608,7 +598,7 @@ class SpotifyProvider(MusicProvider):
         url = "https://api.spotify.com/v1/%s" % endpoint
         token = await self.async_get_token()
         headers = {"Authorization": "Bearer %s" % token["accessToken"]}
-        async with self._http_session.post(
+        async with self.mass.http_session.post(
             url, headers=headers, params=params, json=data, verify_ssl=False
         ) as response:
             return await response.text()

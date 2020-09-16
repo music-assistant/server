@@ -247,7 +247,7 @@ class HTTPStreamer:
                 cur_chunk += 1
 
                 # HANDLE FIRST PART OF TRACK
-                if cur_chunk == 1 and is_last_chunk:
+                if not chunk and cur_chunk == 1 and is_last_chunk:
                     LOGGER.warning("Stream error, skip track %s", queue_track.item_id)
                     break
                 if cur_chunk <= 2 and not last_fadeout_data:

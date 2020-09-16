@@ -54,7 +54,6 @@ class Provider:
     @abstractmethod
     async def async_on_stop(self):
         """Handle correct close/cleanup of the provider on exit. Called on shutdown."""
-        raise NotImplementedError
 
     async def async_on_reload(self):
         """Handle configuration changes for this provider. Called on reload."""

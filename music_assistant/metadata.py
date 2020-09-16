@@ -25,11 +25,6 @@ class MetaData:
         self.musicbrainz = MusicBrainz(mass)
         self.fanarttv = FanartTv(mass)
 
-    async def async_setup(self):
-        """Async setup of metadata module."""
-        await self.musicbrainz.async_setup()
-        await self.fanarttv.async_setup()
-
     async def async_get_artist_metadata(self, mb_artist_id, cur_metadata):
         """Get/update rich metadata for an artist by providing the musicbrainz artist id."""
         metadata = cur_metadata
@@ -120,14 +115,6 @@ class MusicBrainz:
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
-        self.throttler = None
-        self._http_session = None
-
-    async def async_setup(self):
-        """Perform async setup."""
-        self._http_session = aiohttp.ClientSession(
-            loop=self.mass.loop, connector=aiohttp.TCPConnector()
-        )
         self.throttler = Throttler(rate_limit=1, period=1)
 
     async def async_search_artist_by_album(
@@ -209,7 +196,7 @@ class MusicBrainz:
         headers = {"User-Agent": "Music Assistant/1.0.0 https://github.com/marcelveldt"}
         params["fmt"] = "json"
         async with self.throttler:
-            async with self._http_session.get(
+            async with self.mass.http_session.get(
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
                 try:
@@ -231,14 +218,6 @@ class FanartTv:
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
-        self._http_session = None
-        self.throttler = None
-
-    async def async_setup(self):
-        """Perform async setup."""
-        self._http_session = aiohttp.ClientSession(
-            loop=self.mass.loop, connector=aiohttp.TCPConnector()
-        )
         self.throttler = Throttler(rate_limit=1, period=2)
 
     async def async_get_artist_images(self, mb_artist_id):
@@ -271,7 +250,7 @@ class FanartTv:
         url = "http://webservice.fanart.tv/v3/%s" % endpoint
         params["api_key"] = "639191cb0774661597f28a47e7e2bad5"
         async with self.throttler:
-            async with self._http_session.get(
+            async with self.mass.http_session.get(
                 url, params=params, verify_ssl=False
             ) as response:
                 try:

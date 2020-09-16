@@ -14,7 +14,7 @@ from music_assistant.constants import (
     EVENT_PLAYER_REMOVED,
 )
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
-from music_assistant.models.media_types import MediaItem, MediaType
+from music_assistant.models.media_types import MediaItem, MediaType, Track
 from music_assistant.models.player import (
     Player,
     PlayerControl,
@@ -24,6 +24,7 @@ from music_assistant.models.player import (
 from music_assistant.models.player_queue import PlayerQueue, QueueItem, QueueOption
 from music_assistant.models.playerprovider import PlayerProvider
 from music_assistant.models.provider import ProviderType
+from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 from music_assistant.utils import (
     async_iter_items,
     callback,
@@ -250,6 +251,45 @@ class PlayerManager:
             return await player_queue.async_insert(queue_items, 0)
         if queue_opt == QueueOption.Add:
             return await player_queue.async_append(queue_items)
+
+    async def async_cmd_play_uri(self, player_id: str, uri: str):
+        """
+        Play the specified uri/url on the given player.
+
+        Will create a fake track on the queue.
+
+            :param player_id: player_id of the player to handle the command.
+            :param uri: Url/Uri that can be played by a player.
+            :param queue_opt:
+                QueueOption.Play -> Insert new items in queue and start playing at inserted position
+                QueueOption.Replace -> Replace queue contents with these items
+                QueueOption.Next -> Play item(s) after current playing item
+                QueueOption.Add -> Append new items at end of the queue
+        """
+        player = self._players[player_id]
+        if not player:
+            return
+        queue_item = QueueItem(
+            Track(
+                item_id=uri,
+                provider="",
+                name="uri",
+            )
+        )
+        queue_item.streamdetails = StreamDetails(
+            type=StreamType.URL,
+            provider="",
+            item_id=uri,
+            path=uri,
+            content_type=ContentType(uri.split(".")[-1]),
+            sample_rate=44100,
+            bit_depth=16,
+        )
+        # turn on player
+        await self.async_cmd_power_on(player_id)
+        # load item into the queue
+        player_queue = self.get_player_queue(player_id)
+        return await player_queue.async_insert([queue_item], 0)
 
     async def async_cmd_stop(self, player_id: str) -> None:
         """

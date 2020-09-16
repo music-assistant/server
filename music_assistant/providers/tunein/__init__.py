@@ -2,7 +2,6 @@
 import logging
 from typing import List, Optional
 
-import aiohttp
 from asyncio_throttle import Throttler
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
@@ -47,7 +46,6 @@ class TuneInProvider(MusicProvider):
 
     _username = None
     _password = None
-    _http_session = None
     _throttler = None
 
     @property
@@ -73,9 +71,6 @@ class TuneInProvider(MusicProvider):
     async def async_on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
         # pylint: disable=attribute-defined-outside-init
-        self._http_session = aiohttp.ClientSession(
-            loop=self.mass.loop, connector=aiohttp.TCPConnector()
-        )
         config = self.mass.config.get_provider_config(self.id)
         if not config[CONF_USERNAME] or not config[CONF_PASSWORD]:
             LOGGER.debug("Username and password not set. Abort load of provider.")
@@ -83,11 +78,6 @@ class TuneInProvider(MusicProvider):
         self._username = config[CONF_USERNAME]
         self._password = config[CONF_PASSWORD]
         self._throttler = Throttler(rate_limit=1, period=1)
-
-    async def async_on_stop(self):
-        """Handle correct close/cleanup of the provider on exit."""
-        if self._http_session:
-            await self._http_session.close()
 
     async def async_search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
@@ -198,7 +188,7 @@ class TuneInProvider(MusicProvider):
         params["username"] = self._username
         params["partnerId"] = "1"
         async with self._throttler:
-            async with self._http_session.get(
+            async with self.mass.http_session.get(
                 url, params=params, verify_ssl=False
             ) as response:
                 result = await response.json()

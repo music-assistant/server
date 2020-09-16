@@ -5,7 +5,6 @@ import logging
 import time
 from typing import List, Optional
 
-import aiohttp
 from asyncio_throttle import Throttler
 from music_assistant.app_vars import get_app_var  # noqa # pylint: disable=all
 from music_assistant.constants import (
@@ -60,7 +59,6 @@ class QobuzProvider(MusicProvider):
 
     # pylint: disable=abstract-method
 
-    _http_session = None
     __user_auth_info = None
 
     @property
@@ -86,9 +84,6 @@ class QobuzProvider(MusicProvider):
     async def async_on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
         # pylint: disable=attribute-defined-outside-init
-        self._http_session = aiohttp.ClientSession(
-            loop=self.mass.loop, connector=aiohttp.TCPConnector()
-        )
         config = self.mass.config.get_provider_config(self.id)
         if not config[CONF_USERNAME] or not config[CONF_PASSWORD]:
             LOGGER.debug("Username and password not set. Abort load of provider.")
@@ -102,11 +97,6 @@ class QobuzProvider(MusicProvider):
         self.mass.add_event_listener(self.async_mass_event, EVENT_STREAM_STARTED)
         self.mass.add_event_listener(self.async_mass_event, EVENT_PLAYBACK_STOPPED)
         return True
-
-    async def async_on_stop(self):
-        """Handle correct close/cleanup of the provider on exit."""
-        if self._http_session:
-            await self._http_session.close()
 
     async def async_search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
@@ -680,7 +670,7 @@ class QobuzProvider(MusicProvider):
             params["app_id"] = get_app_var(0)
             params["user_auth_token"] = await self.__async_auth_token()
         async with self._throttler:
-            async with self._http_session.get(
+            async with self.mass.http_session.get(
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
                 result = await response.json()
@@ -700,7 +690,7 @@ class QobuzProvider(MusicProvider):
         url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
         params["app_id"] = get_app_var(0)
         params["user_auth_token"] = await self.__async_auth_token()
-        async with self._http_session.post(
+        async with self.mass.http_session.post(
             url, params=params, json=data, verify_ssl=False
         ) as response:
             result = await response.json()

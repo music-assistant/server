@@ -8,6 +8,7 @@ import os
 import threading
 from typing import Any, Awaitable, Callable, List, Optional, Union
 
+import aiohttp
 from music_assistant.cache import Cache
 from music_assistant.config import MassConfig
 from music_assistant.constants import (
@@ -40,6 +41,7 @@ class MusicAssistant:
         """
 
         self.loop = None
+        self._http_session = None
         self._event_listeners = []
         self._providers = {}
         self.config = MassConfig(self, datapath)
@@ -57,13 +59,18 @@ class MusicAssistant:
 
     async def async_start(self):
         """Start running the music assistant server."""
+        # initialize loop
         self.loop = asyncio.get_event_loop()
         self.loop.set_exception_handler(self.__handle_exception)
         if LOGGER.level == logging.DEBUG:
             self.loop.set_debug(True)
+        # create shared aiohttp ClientSession
+        self._http_session = aiohttp.ClientSession(
+            loop=self.loop,
+            connector=aiohttp.TCPConnector(enable_cleanup_closed=True, ssl=False),
+        )
         await self.database.async_setup()
         await self.cache.async_setup()
-        await self.metadata.async_setup()
         await self.music_manager.async_setup()
         await self.player_manager.async_setup()
         await self.web.async_setup()
@@ -79,6 +86,13 @@ class MusicAssistant:
         for prov in self._providers.values():
             await prov.async_on_stop()
         await self.player_manager.async_close()
+        await self._http_session.connector.close()
+        self._http_session.detach()
+
+    @property
+    def http_session(self):
+        """Return the default http session."""
+        return self._http_session
 
     async def async_register_provider(self, provider: Provider):
         """Register a new Provider/Plugin."""
@@ -184,6 +198,7 @@ class MusicAssistant:
 
         return remove_listener
 
+    @callback
     def add_job(
         self, target: Callable[..., Any], *args: Any
     ) -> Optional[asyncio.Future]:
@@ -205,9 +220,7 @@ class MusicAssistant:
         if threading.current_thread() is not threading.main_thread():
             # called from other thread
             if asyncio.iscoroutine(check_target):
-                task = asyncio.run_coroutine_threadsafe(
-                    target, self.loop
-                )  # type: ignore
+                task = asyncio.run_coroutine_threadsafe(target, self.loop)  # type: ignore
             elif asyncio.iscoroutinefunction(check_target):
                 task = asyncio.run_coroutine_threadsafe(target(*args), self.loop)
             elif is_callback(check_target):

@@ -211,7 +211,8 @@ class PlayerQueue:
         it will send a constant stream of audio to the player with all tracks.
         """
         supports_crossfade = PlayerFeature.CROSSFADE in self.player.features
-        return self.crossfade_enabled and not supports_crossfade
+        supports_queue = PlayerFeature.QUEUE in self.player.features
+        return not supports_crossfade if self.crossfade_enabled else not supports_queue
 
     @callback
     def get_item(self, index):
