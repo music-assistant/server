@@ -728,8 +728,6 @@ class Web:
                         self.mass.add_event_listener(async_send_message, msg_details)
                     )
                     await async_send_message("event listener subscribed", msg_details)
-                elif msg == "signal_event":
-                    self.mass.signal_event(msg, msg_details)
                 elif msg == "player_command":
                     player_id = msg_details.get("player_id")
                     cmd = msg_details.get("cmd")
@@ -744,7 +742,8 @@ class Web:
                     msg_details = {"cmd": cmd, "result": result}
                     await async_send_message("player_command_result", msg_details)
                 else:
-                    await async_send_message("error", "invalid command")
+                    # simply echo the message on the eventbus
+                    self.mass.signal_event(msg, msg_details)
 
         except (AssertionError, asyncio.CancelledError) as exc:
             LOGGER.warning("Websocket disconnected - %s", str(exc))

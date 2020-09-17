@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Any, List
 
 from mashumaro import DataClassDictMixin
+from music_assistant.constants import EVENT_SET_PLAYER_CONTROL_STATE
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.utils import CustomIntEnum
 
@@ -84,7 +85,7 @@ class PlayerControlType(CustomIntEnum):
 
 
 @dataclass
-class PlayerControl(DataClassDictMixin):
+class PlayerControl:
     """
     Model for a player control.
 
@@ -93,7 +94,29 @@ class PlayerControl(DataClassDictMixin):
     """
 
     type: PlayerControlType = PlayerControlType.UNKNOWN
-    id: str = ""
+    control_id: str = ""
+    provider: str = ""
     name: str = ""
     state: Any = None
-    set_state: Any = None
+
+    async def async_set_state(self, new_state: Any):
+        """Handle command to set the state for a player control."""
+        # by default we just signal an event on the eventbus
+        # pickup this event (e.g. from the websocket api)
+        # or override this method with your own implementation.
+
+        # pylint: disable=no-member
+        self.mass.signal_event(
+            EVENT_SET_PLAYER_CONTROL_STATE,
+            {"control_id": self.control_id, "state": new_state},
+        )
+
+    def to_dict(self):
+        """Return dict representation of this playercontrol."""
+        return {
+            "type": int(self.type),
+            "control_id": self.control_id,
+            "provider": self.provider,
+            "name": self.name,
+            "state": self.state,
+        }

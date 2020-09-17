@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from music_assistant.constants import (
     CONF_ENABLED,
@@ -12,6 +12,8 @@ from music_assistant.constants import (
     EVENT_PLAYER_CONTROL_REGISTERED,
     EVENT_PLAYER_CONTROL_UPDATED,
     EVENT_PLAYER_REMOVED,
+    EVENT_REGISTER_PLAYER_CONTROL,
+    EVENT_UNREGISTER_PLAYER_CONTROL,
 )
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.media_types import MediaItem, MediaType, Track
@@ -51,6 +53,14 @@ class PlayerManager:
         self._poll_ticks = 0
         self._controls = {}
         self._player_controls_config_entries = []
+        self.mass.add_event_listener(
+            self.__handle_websocket_player_control_event,
+            [
+                EVENT_REGISTER_PLAYER_CONTROL,
+                EVENT_UNREGISTER_PLAYER_CONTROL,
+                EVENT_PLAYER_CONTROL_UPDATED,
+            ],
+        )
 
     async def async_setup(self):
         """Async initialize of module."""
@@ -162,26 +172,39 @@ class PlayerManager:
 
     async def async_register_player_control(self, control: PlayerControl):
         """Register a playercontrol with the player manager."""
-        self._controls[control.id] = control
-        LOGGER.info("New %s PlayerControl registered: %s", control.type, control.name)
-        self.mass.signal_event(EVENT_PLAYER_CONTROL_REGISTERED, control.id)
+        # control.mass = self.mass
+        control.mass = self.mass
+        control.type = PlayerControlType(control.type)
+        self._controls[control.control_id] = control
+        LOGGER.info(
+            "New PlayerControl (%s) registered: %s\\%s",
+            control.type,
+            control.provider,
+            control.name,
+        )
         await self.__async_create_playercontrol_config_entries()
         # update all players as they may want to use this control
         for player in self._players.values():
             self.mass.add_job(self.async_update_player(player))
 
-    async def async_update_player_control(self, control_id: str, new_state: Any):
+    async def async_update_player_control(self, control: PlayerControl):
         """Update a playercontrol's state on the player manager."""
-        control = self._controls.get(control_id)
-        if not control or control.state == new_state:
+        if control.control_id not in self._controls:
+            return await self.async_register_player_control(control)
+        new_state = control.state
+        if self._controls[control.control_id].state == new_state:
             return
-        LOGGER.info("PlayerControl %s updated - new state: %s", control.name, new_state)
-        control.state = new_state
-        self.mass.signal_event(EVENT_PLAYER_CONTROL_UPDATED, control.id)
+        self._controls[control.control_id].state = new_state
+        LOGGER.debug(
+            "PlayerControl %s\\%s updated - new state: %s",
+            control.provider,
+            control.name,
+            new_state,
+        )
         # update all players using this playercontrol
         for player_id, player in self._players.items():
             conf = self.mass.config.player_settings[player_id]
-            if control.id in [
+            if control.control_id in [
                 conf.get(CONF_POWER_CONTROL),
                 conf.get(CONF_VOLUME_CONTROL),
             ]:
@@ -361,7 +384,7 @@ class PlayerManager:
         if player_config.get(CONF_POWER_CONTROL):
             control = self.get_player_control(player_config[CONF_POWER_CONTROL])
             if control:
-                self.mass.add_job(control.set_state, control.id, True)
+                await control.async_set_state(True)
 
     async def async_cmd_power_off(self, player_id: str) -> None:
         """
@@ -377,7 +400,7 @@ class PlayerManager:
         if player_config.get(CONF_POWER_CONTROL):
             control = self.get_player_control(player_config[CONF_POWER_CONTROL])
             if control:
-                self.mass.add_job(control.set_state, control.id, False)
+                await control.async_set_state(False)
         # handle group power
         if player.is_group_player:
             # player is group, turn off all childs
@@ -433,7 +456,7 @@ class PlayerManager:
         if player_config.get(CONF_VOLUME_CONTROL):
             control = self.get_player_control(player_config[CONF_VOLUME_CONTROL])
             if control:
-                self.mass.add_job(control.set_state, control.id, volume_level)
+                await control.async_set_state(volume_level)
                 # just force full volume on actual player if volume is outsourced to volumecontrol
                 await player_prov.async_cmd_volume_set(player_id, 100)
         # handle group volume
@@ -645,7 +668,8 @@ class PlayerManager:
         power_controls = self.get_player_controls(PlayerControlType.POWER)
         if power_controls:
             controls = [
-                {"text": item.name, "value": item.id} for item in power_controls
+                {"text": f"{item.provider}: {item.name}", "value": item.control_id}
+                for item in power_controls
             ]
             entries.append(
                 ConfigEntry(
@@ -659,7 +683,8 @@ class PlayerManager:
         volume_controls = self.get_player_controls(PlayerControlType.VOLUME)
         if volume_controls:
             controls = [
-                {"text": item.name, "value": item.id} for item in volume_controls
+                {"text": f"{item.provider}: {item.name}", "value": item.control_id}
+                for item in volume_controls
             ]
             entries.append(
                 ConfigEntry(
@@ -695,3 +720,13 @@ class PlayerManager:
                         self.mass.add_job(self.async_update_player(child_player))
         if player_id in self._player_queues and player.active_queue == player_id:
             self.mass.add_job(self._player_queues[player_id].async_update_state())
+
+    async def __handle_websocket_player_control_event(self, msg, msg_details):
+        """Handle player controls over the websockets api."""
+        if msg in [EVENT_REGISTER_PLAYER_CONTROL, EVENT_PLAYER_CONTROL_UPDATED]:
+            # create or update a playercontrol registered through the websockets api
+            control = PlayerControl(**msg_details)
+            await self.async_update_player_control(control)
+            # send confirmation to the client that the register was successful
+            if msg == EVENT_PLAYER_CONTROL_REGISTERED:
+                self.mass.signal_event(EVENT_PLAYER_CONTROL_REGISTERED, control)

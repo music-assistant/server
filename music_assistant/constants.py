@@ -1,6 +1,6 @@
 """All constants for Music Assistant."""
 
-__version__ = "0.0.31"
+__version__ = "0.0.32"
 REQUIRED_PYTHON_VER = "3.7"
 
 CONF_USERNAME = "username"
@@ -32,4 +32,11 @@ EVENT_QUEUE_TIME_UPDATED = "queue time updated"
 EVENT_SHUTDOWN = "application shutdown"
 EVENT_PROVIDER_REGISTERED = "provider registered"
 EVENT_PLAYER_CONTROL_REGISTERED = "player control registered"
+EVENT_PLAYER_CONTROL_UNREGISTERED = "player control unregistered"
 EVENT_PLAYER_CONTROL_UPDATED = "player control updated"
+EVENT_SET_PLAYER_CONTROL_STATE = "set player control state"
+
+# websocket commands
+EVENT_REGISTER_PLAYER_CONTROL = "register player control"
+EVENT_UNREGISTER_PLAYER_CONTROL = "unregister player control"
+EVENT_UPDATE_PLAYER_CONTROL = "update player control"
