@@ -441,6 +441,7 @@ class HTTPStreamer:
             yield (True, b"")
             return
         # fire event that streaming has started for this track
+        streamdetails.path = ""  # invalidate
         self.mass.signal_event(EVENT_STREAM_STARTED, streamdetails)
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
@@ -462,10 +463,12 @@ class HTTPStreamer:
                 yield (False, prev_chunk)
             prev_chunk = chunk
         # fire event that streaming has ended
-        self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails)
-        # send task to background to analyse the audio
-        if queue_item.media_type == MediaType.Track:
-            self.mass.loop.run_in_executor(None, self.__analyze_audio, streamdetails)
+        if not cancelled.is_set():
+            streamdetails.seconds_played = queue_item.duration
+            self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails)
+            # send task to background to analyse the audio
+            if queue_item.media_type == MediaType.Track:
+                self.mass.add_job(self.__analyze_audio, streamdetails)
 
     def __get_player_sox_options(
         self, player_id: str, streamdetails: StreamDetails

@@ -8,9 +8,8 @@ from enum import Enum
 from typing import List
 
 from music_assistant.constants import (
-    EVENT_PLAYBACK_STARTED,
-    EVENT_PLAYBACK_STOPPED,
     EVENT_QUEUE_ITEMS_UPDATED,
+    EVENT_QUEUE_TIME_UPDATED,
     EVENT_QUEUE_UPDATED,
 )
 from music_assistant.models.media_types import Track
@@ -67,7 +66,6 @@ class PlayerQueue:
         self._last_item_time = 0
         self._last_queue_startindex = 0
         self._next_queue_startindex = 0
-        self._last_player_state = PlayerState.Stopped
         self._last_track = None
         # load previous queue settings from disk
         self.mass.add_job(self.__async_restore_saved_state())
@@ -237,6 +235,7 @@ class PlayerQueue:
             return
         if self.use_queue_stream:
             return await self.async_play_index(self.cur_index + 1)
+        await self.mass.player_manager.async_cmd_power_on(self.player_id)
         return await self.mass.player_manager.get_player_provider(
             self.player_id
         ).async_cmd_next(self.player_id)
@@ -245,6 +244,7 @@ class PlayerQueue:
         """Play the previous track in the queue."""
         if self.cur_index is None:
             return
+        await self.mass.player_manager.async_cmd_power_on(self.player_id)
         if self.use_queue_stream:
             return await self.async_play_index(self.cur_index - 1)
         return await self.mass.player_manager.async_cmd_previous(self.player_id)
@@ -252,6 +252,7 @@ class PlayerQueue:
     async def async_resume(self):
         """Resume previous queue."""
         if self.items:
+            await self.mass.player_manager.async_cmd_power_on(self.player_id)
             prev_index = self.cur_index
             supports_queue = PlayerFeature.QUEUE in self.player.features
             if self.use_queue_stream or not supports_queue:
@@ -271,6 +272,7 @@ class PlayerQueue:
 
     async def async_play_index(self, index):
         """Play item at index X in queue."""
+        await self.mass.player_manager.async_cmd_power_on(self.player_id)
         player_prov = self.mass.player_manager.get_player_provider(self.player_id)
         supports_queue = PlayerFeature.QUEUE in self.player.features
         if not isinstance(index, int):
@@ -329,6 +331,7 @@ class PlayerQueue:
 
     async def async_load(self, queue_items: List[QueueItem]):
         """Load (overwrite) queue with new items."""
+        await self.mass.player_manager.async_cmd_power_on(self.player_id)
         supports_queue = PlayerFeature.QUEUE in self.player.features
         for index, item in enumerate(queue_items):
             item.sort_index = index
@@ -470,7 +473,6 @@ class PlayerQueue:
                     break
         # process new index
         await self.async_process_queue_update(cur_index, track_time)
-        self.mass.signal_event(EVENT_QUEUE_UPDATED, self.to_dict())
 
     async def async_start_queue_stream(self):
         """Call when queue_streamer starts playing the queue stream."""
@@ -521,34 +523,21 @@ class PlayerQueue:
     async def async_process_queue_update(self, new_index, track_time):
         """Compare the queue index to determine if playback changed."""
         new_track = self.get_item(new_index)
-        if (not self._last_track and new_track) or self._last_track != new_track:
-            # queue track updated
-            # account for track changing state so trigger track change after 1 second
-            if self._last_track and self._last_track.streamdetails:
-                self._last_track.streamdetails.seconds_played = self._last_item_time
-                self.mass.signal_event(
-                    EVENT_PLAYBACK_STOPPED, self._last_track.streamdetails
-                )
-            if new_track and new_track.streamdetails:
-                self.mass.signal_event(EVENT_PLAYBACK_STARTED, new_track.streamdetails)
-                self._last_track = new_track
-        if self._last_player_state != self.player.state:
-            self._last_player_state = self.player.state
-            if self.player.elapsed_time == 0 and self.player.state in [
-                PlayerState.Stopped,
-                PlayerState.Off,
-            ]:
-                # player stopped playing
-                if self._last_track:
-                    self.mass.signal_event(
-                        EVENT_PLAYBACK_STOPPED, self._last_track.streamdetails
-                    )
-        # update vars
-        if track_time > 2:
-            # account for track changing state so keep this a few seconds behind
-            self._last_item_time = track_time
         self._cur_item_time = track_time
         self._cur_index = new_index
+        if self._last_track != new_track:
+            # queue track updated
+            self._last_track = new_track
+            self.mass.signal_event(EVENT_QUEUE_UPDATED, self.to_dict())
+            if self._last_track:
+                self._last_track.streamdetails = None  # invalidate streamdetails
+        # update vars
+        if self._last_item_time != track_time:
+            self._last_item_time = track_time
+            self.mass.signal_event(
+                EVENT_QUEUE_TIME_UPDATED,
+                {"player_id": self.player_id, "cur_item_time": track_time},
+            )
 
     @staticmethod
     def __shuffle_items(queue_items):

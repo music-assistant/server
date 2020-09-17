@@ -3,24 +3,17 @@
 import logging
 from typing import List
 
-import slugify as slug
 from hass_client import (
     EVENT_CONNECTED,
     EVENT_STATE_CHANGED,
     IS_SUPERVISOR,
     HomeAssistant,
 )
-from music_assistant.constants import (
-    CONF_URL,
-    EVENT_PLAYER_ADDED,
-    EVENT_PLAYER_CHANGED,
-    EVENT_PLAYER_REMOVED,
-)
+from music_assistant.constants import CONF_URL
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
-from music_assistant.models.media_types import MediaType
-from music_assistant.models.player import Player, PlayerControl, PlayerControlType
+from music_assistant.models.player import PlayerControl, PlayerControlType
 from music_assistant.models.provider import Provider
-from music_assistant.utils import callback, run_periodic, try_parse_float
+from music_assistant.utils import callback, try_parse_float
 
 PROV_ID = "homeassistant"
 PROV_NAME = "Home Assistant integration"
@@ -40,14 +33,6 @@ CONFIG_ENTRY_TOKEN = ConfigEntry(
     entry_type=ConfigEntryType.PASSWORD,
     description_key="hass_token",
 )
-CONFIG_ENTRY_PUBLISH_PLAYERS = ConfigEntry(
-    entry_key=CONF_PUBLISH_PLAYERS,
-    entry_type=ConfigEntryType.BOOL,
-    description_key=CONF_PUBLISH_PLAYERS,
-    default_value=True,
-)
-
-# TODO: handle player removals and renames in publishing to hass
 
 
 async def async_setup(mass):
@@ -59,7 +44,6 @@ async def async_setup(mass):
 class HomeAssistantPlugin(Provider):
     """Homeassistant plugin.
 
-    allows publishing of our players to hass
     allows using hass entities (like switches, media_players or gui inputs) to be triggered
     """
 
@@ -69,7 +53,6 @@ class HomeAssistantPlugin(Provider):
         self._tasks = []
         self._tracked_entities = []
         self._sources = []
-        self._published_players = {}
         super().__init__(*args, **kwargs)
 
     @property
@@ -90,7 +73,6 @@ class HomeAssistantPlugin(Provider):
             entries.append(CONFIG_ENTRY_URL)
             entries.append(CONFIG_ENTRY_TOKEN)
         entries += [
-            CONFIG_ENTRY_PUBLISH_PLAYERS,
             ConfigEntry(
                 entry_key=CONF_POWER_ENTITIES,
                 entry_type=ConfigEntryType.STRING,
@@ -121,12 +103,7 @@ class HomeAssistantPlugin(Provider):
             )
         # register callbacks
         self._hass.register_event_callback(self.__async_hass_event)
-        self.mass.add_event_listener(
-            self.__async_mass_event,
-            [EVENT_PLAYER_CHANGED, EVENT_PLAYER_ADDED, EVENT_PLAYER_REMOVED],
-        )
         await self._hass.async_connect()
-        self._tasks.append(self.mass.add_job(self.__async_get_sources()))
         return True
 
     async def async_on_stop(self):
@@ -136,166 +113,15 @@ class HomeAssistantPlugin(Provider):
         if self._hass:
             await self._hass.async_close()
 
-    async def __async_mass_event(self, event, event_data):
-        """Receive event from Music Assistant."""
-        if event in [EVENT_PLAYER_CHANGED, EVENT_PLAYER_ADDED]:
-            await self.__async_publish_player(event_data)
-        # TODO: player removals
-
     async def __async_hass_event(self, event_type, event_data):
         """Receive event from Home Assistant."""
         if event_type == EVENT_STATE_CHANGED:
             if event_data["entity_id"] in self._tracked_entities:
                 new_state = event_data["new_state"]
                 await self.__async_update_player_controls(new_state)
-        elif event_type == "call_service" and event_data["domain"] == "media_player":
-            await self.__async_handle_player_command(
-                event_data["service"], event_data["service_data"]
-            )
         elif event_type == EVENT_CONNECTED:
             # register player controls on connect
             self.mass.add_job(self.__async_register_player_controls())
-
-    async def __async_handle_player_command(self, service, service_data):
-        """Handle forwarded service call for one of our players."""
-        if isinstance(service_data["entity_id"], list):
-            # can be a list of entity ids if action fired on multiple items
-            entity_ids = service_data["entity_id"]
-        else:
-            entity_ids = [service_data["entity_id"]]
-        for entity_id in entity_ids:
-            if entity_id in self._published_players:
-                # call is for one of our players so handle it
-                player_id = self._published_players[entity_id]
-                if not self.mass.player_manager.get_player(player_id):
-                    return
-                if service == "turn_on":
-                    await self.mass.player_manager.async_cmd_power_on(player_id)
-                elif service == "turn_off":
-                    await self.mass.player_manager.async_cmd_power_off(player_id)
-                elif service == "toggle":
-                    await self.mass.player_manager.async_cmd_power_toggle(player_id)
-                elif service == "volume_mute":
-                    await self.mass.player_manager.async_cmd_volume_mute(
-                        player_id, service_data["is_volume_muted"]
-                    )
-                elif service == "volume_up":
-                    await self.mass.player_manager.async_cmd_volume_up(player_id)
-                elif service == "volume_down":
-                    await self.mass.player_manager.async_cmd_volume_down(player_id)
-                elif service == "volume_set":
-                    volume_level = service_data["volume_level"] * 100
-                    await self.mass.player_manager.async_cmd_volume_set(
-                        player_id, volume_level
-                    )
-                elif service == "media_play":
-                    await self.mass.player_manager.async_cmd_play(player_id)
-                elif service == "media_pause":
-                    await self.mass.player_manager.async_cmd_pause(player_id)
-                elif service == "media_stop":
-                    await self.mass.player_manager.async_cmd_stop(player_id)
-                elif service == "media_next_track":
-                    await self.mass.player_manager.async_cmd_next(player_id)
-                elif service == "media_play_pause":
-                    await self.mass.player_manager.async_cmd_play_pause(player_id)
-                elif service in ["play_media", "select_source"]:
-                    return await self.__async_handle_play_media(player_id, service_data)
-                else:
-                    LOGGER.error(
-                        "%s service is unhandled. Service data: %s",
-                        service,
-                        service_data,
-                    )
-
-    async def __async_handle_play_media(self, player_id, service_data):
-        """Handle play media request from homeassistant."""
-        media_content_id = service_data.get("media_content_id")
-        if not media_content_id:
-            media_content_id = service_data.get("source")
-        queue_opt = "add" if service_data.get("enqueue") else "play"
-        if "://" not in media_content_id:
-            media_items = []
-            for playlist_str in media_content_id.split(","):
-                playlist_str = playlist_str.strip()
-                playlist = (
-                    await self.mass.music_manager.async_get_library_playlist_by_name(
-                        playlist_str
-                    )
-                )
-                if playlist:
-                    media_items.append(playlist)
-                else:
-                    radio = await self.mass.music_manager.async_get_radio_by_name(
-                        playlist_str
-                    )
-                    if radio:
-                        media_items.append(radio)
-                        queue_opt = "play"
-            return await self.mass.player_manager.async_play_media(
-                player_id, media_items, queue_opt
-            )
-        if "spotify://playlist" in media_content_id:
-            # TODO: handle parsing of other uri's here
-            playlist = await self.mass.music_manager.async_getplaylist(
-                "spotify", media_content_id.split(":")[-1]
-            )
-            return await self.mass.player_manager.async_play_media(
-                player_id, playlist, queue_opt
-            )
-
-    async def __async_publish_player(self, player: Player):
-        """Publish player details to Home Assistant."""
-        if not self.mass.config.providers[PROV_ID][CONF_PUBLISH_PLAYERS]:
-            return False
-        if not player.available:
-            return
-        player_id = player.player_id
-        entity_id = (
-            "media_player.mass_" + slug.slugify(player.name, separator="_").lower()
-        )
-        player_queue = self.mass.player_manager.get_player_queue(player_id)
-        cur_item = player_queue.cur_item if player_queue else None
-        state_attributes = {
-            "supported_features": 196541,
-            "friendly_name": player.name,
-            "source_list": self._sources,
-            "source": "unknown",
-            "volume_level": player.volume_level / 100,
-            "is_volume_muted": player.muted,
-            "media_position_updated_at": player.updated_at.isoformat(),
-            "media_duration": cur_item.duration if cur_item else None,
-            "media_position": player_queue.cur_item_time if player_queue else None,
-            "media_title": cur_item.name if cur_item else None,
-            "media_artist": cur_item.artists[0].name
-            if cur_item and cur_item.artists
-            else None,
-            "media_album_name": cur_item.album.name
-            if cur_item and cur_item.album
-            else None,
-            "entity_picture": "",
-            "mass_player_id": player_id,
-        }
-        if cur_item:
-            host = self.mass.web.internal_url
-            item_type = "radio" if cur_item.media_type == MediaType.Radio else "track"
-            # pylint: disable=line-too-long
-            img_url = f"{host}/api/{item_type}/{cur_item.item_id}/thumb?provider={cur_item.provider}"
-            state_attributes["entity_picture"] = img_url
-        self._published_players[entity_id] = player.player_id
-        await self._hass.async_set_state(entity_id, player.state, state_attributes)
-
-    @run_periodic(600)
-    async def __async_get_sources(self):
-        """We build a list of all playlists to use as player sources."""
-        # pylint: disable=attribute-defined-outside-init
-        self._sources = [
-            playlist.name
-            async for playlist in self.mass.music_manager.async_get_library_playlists()
-        ]
-        self._sources += [
-            playlist.name
-            async for playlist in self.mass.music_manager.async_get_library_radios()
-        ]
 
     @callback
     def __get_power_control_entities(self):

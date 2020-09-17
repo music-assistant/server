@@ -24,7 +24,7 @@ from music_assistant.models.media_types import (
 )
 from music_assistant.models.musicprovider import MusicProvider
 from music_assistant.models.provider import ProviderType
-from music_assistant.models.streamdetails import StreamDetails
+from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 from music_assistant.utils import compare_strings, run_periodic
 from PIL import Image
 
@@ -1077,29 +1077,38 @@ class MusicManager:
             param media_item: The MediaItem (track/radio) for which to request the streamdetails for.
             param player_id: Optionally provide the player_id which will play this stream.
         """
-        if media_item.streamdetails:
-            media_item.streamdetails.player_id = player_id
-            return media_item.streamdetails  # already present, no need to fetch again!
-        # always request the full db track as there might be other qualities available
-        # except for radio
-        if media_item.media_type == MediaType.Radio:
-            full_track = media_item
+        if media_item.provider == "uri":
+            # special type: a plain uri was added to the queue
+            streamdetails = StreamDetails(
+                type=StreamType.URL,
+                provider="uri",
+                item_id=media_item.item_id,
+                path=media_item.item_id,
+                content_type=ContentType(media_item.item_id.split(".")[-1]),
+                sample_rate=44100,
+                bit_depth=16,
+            )
         else:
-            full_track = await self.async_get_track(
-                media_item.item_id, media_item.provider, lazy=True, refresh=True
-            )
-        # sort by quality and check track availability
-        for prov_media in sorted(
-            full_track.provider_ids, key=lambda x: x.quality, reverse=True
-        ):
-            # get streamdetails from provider
-            music_prov = self.mass.get_provider(prov_media.provider)
-            if not music_prov:
-                continue  # provider temporary unavailable ?
+            # always request the full db track as there might be other qualities available
+            # except for radio
+            if media_item.media_type == MediaType.Radio:
+                full_track = media_item
+            else:
+                full_track = await self.async_get_track(
+                    media_item.item_id, media_item.provider, lazy=True, refresh=True
+                )
+            # sort by quality and check track availability
+            for prov_media in sorted(
+                full_track.provider_ids, key=lambda x: x.quality, reverse=True
+            ):
+                # get streamdetails from provider
+                music_prov = self.mass.get_provider(prov_media.provider)
+                if not music_prov:
+                    continue  # provider temporary unavailable ?
 
-            streamdetails = await music_prov.async_get_stream_details(
-                prov_media.item_id
-            )
+                streamdetails = await music_prov.async_get_stream_details(
+                    prov_media.item_id
+                )
 
             if streamdetails:
                 streamdetails.player_id = player_id

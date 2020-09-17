@@ -76,8 +76,6 @@ class ChromecastPlayer:
     @property
     def state(self) -> PlayerState:
         """Return the state of the player."""
-        if not self._powered:
-            return PlayerState.Off
         if self.media_status is None:
             return PlayerState.Stopped
         if self.media_status.player_is_playing:

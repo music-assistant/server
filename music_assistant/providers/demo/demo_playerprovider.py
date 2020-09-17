@@ -104,12 +104,17 @@ class DemoPlayerProvider(PlayerProvider):
         player.current_uri = uri
         player.sox = subprocess.Popen(["play", uri])
         player.state = PlayerState.Playing
+        player.powered = True
         self.mass.add_job(self.mass.player_manager.async_update_player(player))
 
         async def report_progress():
             """Report fake progress while sox is playing."""
             player.elapsed_time = 0
-            while player.sox and not player.sox.poll():
+            while (
+                player.state == PlayerState.Playing
+                and player.sox
+                and not player.sox.poll()
+            ):
                 await asyncio.sleep(1)
                 player.elapsed_time += 1
                 self.mass.add_job(self.mass.player_manager.async_update_player(player))

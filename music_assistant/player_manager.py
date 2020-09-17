@@ -24,7 +24,6 @@ from music_assistant.models.player import (
 from music_assistant.models.player_queue import PlayerQueue, QueueItem, QueueOption
 from music_assistant.models.playerprovider import PlayerProvider
 from music_assistant.models.provider import ProviderType
-from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 from music_assistant.utils import (
     async_iter_items,
     callback,
@@ -272,18 +271,15 @@ class PlayerManager:
         queue_item = QueueItem(
             Track(
                 item_id=uri,
-                provider="",
-                name="uri",
+                provider="uri",
+                name=uri,
             )
         )
-        queue_item.streamdetails = StreamDetails(
-            type=StreamType.URL,
-            provider="",
-            item_id=uri,
-            path=uri,
-            content_type=ContentType(uri.split(".")[-1]),
-            sample_rate=44100,
-            bit_depth=16,
+        # generate uri for this queue item
+        queue_item.uri = "%s/stream/%s/%s" % (
+            self.mass.web.internal_url,
+            player_id,
+            queue_item.queue_item_id,
         )
         # turn on player
         await self.async_cmd_power_on(player_id)
@@ -388,6 +384,22 @@ class PlayerManager:
             for child_player_id in player.group_childs:
                 if self._players.get(child_player_id):
                     await self.async_cmd_power_off(child_player_id)
+        else:
+            # if this was the last powered player in the group, turn off group
+            for parent_player_id in player.group_parents:
+                parent_player = self._players.get(parent_player_id)
+                if not parent_player:
+                    continue
+                has_powered_players = False
+                for child_player_id in parent_player.group_childs:
+                    if child_player_id == player_id:
+                        continue
+                    child_player = self._players.get(child_player_id)
+                    if child_player and child_player.powered:
+                        has_powered_players = True
+                        break
+                if not has_powered_players:
+                    await self.async_cmd_power_off(parent_player_id)
 
     async def async_cmd_power_toggle(self, player_id: str):
         """
@@ -591,8 +603,6 @@ class PlayerManager:
     @callback
     def __get_player_state(self, player: Player, active_parent: str):
         """Get final/calculated player's state."""
-        if not player.available or not player.powered:
-            return PlayerState.Off
         if active_parent != player.player_id:
             # use group state
             return self._players[active_parent].state

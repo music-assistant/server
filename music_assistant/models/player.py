@@ -13,7 +13,6 @@ from music_assistant.utils import CustomIntEnum
 class PlayerState(Enum):
     """Enum for the playstate of a player."""
 
-    Off = "off"
     Stopped = "stopped"
     Paused = "paused"
     Playing = "playing"
@@ -45,7 +44,7 @@ class Player(DataClassDictMixin):
     name: str = ""
     powered: bool = False
     elapsed_time: int = 0
-    state: PlayerState = PlayerState.Off
+    state: PlayerState = PlayerState.Stopped
     available: bool = True
     current_uri: str = ""
     volume_level: int = 0
