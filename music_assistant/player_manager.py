@@ -511,13 +511,6 @@ class PlayerManager:
         else:
             gain_correct = target_gain - track_loudness
         gain_correct = round(gain_correct, 2)
-        LOGGER.debug(
-            "Loudness level for track %s/%s is %s - calculated replayGain is %s",
-            provider_id,
-            item_id,
-            track_loudness,
-            gain_correct,
-        )
         return gain_correct
 
     async def __async_create_player_state(self, player: Player):

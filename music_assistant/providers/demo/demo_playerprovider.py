@@ -1,5 +1,6 @@
 """Demo/test providers."""
 import asyncio
+import logging
 import signal
 import subprocess
 from typing import List
@@ -10,6 +11,7 @@ from music_assistant.models.playerprovider import PlayerProvider
 
 PROV_ID = "demo_player"
 PROV_NAME = "Demo/Test players"
+LOGGER = logging.getLogger(PROV_ID)
 
 
 class DemoPlayerProvider(PlayerProvider):
@@ -18,6 +20,7 @@ class DemoPlayerProvider(PlayerProvider):
     def __init__(self, *args, **kwargs):
         """Initialize."""
         self._players = {}
+        self._progress_tasks = {}
         super().__init__(*args, **kwargs)
 
     @property
@@ -102,27 +105,27 @@ class DemoPlayerProvider(PlayerProvider):
         if player.sox:
             await self.async_cmd_stop(player_id)
         player.current_uri = uri
-        player.sox = subprocess.Popen(["play", uri])
+        player.sox = subprocess.Popen(["play", "-q", uri])
         player.state = PlayerState.Playing
         player.powered = True
         self.mass.add_job(self.mass.player_manager.async_update_player(player))
 
         async def report_progress():
             """Report fake progress while sox is playing."""
+            LOGGER.info("Playback started on player %s", player_id)
             player.elapsed_time = 0
-            while (
-                player.state == PlayerState.Playing
-                and player.sox
-                and not player.sox.poll()
-            ):
+            while player.sox and not player.sox.poll():
                 await asyncio.sleep(1)
                 player.elapsed_time += 1
                 self.mass.add_job(self.mass.player_manager.async_update_player(player))
+            LOGGER.info("Playback stopped on player %s", player_id)
             player.elapsed_time = 0
             player.state = PlayerState.Stopped
             self.mass.add_job(self.mass.player_manager.async_update_player(player))
 
-        self.mass.add_job(report_progress)
+        if self._progress_tasks.get(player_id):
+            self._progress_tasks[player_id].cancel()
+        self._progress_tasks[player_id] = self.mass.add_job(report_progress)
 
     async def async_cmd_stop(self, player_id: str) -> None:
         """

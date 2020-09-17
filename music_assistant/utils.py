@@ -14,6 +14,8 @@ from typing import Any, Callable, TypeVar
 
 import memory_tempfile
 import unidecode
+from cryptography.fernet import Fernet, InvalidToken
+from music_assistant.app_vars import get_app_var  # noqa # pylint: disable=all
 
 try:
     import simplejson as json
@@ -296,6 +298,19 @@ def create_tempfile():
             buffering=0
         )
     return tempfile.NamedTemporaryFile(buffering=0)
+
+
+def encrypt_string(str_value):
+    """Encrypt a string with Fernet."""
+    return Fernet(get_app_var(3)).encrypt(str_value.encode()).decode()
+
+
+def decrypt_string(str_value):
+    """Decrypt a string with Fernet."""
+    try:
+        return Fernet(get_app_var(3)).decrypt(str_value.encode()).decode()
+    except InvalidToken:
+        return None
 
 
 class CustomIntEnum(int, Enum):

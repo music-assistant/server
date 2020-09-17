@@ -8,9 +8,7 @@ import asyncio
 import gc
 import io
 import logging
-import os
 import shlex
-import signal
 import subprocess
 import threading
 import urllib
@@ -24,7 +22,7 @@ from music_assistant.constants import EVENT_STREAM_ENDED, EVENT_STREAM_STARTED
 from music_assistant.models.media_types import MediaType
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
-from music_assistant.utils import create_tempfile, get_ip, try_parse_int
+from music_assistant.utils import create_tempfile, decrypt_string, get_ip, try_parse_int
 from music_assistant.web import require_local_subnet
 
 LOGGER = logging.getLogger("mass")
@@ -121,6 +119,7 @@ class HTTPStreamer:
             asyncio.CancelledError,
             aiohttp.ClientConnectionError,
             asyncio.TimeoutError,
+            Exception,
         ) as exc:
             cancelled.set()
             raise exc  # re-raise
@@ -172,7 +171,7 @@ class HTTPStreamer:
         player_queue = self.mass.player_manager.get_player_queue(player_id)
         sample_rate = try_parse_int(player_conf["max_sample_rate"])
         fade_length = try_parse_int(player_conf["crossfade_duration"])
-        if not sample_rate or sample_rate < 44100 or sample_rate > 384000:
+        if not sample_rate or sample_rate < 44100:
             sample_rate = 96000
         if fade_length:
             fade_bytes = int(sample_rate * 4 * 2 * fade_length)
@@ -362,10 +361,9 @@ class HTTPStreamer:
             sox_proc.stdin.write(last_fadeout_data)
             del last_fadeout_data
         # END OF QUEUE STREAM
-        sox_proc.stdin.close()
         sox_proc.terminate()
+        sox_proc.communicate()
         fill_buffer_thread.join()
-        del sox_proc
         # run garbage collect manually to avoid too much memory fragmentation
         gc.collect()
         if cancelled.is_set():
@@ -377,7 +375,6 @@ class HTTPStreamer:
         self, player_id, queue_item, cancelled, chunksize=128000, resample=None
     ):
         """Get audio stream from provider and apply additional effects/processing if needed."""
-        # pylint: disable=subprocess-popen-preexec-fn
         streamdetails = self.mass.add_job(
             self.mass.music_manager.async_get_stream_details(queue_item, player_id)
         ).result()
@@ -396,52 +393,39 @@ class HTTPStreamer:
         if streamdetails.content_type == ContentType.AAC:
             # support for AAC created with ffmpeg in between
             args = 'ffmpeg -v quiet -i "%s" -f flac - | sox -t flac - -t %s - %s' % (
-                streamdetails.path,
+                decrypt_string(streamdetails.path),
                 outputfmt,
                 sox_options,
             )
             process = subprocess.Popen(
-                args,
-                shell=True,
-                stdout=subprocess.PIPE,
-                bufsize=chunksize,
-                preexec_fn=os.setsid,
+                args, shell=True, stdout=subprocess.PIPE, bufsize=chunksize
             )
         elif streamdetails.type in [StreamType.URL, StreamType.FILE]:
             args = 'sox -t %s "%s" -t %s - %s' % (
                 streamdetails.content_type.name,
-                streamdetails.path,
+                decrypt_string(streamdetails.path),
                 outputfmt,
                 sox_options,
             )
             args = shlex.split(args)
             process = subprocess.Popen(
-                args,
-                shell=False,
-                stdout=subprocess.PIPE,
-                bufsize=chunksize,
-                preexec_fn=os.setsid,
+                args, shell=False, stdout=subprocess.PIPE, bufsize=chunksize
             )
         elif streamdetails.type == StreamType.EXECUTABLE:
             args = "%s | sox -t %s - -t %s - %s" % (
-                streamdetails.path,
+                decrypt_string(streamdetails.path),
                 streamdetails.content_type.name,
                 outputfmt,
                 sox_options,
             )
             process = subprocess.Popen(
-                args,
-                shell=True,
-                stdout=subprocess.PIPE,
-                bufsize=chunksize,
-                preexec_fn=os.setsid,
+                args, shell=True, stdout=subprocess.PIPE, bufsize=chunksize
             )
         else:
             LOGGER.warning("no streaming options for %s", queue_item.name)
             yield (True, b"")
             return
         # fire event that streaming has started for this track
-        streamdetails.path = ""  # invalidate
         self.mass.signal_event(EVENT_STREAM_STARTED, streamdetails)
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
@@ -450,11 +434,16 @@ class HTTPStreamer:
             if cancelled.is_set():
                 # http session ended
                 # send terminate and pick up left over bytes
-                # process.terminate()
-                os.killpg(os.getpgid(process.pid), signal.SIGHUP)
-                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-            # read exactly chunksize of data
-            chunk = process.stdout.read(chunksize)
+                process.terminate()
+                chunk, _ = process.communicate()
+                LOGGER.warning(
+                    "__get_audio_stream cancelled for track %s on player %s",
+                    queue_item.name,
+                    player_id,
+                )
+            else:
+                # read exactly chunksize of data
+                chunk = process.stdout.read(chunksize)
             if len(chunk) < chunksize:
                 # last chunk
                 yield (True, prev_chunk + chunk)
@@ -469,6 +458,11 @@ class HTTPStreamer:
             # send task to background to analyse the audio
             if queue_item.media_type == MediaType.Track:
                 self.mass.add_job(self.__analyze_audio, streamdetails)
+        LOGGER.warning(
+            "__get_audio_stream complete for track %s on player %s",
+            queue_item.name,
+            player_id,
+        )
 
     def __get_player_sox_options(
         self, player_id: str, streamdetails: StreamDetails
@@ -508,11 +502,15 @@ class HTTPStreamer:
             # only when needed we do the analyze stuff
             LOGGER.debug("Start analyzing track %s", item_key)
             if streamdetails.type == StreamType.URL:
-                audio_data = urllib.request.urlopen(streamdetails.path).read()
+                audio_data = urllib.request.urlopen(
+                    decrypt_string(streamdetails.path)
+                ).read()
             elif streamdetails.type == StreamType.EXECUTABLE:
-                audio_data = subprocess.check_output(streamdetails.path, shell=True)
+                audio_data = subprocess.check_output(
+                    decrypt_string(streamdetails.path), shell=True
+                )
             elif streamdetails.type == StreamType.FILE:
-                with open(streamdetails.path, "rb") as _file:
+                with open(decrypt_string(streamdetails.path), "rb") as _file:
                     audio_data = _file.read()
             # calculate BS.1770 R128 integrated loudness
             with io.BytesIO(audio_data) as tmpfile:

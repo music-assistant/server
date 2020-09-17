@@ -7,8 +7,6 @@ from collections import OrderedDict
 from enum import Enum
 from typing import List
 
-from cryptography.fernet import Fernet, InvalidToken
-from music_assistant.app_vars import get_app_var  # noqa # pylint: disable=all
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENABLED,
@@ -20,7 +18,13 @@ from music_assistant.constants import (
     EVENT_CONFIG_CHANGED,
 )
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
-from music_assistant.utils import get_external_ip, json, try_load_json_file
+from music_assistant.utils import (
+    decrypt_string,
+    encrypt_string,
+    get_external_ip,
+    json,
+    try_load_json_file,
+)
 from passlib.hash import pbkdf2_sha256
 
 LOGGER = logging.getLogger("mass")
@@ -200,10 +204,9 @@ class ConfigItem:
         entry = self.get_entry(key)
         if entry.entry_type == ConfigEntryType.PASSWORD:
             # decrypted password is only returned if explicitly asked for this key
-            try:
-                return Fernet(get_app_var(3)).decrypt(entry.value.encode()).decode()
-            except InvalidToken:
-                pass
+            decrypted_value = decrypt_string(entry.value)
+            if decrypted_value:
+                return decrypted_value
         return entry.value
 
     def __setitem__(self, key, value):
@@ -237,7 +240,7 @@ class ConfigItem:
                 if entry.store_hashed:
                     value = pbkdf2_sha256.hash(value)
                 if entry.entry_type == ConfigEntryType.PASSWORD:
-                    value = Fernet(get_app_var(3)).encrypt(value.encode()).decode()
+                    value = encrypt_string(value)
                 self.stored_config[key] = value
                 self.mass.signal_event(
                     EVENT_CONFIG_CHANGED, (self._base_type, self._parent_item_key)

@@ -94,8 +94,9 @@ class QobuzProvider(MusicProvider):
         self.__user_auth_info = None
         self.__logged_in = False
         self._throttler = Throttler(rate_limit=4, period=1)
-        self.mass.add_event_listener(self.async_mass_event, EVENT_STREAM_STARTED)
-        self.mass.add_event_listener(self.async_mass_event, EVENT_STREAM_ENDED)
+        self.mass.add_event_listener(
+            self.async_mass_event, [EVENT_STREAM_STARTED, EVENT_STREAM_ENDED]
+        )
         return True
 
     async def async_search(
@@ -369,7 +370,7 @@ class QobuzProvider(MusicProvider):
         if not self.__user_auth_info:
             return
         # TODO: need to figure out if the streamed track is purchased by user
-        if msg == EVENT_STREAM_STARTED and msg_details["provider"] == PROV_ID:
+        if msg == EVENT_STREAM_STARTED and msg_details.provider == PROV_ID:
             # report streaming started to qobuz
             device_id = self.__user_auth_info["user"]["device"]["id"]
             credential_id = self.__user_auth_info["user"]["credential"]["id"]

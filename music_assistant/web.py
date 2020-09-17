@@ -612,7 +612,10 @@ class Web:
         player_id = request.match_info.get("player_id")
         player_queue = self.mass.player_manager.get_player_queue(player_id)
         cmd = request.match_info.get("cmd")
-        cmd_args = await request.json()
+        try:
+            cmd_args = await request.json()
+        except json.decoder.JSONDecodeError:
+            cmd_args = None
         if cmd == "repeat_enabled":
             player_queue.repeat_enabled = cmd_args
         elif cmd == "shuffle_enabled":
@@ -627,7 +630,7 @@ class Web:
             await player_queue.async_move_item(cmd_args, 1)
         elif cmd == "next":
             await player_queue.async_move_item(cmd_args, 0)
-        return web.json_response(player_queue, dumps=json_serializer)
+        return web.json_response(player_queue.to_dict(), dumps=json_serializer)
 
     @login_required
     @routes.get("/api/players/{player_id}")

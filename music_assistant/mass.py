@@ -104,10 +104,10 @@ class MusicAssistant:
         if self.config.providers[provider.id][CONF_ENABLED]:
             if await provider.async_on_start():
                 provider.available = True
-                LOGGER.debug("New provider registered: %s", provider.name)
+                LOGGER.debug("Provider registered: %s", provider.name)
                 self.signal_event(EVENT_PROVIDER_REGISTERED, provider.id)
         else:
-            LOGGER.debug("Not loading provider %s as it is disabled:", provider.name)
+            LOGGER.debug("Not loading provider %s as it is disabled", provider.name)
 
     async def register_provider(self, provider: Provider):
         """Register a new Provider/Plugin."""
@@ -161,7 +161,7 @@ class MusicAssistant:
                 except Exception as exc:
                     LOGGER.exception("Error preloading module %s: %s", module_name, exc)
                 else:
-                    LOGGER.info("Successfully preloaded module %s", module_name)
+                    LOGGER.debug("Successfully preloaded module %s", module_name)
 
     @callback
     def signal_event(self, event_msg: str, event_details: Any = None):

@@ -25,7 +25,7 @@ from music_assistant.models.media_types import (
 from music_assistant.models.musicprovider import MusicProvider
 from music_assistant.models.provider import ProviderType
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
-from music_assistant.utils import compare_strings, run_periodic
+from music_assistant.utils import compare_strings, encrypt_string, run_periodic
 from PIL import Image
 
 LOGGER = logging.getLogger("mass")
@@ -1095,7 +1095,7 @@ class MusicManager:
                 full_track = media_item
             else:
                 full_track = await self.async_get_track(
-                    media_item.item_id, media_item.provider, lazy=True, refresh=True
+                    media_item.item_id, media_item.provider, lazy=True, refresh=False
                 )
             # sort by quality and check track availability
             for prov_media in sorted(
@@ -1109,12 +1109,18 @@ class MusicManager:
                 streamdetails = await music_prov.async_get_stream_details(
                     prov_media.item_id
                 )
+                if streamdetails:
+                    break
 
-            if streamdetails:
-                streamdetails.player_id = player_id
-                # set streamdetails as attribute on the media_item
-                media_item.streamdetails = streamdetails
-                return streamdetails
+        if streamdetails:
+            # set player_id on the streamdetails so we know what players stream
+            streamdetails.player_id = player_id
+            # store the path encrypted as we do not want it to be visible in the api
+            streamdetails.path = encrypt_string(streamdetails.path)
+            # set streamdetails as attribute on the media_item
+            # this way the app knows what content is playing
+            media_item.streamdetails = streamdetails
+            return streamdetails
         return None
 
     ################ Library synchronization logic ################

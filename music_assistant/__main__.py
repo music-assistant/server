@@ -64,7 +64,7 @@ def main():
         mass.async_start(),
         use_uvloop=True,
         shutdown_callback=on_shutdown,
-        executor_workers=32,
+        executor_workers=64,
     )
 
 
