@@ -308,7 +308,6 @@ class ChromecastPlayer:
             self.media_status.player_is_playing or self.media_status.player_is_paused
         ):
             self._chromecast.media_controller.stop()
-            self._chromecast.quit_app()
         self._powered = False
         # chromecast has no real poweroff so we send mute instead
         self._chromecast.set_volume_muted(True)
