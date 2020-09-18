@@ -558,7 +558,9 @@ class PlayerManager:
         else:
             player_state.elapsed_time = int(player.elapsed_time)
             player_state.current_uri = player.current_uri
-        player_state.state = self.__get_player_state(player, active_queue)
+        player_state.state = self.__get_player_state(
+            player, active_queue, player_state.powered
+        )
         player_state.available = False if not player_enabled else player.available
         player_state.volume_level = self.__get_player_volume_level(player)
         player_state.muted = self.__get_player_mute_state(player)
@@ -617,11 +619,13 @@ class PlayerManager:
         return player.volume_level
 
     @callback
-    def __get_player_state(self, player: Player, active_parent: str):
+    def __get_player_state(self, player: Player, active_parent: str, powered: bool):
         """Get final/calculated player's state."""
-        if active_parent != player.player_id:
+        if powered and active_parent != player.player_id:
             # use group state
             return self._players[active_parent].state
+        if player.state == PlayerState.Stopped and not powered:
+            return PlayerState.Off
         return player.state
 
     @callback

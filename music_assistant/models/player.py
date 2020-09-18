@@ -17,6 +17,7 @@ class PlayerState(Enum):
     Stopped = "stopped"
     Paused = "paused"
     Playing = "playing"
+    Off = "off"
 
 
 @dataclass
