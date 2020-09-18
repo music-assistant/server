@@ -316,8 +316,11 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        # TODO: redirect playback related commands to parent player?
-        return await self.get_player_provider(player_id).async_cmd_stop(player_id)
+        player = self.get_player(player_id)
+        queue_player_id = player.active_queue
+        return await self.get_player_provider(queue_player_id).async_cmd_stop(
+            queue_player_id
+        )
 
     async def async_cmd_play(self, player_id: str) -> None:
         """
@@ -325,14 +328,16 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        # power on at play request
-        await self.async_cmd_power_on(player_id)
         player = self.get_player(player_id)
+        queue_player_id = player.active_queue
         # unpause if paused else resume queue
         if player.state == PlayerState.Paused:
-            return await self.get_player_provider(player_id).async_cmd_play(player_id)
-        return await self._player_queues[player_id].async_resume()
-        # TODO: redirect playback related commands to parent player?
+            return await self.get_player_provider(queue_player_id).async_cmd_play(
+                queue_player_id
+            )
+        # power on at play request
+        await self.async_cmd_power_on(player_id)
+        return await self._player_queues[queue_player_id].async_resume()
 
     async def async_cmd_pause(self, player_id: str):
         """
@@ -340,8 +345,11 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        return await self.get_player_provider(player_id).async_cmd_pause(player_id)
-        # TODO: redirect playback related commands to parent player?
+        player = self.get_player(player_id)
+        queue_player_id = player.active_queue
+        return await self.get_player_provider(queue_player_id).async_cmd_pause(
+            queue_player_id
+        )
 
     async def async_cmd_play_pause(self, player_id: str):
         """
@@ -360,7 +368,9 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        return await self.get_player_queue(player_id).async_next()
+        player = self.get_player(player_id)
+        queue_player_id = player.active_queue
+        return await self.get_player_queue(queue_player_id).async_next()
 
     async def async_cmd_previous(self, player_id: str):
         """
@@ -368,7 +378,9 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        return await self.get_player_queue(player_id).async_previous()
+        player = self.get_player(player_id)
+        queue_player_id = player.active_queue
+        return await self.get_player_queue(queue_player_id).async_previous()
 
     async def async_cmd_power_on(self, player_id: str) -> None:
         """
@@ -405,19 +417,20 @@ class PlayerManager:
         if player.is_group_player:
             # player is group, turn off all childs
             for child_player_id in player.group_childs:
-                if self._players.get(child_player_id):
+                child_player = self.get_player(child_player_id)
+                if child_player and child_player.powered:
                     await self.async_cmd_power_off(child_player_id)
         else:
             # if this was the last powered player in the group, turn off group
             for parent_player_id in player.group_parents:
-                parent_player = self._players.get(parent_player_id)
-                if not parent_player:
+                parent_player = self.get_player(parent_player_id)
+                if not parent_player or not parent_player.powered:
                     continue
                 has_powered_players = False
                 for child_player_id in parent_player.group_childs:
                     if child_player_id == player_id:
                         continue
-                    child_player = self._players.get(child_player_id)
+                    child_player = self.get_player(child_player_id)
                     if child_player and child_player.powered:
                         has_powered_players = True
                         break
