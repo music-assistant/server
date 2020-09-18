@@ -347,7 +347,8 @@ class MassConfig:
             return DEFAULT_PLAYER_CONFIG_ENTRIES + player.config_entries
         return DEFAULT_PLAYER_CONFIG_ENTRIES
 
-    def get_base_config_entries(self, base_key) -> List[ConfigEntry]:
+    @staticmethod
+    def get_base_config_entries(base_key) -> List[ConfigEntry]:
         """Return all base config entries."""
         return DEFAULT_BASE_CONFIG_ENTRIES[base_key]
 
