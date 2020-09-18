@@ -342,10 +342,8 @@ class MassConfig:
 
     def get_player_config_entries(self, player_id: str) -> List[ConfigEntry]:
         """Return all config entries for the given player."""
-        player = self.mass.player_manager.get_player(player_id)
-        if player:
-            return DEFAULT_PLAYER_CONFIG_ENTRIES + player.config_entries
-        return DEFAULT_PLAYER_CONFIG_ENTRIES
+        player_conf = self.mass.player_manager.get_player_config_entries(player_id)
+        return DEFAULT_PLAYER_CONFIG_ENTRIES + player_conf
 
     @staticmethod
     def get_base_config_entries(base_key) -> List[ConfigEntry]:

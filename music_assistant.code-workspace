@@ -1,13 +1,7 @@
 {
 	"folders": [
 		{
-			"path": "../music-assistant-app"
-		},
-		{
-			"path": "../music-assistant.github.io"
-		},
-		{
-			"path": "../python-musicassistant-client"
+			"path": "."
 		}
 	],
 	"settings": {

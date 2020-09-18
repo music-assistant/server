@@ -52,7 +52,6 @@ class PlayerManager:
         self._player_queues = {}
         self._poll_ticks = 0
         self._controls = {}
-        self._player_controls_config_entries = []
         self.mass.add_event_listener(
             self.__handle_websocket_player_control_event,
             [
@@ -98,7 +97,11 @@ class PlayerManager:
     @callback
     def get_player(self, player_id: str) -> Player:
         """Return player by player_id or None if player does not exist."""
-        return self._players.get(player_id)
+        player = self._players.get(player_id)
+        if not player or not player.available:
+            LOGGER.warning("Player %s is not available!", player_id)
+            return None
+        return player
 
     @callback
     def get_player_provider(self, player_id: str) -> PlayerProvider:
@@ -182,10 +185,14 @@ class PlayerManager:
             control.provider,
             control.name,
         )
-        await self.__async_create_playercontrol_config_entries()
-        # update all players as they may want to use this control
-        for player in self._players.values():
-            self.mass.add_job(self.async_update_player(player))
+        # update all players using this playercontrol
+        for player_id, player in self._players.items():
+            conf = self.mass.config.player_settings[player_id]
+            if control.control_id in [
+                conf.get(CONF_POWER_CONTROL),
+                conf.get(CONF_VOLUME_CONTROL),
+            ]:
+                self.mass.add_job(self.async_update_player(player))
 
     async def async_update_player_control(self, control: PlayerControl):
         """Update a playercontrol's state on the player manager."""
@@ -229,7 +236,7 @@ class PlayerManager:
                 QueueOption.Next -> Play item(s) after current playing item
                 QueueOption.Add -> Append new items at end of the queue
         """
-        player = self._players[player_id]
+        player = self.get_player(player_id)
         if not player:
             return
         # a single item or list of items may be provided
@@ -288,7 +295,7 @@ class PlayerManager:
                 QueueOption.Next -> Play item(s) after current playing item
                 QueueOption.Add -> Append new items at end of the queue
         """
-        player = self._players[player_id]
+        player = self.get_player(player_id)
         if not player:
             return
         queue_item = QueueItem(
@@ -317,6 +324,8 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
         """
         player = self.get_player(player_id)
+        if not player:
+            return
         queue_player_id = player.active_queue
         return await self.get_player_provider(queue_player_id).async_cmd_stop(
             queue_player_id
@@ -329,6 +338,8 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
         """
         player = self.get_player(player_id)
+        if not player:
+            return
         queue_player_id = player.active_queue
         # unpause if paused else resume queue
         if player.state == PlayerState.Paused:
@@ -346,6 +357,8 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
         """
         player = self.get_player(player_id)
+        if not player:
+            return
         queue_player_id = player.active_queue
         return await self.get_player_provider(queue_player_id).async_cmd_pause(
             queue_player_id
@@ -358,6 +371,8 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
         """
         player = self.get_player(player_id)
+        if not player:
+            return
         if player.state == PlayerState.Playing:
             return await self.async_cmd_pause(player_id)
         return await self.async_cmd_play(player_id)
@@ -369,6 +384,8 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
         """
         player = self.get_player(player_id)
+        if not player:
+            return
         queue_player_id = player.active_queue
         return await self.get_player_queue(queue_player_id).async_next()
 
@@ -379,6 +396,8 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
         """
         player = self.get_player(player_id)
+        if not player:
+            return
         queue_player_id = player.active_queue
         return await self.get_player_queue(queue_player_id).async_previous()
 
@@ -388,7 +407,9 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self._players[player_id]
+        player = self.get_player(player_id)
+        if not player:
+            return
         player_config = self.mass.config.player_settings[player.player_id]
         # turn on player
         await self.get_player_provider(player_id).async_cmd_power_on(player_id)
@@ -404,7 +425,9 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self._players[player_id]
+        player = self.get_player(player_id)
+        if not player:
+            return
         player_config = self.mass.config.player_settings[player.player_id]
         # turn off player
         await self.get_player_provider(player_id).async_cmd_power_off(player_id)
@@ -442,7 +465,9 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self._players[player_id]
+        player = self.get_player(player_id)
+        if not player:
+            return
         if player.powered:
             return await self.async_cmd_power_off(player_id)
         return await self.async_cmd_power_on(player_id)
@@ -455,7 +480,7 @@ class PlayerManager:
             :param volume_level: volume level to set (0..100).
         """
         player = self.get_player(player_id)
-        if not player.powered:
+        if not player or not player.powered:
             return
         player_prov = self.get_player_provider(player_id)
         player_config = self.mass.config.player_settings[player.player_id]
@@ -498,7 +523,9 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self._players[player_id]
+        player = self.get_player(player_id)
+        if not player:
+            return
         new_level = player.volume_level + 1
         if new_level > 100:
             new_level = 100
@@ -510,7 +537,9 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self._players[player_id]
+        player = self.get_player(player_id)
+        if not player:
+            return
         new_level = player.volume_level - 1
         if new_level < 0:
             new_level = 0
@@ -523,11 +552,52 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
             :param is_muted: bool with the new mute state.
         """
+        player = self.get_player(player_id)
+        if not player:
+            return
         player_prov = self.get_player_provider(player_id)
         # TODO: handle mute on volumecontrol?
         return await player_prov.async_cmd_volume_mute(player_id, is_muted)
 
     # OTHER/HELPER FUNCTIONS
+
+    @callback
+    def get_player_config_entries(self, player_id: str):
+        """Get final/calculated config entries for a player."""
+        if player_id not in self._org_players:
+            return []
+        entries = self._org_players[player_id].config_entries
+        # append power control config entries
+        power_controls = self.get_player_controls(PlayerControlType.POWER)
+        if power_controls:
+            controls = [
+                {"text": f"{item.provider}: {item.name}", "value": item.control_id}
+                for item in power_controls
+            ]
+            entries.append(
+                ConfigEntry(
+                    entry_key=CONF_POWER_CONTROL,
+                    entry_type=ConfigEntryType.STRING,
+                    description_key=CONF_POWER_CONTROL,
+                    values=controls,
+                )
+            )
+        # append volume control config entries
+        volume_controls = self.get_player_controls(PlayerControlType.VOLUME)
+        if volume_controls:
+            controls = [
+                {"text": f"{item.provider}: {item.name}", "value": item.control_id}
+                for item in volume_controls
+            ]
+            entries.append(
+                ConfigEntry(
+                    entry_key=CONF_VOLUME_CONTROL,
+                    entry_type=ConfigEntryType.STRING,
+                    description_key=CONF_VOLUME_CONTROL,
+                    values=controls,
+                )
+            )
+        return entries
 
     async def async_get_gain_correct(
         self, player_id: str, item_id: str, provider_id: str
@@ -583,12 +653,7 @@ class PlayerManager:
         player_state.device_info = player.device_info
         player_state.should_poll = player.should_poll
         player_state.features = player.features
-        player_state.config_entries = self.__get_player_config_entries(player)
         player_state.active_queue = active_queue
-        if active_queue in self._player_queues:
-            player_state.cur_queue_item_id = self._player_queues[
-                active_queue
-            ].cur_item_id
 
     @callback
     def __get_player_name(self, player: Player):
@@ -673,46 +738,6 @@ class PlayerManager:
             if group_player and group_player.powered:
                 return group_player_id
         return player.player_id
-
-    @callback
-    def __get_player_config_entries(self, player: Player):
-        """Get final/calculated config entries for this player."""
-        return player.config_entries + self._player_controls_config_entries
-
-    async def __async_create_playercontrol_config_entries(self):
-        """Create special config entries for player controls."""
-        entries = []
-        # append power control config entries
-        power_controls = self.get_player_controls(PlayerControlType.POWER)
-        if power_controls:
-            controls = [
-                {"text": f"{item.provider}: {item.name}", "value": item.control_id}
-                for item in power_controls
-            ]
-            entries.append(
-                ConfigEntry(
-                    entry_key=CONF_POWER_CONTROL,
-                    entry_type=ConfigEntryType.STRING,
-                    description_key=CONF_POWER_CONTROL,
-                    values=controls,
-                )
-            )
-        # append volume control config entries
-        volume_controls = self.get_player_controls(PlayerControlType.VOLUME)
-        if volume_controls:
-            controls = [
-                {"text": f"{item.provider}: {item.name}", "value": item.control_id}
-                for item in volume_controls
-            ]
-            entries.append(
-                ConfigEntry(
-                    entry_key=CONF_VOLUME_CONTROL,
-                    entry_type=ConfigEntryType.STRING,
-                    description_key=CONF_VOLUME_CONTROL,
-                    values=controls,
-                )
-            )
-        self._player_controls_config_entries = entries
 
     @callback
     def __player_updated(self, player_id: str, changed_value: str):

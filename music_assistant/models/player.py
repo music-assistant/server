@@ -61,7 +61,6 @@ class Player(DataClassDictMixin):
     updated_at: datetime = field(default=datetime.utcnow(), init=False)
     active_queue: str = field(default="", init=False)
     group_parents: List[str] = field(init=False, default_factory=list)
-    cur_queue_item_id: str = field(default="", init=False)
 
     def __setattr__(self, name, value):
         """Watch for attribute updates. Do not override."""
