@@ -503,7 +503,11 @@ class PlayerQueue:
             self._next_queue_startindex = self.next_index
             self._cur_index = new_index
         # check if a new track is loaded, wait for the streamdetails
-        if self._last_item != self.cur_item and self.cur_item.streamdetails:
+        if (
+            self.cur_item
+            and self._last_item != self.cur_item
+            and self.cur_item.streamdetails
+        ):
             # new active item in queue
             self.mass.signal_event(EVENT_QUEUE_UPDATED, self.to_dict())
             # invalidate previous streamdetails

@@ -419,7 +419,7 @@ class PlayerManager:
             for child_player_id in player.group_childs:
                 child_player = self.get_player(child_player_id)
                 if child_player and child_player.powered:
-                    await self.async_cmd_power_off(child_player_id)
+                    self.mass.add_job(self.async_cmd_power_off(child_player_id))
         else:
             # if this was the last powered player in the group, turn off group
             for parent_player_id in player.group_parents:
@@ -433,9 +433,8 @@ class PlayerManager:
                     child_player = self.get_player(child_player_id)
                     if child_player and child_player.powered:
                         has_powered_players = True
-                        break
                 if not has_powered_players:
-                    await self.async_cmd_power_off(parent_player_id)
+                    self.mass.add_job(self.async_cmd_power_off(parent_player_id))
 
     async def async_cmd_power_toggle(self, player_id: str):
         """
@@ -561,8 +560,10 @@ class PlayerManager:
             player_state = Player(player.player_id, player.provider_id)
             self._players[player.player_id] = player_state
             setattr(player_state, "_on_update", self.__player_updated)
-        group_parents = self.__get_player_group_parents(player)
-        active_queue = self.__get_player_active_queue(player, group_parents)
+        player_state.group_parents = self.__get_player_group_parents(player)
+        active_queue = self.__get_player_active_queue(
+            player, player_state.group_parents
+        )
         player_state.name = self.__get_player_name(player)
         player_state.powered = self.__get_player_power_state(player)
         if active_queue != player.player_id:
