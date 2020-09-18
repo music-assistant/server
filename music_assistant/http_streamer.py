@@ -460,7 +460,7 @@ class HTTPStreamer:
             # send task to background to analyse the audio
             if queue_item.media_type == MediaType.Track:
                 self.mass.add_job(self.__analyze_audio, streamdetails)
-        LOGGER.warning(
+        LOGGER.debug(
             "__get_audio_stream complete for track %s on player %s",
             queue_item.name,
             player_id,
