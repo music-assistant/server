@@ -140,16 +140,14 @@ class PlayerManager:
 
     async def async_add_player(self, player: Player) -> None:
         """Register a new player or update an existing one."""
-        if not player:
+        if not player or not player.available:
             return
         is_new_player = player.player_id not in self._players
         await self.__async_create_player_state(player)
         if is_new_player:
             # create player queue
             if player.player_id not in self._player_queues:
-                self._player_queues[player.player_id] = PlayerQueue(
-                    self.mass, player.player_id
-                )
+                self._player_queues[player.player_id] = PlayerQueue(self.mass, player)
             # TODO: turn on player if it was previously turned on ?
             LOGGER.info(
                 "New player added: %s/%s",
@@ -161,6 +159,7 @@ class PlayerManager:
     async def async_remove_player(self, player_id: str):
         """Remove a player from the registry."""
         self._players.pop(player_id, None)
+        self._player_queues.pop(player_id, None)
         self._org_players.pop(player_id, None)
         LOGGER.info("Player removed: %s", player_id)
         self.mass.signal_event(EVENT_PLAYER_REMOVED, {"player_id": player_id})
@@ -703,9 +702,9 @@ class PlayerManager:
         if powered and active_parent != player.player_id:
             # use group state
             return self._players[active_parent].state
-        if player.state == PlayerState.Stopped and not powered:
+        if PlayerState(player.state) == PlayerState.Stopped and not powered:
             return PlayerState.Off
-        return player.state
+        return PlayerState(player.state)
 
     @callback
     @classmethod

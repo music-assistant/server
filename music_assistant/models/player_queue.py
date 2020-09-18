@@ -54,10 +54,10 @@ class QueueItem(Track):
 class PlayerQueue:
     """Class that holds the queue items for a player."""
 
-    def __init__(self, mass, player_id):
+    def __init__(self, mass, player):
         """Initialize class."""
         self.mass = mass
-        self.player_id = player_id
+        self._player = player
         self._items = []
         self._shuffle_enabled = False
         self._repeat_enabled = False
@@ -78,7 +78,12 @@ class PlayerQueue:
     @property
     def player(self):
         """Return handle to player."""
-        return self.mass.player_manager.get_player(self.player_id)
+        return self._player
+
+    @property
+    def player_id(self):
+        """Return handle to player."""
+        return self._player.player_id
 
     @property
     def shuffle_enabled(self):

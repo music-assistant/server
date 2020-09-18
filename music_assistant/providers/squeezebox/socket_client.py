@@ -8,6 +8,7 @@ import time
 from enum import Enum
 from typing import Awaitable
 
+from music_assistant.models.player import PlayerState
 from music_assistant.utils import callback, run_periodic
 
 from .constants import PROV_ID
@@ -28,14 +29,6 @@ DEVICE_TYPE = {
     11: "softboom",
     12: "squeezeplay",
 }
-
-
-class State(str, Enum):
-    """Enum for the playstate of a squeezebox player."""
-
-    Stopped = "stopped"
-    Paused = "paused"
-    Playing = "playing"
 
 
 class Event(Enum):
@@ -70,7 +63,7 @@ class SqueezeSocketClient:
         self._volume_level = 0
         self._powered = False
         self._muted = False
-        self._state = State.Stopped
+        self._state = PlayerState.Stopped
         self._elapsed_time = 0
         self._current_uri = ""
         self._tasks = [
@@ -356,7 +349,7 @@ class SqueezeSocketClient:
         """Process incoming stat STMf message (connection closed)."""
         # pylint: disable=unused-argument
         LOGGER.debug("STMf received - connection closed.")
-        self._state = State.Stopped
+        self._state = PlayerState.Stopped
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
@@ -376,7 +369,7 @@ class SqueezeSocketClient:
         """Process incoming stat STMp message: Pause confirmed."""
         # pylint: disable=unused-argument
         LOGGER.debug("STMp received - pause confirmed.")
-        self._state = State.Paused
+        self._state = PlayerState.Paused
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
@@ -384,7 +377,7 @@ class SqueezeSocketClient:
         """Process incoming stat STMr message: Resume confirmed."""
         # pylint: disable=unused-argument
         LOGGER.debug("STMr received - resume confirmed.")
-        self._state = State.Playing
+        self._state = PlayerState.Playing
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
@@ -392,7 +385,7 @@ class SqueezeSocketClient:
         # pylint: disable=unused-argument
         """Process incoming stat STMs message: Playback of new track has started."""
         LOGGER.debug("STMs received - playback of new track has started.")
-        self._state = State.Playing
+        self._state = PlayerState.Playing
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
@@ -419,7 +412,7 @@ class SqueezeSocketClient:
             server_timestamp,
             error_code,
         ) = struct.unpack("!BBBLLLLHLLLLHLLH", data)
-        if self._state == State.Playing and elapsed_seconds != self._elapsed_time:
+        if self._state == PlayerState.Playing and elapsed_seconds != self._elapsed_time:
             self._elapsed_time = elapsed_seconds
             asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
@@ -428,7 +421,7 @@ class SqueezeSocketClient:
         """Process incoming stat STMu message: Buffer underrun: Normal end of playback."""
         # pylint: disable=unused-argument
         LOGGER.debug("STMu received - end of playback.")
-        self.state = State.Stopped
+        self.state = PlayerState.Stopped
         asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
 
     @callback
