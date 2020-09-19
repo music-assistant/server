@@ -187,7 +187,12 @@ class HTTPStreamer:
 
         def fill_buffer():
             while True:
-                if sox_proc.stdout.closed or sox_proc.poll() is not None:
+                if (
+                    not sox_proc
+                    or not sox_proc.stdout
+                    or sox_proc.stdout.closed
+                    or sox_proc.poll() is not None
+                ):
                     break
                 chunk = sox_proc.stdout.read(128000)  # noqa
                 if not chunk:
