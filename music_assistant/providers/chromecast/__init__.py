@@ -59,9 +59,13 @@ class ChromecastProvider(PlayerProvider):
             self.__chromecast_remove_callback,
             self.__chromecast_add_update_callback,
         )
-        self._browser = pychromecast.discovery.start_discovery(
-            self._listener, self.mass.zeroconf
-        )
+
+        def start_discovery():
+            self._browser = pychromecast.discovery.start_discovery(
+                self._listener, self.mass.zeroconf
+            )
+
+        self.mass.add_job(start_discovery)
         return True
 
     async def async_on_stop(self):
@@ -76,7 +80,7 @@ class ChromecastProvider(PlayerProvider):
 
     async def async_cmd_play_uri(self, player_id: str, uri: str):
         """
-        Play the specified uri/url on the goven player.
+        Play the specified uri/url on the given player.
 
             :param player_id: player_id of the player to handle the command.
         """
@@ -191,15 +195,13 @@ class ChromecastProvider(PlayerProvider):
             port=service[5],
         )
         player_id = cast_info.uuid
-        LOGGER.debug(
-            "Chromecast discovered: %s (%s)", cast_info.friendly_name, player_id
-        )
         if player_id in self._players:
             # player already added, the player will take care of reconnects itself.
-            LOGGER.debug(
-                "Player is already added:  %s (%s)", cast_info.friendly_name, player_id
-            )
+            return
         else:
+            LOGGER.debug(
+                "Chromecast discovered: %s (%s)", cast_info.friendly_name, player_id
+            )
             player = ChromecastPlayer(self.mass, cast_info)
             self._players[player_id] = player
             self.mass.add_job(self.mass.player_manager.async_add_player(player))

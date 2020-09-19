@@ -98,9 +98,8 @@ class PlayerManager:
     def get_player(self, player_id: str) -> Player:
         """Return player by player_id or None if player does not exist."""
         player = self._players.get(player_id)
-        if not player or not player.available:
+        if not player:
             LOGGER.warning("Player %s is not available!", player_id)
-            return None
         return player
 
     @callback
@@ -147,7 +146,9 @@ class PlayerManager:
         if is_new_player:
             # create player queue
             if player.player_id not in self._player_queues:
-                self._player_queues[player.player_id] = PlayerQueue(self.mass, player)
+                self._player_queues[player.player_id] = PlayerQueue(
+                    self.mass, player.player_id
+                )
             # TODO: turn on player if it was previously turned on ?
             LOGGER.info(
                 "New player added: %s/%s",

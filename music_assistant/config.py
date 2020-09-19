@@ -252,7 +252,7 @@ class ConfigItem:
                         self.mass.get_provider(self._parent_item_key).async_on_reload()
                     )
                 if self._base_type == ConfigBaseType.PLAYER:
-
+                    # force update of player if it's config changed
                     player = self.mass.player_manager.get_player(self._parent_item_key)
                     if player:
                         self.mass.add_job(

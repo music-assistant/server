@@ -210,7 +210,6 @@ class ChromecastPlayer:
 
     def new_cast_status(self, cast_status):
         """Handle updates of the cast status."""
-        LOGGER.debug("received cast status for %s", self.name)
         self.cast_status = cast_status
         self._is_speaker_group = (
             self._cast_info.is_audio_group
@@ -224,7 +223,6 @@ class ChromecastPlayer:
 
     def new_media_status(self, media_status):
         """Handle updates of the media status."""
-        LOGGER.debug("received media_status for %s", self.name)
         self.media_status = media_status
         self.mass.add_job(self.mass.player_manager.async_update_player(self))
         if media_status.player_is_playing:
@@ -232,7 +230,6 @@ class ChromecastPlayer:
 
     def new_connection_status(self, connection_status):
         """Handle updates of connection status."""
-        LOGGER.debug("received connection_status for %s", self._cast_info.friendly_name)
         if connection_status.status == CONNECTION_STATUS_DISCONNECTED:
             self._available = False
             self._invalidate()
@@ -305,7 +302,9 @@ class ChromecastPlayer:
             LOGGER.warning("Ignore player command: Socket client is not connected.")
             return
         if self.media_status and (
-            self.media_status.player_is_playing or self.media_status.player_is_paused
+            self.media_status.player_is_playing
+            or self.media_status.player_is_paused
+            or self.media_status.player_is_idle
         ):
             self._chromecast.media_controller.stop()
         self._powered = False
