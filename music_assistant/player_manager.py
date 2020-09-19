@@ -734,7 +734,7 @@ class PlayerManager:
     @callback
     def __get_player_active_queue(self, player: Player, group_parents: List[str]):
         """Return the active parent player/queue for a player."""
-        # if a group is playing, all of it's childs will have/use
+        # if a group is powered on, all of it's childs will have/use
         # the parent's player's queue.
         for group_player_id in group_parents:
             group_player = self.get_player(group_player_id)
