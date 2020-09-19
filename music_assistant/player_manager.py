@@ -428,6 +428,9 @@ class PlayerManager:
         player = self.get_player(player_id)
         if not player:
             return
+        # send stop if player is playing
+        if player.active_queue == player_id:
+            await self.async_cmd_stop(player_id)
         player_config = self.mass.config.player_settings[player.player_id]
         # turn off player
         await self.get_player_provider(player_id).async_cmd_power_off(player_id)

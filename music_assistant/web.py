@@ -690,7 +690,10 @@ class Web:
             # callback for internal events
             async def async_send_message(msg, msg_details=None):
                 ws_msg = {"message": msg, "message_details": msg_details}
-                await ws_response.send_json(ws_msg, dumps=json_serializer)
+                try:
+                    await ws_response.send_json(ws_msg, dumps=json_serializer)
+                except AssertionError:
+                    LOGGER.debug("trying to send message to ws while disconnected")
 
             # process incoming messages
             async for msg in ws_response:
@@ -744,13 +747,11 @@ class Web:
                 else:
                     # simply echo the message on the eventbus
                     self.mass.signal_event(msg, msg_details)
-
-        except (AssertionError, asyncio.CancelledError) as exc:
-            LOGGER.warning("Websocket disconnected - %s", str(exc))
+        except (AssertionError, asyncio.CancelledError):
+            LOGGER.debug("Websocket disconnected")
         finally:
-            for callback in remove_callbacks:
-                callback()
-        LOGGER.debug("websocket connection closed")
+            for remove_callback in remove_callbacks:
+                remove_callback()
         return ws_response
 
     @require_local_subnet
