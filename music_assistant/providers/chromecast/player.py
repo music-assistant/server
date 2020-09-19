@@ -1,6 +1,7 @@
 """Representation of a Cast device on the network."""
 import logging
 import uuid
+from contextlib import suppress
 from datetime import datetime
 from typing import List, Optional
 
@@ -258,35 +259,40 @@ class ChromecastPlayer:
         if not self._chromecast.socket_client.is_connected:
             LOGGER.warning("Ignore player command: Socket client is not connected.")
             return
-        self._chromecast.media_controller.stop()
+        with suppress(pychromecast.error.NotConnected):
+            self._chromecast.media_controller.stop()
 
     def play(self):
         """Send play command to player."""
         if not self._chromecast.socket_client.is_connected:
             LOGGER.warning("Ignore player command: Socket client is not connected.")
             return
-        self._chromecast.media_controller.play()
+        with suppress(pychromecast.error.NotConnected):
+            self._chromecast.media_controller.play()
 
     def pause(self):
         """Send pause command to player."""
         if not self._chromecast.socket_client.is_connected:
             LOGGER.warning("Ignore player command: Socket client is not connected.")
             return
-        self._chromecast.media_controller.pause()
+        with suppress(pychromecast.error.NotConnected):
+            self._chromecast.media_controller.pause()
 
     def next(self):
         """Send next track command to player."""
         if not self._chromecast.socket_client.is_connected:
             LOGGER.warning("Ignore player command: Socket client is not connected.")
             return
-        self._chromecast.media_controller.queue_next()
+        with suppress(pychromecast.error.NotConnected):
+            self._chromecast.media_controller.queue_next()
 
     def previous(self):
         """Send previous track command to player."""
         if not self._chromecast.socket_client.is_connected:
             LOGGER.warning("Ignore player command: Socket client is not connected.")
             return
-        self._chromecast.media_controller.queue_prev()
+        with suppress(pychromecast.error.NotConnected):
+            self._chromecast.media_controller.queue_prev()
 
     def power_on(self):
         """Send power ON command to player."""
@@ -294,81 +300,75 @@ class ChromecastPlayer:
             LOGGER.warning("Ignore player command: Socket client is not connected.")
             return
         self._powered = True
-        self._chromecast.set_volume_muted(False)
+        with suppress(pychromecast.error.NotConnected):
+            self._chromecast.set_volume_muted(False)
 
     def power_off(self):
         """Send power OFF command to player."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        if self.media_status and (
-            self.media_status.player_is_playing
-            or self.media_status.player_is_paused
-            or self.media_status.player_is_idle
-        ):
-            self._chromecast.media_controller.stop()
-        self._powered = False
-        # chromecast has no real poweroff so we send mute instead
-        self._chromecast.set_volume_muted(True)
+        with suppress(pychromecast.error.NotConnected):
+            if self.media_status and (
+                self.media_status.player_is_playing
+                or self.media_status.player_is_paused
+                or self.media_status.player_is_idle
+            ):
+                self._chromecast.media_controller.stop()
+            self._powered = False
+            # chromecast has no real poweroff so we send mute instead
+            self._chromecast.set_volume_muted(True)
 
     def volume_set(self, volume_level):
         """Send new volume level command to player."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        self._chromecast.set_volume(volume_level)
-        # self.volume_level = volume_level
+        with suppress(pychromecast.error.NotConnected):
+            self._chromecast.set_volume(volume_level)
 
     def volume_mute(self, is_muted=False):
         """Send mute command to player."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        self._chromecast.set_volume_muted(is_muted)
+        with suppress(pychromecast.error.NotConnected):
+            self._chromecast.set_volume_muted(is_muted)
 
     def play_uri(self, uri: str):
         """Play single uri on player."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        player_queue = self.mass.player_manager.get_player_queue(self.player_id)
-        if player_queue.use_queue_stream:
-            # create CC queue so that skip and previous will work
-            queue_item = QueueItem()
-            queue_item.name = "Music Assistant"
-            queue_item.uri = uri
-            return self.queue_load([queue_item, queue_item])
-        self._chromecast.play_media(uri, "audio/flac")
+        with suppress(pychromecast.error.NotConnected):
+            player_queue = self.mass.player_manager.get_player_queue(self.player_id)
+            if player_queue.use_queue_stream:
+                # create CC queue so that skip and previous will work
+                queue_item = QueueItem()
+                queue_item.name = "Music Assistant"
+                queue_item.uri = uri
+                return self.queue_load([queue_item, queue_item])
+            self._chromecast.play_media(uri, "audio/flac")
 
     def queue_load(self, queue_items: List[QueueItem]):
         """Load (overwrite) queue with new items."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        player_queue = self.mass.player_manager.get_player_queue(self.player_id)
-        cc_queue_items = self.__create_queue_items(queue_items[:50])
-        repeat_enabled = player_queue.use_queue_stream or player_queue.repeat_enabled
-        queuedata = {
-            "type": "QUEUE_LOAD",
-            "repeatMode": "REPEAT_ALL" if repeat_enabled else "REPEAT_OFF",
-            "shuffle": False,  # handled by our queue controller
-            "queueType": "PLAYLIST",
-            "startIndex": 0,  # Item index to play after this request or keep same item if undefined
-            "items": cc_queue_items,  # only load 50 tracks at once or the socket will crash
-        }
-        self.__send_player_queue(queuedata)
-        if len(queue_items) > 50:
-            self.queue_append(queue_items[51:])
+        with suppress(pychromecast.error.NotConnected):
+            player_queue = self.mass.player_manager.get_player_queue(self.player_id)
+            cc_queue_items = self.__create_queue_items(queue_items[:50])
+            repeat_enabled = (
+                player_queue.use_queue_stream or player_queue.repeat_enabled
+            )
+            queuedata = {
+                "type": "QUEUE_LOAD",
+                "repeatMode": "REPEAT_ALL" if repeat_enabled else "REPEAT_OFF",
+                "shuffle": False,  # handled by our queue controller
+                "queueType": "PLAYLIST",
+                "startIndex": 0,  # Item index to play after this request or keep same item if undefined
+                "items": cc_queue_items,  # only load 50 tracks at once or the socket will crash
+            }
+            self.__send_player_queue(queuedata)
+            if len(queue_items) > 50:
+                self.queue_append(queue_items[51:])
 
     def queue_append(self, queue_items: List[QueueItem]):
         """Append new items at the end of the queue."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        cc_queue_items = self.__create_queue_items(queue_items)
-        for chunk in chunks(cc_queue_items, 50):
-            queuedata = {"type": "QUEUE_INSERT", "insertBefore": None, "items": chunk}
-            self.__send_player_queue(queuedata)
+        with suppress(pychromecast.error.NotConnected):
+            cc_queue_items = self.__create_queue_items(queue_items)
+            for chunk in chunks(cc_queue_items, 50):
+                queuedata = {
+                    "type": "QUEUE_INSERT",
+                    "insertBefore": None,
+                    "items": chunk,
+                }
+                self.__send_player_queue(queuedata)
 
     def __create_queue_items(self, tracks):
         """Create list of CC queue items from tracks."""
