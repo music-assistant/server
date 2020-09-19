@@ -23,6 +23,7 @@ class ContentType(Enum):
     MP3 = "mp3"
     RAW = "raw"
     AAC = "aac"
+    MPEG = "mpeg"
 
 
 @dataclass
