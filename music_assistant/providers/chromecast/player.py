@@ -442,4 +442,5 @@ class SuppressChromeCastError(suppress):
                 "Chromecast client %s is not connected, ignoring command...",
                 self.player_id,
             )
+            return True
         return exctype is None
