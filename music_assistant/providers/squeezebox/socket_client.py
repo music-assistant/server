@@ -65,6 +65,7 @@ class SqueezeSocketClient:
         self._muted = False
         self._state = PlayerState.Stopped
         self._elapsed_time = 0
+        self._elapsed_time_milliseconds = 0
         self._current_uri = ""
         self._tasks = [
             asyncio.create_task(self.__async_socket_reader()),
@@ -125,6 +126,11 @@ class SqueezeSocketClient:
     def elapsed_time(self):
         """Return elapsed_time of current playing track."""
         return self._elapsed_time
+
+    @property
+    def elapsed_time_milliseconds(self):
+        """Return elapsed_time in milliseconds of current playing track."""
+        return self._elapsed_time_milliseconds
 
     @property
     def current_uri(self):
@@ -415,6 +421,7 @@ class SqueezeSocketClient:
         if self._state == PlayerState.Playing and elapsed_seconds != self._elapsed_time:
             self._elapsed_time = elapsed_seconds
             asyncio.create_task(self._event_callback(Event.EVENT_UPDATED, self))
+        self.elapsed_time_milliseconds = elapsed_milliseconds
 
     @callback
     def _process_stat_stmu(self, data):

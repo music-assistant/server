@@ -6,10 +6,12 @@ import os
 import platform
 import re
 import socket
+import struct
 import tempfile
 import urllib.request
 from datetime import datetime
 from enum import Enum
+from io import BytesIO
 from typing import Any, Callable, TypeVar
 
 import memory_tempfile
@@ -305,10 +307,30 @@ def encrypt_string(str_value):
     return Fernet(get_app_var(3)).encrypt(str_value.encode()).decode()
 
 
+def encrypt_bytes(bytes_value):
+    """Encrypt bytes with Fernet."""
+    return Fernet(get_app_var(3)).encrypt(bytes_value)
+
+
+def yield_chunks(_obj, chunk_size):
+    """Yield successive n-sized chunks from list/str/bytes."""
+    chunk_size = int(chunk_size)
+    for i in range(0, len(_obj), chunk_size):
+        yield _obj[i : i + chunk_size]
+
+
 def decrypt_string(str_value):
     """Decrypt a string with Fernet."""
     try:
         return Fernet(get_app_var(3)).decrypt(str_value.encode()).decode()
+    except InvalidToken:
+        return None
+
+
+def decrypt_bytes(bytes_value):
+    """Decrypt bytes with Fernet."""
+    try:
+        return Fernet(get_app_var(3)).decrypt(bytes_value)
     except InvalidToken:
         return None
 
@@ -340,3 +362,50 @@ class CustomIntEnum(int, Enum):
             if key.lower() == string or value == try_parse_int(string):
                 return value
         return KeyError
+
+
+def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=3600):
+    """Generate a wave header from given params."""
+    file = BytesIO()
+    numsamples = samplerate * duration
+
+    # Generate format chunk
+    format_chunk_spec = b"<4sLHHLLHH"
+    format_chunk = struct.pack(
+        format_chunk_spec,
+        b"fmt ",  # Chunk id
+        16,  # Size of this chunk (excluding chunk id and this field)
+        1,  # Audio format, 1 for PCM
+        channels,  # Number of channels
+        int(samplerate),  # Samplerate, 44100, 48000, etc.
+        int(samplerate * channels * (bitspersample / 8)),  # Byterate
+        int(channels * (bitspersample / 8)),  # Blockalign
+        bitspersample,  # 16 bits for two byte samples, etc.
+    )
+    # Generate data chunk
+    data_chunk_spec = b"<4sL"
+    datasize = int(numsamples * channels * (bitspersample / 8))
+    data_chunk = struct.pack(
+        data_chunk_spec,
+        b"data",  # Chunk id
+        int(datasize),  # Chunk size (excluding chunk id and this field)
+    )
+    sum_items = [
+        # "WAVE" string following size field
+        4,
+        # "fmt " + chunk size field + chunk size
+        struct.calcsize(format_chunk_spec),
+        # Size of data chunk spec + data size
+        struct.calcsize(data_chunk_spec) + datasize,
+    ]
+    # Generate main header
+    all_chunks_size = int(sum(sum_items))
+    main_header_spec = b"<4sL4s"
+    main_header = struct.pack(main_header_spec, b"RIFF", all_chunks_size, b"WAVE")
+    # Write all the contents in
+    file.write(main_header)
+    file.write(format_chunk)
+    file.write(data_chunk)
+
+    # return file.getvalue(), all_chunks_size + 8
+    return file.getvalue()

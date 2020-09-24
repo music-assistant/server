@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from music_assistant.constants import (
     CONF_ENABLED,
+    CONF_GROUP_DELAY,
     CONF_NAME,
     EVENT_PLAYER_ADDED,
     EVENT_PLAYER_CHANGED,
@@ -172,6 +173,12 @@ class PlayerManager:
         if player.player_id not in self._players:
             return await self.async_add_player(player)
         await self.__async_create_player_state(player)
+
+    async def async_trigger_player_update(self, player_id: str):
+        """Trigger update on an existing player.."""
+        if player_id not in self._org_players:
+            return
+        await self.async_update_player(self._org_players[player_id])
 
     async def async_register_player_control(self, control: PlayerControl):
         """Register a playercontrol with the player manager."""
@@ -569,7 +576,7 @@ class PlayerManager:
         """Get final/calculated config entries for a player."""
         if player_id not in self._org_players:
             return []
-        entries = self._org_players[player_id].config_entries
+        entries = [item for item in self._org_players[player_id].config_entries]
         # append power control config entries
         power_controls = self.get_player_controls(PlayerControlType.POWER)
         if power_controls:
@@ -600,6 +607,22 @@ class PlayerManager:
                     values=controls,
                 )
             )
+        # append group player entries
+        player = self.get_player(player_id)
+        if player:
+            for parent_id in player.group_parents:
+                parent_player = self.get_player(parent_id)
+                if parent_player and parent_player.provider_id == "group_player":
+                    entries.append(
+                        ConfigEntry(
+                            entry_key=CONF_GROUP_DELAY,
+                            entry_type=ConfigEntryType.INT,
+                            default_value=0,
+                            range=(0, 1000),
+                            description_key=CONF_GROUP_DELAY,
+                        )
+                    )
+                    break
         return entries
 
     async def async_get_gain_correct(

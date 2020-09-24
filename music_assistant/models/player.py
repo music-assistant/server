@@ -57,6 +57,7 @@ class Player(DataClassDictMixin):
     should_poll: bool = False
     features: List[PlayerFeature] = field(default_factory=list)
     config_entries: List[ConfigEntry] = field(default_factory=list)
+    elapsed_time_milliseconds = 0  # optionally provide this for more accurate sync
     # below attributes are handled by the player manager. No need to set/override them.
     updated_at: datetime = field(default=datetime.utcnow(), init=False)
     active_queue: str = field(default="", init=False)
@@ -64,11 +65,13 @@ class Player(DataClassDictMixin):
 
     def __setattr__(self, name, value):
         """Watch for attribute updates. Do not override."""
-        if name == "updated_at":
+        if name in ["updated_at", "elapsed_time_miliseconds"]:
             # updated at is set by the on_update callback
             # make sure we do not hit an endless loop
             super().__setattr__(name, value)
             return
+        if name == "elapsed_time" and not self.elapsed_time_milliseconds:
+            super().__setattr__("elapsed_time_milliseconds", value * 1000)
         value_changed = hasattr(self, name) and getattr(self, name) != value
         super().__setattr__(name, value)
         if value_changed and hasattr(self, "_on_update"):

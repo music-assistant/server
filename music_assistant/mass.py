@@ -22,6 +22,7 @@ from music_assistant.metadata import MetaData
 from music_assistant.models.provider import Provider, ProviderType
 from music_assistant.music_manager import MusicManager
 from music_assistant.player_manager import PlayerManager
+from music_assistant.stream_manager import StreamManager
 from music_assistant.utils import callback, get_ip_pton, is_callback
 from music_assistant.web import Web
 from zeroconf import NonUniqueNameException, ServiceInfo, Zeroconf
@@ -53,6 +54,7 @@ class MusicAssistant:
         self.music_manager = MusicManager(self)
         self.player_manager = PlayerManager(self)
         self.http_streamer = HTTPStreamer(self)
+        self.stream_manager = StreamManager(self)
         # shared zeroconf instance
         self.zeroconf = Zeroconf()
         self._exit = False
@@ -73,9 +75,9 @@ class MusicAssistant:
         await self.cache.async_setup()
         await self.music_manager.async_setup()
         await self.player_manager.async_setup()
-        await self.web.async_setup()
         await self.async_preload_providers()
         await self.__async_setup_discovery()
+        await self.web.async_setup()
 
     async def async_stop(self):
         """Stop running the music assistant server."""

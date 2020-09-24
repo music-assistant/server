@@ -8,7 +8,7 @@ from typing import List, Optional
 import pychromecast
 from music_assistant.models.player import DeviceInfo, PlayerFeature, PlayerState
 from music_assistant.models.player_queue import QueueItem
-from music_assistant.utils import compare_strings
+from music_assistant.utils import compare_strings, yield_chunks
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import (
     CONNECTION_STATUS_CONNECTED,
@@ -358,7 +358,7 @@ class ChromecastPlayer:
     def queue_append(self, queue_items: List[QueueItem]):
         """Append new items at the end of the queue."""
         cc_queue_items = self.__create_queue_items(queue_items)
-        for chunk in chunks(cc_queue_items, 50):
+        for chunk in yield_chunks(cc_queue_items, 50):
             queuedata = {
                 "type": "QUEUE_INSERT",
                 "insertBefore": None,
@@ -419,12 +419,6 @@ class ChromecastPlayer:
                 )
             else:
                 send_queue()
-
-
-def chunks(_list, chunk_size):
-    """Yield successive n-sized chunks from list."""
-    for i in range(0, len(_list), chunk_size):
-        yield _list[i : i + chunk_size]
 
 
 class SuppressChromeCastError(suppress):

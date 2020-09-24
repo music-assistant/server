@@ -2,6 +2,7 @@
 
 import logging
 import random
+import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
@@ -82,8 +83,15 @@ class PlayerQueue:
 
     @property
     def player_id(self):
-        """Return handle to player."""
+        """Return the player's id."""
         return self._player_id
+
+    def get_stream_url(self):
+        """Return the full stream url for this QueueStream."""
+        uri = f"{self.mass.web.internal_url}/stream_queue/{self.player_id}"
+        # we set the checksum just to invalidate cache stuf
+        uri += f"?checksum={time.time()}"
+        return uri
 
     @property
     def shuffle_enabled(self):
@@ -293,13 +301,7 @@ class PlayerQueue:
         if self.use_queue_stream:
             self._next_queue_startindex = index
             self.player.elapsed_time = 0  # set just in case of a race condition
-            queue_stream_uri = "%s/stream/%s?id=%s" % (
-                self.mass.web.internal_url,
-                self.player.player_id,
-                self.items[
-                    index
-                ].queue_item_id,  # just set to invalidate any cache stuff
-            )
+            queue_stream_uri = self.get_stream_url()
             return await player_prov.async_cmd_play_uri(
                 self.player_id, queue_stream_uri
             )

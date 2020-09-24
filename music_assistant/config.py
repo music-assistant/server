@@ -253,11 +253,11 @@ class ConfigItem:
                     )
                 if self._base_type == ConfigBaseType.PLAYER:
                     # force update of player if it's config changed
-                    player = self.mass.player_manager.get_player(self._parent_item_key)
-                    if player:
-                        self.mass.add_job(
-                            self.mass.player_manager.async_update_player(player)
+                    self.mass.add_job(
+                        self.mass.player_manager.async_trigger_player_update(
+                            self._parent_item_key
                         )
+                    )
             return
         # raise KeyError if we're trying to set a value not defined as ConfigEntry
         raise KeyError

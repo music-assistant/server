@@ -68,23 +68,6 @@ class DemoPlayerProvider(PlayerProvider):
         player.sox = None
         self._players[player.player_id] = player
         self.mass.add_job(self.mass.player_manager.async_add_player(player))
-        # create fake/test group player
-        group_player = Player(
-            player_id="demo_group_player",
-            is_group_player=True,
-            group_childs=["demo_player_1", "demo_player_2"],
-            provider_id=PROV_ID,
-            name="Demo Group Player",
-            device_info=DeviceInfo(
-                model="Demo/Test Group player",
-                address="http://demo_group_player:12345",
-                manufacturer=PROV_ID,
-            ),
-        )
-        group_player.sox = None
-        self._players[group_player.player_id] = group_player
-        self.mass.add_job(self.mass.player_manager.async_add_player(group_player))
-
         return True
 
     async def async_on_stop(self):
@@ -105,7 +88,7 @@ class DemoPlayerProvider(PlayerProvider):
         if player.sox:
             await self.async_cmd_stop(player_id)
         player.current_uri = uri
-        player.sox = subprocess.Popen(["play", "-q", uri])
+        player.sox = subprocess.Popen(["play", "-t", "wav", "-q", uri])
         player.state = PlayerState.Playing
         player.powered = True
         self.mass.add_job(self.mass.player_manager.async_update_player(player))
