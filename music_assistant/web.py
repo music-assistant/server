@@ -124,21 +124,6 @@ class Web:
         app.add_routes(routes)
         app.add_routes(
             [
-                web.get(
-                    "/stream/{player_id}",
-                    self.mass.http_streamer.async_stream,
-                    allow_head=False,
-                ),
-                web.get(
-                    "/stream/{player_id}/{queue_item_id}",
-                    self.mass.http_streamer.async_stream,
-                    allow_head=False,
-                ),
-                web.get(
-                    "/stream_media/{media_type}/{provider}/{item_id}",
-                    self.mass.http_streamer.async_stream_media_item,
-                    allow_head=False,
-                ),
                 web.get("/", self.async_index),
                 web.post("/login", self.async_login),
                 web.get("/jsonrpc.js", self.async_json_rpc),
@@ -254,9 +239,8 @@ class Web:
             raise web.HTTPFound("https://music-assistant.github.io/app")
         return web.FileResponse(os.path.join(webdir, "index.html"))
 
-    @routes.get("/stream_media/{media_type}/{item_id}")
+    @routes.get("/stream/media/{media_type}/{item_id}")
     async def stream_media(self, request):
-        # pylint: disable=unused-argument
         """Stream a single audio track."""
         media_type = MediaType.from_string(request.match_info["media_type"])
         if media_type not in [MediaType.Track, MediaType.Radio]:
@@ -275,20 +259,18 @@ class Web:
         resp = web.StreamResponse(
             status=200, reason="OK", headers={"Content-Type": f"audio/{content_type}"}
         )
+        resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         # stream track
         async for audio_chunk in self.mass.stream_manager.async_get_stream(
             streamdetails
         ):
-            if not audio_chunk or audio_chunk is StopAsyncIteration:
-                break
             await resp.write(audio_chunk)
         return resp
 
-    @routes.get("/stream_queue/{player_id}")
+    @routes.get("/stream/queue/{player_id}")
     async def stream_queue(self, request):
-        # pylint: disable=unused-argument
         """Stream a player's queue."""
         player_id = request.match_info["player_id"]
         if not self.mass.player_manager.get_player_queue(player_id):
@@ -296,21 +278,39 @@ class Web:
 
         # prepare request
         resp = web.StreamResponse(
-            status=200, reason="OK", headers={"Content-Type": "audio/wav"}
+            status=200, reason="OK", headers={"Content-Type": "audio/flac"}
         )
         resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         # stream queue
-        async for audio_chunk in self.mass.stream_manager.async_stream_queue(player_id):
-            if not audio_chunk or audio_chunk is StopAsyncIteration:
-                break
+        async for audio_chunk in self.mass.stream_manager.async_queue_stream_flac(
+            player_id
+        ):
             await resp.write(audio_chunk)
         return resp
 
-    @routes.get("/stream_group/{group_player_id}")
+    @routes.get("/stream/queue/{player_id}/{queue_item_id}")
+    async def stream_queue_item(self, request):
+        """Stream a single queue item."""
+        player_id = request.match_info["player_id"]
+        queue_item_id = request.match_info["queue_item_id"]
+
+        # prepare request
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": "audio/flac"}
+        )
+        resp.enable_chunked_encoding()
+        await resp.prepare(request)
+
+        async for audio_chunk in self.mass.stream_manager.async_stream_queue_item(
+            player_id, queue_item_id
+        ):
+            await resp.write(audio_chunk)
+        return resp
+
+    @routes.get("/stream/group/{group_player_id}")
     async def stream_group(self, request):
-        # pylint: disable=unused-argument
         """Handle streaming to all players of a group. Highly experimental."""
         group_player_id = request.match_info["group_player_id"]
         if not self.mass.player_manager.get_player_queue(group_player_id):
@@ -319,16 +319,15 @@ class Web:
 
         # prepare request
         resp = web.StreamResponse(
-            status=200, reason="OK", headers={"Content-Type": "audio/wav"}
+            status=200, reason="OK", headers={"Content-Type": "audio/flac"}
         )
         resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         # stream queue
-        player_prov = self.mass.player_manager.get_player_provider(group_player_id)
-        await player_prov.subscribe_stream_client(
-            group_player_id, child_player_id, resp
-        )
+        player = self.mass.player_manager.get_player(group_player_id)
+        async for audio_chunk in player.subscribe_stream_client(child_player_id):
+            await resp.write(audio_chunk)
         return resp
 
     @login_required
@@ -605,7 +604,7 @@ class Web:
     async def async_players(self, request):
         # pylint: disable=unused-argument
         """Get all players."""
-        players = self.mass.player_manager.players
+        players = self.mass.player_manager.player_states
         players.sort(key=lambda x: str(x.name), reverse=False)
         return web.json_response(players, dumps=json_serializer)
 
@@ -714,7 +713,7 @@ class Web:
     async def async_player(self, request):
         """Get single player."""
         player_id = request.match_info.get("player_id")
-        player = self.mass.player_manager.get_player(player_id)
+        player = self.mass.player_manager.get_player_state(player_id)
         if not player:
             return web.Response(text="invalid player", status=404)
         return web.json_response(player, dumps=json_serializer)

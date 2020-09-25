@@ -17,7 +17,6 @@ from music_assistant.constants import (
     EVENT_SHUTDOWN,
 )
 from music_assistant.database import Database
-from music_assistant.http_streamer import HTTPStreamer
 from music_assistant.metadata import MetaData
 from music_assistant.models.provider import Provider, ProviderType
 from music_assistant.music_manager import MusicManager
@@ -53,7 +52,6 @@ class MusicAssistant:
         self.web = Web(self)
         self.music_manager = MusicManager(self)
         self.player_manager = PlayerManager(self)
-        self.http_streamer = HTTPStreamer(self)
         self.stream_manager = StreamManager(self)
         # shared zeroconf instance
         self.zeroconf = Zeroconf()
@@ -202,7 +200,7 @@ class MusicAssistant:
 
     @callback
     def add_job(
-        self, target: Callable[..., Any], *args: Any
+        self, target: Callable[..., Any], *args: Any, **kwargs: Any
     ) -> Optional[asyncio.Future]:
         """Add a job/task to the event loop.
 
@@ -224,21 +222,23 @@ class MusicAssistant:
             if asyncio.iscoroutine(check_target):
                 task = asyncio.run_coroutine_threadsafe(target, self.loop)  # type: ignore
             elif asyncio.iscoroutinefunction(check_target):
-                task = asyncio.run_coroutine_threadsafe(target(*args), self.loop)
+                task = asyncio.run_coroutine_threadsafe(
+                    target(*args, **kwargs), self.loop
+                )
             elif is_callback(check_target):
-                task = self.loop.call_soon_threadsafe(target, *args)
+                task = self.loop.call_soon_threadsafe(target, *args, **kwargs)
             else:
-                task = self.loop.run_in_executor(None, target, *args)  # type: ignore
+                task = self.loop.run_in_executor(None, target, *args, **kwargs)  # type: ignore
         else:
             # called from mainthread
             if asyncio.iscoroutine(check_target):
                 task = self.loop.create_task(target)  # type: ignore
             elif asyncio.iscoroutinefunction(check_target):
-                task = self.loop.create_task(target(*args))
+                task = self.loop.create_task(target(*args, **kwargs))
             elif is_callback(check_target):
-                task = self.loop.call_soon(target, *args)
+                task = self.loop.call_soon(target, *args, *kwargs)
             else:
-                task = self.loop.run_in_executor(None, target, *args)  # type: ignore
+                task = self.loop.run_in_executor(None, target, *args, *kwargs)  # type: ignore
         return task
 
     @staticmethod

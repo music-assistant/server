@@ -14,7 +14,8 @@ CONF_NAME = "name"
 CONF_CROSSFADE_DURATION = "crossfade_duration"
 CONF_FALLBACK_GAIN_CORRECT = "fallback_gain_correct"
 CONF_GROUP_DELAY = "group_delay"
-
+CONF_VOLUME_CONTROL = "volume_control"
+CONF_POWER_CONTROL = "power_control"
 
 CONF_KEY_BASE = "base"
 CONF_KEY_PLAYERSETTINGS = "player_settings"

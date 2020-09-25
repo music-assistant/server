@@ -12,7 +12,7 @@ import logging
 import os
 import shlex
 from enum import Enum
-from typing import AsyncIterator, List, Optional, Tuple
+from typing import AsyncGenerator, List, Optional, Tuple
 
 import pyloudnorm
 import soundfile
@@ -22,7 +22,6 @@ from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 from music_assistant.utils import (
     create_tempfile,
-    create_wave_header,
     decrypt_bytes,
     decrypt_string,
     encrypt_bytes,
@@ -38,7 +37,7 @@ class SoxOutputFormat(Enum):
     """Enum representing the various output formats."""
 
     MP3 = "mp3"  # Lossy mp3
-    OGG = "ogg -C 10"  # Lossy Ogg Vorbis with (almost) no compression
+    OGG = "ogg"  # Lossy Ogg Vorbis
     FLAC = "flac"  # Flac (with default compression)
     S24 = "s24"  # Raw PCM 24bits signed
     S32 = "s32"  # Raw PCM 32bits signed
@@ -61,7 +60,7 @@ class StreamManager:
         resample: Optional[int] = None,
         gain_db_adjust: Optional[float] = None,
         chunk_size: int = 128000,
-    ) -> AsyncIterator[Tuple[bool, bytes]]:
+    ) -> AsyncGenerator[Tuple[bool, bytes], None]:
         """Get the sox manipulated audio data for the given streamdetails."""
         # collect all args for sox
         if output_format in [
@@ -82,7 +81,7 @@ class StreamManager:
         if resample:
             args += ["rate", "-v", str(resample)]
         LOGGER.info(
-            "[async_get_sox_stream] [%s/%s] Starting sox with args: %s",
+            "[async_get_sox_stream] [%s/%s] started using args: %s",
             streamdetails.provider,
             streamdetails.item_id,
             " ".join(args),
@@ -94,34 +93,28 @@ class StreamManager:
             stdin=asyncio.subprocess.PIPE,
             bufsize=0,
         )
-        try:
 
-            async def fill_buffer():
-                """Forward audio chunks to sox stdin."""
-                LOGGER.debug(
-                    "[async_get_sox_stream] [%s/%s] fill_buffer started",
-                    streamdetails.provider,
-                    streamdetails.item_id,
-                )
-                # feed audio data into sox stdin for processing
-                async for chunk in self.async_get_stream(streamdetails):
-                    sox_proc.stdin.write(chunk)
-                    await sox_proc.stdin.drain()
-                sox_proc.stdin.write_eof()
-                await sox_proc.stdin.drain()
-                LOGGER.info(
-                    "[async_get_sox_stream] [%s/%s] fill_buffer finished",
-                    streamdetails.provider,
-                    streamdetails.item_id,
-                )
-
-            fill_buffer_task = self.mass.loop.create_task(fill_buffer())
-
+        async def fill_buffer():
+            """Forward audio chunks to sox stdin."""
             LOGGER.debug(
-                "[async_get_sox_stream] [%s/%s] start yielding chunks",
+                "[async_get_sox_stream] [%s/%s] fill_buffer started",
                 streamdetails.provider,
                 streamdetails.item_id,
             )
+            # feed audio data into sox stdin for processing
+            async for chunk in self.async_get_media_stream(streamdetails):
+                sox_proc.stdin.write(chunk)
+                await sox_proc.stdin.drain()
+            sox_proc.stdin.write_eof()
+            await sox_proc.stdin.drain()
+            LOGGER.debug(
+                "[async_get_sox_stream] [%s/%s] fill_buffer finished",
+                streamdetails.provider,
+                streamdetails.item_id,
+            )
+
+        fill_buffer_task = self.mass.loop.create_task(fill_buffer())
+        try:
             # yield chunks from stdout
             # we keep 1 chunk behind to detect end of stream properly
             prev_chunk = b""
@@ -133,11 +126,6 @@ class StreamManager:
                     chunk = exc.partial
                 if len(chunk) < chunk_size:
                     # last chunk
-                    LOGGER.debug(
-                        "[async_get_sox_stream] [%s/%s] last chunk received",
-                        streamdetails.provider,
-                        streamdetails.item_id,
-                    )
                     yield (True, prev_chunk + chunk)
                     break
                 if prev_chunk:
@@ -150,58 +138,95 @@ class StreamManager:
                 streamdetails.provider,
                 streamdetails.item_id,
             )
-        except Exception as exc:
-            # pylint: disable=broad-except
+        except (GeneratorExit, Exception):  # pylint: disable=broad-except
             LOGGER.warning(
-                "[async_get_sox_stream] [%s/%s] Aborted: %s",
+                "[async_get_sox_stream] [%s/%s] aborted",
                 streamdetails.provider,
                 streamdetails.item_id,
-                str(exc),
             )
-        finally:
+            if fill_buffer_task and not fill_buffer_task.cancelled():
+                fill_buffer_task.cancel()
+            sox_proc.terminate()
             await sox_proc.communicate()
             await sox_proc.wait()
+            # raise GeneratorExit from exc
+        else:
+            LOGGER.debug(
+                "[async_get_sox_stream] [%s/%s] finished",
+                streamdetails.provider,
+                streamdetails.item_id,
+            )
 
-    async def async_stream_queue_item(
-        self, player_id: str, queue_item_id: str
-    ) -> AsyncIterator[bytes]:
-        """Start streaming the PlayerQueue's tracks as constant feed."""
-        # player_queue = self.mass.player_manager.get_player_queue(player_id)
-        # queue_conf = self.mass.config.get_player_config(player_id)
-        # sample_rate = try_parse_int(queue_conf["max_sample_rate"])
-        # fade_length = try_parse_int(queue_conf["crossfade_duration"])
+    async def async_queue_stream_flac(self, player_id) -> AsyncGenerator[bytes, None]:
+        """Stream the PlayerQueue's tracks as constant feed in flac format."""
 
-        # async for is_last_chunk, chunk in self.mass.stream_manager.async_get_sox_stream(
-        #     streamdetails,
-        #     SoxOutputFormat.S32,
-        #     resample=sample_rate,
-        #     gain_db_adjust=gain_correct,
-        #     chunk_size=chunk_size,
-        # ):
+        args = ["sox", "-t", "s32", "-c", "2", "-r", "96000", "-", "-t", "flac", "-"]
+        sox_proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE,
+        )
+        LOGGER.debug(
+            "[async_queue_stream_flac] [%s] started using args: %s",
+            player_id,
+            " ".join(args),
+        )
+        chunk_size = 571392  # 74,7% of pcm
 
-    async def async_stream_queue(
-        self, player_id, send_wave_header=True
-    ) -> AsyncIterator:
-        """Start streaming the PlayerQueue's tracks as constant feed."""
+        # feed stdin with pcm samples
+        async def fill_buffer():
+            """Feed audio data into sox stdin for processing."""
+            LOGGER.debug(
+                "[async_queue_stream_flac] [%s] fill buffer started", player_id
+            )
+            async for chunk in self.async_queue_stream_pcm(player_id, 96000, 32):
+                sox_proc.stdin.write(chunk)
+                await sox_proc.stdin.drain()
+            sox_proc.stdin.write_eof()
+            await sox_proc.stdin.drain()
+            LOGGER.debug(
+                "[async_queue_stream_flac] [%s] fill buffer finished", player_id
+            )
+
+        fill_buffer_task = self.mass.loop.create_task(fill_buffer())
+        try:
+            # yield flac chunks from stdout
+            while True:
+                try:
+                    chunk = await sox_proc.stdout.readexactly(chunk_size)
+                    yield chunk
+                except asyncio.IncompleteReadError as exc:
+                    chunk = exc.partial
+                    yield chunk
+                    break
+        except (GeneratorExit, Exception):  # pylint: disable=broad-except
+            LOGGER.debug("[async_queue_stream_flac] [%s] aborted", player_id)
+            if fill_buffer_task and not fill_buffer_task.cancelled():
+                fill_buffer_task.cancel()
+            sox_proc.terminate()
+            await sox_proc.communicate()
+            await sox_proc.wait()
+        else:
+            LOGGER.debug(
+                "[async_queue_stream_flac] [%s] finished",
+                player_id,
+            )
+
+    async def async_queue_stream_pcm(
+        self, player_id, sample_rate=96000, bit_depth=32
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream the PlayerQueue's tracks as constant feed in PCM raw audio."""
         player_queue = self.mass.player_manager.get_player_queue(player_id)
         queue_conf = self.mass.config.get_player_config(player_id)
-        sample_rate = 96000  # fixed to 96000 for now
         fade_length = try_parse_int(queue_conf["crossfade_duration"])
         pcm_args = ["s32", "-c", "2", "-r", str(sample_rate)]
-        bit_depth = 32  # we use 32 bits to minimize losses from conversions and effects
-        if not sample_rate:
-            sample_rate = 96000
         chunk_size = int(sample_rate * (bit_depth / 8) * 2)  # 1 second
         if fade_length:
             buffer_size = chunk_size * fade_length
         else:
             buffer_size = chunk_size * 10
 
-        LOGGER.info("Start Queue Stream %s ", player_id)
-
-        # wave header
-        if send_wave_header:
-            yield create_wave_header(sample_rate, 2, 32)
+        LOGGER.info("Start Queue Stream for player %s ", player_id)
 
         is_start = True
         last_fadeout_data = b""
@@ -359,9 +384,34 @@ class StreamManager:
         gc.collect()
         LOGGER.info("streaming of queue for player %s completed", player_id)
 
-    async def async_get_stream(
+    async def async_stream_queue_item(
+        self, player_id: str, queue_item_id: str
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream a single Queue item."""
+        # collect streamdetails
+        player_queue = self.mass.player_manager.get_player_queue(player_id)
+        if not player_queue:
+            raise FileNotFoundError("invalid player_id")
+        queue_item = player_queue.by_item_id(queue_item_id)
+        if not queue_item:
+            raise FileNotFoundError("invalid queue_item_id")
+        streamdetails = await self.mass.music_manager.async_get_stream_details(
+            queue_item, player_id
+        )
+
+        # get gain correct / replaygain
+        gain_correct = await self.mass.player_manager.async_get_gain_correct(
+            player_id, streamdetails.item_id, streamdetails.provider
+        )
+        # start streaming
+        async for _, audio_chunk in self.async_get_sox_stream(
+            streamdetails, gain_db_adjust=gain_correct
+        ):
+            yield audio_chunk
+
+    async def async_get_media_stream(
         self, streamdetails: StreamDetails
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes, None]:
         """Get the (original/untouched) audio data for the given streamdetails. Generator."""
         stream_path = decrypt_string(streamdetails.path)
         stream_type = StreamType(streamdetails.type)
@@ -384,7 +434,7 @@ class StreamManager:
         # signal start of stream event
         self.mass.signal_event(EVENT_STREAM_STARTED, streamdetails)
         LOGGER.debug(
-            "[async_get_stream] [%s/%s] started, using %s",
+            "[async_get_media_stream] [%s/%s] started, using %s",
             streamdetails.provider,
             streamdetails.item_id,
             stream_type,
@@ -411,15 +461,15 @@ class StreamManager:
                 async for chunk in process.stdout:
                     audio_data += chunk
                     yield chunk
-            except Exception as exc:  # pylint: disable=broad-except
+            except (GeneratorExit, Exception) as exc:  # pylint: disable=broad-except
                 LOGGER.warning(
-                    "[async_get_stream] [%s/%s] Aborted: %s",
+                    "[async_get_media_stream] [%s/%s] Aborted: %s",
                     streamdetails.provider,
                     streamdetails.item_id,
                     str(exc),
                 )
-            finally:
                 # read remaining bytes
+                process.terminate()
                 await process.communicate()
                 await process.wait()
 
@@ -429,7 +479,7 @@ class StreamManager:
         # send analyze job to background worker
         self.mass.add_job(self.__analyze_audio, streamdetails, audio_data)
         LOGGER.debug(
-            "[async_get_stream] [%s/%s] Finished",
+            "[async_get_media_stream] [%s/%s] Finished",
             streamdetails.provider,
             streamdetails.item_id,
         )
@@ -457,7 +507,7 @@ class StreamManager:
             sox_options.append(player_conf["sox_options"])
         return " ".join(sox_options)
 
-    def __analyze_audio(self, streamdetails, audio_data):
+    def __analyze_audio(self, streamdetails, audio_data) -> None:
         """Analyze track audio, for now we only calculate EBU R128 loudness."""
         item_key = "%s%s" % (streamdetails.item_id, streamdetails.provider)
         if item_key in self.analyze_jobs:
@@ -495,7 +545,7 @@ class StreamManager:
 
 async def async_crossfade_pcm_parts(
     fade_in_part: bytes, fade_out_part: bytes, pcm_args: List[str], fade_length: int
-):
+) -> bytes:
     """Crossfade two chunks of pcm/raw audio using sox."""
     # create fade-in part
     fadeinfile = create_tempfile()
@@ -526,7 +576,9 @@ async def async_crossfade_pcm_parts(
     return crossfade_part
 
 
-async def async_strip_silence(audio_data: bytes, pcm_args: List[str], reverse=False):
+async def async_strip_silence(
+    audio_data: bytes, pcm_args: List[str], reverse=False
+) -> bytes:
     """Strip silence from (a chunk of) pcm audio."""
     args = ["sox", "--ignore-length", "-t"] + pcm_args + ["-", "-t"] + pcm_args + ["-"]
     if reverse:

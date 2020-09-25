@@ -197,7 +197,9 @@ class ConfigItem:
                     # use default value for config entry
                     entry.value = entry.default_value
                 return entry
-        raise KeyError
+        raise KeyError(
+            "%s\\%s has no key %s!" % (self._base_type, self._parent_item_key, key)
+        )
 
     def __getitem__(self, key) -> ConfigEntry:
         """Return default value from ConfigEntry if needed."""

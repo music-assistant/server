@@ -1,14 +1,11 @@
-"""Generic Models and helpers for plugins."""
+"""Generic Models and helpers for providers/plugins."""
 
 from abc import abstractmethod
-from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, List
+from typing import List
 
+from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.models.config_entry import ConfigEntry
-
-if TYPE_CHECKING:
-    from music_assistant.mass import MusicAssistant
 
 
 class ProviderType(Enum):
@@ -19,13 +16,19 @@ class ProviderType(Enum):
     GENERIC = "generic"
 
 
-@dataclass
 class Provider:
     """Base model for a provider/plugin."""
 
-    type: ProviderType = ProviderType.GENERIC
-    mass: "MusicAssistant" = None
-    available: bool = False
+    mass: MusicAssistantType = (
+        None  # will be set automagically while loading the provider
+    )
+    available: bool = False  # will be set automagically while loading the provider
+
+    @property
+    @abstractmethod
+    def type(self) -> ProviderType:
+        """Return ProviderType."""
+        return ProviderType.GENERIC
 
     @property
     @abstractmethod
@@ -52,10 +55,10 @@ class Provider:
         raise NotImplementedError
 
     @abstractmethod
-    async def async_on_stop(self):
+    async def async_on_stop(self) -> None:
         """Handle correct close/cleanup of the provider on exit. Called on shutdown."""
 
-    async def async_on_reload(self):
+    async def async_on_reload(self) -> None:
         """Handle configuration changes for this provider. Called on reload."""
         await self.async_on_stop()
         await self.async_on_start()
