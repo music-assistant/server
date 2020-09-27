@@ -344,8 +344,8 @@ class GroupPlayer(Player):
             )
             self.connected_clients.pop(child_player_id, None)
             await sox_proc.communicate()
-            sox_proc.terminate()
             if sox_proc and sox_proc.returncode is None:
+                sox_proc.terminate()
                 await sox_proc.wait()
         else:
             self.connected_clients.pop(child_player_id, None)
