@@ -221,7 +221,7 @@ class PlayerManager:
                 conf.get(CONF_POWER_CONTROL),
                 conf.get(CONF_VOLUME_CONTROL),
             ]:
-                player.update_state()
+                await self.async_trigger_player_update(player.player_id)
 
     # SERVICE CALLS / PLAYER COMMANDS
 
