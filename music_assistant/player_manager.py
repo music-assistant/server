@@ -192,8 +192,8 @@ class PlayerManager:
             control.name,
         )
         # update all players using this playercontrol
-        for player_id, player in self.players:
-            conf = self.mass.config.player_settings[player_id]
+        for player in self.players:
+            conf = self.mass.config.player_settings[player.player_id]
             if control.control_id in [
                 conf.get(CONF_POWER_CONTROL),
                 conf.get(CONF_VOLUME_CONTROL),
@@ -215,8 +215,8 @@ class PlayerManager:
             new_state,
         )
         # update all players using this playercontrol
-        for player_id, player in self.players:
-            conf = self.mass.config.player_settings[player_id]
+        for player in self.players:
+            conf = self.mass.config.player_settings[player.player_id]
             if control.control_id in [
                 conf.get(CONF_POWER_CONTROL),
                 conf.get(CONF_VOLUME_CONTROL),
