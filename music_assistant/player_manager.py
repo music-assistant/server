@@ -4,7 +4,6 @@ import logging
 from typing import List, Optional
 
 from music_assistant.constants import (
-    CONF_GROUP_DELAY,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
     EVENT_PLAYER_ADDED,
@@ -15,7 +14,6 @@ from music_assistant.constants import (
     EVENT_UNREGISTER_PLAYER_CONTROL,
 )
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.media_types import MediaItem, MediaType, Track
 from music_assistant.models.player import (
     PlaybackState,
@@ -46,7 +44,6 @@ class PlayerManager:
         """Initialize class."""
         self.mass = mass
         self._player_states = {}
-        self._players = {}
         self._providers = {}
         self._player_queues = {}
         self._poll_ticks = 0
@@ -72,25 +69,20 @@ class PlayerManager:
     @run_periodic(1)
     async def poll_task(self):
         """Check for updates on players that need to be polled."""
-        for player in self._players.values():
-            if player.should_poll and (
+        for player_state in self.players:
+            if player_state.player.should_poll and (
                 self._poll_ticks >= POLL_INTERVAL
-                or player.state == PlaybackState.Playing
+                or player_state.state == PlaybackState.Playing
             ):
-                await player.async_on_update()
+                await player_state.player.async_on_update()
         if self._poll_ticks >= POLL_INTERVAL:
             self._poll_ticks = 0
         else:
             self._poll_ticks += 1
 
     @property
-    def players(self) -> List[Player]:
+    def players(self) -> List[PlayerState]:
         """Return all registered players."""
-        return list(self._players.values())
-
-    @property
-    def player_states(self) -> List[PlayerState]:
-        """Return all player states."""
         return list(self._player_states.values())
 
     @property
@@ -104,16 +96,8 @@ class PlayerManager:
         return self.mass.get_providers(ProviderType.PLAYER_PROVIDER)
 
     @callback
-    def get_player(self, player_id: str) -> Player:
+    def get_player(self, player_id: str) -> PlayerState:
         """Return player by player_id or None if player does not exist."""
-        player = self._players.get(player_id)
-        if not player:
-            LOGGER.warning("Player %s is not available!", player_id)
-        return player
-
-    @callback
-    def get_player_state(self, player_id: str) -> PlayerState:
-        """Return playerstate by player_id or None if player does not exist."""
         player = self._player_states.get(player_id)
         if not player:
             LOGGER.warning("Player %s is not available!", player_id)
@@ -128,10 +112,10 @@ class PlayerManager:
     @callback
     def get_player_queue(self, player_id: str) -> PlayerQueue:
         """Return player's queue by player_id or None if player does not exist."""
-        if player_id not in self._players:
+        player = self.get_player(player_id)
+        if not player:
             LOGGER.warning("Player(queue) %s is not available!", player_id)
             return None
-        player = self._players[player_id]
         return self._player_queues.get(player.active_queue)
 
     @callback
@@ -159,14 +143,11 @@ class PlayerManager:
         """Register a new player or update an existing one."""
         if not player or not player.available:
             return
-        if player.player_id in self._players:
+        if player.player_id in self._player_states:
             return await self.async_update_player(player)
-        # store handle to this player
-        player.mass = self.mass
-        self._players[player.player_id] = player
         # create playerstate and queue object
-        self._player_queues[player.player_id] = PlayerQueue(self.mass, player.player_id)
         self._player_states[player.player_id] = PlayerState(self.mass, player)
+        self._player_queues[player.player_id] = PlayerQueue(self.mass, player.player_id)
         # TODO: turn on player if it was previously turned on ?
         LOGGER.info(
             "New player added: %s/%s",
@@ -179,9 +160,10 @@ class PlayerManager:
 
     async def async_remove_player(self, player_id: str):
         """Remove a player from the registry."""
-        self._player_states.pop(player_id, None)
+        player_state = self._player_states.pop(player_id, None)
+        if player_state:
+            await player_state.player.async_on_remove()
         self._player_queues.pop(player_id, None)
-        self._players.pop(player_id, None)
         LOGGER.info("Player removed: %s", player_id)
         self.mass.signal_event(EVENT_PLAYER_REMOVED, {"player_id": player_id})
 
@@ -189,13 +171,13 @@ class PlayerManager:
         """Update an existing player (or register as new if non existing)."""
         if player.player_id not in self._player_states:
             return await self.async_add_player(player)
-        self._player_states[player.player_id].update(player)
+        await self._player_states[player.player_id].async_update(player)
 
     async def async_trigger_player_update(self, player_id: str):
-        """Trigger update on an existing player.."""
-        if player_id not in self._players:
-            return
-        await self.async_update_player(self._players[player_id])
+        """Trigger update of an existing player.."""
+        player = self.get_player(player_id)
+        if player:
+            await self._player_states[player.player_id].async_update(player.player)
 
     async def async_register_player_control(self, control: PlayerControl):
         """Register a playercontrol with the player manager."""
@@ -210,7 +192,7 @@ class PlayerManager:
             control.name,
         )
         # update all players using this playercontrol
-        for player_id, player in self._player_states.items():
+        for player_id, player in self.players:
             conf = self.mass.config.player_settings[player_id]
             if control.control_id in [
                 conf.get(CONF_POWER_CONTROL),
@@ -233,7 +215,7 @@ class PlayerManager:
             new_state,
         )
         # update all players using this playercontrol
-        for player_id, player in self._players.items():
+        for player_id, player in self.players:
             conf = self.mass.config.player_settings[player_id]
             if control.control_id in [
                 conf.get(CONF_POWER_CONTROL),
@@ -529,7 +511,7 @@ class PlayerManager:
             else:
                 volume_dif_percent = volume_dif / cur_volume
             for child_player_id in player.group_childs:
-                child_player = self._player_states.get(child_player_id)
+                child_player = self.get_player(child_player_id)
                 if child_player and child_player.available and child_player.powered:
                     cur_child_volume = child_player.volume_level
                     new_child_volume = cur_child_volume + (
@@ -582,60 +564,6 @@ class PlayerManager:
         return await player.async_cmd_volume_mute(is_muted)
 
     # OTHER/HELPER FUNCTIONS
-
-    @callback
-    def get_player_config_entries(self, player_id: str):
-        """Get final/calculated config entries for a player."""
-        if player_id not in self._players:
-            return []
-        entries = [item for item in self._players[player_id].config_entries]
-        # append power control config entries
-        power_controls = self.get_player_controls(PlayerControlType.POWER)
-        if power_controls:
-            controls = [
-                {"text": f"{item.provider}: {item.name}", "value": item.control_id}
-                for item in power_controls
-            ]
-            entries.append(
-                ConfigEntry(
-                    entry_key=CONF_POWER_CONTROL,
-                    entry_type=ConfigEntryType.STRING,
-                    description_key=CONF_POWER_CONTROL,
-                    values=controls,
-                )
-            )
-        # append volume control config entries
-        volume_controls = self.get_player_controls(PlayerControlType.VOLUME)
-        if volume_controls:
-            controls = [
-                {"text": f"{item.provider}: {item.name}", "value": item.control_id}
-                for item in volume_controls
-            ]
-            entries.append(
-                ConfigEntry(
-                    entry_key=CONF_VOLUME_CONTROL,
-                    entry_type=ConfigEntryType.STRING,
-                    description_key=CONF_VOLUME_CONTROL,
-                    values=controls,
-                )
-            )
-        # append group player entries
-        player = self.get_player(player_id)
-        if player:
-            for parent_id in player.group_parents:
-                parent_player = self.get_player(parent_id)
-                if parent_player and parent_player.provider_id == "group_player":
-                    entries.append(
-                        ConfigEntry(
-                            entry_key=CONF_GROUP_DELAY,
-                            entry_type=ConfigEntryType.INT,
-                            default_value=0,
-                            range=(0, 1000),
-                            description_key=CONF_GROUP_DELAY,
-                        )
-                    )
-                    break
-        return entries
 
     async def async_get_gain_correct(
         self, player_id: str, item_id: str, provider_id: str

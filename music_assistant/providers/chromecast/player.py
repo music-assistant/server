@@ -1,8 +1,7 @@
 """Representation of a Cast device on the network."""
-import asyncio
 import logging
-import time
 import uuid
+from datetime import datetime
 from typing import List, Optional
 
 import pychromecast
@@ -80,7 +79,7 @@ class ChromecastPlayer(Player):
     @property
     def should_poll(self) -> bool:
         """Return bool if this player needs to be polled for state changes."""
-        return False
+        return self.media_status and self.media_status.player_is_playing
 
     @property
     def state(self) -> PlaybackState:
@@ -96,8 +95,8 @@ class ChromecastPlayer(Player):
         return PlaybackState.Stopped
 
     @property
-    def elapsed_time(self) -> float:
-        """Return position of current playing media in (fractions of) seconds."""
+    def elapsed_time(self) -> int:
+        """Return position of current playing media in seconds."""
         if self.media_status is None or not (
             self.media_status.player_is_playing
             or self.media_status.player_is_paused
@@ -106,14 +105,33 @@ class ChromecastPlayer(Player):
             return 0
         if self.media_status.player_is_playing:
             # Add time since last update
-            return float(
+            return self.media_status.adjusted_current_time
+        # Not playing, return last reported seek time
+        return self.media_status.current_time
+
+    @property
+    def elapsed_milliseconds(self) -> int:
+        """Return (realtime) elapsed time of current playing media in milliseconds."""
+        if self.media_status is None or not (
+            self.media_status.player_is_playing
+            or self.media_status.player_is_paused
+            or self.media_status.player_is_idle
+        ):
+            return 0
+        if self.media_status.player_is_playing:
+            # Add time since last update
+            return int(
                 (
                     self.media_status.current_time
-                    + (time.time() - self.media_status.last_updated.timestamp())
+                    + (
+                        datetime.utcnow().timestamp()
+                        - self.media_status.last_updated.timestamp()
+                    )
                 )
+                * 1000
             )
         # Not playing, return last reported seek time
-        return float(self.media_status.current_time)
+        return self.media_status.current_time * 1000
 
     @property
     def available(self) -> bool:
@@ -203,7 +221,6 @@ class ChromecastPlayer(Player):
         mz_controller = MultizoneController(chromecast.uuid)
         chromecast.register_handler(mz_controller)
         chromecast.mz_controller = mz_controller
-        self.mass.add_job(self.async_poll_media_status_task())
         self.mass.add_job(self._chromecast.start)
 
     def disconnect(self) -> None:
@@ -214,7 +231,7 @@ class ChromecastPlayer(Player):
             "[%s] Disconnecting from chromecast socket", self._cast_info.friendly_name
         )
         self._available = False
-        self._chromecast.disconnect()
+        self.mass.add_job(self._chromecast.disconnect)
         self._invalidate()
 
     def _invalidate(self) -> None:
@@ -227,6 +244,10 @@ class ChromecastPlayer(Player):
         if self._status_listener is not None:
             self._status_listener.invalidate()
             self._status_listener = None
+
+    async def async_on_remove(self) -> None:
+        """Call when player is removed from the player manager."""
+        self.disconnect()
 
     # ========== Callbacks ==========
 
@@ -241,13 +262,12 @@ class ChromecastPlayer(Player):
                 self._chromecast.mz_controller.members[0], self.player_id
             )
         )
-        self.mass.add_job(self.mass.player_manager.async_update_player(self))
+        self.update_state()
 
     def new_media_status(self, media_status) -> None:
         """Handle updates of the media status."""
-        LOGGER.debug("new media status for %s", self.player_id)
         self.media_status = media_status
-        self.mass.add_job(self.mass.player_manager.async_update_player(self))
+        self.update_state()
         if media_status.player_is_playing:
             self._powered = True
 
@@ -256,7 +276,7 @@ class ChromecastPlayer(Player):
         if connection_status.status == CONNECTION_STATUS_DISCONNECTED:
             self._available = False
             self._invalidate()
-            self.mass.add_job(self.mass.player_manager.async_update_player(self))
+            self.update_state()
             return
 
         new_available = connection_status.status == CONNECTION_STATUS_CONNECTED
@@ -270,38 +290,44 @@ class ChromecastPlayer(Player):
                 connection_status.status,
             )
             self._available = new_available
-            self.mass.add_job(self.mass.player_manager.async_update_player(self))
+            self.update_state()
             if self._cast_info.is_audio_group and new_available:
                 self._chromecast.mz_controller.update_members()
 
-    async def async_poll_media_status_task(self) -> None:
-        """Task which keeps asking for the mediastatus so we have accurate elapsed_time."""
-        while True:
-            if self.state == PlaybackState.Playing:
-                self.mass.add_job(self._chromecast.media_controller.update_status)
-            await asyncio.sleep(10)
+    async def async_on_update(self) -> None:
+        """Call when player is periodically polled by the player manager (should_poll=True)."""
+        if self.mass.player_manager.get_player(self.player_id).active_queue.startswith(
+            "group_player"
+        ):
+            self.mass.add_job(self._chromecast.media_controller.update_status)
+        self.update_state()
 
     # ========== Service Calls ==========
 
     async def async_cmd_stop(self) -> None:
         """Send stop command to player."""
-        self.mass.add_job(self._chromecast.media_controller.stop)
+        if self._chromecast and self._chromecast.media_controller:
+            self.mass.add_job(self._chromecast.media_controller.stop)
 
     async def async_cmd_play(self) -> None:
         """Send play command to player."""
-        self.mass.add_job(self._chromecast.media_controller.play)
+        if self._chromecast.media_controller:
+            self.mass.add_job(self._chromecast.media_controller.play)
 
     async def async_cmd_pause(self) -> None:
         """Send pause command to player."""
-        self.mass.add_job(self._chromecast.media_controller.pause)
+        if self._chromecast.media_controller:
+            self.mass.add_job(self._chromecast.media_controller.pause)
 
     async def async_cmd_next(self) -> None:
         """Send next track command to player."""
-        self.mass.add_job(self._chromecast.media_controller.queue_next)
+        if self._chromecast.media_controller:
+            self.mass.add_job(self._chromecast.media_controller.queue_next)
 
     async def async_cmd_previous(self) -> None:
         """Send previous track command to player."""
-        self.mass.add_job(self._chromecast.media_controller.queue_prev)
+        if self._chromecast.media_controller:
+            self.mass.add_job(self._chromecast.media_controller.queue_prev)
 
     async def async_cmd_power_on(self) -> None:
         """Send power ON command to player."""
@@ -352,7 +378,7 @@ class ChromecastPlayer(Player):
             "startIndex": 0,  # Item index to play after this request or keep same item if undefined
             "items": cc_queue_items,  # only load 50 tracks at once or the socket will crash
         }
-        self.__send_player_queue(queuedata)
+        self.mass.add_job(self.__send_player_queue, queuedata)
         if len(queue_items) > 50:
             await self.async_cmd_queue_append(queue_items[51:])
 
@@ -365,7 +391,7 @@ class ChromecastPlayer(Player):
                 "insertBefore": None,
                 "items": chunk,
             }
-            self.__send_player_queue(queuedata)
+            self.mass.add_job(self.__send_player_queue, queuedata)
 
     def __create_queue_items(self, tracks) -> None:
         """Create list of CC queue items from tracks."""
@@ -411,11 +437,10 @@ class ChromecastPlayer(Player):
         def send_queue():
             """Plays media after chromecast has switched to requested app."""
             queuedata["mediaSessionId"] = media_controller.status.media_session_id
-            self.mass.add_job(media_controller.send_message, queuedata, False)
+            media_controller.send_message(queuedata, False)
 
         if not media_controller.status.media_session_id:
-            self.mass.add_job(
-                receiver_ctrl.launch_app,
+            receiver_ctrl.launch_app(
                 media_controller.app_id,
                 callback_function=send_queue,
             )

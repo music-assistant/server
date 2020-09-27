@@ -73,6 +73,10 @@ class SqueezeSocketClient(Player):
                 task.cancel()
         await self.mass.player_manager.async_remove_player(self.player_id)
 
+    async def async_on_remove(self) -> None:
+        """Call when player is removed from the player manager."""
+        await self.async_close()
+
     @property
     def player_id(self) -> str:
         """Return player id (=mac address) of the player."""
@@ -124,7 +128,14 @@ class SqueezeSocketClient(Player):
     @property
     def elapsed_time(self):
         """Return elapsed_time of current playing track in (fractions of) seconds."""
-        return float(self._elapsed_milliseconds / 1000)
+        return self._elapsed_seconds
+
+    @property
+    def elapsed_milliseconds(self) -> int:
+        """Return (realtime) elapsed time of current playing media in milliseconds."""
+        return self._elapsed_milliseconds + int(
+            (time.time() * 1000) - (self._last_heartbeat * 1000)
+        )
 
     @property
     def current_uri(self):
@@ -484,6 +495,8 @@ class SqueezeSocketClient(Player):
         # pylint: disable=unused-argument
         LOGGER.debug("STMf received - connection closed.")
         self._state = PlaybackState.Stopped
+        self._elapsed_milliseconds = 0
+        self._elapsed_seconds = 0
         self.update_state()
 
     @callback
@@ -526,8 +539,7 @@ class SqueezeSocketClient(Player):
     def _process_stat_stmt(self, data):
         """Process incoming stat STMt message: heartbeat from client."""
         # pylint: disable=unused-variable
-        timestamp = time.time()
-        self._last_heartbeat = timestamp
+        self._last_heartbeat = time.time()
         (
             num_crlf,
             mas_initialized,
@@ -546,12 +558,13 @@ class SqueezeSocketClient(Player):
             server_timestamp,
             error_code,
         ) = struct.unpack("!BBBLLLLHLLLLHLLH", data)
-        self._elapsed_milliseconds = elapsed_milliseconds
-        if (
-            self.state == PlaybackState.Playing
-            and self._elapsed_seconds != elapsed_seconds
-        ):
-            self.update_state()
+        if self.state == PlaybackState.Playing:
+            # elapsed seconds is weird when player is buffering etc.
+            # only rely on it if player is playing
+            self._elapsed_milliseconds = elapsed_milliseconds
+            if self._elapsed_seconds != elapsed_seconds:
+                self._elapsed_seconds = elapsed_seconds
+                self.update_state()
 
     @callback
     def _process_stat_stmu(self, data):

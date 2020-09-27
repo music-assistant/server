@@ -209,13 +209,13 @@ class MusicAssistant:
         """
         task = None
 
-        if self._exit:
-            return
-
         # Check for partials to properly determine if coroutine function
         check_target = target
         while isinstance(check_target, functools.partial):
             check_target = check_target.func
+
+        if self._exit:
+            LOGGER.warning("scheduling job %s while exiting", check_target.__name__)
 
         if threading.current_thread() is not threading.main_thread():
             # called from other thread

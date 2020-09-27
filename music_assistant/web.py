@@ -326,7 +326,7 @@ class Web:
 
         # stream queue
         player = self.mass.player_manager.get_player(group_player_id)
-        async for audio_chunk in player.subscribe_stream_client(child_player_id):
+        async for audio_chunk in player.player.subscribe_stream_client(child_player_id):
             await resp.write(audio_chunk)
         return resp
 
@@ -604,7 +604,7 @@ class Web:
     async def async_players(self, request):
         # pylint: disable=unused-argument
         """Get all players."""
-        players = self.mass.player_manager.player_states
+        players = self.mass.player_manager.players
         players.sort(key=lambda x: str(x.name), reverse=False)
         return web.json_response(players, dumps=json_serializer)
 
@@ -713,7 +713,7 @@ class Web:
     async def async_player(self, request):
         """Get single player."""
         player_id = request.match_info.get("player_id")
-        player = self.mass.player_manager.get_player_state(player_id)
+        player = self.mass.player_manager.get_player(player_id)
         if not player:
             return web.Response(text="invalid player", status=404)
         return web.json_response(player, dumps=json_serializer)

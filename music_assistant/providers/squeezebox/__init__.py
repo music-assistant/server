@@ -60,8 +60,6 @@ class PySqueezeProvider(PlayerProvider):
         """Handle correct close/cleanup of the provider on exit."""
         for task in self._tasks:
             task.cancel()
-        for player in self.players:
-            await player.async_close()
 
     async def async_start_discovery(self):
         """Start discovery for players."""

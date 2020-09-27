@@ -3,7 +3,7 @@
 from abc import abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, List
+from typing import Any, List, Optional
 
 from mashumaro import DataClassDictMixin
 from music_assistant.constants import EVENT_SET_PLAYER_CONTROL_STATE
@@ -70,9 +70,20 @@ class Player:
 
     @property
     @abstractmethod
-    def elapsed_time(self) -> float:
-        """Return elapsed_time of current playing uri in (fractions of) seconds."""
-        return 0.0
+    def elapsed_time(self) -> int:
+        """Return elapsed time of current playing media in seconds."""
+        return 0
+
+    @property
+    def elapsed_milliseconds(self) -> Optional[int]:
+        """
+        Return elapsed time of current playing media in milliseconds.
+
+        This is an optional property.
+        If provided, the property must return the REALTIME value while playing.
+        Used for synced playback in player groups.
+        """
+        return None
 
     @property
     @abstractmethod
@@ -87,7 +98,7 @@ class Player:
 
     @property
     @abstractmethod
-    def current_uri(self) -> str:
+    def current_uri(self) -> Optional[str]:
         """Return currently loaded uri of player (if any)."""
         return None
 
@@ -140,6 +151,9 @@ class Player:
         """Call when player is periodically polled by the player manager (should_poll=True)."""
         self.update_state()
 
+    async def async_on_remove(self) -> None:
+        """Call when player is removed from the player manager."""
+
     async def async_cmd_play_uri(self, uri: str) -> None:
         """
         Play the specified uri/url on the player.
@@ -184,7 +198,7 @@ class Player:
         """
         raise NotImplementedError
 
-    async def async_cmd_volume_mute(self, is_muted: bool = False):
+    async def async_cmd_volume_mute(self, is_muted: bool = False) -> None:
         """
         Send volume MUTE command to given player.
 
@@ -254,31 +268,6 @@ class Player:
     def update_state(self) -> None:
         """Call to store current player state in the player manager."""
         self.mass.add_job(self.mass.player_manager.async_update_player(self))
-
-    @property
-    def group_parents(self) -> str:
-        """Return all group players this player belongs to."""
-        if self.is_group_player:
-            return []
-        result = []
-        for player in self.mass.player_manager.players:
-            if not player.is_group_player:
-                continue
-            if self.player_id not in player.group_childs:
-                continue
-            result.append(player.player_id)
-        return result
-
-    @property
-    def active_queue(self) -> str:
-        """Return the active parent player/queue for a player."""
-        # if a group is powered on, all of it's childs will have/use
-        # the parent's player's queue.
-        for group_player_id in self.group_parents:
-            group_player = self.mass.player_manager.get_player(group_player_id)
-            if group_player and group_player.powered:
-                return group_player_id
-        return self.player_id
 
 
 class PlayerControlType(CustomIntEnum):

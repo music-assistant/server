@@ -14,8 +14,9 @@ PROV_ID = "group_player"
 PROV_NAME = "Group player creator"
 LOGGER = logging.getLogger(PROV_ID)
 
-CONF_PLAYER_COUNT = "groupplayer_player_count"
-CONF_PLAYERS = "groupplayer_players"
+CONF_PLAYER_COUNT = "group_player_count"
+CONF_PLAYERS = "group_player_players"
+CONF_MASTER = "group_player_master"
 
 CONFIG_ENTRIES = [
     ConfigEntry(
@@ -84,6 +85,7 @@ class GroupPlayer(Player):
         self._muted = False
         self.connected_clients = {}
         self.stream_task = None
+        self.sync_task = None
 
     @property
     def player_id(self) -> str:
@@ -146,6 +148,11 @@ class GroupPlayer(Player):
         return self.state in [PlaybackState.Playing, PlaybackState.Paused]
 
     @property
+    def is_group_player(self) -> bool:
+        """Return True if this player is a group player."""
+        return True
+
+    @property
     def group_childs(self):
         """Return group childs of this group player."""
         player_conf = self.mass.config.get_player_config(self.player_id)
@@ -169,6 +176,12 @@ class GroupPlayer(Player):
             for item in self.mass.player_manager.players
             if item.player_id is not self._player_id
         ]
+        selected_players = self.mass.config.get_player_config(self.player_id).get(
+            CONF_PLAYERS, []
+        )
+        default_master = ""
+        if selected_players:
+            default_master = selected_players[0]
         return [
             ConfigEntry(
                 entry_key=CONF_PLAYERS,
@@ -177,7 +190,16 @@ class GroupPlayer(Player):
                 values=all_players,
                 description_key=CONF_PLAYERS,
                 multi_value=True,
-            )
+            ),
+            ConfigEntry(
+                entry_key=CONF_MASTER,
+                entry_type=ConfigEntryType.STRING,
+                default_value=default_master,
+                values=selected_players,
+                description_key=CONF_MASTER,
+                multi_value=False,
+                depends_on=CONF_MASTER,
+            ),
         ]
 
     # SERVICE CALLS / PLAYER COMMANDS
@@ -207,6 +229,8 @@ class GroupPlayer(Player):
             self.stream_task.cancel()
             self.connected_clients = {}
             await asyncio.sleep(0.5)
+        if self.sync_task:
+            self.sync_task.cancel()
         # forward this command to each child player
         # TODO: Only forward to powered child players
         for child_player_id in self.group_childs:
@@ -334,6 +358,7 @@ class GroupPlayer(Player):
         """Handle streaming queue to connected child players."""
         ticks = 0
         while ticks < 60 and len(self.connected_clients) != len(self.group_childs):
+            # TODO: Support situation where not alle clients of the group are powered
             await asyncio.sleep(0.1)
             ticks += 1
         if not self.connected_clients:
@@ -342,25 +367,7 @@ class GroupPlayer(Player):
         LOGGER.debug(
             "start queue stream with %s connected clients", len(self.connected_clients)
         )
-
-        async def send_client_data(writer_obj: asyncio.StreamWriter, data: bytes):
-            try:
-                writer_obj.write(data)
-                await writer_obj.drain()
-            except (BrokenPipeError, ConnectionResetError, AssertionError):
-                pass  # happens at client disconnect
-
-        # pick a master player, by default it's the first powered player with 0 delay
-        # TODO: make master player configurable ?
-        master_player_id = ""
-        for child_player_id in self.connected_clients:
-            player_conf = self.mass.config.get_player_config(child_player_id)
-            if player_conf and player_conf.get(CONF_GROUP_DELAY) == 0:
-                master_player_id = child_player_id
-                break
-        if not master_player_id:
-            master_player_id = list(self.connected_clients.keys())[0]
-        master_player = self.mass.player_manager.get_player(master_player_id)
+        self.sync_task = asyncio.create_task(self.__synchronize_players())
 
         received_milliseconds = 0
         received_seconds = 0
@@ -371,7 +378,6 @@ class GroupPlayer(Player):
             received_milliseconds += 1000
             chunk_size = len(audio_chunk)
             start_bytes = 0
-            send_tasks = []
 
             # make sure we still have clients connected
             if not self.connected_clients:
@@ -379,71 +385,130 @@ class GroupPlayer(Player):
                 return
 
             # send the audio chunk to all connected players
-            for child_player_id, writer in list(self.connected_clients.items()):
+            for child_player_id, writer in self.connected_clients.items():
 
-                child_player = self.mass.player_manager.get_player(child_player_id)
-
-                # set all players in paused state and resume
-                # when 10 chunks are loaded into buffer
-                if received_seconds == 1:
-                    send_tasks.append(child_player.async_cmd_pause())
-                elif received_seconds == 10:
-                    send_tasks.append(child_player.async_cmd_play())
-
-                # make sure players do not buffer more than 20 seconds of audio
-                if received_seconds - child_player.elapsed_time > 20:
-                    LOGGER.debug(
-                        "back off, too much data in buffer! (%s)",
-                        received_seconds - child_player.elapsed_time,
-                    )
-                    await asyncio.sleep(1)
-
-                # work out startdelays
+                # work out startdelay
                 if received_seconds == 1:
                     player_delay = self.mass.config.player_settings[
                         child_player_id
-                    ].get(CONF_GROUP_DELAY)
+                    ].get(CONF_GROUP_DELAY, 0)
                     if player_delay:
-                        if received_milliseconds <= player_delay:
-                            continue  # skip this chunk completely
                         start_bytes = int(
                             ((player_delay - received_milliseconds) / 1000) * chunk_size
                         )
                     else:
                         start_bytes = 0
 
-                # Handle drifting/lagging by monitoring progress and compare to master player
-                if child_player_id != master_player_id:
-                    mp_milliseconds = master_player.elapsed_time * 1000
-                    cp_milliseconds = child_player.elapsed_time * 1000
-                    drift = cp_milliseconds - mp_milliseconds
-                    if drift > 100:
-                        LOGGER.debug(
-                            "child player %s is drifting ahead with %s milliseconds",
-                            child_player_id,
-                            drift,
-                        )
-                        start_bytes = int(drift / 1000 * chunk_size)
-                    lag = mp_milliseconds - cp_milliseconds
-                    if lag > 100:
-                        LOGGER.debug(
-                            "child player %s is lagging behind with %s milliseconds",
-                            child_player_id,
-                            lag,
-                        )
-                        # writer.write(b"\0" * int(lag / 1000 * chunk_size))
-                        send_tasks.append(
-                            send_client_data(
-                                writer, b"\0" * int(lag / 1000 * chunk_size)
-                            )
-                        )
-
-                # add task to send the data to the client
-                send_tasks.append(send_client_data(writer, audio_chunk[start_bytes:]))
+                # send the data to the client
+                try:
+                    writer.write(audio_chunk[start_bytes:])
+                    await writer.drain()
+                except (BrokenPipeError, ConnectionResetError, AssertionError):
+                    pass  # happens at client disconnect
 
             if not self.connected_clients:
                 LOGGER.warning("no more clients!")
                 return
 
-            # wait for all clients to consume the data
-            await asyncio.wait(send_tasks, return_when=asyncio.ALL_COMPLETED)
+    async def __synchronize_players(self):
+        """Handle drifting/lagging by monitoring progress and compare to master player."""
+
+        master_player_id = self.mass.config.player_settings[self.player_id].get(
+            CONF_MASTER
+        )
+        if not master_player_id:
+            LOGGER.warning("Synchronization of playback aborted: no master player.")
+            return
+        else:
+            LOGGER.debug(
+                "Synchronize playback of group using master player %s", master_player_id
+            )
+        master_player = self.mass.player_manager.get_player(master_player_id)
+
+        # wait until master is playing
+        while master_player.state != PlaybackState.Playing:
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
+
+        prev_lags = {}
+        prev_drifts = {}
+
+        while self.connected_clients:
+
+            # check every 2 seconds for player sync
+            await asyncio.sleep(0.5)
+
+            for child_player_id in self.connected_clients:
+
+                if child_player_id == master_player_id:
+                    continue
+                child_player = self.mass.player_manager.get_player(child_player_id)
+
+                if (
+                    not child_player
+                    or child_player.state != PlaybackState.Playing
+                    or child_player.elapsed_milliseconds is None
+                ):
+                    continue
+
+                if child_player_id not in prev_lags:
+                    prev_lags[child_player_id] = []
+                if child_player_id not in prev_drifts:
+                    prev_drifts[child_player_id] = []
+
+                # calculate lag (player is too slow in relation to the master)
+                lag = (
+                    master_player.elapsed_milliseconds
+                    - child_player.elapsed_milliseconds
+                )
+                prev_lags[child_player_id].append(lag)
+                if len(prev_lags[child_player_id]) == 10:
+                    # if we have 10 samples calclate the average lag
+                    avg_lag = sum(prev_lags[child_player_id]) / len(
+                        prev_lags[child_player_id]
+                    )
+                    prev_lags[child_player_id] = []
+                    if avg_lag > 50:
+                        LOGGER.debug(
+                            "child player %s is lagging behind with %s milliseconds",
+                            child_player_id,
+                            avg_lag,
+                        )
+                        # we correct the lag by pausing the master player for a very short time
+                        await master_player.async_cmd_pause()
+                        # sending the command takes some time, account for that too
+                        if avg_lag > 20:
+                            sleep_time = avg_lag - 20
+                            await asyncio.sleep(sleep_time / 1000)
+                        asyncio.create_task(master_player.async_cmd_play())
+                        break  # no more processing this round if we've just corrected a lag
+
+                # calculate drift (player is going faster in relation to the master)
+                drift = (
+                    child_player.elapsed_milliseconds
+                    - master_player.elapsed_milliseconds
+                )
+                prev_drifts[child_player_id].append(drift)
+                if len(prev_drifts[child_player_id]) == 10:
+                    # if we have 10 samples calculate the average drift
+                    avg_drift = sum(prev_drifts[child_player_id]) / len(
+                        prev_drifts[child_player_id]
+                    )
+                    prev_drifts[child_player_id] = []
+
+                    if avg_drift > 50:
+                        LOGGER.debug(
+                            "child player %s is drifting ahead with %s milliseconds",
+                            child_player_id,
+                            avg_drift,
+                        )
+                        # we correct the drift by pausing the player for a very short time
+                        # this is not the best approach but works with all playertypes
+                        # temporary solution until I find something better like sending more/less pcm chunks
+                        await child_player.async_cmd_pause()
+                        # sending the command takes some time, account for that too
+                        if avg_drift > 20:
+                            sleep_time = drift - 20
+                            await asyncio.sleep(sleep_time / 1000)
+                        await child_player.async_cmd_play()
+                        break  # no more processing this round if we've just corrected a lag

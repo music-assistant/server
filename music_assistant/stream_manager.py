@@ -80,7 +80,7 @@ class StreamManager:
             args += ["vol", str(gain_db_adjust), "dB"]
         if resample:
             args += ["rate", "-v", str(resample)]
-        LOGGER.info(
+        LOGGER.debug(
             "[async_get_sox_stream] [%s/%s] started using args: %s",
             streamdetails.provider,
             streamdetails.item_id,
