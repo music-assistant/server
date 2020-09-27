@@ -426,8 +426,8 @@ class StreamManager:
             if audio_data:
                 stream_type = StreamType.CACHE
 
-        # support for AAC created with ffmpeg in between
-        if streamdetails.content_type == ContentType.AAC:
+        # support for AAC/MPEG created with ffmpeg in between
+        if streamdetails.content_type in [ContentType.AAC, ContentType.MPEG]:
             stream_type = StreamType.EXECUTABLE
             streamdetails.content_type = ContentType.FLAC
             stream_path = f'ffmpeg -v quiet -i "{stream_path}" -f flac -'
