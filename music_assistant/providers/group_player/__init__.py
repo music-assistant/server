@@ -343,9 +343,10 @@ class GroupPlayer(Player):
                 "[%s] child player aborted stream: %s", self.player_id, child_player_id
             )
             self.connected_clients.pop(child_player_id, None)
-            sox_proc.terminate()
             await sox_proc.communicate()
-            await sox_proc.wait()
+            sox_proc.terminate()
+            if sox_proc and sox_proc.returncode is None:
+                await sox_proc.wait()
         else:
             self.connected_clients.pop(child_player_id, None)
             LOGGER.debug(

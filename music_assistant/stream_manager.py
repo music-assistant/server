@@ -146,10 +146,10 @@ class StreamManager:
             )
             if fill_buffer_task and not fill_buffer_task.cancelled():
                 fill_buffer_task.cancel()
-            sox_proc.terminate()
             await sox_proc.communicate()
-            await sox_proc.wait()
-            # raise GeneratorExit from exc
+            sox_proc.terminate()
+            if sox_proc and sox_proc.returncode is None:
+                await sox_proc.wait()
         else:
             LOGGER.debug(
                 "[async_get_sox_stream] [%s/%s] finished",
@@ -203,9 +203,10 @@ class StreamManager:
             LOGGER.debug("[async_queue_stream_flac] [%s] aborted", player_id)
             if fill_buffer_task and not fill_buffer_task.cancelled():
                 fill_buffer_task.cancel()
-            sox_proc.terminate()
             await sox_proc.communicate()
-            await sox_proc.wait()
+            sox_proc.terminate()
+            if sox_proc and sox_proc.returncode is None:
+                await sox_proc.wait()
         else:
             LOGGER.debug(
                 "[async_queue_stream_flac] [%s] finished",
@@ -469,9 +470,10 @@ class StreamManager:
                     str(exc),
                 )
                 # read remaining bytes
-                process.terminate()
                 await process.communicate()
-                await process.wait()
+                process.terminate()
+                if process and process.returncode is None:
+                    await process.wait()
 
         # signal end of stream event
         self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails)
