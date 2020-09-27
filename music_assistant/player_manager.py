@@ -32,7 +32,7 @@ from music_assistant.utils import (
     try_parse_int,
 )
 
-POLL_INTERVAL = 10
+POLL_INTERVAL = 30
 
 LOGGER = logging.getLogger("mass")
 

@@ -145,7 +145,7 @@ class GroupPlayer(Player):
     @property
     def should_poll(self):
         """Return True if this player should be polled for state."""
-        return self.state in [PlaybackState.Playing, PlaybackState.Paused]
+        return True
 
     @property
     def is_group_player(self) -> bool:
@@ -176,9 +176,16 @@ class GroupPlayer(Player):
             for item in self.mass.player_manager.players
             if item.player_id is not self._player_id
         ]
-        selected_players = self.mass.config.get_player_config(self.player_id).get(
+        selected_players_ids = self.mass.config.get_player_config(self.player_id).get(
             CONF_PLAYERS, []
         )
+        selected_players = []
+        for player_id in selected_players_ids:
+            player = self.mass.player_manager.get_player(player_id)
+            if player:
+                selected_players.append(
+                    {"text": player.name, "value": player.player_id}
+                )
         default_master = ""
         if selected_players:
             default_master = selected_players[0]
