@@ -197,7 +197,9 @@ class ConfigItem:
                     # use default value for config entry
                     entry.value = entry.default_value
                 return entry
-        raise KeyError
+        raise KeyError(
+            "%s\\%s has no key %s!" % (self._base_type, self._parent_item_key, key)
+        )
 
     def __getitem__(self, key) -> ConfigEntry:
         """Return default value from ConfigEntry if needed."""
@@ -253,11 +255,11 @@ class ConfigItem:
                     )
                 if self._base_type == ConfigBaseType.PLAYER:
                     # force update of player if it's config changed
-                    player = self.mass.player_manager.get_player(self._parent_item_key)
-                    if player:
-                        self.mass.add_job(
-                            self.mass.player_manager.async_update_player(player)
+                    self.mass.add_job(
+                        self.mass.player_manager.async_trigger_player_update(
+                            self._parent_item_key
                         )
+                    )
             return
         # raise KeyError if we're trying to set a value not defined as ConfigEntry
         raise KeyError
@@ -342,8 +344,10 @@ class MassConfig:
 
     def get_player_config_entries(self, player_id: str) -> List[ConfigEntry]:
         """Return all config entries for the given player."""
-        player_conf = self.mass.player_manager.get_player_config_entries(player_id)
-        return DEFAULT_PLAYER_CONFIG_ENTRIES + player_conf
+        player = self.mass.player_manager.get_player(player_id)
+        if player:
+            return DEFAULT_PLAYER_CONFIG_ENTRIES + player.config_entries
+        return DEFAULT_PLAYER_CONFIG_ENTRIES
 
     @staticmethod
     def get_base_config_entries(base_key) -> List[ConfigEntry]:

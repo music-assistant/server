@@ -7,7 +7,12 @@ from typing import List
 
 import soco
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
+from music_assistant.models.player import (
+    DeviceInfo,
+    PlaybackState,
+    Player,
+    PlayerFeature,
+)
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.playerprovider import PlayerProvider
 from music_assistant.utils import run_periodic
@@ -353,7 +358,7 @@ class SonosProvider(PlayerProvider):
             )
             rel_time = __timespan_secs(position_info.get("RelTime"))
             player.elapsed_time = rel_time
-            if player.state == PlayerState.Playing:
+            if player.state == PlaybackState.Playing:
                 self.mass.add_job(self.__async_report_progress(player_id))
         self.mass.add_job(self.mass.player_manager.async_update_player(player))
 
@@ -389,7 +394,7 @@ class SonosProvider(PlayerProvider):
         # so we need to send it in periodically
         player = self._players[player_id]
         player.should_poll = True
-        while player and player.state == PlayerState.Playing:
+        while player and player.state == PlaybackState.Playing:
             time_diff = time.time() - player.media_position_updated_at
             adjusted_current_time = player.elapsed_time + time_diff
             player.elapsed_time = adjusted_current_time
@@ -398,15 +403,15 @@ class SonosProvider(PlayerProvider):
         self._report_progress_tasks.pop(player_id, None)
 
 
-def __convert_state(sonos_state: str) -> PlayerState:
-    """Convert Sonos state to PlayerState."""
+def __convert_state(sonos_state: str) -> PlaybackState:
+    """Convert Sonos state to PlaybackState."""
     if sonos_state == "PLAYING":
-        return PlayerState.Playing
+        return PlaybackState.Playing
     if sonos_state == "TRANSITIONING":
-        return PlayerState.Playing
+        return PlaybackState.Playing
     if sonos_state == "PAUSED_PLAYBACK":
-        return PlayerState.Paused
-    return PlayerState.Stopped
+        return PlaybackState.Paused
+    return PlaybackState.Stopped
 
 
 def __timespan_secs(timespan):

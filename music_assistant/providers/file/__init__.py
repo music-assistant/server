@@ -88,6 +88,8 @@ class FileProvider(MusicProvider):
     async def async_on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
         conf = self.mass.config.get_provider_config(self.id)
+        if not conf[CONF_MUSIC_DIR]:
+            return False
         if not os.path.isdir(conf[CONF_MUSIC_DIR]):
             raise FileNotFoundError(f"Directory {conf[CONF_MUSIC_DIR]} does not exist")
         self._music_dir = conf["music_dir"]

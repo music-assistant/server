@@ -17,11 +17,11 @@ from music_assistant.constants import (
     EVENT_SHUTDOWN,
 )
 from music_assistant.database import Database
-from music_assistant.http_streamer import HTTPStreamer
 from music_assistant.metadata import MetaData
 from music_assistant.models.provider import Provider, ProviderType
 from music_assistant.music_manager import MusicManager
 from music_assistant.player_manager import PlayerManager
+from music_assistant.stream_manager import StreamManager
 from music_assistant.utils import callback, get_ip_pton, is_callback
 from music_assistant.web import Web
 from zeroconf import NonUniqueNameException, ServiceInfo, Zeroconf
@@ -52,7 +52,7 @@ class MusicAssistant:
         self.web = Web(self)
         self.music_manager = MusicManager(self)
         self.player_manager = PlayerManager(self)
-        self.http_streamer = HTTPStreamer(self)
+        self.stream_manager = StreamManager(self)
         # shared zeroconf instance
         self.zeroconf = Zeroconf()
         self._exit = False
@@ -73,9 +73,9 @@ class MusicAssistant:
         await self.cache.async_setup()
         await self.music_manager.async_setup()
         await self.player_manager.async_setup()
-        await self.web.async_setup()
         await self.async_preload_providers()
         await self.__async_setup_discovery()
+        await self.web.async_setup()
 
     async def async_stop(self):
         """Stop running the music assistant server."""
@@ -200,7 +200,7 @@ class MusicAssistant:
 
     @callback
     def add_job(
-        self, target: Callable[..., Any], *args: Any
+        self, target: Callable[..., Any], *args: Any, **kwargs: Any
     ) -> Optional[asyncio.Future]:
         """Add a job/task to the event loop.
 
@@ -209,34 +209,36 @@ class MusicAssistant:
         """
         task = None
 
-        if self._exit:
-            return
-
         # Check for partials to properly determine if coroutine function
         check_target = target
         while isinstance(check_target, functools.partial):
             check_target = check_target.func
+
+        if self._exit:
+            LOGGER.warning("scheduling job %s while exiting", check_target.__name__)
 
         if threading.current_thread() is not threading.main_thread():
             # called from other thread
             if asyncio.iscoroutine(check_target):
                 task = asyncio.run_coroutine_threadsafe(target, self.loop)  # type: ignore
             elif asyncio.iscoroutinefunction(check_target):
-                task = asyncio.run_coroutine_threadsafe(target(*args), self.loop)
+                task = asyncio.run_coroutine_threadsafe(
+                    target(*args, **kwargs), self.loop
+                )
             elif is_callback(check_target):
-                task = self.loop.call_soon_threadsafe(target, *args)
+                task = self.loop.call_soon_threadsafe(target, *args, **kwargs)
             else:
-                task = self.loop.run_in_executor(None, target, *args)  # type: ignore
+                task = self.loop.run_in_executor(None, target, *args, **kwargs)  # type: ignore
         else:
             # called from mainthread
             if asyncio.iscoroutine(check_target):
                 task = self.loop.create_task(target)  # type: ignore
             elif asyncio.iscoroutinefunction(check_target):
-                task = self.loop.create_task(target(*args))
+                task = self.loop.create_task(target(*args, **kwargs))
             elif is_callback(check_target):
-                task = self.loop.call_soon(target, *args)
+                task = self.loop.call_soon(target, *args, *kwargs)
             else:
-                task = self.loop.run_in_executor(None, target, *args)  # type: ignore
+                task = self.loop.run_in_executor(None, target, *args, *kwargs)  # type: ignore
         return task
 
     @staticmethod

@@ -4,7 +4,7 @@ import time
 from typing import List
 
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.models.player import Player, PlayerState
+from music_assistant.models.player import PlaybackState, Player
 from music_assistant.models.playerprovider import PlayerProvider
 from music_assistant.utils import run_periodic
 
@@ -147,7 +147,7 @@ class WebPlayerProvider(PlayerProvider):
         if "muted" in data:
             player.muted = data["muted"]
         if "state" in data:
-            player.state = PlayerState(data["state"])
+            player.state = PlaybackState(data["state"])
         if "cur_time" in data:
             player.elapsed_time = data["elapsed_time"]
         if "current_uri" in data:

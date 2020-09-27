@@ -3,7 +3,6 @@ import asyncio
 import logging
 import os
 import platform
-import subprocess
 import time
 from typing import List, Optional
 
@@ -470,8 +469,7 @@ class SpotifyProvider(MusicProvider):
         if not self._username or not self._password:
             return tokeninfo
         # retrieve token with spotty
-        task = self.mass.add_job(self.__get_token)
-        tokeninfo = await task
+        tokeninfo = await self.__async_get_token()
         if tokeninfo:
             self.__auth_token = tokeninfo
             self.sp_user = await self.__async_get_data("me")
@@ -481,7 +479,7 @@ class SpotifyProvider(MusicProvider):
             raise Exception("Can't get Spotify token for user %s" % self._username)
         return tokeninfo
 
-    def __get_token(self):
+    async def __async_get_token(self):
         """Get spotify auth token with spotty bin."""
         # get token with spotty
         scopes = [
@@ -519,11 +517,15 @@ class SpotifyProvider(MusicProvider):
             self.mass.config.data_path,
             "--disable-discovery",
         ]
-        spotty = subprocess.Popen(
-            args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        spotty = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
         )
-        stdout, _ = spotty.communicate()
-        result = json.loads(stdout)
+        stdout, _ = await spotty.communicate()
+        try:
+            result = json.loads(stdout)
+        except json.decoder.JSONDecodeError:
+            LOGGER.warning("Error while retrieving Spotify token!")
+            result = None
         # transform token info to spotipy compatible format
         if result and "accessToken" in result:
             tokeninfo = result

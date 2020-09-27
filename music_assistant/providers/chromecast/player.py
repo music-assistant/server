@@ -1,14 +1,20 @@
 """Representation of a Cast device on the network."""
 import logging
 import uuid
-from contextlib import suppress
 from datetime import datetime
 from typing import List, Optional
 
 import pychromecast
-from music_assistant.models.player import DeviceInfo, PlayerFeature, PlayerState
+from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.models.config_entry import ConfigEntry
+from music_assistant.models.player import (
+    DeviceInfo,
+    PlaybackState,
+    Player,
+    PlayerFeature,
+)
 from music_assistant.models.player_queue import QueueItem
-from music_assistant.utils import compare_strings
+from music_assistant.utils import compare_strings, yield_chunks
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import (
     CONNECTION_STATUS_CONNECTED,
@@ -22,7 +28,7 @@ LOGGER = logging.getLogger(PROV_ID)
 PLAYER_FEATURES = [PlayerFeature.QUEUE]
 
 
-class ChromecastPlayer:
+class ChromecastPlayer(Player):
     """Representation of a Cast device on the network.
 
     This class is the holder of the pychromecast.Chromecast object and
@@ -30,13 +36,12 @@ class ChromecastPlayer:
     "elected leader" itself.
     """
 
-    def __init__(self, mass, cast_info: ChromecastInfo):
+    def __init__(self, mass: MusicAssistantType, cast_info: ChromecastInfo) -> None:
         """Initialize the cast device."""
         self.mass = mass
-        self.features = PLAYER_FEATURES
-        self.config_entries = PLAYER_CONFIG_ENTRIES
-        self.provider_id = PROV_ID
         self._cast_info = cast_info
+        self._player_id = cast_info.uuid
+
         self.services = cast_info.services
         self._chromecast: Optional[pychromecast.Chromecast] = None
         self.cast_status = None
@@ -48,44 +53,46 @@ class ChromecastPlayer:
         self._powered = False
         self._status_listener: Optional[CastStatusListener] = None
         self._is_speaker_group = False
-        self.last_updated = datetime.utcnow()
 
     @property
-    def player_id(self):
-        """Return id of this player."""
-        return self._cast_info.uuid
+    def player_id(self) -> str:
+        """Return player id of this player."""
+        return self._player_id
 
     @property
-    def name(self):
+    def provider_id(self) -> str:
+        """Return provider id of this player."""
+        return PROV_ID
+
+    @property
+    def name(self) -> str:
         """Return name of this player."""
         return (
             self._chromecast.name if self._chromecast else self._cast_info.friendly_name
         )
 
     @property
-    def powered(self):
+    def powered(self) -> bool:
         """Return power state of this player."""
         return self._powered
 
     @property
-    def should_poll(self):
+    def should_poll(self) -> bool:
         """Return bool if this player needs to be polled for state changes."""
-        if not self._chromecast or not self._chromecast.media_controller:
-            return False
-        return self._chromecast.media_controller.status.player_is_playing
+        return self.media_status and self.media_status.player_is_playing
 
     @property
-    def state(self) -> PlayerState:
+    def state(self) -> PlaybackState:
         """Return the state of the player."""
         if self.media_status is None:
-            return PlayerState.Stopped
+            return PlaybackState.Stopped
         if self.media_status.player_is_playing:
-            return PlayerState.Playing
+            return PlaybackState.Playing
         if self.media_status.player_is_paused:
-            return PlayerState.Paused
+            return PlaybackState.Paused
         if self.media_status.player_is_idle:
-            return PlayerState.Stopped
-        return PlayerState.Stopped
+            return PlaybackState.Stopped
+        return PlaybackState.Stopped
 
     @property
     def elapsed_time(self) -> int:
@@ -96,39 +103,63 @@ class ChromecastPlayer:
             or self.media_status.player_is_idle
         ):
             return 0
-
         if self.media_status.player_is_playing:
-            return self._chromecast.media_controller.status.adjusted_current_time
+            # Add time since last update
+            return self.media_status.adjusted_current_time
         # Not playing, return last reported seek time
         return self.media_status.current_time
 
     @property
-    def available(self):
+    def elapsed_milliseconds(self) -> int:
+        """Return (realtime) elapsed time of current playing media in milliseconds."""
+        if self.media_status is None or not (
+            self.media_status.player_is_playing
+            or self.media_status.player_is_paused
+            or self.media_status.player_is_idle
+        ):
+            return 0
+        if self.media_status.player_is_playing:
+            # Add time since last update
+            return int(
+                (
+                    self.media_status.current_time
+                    + (
+                        datetime.utcnow().timestamp()
+                        - self.media_status.last_updated.timestamp()
+                    )
+                )
+                * 1000
+            )
+        # Not playing, return last reported seek time
+        return self.media_status.current_time * 1000
+
+    @property
+    def available(self) -> bool:
         """Return availablity state of this player."""
         return self._available
 
     @property
-    def current_uri(self):
+    def current_uri(self) -> str:
         """Return current_uri of this player."""
         return self.media_status.content_id if self.media_status else None
 
     @property
-    def volume_level(self):
+    def volume_level(self) -> int:
         """Return volume_level of this player."""
         return int(self.cast_status.volume_level * 100 if self.cast_status else 0)
 
     @property
-    def muted(self):
+    def muted(self) -> bool:
         """Return mute state of this player."""
         return self.cast_status.volume_muted if self.cast_status else False
 
     @property
-    def is_group_player(self):
+    def is_group_player(self) -> bool:
         """Return if this player is a group player."""
         return self._cast_info.is_audio_group and not self._is_speaker_group
 
     @property
-    def group_childs(self):
+    def group_childs(self) -> List[str]:
         """Return group_childs."""
         if (
             self._cast_info.is_audio_group
@@ -141,7 +172,7 @@ class ChromecastPlayer:
         return []
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo:
         """Return deviceinfo."""
         return DeviceInfo(
             model=self._cast_info.model_name,
@@ -149,7 +180,17 @@ class ChromecastPlayer:
             manufacturer=self._cast_info.manufacturer,
         )
 
-    async def set_cast_info(self, cast_info: ChromecastInfo):
+    @property
+    def features(self) -> List[PlayerFeature]:
+        """Return list of features this player supports."""
+        return PLAYER_FEATURES
+
+    @property
+    def config_entries(self) -> List[ConfigEntry]:
+        """Return player specific config entries (if any)."""
+        return PLAYER_CONFIG_ENTRIES
+
+    def set_cast_info(self, cast_info: ChromecastInfo) -> None:
         """Set the cast information and set up the chromecast object."""
         self._cast_info = cast_info
         if self._chromecast is not None:
@@ -178,14 +219,11 @@ class ChromecastPlayer:
         self.cast_status = chromecast.status
         self.media_status = chromecast.media_controller.status
         mz_controller = MultizoneController(chromecast.uuid)
-        # mz.register_listener(
-        #     MZListener(mz, self.__handle_group_members_update, self.mass.loop)
-        # )
         chromecast.register_handler(mz_controller)
         chromecast.mz_controller = mz_controller
-        self._chromecast.start()
+        self.mass.add_job(self._chromecast.start)
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """Disconnect Chromecast object if it is set."""
         if self._chromecast is None:
             return
@@ -193,10 +231,10 @@ class ChromecastPlayer:
             "[%s] Disconnecting from chromecast socket", self._cast_info.friendly_name
         )
         self._available = False
-        self._chromecast.disconnect()
+        self.mass.add_job(self._chromecast.disconnect)
         self._invalidate()
 
-    def _invalidate(self):
+    def _invalidate(self) -> None:
         """Invalidate some attributes."""
         self._chromecast = None
         self.cast_status = None
@@ -207,9 +245,13 @@ class ChromecastPlayer:
             self._status_listener.invalidate()
             self._status_listener = None
 
+    async def async_on_remove(self) -> None:
+        """Call when player is removed from the player manager."""
+        self.disconnect()
+
     # ========== Callbacks ==========
 
-    def new_cast_status(self, cast_status):
+    def new_cast_status(self, cast_status) -> None:
         """Handle updates of the cast status."""
         self.cast_status = cast_status
         self._is_speaker_group = (
@@ -220,21 +262,21 @@ class ChromecastPlayer:
                 self._chromecast.mz_controller.members[0], self.player_id
             )
         )
-        self.mass.add_job(self.mass.player_manager.async_update_player(self))
+        self.update_state()
 
-    def new_media_status(self, media_status):
+    def new_media_status(self, media_status) -> None:
         """Handle updates of the media status."""
         self.media_status = media_status
-        self.mass.add_job(self.mass.player_manager.async_update_player(self))
+        self.update_state()
         if media_status.player_is_playing:
             self._powered = True
 
-    def new_connection_status(self, connection_status):
+    def new_connection_status(self, connection_status) -> None:
         """Handle updates of connection status."""
         if connection_status.status == CONNECTION_STATUS_DISCONNECTED:
             self._available = False
             self._invalidate()
-            self.mass.add_job(self.mass.player_manager.async_update_player(self))
+            self.update_state()
             return
 
         new_available = connection_status.status == CONNECTION_STATUS_CONNECTED
@@ -248,85 +290,71 @@ class ChromecastPlayer:
                 connection_status.status,
             )
             self._available = new_available
-            self.mass.add_job(self.mass.player_manager.async_update_player(self))
+            self.update_state()
             if self._cast_info.is_audio_group and new_available:
                 self._chromecast.mz_controller.update_members()
 
+    async def async_on_update(self) -> None:
+        """Call when player is periodically polled by the player manager (should_poll=True)."""
+        if self.mass.player_manager.get_player(self.player_id).active_queue.startswith(
+            "group_player"
+        ):
+            self.mass.add_job(self._chromecast.media_controller.update_status)
+        self.update_state()
+
     # ========== Service Calls ==========
 
-    def stop(self):
+    async def async_cmd_stop(self) -> None:
         """Send stop command to player."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        with SuppressChromeCastError(self.name):
-            self._chromecast.media_controller.stop()
+        if self._chromecast and self._chromecast.media_controller:
+            self.mass.add_job(self._chromecast.media_controller.stop)
 
-    def play(self):
+    async def async_cmd_play(self) -> None:
         """Send play command to player."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        with SuppressChromeCastError(self.name):
-            self._chromecast.media_controller.play()
+        if self._chromecast.media_controller:
+            self.mass.add_job(self._chromecast.media_controller.play)
 
-    def pause(self):
+    async def async_cmd_pause(self) -> None:
         """Send pause command to player."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        with SuppressChromeCastError(self.name):
-            self._chromecast.media_controller.pause()
+        if self._chromecast.media_controller:
+            self.mass.add_job(self._chromecast.media_controller.pause)
 
-    def next(self):
+    async def async_cmd_next(self) -> None:
         """Send next track command to player."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        with SuppressChromeCastError(self.name):
-            self._chromecast.media_controller.queue_next()
+        if self._chromecast.media_controller:
+            self.mass.add_job(self._chromecast.media_controller.queue_next)
 
-    def previous(self):
+    async def async_cmd_previous(self) -> None:
         """Send previous track command to player."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
-        with SuppressChromeCastError(self.name):
-            self._chromecast.media_controller.queue_prev()
+        if self._chromecast.media_controller:
+            self.mass.add_job(self._chromecast.media_controller.queue_prev)
 
-    def power_on(self):
+    async def async_cmd_power_on(self) -> None:
         """Send power ON command to player."""
-        if not self._chromecast.socket_client.is_connected:
-            LOGGER.warning("Ignore player command: Socket client is not connected.")
-            return
         self._powered = True
-        with SuppressChromeCastError(self.name):
-            self._chromecast.set_volume_muted(False)
+        self.mass.add_job(self._chromecast.set_volume_muted, False)
 
-    def power_off(self):
+    async def async_cmd_power_off(self) -> None:
         """Send power OFF command to player."""
-        with SuppressChromeCastError(self.name):
-            if self.media_status and (
-                self.media_status.player_is_playing
-                or self.media_status.player_is_paused
-                or self.media_status.player_is_idle
-            ):
-                self._chromecast.media_controller.stop()
-            self._powered = False
-            # chromecast has no real poweroff so we send mute instead
-            self._chromecast.set_volume_muted(True)
+        if self.media_status and (
+            self.media_status.player_is_playing
+            or self.media_status.player_is_paused
+            or self.media_status.player_is_idle
+        ):
+            self.mass.add_job(self._chromecast.media_controller.stop)
+        self._powered = False
+        # chromecast has no real poweroff so we send mute instead
+        self.mass.add_job(self._chromecast.set_volume_muted, True)
 
-    def volume_set(self, volume_level):
+    async def async_cmd_volume_set(self, volume_level: int) -> None:
         """Send new volume level command to player."""
-        with SuppressChromeCastError(self.name):
-            self._chromecast.set_volume(volume_level)
+        self.mass.add_job(self._chromecast.set_volume, volume_level / 100)
 
-    def volume_mute(self, is_muted=False):
+    async def async_cmd_volume_mute(self, is_muted: bool = False) -> None:
         """Send mute command to player."""
-        with SuppressChromeCastError(self.name):
-            self._chromecast.set_volume_muted(is_muted)
+        self.mass.add_job(self._chromecast.set_volume_muted, is_muted)
 
-    def play_uri(self, uri: str):
+    async def async_cmd_play_uri(self, uri: str) -> None:
         """Play single uri on player."""
         player_queue = self.mass.player_manager.get_player_queue(self.player_id)
         if player_queue.use_queue_stream:
@@ -334,11 +362,10 @@ class ChromecastPlayer:
             queue_item = QueueItem()
             queue_item.name = "Music Assistant"
             queue_item.uri = uri
-            return self.queue_load([queue_item, queue_item])
-        with SuppressChromeCastError(self.name):
-            self._chromecast.play_media(uri, "audio/flac")
+            return await self.async_cmd_queue_load([queue_item, queue_item])
+        self.mass.add_job(self._chromecast.play_media, uri, "audio/flac")
 
-    def queue_load(self, queue_items: List[QueueItem]):
+    async def async_cmd_queue_load(self, queue_items: List[QueueItem]) -> None:
         """Load (overwrite) queue with new items."""
         player_queue = self.mass.player_manager.get_player_queue(self.player_id)
         cc_queue_items = self.__create_queue_items(queue_items[:50])
@@ -351,22 +378,22 @@ class ChromecastPlayer:
             "startIndex": 0,  # Item index to play after this request or keep same item if undefined
             "items": cc_queue_items,  # only load 50 tracks at once or the socket will crash
         }
-        self.__send_player_queue(queuedata)
+        self.mass.add_job(self.__send_player_queue, queuedata)
         if len(queue_items) > 50:
-            self.queue_append(queue_items[51:])
+            await self.async_cmd_queue_append(queue_items[51:])
 
-    def queue_append(self, queue_items: List[QueueItem]):
+    async def async_cmd_queue_append(self, queue_items: List[QueueItem]) -> None:
         """Append new items at the end of the queue."""
         cc_queue_items = self.__create_queue_items(queue_items)
-        for chunk in chunks(cc_queue_items, 50):
+        for chunk in yield_chunks(cc_queue_items, 50):
             queuedata = {
                 "type": "QUEUE_INSERT",
                 "insertBefore": None,
                 "items": chunk,
             }
-            self.__send_player_queue(queuedata)
+            self.mass.add_job(self.__send_player_queue, queuedata)
 
-    def __create_queue_items(self, tracks):
+    def __create_queue_items(self, tracks) -> None:
         """Create list of CC queue items from tracks."""
         queue_items = []
         for track in tracks:
@@ -401,46 +428,21 @@ class ChromecastPlayer:
             },
         }
 
-    def __send_player_queue(self, queuedata):
+    def __send_player_queue(self, queuedata: dict) -> None:
         """Send new data to the CC queue."""
-        with SuppressChromeCastError(self.name):
-            media_controller = self._chromecast.media_controller
-            # pylint: disable=protected-access
-            receiver_ctrl = media_controller._socket_client.receiver_controller
+        media_controller = self._chromecast.media_controller
+        # pylint: disable=protected-access
+        receiver_ctrl = media_controller._socket_client.receiver_controller
 
-            def send_queue():
-                """Plays media after chromecast has switched to requested app."""
-                queuedata["mediaSessionId"] = media_controller.status.media_session_id
-                media_controller.send_message(queuedata, inc_session_id=False)
+        def send_queue():
+            """Plays media after chromecast has switched to requested app."""
+            queuedata["mediaSessionId"] = media_controller.status.media_session_id
+            media_controller.send_message(queuedata, False)
 
-            if not media_controller.status.media_session_id:
-                receiver_ctrl.launch_app(
-                    media_controller.app_id, callback_function=send_queue
-                )
-            else:
-                send_queue()
-
-
-def chunks(_list, chunk_size):
-    """Yield successive n-sized chunks from list."""
-    for i in range(0, len(_list), chunk_size):
-        yield _list[i : i + chunk_size]
-
-
-class SuppressChromeCastError(suppress):
-    """Context manager to suppress Chromecast connection error."""
-
-    def __init__(self, player_id):
-        """Handle init of the contextmanager."""
-        # pylint: disable=super-init-not-called
-        self.player_id = player_id
-
-    def __exit__(self, exctype, excinst, exctb):
-        """Handle exit of the contextmanager."""
-        if exctype is not None and issubclass(exctype, pychromecast.error.NotConnected):
-            LOGGER.warning(
-                "Chromecast client %s is not connected, ignoring command...",
-                self.player_id,
+        if not media_controller.status.media_session_id:
+            receiver_ctrl.launch_app(
+                media_controller.app_id,
+                callback_function=send_queue,
             )
-            return True
-        return exctype is None
+        else:
+            send_queue()

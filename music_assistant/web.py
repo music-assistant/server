@@ -124,21 +124,6 @@ class Web:
         app.add_routes(routes)
         app.add_routes(
             [
-                web.get(
-                    "/stream/{player_id}",
-                    self.mass.http_streamer.async_stream,
-                    allow_head=False,
-                ),
-                web.get(
-                    "/stream/{player_id}/{queue_item_id}",
-                    self.mass.http_streamer.async_stream,
-                    allow_head=False,
-                ),
-                web.get(
-                    "/stream_media/{media_type}/{provider}/{item_id}",
-                    self.mass.http_streamer.async_stream_media_item,
-                    allow_head=False,
-                ),
                 web.get("/", self.async_index),
                 web.post("/login", self.async_login),
                 web.get("/jsonrpc.js", self.async_json_rpc),
@@ -253,6 +238,97 @@ class Web:
         if not os.path.isdir(webdir):
             raise web.HTTPFound("https://music-assistant.github.io/app")
         return web.FileResponse(os.path.join(webdir, "index.html"))
+
+    @routes.get("/stream/media/{media_type}/{item_id}")
+    async def stream_media(self, request):
+        """Stream a single audio track."""
+        media_type = MediaType.from_string(request.match_info["media_type"])
+        if media_type not in [MediaType.Track, MediaType.Radio]:
+            return web.Response(status=404, reason="Media item is not playable!")
+        item_id = request.match_info["item_id"]
+        provider = request.rel_url.query.get("provider", "database")
+        media_item = await self.mass.music_manager.async_get_item(
+            item_id, provider, media_type
+        )
+        streamdetails = await self.mass.music_manager.async_get_stream_details(
+            media_item
+        )
+
+        # prepare request
+        content_type = streamdetails.content_type.value
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": f"audio/{content_type}"}
+        )
+        resp.enable_chunked_encoding()
+        await resp.prepare(request)
+
+        # stream track
+        async for audio_chunk in self.mass.stream_manager.async_get_stream(
+            streamdetails
+        ):
+            await resp.write(audio_chunk)
+        return resp
+
+    @routes.get("/stream/queue/{player_id}")
+    async def stream_queue(self, request):
+        """Stream a player's queue."""
+        player_id = request.match_info["player_id"]
+        if not self.mass.player_manager.get_player_queue(player_id):
+            return web.Response(text="invalid queue", status=404)
+
+        # prepare request
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": "audio/flac"}
+        )
+        resp.enable_chunked_encoding()
+        await resp.prepare(request)
+
+        # stream queue
+        async for audio_chunk in self.mass.stream_manager.async_queue_stream_flac(
+            player_id
+        ):
+            await resp.write(audio_chunk)
+        return resp
+
+    @routes.get("/stream/queue/{player_id}/{queue_item_id}")
+    async def stream_queue_item(self, request):
+        """Stream a single queue item."""
+        player_id = request.match_info["player_id"]
+        queue_item_id = request.match_info["queue_item_id"]
+
+        # prepare request
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": "audio/flac"}
+        )
+        resp.enable_chunked_encoding()
+        await resp.prepare(request)
+
+        async for audio_chunk in self.mass.stream_manager.async_stream_queue_item(
+            player_id, queue_item_id
+        ):
+            await resp.write(audio_chunk)
+        return resp
+
+    @routes.get("/stream/group/{group_player_id}")
+    async def stream_group(self, request):
+        """Handle streaming to all players of a group. Highly experimental."""
+        group_player_id = request.match_info["group_player_id"]
+        if not self.mass.player_manager.get_player_queue(group_player_id):
+            return web.Response(text="invalid player id", status=404)
+        child_player_id = request.rel_url.query.get("player_id", request.remote)
+
+        # prepare request
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": "audio/flac"}
+        )
+        resp.enable_chunked_encoding()
+        await resp.prepare(request)
+
+        # stream queue
+        player = self.mass.player_manager.get_player(group_player_id)
+        async for audio_chunk in player.player.subscribe_stream_client(child_player_id):
+            await resp.write(audio_chunk)
+        return resp
 
     @login_required
     @routes.get("/api/library/artists")
