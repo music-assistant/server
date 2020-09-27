@@ -29,7 +29,6 @@ class ChromecastProvider(PlayerProvider):
     def __init__(self, *args, **kwargs):
         """Initialize."""
         self.mz_mgr = MultizoneManager()
-        self._players = {}
         self._listener = None
         self._browser = None
         super().__init__(*args, **kwargs)
@@ -70,10 +69,7 @@ class ChromecastProvider(PlayerProvider):
         if not self._browser:
             return
         # stop discovery
-        pychromecast.stop_discovery(self._browser)
-        # stop cast socket clients
-        for player in self._players.values():
-            player.disconnect()
+        self.mass.add_job(pychromecast.stop_discovery, self._browser)
 
     def __chromecast_add_update_callback(self, cast_uuid, cast_service_name):
         """Handle zeroconf discovery of a new or updated chromecast."""
@@ -90,15 +86,16 @@ class ChromecastProvider(PlayerProvider):
             port=service[5],
         )
         player_id = cast_info.uuid
-        if player_id in self._players:
+        player_state = self.mass.player_manager.get_player(player_id)
+        if player_state:
             # player already added, the player will take care of reconnects itself.
+            self.mass.add_job(player_state.player.set_cast_info, cast_info)
             return
         LOGGER.debug(
             "Chromecast discovered: %s (%s)", cast_info.friendly_name, player_id
         )
         player = ChromecastPlayer(self.mass, cast_info)
-        self._players[player_id] = player
-        self.mass.add_job(self._players[player_id].set_cast_info, cast_info)
+        self.mass.add_job(player.set_cast_info, cast_info)
         self.mass.add_job(self.mass.player_manager.async_add_player(player))
 
     def __chromecast_remove_callback(self, cast_uuid, cast_service_name, cast_service):

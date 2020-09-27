@@ -247,7 +247,7 @@ class ChromecastPlayer(Player):
 
     async def async_on_remove(self) -> None:
         """Call when player is removed from the player manager."""
-        self.disconnect()
+        self.mass.add_job(self.disconnect)
 
     # ========== Callbacks ==========
 

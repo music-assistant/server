@@ -66,16 +66,11 @@ class SqueezeSocketClient(Player):
             asyncio.create_task(self.__async_send_heartbeat()),
         ]
 
-    async def async_close(self):
-        """Cleanup when the socket client needs to close."""
+    async def async_on_remove(self) -> None:
+        """Call when player is removed from the player manager."""
         for task in self._tasks:
             if not task.cancelled():
                 task.cancel()
-        await self.mass.player_manager.async_remove_player(self.player_id)
-
-    async def async_on_remove(self) -> None:
-        """Call when player is removed from the player manager."""
-        await self.async_close()
 
     @property
     def player_id(self) -> str:
@@ -348,7 +343,7 @@ class SqueezeSocketClient(Player):
         """Send command to Squeeze player."""
         if self._reader.at_eof() or self._writer.is_closing():
             LOGGER.debug("Socket is disconnected.")
-            return await self.async_close()
+            await self.mass.player_manager.async_remove_player(self.player_id)
         packet = struct.pack("!H", len(data) + 4) + command + data
         try:
             self._writer.write(packet)
@@ -379,7 +374,7 @@ class SqueezeSocketClient(Player):
                         handler(packet)
         # EOF reached: socket is disconnected
         LOGGER.info("Socket disconnected: %s", self._writer.get_extra_info("peername"))
-        await self.async_close()
+        await self.mass.player_manager.async_remove_player(self.player_id)
 
     @callback
     @staticmethod

@@ -17,7 +17,7 @@ class PlayerProvider(Provider):
         return ProviderType.PLAYER_PROVIDER
 
     @property
-    def players(self, calculated_state=False) -> Players:
+    def players(self) -> Players:
         """Return all players belonging to this provider."""
         # pylint: disable=no-member
         return [

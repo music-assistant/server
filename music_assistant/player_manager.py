@@ -65,6 +65,8 @@ class PlayerManager:
         """Handle stop/shutdown."""
         for player_queue in list(self._player_queues.values()):
             await player_queue.async_close()
+        for player_state in self.players:
+            await player_state.player.async_on_remove()
 
     @run_periodic(1)
     async def poll_task(self):
