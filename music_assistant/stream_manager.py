@@ -147,8 +147,8 @@ class StreamManager:
             if fill_buffer_task and not fill_buffer_task.cancelled():
                 fill_buffer_task.cancel()
             await sox_proc.communicate()
-            sox_proc.terminate()
             if sox_proc and sox_proc.returncode is None:
+                sox_proc.terminate()
                 await sox_proc.wait()
         else:
             LOGGER.debug(
@@ -204,8 +204,8 @@ class StreamManager:
             if fill_buffer_task and not fill_buffer_task.cancelled():
                 fill_buffer_task.cancel()
             await sox_proc.communicate()
-            sox_proc.terminate()
             if sox_proc and sox_proc.returncode is None:
+                sox_proc.terminate()
                 await sox_proc.wait()
         else:
             LOGGER.debug(
@@ -471,8 +471,8 @@ class StreamManager:
                 )
                 # read remaining bytes
                 await process.communicate()
-                process.terminate()
                 if process and process.returncode is None:
+                    process.terminate()
                     await process.wait()
 
         # signal end of stream event
