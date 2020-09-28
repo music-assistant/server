@@ -19,7 +19,7 @@ unidecode==1.1.1
 hass-client==0.0.6
 PyJWT==1.7.1
 aiohttp_jwt==0.6.1
-zeroconf==0.28.4
+zeroconf==0.28.5
 passlib==1.7.2
 cryptography==3.1
 mashumaro==1.12
