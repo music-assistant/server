@@ -2,7 +2,7 @@ argparse==1.4.0
 cytoolz==0.10.1
 aiohttp[speedups]==3.6.2
 requests==2.24.0
-pychromecast==7.2.1
+pychromecast==7.5.0
 asyncio-throttle==1.0.1
 aiofile==3.1.0
 aiosqlite==0.15.0
