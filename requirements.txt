@@ -1,5 +1,5 @@
 argparse==1.4.0
-cytoolz==0.10.1
+cytoolz==0.11.0
 aiohttp[speedups]==3.6.2
 requests==2.24.0
 pychromecast==7.5.0
