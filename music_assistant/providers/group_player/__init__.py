@@ -427,10 +427,9 @@ class GroupPlayer(Player):
         if not master_player_id:
             LOGGER.warning("Synchronization of playback aborted: no master player.")
             return
-        else:
-            LOGGER.debug(
-                "Synchronize playback of group using master player %s", master_player_id
-            )
+        LOGGER.debug(
+            "Synchronize playback of group using master player %s", master_player_id
+        )
         master_player = self.mass.player_manager.get_player(master_player_id)
 
         # wait until master is playing

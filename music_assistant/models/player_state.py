@@ -359,7 +359,8 @@ class PlayerState:
     @callback
     def get_player_config_entries(self):
         """Get final/calculated config entries for a player."""
-        entries = [item for item in self.player.config_entries]
+        entries = []
+        entries += self.player.config_entries
         # append power control config entries
         power_controls = self.mass.player_manager.get_player_controls(
             PlayerControlType.POWER
