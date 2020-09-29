@@ -2,7 +2,7 @@ argparse==1.4.0
 cytoolz==0.10.1
 aiohttp[speedups]==3.6.2
 requests==2.24.0
-pychromecast==7.2.1
+pychromecast==7.5.0
 asyncio-throttle==1.0.1
 aiofile==3.1.0
 aiosqlite==0.15.0
@@ -19,7 +19,7 @@ unidecode==1.1.1
 hass-client==0.0.6
 PyJWT==1.7.1
 aiohttp_jwt==0.6.1
-zeroconf==0.28.4
+zeroconf==0.28.5
 passlib==1.7.2
 cryptography==3.1
 mashumaro==1.12
