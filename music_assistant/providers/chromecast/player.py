@@ -231,7 +231,11 @@ class ChromecastPlayer(Player):
             "[%s] Disconnecting from chromecast socket", self._cast_info.friendly_name
         )
         self._available = False
-        self.mass.add_job(self._chromecast.disconnect)
+        if (
+            self._chromecast.socket_client
+            and not self._chromecast.socket_client.is_stopped
+        ):
+            self.mass.add_job(self._chromecast.disconnect)
         self._invalidate()
 
     def _invalidate(self) -> None:

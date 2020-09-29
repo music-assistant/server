@@ -98,12 +98,15 @@ class PlayerManager:
         return self.mass.get_providers(ProviderType.PLAYER_PROVIDER)
 
     @callback
-    def get_player(self, player_id: str) -> PlayerState:
+    def get_player(
+        self, player_id: str, return_player_state: bool = True
+    ) -> PlayerState:
         """Return player by player_id or None if player does not exist."""
-        player = self._player_states.get(player_id)
-        if not player:
-            LOGGER.warning("Player %s is not available!", player_id)
-        return player
+        player_state = self._player_states.get(player_id)
+        if return_player_state and player_state:
+            # return underlying player object
+            return player_state.player
+        return player_state
 
     @callback
     def get_player_provider(self, player_id: str) -> PlayerProvider:
@@ -147,6 +150,8 @@ class PlayerManager:
             return
         if player.player_id in self._player_states:
             return await self.async_update_player(player)
+        # set the mass object on the player
+        player.mass = self.mass
         # create playerstate and queue object
         self._player_states[player.player_id] = PlayerState(self.mass, player)
         self._player_queues[player.player_id] = PlayerQueue(self.mass, player.player_id)
