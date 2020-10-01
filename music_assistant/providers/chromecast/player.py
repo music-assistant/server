@@ -6,6 +6,7 @@ from typing import List, Optional
 
 import pychromecast
 from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.util import compare_strings, yield_chunks
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import (
     DeviceInfo,
@@ -14,7 +15,6 @@ from music_assistant.models.player import (
     PlayerFeature,
 )
 from music_assistant.models.player_queue import QueueItem
-from music_assistant.utils import compare_strings, yield_chunks
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import (
     CONNECTION_STATUS_CONNECTED,
@@ -300,7 +300,7 @@ class ChromecastPlayer(Player):
 
     async def async_on_update(self) -> None:
         """Call when player is periodically polled by the player manager (should_poll=True)."""
-        if self.mass.player_manager.get_player(self.player_id).active_queue.startswith(
+        if self.mass.players.get_player_state(self.player_id).active_queue.startswith(
             "group_player"
         ):
             self.mass.add_job(self._chromecast.media_controller.update_status)
@@ -360,7 +360,7 @@ class ChromecastPlayer(Player):
 
     async def async_cmd_play_uri(self, uri: str) -> None:
         """Play single uri on player."""
-        player_queue = self.mass.player_manager.get_player_queue(self.player_id)
+        player_queue = self.mass.players.get_player_queue(self.player_id)
         if player_queue.use_queue_stream:
             # create CC queue so that skip and previous will work
             queue_item = QueueItem()
@@ -371,7 +371,7 @@ class ChromecastPlayer(Player):
 
     async def async_cmd_queue_load(self, queue_items: List[QueueItem]) -> None:
         """Load (overwrite) queue with new items."""
-        player_queue = self.mass.player_manager.get_player_queue(self.player_id)
+        player_queue = self.mass.players.get_player_queue(self.player_id)
         cc_queue_items = self.__create_queue_items(queue_items[:50])
         repeat_enabled = player_queue.use_queue_stream or player_queue.repeat_enabled
         queuedata = {
@@ -407,7 +407,7 @@ class ChromecastPlayer(Player):
 
     def __create_queue_item(self, track):
         """Create CC queue item from track info."""
-        player_queue = self.mass.player_manager.get_player_queue(self.player_id)
+        player_queue = self.mass.players.get_player_queue(self.player_id)
         return {
             "opt_itemId": track.queue_item_id,
             "autoplay": True,

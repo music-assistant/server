@@ -8,7 +8,7 @@ from music_assistant.constants import CONF_GROUP_DELAY
 from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import DeviceInfo, PlaybackState, Player
-from music_assistant.models.playerprovider import PlayerProvider
+from music_assistant.models.provider import PlayerProvider
 
 PROV_ID = "group_player"
 PROV_NAME = "Group player creator"
@@ -22,7 +22,7 @@ CONFIG_ENTRIES = [
     ConfigEntry(
         entry_key=CONF_PLAYER_COUNT,
         entry_type=ConfigEntryType.INT,
-        description_key=CONF_PLAYER_COUNT,
+        description=CONF_PLAYER_COUNT,
         default_value=1,
         range=(0, 10),
     )
@@ -55,10 +55,10 @@ class GroupPlayerProvider(PlayerProvider):
 
     async def async_on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
-        conf = self.mass.config.providers[PROV_ID]
+        conf = self.mass.config.player_providers[PROV_ID]
         for index in range(conf[CONF_PLAYER_COUNT]):
             player = GroupPlayer(self.mass, index)
-            self.mass.add_job(self.mass.player_manager.async_add_player(player))
+            self.mass.add_job(self.mass.players.async_add_player(player))
         return True
 
     async def async_on_stop(self):
@@ -137,7 +137,7 @@ class GroupPlayer(Player):
         """Return elapsed timefor first child player."""
         if self.state in [PlaybackState.Playing, PlaybackState.Paused]:
             for player_id in self.group_childs:
-                player = self.mass.player_manager.get_player(player_id)
+                player = self.mass.players.get_player(player_id)
                 if player:
                     return player.elapsed_time
         return 0
@@ -173,18 +173,19 @@ class GroupPlayer(Player):
         """Return config entries for this group player."""
         all_players = [
             {"text": item.name, "value": item.player_id}
-            for item in self.mass.player_manager.players
+            for item in self.mass.players.player_states
             if item.player_id is not self._player_id
         ]
         selected_players_ids = self.mass.config.get_player_config(self.player_id).get(
             CONF_PLAYERS, []
         )
+        # selected_players_ids = []
         selected_players = []
         for player_id in selected_players_ids:
-            player = self.mass.player_manager.get_player(player_id)
-            if player:
+            player_state = self.mass.players.get_player_state(player_id)
+            if player_state:
                 selected_players.append(
-                    {"text": player.name, "value": player.player_id}
+                    {"text": player_state.name, "value": player_state.player_id}
                 )
         default_master = ""
         if selected_players:
@@ -195,7 +196,7 @@ class GroupPlayer(Player):
                 entry_type=ConfigEntryType.STRING,
                 default_value=[],
                 values=all_players,
-                description_key=CONF_PLAYERS,
+                description=CONF_PLAYERS,
                 multi_value=True,
             ),
             ConfigEntry(
@@ -203,7 +204,7 @@ class GroupPlayer(Player):
                 entry_type=ConfigEntryType.STRING,
                 default_value=default_master,
                 values=selected_players,
-                description_key=CONF_MASTER,
+                description=CONF_MASTER,
                 multi_value=False,
                 depends_on=CONF_MASTER,
             ),
@@ -221,7 +222,7 @@ class GroupPlayer(Player):
         # TODO: Only start playing on powered players ?
         # Monitor if a child turns on and join it to the sync ?
         for child_player_id in self.group_childs:
-            child_player = self.mass.player_manager.get_player(child_player_id)
+            child_player = self.mass.players.get_player(child_player_id)
             if child_player:
                 queue_stream_uri = f"{self.mass.web.internal_url}/stream/group/{self.player_id}?player_id={child_player_id}"
                 await child_player.async_cmd_play_uri(queue_stream_uri)
@@ -241,7 +242,7 @@ class GroupPlayer(Player):
         # forward this command to each child player
         # TODO: Only forward to powered child players
         for child_player_id in self.group_childs:
-            child_player = self.mass.player_manager.get_player(child_player_id)
+            child_player = self.mass.players.get_player(child_player_id)
             if child_player:
                 await child_player.async_cmd_stop()
         self.update_state()
@@ -252,7 +253,7 @@ class GroupPlayer(Player):
             return
         # forward this command to each child player
         for child_player_id in self.group_childs:
-            child_player = self.mass.player_manager.get_player(child_player_id)
+            child_player = self.mass.players.get_player(child_player_id)
             if child_player:
                 await child_player.async_cmd_play()
         self._state = PlaybackState.Playing
@@ -262,7 +263,7 @@ class GroupPlayer(Player):
         """Send PAUSE command to player."""
         # forward this command to each child player
         for child_player_id in self.group_childs:
-            child_player = self.mass.player_manager.get_player(child_player_id)
+            child_player = self.mass.players.get_player(child_player_id)
             if child_player:
                 await child_player.async_cmd_pause()
         self._state = PlaybackState.Paused
@@ -285,10 +286,7 @@ class GroupPlayer(Player):
 
             :param volume_level: volume level to set (0..100).
         """
-        for child_player_id in self.group_childs:
-            child_player = self.mass.player_manager.get_player(child_player_id)
-            if child_player and child_player.powered:
-                await child_player.async_cmd_volume_set(volume_level)
+        # this is already handled by the player manager
 
     async def async_cmd_volume_mute(self, is_muted=False):
         """
@@ -297,9 +295,7 @@ class GroupPlayer(Player):
             :param is_muted: bool with new mute state.
         """
         for child_player_id in self.group_childs:
-            child_player = self.mass.player_manager.get_player(child_player_id)
-            if child_player and child_player.powered:
-                await child_player.async_cmd_volume_mute(is_muted)
+            self.mass.players.async_cmd_volume_mute(child_player_id)
         self.muted = is_muted
 
     async def subscribe_stream_client(self, child_player_id):
@@ -379,7 +375,7 @@ class GroupPlayer(Player):
 
         received_milliseconds = 0
         received_seconds = 0
-        async for audio_chunk in self.mass.stream_manager.async_queue_stream_pcm(
+        async for audio_chunk in self.mass.streams.async_queue_stream_pcm(
             self.player_id, sample_rate=96000, bit_depth=32
         ):
             received_seconds += 1
@@ -424,13 +420,13 @@ class GroupPlayer(Player):
         master_player_id = self.mass.config.player_settings[self.player_id].get(
             CONF_MASTER
         )
-        if not master_player_id:
+        master_player = self.mass.players.get_player(master_player_id)
+        if not master_player:
             LOGGER.warning("Synchronization of playback aborted: no master player.")
             return
         LOGGER.debug(
-            "Synchronize playback of group using master player %s", master_player_id
+            "Synchronize playback of group using master player %s", master_player.name
         )
-        master_player = self.mass.player_manager.get_player(master_player_id)
 
         # wait until master is playing
         while master_player.state != PlaybackState.Playing:
@@ -449,7 +445,7 @@ class GroupPlayer(Player):
 
                 if child_player_id == master_player_id:
                     continue
-                child_player = self.mass.player_manager.get_player(child_player_id)
+                child_player = self.mass.players.get_player(child_player_id)
 
                 if (
                     not child_player

@@ -6,11 +6,18 @@ import functools
 import logging
 import os
 import time
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import aiohttp
-from music_assistant.cache import async_cached, async_cached_generator
-from music_assistant.constants import EVENT_MUSIC_SYNC_STATUS
+from music_assistant.constants import EVENT_MUSIC_SYNC_STATUS, EVENT_PROVIDER_REGISTERED
+from music_assistant.helpers.cache import async_cached, async_cached_generator
+from music_assistant.helpers.musicbrainz import MusicBrainz
+from music_assistant.helpers.util import (
+    callback,
+    compare_strings,
+    encrypt_string,
+    run_periodic,
+)
 from music_assistant.models.media_types import (
     Album,
     Artist,
@@ -22,10 +29,8 @@ from music_assistant.models.media_types import (
     SearchResult,
     Track,
 )
-from music_assistant.models.musicprovider import MusicProvider
-from music_assistant.models.provider import ProviderType
+from music_assistant.models.provider import MusicProvider, ProviderType
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
-from music_assistant.utils import compare_strings, encrypt_string, run_periodic
 from PIL import Image
 
 LOGGER = logging.getLogger("mass")
@@ -72,7 +77,9 @@ class MusicManager:
         self.running_sync_jobs = []
         self.mass = mass
         self.cache = mass.cache
+        self.musicbrainz = MusicBrainz(mass)
         self._match_jobs = []
+        self.mass.add_event_listener(self.mass_event, [EVENT_PROVIDER_REGISTERED])
 
     async def async_setup(self):
         """Async initialize of module."""
@@ -83,6 +90,15 @@ class MusicManager:
     def providers(self) -> List[MusicProvider]:
         """Return all providers of type musicprovider."""
         return self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
+
+    @callback
+    def mass_event(self, msg: str, msg_details: Any):
+        """Handle message on eventbus."""
+        if msg == EVENT_PROVIDER_REGISTERED:
+            # schedule a sync task when a new provider registers
+            provider = self.mass.get_provider(msg_details)
+            if provider.type == ProviderType.MUSIC_PROVIDER:
+                self.mass.add_job(self.async_music_provider_sync(msg_details))
 
     ################ GET MediaItem(s) by id and provider #################
 
@@ -552,7 +568,7 @@ class MusicManager:
         ):
             if not lookup_album:
                 continue
-            musicbrainz_id = await self.mass.metadata.async_get_mb_artist_id(
+            musicbrainz_id = await self.musicbrainz.async_get_mb_artist_id(
                 artist.name,
                 albumname=lookup_album.name,
                 album_upc=lookup_album.external_ids.get(ExternalId.UPC),
@@ -565,7 +581,7 @@ class MusicManager:
         ):
             if not lookup_track:
                 continue
-            musicbrainz_id = await self.mass.metadata.async_get_mb_artist_id(
+            musicbrainz_id = await self.musicbrainz.async_get_mb_artist_id(
                 artist.name,
                 trackname=lookup_track.name,
                 track_isrc=lookup_track.external_ids.get(ExternalId.ISRC),

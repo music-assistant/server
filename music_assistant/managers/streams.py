@@ -19,8 +19,7 @@ import soundfile
 from aiofile import AIOFile, Reader
 from music_assistant.constants import EVENT_STREAM_ENDED, EVENT_STREAM_STARTED
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
-from music_assistant.utils import (
+from music_assistant.helpers.util import (
     create_tempfile,
     decrypt_bytes,
     decrypt_string,
@@ -29,6 +28,7 @@ from music_assistant.utils import (
     try_parse_int,
     yield_chunks,
 )
+from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 
 LOGGER = logging.getLogger("mass")
 
@@ -217,7 +217,7 @@ class StreamManager:
         self, player_id, sample_rate=96000, bit_depth=32
     ) -> AsyncGenerator[bytes, None]:
         """Stream the PlayerQueue's tracks as constant feed in PCM raw audio."""
-        player_queue = self.mass.player_manager.get_player_queue(player_id)
+        player_queue = self.mass.players.get_player_queue(player_id)
         queue_conf = self.mass.config.get_player_config(player_id)
         fade_length = try_parse_int(queue_conf["crossfade_duration"])
         pcm_args = ["s32", "-c", "2", "-r", str(sample_rate)]
@@ -244,11 +244,11 @@ class StreamManager:
                 LOGGER.debug("no (more) tracks left in queue")
                 break
             # get streamdetails
-            streamdetails = await self.mass.music_manager.async_get_stream_details(
+            streamdetails = await self.mass.music.async_get_stream_details(
                 queue_track, player_id
             )
             # get gain correct / replaygain
-            gain_correct = await self.mass.player_manager.async_get_gain_correct(
+            gain_correct = await self.mass.players.async_get_gain_correct(
                 player_id, streamdetails.item_id, streamdetails.provider
             )
             LOGGER.debug(
@@ -262,7 +262,7 @@ class StreamManager:
             prev_chunk = None
             bytes_written = 0
             # handle incoming audio chunks
-            async for is_last_chunk, chunk in self.mass.stream_manager.async_get_sox_stream(
+            async for is_last_chunk, chunk in self.mass.streams.async_get_sox_stream(
                 streamdetails,
                 SoxOutputFormat.S32,
                 resample=sample_rate,
@@ -390,18 +390,18 @@ class StreamManager:
     ) -> AsyncGenerator[bytes, None]:
         """Stream a single Queue item."""
         # collect streamdetails
-        player_queue = self.mass.player_manager.get_player_queue(player_id)
+        player_queue = self.mass.players.get_player_queue(player_id)
         if not player_queue:
             raise FileNotFoundError("invalid player_id")
         queue_item = player_queue.by_item_id(queue_item_id)
         if not queue_item:
             raise FileNotFoundError("invalid queue_item_id")
-        streamdetails = await self.mass.music_manager.async_get_stream_details(
+        streamdetails = await self.mass.music.async_get_stream_details(
             queue_item, player_id
         )
 
         # get gain correct / replaygain
-        gain_correct = await self.mass.player_manager.async_get_gain_correct(
+        gain_correct = await self.mass.players.async_get_gain_correct(
             player_id, streamdetails.item_id, streamdetails.provider
         )
         # start streaming
@@ -494,7 +494,7 @@ class StreamManager:
         player_conf = self.mass.config.get_player_config(player_id)
         # volume normalisation
         gain_correct = self.mass.add_job(
-            self.mass.player_manager.async_get_gain_correct(
+            self.mass.players.async_get_gain_correct(
                 player_id, streamdetails.item_id, streamdetails.provider
             )
         ).result()

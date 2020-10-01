@@ -8,7 +8,7 @@ import time
 from functools import reduce
 
 import aiosqlite
-from music_assistant.utils import run_periodic
+from music_assistant.helpers.util import run_periodic
 
 LOGGER = logging.getLogger("mass")
 
@@ -113,7 +113,7 @@ async def async_cached_generator(
         for item in cache_result:
             yield item
     else:
-        # nothing in cache, yield from iterator and store in cache when complete
+        # nothing in cache, yield from generator and store in cache when complete
         cache_result = []
         async for item in coro_func:
             yield item

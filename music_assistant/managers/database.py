@@ -7,6 +7,7 @@ from functools import partial
 from typing import List
 
 import aiosqlite
+from music_assistant.helpers.util import compare_strings, get_sort_name, try_parse_int
 from music_assistant.models.media_types import (
     Album,
     AlbumType,
@@ -21,7 +22,6 @@ from music_assistant.models.media_types import (
     Track,
     TrackQuality,
 )
-from music_assistant.utils import compare_strings, get_sort_name, try_parse_int
 
 LOGGER = logging.getLogger("mass")
 
@@ -48,7 +48,7 @@ class DbConnect:
         return False
 
 
-class Database:
+class DatabaseManager:
     """Class that holds the (logic to the) database."""
 
     def __init__(self, mass):
@@ -56,7 +56,6 @@ class Database:
         self.mass = mass
         self._dbfile = os.path.join(mass.config.data_path, "database.db")
         self.db_conn = partial(DbConnect, self._dbfile)
-        # logging.getLogger("aiosqlite").setLevel(logging.INFO)
 
     async def async_setup(self):
         """Async initialization."""

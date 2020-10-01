@@ -6,13 +6,14 @@ import time
 from typing import List, Optional
 
 from asyncio_throttle import Throttler
-from music_assistant.app_vars import get_app_var  # noqa # pylint: disable=all
 from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_USERNAME,
     EVENT_STREAM_ENDED,
     EVENT_STREAM_STARTED,
 )
+from music_assistant.helpers.app_vars import get_app_var  # noqa # pylint: disable=all
+from music_assistant.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.media_types import (
     Album,
@@ -26,9 +27,8 @@ from music_assistant.models.media_types import (
     Track,
     TrackQuality,
 )
-from music_assistant.models.musicprovider import MusicProvider
+from music_assistant.models.provider import MusicProvider
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
-from music_assistant.utils import parse_title_and_version, try_parse_int
 
 PROV_ID = "qobuz"
 PROV_NAME = "Qobuz"
@@ -38,12 +38,12 @@ CONFIG_ENTRIES = [
     ConfigEntry(
         entry_key=CONF_USERNAME,
         entry_type=ConfigEntryType.STRING,
-        description_key=CONF_USERNAME,
+        description=CONF_USERNAME,
     ),
     ConfigEntry(
         entry_key=CONF_PASSWORD,
         entry_type=ConfigEntryType.PASSWORD,
-        description_key=CONF_PASSWORD,
+        description=CONF_PASSWORD,
     ),
 ]
 

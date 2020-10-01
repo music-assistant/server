@@ -5,6 +5,7 @@ import os
 from typing import List, Optional
 
 import taglib
+from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.media_types import (
     Album,
@@ -16,9 +17,8 @@ from music_assistant.models.media_types import (
     Track,
     TrackQuality,
 )
-from music_assistant.models.musicprovider import MusicProvider
+from music_assistant.models.provider import MusicProvider
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
-from music_assistant.utils import parse_title_and_version
 
 PROV_ID = "file"
 PROV_NAME = "Local files and playlists"
@@ -32,12 +32,12 @@ CONFIG_ENTRIES = [
     ConfigEntry(
         entry_key=CONF_MUSIC_DIR,
         entry_type=ConfigEntryType.STRING,
-        description_key="file_prov_music_path",
+        description="file_prov_music_path",
     ),
     ConfigEntry(
         entry_key=CONF_PLAYLISTS_DIR,
         entry_type=ConfigEntryType.STRING,
-        description_key="file_prov_playlists_path",
+        description="file_prov_playlists_path",
     ),
 ]
 
@@ -395,7 +395,7 @@ class FileProvider(MusicProvider):
             prov_id = uri.split("://")[0]
             prov_item_id = uri.split("/")[-1].split(".")[0].split(":")[-1]
             try:
-                return await self.mass.music_manager.async_get_track(
+                return await self.mass.music.async_get_track(
                     prov_item_id, prov_id, lazy=False
                 )
             except Exception as exc:

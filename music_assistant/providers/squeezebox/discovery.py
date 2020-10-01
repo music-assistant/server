@@ -5,7 +5,7 @@ import socket
 import struct
 from collections import OrderedDict
 
-from music_assistant.utils import get_hostname, get_ip
+from music_assistant.helpers.util import get_hostname, get_ip
 
 LOGGER = logging.getLogger("squeezebox")
 

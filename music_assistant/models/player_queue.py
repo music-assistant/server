@@ -19,10 +19,10 @@ from music_assistant.helpers.typing import (
     OptionalStr,
     PlayerType,
 )
+from music_assistant.helpers.util import callback
 from music_assistant.models.media_types import Track
 from music_assistant.models.player import PlaybackState, PlayerFeature
 from music_assistant.models.streamdetails import StreamDetails
-from music_assistant.utils import callback
 
 # pylint: disable=too-many-instance-attributes
 # pylint: disable=too-many-public-methods
@@ -85,7 +85,12 @@ class PlayerQueue:
     @property
     def player(self) -> PlayerType:
         """Return handle to player."""
-        return self.mass.player_manager.get_player(self._player_id)
+        return self.mass.players.get_player(self._player_id)
+
+    @property
+    def player_state(self) -> PlayerType:
+        """Return handle to player state."""
+        return self.mass.players.get_player_state(self._player_id)
 
     @property
     def player_id(self) -> str:
@@ -274,7 +279,7 @@ class PlayerQueue:
             return
         if self.use_queue_stream:
             return await self.async_play_index(self.cur_index - 1)
-        return await self.mass.player_manager.async_cmd_previous(self.player_id)
+        return await self.mass.players.async_cmd_previous(self.player_id)
 
     async def async_resume(self) -> None:
         """Resume previous queue."""
@@ -449,7 +454,7 @@ class PlayerQueue:
 
     async def async_clear(self) -> None:
         """Clear all items in the queue."""
-        await self.mass.player_manager.async_cmd_stop(self.player_id)
+        await self.mass.players.async_cmd_stop(self.player_id)
         self._items = []
         if self.supports_queue:
             # send queue cmd to player's own implementation

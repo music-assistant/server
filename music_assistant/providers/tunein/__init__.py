@@ -12,7 +12,7 @@ from music_assistant.models.media_types import (
     SearchResult,
     TrackQuality,
 )
-from music_assistant.models.musicprovider import MusicProvider
+from music_assistant.models.provider import MusicProvider
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 
 PROV_ID = "tunein"
@@ -23,12 +23,12 @@ CONFIG_ENTRIES = [
     ConfigEntry(
         entry_key=CONF_USERNAME,
         entry_type=ConfigEntryType.STRING,
-        description_key=CONF_USERNAME,
+        description=CONF_USERNAME,
     ),
     ConfigEntry(
         entry_key=CONF_PASSWORD,
         entry_type=ConfigEntryType.PASSWORD,
-        description_key=CONF_PASSWORD,
+        description=CONF_PASSWORD,
     ),
 ]
 
@@ -78,6 +78,7 @@ class TuneInProvider(MusicProvider):
         self._username = config[CONF_USERNAME]
         self._password = config[CONF_PASSWORD]
         self._throttler = Throttler(rate_limit=1, period=1)
+        return True
 
     async def async_search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
