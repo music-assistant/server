@@ -54,6 +54,6 @@
     "desc_target_volume": "Selecteer het gewenste doelvolume in LUFS. De R128 standaard is -22 LUFS.",
     "desc_gain_correct": "Stel een fallback gain correctie in als er geen R128 meting beschikbaar is.",
     "desc_crossfade": "Crossfade inschakelen door het instellen van een crossfade duur in seconden.",
-    "desc_enable_provider": "Deze provider inschakelen.",
+    "desc_enable_provider": "Deze provider inschakelen."
   }
 }

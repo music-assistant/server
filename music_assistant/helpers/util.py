@@ -260,7 +260,7 @@ def compare_strings(str1, str2, strict=False):
 def merge_dict(base_dict: dict, new_dict: dict):
     """Merge dict without overwriting existing values."""
     for key, value in new_dict.items():
-        if isinstance(value, dict):
+        if base_dict.get(key) and isinstance(value, dict):
             base_dict[key] = merge_dict(base_dict[key], value)
         elif not base_dict.get(key):
             base_dict[key] = value
