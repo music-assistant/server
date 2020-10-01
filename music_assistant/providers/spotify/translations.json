@@ -1,0 +1,10 @@
+{
+    "en": {
+        "desc_spotify_username": "Username for your Spotify account",
+        "desc_spotify_password": "Password for your Spotify account"
+    },
+    "nl": {
+        "desc_spotify_username": "Gebruikersnaam van jouw Spotify account",
+        "desc_spotify_password": "Wachtwoord van jouw Spotify account"
+    }
+}

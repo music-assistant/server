@@ -6,6 +6,7 @@ import time
 from typing import List
 
 import soco
+from music_assistant.helpers.util import run_periodic
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import (
     DeviceInfo,
@@ -14,8 +15,7 @@ from music_assistant.models.player import (
     PlayerFeature,
 )
 from music_assistant.models.player_queue import QueueItem
-from music_assistant.models.playerprovider import PlayerProvider
-from music_assistant.utils import run_periodic
+from music_assistant.models.provider import PlayerProvider
 
 PROV_ID = "sonos"
 PROV_NAME = "Sonos"
@@ -244,7 +244,7 @@ class SonosProvider(PlayerProvider):
             :param player_id: player_id of the player to handle the command.
             :param queue_items: a list of QueueItems
         """
-        player_queue = self.mass.player_manager.get_player_queue(player_id)
+        player_queue = self.mass.players.get_player_queue(player_id)
         if player_queue:
             return await self.async_cmd_queue_insert(
                 player_id, queue_items, len(player_queue.items)
@@ -283,7 +283,7 @@ class SonosProvider(PlayerProvider):
         for player in list(self._players.values()):
             if not player.is_group and player.soco.uid not in new_device_ids:
                 self.mass.add_job(
-                    self.mass.player_manager.async_remove_player(player.player_id)
+                    self.mass.players.async_remove_player(player.player_id)
                 )
                 for sub in player.subscriptions:
                     sub.unsubscribe()
@@ -327,7 +327,7 @@ class SonosProvider(PlayerProvider):
         subscribe(soco_device.avTransport, self.__player_event)
         subscribe(soco_device.renderingControl, self.__player_event)
         subscribe(soco_device.zoneGroupTopology, self.__topology_changed)
-        self.mass.run_task(self.mass.player_manager.async_add_player(player))
+        self.mass.run_task(self.mass.players.async_add_player(player))
         return player
 
     def __player_event(self, player_id: str, event):
@@ -360,7 +360,7 @@ class SonosProvider(PlayerProvider):
             player.elapsed_time = rel_time
             if player.state == PlaybackState.Playing:
                 self.mass.add_job(self.__async_report_progress(player_id))
-        self.mass.add_job(self.mass.player_manager.async_update_player(player))
+        self.mass.add_job(self.mass.players.async_update_player(player))
 
     def __process_groups(self, sonos_groups):
         """Process all sonos groups."""
@@ -376,9 +376,7 @@ class SonosProvider(PlayerProvider):
             group_player.is_group_player = True
             group_player.name = group.label
             group_player.group_childs = [item.uid for item in group.members]
-            self.mass.run_task(
-                self.mass.player_manager.async_update_player(group_player)
-            )
+            self.mass.run_task(self.mass.players.async_update_player(group_player))
 
     async def __topology_changed(self, player_id, event=None):
         """Received topology changed event from one of the sonos players."""

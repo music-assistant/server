@@ -1,6 +1,9 @@
 {
     "python.linting.pylintEnabled": true,
+    "python.linting.pylintArgs": ["--rcfile=${workspaceFolder}/setup.cfg"],
     "python.linting.enabled": true,
     "python.pythonPath": "venv/bin/python3",
-    "python.linting.flake8Enabled": false
+    "python.linting.flake8Enabled": true,
+    "python.linting.flake8Args": ["--config=${workspaceFolder}/setup.cfg"],
+    "python.linting.mypyEnabled": false,
 }

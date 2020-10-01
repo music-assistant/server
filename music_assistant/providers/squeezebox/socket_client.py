@@ -8,7 +8,7 @@ import time
 from enum import Enum
 from typing import Callable
 
-from music_assistant.utils import callback, run_periodic
+from music_assistant.helpers.util import callback, run_periodic
 
 from .constants import PROV_ID
 

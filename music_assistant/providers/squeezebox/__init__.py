@@ -6,6 +6,7 @@ from typing import List
 
 from music_assistant.constants import CONF_CROSSFADE_DURATION
 from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.util import callback
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import (
     DeviceInfo,
@@ -14,8 +15,7 @@ from music_assistant.models.player import (
     PlayerFeature,
 )
 from music_assistant.models.player_queue import QueueItem
-from music_assistant.models.playerprovider import PlayerProvider
-from music_assistant.utils import callback
+from music_assistant.models.provider import PlayerProvider
 
 from .constants import PROV_ID, PROV_NAME
 from .discovery import DiscoveryProtocol
@@ -96,10 +96,8 @@ class PySqueezeProvider(PlayerProvider):
             if not player_id:
                 return
             # always check if we already have this player as it might be reconnected
-            player_state = self.mass.player_manager.get_player(player_id)
-            if player_state:
-                player = player_state.player
-            else:
+            player = self.mass.players.get_player(player_id)
+            if not player:
                 player = SqueezePlayer(self.mass, socket_client)
             player.set_socket_client(socket_client)
             # just update, the playermanager will take care of adding it if it's a new player
@@ -252,7 +250,7 @@ class SqueezePlayer(Player):
 
     async def async_cmd_next(self):
         """Send NEXT TRACK command to player."""
-        queue = self.mass.player_manager.get_player_queue(self.player_id)
+        queue = self.mass.players.get_player_queue(self.player_id)
         if queue:
             new_track = queue.get_item(queue.cur_index + 1)
             if new_track:
@@ -260,7 +258,7 @@ class SqueezePlayer(Player):
 
     async def async_cmd_previous(self):
         """Send PREVIOUS TRACK command to player."""
-        queue = self.mass.player_manager.get_player_queue(self.player_id)
+        queue = self.mass.players.get_player_queue(self.player_id)
         if queue:
             new_track = queue.get_item(queue.cur_index - 1)
             if new_track:
@@ -272,7 +270,7 @@ class SqueezePlayer(Player):
 
             :param index: (int) index of the queue item that should start playing
         """
-        queue = self.mass.player_manager.get_player_queue(self.player_id)
+        queue = self.mass.players.get_player_queue(self.player_id)
         if queue:
             new_track = queue.get_item(index)
             if new_track:
@@ -300,7 +298,7 @@ class SqueezePlayer(Player):
         """
         # queue handled by built-in queue controller
         # we only check the start index
-        queue = self.mass.player_manager.get_player_queue(self.player_id)
+        queue = self.mass.players.get_player_queue(self.player_id)
         if queue and insert_at_index == queue.cur_index:
             return await self.async_cmd_queue_play_index(insert_at_index)
 
@@ -341,7 +339,7 @@ class SqueezePlayer(Player):
             self.mass.add_job(self.async_restore_states())
         elif event == SqueezeEvent.DECODER_READY:
             # tell player to load next queue track
-            queue = self.mass.player_manager.get_player_queue(self.player_id)
+            queue = self.mass.players.get_player_queue(self.player_id)
             if queue:
                 next_item = queue.next_item
                 if next_item:

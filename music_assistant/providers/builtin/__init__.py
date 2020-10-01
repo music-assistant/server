@@ -1,4 +1,4 @@
-"""Demo/test providers."""
+"""Local player provider."""
 import asyncio
 import logging
 import signal
@@ -7,15 +7,21 @@ from typing import List
 
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import DeviceInfo, PlaybackState, Player
-from music_assistant.models.playerprovider import PlayerProvider
+from music_assistant.models.provider import PlayerProvider
 
-PROV_ID = "demo_player"
-PROV_NAME = "Demo/Test players"
+PROV_ID = "builtin"
+PROV_NAME = "Built-in (local) player"
 LOGGER = logging.getLogger(PROV_ID)
 
 
-class DemoPlayerProvider(PlayerProvider):
-    """Demo PlayerProvider which provides fake players."""
+async def async_setup(mass):
+    """Perform async setup of this Plugin/Provider."""
+    prov = BuiltinPlayerProvider()
+    await mass.async_register_provider(prov)
+
+
+class BuiltinPlayerProvider(PlayerProvider):
+    """Demo PlayerProvider which provides a single local player."""
 
     @property
     def id(self) -> str:
@@ -34,11 +40,8 @@ class DemoPlayerProvider(PlayerProvider):
 
     async def async_on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
-        # create fake/test regular player 1
-        player = DemoPlayer("demo_player_1", "Demo player 1")
-        self.mass.add_job(self.mass.player_manager.async_add_player(player))
-        player = DemoPlayer("demo_player_2", "Demo player 2")
-        self.mass.add_job(self.mass.player_manager.async_add_player(player))
+        player = BuiltinPlayer("local_player", "Built-in player on the server")
+        self.mass.add_job(self.mass.players.async_add_player(player))
         return True
 
     async def async_on_stop(self):
@@ -47,11 +50,11 @@ class DemoPlayerProvider(PlayerProvider):
             await player.async_cmd_stop()
 
 
-class DemoPlayer(Player):
-    """Representation of a player for the demo provider."""
+class BuiltinPlayer(Player):
+    """Representation of a BuiltinPlayer."""
 
     def __init__(self, player_id: str, name: str) -> None:
-        """Initialize a demo player."""
+        """Initialize the built-in player."""
         self._player_id = player_id
         self._name = name
         self._powered = False
@@ -85,7 +88,7 @@ class DemoPlayer(Player):
 
     @property
     def elapsed_time(self) -> float:
-        """Return elapsed_time of current playing uri in (fractions of) seconds."""
+        """Return elapsed_time of current playing uri in seconds."""
         return self._elapsed_time
 
     @property

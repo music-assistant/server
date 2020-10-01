@@ -6,9 +6,11 @@ import platform
 import time
 from typing import List, Optional
 
+import orjson
 from asyncio_throttle import Throttler
-from music_assistant.app_vars import get_app_var  # noqa # pylint: disable=all
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.helpers.app_vars import get_app_var  # noqa # pylint: disable=all
+from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.media_types import (
     Album,
@@ -22,9 +24,8 @@ from music_assistant.models.media_types import (
     Track,
     TrackQuality,
 )
-from music_assistant.models.musicprovider import MusicProvider
+from music_assistant.models.provider import MusicProvider
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
-from music_assistant.utils import json, parse_title_and_version
 
 PROV_ID = "spotify"
 PROV_NAME = "Spotify"
@@ -35,12 +36,14 @@ CONFIG_ENTRIES = [
     ConfigEntry(
         entry_key=CONF_USERNAME,
         entry_type=ConfigEntryType.STRING,
-        description_key=CONF_USERNAME,
+        label=CONF_USERNAME,
+        description="desc_spotify_username",
     ),
     ConfigEntry(
         entry_key=CONF_PASSWORD,
         entry_type=ConfigEntryType.PASSWORD,
-        description_key=CONF_PASSWORD,
+        label=CONF_PASSWORD,
+        description="desc_spotify_password",
     ),
 ]
 
@@ -522,8 +525,8 @@ class SpotifyProvider(MusicProvider):
         )
         stdout, _ = await spotty.communicate()
         try:
-            result = json.loads(stdout)
-        except json.decoder.JSONDecodeError:
+            result = orjson.loads(stdout)
+        except orjson.decoder.JSONDecodeError:
             LOGGER.warning("Error while retrieving Spotify token!")
             result = None
         # transform token info to spotipy compatible format
@@ -563,7 +566,7 @@ class SpotifyProvider(MusicProvider):
             async with self.mass.http_session.get(
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
-                result = await response.json()
+                result = await response.json(loads=orjson.loads)
                 if not result or "error" in result:
                     LOGGER.error("%s - %s", endpoint, result)
                     result = None

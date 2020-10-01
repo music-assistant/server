@@ -9,21 +9,15 @@ import socket
 import struct
 import tempfile
 import urllib.request
-from datetime import datetime
 from enum import Enum
 from io import BytesIO
 from typing import Any, Callable, TypeVar
 
 import memory_tempfile
+import orjson
 import unidecode
 from cryptography.fernet import Fernet, InvalidToken
-from music_assistant.app_vars import get_app_var  # noqa # pylint: disable=all
-
-try:
-    import simplejson as json
-except ImportError:
-    import json
-
+from music_assistant.helpers.app_vars import get_app_var  # noqa # pylint: disable=all
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -244,26 +238,8 @@ def get_folder_size(folderpath):
     return total_size_gb
 
 
-class EnhancedJSONEncoder(json.JSONEncoder):
-    """Custom JSON decoder."""
-
-    def default(self, obj):
-        """Return default handler."""
-        # pylint: disable=method-hidden
-        try:
-            # as most of our objects are dataclass, we just try this first
-            return obj.to_dict()
-        except AttributeError:
-            pass
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        if isinstance(obj, Enum):
-            return str(obj)
-        return super().default(obj)
-
-
 # pylint: disable=invalid-name
-json_serializer = functools.partial(json.dumps, cls=EnhancedJSONEncoder)
+json_serializer = functools.partial(orjson.dumps, option=orjson.OPT_NAIVE_UTC)
 # pylint: enable=invalid-name
 
 
@@ -281,12 +257,22 @@ def compare_strings(str1, str2, strict=False):
     return match
 
 
+def merge_dict(base_dict: dict, new_dict: dict):
+    """Merge dict without overwriting existing values."""
+    for key, value in new_dict.items():
+        if isinstance(value, dict):
+            base_dict[key] = merge_dict(base_dict[key], value)
+        elif not base_dict.get(key):
+            base_dict[key] = value
+    return base_dict
+
+
 def try_load_json_file(jsonfile):
     """Try to load json from file."""
     try:
-        with open(jsonfile) as _file:
-            return json.loads(_file.read())
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        with open(jsonfile, "rb") as _file:
+            return orjson.loads(_file.read())
+    except (FileNotFoundError, orjson.JSONDecodeError) as exc:
         logging.getLogger().debug(
             "Could not load json from file %s", jsonfile, exc_info=exc
         )
@@ -323,7 +309,7 @@ def decrypt_string(str_value):
     """Decrypt a string with Fernet."""
     try:
         return Fernet(get_app_var(3)).decrypt(str_value.encode()).decode()
-    except InvalidToken:
+    except (InvalidToken, AttributeError):
         return None
 
 
@@ -331,7 +317,7 @@ def decrypt_bytes(bytes_value):
     """Decrypt bytes with Fernet."""
     try:
         return Fernet(get_app_var(3)).decrypt(bytes_value)
-    except InvalidToken:
+    except (InvalidToken, AttributeError):
         return None
 
 

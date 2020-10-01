@@ -5,11 +5,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, List, Optional
 
-from mashumaro import DataClassDictMixin
 from music_assistant.constants import EVENT_SET_PLAYER_CONTROL_STATE
 from music_assistant.helpers.typing import MusicAssistantType, QueueItems
+from music_assistant.helpers.util import CustomIntEnum, callback
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.utils import CustomIntEnum, callback
 
 
 class PlaybackState(Enum):
@@ -22,7 +21,7 @@ class PlaybackState(Enum):
 
 
 @dataclass
-class DeviceInfo(DataClassDictMixin):
+class DeviceInfo:
     """Model for a player's deviceinfo."""
 
     model: str = ""
@@ -267,7 +266,7 @@ class Player:
     @callback
     def update_state(self) -> None:
         """Call to store current player state in the player manager."""
-        self.mass.add_job(self.mass.player_manager.async_update_player(self))
+        self.mass.add_job(self.mass.players.async_update_player(self))
 
 
 class PlayerControlType(CustomIntEnum):

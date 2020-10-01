@@ -6,7 +6,7 @@ from typing import List
 
 import pychromecast
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.models.playerprovider import PlayerProvider
+from music_assistant.models.provider import PlayerProvider
 from pychromecast.controllers.multizone import MultizoneManager
 
 from .const import PROV_ID, PROV_NAME, PROVIDER_CONFIG_ENTRIES
@@ -86,17 +86,17 @@ class ChromecastProvider(PlayerProvider):
             port=service[5],
         )
         player_id = cast_info.uuid
-        player_state = self.mass.player_manager.get_player(player_id)
-        if player_state:
+        player = self.mass.players.get_player(player_id)
+        if player:
             # player already added, the player will take care of reconnects itself.
-            self.mass.add_job(player_state.player.set_cast_info, cast_info)
+            self.mass.add_job(player.set_cast_info, cast_info)
             return
         LOGGER.debug(
             "Chromecast discovered: %s (%s)", cast_info.friendly_name, player_id
         )
         player = ChromecastPlayer(self.mass, cast_info)
         self.mass.add_job(player.set_cast_info, cast_info)
-        self.mass.add_job(self.mass.player_manager.async_add_player(player))
+        self.mass.add_job(self.mass.players.async_add_player(player))
 
     def __chromecast_remove_callback(self, cast_uuid, cast_service_name, cast_service):
         """Handle a Chromecast removed event."""
@@ -104,4 +104,4 @@ class ChromecastProvider(PlayerProvider):
         player_id = str(cast_service[1])
         friendly_name = cast_service[3]
         LOGGER.debug("Chromecast removed: %s - %s", friendly_name, player_id)
-        self.mass.add_job(self.mass.player_manager.async_remove_player(player_id))
+        self.mass.add_job(self.mass.players.async_remove_player(player_id))
