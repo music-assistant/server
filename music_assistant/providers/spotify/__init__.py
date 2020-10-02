@@ -526,7 +526,7 @@ class SpotifyProvider(MusicProvider):
         stdout, _ = await spotty.communicate()
         try:
             result = orjson.loads(stdout)
-        except orjson.decoder.JSONDecodeError:
+        except orjson.JSONDecodeError:
             LOGGER.warning("Error while retrieving Spotify token!")
             result = None
         # transform token info to spotipy compatible format

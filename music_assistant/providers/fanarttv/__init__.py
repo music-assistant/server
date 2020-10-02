@@ -93,7 +93,7 @@ class FanartTvProvider(MetadataProvider):
                     result = await response.json(loads=orjson.loads)
                 except (
                     aiohttp.client_exceptions.ContentTypeError,
-                    orjson.decoder.JSONDecodeError,
+                    orjson.JSONDecodeError,
                 ):
                     LOGGER.error("Failed to retrieve %s", endpoint)
                     text_result = await response.text()

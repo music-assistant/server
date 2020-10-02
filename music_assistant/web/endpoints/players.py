@@ -30,7 +30,7 @@ async def async_player_command(request: web.Request):
     cmd = request.match_info.get("cmd")
     try:
         cmd_args = await request.json(loads=orjson.loads)
-    except orjson.decoder.JSONDecodeError:
+    except orjson.JSONDecodeError:
         cmd_args = None
     player_cmd = getattr(request.app["mass"].players, f"async_cmd_{cmd}", None)
     if player_cmd and cmd_args is not None:
@@ -112,7 +112,7 @@ async def async_player_queue_cmd(request: web.Request):
     cmd = request.match_info.get("cmd")
     try:
         cmd_args = await request.json(loads=orjson.loads)
-    except orjson.decoder.JSONDecodeError:
+    except orjson.JSONDecodeError:
         cmd_args = None
     if cmd == "repeat_enabled":
         player_queue.repeat_enabled = cmd_args

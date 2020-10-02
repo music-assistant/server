@@ -41,7 +41,7 @@ async def async_websocket_handler(request: aiohttp.web.Request):
                 continue
             try:
                 data = msg.json(loads=orjson.loads)
-            except orjson.decoder.JSONDecodeError:
+            except orjson.JSONDecodeError:
                 await async_send_message(
                     "error",
                     'commands must be issued in json format \

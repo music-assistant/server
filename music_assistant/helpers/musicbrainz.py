@@ -175,7 +175,7 @@ class MusicBrainz:
                     result = await response.json(loads=orjson.loads)
                 except (
                     aiohttp.client_exceptions.ContentTypeError,
-                    orjson.decoder.JSONDecodeError,
+                    orjson.JSONDecodeError,
                 ) as exc:
                     msg = await response.text()
                     LOGGER.error("%s - %s", str(exc), msg)

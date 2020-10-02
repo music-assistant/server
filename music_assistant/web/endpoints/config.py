@@ -61,7 +61,7 @@ async def async_put_config(request: web.Request):
     entry_key = request.match_info.get("entry_key")
     try:
         new_value = await request.json(loads=orjson.loads)
-    except orjson.decoder.JSONDecodeError:
+    except orjson.JSONDecodeError:
         new_value = (
             request.app["mass"]
             .config[conf_base][conf_key]
