@@ -1,16 +1,16 @@
 """Search API endpoints."""
 
-from aiohttp import web
+from aiohttp.web import Request, Response, RouteTableDef
 from aiohttp_jwt import login_required
 from music_assistant.helpers.util import json_serializer
 from music_assistant.models.media_types import MediaType
 
-routes = web.RouteTableDef()
+routes = RouteTableDef()
 
 
 @routes.get("/api/search")
 @login_required
-async def async_search(request: web.Request):
+async def async_search(request: Request):
     """Search database and/or providers."""
     searchquery = request.rel_url.query.get("query")
     media_types_query = request.rel_url.query.get("media_types")
@@ -30,4 +30,4 @@ async def async_search(request: web.Request):
     result = await request.app["mass"].music.async_global_search(
         searchquery, media_types, limit=limit
     )
-    return web.Response(body=json_serializer(result), content_type="application/json")
+    return Response(body=json_serializer(result), content_type="application/json")

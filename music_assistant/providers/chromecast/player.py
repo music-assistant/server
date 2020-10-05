@@ -6,7 +6,7 @@ from typing import List, Optional
 
 import pychromecast
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.helpers.util import compare_strings, yield_chunks
+from music_assistant.helpers.util import async_yield_chunks, compare_strings
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import (
     DeviceInfo,
@@ -50,7 +50,6 @@ class ChromecastPlayer(Player):
         self.mz_mgr = None
         self.mz_manager = None
         self._available = False
-        self._powered = False
         self._status_listener: Optional[CastStatusListener] = None
         self._is_speaker_group = False
 
@@ -74,7 +73,7 @@ class ChromecastPlayer(Player):
     @property
     def powered(self) -> bool:
         """Return power state of this player."""
-        return self._powered
+        return not self.cast_status.volume_muted if self.cast_status else False
 
     @property
     def should_poll(self) -> bool:
@@ -272,8 +271,6 @@ class ChromecastPlayer(Player):
         """Handle updates of the media status."""
         self.media_status = media_status
         self.update_state()
-        if media_status.player_is_playing:
-            self._powered = True
 
     def new_connection_status(self, connection_status) -> None:
         """Handle updates of connection status."""
@@ -296,13 +293,14 @@ class ChromecastPlayer(Player):
             self._available = new_available
             self.update_state()
             if self._cast_info.is_audio_group and new_available:
-                self._chromecast.mz_controller.update_members()
+                self.mass.add_job(self._chromecast.mz_controller.update_members)
 
     async def async_on_update(self) -> None:
         """Call when player is periodically polled by the player manager (should_poll=True)."""
         if self.mass.players.get_player_state(self.player_id).active_queue.startswith(
             "group_player"
         ):
+            # the group player wants very accurate elapsed_time state so we request it very often
             self.mass.add_job(self._chromecast.media_controller.update_status)
         self.update_state()
 
@@ -335,7 +333,6 @@ class ChromecastPlayer(Player):
 
     async def async_cmd_power_on(self) -> None:
         """Send power ON command to player."""
-        self._powered = True
         self.mass.add_job(self._chromecast.set_volume_muted, False)
 
     async def async_cmd_power_off(self) -> None:
@@ -346,7 +343,6 @@ class ChromecastPlayer(Player):
             or self.media_status.player_is_idle
         ):
             self.mass.add_job(self._chromecast.media_controller.stop)
-        self._powered = False
         # chromecast has no real poweroff so we send mute instead
         self.mass.add_job(self._chromecast.set_volume_muted, True)
 
@@ -389,7 +385,7 @@ class ChromecastPlayer(Player):
     async def async_cmd_queue_append(self, queue_items: List[QueueItem]) -> None:
         """Append new items at the end of the queue."""
         cc_queue_items = self.__create_queue_items(queue_items)
-        for chunk in yield_chunks(cc_queue_items, 50):
+        async for chunk in async_yield_chunks(cc_queue_items, 50):
             queuedata = {
                 "type": "QUEUE_INSERT",
                 "insertBefore": None,

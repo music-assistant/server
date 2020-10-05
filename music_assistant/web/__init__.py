@@ -27,7 +27,7 @@ from .endpoints import (
     websocket,
 )
 
-LOGGER = logging.getLogger("mass")
+LOGGER = logging.getLogger("webserver")
 
 
 routes = web.RouteTableDef()
@@ -87,7 +87,7 @@ class WebServer:
         app.add_routes(websocket.routes)
         app.add_routes(routes)
 
-        webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web/static/")
+        webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static/")
         if os.path.isdir(webdir):
             app.router.add_static("/", webdir, append_version=True)
         else:
@@ -195,7 +195,7 @@ async def async_index(request: web.Request):
     """Get the index page, redirect if we do not have a web directory."""
     # pylint: disable=unused-argument
     html_app = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "web/static/index.html"
+        os.path.dirname(os.path.abspath(__file__)), "static/index.html"
     )
     if not os.path.isfile(html_app):
         raise web.HTTPFound("https://music-assistant.github.io/app")

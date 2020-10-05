@@ -16,7 +16,7 @@
     "https_port": "HTTPS Port",
     "ssl_certificate": "SSL Certificate file location",
     "ssl_key": "Path to certificate key file",
-
+    
     "desc_sample_rate": "Set the maximum sample rate this player can handle.",
     "desc_volume_normalisation": "Enable R128 volume normalisation to play music at an equally loud volume.",
     "desc_target_volume": "Set the preferred target volume level in LUFS. The R128 default is -22 LUFS.",
@@ -54,6 +54,13 @@
     "desc_target_volume": "Selecteer het gewenste doelvolume in LUFS. De R128 standaard is -22 LUFS.",
     "desc_gain_correct": "Stel een fallback gain correctie in als er geen R128 meting beschikbaar is.",
     "desc_crossfade": "Crossfade inschakelen door het instellen van een crossfade duur in seconden.",
-    "desc_enable_provider": "Deze provider inschakelen."
+    "desc_enable_provider": "Deze provider inschakelen.",
+    "desc_http_port": "De TCP poort waarop de HTTP webserver gestart mag worden.",
+    "desc_https_port": "De TCP poort waarop de HTTPS webserver gestart mag worden. De HTTPS Server wordt alleen ingeschakeld indien er ook valide certificaat gegevens worden opgegegven.",
+    "desc_ssl_certificate": "Geef het pad op naar het certificaat bestand (PEM).",
+    "desc_ssl_key": "Geef het pad om naar het bestand met de private key.",
+    "desc_external_url": "Geef de URL waarop deze Music Assistant server extern te benaderen is. Zorg dat dit overeenomst met het certificaat.",
+    "desc_base_username": "Gebruikersnaam waarmee deze server beveiligd moet worden.",
+    "desc_base_password": "Wachtwoord waarmee deze server beveiligd moet worden. Mag worden leeggelaten maar dit is extreem gevaarlijk indien je besluit de server extern toegankelijk te maken."
   }
 }

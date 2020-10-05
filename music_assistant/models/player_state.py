@@ -38,18 +38,35 @@ from music_assistant.constants import (
     EVENT_PLAYER_CHANGED,
 )
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.helpers.util import callback
-from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import (
     DeviceInfo,
     PlaybackState,
     Player,
-    PlayerControlType,
     PlayerFeature,
 )
 
 LOGGER = logging.getLogger("mass")
 
+# List of all player_state attributes
+PLAYER_ATTRIBUTES = [
+    ATTR_ACTIVE_QUEUE,
+    ATTR_AVAILABLE,
+    ATTR_CURRENT_URI,
+    ATTR_DEVICE_INFO,
+    ATTR_ELAPSED_TIME,
+    ATTR_FEATURES,
+    ATTR_GROUP_CHILDS,
+    ATTR_GROUP_PARENTS,
+    ATTR_IS_GROUP_PLAYER,
+    ATTR_MUTED,
+    ATTR_NAME,
+    ATTR_PLAYER_ID,
+    ATTR_POWERED,
+    ATTR_PROVIDER_ID,
+    ATTR_SHOULD_POLL,
+    ATTR_STATE,
+    ATTR_VOLUME_LEVEL,
+]
 
 # list of Player attributes that can/will cause a player changed event
 UPDATE_ATTRIBUTES = [
@@ -62,8 +79,6 @@ UPDATE_ATTRIBUTES = [
     ATTR_MUTED,
     ATTR_IS_GROUP_PLAYER,
     ATTR_GROUP_CHILDS,
-    ATTR_DEVICE_INFO,
-    ATTR_FEATURES,
     ATTR_SHOULD_POLL,
 ]
 
@@ -101,7 +116,7 @@ class PlayerState:
         self._updated_at = datetime.utcnow()
         self._group_parents = self.get_group_parents()
         self._active_queue = self.get_active_queue()
-        self._config_entries = self.get_player_config_entries()
+        self._group_delay = self.get_group_delay()
         # schedule update to set the transforms
         self.mass.add_job(self.async_update(player))
 
@@ -144,7 +159,10 @@ class PlayerState:
         If provided, the property must return the REALTIME value while playing.
         Used for synced playback in player groups.
         """
-        return self.player.elapsed_milliseconds  # always realtime returned from player
+        # always realtime returned from player
+        if self.player.elapsed_milliseconds is not None:
+            return self.player.elapsed_milliseconds - self.group_delay
+        return None
 
     @property
     def state(self) -> PlaybackState:
@@ -197,16 +215,25 @@ class PlayerState:
         return self._features
 
     @property
-    def config_entries(self) -> List[ConfigEntry]:
-        """Return player specific config entries (if any)."""
-        return self._config_entries
+    def group_delay(self) -> int:
+        """Return group delay of this player in milliseconds (if configured)."""
+        return self._group_delay
 
     async def async_update(self, player: Player):
+        """Run update player state task in executor."""
+        self.mass.add_job(self.update, player)
+
+    def update(self, player: Player):
         """Update attributes from player object."""
+        new_available = self.get_available(player.available)
+        if self.available == new_available and not new_available:
+            return  # ignore players that are unavailable
+
         # detect state changes
         changed_keys = set()
-        for attr in UPDATE_ATTRIBUTES:
-            new_value = getattr(self._player, attr)
+        for attr in PLAYER_ATTRIBUTES:
+
+            new_value = getattr(self._player, attr, None)
 
             # handle transformations
             if attr == ATTR_NAME:
@@ -219,6 +246,10 @@ class PlayerState:
                 new_value = self.get_available(new_value)
             elif attr == ATTR_VOLUME_LEVEL:
                 new_value = self.get_volume_level(new_value)
+            elif attr == ATTR_GROUP_PARENTS:
+                new_value = self.get_group_parents()
+            elif attr == ATTR_ACTIVE_QUEUE:
+                new_value = self.get_active_queue()
 
             current_value = getattr(self, attr)
 
@@ -226,36 +257,34 @@ class PlayerState:
                 # value changed
                 setattr(self, "_" + attr, new_value)
                 changed_keys.add(attr)
-                LOGGER.debug("Attribute %s changed on player %s", attr, self.player_id)
-
-        # some attributes are always updated
-        self._elapsed_time = player.elapsed_time
-        self._updated_at = datetime.utcnow()
-        self._group_parents = self.get_group_parents()
-        self._active_queue = self.get_active_queue()
-        self._config_entries = self.get_player_config_entries()
 
         if changed_keys:
-            self.mass.signal_event(EVENT_PLAYER_CHANGED, self)
-            # update group player childs when parent updates
-            if ATTR_GROUP_CHILDS in changed_keys:
+            self._updated_at = datetime.utcnow()
+
+            if changed_keys.intersection(set(UPDATE_ATTRIBUTES)):
+                self.mass.signal_event(EVENT_PLAYER_CHANGED, self)
+                # update group player childs when parent updates
                 for child_player_id in self.group_childs:
                     self.mass.add_job(
                         self.mass.players.async_trigger_player_update(child_player_id)
                     )
+                # update group player when child updates
+                for group_player_id in self.group_parents:
+                    self.mass.add_job(
+                        self.mass.players.async_trigger_player_update(group_player_id)
+                    )
 
-        # always update the player queue
-        player_queue = self.mass.players.get_player_queue(self.active_queue)
-        if player_queue:
-            self.mass.add_job(player_queue.async_update_state())
+            # always update the player queue
+            player_queue = self.mass.players.get_player_queue(self.active_queue)
+            if player_queue:
+                self.mass.add_job(player_queue.async_update_state())
+            self._group_delay = self.get_group_delay()
 
-    @callback
     def get_name(self, name: str) -> str:
         """Return final/calculated player name."""
         conf_name = self.mass.config.get_player_config(self.player_id)[CONF_NAME]
         return conf_name if conf_name else name
 
-    @callback
     def get_power(self, power: bool) -> bool:
         """Return final/calculated player's power state."""
         if not self.available:
@@ -269,7 +298,6 @@ class PlayerState:
                 return control.state
         return power
 
-    @callback
     def get_state(self, state: PlaybackState) -> PlaybackState:
         """Return final/calculated player's playback state."""
         if self.powered and self.active_queue != self.player_id:
@@ -279,15 +307,13 @@ class PlayerState:
             return PlaybackState.Off
         return state
 
-    @callback
     def get_available(self, available: bool) -> bool:
         """Return current availablity of player."""
-        player_enabled = bool(
-            self.mass.config.get_player_config(self.player_id)[CONF_ENABLED]
-        )
+        player_enabled = self.mass.config.get_player_config(self.player_id)[
+            CONF_ENABLED
+        ]
         return False if not player_enabled else available
 
-    @callback
     def get_volume_level(self, volume_level: int) -> int:
         """Return final/calculated player's volume_level."""
         if not self.available:
@@ -318,7 +344,6 @@ class PlayerState:
         """Return all group players this player belongs to."""
         return self._group_parents
 
-    @callback
     def get_group_parents(self) -> List[str]:
         """Return all group players this player belongs to."""
         if self.is_group_player:
@@ -337,7 +362,6 @@ class PlayerState:
         """Return the active parent player/queue for a player."""
         return self._active_queue
 
-    @callback
     def get_active_queue(self) -> str:
         """Return the active parent player/queue for a player."""
         # if a group is powered on, all of it's childs will have/use
@@ -353,60 +377,13 @@ class PlayerState:
         """Return the datetime (UTC) that the player state was last updated."""
         return self._updated_at
 
-    @callback
-    def get_player_config_entries(self):
-        """Get final/calculated config entries for a player."""
-        entries = []
-        entries += self.player.config_entries
-        # append power control config entries
-        power_controls = self.mass.players.get_player_controls(PlayerControlType.POWER)
-        if power_controls:
-            controls = [
-                {"text": f"{item.provider}: {item.name}", "value": item.control_id}
-                for item in power_controls
-            ]
-            entries.append(
-                ConfigEntry(
-                    entry_key=CONF_POWER_CONTROL,
-                    entry_type=ConfigEntryType.STRING,
-                    description=CONF_POWER_CONTROL,
-                    values=controls,
-                )
-            )
-        # append volume control config entries
-        volume_controls = self.mass.players.get_player_controls(
-            PlayerControlType.VOLUME
-        )
-        if volume_controls:
-            controls = [
-                {"text": f"{item.provider}: {item.name}", "value": item.control_id}
-                for item in volume_controls
-            ]
-            entries.append(
-                ConfigEntry(
-                    entry_key=CONF_VOLUME_CONTROL,
-                    entry_type=ConfigEntryType.STRING,
-                    description=CONF_VOLUME_CONTROL,
-                    values=controls,
-                )
-            )
-        # append group player entries
-        for parent_id in self.group_parents:
-            parent_player = self.mass.players.get_player_state(parent_id)
-            if parent_player and parent_player.provider_id == "group_player":
-                entries.append(
-                    ConfigEntry(
-                        entry_key=CONF_GROUP_DELAY,
-                        entry_type=ConfigEntryType.INT,
-                        default_value=0,
-                        range=(0, 500),
-                        description=CONF_GROUP_DELAY,
-                    )
-                )
-                break
-        return entries
+    def get_group_delay(self):
+        """Get group delay for a player."""
+        player_settings = self.mass.config.get_player_config(self.player_id)
+        if player_settings:
+            return player_settings.get(CONF_GROUP_DELAY, 0)
+        return 0
 
-    # @callback
     def to_dict(self):
         """Instance attributes as dict so it can be serialized to json."""
         return {

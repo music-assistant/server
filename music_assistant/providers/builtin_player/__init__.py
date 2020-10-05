@@ -9,7 +9,7 @@ from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import DeviceInfo, PlaybackState, Player
 from music_assistant.models.provider import PlayerProvider
 
-PROV_ID = "builtin"
+PROV_ID = "builtin_player"
 PROV_NAME = "Built-in (local) player"
 LOGGER = logging.getLogger(PROV_ID)
 

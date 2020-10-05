@@ -104,4 +104,4 @@ class ChromecastProvider(PlayerProvider):
         player_id = str(cast_service[1])
         friendly_name = cast_service[3]
         LOGGER.debug("Chromecast removed: %s - %s", friendly_name, player_id)
-        self.mass.add_job(self.mass.players.async_remove_player(player_id))
+        # we ignore this event completely as the Chromecast socket clients handles this on its own

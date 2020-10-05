@@ -33,7 +33,7 @@ from music_assistant.models.provider import PlayerProvider, ProviderType
 
 POLL_INTERVAL = 30
 
-LOGGER = logging.getLogger("mass")
+LOGGER = logging.getLogger("player_manager")
 
 
 class PlayerManager:
@@ -107,9 +107,7 @@ class PlayerManager:
         return self._player_states.get(player_id)
 
     @callback
-    def get_player(
-        self, player_id: str, return_player_state: bool = True
-    ) -> PlayerState:
+    def get_player(self, player_id: str) -> PlayerState:
         """Return Player by player_id or None if player does not exist."""
         player_state = self._player_states.get(player_id)
         if player_state:
@@ -154,7 +152,7 @@ class PlayerManager:
 
     async def async_add_player(self, player: Player) -> None:
         """Register a new player or update an existing one."""
-        if not player or not player.available:
+        if not player or not player.available or self.mass.exit:
             return
         if player.player_id in self._player_states:
             return await self.async_update_player(player)
@@ -184,6 +182,8 @@ class PlayerManager:
 
     async def async_update_player(self, player: Player):
         """Update an existing player (or register as new if non existing)."""
+        if self.mass.exit:
+            return
         if player.player_id not in self._player_states:
             return await self.async_add_player(player)
         await self._player_states[player.player_id].async_update(player)

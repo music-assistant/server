@@ -1,7 +1,7 @@
 """Config API endpoints."""
 
 import orjson
-from aiohttp import web
+from aiohttp.web import Request, Response, RouteTableDef, json_response
 from aiohttp_jwt import login_required
 from music_assistant.constants import (
     CONF_KEY_BASE,
@@ -13,48 +13,51 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.util import json_serializer
 
-routes = web.RouteTableDef()
+routes = RouteTableDef()
 
 
 @routes.get("/api/config")
 @login_required
-async def async_get_config(request: web.Request):
+async def async_get_config(request: Request):
     """Get the full config."""
-    language = request.rel_url.query.get("lang", "en")
     conf = {
-        CONF_KEY_BASE: request.app["mass"].config.base.to_dict(language),
-        CONF_KEY_MUSIC_PROVIDERS: request.app["mass"].config.music_providers.to_dict(
-            language
-        ),
-        CONF_KEY_PLAYER_PROVIDERS: request.app["mass"].config.player_providers.to_dict(
-            language
-        ),
-        CONF_KEY_METADATA_PROVIDERS: request.app[
-            "mass"
-        ].config.metadata_providers.to_dict(language),
-        CONF_KEY_PLUGINS: request.app["mass"].config.plugins.to_dict(language),
-        CONF_KEY_PLAYER_SETTINGS: request.app["mass"].config.player_settings.to_dict(
-            language
-        ),
+        key: f"/api/config/{key}"
+        for key in [
+            CONF_KEY_BASE,
+            CONF_KEY_MUSIC_PROVIDERS,
+            CONF_KEY_PLAYER_PROVIDERS,
+            CONF_KEY_METADATA_PROVIDERS,
+            CONF_KEY_PLUGINS,
+            CONF_KEY_PLAYER_SETTINGS,
+        ]
     }
-    return web.Response(body=json_serializer(conf), content_type="application/json")
+    return Response(body=json_serializer(conf), content_type="application/json")
 
 
 @routes.get("/api/config/{base}")
 @login_required
-async def async_get_config_item(request: web.Request):
+async def async_get_config_base_item(request: Request):
     """Get the config by base type."""
     language = request.rel_url.query.get("lang", "en")
     conf_base = request.match_info.get("base")
-    conf = request.app["mass"].config[conf_base]
-    return web.Response(
-        body=json_serializer(conf.to_dict(language)), content_type="application/json"
-    )
+    conf = request.app["mass"].config[conf_base].all_items(language)
+    return Response(body=json_serializer(conf), content_type="application/json")
+
+
+@routes.get("/api/config/{base}/{item}")
+@login_required
+async def async_get_config_item(request: Request):
+    """Get the config by base and item type."""
+    language = request.rel_url.query.get("lang", "en")
+    conf_base = request.match_info.get("base")
+    conf_item = request.match_info.get("item")
+    conf = request.app["mass"].config[conf_base][conf_item].all_items(language)
+    return Response(body=json_serializer(conf), content_type="application/json")
 
 
 @routes.put("/api/config/{base}/{key}/{entry_key}")
 @login_required
-async def async_put_config(request: web.Request):
+async def async_put_config(request: Request):
     """Save the given config item."""
     conf_key = request.match_info.get("key")
     conf_base = request.match_info.get("base")
@@ -69,4 +72,4 @@ async def async_put_config(request: web.Request):
             .default_value
         )
     request.app["mass"].config[conf_base][conf_key][entry_key] = new_value
-    return web.json_response(True)
+    return json_response(True)

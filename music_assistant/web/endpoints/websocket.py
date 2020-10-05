@@ -3,24 +3,25 @@
 import logging
 from asyncio import CancelledError
 
-import aiohttp
 import jwt
 import orjson
+from aiohttp import WSMsgType
+from aiohttp.web import Request, RouteTableDef, WebSocketResponse
 from music_assistant.helpers.util import json_serializer
 
-routes = aiohttp.web.RouteTableDef()
+routes = RouteTableDef()
 
 LOGGER = logging.getLogger("websocket")
 
 
 @routes.get("/ws")
-async def async_websocket_handler(request: aiohttp.web.Request):
+async def async_websocket_handler(request: Request):
     """Handle websockets connection."""
     ws_response = None
     authenticated = False
     remove_callbacks = []
     try:
-        ws_response = aiohttp.web.WebSocketResponse()
+        ws_response = WebSocketResponse()
         await ws_response.prepare(request)
 
         # callback for internal events
@@ -28,14 +29,11 @@ async def async_websocket_handler(request: aiohttp.web.Request):
             if hasattr(msg_details, "to_dict"):
                 msg_details = msg_details.to_dict()
             ws_msg = {"message": msg, "message_details": msg_details}
-            try:
-                await ws_response.send_str(json_serializer(ws_msg).decode())
-            except AssertionError:
-                LOGGER.debug("trying to send message to ws while disconnected")
+            await ws_response.send_str(json_serializer(ws_msg).decode())
 
         # process incoming messages
         async for msg in ws_response:
-            if msg.type != aiohttp.WSMsgType.TEXT:
+            if msg.type != WSMsgType.TEXT:
                 # not sure when/if this happens but log it anyway
                 LOGGER.warning(msg.data)
                 continue

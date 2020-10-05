@@ -3,16 +3,24 @@ import logging
 import time
 from typing import List
 
+from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.util import run_periodic
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.models.player import PlaybackState, Player
-from music_assistant.models.playerprovider import PlayerProvider
-from music_assistant.utils import run_periodic
+from music_assistant.models.player import (
+    DeviceInfo,
+    PlaybackState,
+    Player,
+    PlayerFeature,
+)
+from music_assistant.models.provider import PlayerProvider
 
 PROV_ID = "webplayer"
 PROV_NAME = "WebPlayer"
 LOGGER = logging.getLogger(PROV_ID)
 
 CONFIG_ENTRIES = []
+PLAYER_CONFIG_ENTRIES = []
+PLAYER_FEATURES = []
 
 EVENT_WEBPLAYER_CMD = "webplayer command"
 EVENT_WEBPLAYER_STATE = "webplayer state"
@@ -61,82 +69,25 @@ class WebPlayerProvider(PlayerProvider):
         )
         self.mass.add_job(self.async_check_players())
 
-    async def async_on_stop(self):
-        """Handle correct close/cleanup of the provider on exit. Called on shutdown."""
-        # nothing to do ?
-
     async def async_handle_mass_event(self, msg, msg_details):
         """Handle received event for the webplayer component."""
-        if msg == EVENT_WEBPLAYER_REGISTER:
+        player = self.mass.players.get_player(msg_details["player_id"])
+        if not player:
             # register new player
-            player_id = msg_details["player_id"]
-            player = Player(
-                player_id=player_id,
-                provider_id=PROV_ID,
-                name=msg_details["name"],
-                powered=True,
-            )
-            await self.mass.player_manager.async_add_player(player)
-
-        elif msg == EVENT_WEBPLAYER_STATE:
-            await self.__async_handle_player_state(msg_details)
+            player = WebPlayer(self.mass, msg_details["player_id"], msg_details["name"])
+            await self.mass.players.async_add_player(player)
+        await player.handle_player_state(msg_details)
 
     @run_periodic(30)
     async def async_check_players(self) -> None:
         """Invalidate players that did not send a heartbeat message in a while."""
         cur_time = time.time()
         offline_players = []
-        for player in self._players.values():
+        for player in self.players:
             if cur_time - player.last_message > 30:
                 offline_players.append(player.player_id)
         for player_id in offline_players:
-            await self.mass.player_manager.async_remove_player(player_id)
-            self._players.pop(player_id, None)
-
-    async def async_cmd_stop(self, player_id: str) -> None:
-        """Send stop command to player."""
-        data = {"player_id": player_id, "cmd": "stop"}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
-
-    async def async_cmd_play(self, player_id: str) -> None:
-        """Send play command to player."""
-        data = {"player_id": player_id, "cmd": "play"}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
-
-    async def async_cmd_pause(self, player_id: str):
-        """Send pause command to player."""
-        data = {"player_id": player_id, "cmd": "pause"}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
-
-    async def async_cmd_power_on(self, player_id: str) -> None:
-        """Send power ON command to player."""
-        self._players[player_id].powered = True  # not supported on webplayer
-        data = {"player_id": player_id, "cmd": "stop"}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
-
-    async def async_cmd_power_off(self, player_id: str) -> None:
-        """Send power OFF command to player."""
-        await self.async_cmd_stop(player_id)
-        self._players[player_id].powered = False
-
-    async def async_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """Send new volume level command to player."""
-        data = {
-            "player_id": player_id,
-            "cmd": "volume_set",
-            "volume_level": volume_level,
-        }
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
-
-    async def async_cmd_volume_mute(self, player_id: str, is_muted=False):
-        """Send mute command to player."""
-        data = {"player_id": player_id, "cmd": "volume_mute", "is_muted": is_muted}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
-
-    async def async_cmd_play_uri(self, player_id: str, uri: str):
-        """Play single uri on player."""
-        data = {"player_id": player_id, "cmd": "play_uri", "uri": uri}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+            await self.mass.players.async_remove_player(player_id)
 
     async def __async_handle_player_state(self, data):
         """Handle state event from player."""
@@ -157,4 +108,160 @@ class WebPlayerProvider(PlayerProvider):
         if "name" in data:
             player.name = data["name"]
         player.last_message = time.time()
-        self.mass.add_job(self.mass.player_manager.async_update_player(player))
+        self.mass.add_job(self.mass.players.async_update_player(player))
+
+
+class WebPlayer(Player):
+    """Definition of a webplayer."""
+
+    def __init__(self, mass: MusicAssistantType, player_id: str, player_name: str):
+        """Initialize the webplayer."""
+        self._player_id = player_id
+        self._player_name = player_name
+        self._powered = True
+        self._elapsed_time = 0
+        self._state = PlaybackState.Stopped
+        self._current_uri = ""
+        self._volume_level = 100
+        self._muted = False
+        self.last_message = time.time()
+
+    async def handle_player_state(self, data: dict):
+        """Handle state event from player."""
+        if "volume_level" in data:
+            self._volume_level = data["volume_level"]
+        if "muted" in data:
+            self._muted = data["muted"]
+        if "state" in data:
+            self._state = PlaybackState(data["state"])
+        if "cur_time" in data:
+            self._elapsed_time = data["elapsed_time"]
+        if "current_uri" in data:
+            self._current_uri = data["current_uri"]
+        if "powered" in data:
+            self._powered = data["powered"]
+        if "name" in data:
+            self._player_name = data["name"]
+        self.last_message = time.time()
+        self.update_state()
+
+    @property
+    def player_id(self) -> str:
+        """Return player id of this player."""
+        return self._player_id
+
+    @property
+    def provider_id(self) -> str:
+        """Return provider id of this player."""
+        return PROV_ID
+
+    @property
+    def name(self) -> str:
+        """Return name of the player."""
+        return self._player_name
+
+    @property
+    def powered(self) -> bool:
+        """Return current power state of player."""
+        return self._powered
+
+    @property
+    def elapsed_time(self) -> int:
+        """Return elapsed time of current playing media in seconds."""
+        return self._elapsed_time
+
+    @property
+    def state(self) -> PlaybackState:
+        """Return current PlaybackState of player."""
+        return self._state
+
+    @property
+    def current_uri(self) -> str:
+        """Return currently loaded uri of player (if any)."""
+        return self._current_uri
+
+    @property
+    def volume_level(self) -> int:
+        """Return current volume level of player (scale 0..100)."""
+        return self._volume_level
+
+    @property
+    def muted(self) -> bool:
+        """Return current mute state of player."""
+        return self._muted
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return the device info for this player."""
+        return DeviceInfo()
+
+    @property
+    def should_poll(self) -> bool:
+        """Return True if this player should be polled for state updates."""
+        return False
+
+    @property
+    def features(self) -> List[PlayerFeature]:
+        """Return list of features this player supports."""
+        return PLAYER_FEATURES
+
+    @property
+    def config_entries(self) -> List[ConfigEntry]:
+        """Return player specific config entries (if any)."""
+        return PLAYER_CONFIG_ENTRIES
+
+    async def async_cmd_play_uri(self, uri: str) -> None:
+        """
+        Play the specified uri/url on the player.
+
+            :param uri: uri/url to send to the player.
+        """
+        data = {"player_id": self.player_id, "cmd": "play_uri", "uri": uri}
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+
+    async def async_cmd_stop(self) -> None:
+        """Send STOP command to player."""
+        data = {"player_id": self.player_id, "cmd": "stop"}
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+
+    async def async_cmd_play(self) -> None:
+        """Send PLAY command to player."""
+        data = {"player_id": self.player_id, "cmd": "play"}
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+
+    async def async_cmd_pause(self) -> None:
+        """Send PAUSE command to player."""
+        data = {"player_id": self.player_id, "cmd": "pause"}
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+
+    async def async_cmd_power_on(self) -> None:
+        """Send POWER ON command to player."""
+        data = {"player_id": self.player_id, "cmd": "power_on"}
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+
+    async def async_cmd_power_off(self) -> None:
+        """Send POWER OFF command to player."""
+        data = {"player_id": self.player_id, "cmd": "power_off"}
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+
+    async def async_cmd_volume_set(self, volume_level: int) -> None:
+        """
+        Send volume level command to player.
+
+            :param volume_level: volume level to set (0..100).
+        """
+        data = {
+            "player_id": self.player_id,
+            "cmd": "volume_set",
+            "volume_level": volume_level,
+        }
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+
+    async def async_cmd_volume_mute(self, is_muted: bool = False) -> None:
+        """
+        Send volume MUTE command to given player.
+
+            :param is_muted: bool with new mute state.
+        """
+        data = {"player_id": self.player_id, "cmd": "volume_mute", "is_muted": is_muted}
+        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)

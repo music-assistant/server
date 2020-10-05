@@ -23,7 +23,7 @@ from music_assistant.models.media_types import (
     TrackQuality,
 )
 
-LOGGER = logging.getLogger("mass")
+LOGGER = logging.getLogger("database")
 
 
 class DbConnect:

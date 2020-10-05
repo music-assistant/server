@@ -16,8 +16,6 @@ from typing import Any, Callable, TypeVar
 import memory_tempfile
 import orjson
 import unidecode
-from cryptography.fernet import Fernet, InvalidToken
-from music_assistant.helpers.app_vars import get_app_var  # noqa # pylint: disable=all
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -288,37 +286,11 @@ def create_tempfile():
     return tempfile.NamedTemporaryFile(buffering=0)
 
 
-def encrypt_string(str_value):
-    """Encrypt a string with Fernet."""
-    return Fernet(get_app_var(3)).encrypt(str_value.encode()).decode()
-
-
-def encrypt_bytes(bytes_value):
-    """Encrypt bytes with Fernet."""
-    return Fernet(get_app_var(3)).encrypt(bytes_value)
-
-
-def yield_chunks(_obj, chunk_size):
+async def async_yield_chunks(_obj, chunk_size):
     """Yield successive n-sized chunks from list/str/bytes."""
     chunk_size = int(chunk_size)
     for i in range(0, len(_obj), chunk_size):
         yield _obj[i : i + chunk_size]
-
-
-def decrypt_string(str_value):
-    """Decrypt a string with Fernet."""
-    try:
-        return Fernet(get_app_var(3)).decrypt(str_value.encode()).decode()
-    except (InvalidToken, AttributeError):
-        return None
-
-
-def decrypt_bytes(bytes_value):
-    """Decrypt bytes with Fernet."""
-    try:
-        return Fernet(get_app_var(3)).decrypt(bytes_value)
-    except (InvalidToken, AttributeError):
-        return None
 
 
 class CustomIntEnum(int, Enum):
