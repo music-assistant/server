@@ -98,7 +98,8 @@ class ChromecastProvider(PlayerProvider):
         self.mass.add_job(player.set_cast_info, cast_info)
         self.mass.add_job(self.mass.players.async_add_player(player))
 
-    def __chromecast_remove_callback(self, cast_uuid, cast_service_name, cast_service):
+    @staticmethod
+    def __chromecast_remove_callback(cast_uuid, cast_service_name, cast_service):
         """Handle a Chromecast removed event."""
         # pylint: disable=unused-argument
         player_id = str(cast_service[1])

@@ -284,7 +284,8 @@ class ConfigManager:
                 return translated_value
         return org_string
 
-    def __get_all_translations(self) -> dict:
+    @staticmethod
+    def __get_all_translations() -> dict:
         """Build a list of all translations."""
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # get base translations
