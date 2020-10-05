@@ -3,26 +3,26 @@
 import datetime
 
 import jwt
-from aiohttp import web
+from aiohttp.web import HTTPUnauthorized, Request, Response, RouteTableDef
 from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import json_serializer
 
-routes = web.RouteTableDef()
+routes = RouteTableDef()
 
 
 @routes.post("/login")
 @routes.post("/api/login")
-async def async_login(request: web.Request):
+async def async_login(request: Request):
     """Handle the retrieval of a JWT token."""
     form = await request.json()
     username = form.get("username")
     password = form.get("password")
     token_info = await async_get_token(request.app["mass"], username, password)
     if token_info:
-        return web.Response(
+        return Response(
             body=json_serializer(token_info), content_type="application/json"
         )
-    return web.HTTPUnauthorized(body="Invalid username and/or password provided!")
+    return HTTPUnauthorized(body="Invalid username and/or password provided!")
 
 
 async def async_get_token(

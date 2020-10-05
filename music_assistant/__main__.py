@@ -11,16 +11,16 @@ def get_arguments():
     """Arguments handling."""
     parser = argparse.ArgumentParser(description="MusicAssistant")
 
-    data_dir = os.getenv("APPDATA") if os.name == "nt" else os.path.expanduser("~")
-    data_dir = os.path.join(data_dir, ".musicassistant")
-    if not os.path.isdir(data_dir):
-        os.makedirs(data_dir)
+    default_data_dir = (
+        os.getenv("APPDATA") if os.name == "nt" else os.path.expanduser("~")
+    )
+    default_data_dir = os.path.join(default_data_dir, ".musicassistant")
 
     parser.add_argument(
         "-c",
         "--config",
         metavar="path_to_config_dir",
-        default=data_dir,
+        default=default_data_dir,
         help="Directory that contains the MusicAssistant configuration",
     )
     parser.add_argument(
@@ -46,15 +46,18 @@ def main():
     # parse arguments
     args = get_arguments()
     data_dir = args.config
+    if not os.path.isdir(data_dir):
+        os.makedirs(data_dir)
     # config debug settings if needed
     if args.debug:
         logger.setLevel(logging.DEBUG)
-        logging.getLogger("aiosqlite").setLevel(logging.INFO)
-        logging.getLogger("asyncio").setLevel(logging.WARNING)
     else:
         logger.setLevel(logging.INFO)
+    # cool down logging for asyncio and aiosqlite
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.INFO)
 
-    mass = MusicAssistant(data_dir)
+    mass = MusicAssistant(data_dir, args.debug)
 
     def on_shutdown(loop):
         logger.info("shutdown requested!")

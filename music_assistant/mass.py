@@ -33,14 +33,16 @@ LOGGER = logging.getLogger("mass")
 class MusicAssistant:
     """Main MusicAssistant object."""
 
-    def __init__(self, datapath):
+    def __init__(self, datapath: str, debug: bool = False):
         """
         Create an instance of MusicAssistant.
 
             :param datapath: file location to store the data
         """
 
+        self._exit = False
         self._loop = None
+        self._debug = debug
         self._http_session = None
         self._event_listeners = []
         self._providers = {}
@@ -56,15 +58,13 @@ class MusicAssistant:
         self._streams = StreamManager(self)
         # shared zeroconf instance
         self.zeroconf = Zeroconf()
-        self._exit = False
 
     async def async_start(self):
         """Start running the music assistant server."""
         # initialize loop
         self._loop = asyncio.get_event_loop()
         self._loop.set_exception_handler(self.__handle_exception)
-        if LOGGER.level == logging.DEBUG:
-            self._loop.set_debug(True)
+        self._loop.set_debug(self._debug)
         # create shared aiohttp ClientSession
         self._http_session = aiohttp.ClientSession(
             loop=self.loop,
@@ -80,9 +80,9 @@ class MusicAssistant:
 
     async def async_stop(self):
         """Stop running the music assistant server."""
+        self._exit = True
         LOGGER.info("Application shutdown")
         self.signal_event(EVENT_SHUTDOWN)
-        self._exit = True
         await self.config.async_close()
         await self._web.async_stop()
         for prov in self._providers.values():
@@ -95,6 +95,11 @@ class MusicAssistant:
     def loop(self) -> asyncio.AbstractEventLoop:
         """Return the running event loop."""
         return self._loop
+
+    @property
+    def exit(self) -> bool:
+        """Return bool if the main process is exiting."""
+        return self._exit
 
     @property
     def players(self) -> PlayerManager:
@@ -125,6 +130,11 @@ class MusicAssistant:
     def database(self) -> DatabaseManager:
         """Return the Database controller/manager."""
         return self._database
+
+    @property
+    def metadata(self) -> MetaDataManager:
+        """Return the Metadata controller/manager."""
+        return self._metadata
 
     @property
     def web(self) -> WebServer:
@@ -271,11 +281,12 @@ class MusicAssistant:
                 task = self.loop.run_in_executor(None, target, *args, *kwargs)  # type: ignore
         return task
 
-    @staticmethod
-    def __handle_exception(loop: asyncio.AbstractEventLoop, context: Dict) -> None:
+    def __handle_exception(
+        self, loop: asyncio.AbstractEventLoop, context: Dict
+    ) -> None:
         """Global exception handler."""
         LOGGER.error("Caught exception: %s", context)
-        if loop.get_debug():
+        if self._debug:
             loop.default_exception_handler(context)
 
     async def __async_setup_discovery(self) -> None:

@@ -528,12 +528,13 @@ class SpotifyProvider(MusicProvider):
             result = orjson.loads(stdout)
         except orjson.JSONDecodeError:
             LOGGER.warning("Error while retrieving Spotify token!")
-            result = None
+            return None
         # transform token info to spotipy compatible format
         if result and "accessToken" in result:
             tokeninfo = result
             tokeninfo["expiresAt"] = tokeninfo["expiresIn"] + int(time.time())
-        return tokeninfo
+            return tokeninfo
+        return None
 
     async def __async_get_all_items(self, endpoint, params=None, key="items"):
         """Get all items from a paged list."""

@@ -4,7 +4,6 @@ import asyncio
 import logging
 from typing import List
 
-from music_assistant.constants import CONF_GROUP_DELAY
 from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import DeviceInfo, PlaybackState, Player
@@ -86,6 +85,8 @@ class GroupPlayer(Player):
         self.connected_clients = {}
         self.stream_task = None
         self.sync_task = None
+        self._config_entries = self.__get_config_entries()
+        self._group_childs = self.__get_group_childs()
 
     @property
     def player_id(self) -> str:
@@ -155,10 +156,7 @@ class GroupPlayer(Player):
     @property
     def group_childs(self):
         """Return group childs of this group player."""
-        player_conf = self.mass.config.get_player_config(self.player_id)
-        if player_conf and player_conf.get(CONF_PLAYERS):
-            return player_conf[CONF_PLAYERS]
-        return []
+        return self._group_childs
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -170,6 +168,23 @@ class GroupPlayer(Player):
 
     @property
     def config_entries(self):
+        """Return config entries for this group player."""
+        return self._config_entries
+
+    async def async_on_update(self) -> None:
+        """Call when player is periodically polled by the player manager (should_poll=True)."""
+        self._config_entries = self.__get_config_entries()
+        self._group_childs = self.__get_group_childs()
+        self.update_state()
+
+    def __get_group_childs(self):
+        """Return group childs of this group player."""
+        player_conf = self.mass.config.get_player_config(self.player_id)
+        if player_conf and player_conf.get(CONF_PLAYERS):
+            return player_conf[CONF_PLAYERS]
+        return []
+
+    def __get_config_entries(self):
         """Return config entries for this group player."""
         all_players = [
             {"text": item.name, "value": item.player_id}
@@ -189,14 +204,15 @@ class GroupPlayer(Player):
                 )
         default_master = ""
         if selected_players:
-            default_master = selected_players[0]
+            default_master = selected_players[0]["value"]
         return [
             ConfigEntry(
                 entry_key=CONF_PLAYERS,
                 entry_type=ConfigEntryType.STRING,
                 default_value=[],
                 values=all_players,
-                description=CONF_PLAYERS,
+                label=CONF_PLAYERS,
+                description="group_player_players_desc",
                 multi_value=True,
             ),
             ConfigEntry(
@@ -204,9 +220,10 @@ class GroupPlayer(Player):
                 entry_type=ConfigEntryType.STRING,
                 default_value=default_master,
                 values=selected_players,
-                description=CONF_MASTER,
+                label=CONF_MASTER,
+                description="group_player_master_desc",
                 multi_value=False,
-                depends_on=CONF_MASTER,
+                depends_on=CONF_PLAYERS,
             ),
         ]
 
@@ -362,7 +379,7 @@ class GroupPlayer(Player):
         """Handle streaming queue to connected child players."""
         ticks = 0
         while ticks < 60 and len(self.connected_clients) != len(self.group_childs):
-            # TODO: Support situation where not alle clients of the group are powered
+            # TODO: Support situation where not all clients of the group are powered
             await asyncio.sleep(0.1)
             ticks += 1
         if not self.connected_clients:
@@ -373,15 +390,9 @@ class GroupPlayer(Player):
         )
         self.sync_task = asyncio.create_task(self.__synchronize_players())
 
-        received_milliseconds = 0
-        received_seconds = 0
         async for audio_chunk in self.mass.streams.async_queue_stream_pcm(
             self.player_id, sample_rate=96000, bit_depth=32
         ):
-            received_seconds += 1
-            received_milliseconds += 1000
-            chunk_size = len(audio_chunk)
-            start_bytes = 0
 
             # make sure we still have clients connected
             if not self.connected_clients:
@@ -389,30 +400,17 @@ class GroupPlayer(Player):
                 return
 
             # send the audio chunk to all connected players
-            for child_player_id, writer in self.connected_clients.items():
-
-                # work out startdelay
-                if received_seconds == 1:
-                    player_delay = self.mass.config.player_settings[
-                        child_player_id
-                    ].get(CONF_GROUP_DELAY, 0)
-                    if player_delay:
-                        start_bytes = int(
-                            ((player_delay - received_milliseconds) / 1000) * chunk_size
-                        )
-                    else:
-                        start_bytes = 0
-
-                # send the data to the client
-                try:
-                    writer.write(audio_chunk[start_bytes:])
-                    await writer.drain()
-                except (BrokenPipeError, ConnectionResetError, AssertionError):
-                    pass  # happens at client disconnect
+            tasks = []
+            for _writer in self.connected_clients.values():
+                tasks.append(self.mass.add_job(_writer.write, audio_chunk))
+                tasks.append(self.mass.add_job(_writer.drain()))
+            # wait for clients to consume the data
+            await asyncio.wait(tasks)
 
             if not self.connected_clients:
                 LOGGER.warning("no more clients!")
                 return
+        self.sync_task.cancel()
 
     async def __synchronize_players(self):
         """Handle drifting/lagging by monitoring progress and compare to master player."""
@@ -438,7 +436,7 @@ class GroupPlayer(Player):
 
         while self.connected_clients:
 
-            # check every 2 seconds for player sync
+            # check every 0.5 seconds for player sync
             await asyncio.sleep(0.5)
 
             for child_player_id in self.connected_clients:
@@ -465,13 +463,13 @@ class GroupPlayer(Player):
                     - child_player.elapsed_milliseconds
                 )
                 prev_lags[child_player_id].append(lag)
-                if len(prev_lags[child_player_id]) == 10:
-                    # if we have 10 samples calclate the average lag
+                if len(prev_lags[child_player_id]) == 5:
+                    # if we have 5 samples calclate the average lag
                     avg_lag = sum(prev_lags[child_player_id]) / len(
                         prev_lags[child_player_id]
                     )
                     prev_lags[child_player_id] = []
-                    if avg_lag > 50:
+                    if avg_lag > 25:
                         LOGGER.debug(
                             "child player %s is lagging behind with %s milliseconds",
                             child_player_id,
@@ -492,14 +490,14 @@ class GroupPlayer(Player):
                     - master_player.elapsed_milliseconds
                 )
                 prev_drifts[child_player_id].append(drift)
-                if len(prev_drifts[child_player_id]) == 10:
-                    # if we have 10 samples calculate the average drift
+                if len(prev_drifts[child_player_id]) == 5:
+                    # if we have 5 samples calculate the average drift
                     avg_drift = sum(prev_drifts[child_player_id]) / len(
                         prev_drifts[child_player_id]
                     )
                     prev_drifts[child_player_id] = []
 
-                    if avg_drift > 50:
+                    if avg_drift > 25:
                         LOGGER.debug(
                             "child player %s is drifting ahead with %s milliseconds",
                             child_player_id,

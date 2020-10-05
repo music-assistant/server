@@ -1,15 +1,15 @@
 """JSON RPC API endpoint."""
 
-from aiohttp import web
+from aiohttp.web import Request, Response, RouteTableDef
 from music_assistant.helpers.web import require_local_subnet
 
-routes = web.RouteTableDef()
+routes = RouteTableDef()
 
 
 @routes.route("get", "/jsonrpc.js")
 @routes.route("post", "/jsonrpc.js")
 @require_local_subnet
-async def async_json_rpc(request: web.Request):
+async def async_json_rpc(request: Request):
     """
     Implement LMS jsonrpc interface.
 
@@ -63,5 +63,5 @@ async def async_json_rpc(request: web.Request):
     elif cmd_str == "button power":
         await request.app["mass"].players.async_cmd_power_toggle(player_id)
     else:
-        return web.Response(text="command not supported")
-    return web.Response(text="success")
+        return Response(text="command not supported")
+    return Response(text="success")

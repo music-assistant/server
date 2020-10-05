@@ -89,7 +89,7 @@ class PySqueezeProvider(PlayerProvider):
         """Handle a client connection on the socket."""
         addr = writer.get_extra_info("peername")
         LOGGER.debug("Socket client connected: %s", addr)
-        socket_client = SqueezeSocketClient(reader, writer)
+        socket_client = SqueezeSocketClient(self.mass, reader, writer)
 
         def handle_event(event: SqueezeEvent, socket_client: SqueezeSocketClient):
             player_id = socket_client.player_id

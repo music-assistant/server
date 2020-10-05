@@ -8,7 +8,7 @@ from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import merge_dict
 from music_assistant.models.provider import MetadataProvider, ProviderType
 
-LOGGER = logging.getLogger("mass")
+LOGGER = logging.getLogger("metadata_manager")
 
 
 class MetaDataManager:

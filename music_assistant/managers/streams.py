@@ -6,7 +6,6 @@ of music with crossfade/gapless support (queue stream).
 """
 import asyncio
 import gc
-import gzip
 import io
 import logging
 import os
@@ -18,19 +17,21 @@ import pyloudnorm
 import soundfile
 from aiofile import AIOFile, Reader
 from music_assistant.constants import EVENT_STREAM_ENDED, EVENT_STREAM_STARTED
+from music_assistant.helpers.encryption import (
+    async_decrypt_bytes,
+    async_decrypt_string,
+    encrypt_bytes,
+)
 from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import (
+    async_yield_chunks,
     create_tempfile,
-    decrypt_bytes,
-    decrypt_string,
-    encrypt_bytes,
     get_ip,
     try_parse_int,
-    yield_chunks,
 )
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 
-LOGGER = logging.getLogger("mass")
+LOGGER = logging.getLogger("stream_manager")
 
 
 class SoxOutputFormat(Enum):
@@ -59,7 +60,7 @@ class StreamManager:
         output_format: SoxOutputFormat = SoxOutputFormat.FLAC,
         resample: Optional[int] = None,
         gain_db_adjust: Optional[float] = None,
-        chunk_size: int = 128000,
+        chunk_size: int = 5000000,
     ) -> AsyncGenerator[Tuple[bool, bytes], None]:
         """Get the sox manipulated audio data for the given streamdetails."""
         # collect all args for sox
@@ -80,6 +81,10 @@ class StreamManager:
             args += ["vol", str(gain_db_adjust), "dB"]
         if resample:
             args += ["rate", "-v", str(resample)]
+        if not chunk_size:
+            chunk_size = int(
+                streamdetails.sample_rate * (streamdetails.bit_depth / 8) * 2 * 10
+            )
         LOGGER.debug(
             "[async_get_sox_stream] [%s/%s] started using args: %s",
             streamdetails.provider,
@@ -91,7 +96,7 @@ class StreamManager:
             *args,
             stdout=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.PIPE,
-            bufsize=0,
+            limit=chunk_size * 5,
         )
 
         async def fill_buffer():
@@ -103,8 +108,11 @@ class StreamManager:
             )
             # feed audio data into sox stdin for processing
             async for chunk in self.async_get_media_stream(streamdetails):
+                if self.mass.exit:
+                    break
                 sox_proc.stdin.write(chunk)
                 await sox_proc.stdin.drain()
+            # send eof when last chunk received
             sox_proc.stdin.write_eof()
             await sox_proc.stdin.drain()
             LOGGER.debug(
@@ -133,11 +141,7 @@ class StreamManager:
                 prev_chunk = chunk
 
             await asyncio.wait([fill_buffer_task])
-            LOGGER.debug(
-                "[async_get_sox_stream] [%s/%s] finished",
-                streamdetails.provider,
-                streamdetails.item_id,
-            )
+
         except (GeneratorExit, Exception):  # pylint: disable=broad-except
             LOGGER.warning(
                 "[async_get_sox_stream] [%s/%s] aborted",
@@ -159,19 +163,20 @@ class StreamManager:
 
     async def async_queue_stream_flac(self, player_id) -> AsyncGenerator[bytes, None]:
         """Stream the PlayerQueue's tracks as constant feed in flac format."""
+        chunk_size = 571392  # 74,7% of pcm
 
         args = ["sox", "-t", "s32", "-c", "2", "-r", "96000", "-", "-t", "flac", "-"]
         sox_proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.PIPE,
+            limit=chunk_size,
         )
         LOGGER.debug(
             "[async_queue_stream_flac] [%s] started using args: %s",
             player_id,
             " ".join(args),
         )
-        chunk_size = 571392  # 74,7% of pcm
 
         # feed stdin with pcm samples
         async def fill_buffer():
@@ -180,8 +185,11 @@ class StreamManager:
                 "[async_queue_stream_flac] [%s] fill buffer started", player_id
             )
             async for chunk in self.async_queue_stream_pcm(player_id, 96000, 32):
+                if self.mass.exit:
+                    return
                 sox_proc.stdin.write(chunk)
                 await sox_proc.stdin.drain()
+            # write eof when no more data
             sox_proc.stdin.write_eof()
             await sox_proc.stdin.drain()
             LOGGER.debug(
@@ -221,11 +229,11 @@ class StreamManager:
         queue_conf = self.mass.config.get_player_config(player_id)
         fade_length = try_parse_int(queue_conf["crossfade_duration"])
         pcm_args = ["s32", "-c", "2", "-r", str(sample_rate)]
-        chunk_size = int(sample_rate * (bit_depth / 8) * 2)  # 1 second
+        sample_size = int(sample_rate * (bit_depth / 8) * 2)  # 1 second
         if fade_length:
-            buffer_size = chunk_size * fade_length
+            buffer_size = sample_size * fade_length
         else:
-            buffer_size = chunk_size * 10
+            buffer_size = sample_size * 10
 
         LOGGER.info("Start Queue Stream for player %s ", player_id)
 
@@ -277,8 +285,7 @@ class StreamManager:
                     break
                 if cur_chunk <= 2 and not last_fadeout_data:
                     # no fadeout_part available so just pass it to the output directly
-                    for small_chunk in yield_chunks(chunk, chunk_size):
-                        yield small_chunk
+                    yield chunk
                     bytes_written += len(chunk)
                     del chunk
                 elif cur_chunk == 1 and last_fadeout_data:
@@ -300,15 +307,13 @@ class StreamManager:
                         fade_in_part, last_fadeout_data, pcm_args, fade_length
                     )
                     # send crossfade_part
-                    for small_chunk in yield_chunks(crossfade_part, chunk_size):
-                        yield small_chunk
+                    yield crossfade_part
                     bytes_written += len(crossfade_part)
                     del crossfade_part
                     del fade_in_part
                     last_fadeout_data = b""
                     # also write the leftover bytes from the strip action
-                    for small_chunk in yield_chunks(remaining_bytes, chunk_size):
-                        yield small_chunk
+                    yield remaining_bytes
                     bytes_written += len(remaining_bytes)
                     del remaining_bytes
                     del chunk
@@ -334,8 +339,7 @@ class StreamManager:
                         or len(last_part) < buffer_size
                     ):
                         # crossfading is not enabled so just pass the (stripped) audio data
-                        for small_chunk in yield_chunks(last_part, chunk_size):
-                            yield small_chunk
+                        yield last_part
                         bytes_written += len(last_part)
                         del last_part
                         del chunk
@@ -345,8 +349,7 @@ class StreamManager:
                         last_fadeout_data = last_part[-buffer_size:]
                         remaining_bytes = last_part[:-buffer_size]
                         # write remaining bytes
-                        for small_chunk in yield_chunks(remaining_bytes, chunk_size):
-                            yield small_chunk
+                        yield remaining_bytes
                         bytes_written += len(remaining_bytes)
                         del last_part
                         del remaining_bytes
@@ -357,8 +360,7 @@ class StreamManager:
                     # keep previous chunk in memory so we have enough
                     # samples to perform the crossfade
                     if prev_chunk:
-                        for small_chunk in yield_chunks(prev_chunk, chunk_size):
-                            yield small_chunk
+                        yield prev_chunk
                         bytes_written += len(prev_chunk)
                         prev_chunk = chunk
                     else:
@@ -366,7 +368,7 @@ class StreamManager:
                     del chunk
             # end of the track reached
             # update actual duration to the queue for more accurate now playing info
-            accurate_duration = bytes_written / chunk_size
+            accurate_duration = bytes_written / sample_size
             queue_track.duration = accurate_duration
             LOGGER.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
@@ -377,8 +379,7 @@ class StreamManager:
             # run garbage collect manually to avoid too much memory fragmentation
             gc.collect()
         # end of queue reached, pass last fadeout bits to final output
-        for small_chunk in yield_chunks(last_fadeout_data, chunk_size):
-            yield small_chunk
+        yield last_fadeout_data
         del last_fadeout_data
         # END OF QUEUE STREAM
         # run garbage collect manually to avoid too much memory fragmentation
@@ -414,15 +415,17 @@ class StreamManager:
         self, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes, None]:
         """Get the (original/untouched) audio data for the given streamdetails. Generator."""
-        stream_path = decrypt_string(streamdetails.path)
+        stream_path = await async_decrypt_string(streamdetails.path)
         stream_type = StreamType(streamdetails.type)
         audio_data = b""
 
         # Handle (optional) caching of audio data
-        cache_file = "/tmp/" + f"{streamdetails.item_id}{streamdetails.provider}"[::-1]
+        cache_id = f"{streamdetails.item_id}{streamdetails.provider}"[::-1]
+        cache_file = os.path.join(self.mass.config.data_path, ".audio_cache", cache_id)
         if os.path.isfile(cache_file):
-            with gzip.open(cache_file, "rb") as _file:
-                audio_data = decrypt_bytes(_file.read())
+            async with AIOFile(cache_file, "rb") as afp:
+                audio_data = await afp.read()
+                audio_data = await async_decrypt_bytes(audio_data)
             if audio_data:
                 stream_type = StreamType.CACHE
 
@@ -442,26 +445,39 @@ class StreamManager:
         )
 
         if stream_type == StreamType.CACHE:
-            yield audio_data
+            async for chunk in async_yield_chunks(audio_data, 512000):
+                yield chunk
         elif stream_type == StreamType.URL:
             async with self.mass.http_session.get(stream_path) as response:
                 async for chunk in response.content.iter_any():
-                    audio_data += chunk
                     yield chunk
+                    if len(audio_data) < 100000000:
+                        audio_data += chunk
         elif stream_type == StreamType.FILE:
             async with AIOFile(stream_path) as afp:
                 async for chunk in Reader(afp):
-                    audio_data += chunk
                     yield chunk
+                    if len(audio_data) < 100000000:
+                        audio_data += chunk
         elif stream_type == StreamType.EXECUTABLE:
             args = shlex.split(stream_path)
+            chunk_size = 512000
             process = await asyncio.create_subprocess_exec(
-                *args, stdout=asyncio.subprocess.PIPE
+                *args, stdout=asyncio.subprocess.PIPE, limit=chunk_size
             )
             try:
-                async for chunk in process.stdout:
-                    audio_data += chunk
+                while True:
+                    # read exactly chunksize of data
+                    try:
+                        chunk = await process.stdout.readexactly(chunk_size)
+                    except asyncio.IncompleteReadError as exc:
+                        chunk = exc.partial
                     yield chunk
+                    if len(audio_data) < 100000000:
+                        audio_data += chunk
+                    if len(chunk) < chunk_size:
+                        # last chunk
+                        break
             except (GeneratorExit, Exception) as exc:  # pylint: disable=broad-except
                 LOGGER.warning(
                     "[async_get_media_stream] [%s/%s] Aborted: %s",
@@ -470,16 +486,19 @@ class StreamManager:
                     str(exc),
                 )
                 # read remaining bytes
+                process.terminate()
                 await process.communicate()
                 if process and process.returncode is None:
                     process.terminate()
                     await process.wait()
+                raise GeneratorExit from exc
 
         # signal end of stream event
         self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails)
 
         # send analyze job to background worker
-        self.mass.add_job(self.__analyze_audio, streamdetails, audio_data)
+        if not stream_type == StreamType.CACHE:
+            self.mass.add_job(self.__analyze_audio, streamdetails, audio_data)
         LOGGER.debug(
             "[async_get_media_stream] [%s/%s] Finished",
             streamdetails.provider,
@@ -515,11 +534,17 @@ class StreamManager:
         if item_key in self.analyze_jobs:
             return  # prevent multiple analyze jobs for same track
         self.analyze_jobs[item_key] = True
-        # do we need saving to disk ?
-        cache_file = "/tmp/" + f"{streamdetails.item_id}{streamdetails.provider}"[::-1]
-        if not os.path.isfile(cache_file):
-            with gzip.open(cache_file, "wb") as _file:
+
+        # Save cache file to disk
+        cache_id = f"{streamdetails.item_id}{streamdetails.provider}"[::-1]
+        cache_dir = os.path.join(self.mass.config.data_path, ".audio_cache")
+        if not os.path.isdir(cache_dir):
+            os.mkdir(cache_dir)
+        cache_file = os.path.join(cache_dir, cache_id)
+        if not os.path.isfile(cache_file) and len(audio_data) < 100000000:
+            with open(cache_file, "wb") as _file:
                 _file.write(encrypt_bytes(audio_data))
+
         # get track loudness
         track_loudness = self.mass.add_job(
             self.mass.database.async_get_track_loudness(
@@ -553,14 +578,19 @@ async def async_crossfade_pcm_parts(
     fadeinfile = create_tempfile()
     args = ["sox", "--ignore-length", "-t"] + pcm_args
     args += ["-", "-t"] + pcm_args + [fadeinfile.name, "fade", "t", str(fade_length)]
-    process = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE)
+    process = await asyncio.create_subprocess_exec(
+        *args, stdin=asyncio.subprocess.PIPE, limit=10000000
+    )
     await process.communicate(fade_in_part)
     # create fade-out part
     fadeoutfile = create_tempfile()
     args = ["sox", "--ignore-length", "-t"] + pcm_args + ["-", "-t"] + pcm_args
     args += [fadeoutfile.name, "reverse", "fade", "t", str(fade_length), "reverse"]
     process = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.PIPE,
+        limit=10000000,
     )
     await process.communicate(fade_out_part)
     # create crossfade using sox and some temp files
@@ -568,7 +598,10 @@ async def async_crossfade_pcm_parts(
     args = ["sox", "-m", "-v", "1.0", "-t"] + pcm_args + [fadeoutfile.name, "-v", "1.0"]
     args += ["-t"] + pcm_args + [fadeinfile.name, "-t"] + pcm_args + ["-"]
     process = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.PIPE
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.PIPE,
+        limit=10000000,
     )
     crossfade_part, _ = await process.communicate()
     fadeinfile.close()
@@ -589,7 +622,10 @@ async def async_strip_silence(
     if reverse:
         args.append("reverse")
     process = await asyncio.create_subprocess_exec(
-        *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE
+        *args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        limit=10000000,
     )
     stripped_data, _ = await process.communicate(audio_data)
     return stripped_data

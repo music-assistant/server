@@ -11,13 +11,9 @@ from typing import Any, List, Optional
 import aiohttp
 from music_assistant.constants import EVENT_MUSIC_SYNC_STATUS, EVENT_PROVIDER_REGISTERED
 from music_assistant.helpers.cache import async_cached, async_cached_generator
+from music_assistant.helpers.encryption import async_encrypt_string
 from music_assistant.helpers.musicbrainz import MusicBrainz
-from music_assistant.helpers.util import (
-    callback,
-    compare_strings,
-    encrypt_string,
-    run_periodic,
-)
+from music_assistant.helpers.util import callback, compare_strings, run_periodic
 from music_assistant.models.media_types import (
     Album,
     Artist,
@@ -33,7 +29,7 @@ from music_assistant.models.provider import MusicProvider, ProviderType
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 from PIL import Image
 
-LOGGER = logging.getLogger("mass")
+LOGGER = logging.getLogger("music_manager")
 
 
 def sync_task(desc):
@@ -1132,7 +1128,7 @@ class MusicManager:
             # set player_id on the streamdetails so we know what players stream
             streamdetails.player_id = player_id
             # store the path encrypted as we do not want it to be visible in the api
-            streamdetails.path = encrypt_string(streamdetails.path)
+            streamdetails.path = await async_encrypt_string(streamdetails.path)
             # set streamdetails as attribute on the media_item
             # this way the app knows what content is playing
             media_item.streamdetails = streamdetails

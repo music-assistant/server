@@ -8,7 +8,8 @@ import time
 from enum import Enum
 from typing import Callable
 
-from music_assistant.helpers.util import callback, run_periodic
+from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.util import run_periodic
 
 from .constants import PROV_ID
 
@@ -49,11 +50,13 @@ class SqueezeSocketClient:
 
     def __init__(
         self,
+        mass: MusicAssistantType,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         event_callback: Callable = None,
     ):
         """Initialize the socket client."""
+        self.mass = mass
         self._reader = reader
         self._writer = writer
         self._player_id = ""
@@ -188,6 +191,7 @@ class SqueezeSocketClient:
         power_int = 1 if powered else 0
         await self.__async_send_frame(b"aude", struct.pack("2B", power_int, 1))
         self._powered = powered
+        self.signal_event(SqueezeEvent.STATE_UPDATED)
 
     async def async_cmd_volume_set(self, volume_level: int):
         """Send new volume level command to player."""
@@ -204,6 +208,7 @@ class SqueezeSocketClient:
         muted_int = 0 if muted else 1
         await self.__async_send_frame(b"aude", struct.pack("2B", muted_int, 0))
         self.muted = muted
+        self.signal_event(SqueezeEvent.STATE_UPDATED)
 
     async def async_play_uri(
         self, uri: str, send_flush: bool = True, crossfade_duration: int = 0
@@ -292,7 +297,6 @@ class SqueezeSocketClient:
         self._connected = False
         self.signal_event(SqueezeEvent.DISCONNECTED)
 
-    @callback
     @staticmethod
     def __pack_stream(
         command,
@@ -328,7 +332,6 @@ class SqueezeSocketClient:
             server_ip,
         )
 
-    @callback
     def _process_helo(self, data):
         """Process incoming HELO event from player (player connected)."""
         # pylint: disable=unused-variable
@@ -341,7 +344,6 @@ class SqueezeSocketClient:
         asyncio.create_task(self.__async_initialize_player())
         self.signal_event(SqueezeEvent.CONNECTED)
 
-    @callback
     def _process_stat(self, data):
         """Redirect incoming STAT event from player to correct method."""
         event = data[:4].decode()
@@ -353,9 +355,8 @@ class SqueezeSocketClient:
         if event_handler is None:
             LOGGER.debug("Unhandled event: %s - event_data: %s", event, event_data)
         else:
-            event_handler(data[4:])
+            self.mass.add_job(event_handler, data[4:])
 
-    @callback
     def _process_stat_aude(self, data):
         """Process incoming stat AUDe message (power level and mute)."""
         (spdif_enable, dac_enable) = struct.unpack("2B", data[:4])
@@ -364,21 +365,18 @@ class SqueezeSocketClient:
         self._muted = not powered
         self.signal_event(SqueezeEvent.STATE_UPDATED)
 
-    @callback
     def _process_stat_audg(self, data):
         """Process incoming stat AUDg message (volume level)."""
         # TODO: process volume level
         LOGGER.debug("AUDg received - Volume level: %s", data)
         self.signal_event(SqueezeEvent.STATE_UPDATED)
 
-    @callback
     def _process_stat_stmd(self, data):
         """Process incoming stat STMd message (decoder ready)."""
         # pylint: disable=unused-argument
         LOGGER.debug("STMu received - Decoder Ready for next track.")
         self.signal_event(SqueezeEvent.DECODER_READY)
 
-    @callback
     def _process_stat_stmf(self, data):
         """Process incoming stat STMf message (connection closed)."""
         # pylint: disable=unused-argument
@@ -388,7 +386,6 @@ class SqueezeSocketClient:
         self._elapsed_seconds = 0
         self.signal_event(SqueezeEvent.STATE_UPDATED)
 
-    @callback
     @classmethod
     def _process_stat_stmo(cls, data):
         """
@@ -399,7 +396,6 @@ class SqueezeSocketClient:
         # pylint: disable=unused-argument
         LOGGER.debug("STMo received - output underrun.")
 
-    @callback
     def _process_stat_stmp(self, data):
         """Process incoming stat STMp message: Pause confirmed."""
         # pylint: disable=unused-argument
@@ -407,7 +403,6 @@ class SqueezeSocketClient:
         self._state = STATE_PAUSED
         self.signal_event(SqueezeEvent.STATE_UPDATED)
 
-    @callback
     def _process_stat_stmr(self, data):
         """Process incoming stat STMr message: Resume confirmed."""
         # pylint: disable=unused-argument
@@ -415,7 +410,6 @@ class SqueezeSocketClient:
         self._state = STATE_PLAYING
         self.signal_event(SqueezeEvent.STATE_UPDATED)
 
-    @callback
     def _process_stat_stms(self, data):
         # pylint: disable=unused-argument
         """Process incoming stat STMs message: Playback of new track has started."""
@@ -423,7 +417,6 @@ class SqueezeSocketClient:
         self._state = STATE_PLAYING
         self.signal_event(SqueezeEvent.STATE_UPDATED)
 
-    @callback
     def _process_stat_stmt(self, data):
         """Process incoming stat STMt message: heartbeat from client."""
         # pylint: disable=unused-variable
@@ -454,7 +447,6 @@ class SqueezeSocketClient:
                 self._elapsed_seconds = elapsed_seconds
                 self.signal_event(SqueezeEvent.STATE_UPDATED)
 
-    @callback
     def _process_stat_stmu(self, data):
         """Process incoming stat STMu message: Buffer underrun: Normal end of playback."""
         # pylint: disable=unused-argument
@@ -462,14 +454,12 @@ class SqueezeSocketClient:
         self.state = STATE_STOPPED
         self.signal_event(SqueezeEvent.STATE_UPDATED)
 
-    @callback
     def _process_resp(self, data):
         """Process incoming RESP message: Response received at player."""
         # pylint: disable=unused-argument
         # send continue
         asyncio.create_task(self.__async_send_frame(b"cont", b"0"))
 
-    @callback
     def _process_setd(self, data):
         """Process incoming SETD message: Get/set player firmware settings."""
         cmd_id = data[0]

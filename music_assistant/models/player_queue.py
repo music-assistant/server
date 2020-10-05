@@ -68,6 +68,7 @@ class PlayerQueue:
         self._items = []
         self._shuffle_enabled = False
         self._repeat_enabled = False
+        self._crossfade_enabled = False
         self._cur_index = 0
         self._cur_item_time = 0
         self._last_item = None
@@ -147,9 +148,7 @@ class PlayerQueue:
     @property
     def crossfade_enabled(self) -> bool:
         """Return if crossfade is enabled for this player's queue."""
-        return (
-            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
-        )
+        return self._crossfade_enabled
 
     @property
     def cur_index(self) -> OptionalInt:
@@ -267,6 +266,9 @@ class PlayerQueue:
 
     async def async_next(self) -> None:
         """Play the next track in the queue."""
+        self._crossfade_enabled = (
+            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
+        )
         if self.cur_index is None:
             return
         if self.use_queue_stream:
@@ -275,14 +277,20 @@ class PlayerQueue:
 
     async def async_previous(self) -> None:
         """Play the previous track in the queue."""
+        self._crossfade_enabled = (
+            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
+        )
         if self.cur_index is None:
             return
         if self.use_queue_stream:
             return await self.async_play_index(self.cur_index - 1)
-        return await self.mass.players.async_cmd_previous(self.player_id)
+        return await self.player.async_cmd_previous()
 
     async def async_resume(self) -> None:
         """Resume previous queue."""
+        self._crossfade_enabled = (
+            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
+        )
         if self.items:
             prev_index = self.cur_index
             if self.use_queue_stream or not self.supports_queue:
@@ -299,6 +307,9 @@ class PlayerQueue:
 
     async def async_play_index(self, index: int) -> None:
         """Play item at index X in queue."""
+        self._crossfade_enabled = (
+            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
+        )
         if not isinstance(index, int):
             index = self.__index_by_id(index)
         if not len(self.items) > index:
@@ -346,6 +357,9 @@ class PlayerQueue:
 
     async def async_load(self, queue_items: List[QueueItem]) -> None:
         """Load (overwrite) queue with new items."""
+        self._crossfade_enabled = (
+            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
+        )
         for index, item in enumerate(queue_items):
             item.sort_index = index
         if self._shuffle_enabled:
