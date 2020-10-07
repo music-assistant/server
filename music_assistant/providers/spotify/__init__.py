@@ -61,6 +61,8 @@ class SpotifyProvider(MusicProvider):
 
     __auth_token = None
     sp_user = None
+    _username = None
+    _password = None
 
     @property
     def id(self) -> str:

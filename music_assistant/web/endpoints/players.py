@@ -70,6 +70,8 @@ async def async_player_queue_item(request: Request):
     player_id = request.match_info.get("player_id")
     item_id = request.match_info.get("queue_item")
     player_queue = request.app["mass"].players.get_player_queue(player_id)
+    if not player_queue:
+        return Response(text="invalid player", status=404)
     try:
         item_id = int(item_id)
         queue_item = player_queue.get_item(item_id)
@@ -84,6 +86,8 @@ async def async_player_queue_items(request: Request):
     """Return the items in the player's queue."""
     player_id = request.match_info.get("player_id")
     player_queue = request.app["mass"].players.get_player_queue(player_id)
+    if not player_queue:
+        return Response(text="invalid player", status=404)
 
     async def async_queue_tracks_iter():
         for item in player_queue.items:
@@ -98,6 +102,8 @@ async def async_player_queue(request: Request):
     """Return the player queue details."""
     player_id = request.match_info.get("player_id")
     player_queue = request.app["mass"].players.get_player_queue(player_id)
+    if not player_queue:
+        return Response(text="invalid player", status=404)
     return Response(
         body=json_serializer(player_queue.to_dict()), content_type="application/json"
     )

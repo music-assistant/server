@@ -93,6 +93,8 @@ class StreamManager:
         )
         async with AsyncProcess(args, chunk_size, enable_write=True) as sox_proc:
 
+            cancelled = False
+
             async def fill_buffer():
                 """Forward audio chunks to sox stdin."""
                 LOGGER.debug(
@@ -102,6 +104,8 @@ class StreamManager:
                 )
                 # feed audio data into sox stdin for processing
                 async for chunk in self.async_get_media_stream(streamdetails):
+                    if self.mass.exit or cancelled:
+                        break
                     await sox_proc.write(chunk)
                 await sox_proc.write_eof()
                 LOGGER.debug(
@@ -113,23 +117,34 @@ class StreamManager:
             fill_buffer_task = self.mass.loop.create_task(fill_buffer())
             # yield chunks from stdout
             # we keep 1 chunk behind to detect end of stream properly
-            prev_chunk = b""
-            async for chunk in sox_proc.iterate_chunks():
-                if len(chunk) < chunk_size:
-                    # last chunk
-                    yield (True, prev_chunk + chunk)
-                    break
-                if prev_chunk:
-                    yield (False, prev_chunk)
-                prev_chunk = chunk
+            try:
+                prev_chunk = b""
+                async for chunk in sox_proc.iterate_chunks():
+                    if len(chunk) < chunk_size:
+                        # last chunk
+                        yield (True, prev_chunk + chunk)
+                        break
+                    if prev_chunk:
+                        yield (False, prev_chunk)
+                    prev_chunk = chunk
 
-            await asyncio.wait([fill_buffer_task])
+                await asyncio.wait([fill_buffer_task])
 
-            LOGGER.debug(
-                "[async_get_sox_stream] [%s/%s] finished",
-                streamdetails.provider,
-                streamdetails.item_id,
-            )
+            except (GeneratorExit, Exception) as exc:  # pylint: disable=broad-except
+                cancelled = True
+                fill_buffer_task.cancel()
+                LOGGER.debug(
+                    "[async_get_sox_stream] [%s/%s] cancelled",
+                    streamdetails.provider,
+                    streamdetails.item_id,
+                )
+                raise exc
+            else:
+                LOGGER.debug(
+                    "[async_get_sox_stream] [%s/%s] finished",
+                    streamdetails.provider,
+                    streamdetails.item_id,
+                )
 
     async def async_queue_stream_flac(self, player_id) -> AsyncGenerator[bytes, None]:
         """Stream the PlayerQueue's tracks as constant feed in flac format."""
@@ -145,14 +160,16 @@ class StreamManager:
             )
 
             # feed stdin with pcm samples
+            cancelled = False
+
             async def fill_buffer():
                 """Feed audio data into sox stdin for processing."""
                 LOGGER.debug(
                     "[async_queue_stream_flac] [%s] fill buffer started", player_id
                 )
                 async for chunk in self.async_queue_stream_pcm(player_id, 96000, 32):
-                    if self.mass.exit:
-                        return
+                    if self.mass.exit or cancelled:
+                        break
                     await sox_proc.write(chunk)
                 # write eof when no more data
                 await sox_proc.write_eof()
@@ -161,14 +178,24 @@ class StreamManager:
                 )
 
             fill_buffer_task = self.mass.loop.create_task(fill_buffer())
-            # start yielding audio chunks
-            async for chunk in sox_proc.iterate_chunks():
-                yield chunk
-            await asyncio.wait([fill_buffer_task])
-            LOGGER.debug(
-                "[async_queue_stream_flac] [%s] finished",
-                player_id,
-            )
+            try:
+                # start yielding audio chunks
+                async for chunk in sox_proc.iterate_chunks():
+                    yield chunk
+                await asyncio.wait([fill_buffer_task])
+            except (GeneratorExit, Exception) as exc:  # pylint: disable=broad-except
+                cancelled = True
+                fill_buffer_task.cancel()
+                LOGGER.debug(
+                    "[async_queue_stream_flac] [%s] cancelled",
+                    player_id,
+                )
+                raise exc
+            else:
+                LOGGER.debug(
+                    "[async_queue_stream_flac] [%s] finished",
+                    player_id,
+                )
 
     async def async_queue_stream_pcm(
         self, player_id, sample_rate=96000, bit_depth=32

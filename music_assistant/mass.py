@@ -196,13 +196,16 @@ class MusicAssistant:
 
     @callback
     def get_providers(
-        self, filter_type: Optional[ProviderType] = None
+        self,
+        filter_type: Optional[ProviderType] = None,
+        include_unavailable: bool = False,
     ) -> List[Provider]:
         """Return all providers, optionally filtered by type."""
         return [
             item
             for item in self._providers.values()
-            if (filter_type is None or item.type == filter_type) and item.available
+            if (filter_type is None or item.type == filter_type)
+            and (include_unavailable or item.available)
         ]
 
     @callback

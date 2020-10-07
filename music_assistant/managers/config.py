@@ -457,7 +457,10 @@ class ProviderSettings(ConfigBaseItem):
     def all_keys(self):
         """Return all possible keys of this Config object."""
         prov_type = PROVIDER_TYPE_MAPPINGS[self.conf_key]
-        return (item.id for item in self.mass.get_providers(prov_type))
+        return (
+            item.id
+            for item in self.mass.get_providers(prov_type, include_unavailable=True)
+        )
 
     def get_config_entries(self, child_key: str) -> List[ConfigEntry]:
         """Return all config entries for the given provider."""

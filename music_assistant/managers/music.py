@@ -1115,7 +1115,7 @@ class MusicManager:
             ):
                 # get streamdetails from provider
                 music_prov = self.mass.get_provider(prov_media.provider)
-                if not music_prov:
+                if not music_prov or not music_prov.available:
                     continue  # provider temporary unavailable ?
 
                 streamdetails = await music_prov.async_get_stream_details(
