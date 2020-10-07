@@ -16,6 +16,10 @@
     "https_port": "HTTPS Port",
     "ssl_certificate": "SSL Certificate file location",
     "ssl_key": "Path to certificate key file",
+    "external_url": "External URL",
+    "group_delay": "Correction of groupdelay",
+    "web": "Webserver",
+    "security": "Security",
     
     "desc_sample_rate": "Set the maximum sample rate this player can handle.",
     "desc_volume_normalisation": "Enable R128 volume normalisation to play music at an equally loud volume.",
@@ -29,7 +33,8 @@
     "desc_ssl_key": "Supply the full path to the file containing the private key.",
     "desc_external_url": "Supply the full URL how this Music Assistant instance can be accessed from outside. Make sure this matches the common name of the certificate.",
     "desc_base_username": "Username to access this Music Assistant server.",
-    "desc_base_password": "A password to protect this Music Assistant server. Can be left blank but this is extremely dangerous if this server is reachable from outside."
+    "desc_base_password": "A password to protect this Music Assistant server. Can be left blank but this is extremely dangerous if this server is reachable from outside.",
+    "desc_group_delay": "Only used on grouped playback. Adjust the delay of the grouped playback on this player"
   },
   "nl": {
     "enabled": "Ingeschakeld",
@@ -48,6 +53,10 @@
     "https_port": "HTTPS Port",
     "ssl_certificate": "SSL Certificaat bestandslocatie",
     "ssl_key": "Pad naar het certificaat key bestand",
+    "external_url": "External URL",
+    "web": "Webserver",
+    "security": "Beveiliging",
+    "group_delay": "Correctie van groepsvertraging",
 
     "desc_sample_rate": "Stel de maximale sample rate in die deze speler aankan.",
     "desc_volume_normalisation": "R128 volume normalisatie inschakelen om muziek altijd op een gelijk volume af te spelen.",
@@ -61,6 +70,7 @@
     "desc_ssl_key": "Geef het pad om naar het bestand met de private key.",
     "desc_external_url": "Geef de URL waarop deze Music Assistant server extern te benaderen is. Zorg dat dit overeenomst met het certificaat.",
     "desc_base_username": "Gebruikersnaam waarmee deze server beveiligd moet worden.",
-    "desc_base_password": "Wachtwoord waarmee deze server beveiligd moet worden. Mag worden leeggelaten maar dit is extreem gevaarlijk indien je besluit de server extern toegankelijk te maken."
+    "desc_base_password": "Wachtwoord waarmee deze server beveiligd moet worden. Mag worden leeggelaten maar dit is extreem gevaarlijk indien je besluit de server extern toegankelijk te maken.",
+    "desc_group_delay": "Gebruikt bij afspelen in groep. Pas de vertraging aan voor deze player."
   }
 }

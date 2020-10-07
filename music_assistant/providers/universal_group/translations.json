@@ -1,6 +1,6 @@
 {
     "en": {
-        "Universal Group Players": "Universal Group Players",
+        "Universal Group player": "Universal Group Player",
         "group_player_count": "Number of group players",
         "group_player_count_desc": "Select how many Universal group players should be created.",
         "group_player_players": "Players in group",
@@ -9,7 +9,7 @@
         "group_player_master_desc": "Select the player that should act as group master."
     },
     "nl": {
-        "Universal Group Players": "Universele groep spelers",
+        "Universal Group player": "Universele groep speler",
         "group_player_count": "Aantal groep spelers",
         "group_player_count_desc": "Selecteer hoeveel groep spelers er aangemaakt moeten worden.",
         "group_player_players": "Groepsspelers",

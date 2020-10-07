@@ -22,7 +22,7 @@ class ConfigEntry:
 
     entry_key: str
     entry_type: ConfigEntryType
-    default_value: Any = None
+    default_value: Any = ""
     values: List[Any] = field(default_factory=list)  # select from list of values
     range: Tuple[Any] = ()  # select values within range
     label: str = ""  # a friendly name for the setting

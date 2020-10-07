@@ -107,7 +107,7 @@ class PlayerManager:
         return self._player_states.get(player_id)
 
     @callback
-    def get_player(self, player_id: str) -> PlayerState:
+    def get_player(self, player_id: str) -> Player:
         """Return Player by player_id or None if player does not exist."""
         player_state = self._player_states.get(player_id)
         if player_state:

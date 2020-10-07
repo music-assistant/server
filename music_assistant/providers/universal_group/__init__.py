@@ -9,8 +9,8 @@ from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import DeviceInfo, PlaybackState, Player
 from music_assistant.models.provider import PlayerProvider
 
-PROV_ID = "group_player"
-PROV_NAME = "Group player creator"
+PROV_ID = "universal_group"
+PROV_NAME = "Universal Group player"
 LOGGER = logging.getLogger(PROV_ID)
 
 CONF_PLAYER_COUNT = "group_player_count"
@@ -73,9 +73,9 @@ class GroupPlayer(Player):
         """Initialize."""
         self.mass = mass
         self._player_index = player_index
-        self._player_id = f"group_player_{player_index}"
+        self._player_id = f"{PROV_ID}_{player_index}"
         self._provider_id = PROV_ID
-        self._name = f"Group Player {player_index}"
+        self._name = f"{PROV_NAME} {player_index}"
         self._powered = False
         self._state = PlaybackState.Stopped
         self._available = True
@@ -135,7 +135,7 @@ class GroupPlayer(Player):
 
     @property
     def elapsed_time(self):
-        """Return elapsed timefor first child player."""
+        """Return elapsed time for first child player."""
         if self.state in [PlaybackState.Playing, PlaybackState.Paused]:
             for player_id in self.group_childs:
                 player = self.mass.players.get_player(player_id)

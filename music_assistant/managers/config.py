@@ -115,6 +115,12 @@ DEFAULT_PROVIDER_CONFIG_ENTRIES = [
 DEFAULT_BASE_CONFIG_ENTRIES = {
     CONF_KEY_BASE_WEBSERVER: [
         ConfigEntry(
+            entry_key="__name__",
+            entry_type=ConfigEntryType.LABEL,
+            label=CONF_KEY_BASE_WEBSERVER,
+            hidden=True,
+        ),
+        ConfigEntry(
             entry_key=CONF_HTTP_PORT,
             entry_type=ConfigEntryType.INT,
             default_value=8095,
@@ -146,11 +152,17 @@ DEFAULT_BASE_CONFIG_ENTRIES = {
             entry_key=CONF_EXTERNAL_URL,
             entry_type=ConfigEntryType.STRING,
             default_value=f"http://{get_external_ip()}:8095",
-            label="External url (fqdn)",
+            label=CONF_EXTERNAL_URL,
             description="desc_external_url",
         ),
     ],
     CONF_KEY_BASE_SECURITY: [
+        ConfigEntry(
+            entry_key="__name__",
+            entry_type=ConfigEntryType.LABEL,
+            label=CONF_KEY_BASE_SECURITY,
+            hidden=True,
+        ),
         ConfigEntry(
             entry_key=CONF_USERNAME,
             entry_type=ConfigEntryType.STRING,

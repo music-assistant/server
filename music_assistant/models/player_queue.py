@@ -9,6 +9,7 @@ from enum import Enum
 from typing import List, Optional, Tuple
 
 from music_assistant.constants import (
+    CONF_CROSSFADE_DURATION,
     EVENT_QUEUE_ITEMS_UPDATED,
     EVENT_QUEUE_TIME_UPDATED,
     EVENT_QUEUE_UPDATED,
@@ -68,7 +69,6 @@ class PlayerQueue:
         self._items = []
         self._shuffle_enabled = False
         self._repeat_enabled = False
-        self._crossfade_enabled = False
         self._cur_index = 0
         self._cur_item_time = 0
         self._last_item = None
@@ -144,11 +144,6 @@ class PlayerQueue:
             self._repeat_enabled = enable_repeat
             self.mass.add_job(self.async_update_state())
             self.mass.add_job(self.__async_save_state())
-
-    @property
-    def crossfade_enabled(self) -> bool:
-        """Return if crossfade is enabled for this player's queue."""
-        return self._crossfade_enabled
 
     @property
     def cur_index(self) -> OptionalInt:
@@ -238,6 +233,19 @@ class PlayerQueue:
         )
 
     @property
+    def crossfade_duration(self) -> int:
+        """Return crossfade duration (if enabled)."""
+        player_settings = self.mass.config.get_player_config(self.player_id)
+        if player_settings:
+            return player_settings.get(CONF_CROSSFADE_DURATION, 0)
+        return 0
+
+    @property
+    def crossfade_enabled(self) -> bool:
+        """Return bool if crossfade is enabled."""
+        return self.crossfade_duration > 0
+
+    @property
     def supports_queue(self) -> bool:
         """Return if this player supports native queue."""
         return PlayerFeature.QUEUE in self.player.features
@@ -266,9 +274,6 @@ class PlayerQueue:
 
     async def async_next(self) -> None:
         """Play the next track in the queue."""
-        self._crossfade_enabled = (
-            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
-        )
         if self.cur_index is None:
             return
         if self.use_queue_stream:
@@ -277,9 +282,6 @@ class PlayerQueue:
 
     async def async_previous(self) -> None:
         """Play the previous track in the queue."""
-        self._crossfade_enabled = (
-            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
-        )
         if self.cur_index is None:
             return
         if self.use_queue_stream:
@@ -288,9 +290,6 @@ class PlayerQueue:
 
     async def async_resume(self) -> None:
         """Resume previous queue."""
-        self._crossfade_enabled = (
-            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
-        )
         if self.items:
             prev_index = self.cur_index
             if self.use_queue_stream or not self.supports_queue:
@@ -307,9 +306,6 @@ class PlayerQueue:
 
     async def async_play_index(self, index: int) -> None:
         """Play item at index X in queue."""
-        self._crossfade_enabled = (
-            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
-        )
         if not isinstance(index, int):
             index = self.__index_by_id(index)
         if not len(self.items) > index:
@@ -357,9 +353,6 @@ class PlayerQueue:
 
     async def async_load(self, queue_items: List[QueueItem]) -> None:
         """Load (overwrite) queue with new items."""
-        self._crossfade_enabled = (
-            self.mass.config.player_settings[self.player_id]["crossfade_duration"] > 0
-        )
         for index, item in enumerate(queue_items):
             item.sort_index = index
         if self._shuffle_enabled:
@@ -529,7 +522,6 @@ class PlayerQueue:
     async def async_start_queue_stream(self) -> None:
         """Call when queue_streamer starts playing the queue stream."""
         self._last_queue_startindex = self._next_queue_startindex
-
         self._cur_item_time = 0
         return self.get_item(self._next_queue_startindex)
 

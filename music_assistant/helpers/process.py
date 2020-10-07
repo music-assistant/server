@@ -18,7 +18,7 @@ import threading
 import time
 from typing import AsyncGenerator, List, Optional
 
-LOGGER = logging.getLogger("AsyncProcess")
+LOGGER = logging.getLogger("mass.helpers")
 
 
 class AsyncProcess(object):
@@ -68,7 +68,6 @@ class AsyncProcess(object):
             await self.__queue_out.get()
             self.__queue_out.task_done()
         await self.__proc_task
-        LOGGER.debug("[%s] Context manager closed", self._id)
         return True
 
     async def iterate_chunks(self) -> AsyncGenerator[bytes, None]:
@@ -112,9 +111,6 @@ class AsyncProcess(object):
     def __run_proc(self):
         """Run process in executor."""
         try:
-            LOGGER.debug(
-                "[%s] Starting process with args: %s", self._id, str(self._process_args)
-            )
             proc = subprocess.Popen(
                 self._process_args,
                 shell=self._enable_shell,
@@ -143,7 +139,6 @@ class AsyncProcess(object):
             if proc.poll() is None:
                 proc.terminate()
                 proc.communicate()
-            LOGGER.debug("[%s] process finished", self._id)
 
     def __write_stdin(self, _stdin):
         """Put chunks from queue to stdin."""
