@@ -3,6 +3,8 @@ StreamManager: handles all audio streaming to players.
 
 Either by sending tracks one by one or send one continuous stream
 of music with crossfade/gapless support (queue stream).
+
+All audio is processed by the SoX executable, using various subprocess streams.
 """
 import asyncio
 import gc
@@ -22,6 +24,7 @@ from music_assistant.helpers.encryption import (
     async_decrypt_string,
     encrypt_bytes,
 )
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import (
     async_yield_chunks,
@@ -60,7 +63,7 @@ class StreamManager:
         output_format: SoxOutputFormat = SoxOutputFormat.FLAC,
         resample: Optional[int] = None,
         gain_db_adjust: Optional[float] = None,
-        chunk_size: int = 5000000,
+        chunk_size: int = 1024000,
     ) -> AsyncGenerator[Tuple[bool, bytes], None]:
         """Get the sox manipulated audio data for the given streamdetails."""
         # collect all args for sox
@@ -81,57 +84,37 @@ class StreamManager:
             args += ["vol", str(gain_db_adjust), "dB"]
         if resample:
             args += ["rate", "-v", str(resample)]
-        if not chunk_size:
-            chunk_size = int(
-                streamdetails.sample_rate * (streamdetails.bit_depth / 8) * 2 * 10
-            )
+
         LOGGER.debug(
             "[async_get_sox_stream] [%s/%s] started using args: %s",
             streamdetails.provider,
             streamdetails.item_id,
             " ".join(args),
         )
-        # init the process with stdin/out pipes
-        sox_proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.PIPE,
-            limit=chunk_size * 5,
-        )
+        async with AsyncProcess(args, chunk_size, enable_write=True) as sox_proc:
 
-        async def fill_buffer():
-            """Forward audio chunks to sox stdin."""
-            LOGGER.debug(
-                "[async_get_sox_stream] [%s/%s] fill_buffer started",
-                streamdetails.provider,
-                streamdetails.item_id,
-            )
-            # feed audio data into sox stdin for processing
-            async for chunk in self.async_get_media_stream(streamdetails):
-                if self.mass.exit:
-                    break
-                sox_proc.stdin.write(chunk)
-                await sox_proc.stdin.drain()
-            # send eof when last chunk received
-            sox_proc.stdin.write_eof()
-            await sox_proc.stdin.drain()
-            LOGGER.debug(
-                "[async_get_sox_stream] [%s/%s] fill_buffer finished",
-                streamdetails.provider,
-                streamdetails.item_id,
-            )
+            async def fill_buffer():
+                """Forward audio chunks to sox stdin."""
+                LOGGER.debug(
+                    "[async_get_sox_stream] [%s/%s] fill_buffer started",
+                    streamdetails.provider,
+                    streamdetails.item_id,
+                )
+                # feed audio data into sox stdin for processing
+                async for chunk in self.async_get_media_stream(streamdetails):
+                    await sox_proc.write(chunk)
+                await sox_proc.write_eof()
+                LOGGER.debug(
+                    "[async_get_sox_stream] [%s/%s] fill_buffer finished",
+                    streamdetails.provider,
+                    streamdetails.item_id,
+                )
 
-        fill_buffer_task = self.mass.loop.create_task(fill_buffer())
-        try:
+            fill_buffer_task = self.mass.loop.create_task(fill_buffer())
             # yield chunks from stdout
             # we keep 1 chunk behind to detect end of stream properly
             prev_chunk = b""
-            while True:
-                # read exactly chunksize of data
-                try:
-                    chunk = await sox_proc.stdout.readexactly(chunk_size)
-                except asyncio.IncompleteReadError as exc:
-                    chunk = exc.partial
+            async for chunk in sox_proc.iterate_chunks():
                 if len(chunk) < chunk_size:
                     # last chunk
                     yield (True, prev_chunk + chunk)
@@ -142,19 +125,6 @@ class StreamManager:
 
             await asyncio.wait([fill_buffer_task])
 
-        except (GeneratorExit, Exception):  # pylint: disable=broad-except
-            LOGGER.warning(
-                "[async_get_sox_stream] [%s/%s] aborted",
-                streamdetails.provider,
-                streamdetails.item_id,
-            )
-            if fill_buffer_task and not fill_buffer_task.cancelled():
-                fill_buffer_task.cancel()
-            await sox_proc.communicate()
-            if sox_proc and sox_proc.returncode is None:
-                sox_proc.terminate()
-                await sox_proc.wait()
-        else:
             LOGGER.debug(
                 "[async_get_sox_stream] [%s/%s] finished",
                 streamdetails.provider,
@@ -166,56 +136,35 @@ class StreamManager:
         chunk_size = 571392  # 74,7% of pcm
 
         args = ["sox", "-t", "s32", "-c", "2", "-r", "96000", "-", "-t", "flac", "-"]
-        sox_proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.PIPE,
-            limit=chunk_size,
-        )
-        LOGGER.debug(
-            "[async_queue_stream_flac] [%s] started using args: %s",
-            player_id,
-            " ".join(args),
-        )
+        async with AsyncProcess(args, chunk_size, enable_write=True) as sox_proc:
 
-        # feed stdin with pcm samples
-        async def fill_buffer():
-            """Feed audio data into sox stdin for processing."""
             LOGGER.debug(
-                "[async_queue_stream_flac] [%s] fill buffer started", player_id
-            )
-            async for chunk in self.async_queue_stream_pcm(player_id, 96000, 32):
-                if self.mass.exit:
-                    return
-                sox_proc.stdin.write(chunk)
-                await sox_proc.stdin.drain()
-            # write eof when no more data
-            sox_proc.stdin.write_eof()
-            await sox_proc.stdin.drain()
-            LOGGER.debug(
-                "[async_queue_stream_flac] [%s] fill buffer finished", player_id
+                "[async_queue_stream_flac] [%s] started using args: %s",
+                player_id,
+                " ".join(args),
             )
 
-        fill_buffer_task = self.mass.loop.create_task(fill_buffer())
-        try:
-            # yield flac chunks from stdout
-            while True:
-                try:
-                    chunk = await sox_proc.stdout.readexactly(chunk_size)
-                    yield chunk
-                except asyncio.IncompleteReadError as exc:
-                    chunk = exc.partial
-                    yield chunk
-                    break
-        except (GeneratorExit, Exception):  # pylint: disable=broad-except
-            LOGGER.debug("[async_queue_stream_flac] [%s] aborted", player_id)
-            if fill_buffer_task and not fill_buffer_task.cancelled():
-                fill_buffer_task.cancel()
-            await sox_proc.communicate()
-            if sox_proc and sox_proc.returncode is None:
-                sox_proc.terminate()
-                await sox_proc.wait()
-        else:
+            # feed stdin with pcm samples
+            async def fill_buffer():
+                """Feed audio data into sox stdin for processing."""
+                LOGGER.debug(
+                    "[async_queue_stream_flac] [%s] fill buffer started", player_id
+                )
+                async for chunk in self.async_queue_stream_pcm(player_id, 96000, 32):
+                    if self.mass.exit:
+                        return
+                    await sox_proc.write(chunk)
+                # write eof when no more data
+                await sox_proc.write_eof()
+                LOGGER.debug(
+                    "[async_queue_stream_flac] [%s] fill buffer finished", player_id
+                )
+
+            fill_buffer_task = self.mass.loop.create_task(fill_buffer())
+            # start yielding audio chunks
+            async for chunk in sox_proc.iterate_chunks():
+                yield chunk
+            await asyncio.wait([fill_buffer_task])
             LOGGER.debug(
                 "[async_queue_stream_flac] [%s] finished",
                 player_id,
@@ -418,6 +367,7 @@ class StreamManager:
         stream_path = await async_decrypt_string(streamdetails.path)
         stream_type = StreamType(streamdetails.type)
         audio_data = b""
+        chunk_size = 512000
 
         # Handle (optional) caching of audio data
         cache_id = f"{streamdetails.item_id}{streamdetails.provider}"[::-1]
@@ -445,53 +395,30 @@ class StreamManager:
         )
 
         if stream_type == StreamType.CACHE:
-            async for chunk in async_yield_chunks(audio_data, 512000):
+            async for chunk in async_yield_chunks(audio_data, chunk_size):
                 yield chunk
         elif stream_type == StreamType.URL:
             async with self.mass.http_session.get(stream_path) as response:
-                async for chunk in response.content.iter_any():
+                while True:
+                    chunk = await response.content.read(chunk_size)
+                    if not chunk:
+                        break
                     yield chunk
                     if len(audio_data) < 100000000:
                         audio_data += chunk
         elif stream_type == StreamType.FILE:
             async with AIOFile(stream_path) as afp:
-                async for chunk in Reader(afp):
+                async for chunk in Reader(afp, chunk_size=chunk_size):
                     yield chunk
                     if len(audio_data) < 100000000:
                         audio_data += chunk
         elif stream_type == StreamType.EXECUTABLE:
             args = shlex.split(stream_path)
-            chunk_size = 512000
-            process = await asyncio.create_subprocess_exec(
-                *args, stdout=asyncio.subprocess.PIPE, limit=chunk_size
-            )
-            try:
-                while True:
-                    # read exactly chunksize of data
-                    try:
-                        chunk = await process.stdout.readexactly(chunk_size)
-                    except asyncio.IncompleteReadError as exc:
-                        chunk = exc.partial
+            async with AsyncProcess(args, chunk_size, False) as process:
+                async for chunk in process.iterate_chunks():
                     yield chunk
                     if len(audio_data) < 100000000:
                         audio_data += chunk
-                    if len(chunk) < chunk_size:
-                        # last chunk
-                        break
-            except (GeneratorExit, Exception) as exc:  # pylint: disable=broad-except
-                LOGGER.warning(
-                    "[async_get_media_stream] [%s/%s] Aborted: %s",
-                    streamdetails.provider,
-                    streamdetails.item_id,
-                    str(exc),
-                )
-                # read remaining bytes
-                process.terminate()
-                await process.communicate()
-                if process and process.returncode is None:
-                    process.terminate()
-                    await process.wait()
-                raise GeneratorExit from exc
 
         # signal end of stream event
         self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails)
@@ -578,32 +505,20 @@ async def async_crossfade_pcm_parts(
     fadeinfile = create_tempfile()
     args = ["sox", "--ignore-length", "-t"] + pcm_args
     args += ["-", "-t"] + pcm_args + [fadeinfile.name, "fade", "t", str(fade_length)]
-    process = await asyncio.create_subprocess_exec(
-        *args, stdin=asyncio.subprocess.PIPE, limit=10000000
-    )
-    await process.communicate(fade_in_part)
+    async with AsyncProcess(args, enable_write=True) as sox_proc:
+        await sox_proc.communicate(fade_in_part)
     # create fade-out part
     fadeoutfile = create_tempfile()
     args = ["sox", "--ignore-length", "-t"] + pcm_args + ["-", "-t"] + pcm_args
     args += [fadeoutfile.name, "reverse", "fade", "t", str(fade_length), "reverse"]
-    process = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stdin=asyncio.subprocess.PIPE,
-        limit=10000000,
-    )
-    await process.communicate(fade_out_part)
+    async with AsyncProcess(args, enable_write=True) as sox_proc:
+        await sox_proc.communicate(fade_out_part)
     # create crossfade using sox and some temp files
     # TODO: figure out how to make this less complex and without the tempfiles
     args = ["sox", "-m", "-v", "1.0", "-t"] + pcm_args + [fadeoutfile.name, "-v", "1.0"]
     args += ["-t"] + pcm_args + [fadeinfile.name, "-t"] + pcm_args + ["-"]
-    process = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stdin=asyncio.subprocess.PIPE,
-        limit=10000000,
-    )
-    crossfade_part, _ = await process.communicate()
+    async with AsyncProcess(args, enable_write=False) as sox_proc:
+        crossfade_part = await sox_proc.communicate()
     fadeinfile.close()
     fadeoutfile.close()
     del fadeinfile
@@ -621,11 +536,6 @@ async def async_strip_silence(
     args += ["silence", "1", "0.1", "1%"]
     if reverse:
         args.append("reverse")
-    process = await asyncio.create_subprocess_exec(
-        *args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        limit=10000000,
-    )
-    stripped_data, _ = await process.communicate(audio_data)
+    async with AsyncProcess(args, enable_write=True) as sox_proc:
+        stripped_data = await sox_proc.communicate(audio_data)
     return stripped_data

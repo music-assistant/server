@@ -63,11 +63,9 @@ def main():
         logger.info("shutdown requested!")
         loop.run_until_complete(mass.async_stop())
 
-    # TODO: uvloop is temporary disabled due to a bug with subprocesses
-    # https://github.com/MagicStack/uvloop/issues/317
     run(
         mass.async_start(),
-        use_uvloop=False,
+        use_uvloop=True,
         shutdown_callback=on_shutdown,
         executor_workers=64,
     )

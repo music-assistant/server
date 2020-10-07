@@ -451,7 +451,7 @@ class SqueezeSocketClient:
         """Process incoming stat STMu message: Buffer underrun: Normal end of playback."""
         # pylint: disable=unused-argument
         LOGGER.debug("STMu received - end of playback.")
-        self.state = STATE_STOPPED
+        self._state = STATE_STOPPED
         self.signal_event(SqueezeEvent.STATE_UPDATED)
 
     def _process_resp(self, data):

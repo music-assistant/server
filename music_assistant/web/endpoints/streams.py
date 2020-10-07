@@ -25,7 +25,6 @@ async def stream_media(request: Request):
     resp = StreamResponse(
         status=200, reason="OK", headers={"Content-Type": f"audio/{content_type}"}
     )
-    resp.enable_chunked_encoding()
     await resp.prepare(request)
 
     # stream track
@@ -70,7 +69,6 @@ async def stream_queue_item(request: Request):
     resp = StreamResponse(
         status=200, reason="OK", headers={"Content-Type": "audio/flac"}
     )
-    resp.enable_chunked_encoding()
     await resp.prepare(request)
 
     async for audio_chunk in request.app["mass"].streams.async_stream_queue_item(
@@ -93,7 +91,6 @@ async def stream_group(request: Request):
     resp = StreamResponse(
         status=200, reason="OK", headers={"Content-Type": "audio/flac"}
     )
-    resp.enable_chunked_encoding()
     await resp.prepare(request)
 
     # stream queue

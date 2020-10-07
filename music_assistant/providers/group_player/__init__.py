@@ -318,32 +318,11 @@ class GroupPlayer(Player):
     async def subscribe_stream_client(self, child_player_id):
         """Handle streaming to all players of a group. Highly experimental."""
 
-        # each connected client gets its own sox process to convert incoming pcm samples
-        # to flac (which is streamed to the player).
-        args = [
-            "sox",
-            "-t",
-            "s32",
-            "-c",
-            "2",
-            "-r",
-            "96000",
-            "-",
-            "-t",
-            "flac",
-            "-C",
-            "0",
-            "-",
-        ]
-        sox_proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.PIPE,
-        )
-        chunk_size = 2880000  # roughly 5 seconds of flac @ 96000/32
+        # each connected client gets its own Queue to which audio chunks (flac) are sent
         try:
             # report this client as connected
-            self.connected_clients[child_player_id] = sox_proc.stdin
+            queue = asyncio.Queue()
+            self.connected_clients[child_player_id] = queue
             LOGGER.debug(
                 "[%s] child player connected: %s",
                 self.player_id,
@@ -351,22 +330,16 @@ class GroupPlayer(Player):
             )
             # yield flac chunks from stdout to the http streamresponse
             while True:
-                try:
-                    chunk = await sox_proc.stdout.readexactly(chunk_size)
-                    yield chunk
-                except asyncio.IncompleteReadError as exc:
-                    chunk = exc.partial
-                    yield chunk
+                chunk = await queue.get()
+                yield chunk
+                queue.task_done()
+                if not chunk:
                     break
         except (GeneratorExit, Exception):  # pylint: disable=broad-except
             LOGGER.warning(
                 "[%s] child player aborted stream: %s", self.player_id, child_player_id
             )
             self.connected_clients.pop(child_player_id, None)
-            await sox_proc.communicate()
-            if sox_proc and sox_proc.returncode is None:
-                sox_proc.terminate()
-                await sox_proc.wait()
         else:
             self.connected_clients.pop(child_player_id, None)
             LOGGER.debug(
@@ -390,8 +363,8 @@ class GroupPlayer(Player):
         )
         self.sync_task = asyncio.create_task(self.__synchronize_players())
 
-        async for audio_chunk in self.mass.streams.async_queue_stream_pcm(
-            self.player_id, sample_rate=96000, bit_depth=32
+        async for audio_chunk in self.mass.streams.async_queue_stream_flac(
+            self.player_id
         ):
 
             # make sure we still have clients connected
@@ -401,9 +374,8 @@ class GroupPlayer(Player):
 
             # send the audio chunk to all connected players
             tasks = []
-            for _writer in self.connected_clients.values():
-                tasks.append(self.mass.add_job(_writer.write, audio_chunk))
-                tasks.append(self.mass.add_job(_writer.drain()))
+            for _queue in self.connected_clients.values():
+                tasks.append(self.mass.add_job(_queue.put(audio_chunk)))
             # wait for clients to consume the data
             await asyncio.wait(tasks)
 
