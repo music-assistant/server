@@ -288,9 +288,10 @@ class MusicAssistant:
         self, loop: asyncio.AbstractEventLoop, context: Dict
     ) -> None:
         """Global exception handler."""
-        LOGGER.error("Caught exception: %s", context)
-        if self._debug:
-            loop.default_exception_handler(context)
+        LOGGER.exception(
+            "Caught exception: %s", context.get("exception", context["message"])
+        )
+        loop.default_exception_handler(context)
 
     async def __async_setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
