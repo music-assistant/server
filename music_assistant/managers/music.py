@@ -54,7 +54,7 @@ def sync_task(desc):
                 EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs
             )
             await func(*args)
-            LOGGER.info("Finished syncing %s for provider %s", desc, prov_id)
+            LOGGER.debug("Finished syncing %s for provider %s", desc, prov_id)
             method_class.running_sync_jobs.remove(sync_job)
             method_class.mass.signal_event(
                 EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs

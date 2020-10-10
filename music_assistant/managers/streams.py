@@ -108,11 +108,12 @@ class StreamManager:
 
                 await asyncio.wait([fill_buffer_task])
 
+            # pylint: disable=broad-except
             except (
                 GeneratorExit,
                 asyncio.CancelledError,
                 Exception,
-            ) as exc:  # pylint: disable=broad-except
+            ) as exc:
                 cancelled = True
                 fill_buffer_task.cancel()
                 LOGGER.debug(
@@ -164,11 +165,12 @@ class StreamManager:
                 async for chunk in sox_proc.iterate_chunks():
                     yield chunk
                 await asyncio.wait([fill_buffer_task])
+            # pylint: disable=broad-except
             except (
                 GeneratorExit,
                 asyncio.CancelledError,
                 Exception,
-            ) as exc:  # pylint: disable=broad-except
+            ) as exc:
                 cancelled = True
                 fill_buffer_task.cancel()
                 LOGGER.debug(

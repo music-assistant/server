@@ -21,7 +21,7 @@ from typing import AsyncGenerator, List, Optional
 LOGGER = logging.getLogger("mass.helpers")
 
 
-class AsyncProcess(object):
+class AsyncProcess:
     """Implementation of a (truly) non blocking subprocess."""
 
     def __init__(
