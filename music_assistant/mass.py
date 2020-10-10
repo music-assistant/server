@@ -30,6 +30,14 @@ from zeroconf import NonUniqueNameException, ServiceInfo, Zeroconf
 LOGGER = logging.getLogger("mass")
 
 
+def global_exception_handler(loop: asyncio.AbstractEventLoop, context: Dict) -> None:
+    """Global exception handler."""
+    LOGGER.exception(
+        "Caught exception: %s", context.get("exception", context["message"])
+    )
+    loop.default_exception_handler(context)
+
+
 class MusicAssistant:
     """Main MusicAssistant object."""
 
@@ -63,7 +71,7 @@ class MusicAssistant:
         """Start running the music assistant server."""
         # initialize loop
         self._loop = asyncio.get_event_loop()
-        self._loop.set_exception_handler(__handle_exception)
+        self._loop.set_exception_handler(global_exception_handler)
         self._loop.set_debug(self._debug)
         # create shared aiohttp ClientSession
         self._http_session = aiohttp.ClientSession(
@@ -334,11 +342,3 @@ class MusicAssistant:
                     LOGGER.exception("Error preloading module %s: %s", module_name, exc)
                 else:
                     LOGGER.debug("Successfully preloaded module %s", module_name)
-
-
-def __handle_exception(loop: asyncio.AbstractEventLoop, context: Dict) -> None:
-    """Global exception handler."""
-    LOGGER.exception(
-        "Caught exception: %s", context.get("exception", context["message"])
-    )
-    loop.default_exception_handler(context)

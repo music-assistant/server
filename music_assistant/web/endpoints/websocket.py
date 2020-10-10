@@ -1,7 +1,6 @@
 """Websocket API endpoint."""
 
 import logging
-from asyncio import CancelledError
 
 import jwt
 import orjson
@@ -29,7 +28,14 @@ async def async_websocket_handler(request: Request):
             if hasattr(msg_details, "to_dict"):
                 msg_details = msg_details.to_dict()
             ws_msg = {"message": msg, "message_details": msg_details}
-            await ws_response.send_str(json_serializer(ws_msg).decode())
+            try:
+                await ws_response.send_str(json_serializer(ws_msg).decode())
+            # pylint: disable=broad-except
+            except Exception as exc:
+                LOGGER.debug(
+                    "Error while trying to send message to websocket (probably disconnected): %s",
+                    str(exc),
+                )
 
         # process incoming messages
         async for msg in ws_response:
@@ -87,9 +93,8 @@ async def async_websocket_handler(request: Request):
             else:
                 # simply echo the message on the eventbus
                 request.app["mass"].signal_event(msg, msg_details)
-    except (AssertionError, CancelledError):
-        LOGGER.debug("Websocket disconnected")
     finally:
+        LOGGER.debug("Websocket disconnected")
         for remove_callback in remove_callbacks:
             remove_callback()
     return ws_response
