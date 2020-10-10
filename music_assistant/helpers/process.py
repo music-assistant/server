@@ -18,7 +18,7 @@ import threading
 import time
 from typing import AsyncGenerator, List, Optional
 
-LOGGER = logging.getLogger("mass.helpers")
+LOGGER = logging.getLogger("mass.helpers.process")
 
 
 class AsyncProcess:

@@ -10,7 +10,7 @@ from functools import reduce
 import aiosqlite
 from music_assistant.helpers.util import run_periodic
 
-LOGGER = logging.getLogger("mass")
+LOGGER = logging.getLogger("cache")
 
 
 class Cache:

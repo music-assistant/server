@@ -10,7 +10,7 @@ from music_assistant.helpers.util import json_serializer
 
 routes = RouteTableDef()
 
-LOGGER = logging.getLogger("websocket")
+LOGGER = logging.getLogger("web.endpoints.websocket")
 
 
 @routes.get("/ws")
