@@ -76,6 +76,7 @@ class ChromecastProvider(PlayerProvider):
         # pylint: disable=unused-argument
         if uuid is None:
             return  # Discovered chromecast without uuid
+
         service = self._listener.services[cast_uuid]
         cast_info = ChromecastInfo(
             services=service[0],
@@ -86,15 +87,13 @@ class ChromecastProvider(PlayerProvider):
             port=service[5],
         )
         player_id = cast_info.uuid
-        player = self.mass.players.get_player(player_id)
-        if player:
-            # player already added, the player will take care of reconnects itself.
-            self.mass.add_job(player.set_cast_info, cast_info)
-            return
         LOGGER.debug(
             "Chromecast discovered: %s (%s)", cast_info.friendly_name, player_id
         )
-        player = ChromecastPlayer(self.mass, cast_info)
+        player = self.mass.players.get_player(player_id)
+        if not player:
+            player = ChromecastPlayer(self.mass, cast_info)
+        # if player was already added, it player will take care of reconnects itself.
         self.mass.add_job(player.set_cast_info, cast_info)
         self.mass.add_job(self.mass.players.async_add_player(player))
 

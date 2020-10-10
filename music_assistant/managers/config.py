@@ -43,7 +43,7 @@ from music_assistant.models.player import PlayerControlType
 from music_assistant.models.provider import ProviderType
 from passlib.hash import pbkdf2_sha256
 
-LOGGER = logging.getLogger("config")
+LOGGER = logging.getLogger("config_manager")
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = [
     ConfigEntry(

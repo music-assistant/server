@@ -45,7 +45,7 @@ from music_assistant.models.player import (
     PlayerFeature,
 )
 
-LOGGER = logging.getLogger("mass")
+LOGGER = logging.getLogger("player_state")
 
 # List of all player_state attributes
 PLAYER_ATTRIBUTES = [

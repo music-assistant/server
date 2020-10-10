@@ -192,8 +192,11 @@ class ChromecastPlayer(Player):
     def set_cast_info(self, cast_info: ChromecastInfo) -> None:
         """Set the cast information and set up the chromecast object."""
         self._cast_info = cast_info
-        if self._chromecast and not self._chromecast.socket_client.is_connected:
-            self.disconnect()
+        if self._chromecast and not self._available:
+            try:
+                self.disconnect()
+            except Exception as exc:  # pylint: disable=broad-except
+                LOGGER.exception(exc)
         elif self._chromecast is not None:
             return
         LOGGER.debug(
@@ -222,21 +225,21 @@ class ChromecastPlayer(Player):
         mz_controller = MultizoneController(chromecast.uuid)
         chromecast.register_handler(mz_controller)
         chromecast.mz_controller = mz_controller
-        self.mass.add_job(self._chromecast.start)
+        self._chromecast.start()
 
     def disconnect(self) -> None:
         """Disconnect Chromecast object if it is set."""
+        self._available = False
         if self._chromecast is None:
             return
         LOGGER.warning(
             "[%s] Disconnecting from chromecast socket", self._cast_info.friendly_name
         )
-        self._available = False
         if (
             self._chromecast.socket_client
             and not self._chromecast.socket_client.is_stopped
         ):
-            self.mass.add_job(self._chromecast.disconnect)
+            self._chromecast.disconnect()
         self._invalidate()
 
     def _invalidate(self) -> None:
@@ -455,15 +458,27 @@ class ChromecastPlayer(Player):
         """Try to execute Chromecast command."""
 
         def handle_command(func, *args, **kwarg):
-            if not self._chromecast.socket_client.is_connected:
-                return
+            if (
+                not self._chromecast
+                or not self._chromecast.socket_client
+                or not self._available
+            ):
+                LOGGER.error(
+                    "Error while executing command on player %s: Chromecast is not available!"
+                )
             try:
                 return func(*args, **kwargs)
-            except Exception as exc:  # pylint: disable=broad-except
+            except (
+                pychromecast.NotConnected,
+                pychromecast.ChromecastConnectionError,
+            ) as exc:
                 LOGGER.error(
                     "Error while executing command on player %s: %s",
                     self.name,
                     str(exc),
                 )
+                self._available = False
+            except Exception as exc:  # pylint: disable=broad-except
+                LOGGER.exception(exc)
 
         self.mass.add_job(handle_command, func, *args, **kwargs)

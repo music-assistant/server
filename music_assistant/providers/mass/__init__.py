@@ -19,7 +19,7 @@ from music_assistant.models.provider import PlayerProvider
 
 PROV_ID = "mass"
 PROV_NAME = "Music Assistant"
-LOGGER = logging.getLogger(PROV_ID)
+LOGGER = logging.getLogger("mass_provider")
 
 CONFIG_ENTRIES = []
 PLAYER_CONFIG_ENTRIES = []
@@ -311,7 +311,7 @@ class WebsocketsPlayer(Player):
             self._muted = data["muted"]
         if "state" in data:
             self._state = PlaybackState(data["state"])
-        if "cur_time" in data:
+        if "elapsed_time" in data:
             self._elapsed_time = data["elapsed_time"]
         if "current_uri" in data:
             self._current_uri = data["current_uri"]

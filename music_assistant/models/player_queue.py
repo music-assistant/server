@@ -29,7 +29,7 @@ from music_assistant.models.streamdetails import StreamDetails
 # pylint: disable=too-many-public-methods
 # pylint: disable=too-few-public-methods
 
-LOGGER = logging.getLogger("mass")
+LOGGER = logging.getLogger("player_queue")
 
 
 class QueueOption(Enum):
@@ -163,9 +163,10 @@ class PlayerQueue:
 
         Returns None if queue is empty.
         """
-        if self.cur_index is None or not len(self.items) > self.cur_index:
+        cur_item = self.cur_item
+        if not cur_item:
             return None
-        return self.items[self.cur_index].queue_item_id
+        return cur_item.queue_item_id
 
     @property
     def cur_item(self) -> Optional[QueueItem]:
@@ -174,7 +175,11 @@ class PlayerQueue:
 
         Returns None if queue is empty.
         """
-        if self.cur_index is None or not len(self.items) > self.cur_index:
+        if (
+            self.cur_index is None
+            or not self.items
+            or not len(self.items) > self.cur_index
+        ):
             return None
         return self.items[self.cur_index]
 
