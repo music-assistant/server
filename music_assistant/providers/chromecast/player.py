@@ -482,7 +482,7 @@ class ChromecastPlayer(Player):
         else:
             send_queue()
 
-    async def __try_chromecast_command(self, func, *args, **kwargs):
+    def __try_chromecast_command(self, func, *args, **kwargs):
         """Try to execute Chromecast command."""
         self.mass.add_job(self.__async_try_chromecast_command(func, *args, **kwargs))
 
