@@ -376,7 +376,8 @@ class PlayerSettings(ConfigBaseItem):
                     ConfigEntry(
                         entry_key=CONF_POWER_CONTROL,
                         entry_type=ConfigEntryType.STRING,
-                        description=CONF_POWER_CONTROL,
+                        label=CONF_POWER_CONTROL,
+                        description="desc_power_control",
                         values=controls,
                     )
                 )
@@ -393,7 +394,8 @@ class PlayerSettings(ConfigBaseItem):
                     ConfigEntry(
                         entry_key=CONF_VOLUME_CONTROL,
                         entry_type=ConfigEntryType.STRING,
-                        description=CONF_VOLUME_CONTROL,
+                        label=CONF_VOLUME_CONTROL,
+                        description="desc_volume_control",
                         values=controls,
                     )
                 )
@@ -407,7 +409,8 @@ class PlayerSettings(ConfigBaseItem):
                             entry_type=ConfigEntryType.INT,
                             default_value=0,
                             range=(0, 500),
-                            description=CONF_GROUP_DELAY,
+                            label=CONF_GROUP_DELAY,
+                            description="desc_group_delay",
                         )
                     )
                     break
