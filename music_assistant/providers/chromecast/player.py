@@ -506,6 +506,7 @@ class ChromecastPlayer(Player):
             except (
                 pychromecast.NotConnected,
                 pychromecast.ChromecastConnectionError,
+                pychromecast.error.PyChromecastStopped,
             ) as exc:
                 LOGGER.warning(
                     "Error while executing command %s on player %s: %s",

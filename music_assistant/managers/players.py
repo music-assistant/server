@@ -283,7 +283,7 @@ class PlayerManager:
                 queue_item = QueueItem(track)
                 # generate uri for this queue item
                 queue_item.uri = "%s/stream/queue/%s/%s" % (
-                    self.mass.web.internal_url,
+                    self.mass.web.url,
                     player_id,
                     queue_item.queue_item_id,
                 )
@@ -326,7 +326,7 @@ class PlayerManager:
         )
         # generate uri for this queue item
         queue_item.uri = "%s/stream/%s/%s" % (
-            self.mass.web.internal_url,
+            self.mass.web.url,
             player_id,
             queue_item.queue_item_id,
         )

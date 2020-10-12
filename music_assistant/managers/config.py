@@ -10,14 +10,10 @@ import orjson
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENABLED,
-    CONF_EXTERNAL_URL,
     CONF_FALLBACK_GAIN_CORRECT,
     CONF_GROUP_DELAY,
-    CONF_HTTP_PORT,
-    CONF_HTTPS_PORT,
     CONF_KEY_BASE,
     CONF_KEY_BASE_SECURITY,
-    CONF_KEY_BASE_WEBSERVER,
     CONF_KEY_METADATA_PROVIDERS,
     CONF_KEY_MUSIC_PROVIDERS,
     CONF_KEY_PLAYER_PROVIDERS,
@@ -27,8 +23,6 @@ from music_assistant.constants import (
     CONF_NAME,
     CONF_PASSWORD,
     CONF_POWER_CONTROL,
-    CONF_SSL_CERTIFICATE,
-    CONF_SSL_KEY,
     CONF_TARGET_VOLUME,
     CONF_USERNAME,
     CONF_VOLUME_CONTROL,
@@ -37,7 +31,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.encryption import decrypt_string, encrypt_string
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.helpers.util import get_external_ip, merge_dict, try_load_json_file
+from music_assistant.helpers.util import merge_dict, try_load_json_file
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import PlayerControlType
 from music_assistant.models.provider import ProviderType
@@ -113,49 +107,6 @@ DEFAULT_PROVIDER_CONFIG_ENTRIES = [
 ]
 
 DEFAULT_BASE_CONFIG_ENTRIES = {
-    CONF_KEY_BASE_WEBSERVER: [
-        ConfigEntry(
-            entry_key="__name__",
-            entry_type=ConfigEntryType.LABEL,
-            label=CONF_KEY_BASE_WEBSERVER,
-            hidden=True,
-        ),
-        ConfigEntry(
-            entry_key=CONF_HTTP_PORT,
-            entry_type=ConfigEntryType.INT,
-            default_value=8095,
-            label=CONF_HTTP_PORT,
-            description="desc_http_port",
-        ),
-        ConfigEntry(
-            entry_key=CONF_HTTPS_PORT,
-            entry_type=ConfigEntryType.INT,
-            default_value=8096,
-            label=CONF_HTTPS_PORT,
-            description="desc_https_port",
-        ),
-        ConfigEntry(
-            entry_key=CONF_SSL_CERTIFICATE,
-            entry_type=ConfigEntryType.STRING,
-            default_value="",
-            label=CONF_SSL_CERTIFICATE,
-            description="desc_ssl_certificate",
-        ),
-        ConfigEntry(
-            entry_key=CONF_SSL_KEY,
-            entry_type=ConfigEntryType.STRING,
-            default_value="",
-            label=CONF_SSL_KEY,
-            description="desc_ssl_key",
-        ),
-        ConfigEntry(
-            entry_key=CONF_EXTERNAL_URL,
-            entry_type=ConfigEntryType.STRING,
-            default_value=f"http://{get_external_ip()}:8095",
-            label=CONF_EXTERNAL_URL,
-            description="desc_external_url",
-        ),
-    ],
     CONF_KEY_BASE_SECURITY: [
         ConfigEntry(
             entry_key="__name__",

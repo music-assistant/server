@@ -41,7 +41,7 @@ def global_exception_handler(loop: asyncio.AbstractEventLoop, context: Dict) -> 
 class MusicAssistant:
     """Main MusicAssistant object."""
 
-    def __init__(self, datapath: str, debug: bool = False):
+    def __init__(self, datapath: str, debug: bool = False, port: int = 8095):
         """
         Create an instance of MusicAssistant.
 
@@ -60,7 +60,7 @@ class MusicAssistant:
         self._database = DatabaseManager(self)
         self._cache = Cache(self)
         self._metadata = MetaDataManager(self)
-        self._web = WebServer(self)
+        self._web = WebServer(self, port)
         self._music = MusicManager(self)
         self._players = PlayerManager(self)
         self._streams = StreamManager(self)
@@ -301,7 +301,7 @@ class MusicAssistant:
             zeroconf_type,
             name=f"{name}.{zeroconf_type}",
             addresses=[get_ip_pton()],
-            port=discovery_info["http_port"],
+            port=discovery_info["port"],
             properties=discovery_info,
         )
         LOGGER.debug("Starting Zeroconf broadcast...")

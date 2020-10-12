@@ -1,13 +1,13 @@
 """The web module handles serving the frontend and the rest/websocket api's."""
 import logging
 import os
-import ssl
 import uuid
 
 import aiohttp_cors
 from aiohttp import web
 from aiohttp_jwt import JWTMiddleware
 from music_assistant.constants import __version__ as MASS_VERSION
+from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import get_hostname, get_ip, json_serializer
 
 from .endpoints import (
@@ -36,31 +36,15 @@ routes = web.RouteTableDef()
 class WebServer:
     """Webserver and json/websocket api."""
 
-    def __init__(self, mass):
+    def __init__(self, mass: MusicAssistantType, port: int):
         """Initialize class."""
         self.mass = mass
+        self._port = port
         # load/create/update config
         self._local_ip = get_ip()
         self._device_id = f"{uuid.getnode()}_{get_hostname()}"
         self.config = mass.config.base["web"]
         self._runner = None
-
-        enable_ssl = self.config["ssl_certificate"] and self.config["ssl_key"]
-        if self.config["ssl_certificate"] and not os.path.isfile(
-            self.config["ssl_certificate"]
-        ):
-            enable_ssl = False
-            LOGGER.warning(
-                "SSL certificate file not found: %s", self.config["ssl_certificate"]
-            )
-        if self.config["ssl_key"] and not os.path.isfile(self.config["ssl_key"]):
-            enable_ssl = False
-            LOGGER.warning(
-                "SSL certificate key file not found: %s", self.config["ssl_key"]
-            )
-        if not self.config.get("external_url"):
-            enable_ssl = False
-        self._enable_ssl = enable_ssl
 
     async def async_setup(self):
         """Perform async setup."""
@@ -110,23 +94,9 @@ class WebServer:
             cors.add(route)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
-        http_site = web.TCPSite(self._runner, "0.0.0.0", self.http_port)
+        http_site = web.TCPSite(self._runner, "0.0.0.0", self.port)
         await http_site.start()
-        LOGGER.info("Started HTTP webserver on port %s", self.http_port)
-        if self._enable_ssl:
-            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(
-                self.config["ssl_certificate"], self.config["ssl_key"]
-            )
-            https_site = web.TCPSite(
-                self._runner, "0.0.0.0", self.https_port, ssl_context=ssl_context
-            )
-            await https_site.start()
-            LOGGER.info(
-                "Started HTTPS webserver on port %s - serving at FQDN %s",
-                self.https_port,
-                self.external_url,
-            )
+        LOGGER.info("Started HTTP webserver on port %s", self.port)
 
     async def async_stop(self):
         """Stop the webserver."""
@@ -134,31 +104,19 @@ class WebServer:
         #     await self._runner.cleanup()
 
     @property
-    def internal_ip(self):
-        """Return the local IP address for this Music Assistant instance."""
+    def host(self):
+        """Return the local IP address/host for this Music Assistant instance."""
         return self._local_ip
 
     @property
-    def http_port(self):
-        """Return the HTTP port for this Music Assistant instance."""
-        return self.config.get("http_port", 8095)
+    def port(self):
+        """Return the port for this Music Assistant instance."""
+        return self._port
 
     @property
-    def https_port(self):
-        """Return the HTTPS port for this Music Assistant instance."""
-        return self.config.get("https_port", 8096)
-
-    @property
-    def internal_url(self):
-        """Return the internal URL for this Music Assistant instance."""
-        return f"http://{self._local_ip}:{self.http_port}"
-
-    @property
-    def external_url(self):
-        """Return the internal URL for this Music Assistant instance."""
-        if self._enable_ssl and self.config.get("external_url"):
-            return self.config["external_url"]
-        return self.internal_url
+    def url(self):
+        """Return the URL for this Music Assistant instance."""
+        return f"http://{self.host}:{self.port}"
 
     @property
     def device_id(self):
@@ -170,12 +128,9 @@ class WebServer:
         """Return (discovery) info about this instance."""
         return {
             "id": self._device_id,
-            "external_url": self.external_url,
-            "internal_url": self.internal_url,
-            "host": self.internal_ip,
-            "http_port": self.http_port,
-            "https_port": self.https_port,
-            "ssl_enabled": self._enable_ssl,
+            "url": self.url,
+            "host": self.host,
+            "port": self.port,
             "version": MASS_VERSION,
         }
 

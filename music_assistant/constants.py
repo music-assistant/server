@@ -1,6 +1,6 @@
 """All constants for Music Assistant."""
 
-__version__ = "0.0.56"
+__version__ = "0.0.57"
 REQUIRED_PYTHON_VER = "3.7"
 
 # configuration keys/attributes
@@ -17,8 +17,6 @@ CONF_FALLBACK_GAIN_CORRECT = "fallback_gain_correct"
 CONF_GROUP_DELAY = "group_delay"
 CONF_VOLUME_CONTROL = "volume_control"
 CONF_POWER_CONTROL = "power_control"
-CONF_HTTP_PORT = "http_port"
-CONF_HTTPS_PORT = "https_port"
 CONF_MAX_SAMPLE_RATE = "max_sample_rate"
 CONF_VOLUME_NORMALISATION = "volume_normalisation"
 CONF_TARGET_VOLUME = "target_volume"

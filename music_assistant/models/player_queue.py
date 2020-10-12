@@ -100,7 +100,7 @@ class PlayerQueue:
 
     def get_stream_url(self) -> str:
         """Return the full stream url for this QueueStream."""
-        uri = f"{self.mass.web.internal_url}/stream/queue/{self.player_id}"
+        uri = f"{self.mass.web.url}/stream/queue/{self.player_id}"
         # we set the checksum just to invalidate cache stuf
         uri += f"?checksum={time.time()}"
         return uri

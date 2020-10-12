@@ -76,7 +76,7 @@ class PySqueezeProvider(PlayerProvider):
     async def async_start_discovery(self):
         """Start discovery for players."""
         transport, _ = await self.mass.loop.create_datagram_endpoint(
-            lambda: DiscoveryProtocol(self.mass.web.http_port),
+            lambda: DiscoveryProtocol(self.mass.web.port),
             local_addr=("0.0.0.0", 3483),
         )
         try:
