@@ -1118,11 +1118,18 @@ class MusicManager:
                 if not music_prov or not music_prov.available:
                     continue  # provider temporary unavailable ?
 
-                streamdetails = await music_prov.async_get_stream_details(
-                    prov_media.item_id
+                streamdetails: StreamDetails = (
+                    await music_prov.async_get_stream_details(prov_media.item_id)
                 )
                 if streamdetails:
-                    break
+                    try:
+                        streamdetails.content_type = ContentType(
+                            streamdetails.content_type
+                        )
+                    except KeyError:
+                        LOGGER.warning("Invalid content type!")
+                    else:
+                        break
 
         if streamdetails:
             # set player_id on the streamdetails so we know what players stream
