@@ -468,14 +468,14 @@ class PlayerManager:
         else:
             # if this was the last powered player in the group, turn off group
             for parent_player_id in player_state.group_parents:
-                parent_player = self.get_player(parent_player_id)
+                parent_player = self.get_player_state(parent_player_id)
                 if not parent_player or not parent_player.powered:
                     continue
                 has_powered_players = False
                 for child_player_id in parent_player.group_childs:
                     if child_player_id == player_id:
                         continue
-                    child_player = self.get_player(child_player_id)
+                    child_player = self.get_player_state(child_player_id)
                     if child_player and child_player.powered:
                         has_powered_players = True
                 if not has_powered_players:
@@ -502,7 +502,7 @@ class PlayerManager:
             :param volume_level: volume level to set (0..100).
         """
         player_state = self.get_player_state(player_id)
-        if not player_state or not player_state.powered:
+        if not player_state:
             return
         player_config = self.mass.config.player_settings[player_state.player_id]
         volume_level = try_parse_int(volume_level)
