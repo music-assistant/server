@@ -12,7 +12,7 @@ memory-tempfile==2.2.3
 pyloudnorm==0.1.0
 SoundFile==0.10.3.post1
 aiorun==2020.6.1
-soco==0.19
+soco==0.20
 pillow==7.2.0
 aiohttp_cors==0.7.0
 unidecode==1.1.1
