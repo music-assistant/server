@@ -21,5 +21,5 @@ PyJWT==1.7.1
 aiohttp_jwt==0.6.1
 zeroconf==0.28.5
 passlib==1.7.2
-cryptography==3.1
+cryptography==3.2
 orjson==3.4.0
