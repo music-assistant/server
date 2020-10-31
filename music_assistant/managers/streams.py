@@ -236,8 +236,7 @@ class StreamManager:
 
                 # HANDLE FIRST PART OF TRACK
                 if not chunk and cur_chunk == 1 and is_last_chunk:
-                    LOGGER.warning("Stream error, skip track %s", queue_track.item_id)
-                    break
+                    raise RuntimeError("Stream error on track %s" % queue_track.item_id)
                 if cur_chunk <= 2 and not last_fadeout_data:
                     # no fadeout_part available so just pass it to the output directly
                     yield chunk

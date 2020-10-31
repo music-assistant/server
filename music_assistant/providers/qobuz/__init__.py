@@ -342,20 +342,28 @@ class QobuzProvider(MusicProvider):
             # it seems that simply requesting for highest available quality does not work
             # from time to time the api response is empty for this request ?!
             params = {"format_id": format_id, "track_id": item_id, "intent": "stream"}
-            streamdata = await self.__async_get_data(
+            result = await self.__async_get_data(
                 "track/getFileUrl", params, sign_request=True
             )
-            if streamdata and streamdata.get("url"):
+            if result and result.get("url"):
+                streamdata = result
                 break
-        if not streamdata or not streamdata.get("url"):
-            LOGGER.error("Unable to retrieve stream url for track %s", item_id)
+        if not streamdata:
+            LOGGER.error("Unable to retrieve stream details for track %s", item_id)
+            return None
+        if streamdata["mime_type"] == "audio/mpeg":
+            content_type = ContentType.MPEG
+        elif streamdata["mime_type"] == "audio/flac":
+            content_type = ContentType.FLAC
+        else:
+            LOGGER.error("Unsupported mime type for track %s", item_id)
             return None
         return StreamDetails(
             type=StreamType.URL,
             item_id=str(item_id),
             provider=PROV_ID,
             path=streamdata["url"],
-            content_type=ContentType(streamdata["mime_type"].split("/")[1]),
+            content_type=content_type,
             sample_rate=int(streamdata["sampling_rate"] * 1000),
             bit_depth=streamdata["bit_depth"],
             details=streamdata,  # we need these details for reporting playback
