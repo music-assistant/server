@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@master
       - name: Set up Python 3.7
-        uses: actions/setup-python@v2.1.2
+        uses: actions/setup-python@v2.1.4
         with:
           python-version: 3.7
       - name: Include frontend-app in the release package
