@@ -3,6 +3,12 @@ name: Build multiarch Docker image
 on:
   release:
     types: [published, prereleased]
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: 'Log level'     
+        required: true
+        default: 'warning'
 
 jobs:
   buildx:
