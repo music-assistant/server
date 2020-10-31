@@ -516,7 +516,7 @@ class PlayerManager:
             if control:
                 await control.async_set_state(volume_level)
                 # just force full volume on actual player if volume is outsourced to volumecontrol
-                await player_state.player.async_cmd_volume_set(player_id, 100)
+                await player_state.player.async_cmd_volume_set(100)
         # handle group volume
         elif player_state.is_group_player:
             cur_volume = player_state.volume_level
