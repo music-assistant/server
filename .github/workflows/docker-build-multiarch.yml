@@ -9,6 +9,9 @@ on:
         description: 'Log level'     
         required: true
         default: 'warning'
+      tag:
+        description: 'Tag to set on docker image (e.g. 0.0.1'
+        required: true
 
 jobs:
   buildx:
@@ -16,13 +19,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
+      - name: 'Get Previous tag'
+        id: previoustag
+        uses: "WyriHaximus/github-action-get-previous-tag@master"
 
       - name: Prepare
         id: prep
         run: |
           DOCKER_IMAGE=${{ secrets.DOCKER_USERNAME }}/music-assistant
           VERSION=latest
-          SHORTREF=${GITHUB_SHA::8}
+          SHORTREF=${{ steps.previoustag.outputs.tag }}
 
           # If this is git tag, use the tag name as a docker tag
           if [[ $GITHUB_REF == refs/tags/* ]]; then
