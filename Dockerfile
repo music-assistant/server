@@ -45,6 +45,9 @@ RUN set -x \
     && mkdir -p /etc/fix-attrs.d \
     && mkdir -p /etc/services.d \
     \
+    # rustup requirement for maturin/orjson
+    && pip install maturin \
+    && curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain nightly-2020-10-24 --profile minimal -y \
     # install uvloop and music assistant
     && cd /tmp && pip install --upgrade uvloop music-assistant==${MASS_VERSION} \
     # cleanup build packages
