@@ -7,7 +7,7 @@ ARG JEMALLOC_VERSION=5.2.1
 ARG S6_OVERLAY_VERSION=2.1.0.2
 
 
-RUN BUILD_ARCH="$(dpkg --print-architecture)" && \
+RUN BUILD_ARCH="$(uname -m)" && \
     apt-get update && apt-get install -y --no-install-recommends \
 		# required packages
 		git bash jq flac sox libsox-fmt-mp3 zip curl unzip ffmpeg libsndfile1 libtag1v5 libblas3 liblapack3 \
