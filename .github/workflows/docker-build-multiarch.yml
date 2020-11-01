@@ -16,16 +16,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
-      - name: 'Get Previous tag'
-        id: previoustag
-        uses: "WyriHaximus/github-action-get-previous-tag@master"
-
+      - uses: oprypin/find-latest-tag@v1
+        with:
+          repository: music-assistant/server  # The repository to scan.
+          releases-only: true  # We know that all relevant tags have a GitHub release for them.
+        id: mass  # The step ID to refer to later.
       - name: Prepare
         id: prep
         run: |
           DOCKER_IMAGE=${{ secrets.DOCKER_USERNAME }}/music-assistant
           VERSION=latest
-          SHORTREF=${{ steps.previoustag.outputs.tag }}
+          SHORTREF=${{ steps.mass.outputs.tag }}
 
           # If this is git tag, use the tag name as a docker tag
           if [[ $GITHUB_REF == refs/tags/* ]]; then
