@@ -26,11 +26,12 @@ jobs:
           DOCKER_IMAGE=${{ secrets.DOCKER_USERNAME }}/music-assistant
           VERSION=latest
           SHORTREF=${GITHUB_SHA::8}
+          MANUAL_TAG=${{ github.event.inputs.tag }}
 
           # If a manual tag was supplied, use that
-          if [[ -n $github.event.inputs.tag ]]; then
-            VERSION=${github.event.inputs.tag}
-            
+          if [[ -n $MANUAL_TAG ]]; then
+            VERSION=${MANUAL_TAG}
+
           # If this is git tag, use the tag name as a docker tag
           elif [[ $GITHUB_REF == refs/tags/* ]]; then
             VERSION=${GITHUB_REF#refs/tags/v}
