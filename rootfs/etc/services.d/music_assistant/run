@@ -8,7 +8,7 @@ export LD_PRELOAD="/usr/local/lib/libjemalloc.so.2"
 
 args="--config /data"
 
-if [ $DEBUG == "true" ]; then
+if [ -z ${DEBUG} ]; then
     args="${args} --debug"
 fi
 

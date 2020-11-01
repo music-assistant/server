@@ -1,4 +1,4 @@
-FROM python:slim
+FROM python:3.8-slim
 
 # Build arguments
 # ARG BUILD_ARCH="amd64"
