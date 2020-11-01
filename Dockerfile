@@ -20,17 +20,17 @@ RUN set -x \
     # Setup jemalloc
     && curl -L -s https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2 | tar -xjf - -C /usr/src \
     && cd /usr/src/jemalloc-${JEMALLOC_VERSION} \
-    && ./configure && \
+    && ./configure \
     && make \
     && make install \
     && rm -rf /usr/src/jemalloc-${JEMALLOC_VERSION} \
     \
     # Setup s6 overlay
-    && if [ "$TARGETPLATFORM" == "linux/arm/7" ]; \
+    && if [ "$TARGETPLATFORM" == "linux/arm/v7" ]; \
       then \
-          curl -L -f -s "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-armv7.tar.gz" \
+          curl -L -f -s "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-arm.tar.gz" \
           | tar zxvf - -C /; \
-    elif [ "$TARGETPLATFORM" == "linux/arm/6" ]; \
+    elif [ "$TARGETPLATFORM" == "linux/arm/v6" ]; \
       then \
           curl -L -f -s "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-armhf.tar.gz" \
           | tar zxvf - -C /; \
