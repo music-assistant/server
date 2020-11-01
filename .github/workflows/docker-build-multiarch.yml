@@ -9,9 +9,6 @@ on:
         description: 'Log level'     
         required: true
         default: 'warning'
-      tag:
-        description: 'Tag to set on docker image (e.g. 0.0.1'
-        required: true
 
 jobs:
   buildx:
