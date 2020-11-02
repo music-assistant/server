@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, List, Tuple
 
+from mashumaro import DataClassDictMixin
+
 
 class ConfigEntryType(Enum):
     """Enum for the type of a config entry."""
@@ -17,7 +19,7 @@ class ConfigEntryType(Enum):
 
 
 @dataclass
-class ConfigEntry:
+class ConfigEntry(DataClassDictMixin):
     """Model for a Config Entry."""
 
     entry_key: str

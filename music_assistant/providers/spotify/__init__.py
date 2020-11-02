@@ -1,12 +1,13 @@
 """Spotify musicprovider support for MusicAssistant."""
 import asyncio
+import json
 import logging
 import os
 import platform
 import time
+from json.decoder import JSONDecodeError
 from typing import List, Optional
 
-import orjson
 from asyncio_throttle import Throttler
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.app_vars import get_app_var  # noqa # pylint: disable=all
@@ -527,8 +528,8 @@ class SpotifyProvider(MusicProvider):
         )
         stdout, _ = await spotty.communicate()
         try:
-            result = orjson.loads(stdout)
-        except orjson.JSONDecodeError:
+            result = json.loads(stdout)
+        except JSONDecodeError:
             LOGGER.warning("Error while retrieving Spotify token!")
             return None
         # transform token info to spotipy compatible format
@@ -569,7 +570,7 @@ class SpotifyProvider(MusicProvider):
             async with self.mass.http_session.get(
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
-                result = await response.json(loads=orjson.loads)
+                result = await response.json()
                 if not result or "error" in result:
                     LOGGER.error("%s - %s", endpoint, result)
                     result = None

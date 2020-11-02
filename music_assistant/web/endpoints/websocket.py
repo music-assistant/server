@@ -3,7 +3,7 @@
 import logging
 
 import jwt
-import orjson
+import ujson
 from aiohttp import WSMsgType
 from aiohttp.web import Request, RouteTableDef, WebSocketResponse
 from music_assistant.helpers.util import json_serializer
@@ -29,7 +29,7 @@ async def async_websocket_handler(request: Request):
                 msg_details = msg_details.to_dict()
             ws_msg = {"message": msg, "message_details": msg_details}
             try:
-                await ws_response.send_str(json_serializer(ws_msg).decode())
+                await ws_response.send_str(json_serializer(ws_msg))
             # pylint: disable=broad-except
             except Exception as exc:
                 LOGGER.debug(
@@ -44,8 +44,8 @@ async def async_websocket_handler(request: Request):
                 LOGGER.warning(msg.data)
                 continue
             try:
-                data = msg.json(loads=orjson.loads)
-            except orjson.JSONDecodeError:
+                data = msg.json(loads=ujson.loads)
+            except ValueError:
                 await async_send_message(
                     "error",
                     'commands must be issued in json format \

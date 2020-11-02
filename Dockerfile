@@ -1,4 +1,4 @@
-FROM python:3.8-alpine3.12
+FROM python:3.8-slim
 
 # Versions
 ARG JEMALLOC_VERSION=5.2.1
@@ -9,72 +9,30 @@ WORKDIR /tmp
 
 # Install packages
 RUN set -x \
-    && apk update \
-    && echo "http://dl-8.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories \
-    # default packages
-    && apk add --no-cache \
-        tzdata \
-        ca-certificates \
-        curl \
-        bind-tools \
-        flac \
-        sox \
-        ffmpeg \
-        libsndfile \
-        taglib \
-        openblas \
-        libgfortran \
-        lapack \
-    # build packages
-    && apk add --no-cache --virtual .build-deps \
-        build-base \
-        libsndfile-dev \
-        taglib-dev \
-        openblas-dev \
-        lapack-dev \
-        libffi-dev \
-        gcc \
-        gfortran \
-        freetype-dev \
-        libpng-dev \
-        libressl-dev \
-        fribidi-dev \
-        harfbuzz-dev \
-        jpeg-dev \
-        lcms2-dev \
-        openjpeg-dev \
-        tcl-dev \
-        tiff-dev \
-        tk-dev \
-        zlib-dev
+    && apt-get update && apt-get install -y --no-install-recommends \
+        # required packages
+		    git jq tzdata curl ca-certificates flac sox libsox-fmt-all zip curl ffmpeg libsndfile1 libtag1v5 \
+        # build packages
+        # build-essential libtag1-dev libffi-dev\
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /usr/share/man/man1
 
 # setup jmalloc
-RUN curl -L -f -s "https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2" \
-        | tar -xjf - -C /usr/src \
+RUN curl -L -s https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2 | tar -xjf - -C /usr/src \
     && cd /usr/src/jemalloc-${JEMALLOC_VERSION} \
     && ./configure \
     && make \
     && make install \
     && rm -rf /usr/src/jemalloc-${JEMALLOC_VERSION} \
-    # change workdir back to /tmp
+    \
     && cd /tmp
-
-# dependencies for orjson
-ENV RUSTFLAGS "-C target-feature=-crt-static"
-RUN wget -O rustup.sh https://sh.rustup.rs \
-    && sh rustup.sh -y \
-    && cp $HOME/.cargo/bin/* /usr/local/bin \
-    && rustup install nightly \
-    && rustup default nightly
 
 # install uvloop and music assistant
 RUN pip install --upgrade uvloop music-assistant==${MASS_VERSION}
 
 # cleanup build files
-RUN rustup self uninstall -y \
-    && rm rustup.sh \
-    && apk del .build-deps \
-    && rm -rf /usr/src/*
+RUN apt-get purge -y --auto-remove libtag1-dev libffi-dev build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 
 ENV DEBUG=false

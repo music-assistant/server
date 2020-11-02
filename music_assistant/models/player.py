@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, List, Optional
 
+from mashumaro import DataClassDictMixin
 from music_assistant.constants import EVENT_SET_PLAYER_CONTROL_STATE
 from music_assistant.helpers.typing import MusicAssistantType, QueueItems
 from music_assistant.helpers.util import CustomIntEnum, callback
@@ -21,7 +22,7 @@ class PlaybackState(Enum):
 
 
 @dataclass
-class DeviceInfo:
+class DeviceInfo(DataClassDictMixin):
     """Model for a player's deviceinfo."""
 
     model: str = ""

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, List
 
+from mashumaro import DataClassDictMixin
 from music_assistant.helpers.util import CustomIntEnum
 
 
@@ -48,7 +49,7 @@ class TrackQuality(CustomIntEnum):
 
 
 @dataclass
-class MediaItemProviderId:
+class MediaItemProviderId(DataClassDictMixin):
     """Model for a MediaItem's provider id."""
 
     provider: str
@@ -66,7 +67,7 @@ class ExternalId(Enum):
 
 
 @dataclass
-class MediaItem:
+class MediaItem(DataClassDictMixin):
     """Representation of a media item."""
 
     item_id: str = ""
@@ -133,7 +134,7 @@ class Radio(MediaItem):
 
 
 @dataclass
-class SearchResult:
+class SearchResult(DataClassDictMixin):
     """Model for Media Item Search result."""
 
     artists: List[Artist] = field(default_factory=list)

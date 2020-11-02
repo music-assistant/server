@@ -22,9 +22,9 @@ async def async_stream_json(request: web.Request, generator: AsyncGenerator):
     async for item in generator:
         # write each item into the items object of the json
         if count:
-            json_response = b"," + json_serializer(item)
+            json_response = b"," + json_serializer(item).encode()
         else:
-            json_response = json_serializer(item)
+            json_response = json_serializer(item).encode()
         await resp.write(json_response)
         count += 1
     # write json close tag

@@ -40,7 +40,7 @@ async def async_get_token(
         return {
             "user": username,
             "token": token.decode(),
-            "expires": token_expires,
+            "expires": token_expires.isoformat(),
             "scopes": scopes,
         }
     return None

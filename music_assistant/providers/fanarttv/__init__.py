@@ -1,10 +1,10 @@
 """FanartTv Metadata provider."""
 
 import logging
+from json.decoder import JSONDecodeError
 from typing import Dict, List
 
 import aiohttp
-import orjson
 from asyncio_throttle import Throttler
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.provider import MetadataProvider
@@ -90,10 +90,10 @@ class FanartTvProvider(MetadataProvider):
                 url, params=params, verify_ssl=False
             ) as response:
                 try:
-                    result = await response.json(loads=orjson.loads)
+                    result = await response.json()
                 except (
                     aiohttp.client_exceptions.ContentTypeError,
-                    orjson.JSONDecodeError,
+                    JSONDecodeError,
                 ):
                     LOGGER.error("Failed to retrieve %s", endpoint)
                     text_result = await response.text()

@@ -1,12 +1,12 @@
 """All classes and helpers for the Configuration."""
 
 import copy
+import json
 import logging
 import os
 import shutil
 from typing import List
 
-import orjson
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENABLED,
@@ -283,8 +283,8 @@ class ConfigManager:
         if os.path.isfile(conf_file):
             shutil.move(conf_file, conf_file_backup)
         # write current config to file
-        with open(conf_file, "wb") as _file:
-            _file.write(orjson.dumps(self._stored_config, option=orjson.OPT_INDENT_2))
+        with open(conf_file, "w") as _file:
+            _file.write(json.dumps(self._stored_config, indent=4))
         LOGGER.info("Config saved!")
         self.loading = False
 

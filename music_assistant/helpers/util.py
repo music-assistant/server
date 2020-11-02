@@ -1,6 +1,5 @@
 """Helper and utility functions."""
 import asyncio
-import functools
 import logging
 import os
 import platform
@@ -9,12 +8,13 @@ import socket
 import struct
 import tempfile
 import urllib.request
+from datetime import datetime
 from enum import Enum
 from io import BytesIO
 from typing import Any, Callable, TypeVar
 
 import memory_tempfile
-import orjson
+import ujson
 import unidecode
 
 # pylint: disable=invalid-name
@@ -236,9 +236,26 @@ def get_folder_size(folderpath):
     return total_size_gb
 
 
-# pylint: disable=invalid-name
-json_serializer = functools.partial(orjson.dumps, option=orjson.OPT_NAIVE_UTC)
-# pylint: enable=invalid-name
+def serialize_values(obj):
+    """Recursively create serializable values for (custom) data types."""
+
+    def get_val(val):
+        if hasattr(val, "to_dict"):
+            return val.to_dict()
+        if isinstance(val, list):
+            return [get_val(x) for x in val]
+        if isinstance(val, datetime):
+            return val.isoformat()
+        if isinstance(val, dict):
+            return {key: get_val(value) for key, value in val.items()}
+        return val
+
+    return get_val(obj)
+
+
+def json_serializer(obj):
+    """Json serializer to recursively create serializable values for custom data types."""
+    return ujson.dumps(serialize_values(obj))
 
 
 def get_compare_string(input_str):
@@ -268,9 +285,9 @@ def merge_dict(base_dict: dict, new_dict: dict):
 def try_load_json_file(jsonfile):
     """Try to load json from file."""
     try:
-        with open(jsonfile, "rb") as _file:
-            return orjson.loads(_file.read())
-    except (FileNotFoundError, orjson.JSONDecodeError) as exc:
+        with open(jsonfile, "r") as _file:
+            return ujson.loads(_file.read())
+    except (FileNotFoundError, ValueError) as exc:
         logging.getLogger().debug(
             "Could not load json from file %s", jsonfile, exc_info=exc
         )

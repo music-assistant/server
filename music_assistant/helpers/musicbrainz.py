@@ -2,10 +2,10 @@
 
 import logging
 import re
+from json.decoder import JSONDecodeError
 from typing import Optional
 
 import aiohttp
-import orjson
 from asyncio_throttle import Throttler
 from music_assistant.helpers.cache import async_use_cache
 from music_assistant.helpers.util import compare_strings, get_compare_string
@@ -172,10 +172,10 @@ class MusicBrainz:
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
                 try:
-                    result = await response.json(loads=orjson.loads)
+                    result = await response.json()
                 except (
                     aiohttp.client_exceptions.ContentTypeError,
-                    orjson.JSONDecodeError,
+                    JSONDecodeError,
                 ) as exc:
                     msg = await response.text()
                     LOGGER.error("%s - %s", str(exc), msg)

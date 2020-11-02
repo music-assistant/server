@@ -1,7 +1,8 @@
 """Players API endpoints."""
 
-import orjson
-from aiohttp.web import Request, Response, RouteTableDef
+from json.decoder import JSONDecodeError
+
+from aiohttp.web import Request, Response, RouteTableDef, json_response
 from aiohttp_jwt import login_required
 from music_assistant.helpers.util import json_serializer
 from music_assistant.helpers.web import async_media_items_from_body, async_stream_json
@@ -29,10 +30,10 @@ async def async_player_command(request: Request):
     player_id = request.match_info.get("player_id")
     cmd = request.match_info.get("cmd")
     try:
-        cmd_args = await request.json(loads=orjson.loads)
+        cmd_args = await request.json()
         if cmd_args in ["", {}, []]:
             cmd_args = None
-    except orjson.JSONDecodeError:
+    except JSONDecodeError:
         cmd_args = None
     player_cmd = getattr(request.app["mass"].players, f"async_cmd_{cmd}", None)
     if player_cmd and cmd_args is not None:
@@ -60,7 +61,7 @@ async def async_player_play_media(request: Request):
         player_id, media_items, queue_opt
     )
     result = {"success": success in [True, None]}
-    return Response(body=json_serializer(result), content_type="application/json")
+    return json_response(result)
 
 
 @routes.get("/api/players/{player_id}/queue/items/{queue_item}")
@@ -77,7 +78,7 @@ async def async_player_queue_item(request: Request):
         queue_item = player_queue.get_item(item_id)
     except ValueError:
         queue_item = player_queue.by_item_id(item_id)
-    return Response(body=json_serializer(queue_item), content_type="application/json")
+    return json_response(queue_item.to_dict())
 
 
 @routes.get("/api/players/{player_id}/queue/items")
@@ -117,8 +118,8 @@ async def async_player_queue_cmd(request: Request):
     player_queue = request.app["mass"].players.get_player_queue(player_id)
     cmd = request.match_info.get("cmd")
     try:
-        cmd_args = await request.json(loads=orjson.loads)
-    except orjson.JSONDecodeError:
+        cmd_args = await request.json()
+    except JSONDecodeError:
         cmd_args = None
     if cmd == "repeat_enabled":
         player_queue.repeat_enabled = cmd_args

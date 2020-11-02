@@ -541,9 +541,9 @@ class PlayerQueue:
             "cur_item_id": self.cur_item_id,
             "cur_index": self.cur_index,
             "next_index": self.next_index,
-            "cur_item": self.cur_item,
+            "cur_item": self.cur_item.to_dict() if self.cur_item else None,
             "cur_item_time": self.cur_item_time,
-            "next_item": self.next_item,
+            "next_item": self.next_item.to_dict() if self.next_item else None,
             "queue_stream_enabled": self.use_queue_stream,
         }
 

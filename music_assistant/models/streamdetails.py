@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from mashumaro import DataClassDictMixin
+
 
 class StreamType(Enum):
     """Enum with stream types."""
@@ -26,7 +28,7 @@ class ContentType(Enum):
 
 
 @dataclass
-class StreamDetails:
+class StreamDetails(DataClassDictMixin):
     """Model for streamdetails."""
 
     type: StreamType

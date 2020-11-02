@@ -1,6 +1,7 @@
 """Config API endpoints."""
 
-import orjson
+from json.decoder import JSONDecodeError
+
 from aiohttp.web import Request, Response, RouteTableDef, json_response
 from aiohttp_jwt import login_required
 from music_assistant.constants import (
@@ -63,8 +64,8 @@ async def async_put_config(request: Request):
     conf_base = request.match_info.get("base")
     entry_key = request.match_info.get("entry_key")
     try:
-        new_value = await request.json(loads=orjson.loads)
-    except orjson.JSONDecodeError:
+        new_value = await request.json()
+    except JSONDecodeError:
         new_value = (
             request.app["mass"]
             .config[conf_base][conf_key]
