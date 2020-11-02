@@ -23,6 +23,7 @@ RUN set -x \
         py3-scipy \
         py3-pytaglib \
         py3-pillow \
+        py3-pip \
     # build packages
     && apk add --no-cache --virtual .build-deps \
         build-base
