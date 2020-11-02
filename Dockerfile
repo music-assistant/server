@@ -66,15 +66,15 @@ RUN wget -O rustup.sh https://sh.rustup.rs \
     && cp $HOME/.cargo/bin/* /usr/local/bin \
     && rustup install nightly \
     && rustup default nightly \
-    && pip install orjson \
-    && rustup self uninstall -y \
-    && rm rustup.sh
+    && pip install orjson
 
 # install uvloop and music assistant
 RUN pip install --upgrade uvloop music-assistant==${MASS_VERSION}
 
 # cleanup build files
-RUN apk del .build-deps \
+RUN rustup self uninstall -y \
+    && rm rustup.sh \
+    && apk del .build-deps \
     && rm -rf /usr/src/*
 
 
