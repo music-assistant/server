@@ -67,7 +67,7 @@ RUN wget -O rustup.sh https://sh.rustup.rs \
     && rustup install nightly \
     && rustup default nightly \
     && pip install orjson \
-    && sh rustup.sh --uninstall -y \
+    && rustup self uninstall -y \
     && rm rustup.sh
 
 # install uvloop and music assistant
@@ -76,6 +76,7 @@ RUN pip install --upgrade uvloop music-assistant==${MASS_VERSION}
 # cleanup build files
 RUN apk del .build-deps \
     && rm -rf /usr/src/*
+
 
 ENV DEBUG=false
 VOLUME [ "/data" ]
