@@ -23,6 +23,9 @@ RUN set -x \
         py3-scipy \
         py3-pytaglib \
         py3-pillow \
+        py3-aiohttp \
+        py3-cryptography \
+        py3-jwt \
         py3-pip \
     # build packages
     && apk add --no-cache --virtual .build-deps \
