@@ -77,9 +77,6 @@ RUN pip install --upgrade uvloop music-assistant==${MASS_VERSION}
 RUN apk del .build-deps \
     && rm -rf /usr/src/*
 
-COPY run.sh /
-RUN chmod +x /run.sh
-WORKDIR /
 ENV DEBUG=false
 VOLUME [ "/data" ]
 
