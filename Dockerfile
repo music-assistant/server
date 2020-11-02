@@ -2,7 +2,7 @@ FROM python:3.8-alpine3.12
 
 # Versions
 ARG JEMALLOC_VERSION=5.2.1
-ARG MASS_VERSION=0.0.60
+ARG MASS_VERSION=0.0.61
 
 # Base system
 WORKDIR /tmp
@@ -59,14 +59,13 @@ RUN curl -L -f -s "https://github.com/jemalloc/jemalloc/releases/download/${JEMA
     # change workdir back to /tmp
     && cd /tmp
 
-# build orjson
+# dependencies for orjson
 ENV RUSTFLAGS "-C target-feature=-crt-static"
 RUN wget -O rustup.sh https://sh.rustup.rs \
     && sh rustup.sh -y \
     && cp $HOME/.cargo/bin/* /usr/local/bin \
     && rustup install nightly \
-    && rustup default nightly \
-    && pip install orjson
+    && rustup default nightly
 
 # install uvloop and music assistant
 RUN pip install --upgrade uvloop music-assistant==${MASS_VERSION}
