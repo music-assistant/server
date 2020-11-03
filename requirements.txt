@@ -14,7 +14,6 @@ soco==0.20
 pillow==8.0.1
 aiohttp_cors==0.7.0
 unidecode==1.1.1
-hass-client==0.0.6
 PyJWT==1.7.1
 aiohttp_jwt==0.6.1
 zeroconf==0.28.6

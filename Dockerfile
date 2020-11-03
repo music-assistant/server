@@ -1,4 +1,4 @@
-FROM alpine:3.12
+FROM python:3.8-alpine3.12
 
 # Versions
 ARG JEMALLOC_VERSION=5.2.1
@@ -18,22 +18,36 @@ RUN set -x \
         flac \
         sox \
         ffmpeg \
-        python3 \
-        py3-numpy \
-        py3-scipy \
-        py3-pytaglib \
-        py3-pillow \
-        py3-aiohttp \
-        py3-cryptography \
-        py3-jwt \
-        py3-pip \
+        libsndfile \
+        taglib \
+        openblas \
+        libgfortran \
+        lapack \
     # build packages
     && apk add --no-cache --virtual .build-deps \
-        build-base
+        build-base \
+        libsndfile-dev \
+        taglib-dev \
+        openblas-dev \
+        lapack-dev \
+        libffi-dev \
+        gcc \
+        gfortran \
+        freetype-dev \
+        libpng-dev \
+        libressl-dev \
+        fribidi-dev \
+        harfbuzz-dev \
+        jpeg-dev \
+        lcms2-dev \
+        openjpeg-dev \
+        tcl-dev \
+        tiff-dev \
+        tk-dev \
+        zlib-dev
 
 # setup jmalloc
-RUN mkdir /usr/src \
-    && curl -L -f -s "https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2" \
+RUN curl -L -f -s "https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2" \
         | tar -xjf - -C /usr/src \
     && cd /usr/src/jemalloc-${JEMALLOC_VERSION} \
     && ./configure \
