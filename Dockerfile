@@ -1,5 +1,7 @@
 FROM alpine:3.12
 
+WORKDIR /usr/src/
+
 # Install packages
 RUN set -x \
     && apk update \
