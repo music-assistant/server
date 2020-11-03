@@ -1,0 +1,37 @@
+FROM python:3.8-slim
+
+ARG JEMALLOC_VERSION=5.2.1
+WORKDIR /usr/src/
+COPY . .
+
+ENV RUNTIME_DEPS="tzdata ca-certificates flac sox libsox-fmt-all ffmpeg libsndfile1 libtag1v5"
+ENV BUILD_DEPS="git curl build-essential libtag1-dev libffi-dev"
+
+RUN set -x \
+    # Install packages
+    && apt-get update && apt-get install -y --no-install-recommends \
+        # required packages
+        $RUNTIME_DEPS \
+        # (temp) build packages
+        $BUILD_DEPS \
+    # setup jmalloc
+    && curl -L -s https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2 | tar -xjf - -C /usr/src \
+        && cd /usr/src/jemalloc-${JEMALLOC_VERSION} \
+        && ./configure \
+        && make \
+        && make install \
+        && cd /usr/src \
+    # make sure uvloop is installed
+    &&  pip install uvloop \
+    # install music assistant
+    && python3 setup.py install \
+    # cleanup build files
+    && apt-get remove --purge -y --allow-remove-essential $BUILD_DEPS \
+    && rm -rf /var/lib/apt/lists/*
+
+
+ENV DEBUG=false
+VOLUME [ "/data" ]
+
+ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so
+ENTRYPOINT ["mass", "--config", "/data"]
