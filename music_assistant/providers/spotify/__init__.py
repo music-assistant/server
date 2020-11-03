@@ -615,26 +615,32 @@ class SpotifyProvider(MusicProvider):
     @staticmethod
     def get_spotty_binary():
         """Find the correct spotty binary belonging to the platform."""
-        sp_binary = None
         if platform.system() == "Windows":
-            sp_binary = os.path.join(
+            return os.path.join(
                 os.path.dirname(__file__), "spotty", "windows", "spotty.exe"
             )
-        elif platform.system() == "Darwin":
+        if platform.system() == "Darwin":
             # macos binary is x86_64 intel
-            sp_binary = os.path.join(
-                os.path.dirname(__file__), "spotty", "darwin", "spotty"
-            )
-        elif platform.system() == "Linux":
-            # try to find out the correct architecture by trial and error
+            return os.path.join(os.path.dirname(__file__), "spotty", "darwin", "spotty")
+        if platform.system() == "Linux":
             architecture = platform.machine()
-            if architecture.startswith("AMD64") or architecture.startswith("x86_64"):
+            if architecture in ["AMD64", "x86_64"]:
                 # generic linux x86_64 binary
-                sp_binary = os.path.join(
-                    os.path.dirname(__file__), "spotty", "x86-linux", "spotty-x86_64"
+                return os.path.join(
+                    os.path.dirname(__file__), "spotty", "linux", "spotty-x86_64"
                 )
-            else:
-                sp_binary = os.path.join(
-                    os.path.dirname(__file__), "spotty", "arm-linux", "spotty-muslhf"
+            if "i386" in architecture:
+                # i386 linux binary
+                return os.path.join(
+                    os.path.dirname(__file__), "spotty", "linux", "spotty-i386"
                 )
-        return sp_binary
+            if "aarch64" in architecture or "armv8" in architecture:
+                # arm64 linux binary
+                return os.path.join(
+                    os.path.dirname(__file__), "spotty", "x86-linux", "spotty-aarch64"
+                )
+            # assume armv7
+            return os.path.join(
+                os.path.dirname(__file__), "spotty", "arm-linux", "spotty-armhf"
+            )
+        return None
