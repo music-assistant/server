@@ -53,6 +53,7 @@ RUN set -x \
         tk-dev \
         zlib-dev \
         libuv-dev \
+        libffi \
     # setup jmalloc
     && curl -L -f -s "https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2" \
             | tar -xjf - -C /usr/src \
