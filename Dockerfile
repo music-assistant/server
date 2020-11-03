@@ -76,4 +76,4 @@ EXPOSE 8095/tcp
 VOLUME [ "/data" ]
 
 ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so
-ENTRYPOINT ["python3", "-m", "music_assistant", "--config", "/data"]
+ENTRYPOINT ["mass", "--config", "/data"]
