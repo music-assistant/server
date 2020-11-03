@@ -53,7 +53,7 @@ RUN set -x \
 # setup jmalloc
 ARG JEMALLOC_VERSION=5.2.1
 RUN curl -L -f -s "https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2" \
-        | tar -xjf - -C /tmp/src \
+        | tar -xjf - -C /usr/src \
     && cd /usr/src/jemalloc-${JEMALLOC_VERSION} \
     && ./configure \
     && make \
