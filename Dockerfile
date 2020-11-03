@@ -60,12 +60,11 @@ RUN set -x \
         && ./configure \
         && make \
         && make install \
+        && cd /usr/src \
     # make sure uvloop is installed
     &&  pip install uvloop \
     # install music assistant
-    && pip install --upgrade uvloop \
-        && cd /usr/src \
-        && python3 setup.py install \
+    && python3 setup.py install \
     # cleanup build files
     && apk del .build-deps \
         && rm -rf /usr/src/*
