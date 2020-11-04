@@ -8,7 +8,8 @@ RUN set -x \
         build-essential \
         gcc \
         libtag1-dev \
-        libffi-dev
+        libffi-dev \
+        openssl-dev
 
 # build jemalloc
 ARG JEMALLOC_VERSION=5.2.1
@@ -47,6 +48,7 @@ RUN set -x \
         libsox-fmt-all \
         ffmpeg \
         libtag1v5 \
+        openssl \
     # install music assistant (and all it's dependencies) using the prebuilt wheels
     && pip install --no-cache-dir -f /wheels --extra-index-url=https://www.piwheels.org/simple music_assistant \
     # cleanup

@@ -78,7 +78,7 @@ jobs:
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
-          file: ./Dockerfile.debian
+          file: ./Dockerfile
           platforms: linux/amd64,linux/arm/v7,linux/arm/v6,linux/arm64
           push: true
           tags: ${{ steps.prep.outputs.tags }}
