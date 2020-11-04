@@ -1,9 +1,14 @@
 FROM python:3.8-slim as builder
 
 RUN set -x \
-    # Install packages
+    # Install buildtime packages
     && apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates build-essential gcc libtag1-dev libffi-dev
+        curl \
+        ca-certificates \
+        build-essential \
+        gcc \
+        libtag1-dev \
+        libffi-dev
 
 # build jemalloc
 ARG JEMALLOC_VERSION=5.2.1
@@ -16,36 +21,35 @@ RUN curl -L -s https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC
 
 # build python wheels
 WORKDIR /wheels
-COPY ./requirements.txt /wheels/requirements.txt
-RUN pip install -U pip \
-    && pip wheel -r ./requirements.txt \
-    && pip wheel uvloop
-
+COPY . /tmp
+RUN pip wheel uvloop cchardet aiodns brotlipy \
+    && pip wheel --extra-index-url=https://www.piwheels.org/simple -r /tmp/requirements.txt \
+    # Include frontend-app in the source files
+    && curl -L https://github.com/music-assistant/app/archive/master.tar.gz | tar xz \
+    && mv app-master/docs /tmp/music_assistant/web/static \
+    && pip wheel --extra-index-url=https://www.piwheels.org/simple /tmp
+    
 #### FINAL IMAGE
 FROM python:3.8-slim
 
-WORKDIR /usr/src/
-COPY . .
+WORKDIR /wheels
 COPY --from=builder /wheels /wheels
 COPY --from=builder /usr/local/lib/libjemalloc.so /usr/local/lib/libjemalloc.so
 RUN set -x \
     # Install runtime dependency packages
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        curl tzdata ca-certificates flac sox libsox-fmt-all ffmpeg libsndfile1 libtag1v5 \
-    # Make sure pip is updated
-    && pip install -U pip \
-    # make sure uvloop is installed
-    && pip install --no-cache-dir uvloop -f /wheels \
-    # pre-install all requirements (needed for numpy/scipy)
-    && pip install --no-cache-dir -r /wheels/requirements.txt -f /wheels \
-    # Include frontend-app in the source files
-    && curl -L https://github.com/music-assistant/app/archive/master.tar.gz | tar xz \
-    && mv app-master/docs /usr/src/music_assistant/web/static \
-    # install music assistant
-    && python3 setup.py install \
+        curl \
+        tzdata \
+        ca-certificates \
+        flac \
+        sox \
+        libsox-fmt-all \
+        ffmpeg \
+        libtag1v5 \
+    # install music assistant (and all it's dependencies) using the prebuilt wheels
+    && pip install --no-cache-dir -f /wheels --extra-index-url=https://www.piwheels.org/simple music_assistant \
     # cleanup
-    && rm -rf /usr/src/* \
     && rm -rf /tmp/* \
     && rm -rf /wheels \
     && rm -rf /var/lib/apt/lists/*

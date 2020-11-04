@@ -8,14 +8,12 @@ All audio is processed by the SoX executable, using various subprocess streams.
 """
 import asyncio
 import gc
-import io
 import logging
 import shlex
+import subprocess
 from enum import Enum
 from typing import AsyncGenerator, List, Optional, Tuple
 
-import pyloudnorm
-import soundfile
 from aiofile import AIOFile, Reader
 from music_assistant.constants import (
     CONF_MAX_SAMPLE_RATE,
@@ -451,12 +449,15 @@ class StreamManager:
         if track_loudness is None:
             # only when needed we do the analyze stuff
             LOGGER.debug("Start analyzing track %s", item_key)
-            # calculate BS.1770 R128 integrated loudness
-            with io.BytesIO(audio_data) as tmpfile:
-                data, rate = soundfile.read(tmpfile)
-            meter = pyloudnorm.Meter(rate)  # create BS.1770 meter
-            loudness = meter.integrated_loudness(data)  # measure loudness
-            del data
+            # calculate BS.1770 R128 integrated loudness with ffmpeg
+            # we used pyloudnorm here before but the numpy/scipy requirements were too heavy,
+            # considered the same feature is also included in ffmpeg
+            value = subprocess.check_output(
+                "ffmpeg -i pipe: -af ebur128=framelog=verbose -f null - 2>&1 | awk '/I:/{print $2}'",
+                shell=True,
+                input=audio_data,
+            )
+            loudness = float(value.decode().strip())
             self.mass.add_job(
                 self.mass.database.async_set_track_loudness(
                     streamdetails.item_id, streamdetails.provider, loudness
