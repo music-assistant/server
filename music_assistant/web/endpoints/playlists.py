@@ -3,6 +3,7 @@
 import ujson
 from aiohttp.web import Request, Response, RouteTableDef, json_response
 from aiohttp_jwt import login_required
+from music_assistant.helpers.util import json_serializer
 from music_assistant.helpers.web import async_media_items_from_body, async_stream_json
 
 routes = RouteTableDef()
@@ -17,7 +18,7 @@ async def async_playlist(request: Request):
     if item_id is None or provider is None:
         return Response(text="invalid item or provider", status=501)
     result = await request.app["mass"].music.async_get_playlist(item_id, provider)
-    return json_response(result)
+    return json_response(result, dumps=json_serializer)
 
 
 @routes.get("/api/playlists/{item_id}/tracks")

@@ -315,10 +315,13 @@ class SpotifyProvider(MusicProvider):
         # make sure that the token is still valid by just requesting it
         await self.async_get_token()
         spotty = self.get_spotty_binary()
-        spotty_exec = '%s -n temp -c "%s" --pass-through --single-track %s' % (
-            spotty,
-            self.mass.config.data_path,
-            track.item_id,
+        spotty_exec = (
+            '%s -n temp -c "%s" --pass-through --single-track spotify://track:%s'
+            % (
+                spotty,
+                self.mass.config.data_path,
+                track.item_id,
+            )
         )
         return StreamDetails(
             type=StreamType.EXECUTABLE,
@@ -621,7 +624,7 @@ class SpotifyProvider(MusicProvider):
             )
         if platform.system() == "Darwin":
             # macos binary is x86_64 intel
-            return os.path.join(os.path.dirname(__file__), "spotty", "darwin", "spotty")
+            return os.path.join(os.path.dirname(__file__), "spotty", "osx", "spotty")
         if platform.system() == "Linux":
             architecture = platform.machine()
             if architecture in ["AMD64", "x86_64"]:
@@ -637,10 +640,10 @@ class SpotifyProvider(MusicProvider):
             if "aarch64" in architecture or "armv8" in architecture:
                 # arm64 linux binary
                 return os.path.join(
-                    os.path.dirname(__file__), "spotty", "x86-linux", "spotty-aarch64"
+                    os.path.dirname(__file__), "spotty", "linux", "spotty-aarch64"
                 )
             # assume armv7
             return os.path.join(
-                os.path.dirname(__file__), "spotty", "arm-linux", "spotty-armhf"
+                os.path.dirname(__file__), "spotty", "linux", "spotty-armhf"
             )
         return None
