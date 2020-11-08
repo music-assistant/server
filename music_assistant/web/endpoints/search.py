@@ -1,8 +1,8 @@
 """Search API endpoints."""
 
-from aiohttp.web import Request, Response, RouteTableDef
+from aiohttp.web import Request, RouteTableDef
 from aiohttp_jwt import login_required
-from music_assistant.helpers.util import json_serializer
+from music_assistant.helpers.web import async_json_response
 from music_assistant.models.media_types import MediaType
 
 routes = RouteTableDef()
@@ -26,8 +26,8 @@ async def async_search(request: Request):
         media_types.append(MediaType.Playlist)
     if not media_types_query or "radios" in media_types_query:
         media_types.append(MediaType.Radio)
-
-    result = await request.app["mass"].music.async_global_search(
-        searchquery, media_types, limit=limit
+    return await async_json_response(
+        await request.app["mass"].music.async_global_search(
+            searchquery, media_types, limit=limit
+        )
     )
-    return Response(body=json_serializer(result), content_type="application/json")

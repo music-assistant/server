@@ -2,13 +2,13 @@
 
 from abc import abstractmethod
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Any, List, Optional
 
 from mashumaro import DataClassDictMixin
 from music_assistant.constants import EVENT_SET_PLAYER_CONTROL_STATE
 from music_assistant.helpers.typing import MusicAssistantType, QueueItems
-from music_assistant.helpers.util import CustomIntEnum, callback
+from music_assistant.helpers.util import callback
 from music_assistant.models.config_entry import ConfigEntry
 
 
@@ -30,7 +30,7 @@ class DeviceInfo(DataClassDictMixin):
     manufacturer: str = ""
 
 
-class PlayerFeature(CustomIntEnum):
+class PlayerFeature(IntEnum):
     """Enum for player features."""
 
     QUEUE = 0
@@ -270,7 +270,7 @@ class Player:
         self.mass.add_job(self.mass.players.async_update_player(self))
 
 
-class PlayerControlType(CustomIntEnum):
+class PlayerControlType(Enum):
     """Enum with different player control types."""
 
     POWER = 0

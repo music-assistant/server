@@ -2,8 +2,7 @@
 
 from aiohttp.web import Request, Response, RouteTableDef
 from aiohttp_jwt import login_required
-from music_assistant.helpers.util import json_serializer
-from music_assistant.helpers.web import async_stream_json
+from music_assistant.helpers.web import async_json_response
 
 routes = RouteTableDef()
 
@@ -12,8 +11,9 @@ routes = RouteTableDef()
 @login_required
 async def async_radios(request: Request):
     """Get all radios known in the database."""
-    generator = request.app["mass"].database.async_get_radios()
-    return await async_stream_json(request, generator)
+    return await async_json_response(
+        await request.app["mass"].database.async_get_radios()
+    )
 
 
 @routes.get("/api/radios/{item_id}")
@@ -24,5 +24,6 @@ async def async_radio(request: Request):
     provider = request.rel_url.query.get("provider")
     if item_id is None or provider is None:
         return Response(text="invalid item_id or provider", status=501)
-    result = await request.app["mass"].music.async_get_radio(item_id, provider)
-    return Response(body=json_serializer(result), content_type="application/json")
+    return await async_json_response(
+        await request.app["mass"].music.async_get_radio(item_id, provider)
+    )

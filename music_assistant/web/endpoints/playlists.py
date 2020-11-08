@@ -1,10 +1,9 @@
 """Playlists API endpoints."""
 
 import ujson
-from aiohttp.web import Request, Response, RouteTableDef, json_response
+from aiohttp.web import Request, Response, RouteTableDef
 from aiohttp_jwt import login_required
-from music_assistant.helpers.util import json_serializer
-from music_assistant.helpers.web import async_media_items_from_body, async_stream_json
+from music_assistant.helpers.web import async_json_response, async_media_items_from_body
 
 routes = RouteTableDef()
 
@@ -18,7 +17,7 @@ async def async_playlist(request: Request):
     if item_id is None or provider is None:
         return Response(text="invalid item or provider", status=501)
     result = await request.app["mass"].music.async_get_playlist(item_id, provider)
-    return json_response(result, dumps=json_serializer)
+    return await async_json_response(result)
 
 
 @routes.get("/api/playlists/{item_id}/tracks")
@@ -29,8 +28,10 @@ async def async_playlist_tracks(request: Request):
     provider = request.rel_url.query.get("provider")
     if item_id is None or provider is None:
         return Response(text="invalid item_id or provider", status=501)
-    generator = request.app["mass"].music.async_get_playlist_tracks(item_id, provider)
-    return await async_stream_json(request, generator)
+    result = await request.app["mass"].music.async_get_playlist_tracks(
+        item_id, provider
+    )
+    return await async_json_response(result)
 
 
 @routes.put("/api/playlists/{item_id}/tracks")
@@ -41,7 +42,7 @@ async def async_add_playlist_tracks(request: Request):
     body = await request.json(loads=ujson.loads)
     tracks = await async_media_items_from_body(request.app["mass"], body)
     result = await request.app["mass"].music.async_add_playlist_tracks(item_id, tracks)
-    return json_response(result)
+    return await async_json_response(result)
 
 
 @routes.delete("/api/playlists/{item_id}/tracks")
@@ -54,4 +55,4 @@ async def async_remove_playlist_tracks(request: Request):
     result = await request.app["mass"].music.async_remove_playlist_tracks(
         item_id, tracks
     )
-    return json_response(result)
+    return await async_json_response(result)

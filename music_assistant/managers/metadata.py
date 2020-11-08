@@ -36,7 +36,7 @@ class MetaDataManager:
                 break
             cache_key = f"{provider.id}.artist_metadata.{mb_artist_id}"
             res = await async_cached(
-                self.cache, cache_key, provider.async_get_artist_images(mb_artist_id)
+                self.cache, cache_key, provider.async_get_artist_images, mb_artist_id
             )
             if res:
                 merge_dict(metadata, res)

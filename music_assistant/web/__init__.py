@@ -8,7 +8,8 @@ from aiohttp import web
 from aiohttp_jwt import JWTMiddleware
 from music_assistant.constants import __version__ as MASS_VERSION
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.helpers.util import get_hostname, get_ip, json_serializer
+from music_assistant.helpers.util import get_hostname, get_ip
+from music_assistant.helpers.web import json_serializer
 
 from .endpoints import (
     albums,

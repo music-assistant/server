@@ -99,11 +99,12 @@ class TuneInProvider(MusicProvider):
         params = {"c": "presets"}
         result = await self.__async_get_data("Browse.ashx", params)
         if result and "body" in result:
-            for item in result["body"]:
-                # TODO: expand folders
-                if item["type"] == "audio":
-                    radio = await self.__async_parse_radio(item)
-                    yield radio
+            return [
+                await self.__async_parse_radio(item)
+                for item in result["body"]
+                if item["type"] == "audio"
+            ]
+        return []
 
     async def async_get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""

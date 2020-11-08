@@ -1,11 +1,13 @@
 """Provides a simple stateless caching system."""
 
+import asyncio
 import functools
 import logging
 import os
 import pickle
 import time
 from functools import reduce
+from typing import Awaitable
 
 import aiosqlite
 from music_assistant.helpers.util import run_periodic
@@ -21,7 +23,8 @@ class Cache:
     def __init__(self, mass):
         """Initialize our caching class."""
         self.mass = mass
-        self._dbfile = os.path.join(mass.config.data_path, "cache.db")
+        self._dbfile = os.path.join(mass.config.data_path, ".cache.db")
+        self._mem_cache = {}
 
     async def async_setup(self):
         """Async initialize of cache module."""
@@ -35,7 +38,7 @@ class Cache:
             await db_conn.commit()
         self.mass.add_job(self.async_auto_cleanup())
 
-    async def async_get(self, cache_key, checksum=""):
+    async def async_get(self, cache_key, checksum="", default=None):
         """
         Get object from cache and return the results.
 
@@ -43,40 +46,68 @@ class Cache:
         checkum: optional argument to check if the checksum in the
                     cacheobject matches the checkum provided
         """
-        result = None
         cur_time = int(time.time())
         checksum = self._get_checksum(checksum)
-        sql_query = "SELECT expires, data, checksum FROM simplecache WHERE id = ?"
+
+        # try memory cache first
+        cache_data = self._mem_cache.get(cache_key)
+        if (
+            cache_data
+            and (not checksum or cache_data[1] == checksum)
+            and cache_data[2] >= cur_time
+        ):
+            return cache_data[0]
+        # fall back to db cache
+        sql_query = "SELECT data, checksum, expires FROM simplecache WHERE id = ?"
         async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
-            db_conn.row_factory = aiosqlite.Row
             async with db_conn.execute(sql_query, (cache_key,)) as cursor:
                 cache_data = await cursor.fetchone()
-                if not cache_data:
-                    LOGGER.debug("no cache data for %s", cache_key)
-                elif cache_data["expires"] < cur_time:
-                    LOGGER.debug("cache expired for %s", cache_key)
-                elif checksum and cache_data["checksum"] != checksum:
-                    LOGGER.debug("cache checksum mismatch for %s", cache_key)
-                if cache_data and cache_data["expires"] > cur_time:
-                    if checksum is None or cache_data["checksum"] == checksum:
-                        LOGGER.debug("return cache data for %s", cache_key)
-                        result = pickle.loads(cache_data[1])
-        return result
+                if (
+                    cache_data
+                    and (not checksum or cache_data[1] == checksum)
+                    and cache_data[2] >= cur_time
+                ):
+                    data = await asyncio.get_running_loop().run_in_executor(
+                        None, pickle.loads, cache_data[0]
+                    )
+                    # also store in memory cache for faster access
+                    if cache_key not in self._mem_cache:
+                        self._mem_cache[cache_key] = (
+                            data,
+                            cache_data[1],
+                            cache_data[2],
+                        )
+                    return data
+        LOGGER.debug("no cache data for %s", cache_key)
+        return default
 
     async def async_set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
         """Set data in cache."""
         checksum = self._get_checksum(checksum)
         expires = int(time.time() + expiration)
-        data = pickle.dumps(data)
+        self._mem_cache[cache_key] = (data, checksum, expires)
+        data = await asyncio.get_running_loop().run_in_executor(
+            None, pickle.dumps, data
+        )
         sql_query = """INSERT OR REPLACE INTO simplecache
             (id, expires, data, checksum) VALUES (?, ?, ?, ?)"""
         async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
             await db_conn.execute(sql_query, (cache_key, expires, data, checksum))
             await db_conn.commit()
 
+    async def async_delete(self, cache_key):
+        """Delete data from cache."""
+        self._mem_cache.pop(cache_key, None)
+        sql_query = "DELETE FROM simplecache WHERE id = ?"
+        async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
+            await db_conn.execute(sql_query, (cache_key,))
+            await db_conn.commit()
+
     @run_periodic(3600)
     async def async_auto_cleanup(self):
         """Sceduled auto cleanup task."""
+        # for now we simply rest the memory cache
+        self._mem_cache = {}
         cur_timestamp = int(time.time())
         LOGGER.debug("Running cleanup...")
         sql_query = "SELECT id, expires FROM simplecache"
@@ -90,7 +121,6 @@ class Cache:
                 if cache_data["expires"] < cur_timestamp:
                     sql_query = "DELETE FROM simplecache WHERE id = ?"
                     await db_conn.execute(sql_query, (cache_id,))
-                    LOGGER.debug("delete from db %s", cache_id)
             # compact db
             await db_conn.commit()
         LOGGER.debug("Auto cleanup done")
@@ -104,34 +134,20 @@ class Cache:
         return reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
-async def async_cached_generator(
-    cache, cache_key, coro_func, expires=(86400 * 30), checksum=None
-):
-    """Return helper method to store results of a async generator in the cache."""
-    cache_result = await cache.async_get(cache_key, checksum)
-    if cache_result is not None:
-        for item in cache_result:
-            yield item
-    else:
-        # nothing in cache, yield from generator and store in cache when complete
-        cache_result = []
-        async for item in coro_func:
-            yield item
-            cache_result.append(item)
-        # store results in cache
-        await cache.async_set(cache_key, cache_result, checksum, expires)
-
-
 async def async_cached(
-    cache, cache_key, coro_func, expires=(86400 * 30), checksum=None
+    cache,
+    cache_key: str,
+    coro_func: Awaitable,
+    *args,
+    expires: int = (86400 * 30),
+    checksum=None
 ):
     """Return helper method to store results of a coroutine in the cache."""
     cache_result = await cache.async_get(cache_key, checksum)
-    # normal async function
     if cache_result is not None:
         return cache_result
-    result = await coro_func
-    await cache.async_set(cache_key, cache_result, checksum, expires)
+    result = await coro_func(*args)
+    asyncio.create_task(cache.async_set(cache_key, result, checksum, expires))
     return result
 
 
@@ -150,11 +166,13 @@ def async_use_cache(cache_days=14, cache_checksum=None):
             if cachedata is not None:
                 return cachedata
             result = await func(*args, **kwargs)
-            await method_class.cache.async_set(
-                cache_str,
-                result,
-                checksum=cache_checksum,
-                expiration=(86400 * cache_days),
+            asyncio.create_task(
+                method_class.cache.async_set(
+                    cache_str,
+                    result,
+                    checksum=cache_checksum,
+                    expiration=(86400 * cache_days),
+                )
             )
             return result
 

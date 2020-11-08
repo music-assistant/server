@@ -8,7 +8,9 @@ import ujson
 from aiohttp import WSMsgType
 from aiohttp.web import Request, RouteTableDef, WebSocketResponse
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.helpers.util import json_serializer
+from music_assistant.helpers.web import json_serializer
+
+from .login import async_get_token
 
 routes = RouteTableDef()
 ws_commands = dict()
@@ -70,16 +72,27 @@ async def async_websocket_handler(request: Request):
             if not authenticated and not msg == "login":
                 # make sure client is authenticated
                 await async_send_message("error", "authentication required")
-            elif msg == "login":
+            elif msg == "login" and isinstance(msg_details, str):
                 # handle login with token
                 try:
                     token_info = jwt.decode(msg_details, mass.web.device_id)
                     await async_send_message("login", token_info)
                     authenticated = True
                 except jwt.InvalidTokenError as exc:
-                    async_send_message(
+                    await async_send_message(
                         "error", "Invalid authorization token, " + str(exc)
                     )
+                    authenticated = False
+            elif msg == "login" and isinstance(msg_details, dict):
+                # handle login with username/password
+                token_info = await async_get_token(
+                    mass, msg_details["username"], msg_details["password"]
+                )
+                if token_info:
+                    await async_send_message("login", token_info)
+                    authenticated = True
+                else:
+                    await async_send_message("error", "Invalid credentials")
                     authenticated = False
             elif msg in ws_commands:
                 res = await ws_commands[msg](mass, msg_details)
@@ -90,7 +103,6 @@ async def async_websocket_handler(request: Request):
                     mass.add_event_listener(async_send_message, msg_details)
                 )
                 await async_send_message("event listener subscribed", msg_details)
-
             else:
                 # simply echo the message on the eventbus
                 request.app["mass"].signal_event(msg, msg_details)

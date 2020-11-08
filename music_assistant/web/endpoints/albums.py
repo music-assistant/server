@@ -2,8 +2,7 @@
 
 from aiohttp.web import Request, Response, RouteTableDef
 from aiohttp_jwt import login_required
-from music_assistant.helpers.util import json_serializer
-from music_assistant.helpers.web import async_stream_json
+from music_assistant.helpers.web import async_json_response
 
 routes = RouteTableDef()
 
@@ -12,8 +11,9 @@ routes = RouteTableDef()
 @login_required
 async def async_albums(request: Request):
     """Get all albums known in the database."""
-    generator = request.app["mass"].database.async_get_albums()
-    return await async_stream_json(request, generator)
+    return await async_json_response(
+        await request.app["mass"].database.async_get_albums()
+    )
 
 
 @routes.get("/api/albums/{item_id}")
@@ -25,10 +25,9 @@ async def async_album(request: Request):
     lazy = request.rel_url.query.get("lazy", "true") != "false"
     if item_id is None or provider is None:
         return Response(text="invalid item or provider", status=501)
-    result = await request.app["mass"].music.async_get_album(
-        item_id, provider, lazy=lazy
+    return await async_json_response(
+        await request.app["mass"].music.async_get_album(item_id, provider, lazy=lazy)
     )
-    return Response(body=json_serializer(result), content_type="application/json")
 
 
 @routes.get("/api/albums/{item_id}/tracks")
@@ -39,8 +38,9 @@ async def async_album_tracks(request: Request):
     provider = request.rel_url.query.get("provider")
     if item_id is None or provider is None:
         return Response(text="invalid item_id or provider", status=501)
-    generator = request.app["mass"].music.async_get_album_tracks(item_id, provider)
-    return await async_stream_json(request, generator)
+    return await async_json_response(
+        await request.app["mass"].music.async_get_album_tracks(item_id, provider)
+    )
 
 
 @routes.get("/api/albums/{item_id}/versions")
@@ -51,5 +51,6 @@ async def async_album_versions(request):
     provider = request.rel_url.query.get("provider")
     if item_id is None or provider is None:
         return Response(text="invalid item_id or provider", status=501)
-    generator = request.app["mass"].music.async_get_album_versions(item_id, provider)
-    return await async_stream_json(request, generator)
+    return await async_json_response(
+        await request.app["mass"].music.async_get_album_versions(item_id, provider)
+    )

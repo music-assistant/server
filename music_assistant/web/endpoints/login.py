@@ -5,7 +5,7 @@ import datetime
 import jwt
 from aiohttp.web import HTTPUnauthorized, Request, Response, RouteTableDef
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.helpers.util import json_serializer
+from music_assistant.helpers.web import json_serializer
 
 routes = RouteTableDef()
 

@@ -350,9 +350,9 @@ class FileProvider(MusicProvider):
             artists.append(artist)
         track.artists = artists
         if "GENRE" in song.tags:
-            track.tags = song.tags["GENRE"]
+            track.metadata["genres"] = song.tags["GENRE"]
         if "ISRC" in song.tags:
-            track.external_ids["isrc"] = song.tags["ISRC"][0]
+            track.isrc = song.tags["ISRC"][0]
         if "DISCNUMBER" in song.tags:
             track.disc_number = int(song.tags["DISCNUMBER"][0])
         if "TRACKNUMBER" in song.tags:

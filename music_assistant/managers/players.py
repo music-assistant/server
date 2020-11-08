@@ -14,12 +14,7 @@ from music_assistant.constants import (
     EVENT_UNREGISTER_PLAYER_CONTROL,
 )
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.helpers.util import (
-    async_iter_items,
-    callback,
-    run_periodic,
-    try_parse_int,
-)
+from music_assistant.helpers.util import callback, run_periodic, try_parse_int
 from music_assistant.models.media_types import MediaItem, MediaType, Track
 from music_assistant.models.player import (
     PlaybackState,
@@ -266,20 +261,22 @@ class PlayerManager:
         for media_item in media_items:
             # collect tracks to play
             if media_item.media_type == MediaType.Artist:
-                tracks = self.mass.music.async_get_artist_toptracks(
+                tracks = await self.mass.music.async_get_artist_toptracks(
                     media_item.item_id, provider_id=media_item.provider
                 )
             elif media_item.media_type == MediaType.Album:
-                tracks = self.mass.music.async_get_album_tracks(
+                tracks = await self.mass.music.async_get_album_tracks(
                     media_item.item_id, provider_id=media_item.provider
                 )
             elif media_item.media_type == MediaType.Playlist:
-                tracks = self.mass.music.async_get_playlist_tracks(
+                tracks = await self.mass.music.async_get_playlist_tracks(
                     media_item.item_id, provider_id=media_item.provider
                 )
             else:
-                tracks = async_iter_items(media_item)  # single track
-            async for track in tracks:
+                tracks = [media_item]  # single track
+            for track in tracks:
+                if not track.available:
+                    continue
                 queue_item = QueueItem(track)
                 # generate uri for this queue item
                 queue_item.uri = "%s/stream/queue/%s/%s" % (

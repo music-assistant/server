@@ -2,6 +2,5 @@
 -r requirements_lint.txt
 -r requirements_test.txt
 tox==3.20.1
-python-vlc
 
 -e .

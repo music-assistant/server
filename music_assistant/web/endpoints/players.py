@@ -2,10 +2,9 @@
 
 from json.decoder import JSONDecodeError
 
-from aiohttp.web import Request, Response, RouteTableDef, json_response
+from aiohttp.web import Request, Response, RouteTableDef
 from aiohttp_jwt import login_required
-from music_assistant.helpers.util import json_serializer
-from music_assistant.helpers.web import async_media_items_from_body, async_stream_json
+from music_assistant.helpers.web import async_json_response, async_media_items_from_body
 from music_assistant.models.player_queue import QueueOption
 
 routes = RouteTableDef()
@@ -18,8 +17,9 @@ async def async_players(request: Request):
     """Get all playerstates."""
     player_states = request.app["mass"].players.player_states
     player_states.sort(key=lambda x: str(x.name), reverse=False)
-    players = [player_state.to_dict() for player_state in player_states]
-    return Response(body=json_serializer(players), content_type="application/json")
+    return await async_json_response(
+        [player_state.to_dict() for player_state in player_states]
+    )
 
 
 @routes.post("/api/players/{player_id}/cmd/{cmd}")
@@ -43,7 +43,7 @@ async def async_player_command(request: Request):
     else:
         return Response(text="invalid command", status=501)
     result = {"success": success in [True, None]}
-    return Response(body=json_serializer(result), content_type="application/json")
+    return await async_json_response(result)
 
 
 @routes.post("/api/players/{player_id}/play_media/{queue_opt}")
@@ -61,7 +61,7 @@ async def async_player_play_media(request: Request):
         player_id, media_items, queue_opt
     )
     result = {"success": success in [True, None]}
-    return json_response(result)
+    return await async_json_response(result)
 
 
 @routes.get("/api/players/{player_id}/queue/items/{queue_item}")
@@ -78,7 +78,7 @@ async def async_player_queue_item(request: Request):
         queue_item = player_queue.get_item(item_id)
     except ValueError:
         queue_item = player_queue.by_item_id(item_id)
-    return json_response(queue_item.to_dict())
+    return await async_json_response(queue_item)
 
 
 @routes.get("/api/players/{player_id}/queue/items")
@@ -89,12 +89,7 @@ async def async_player_queue_items(request: Request):
     player_queue = request.app["mass"].players.get_player_queue(player_id)
     if not player_queue:
         return Response(text="invalid player", status=404)
-
-    async def async_queue_tracks_iter():
-        for item in player_queue.items:
-            yield item
-
-    return await async_stream_json(request, async_queue_tracks_iter())
+    return await async_json_response(player_queue.items)
 
 
 @routes.get("/api/players/{player_id}/queue")
@@ -105,9 +100,7 @@ async def async_player_queue(request: Request):
     player_queue = request.app["mass"].players.get_player_queue(player_id)
     if not player_queue:
         return Response(text="invalid player", status=404)
-    return Response(
-        body=json_serializer(player_queue.to_dict()), content_type="application/json"
-    )
+    return await async_json_response(player_queue)
 
 
 @routes.put("/api/players/{player_id}/queue/{cmd}")
@@ -135,9 +128,7 @@ async def async_player_queue_cmd(request: Request):
         await player_queue.async_move_item(cmd_args, 1)
     elif cmd == "next":
         await player_queue.async_move_item(cmd_args, 0)
-    return Response(
-        body=json_serializer(player_queue.to_dict()), content_type="application/json"
-    )
+    return await async_json_response(player_queue)
 
 
 @routes.get("/api/players/{player_id}")
@@ -148,6 +139,4 @@ async def async_player(request: Request):
     player_state = request.app["mass"].players.get_player_state(player_id)
     if not player_state:
         return Response(text="invalid player", status=404)
-    return Response(
-        body=json_serializer(player_state.to_dict()), content_type="application/json"
-    )
+    return await async_json_response(player_state)

@@ -124,130 +124,146 @@ class QobuzProvider(MusicProvider):
         searchresult = await self.__async_get_data("catalog/search", params)
         if searchresult:
             if "artists" in searchresult:
-                for item in searchresult["artists"]["items"]:
-                    artist = await self.__async_parse_artist(item)
-                    if artist:
-                        result.artists.append(artist)
+                result.artists = [
+                    await self.__async_parse_artist(item)
+                    for item in searchresult["artists"]["items"]
+                    if (item and item["id"])
+                ]
             if "albums" in searchresult:
-                for item in searchresult["albums"]["items"]:
-                    album = await self.__async_parse_album(item)
-                    if album:
-                        result.albums.append(album)
+                result.albums = [
+                    await self.__async_parse_album(item)
+                    for item in searchresult["albums"]["items"]
+                    if (item and item["id"])
+                ]
             if "tracks" in searchresult:
-                for item in searchresult["tracks"]["items"]:
-                    track = await self.__async_parse_track(item)
-                    if track:
-                        result.tracks.append(track)
+                result.tracks = [
+                    await self.__async_parse_track(item)
+                    for item in searchresult["tracks"]["items"]
+                    if (item and item["id"])
+                ]
             if "playlists" in searchresult:
-                for item in searchresult["playlists"]["items"]:
-                    playlist = await self.__async_parse_playlist(item)
-                    if playlist:
-                        result.playlists.append(playlist)
+                result.playlists = [
+                    await self.__async_parse_playlist(item)
+                    for item in searchresult["playlists"]["items"]
+                    if (item and item["id"])
+                ]
         return result
 
     async def async_get_library_artists(self) -> List[Artist]:
         """Retrieve all library artists from Qobuz."""
         params = {"type": "artists"}
         endpoint = "favorite/getUserFavorites"
-        async for item in self.__async_get_all_items(endpoint, params, key="artists"):
-            artist = await self.__async_parse_artist(item)
-            if artist:
-                yield artist
+        return [
+            await self.__async_parse_artist(item)
+            for item in await self.__async_get_all_items(
+                endpoint, params, key="artists"
+            )
+            if (item and item["id"])
+        ]
 
     async def async_get_library_albums(self) -> List[Album]:
         """Retrieve all library albums from Qobuz."""
         params = {"type": "albums"}
         endpoint = "favorite/getUserFavorites"
-        async for item in self.__async_get_all_items(endpoint, params, key="albums"):
-            album = await self.__async_parse_album(item)
-            if album:
-                yield album
+        return [
+            await self.__async_parse_album(item)
+            for item in await self.__async_get_all_items(endpoint, params, key="albums")
+            if (item and item["id"])
+        ]
 
     async def async_get_library_tracks(self) -> List[Track]:
         """Retrieve library tracks from Qobuz."""
         params = {"type": "tracks"}
         endpoint = "favorite/getUserFavorites"
-        async for item in self.__async_get_all_items(endpoint, params, key="tracks"):
-            track = await self.__async_parse_track(item)
-            if track:
-                yield track
+        return [
+            await self.__async_parse_track(item)
+            for item in await self.__async_get_all_items(endpoint, params, key="tracks")
+            if (item and item["id"])
+        ]
 
     async def async_get_library_playlists(self) -> List[Playlist]:
         """Retrieve all library playlists from the provider."""
         endpoint = "playlist/getUserPlaylists"
-        async for item in self.__async_get_all_items(endpoint, key="playlists"):
-            playlist = await self.__async_parse_playlist(item)
-            if playlist:
-                yield playlist
+        return [
+            await self.__async_parse_playlist(item)
+            for item in await self.__async_get_all_items(endpoint, key="playlists")
+            if (item and item["id"])
+        ]
 
     async def async_get_radios(self) -> List[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
-        yield None  # TODO
+        return []  # TODO
 
     async def async_get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         params = {"artist_id": prov_artist_id}
         artist_obj = await self.__async_get_data("artist/get", params)
-        return await self.__async_parse_artist(artist_obj)
+        return (
+            await self.__async_parse_artist(artist_obj)
+            if artist_obj and artist_obj["id"]
+            else None
+        )
 
     async def async_get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         params = {"album_id": prov_album_id}
         album_obj = await self.__async_get_data("album/get", params)
-        return await self.__async_parse_album(album_obj)
+        return (
+            await self.__async_parse_album(album_obj)
+            if album_obj and album_obj["id"]
+            else None
+        )
 
     async def async_get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         params = {"track_id": prov_track_id}
         track_obj = await self.__async_get_data("track/get", params)
-        return await self.__async_parse_track(track_obj)
+        return (
+            await self.__async_parse_track(track_obj)
+            if track_obj and track_obj["id"]
+            else None
+        )
 
     async def async_get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         params = {"playlist_id": prov_playlist_id}
         playlist_obj = await self.__async_get_data("playlist/get", params)
-        return await self.__async_parse_playlist(playlist_obj)
+        return (
+            await self.__async_parse_playlist(playlist_obj)
+            if playlist_obj and playlist_obj["id"]
+            else None
+        )
 
     async def async_get_album_tracks(self, prov_album_id) -> List[Track]:
         """Get all album tracks for given album id."""
         params = {"album_id": prov_album_id}
-        async for item in self.__async_get_all_items("album/get", params, key="tracks"):
-            track = await self.__async_parse_track(item)
-            if track:
-                yield track
-            else:
-                LOGGER.warning(
-                    "Unavailable track found in album %s: %s",
-                    prov_album_id,
-                    item["title"],
-                )
+        return [
+            await self.__async_parse_track(item)
+            for item in await self.__async_get_all_items(
+                "album/get", params, key="tracks"
+            )
+            if (item and item["id"])
+        ]
 
     async def async_get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
         params = {"playlist_id": prov_playlist_id, "extra": "tracks"}
         endpoint = "playlist/get"
-        async for item in self.__async_get_all_items(endpoint, params, key="tracks"):
-            playlist_track = await self.__async_parse_track(item)
-            if playlist_track:
-                yield playlist_track
-            else:
-                LOGGER.warning(
-                    "Unavailable track found in playlist %s: %s",
-                    prov_playlist_id,
-                    item["title"],
-                )
-                # TODO: should we look for an alternative
-                # track version if the original is marked unavailable ?
+        return [
+            await self.__async_parse_track(item)
+            for item in await self.__async_get_all_items(endpoint, params, key="tracks")
+            if (item and item["id"])
+        ]
 
     async def async_get_artist_albums(self, prov_artist_id) -> List[Album]:
         """Get a list of albums for the given artist."""
         params = {"artist_id": prov_artist_id, "extra": "albums"}
         endpoint = "artist/get"
-        async for item in self.__async_get_all_items(endpoint, params, key="albums"):
-            if str(item["artist"]["id"]) == str(prov_artist_id):
-                album = await self.__async_parse_album(item)
-                if album:
-                    yield album
+        return [
+            await self.__async_parse_album(item)
+            for item in await self.__async_get_all_items(endpoint, params, key="albums")
+            if (item and item["id"])
+        ]
 
     async def async_get_artist_toptracks(self, prov_artist_id) -> List[Track]:
         """Get a list of most popular tracks for the given artist."""
@@ -256,13 +272,16 @@ class QobuzProvider(MusicProvider):
         artist = await self.async_get_artist(prov_artist_id)
         params = {"query": artist.name, "limit": 25, "type": "tracks"}
         searchresult = await self.__async_get_data("catalog/search", params)
-        for item in searchresult["tracks"]["items"]:
-            if "performer" in item and str(item["performer"]["id"]) == str(
-                prov_artist_id
-            ):
-                track = await self.__async_parse_track(item)
-                if track:
-                    yield track
+        return [
+            await self.__async_parse_track(item)
+            for item in searchresult["tracks"]["items"]
+            if (
+                item
+                and item["id"]
+                and "performer" in item
+                and str(item["performer"]["id"]) == str(prov_artist_id)
+            )
+        ]
 
     async def async_library_add(self, prov_item_id, media_type: MediaType):
         """Add item to library."""
@@ -415,15 +434,12 @@ class QobuzProvider(MusicProvider):
 
     async def __async_parse_artist(self, artist_obj):
         """Parse qobuz artist object to generic layout."""
-        artist = Artist()
-        if not artist_obj or not artist_obj.get("id"):
-            return None
-        artist.item_id = str(artist_obj["id"])
-        artist.provider = PROV_ID
+        artist = Artist(
+            item_id=str(artist_obj["id"]), provider=PROV_ID, name=artist_obj["name"]
+        )
         artist.provider_ids.append(
             MediaItemProviderId(provider=PROV_ID, item_id=str(artist_obj["id"]))
         )
-        artist.name = artist_obj["name"]
         if artist_obj.get("image"):
             for key in ["extralarge", "large", "medium", "small"]:
                 if artist_obj["image"].get(key):
@@ -439,19 +455,9 @@ class QobuzProvider(MusicProvider):
             artist.metadata["qobuz_url"] = artist_obj["url"]
         return artist
 
-    async def __async_parse_album(self, album_obj):
+    async def __async_parse_album(self, album_obj: dict, artist_obj: dict = None):
         """Parse qobuz album object to generic layout."""
-        album = Album()
-        if (
-            not album_obj
-            or not album_obj.get("id")
-            or not album_obj["streamable"]
-            or not album_obj["displayable"]
-        ):
-            # do not return unavailable items
-            return None
-        album.item_id = str(album_obj["id"])
-        album.provider = PROV_ID
+        album = Album(item_id=str(album_obj["id"]), provider=PROV_ID)
         if album_obj["maximum_sampling_rate"] > 192:
             quality = TrackQuality.FLAC_LOSSLESS_HI_RES_4
         elif album_obj["maximum_sampling_rate"] > 96:
@@ -469,25 +475,28 @@ class QobuzProvider(MusicProvider):
                 provider=PROV_ID,
                 item_id=str(album_obj["id"]),
                 quality=quality,
-                details=f'{album_obj["maximum_sampling_rate"]}kHz \
-                    {album_obj["maximum_bit_depth"]}bit',
+                details=f'{album_obj["maximum_sampling_rate"]}kHz {album_obj["maximum_bit_depth"]}bit',
+                available=album_obj["streamable"] and album_obj["displayable"],
             )
         )
         album.name, album.version = parse_title_and_version(
             album_obj["title"], album_obj.get("version")
         )
-        album.artist = await self.__async_parse_artist(album_obj["artist"])
+        if artist_obj:
+            album.artist = artist_obj
+        else:
+            album.artist = await self.__async_parse_artist(album_obj["artist"])
         if album_obj.get("product_type", "") == "single":
-            album.albumtype = AlbumType.Single
+            album.album_type = AlbumType.Single
         elif (
             album_obj.get("product_type", "") == "compilation"
-            or "Various" in album_obj["artist"]["name"]
+            or "Various" in album.artist.name
         ):
-            album.albumtype = AlbumType.Compilation
+            album.album_type = AlbumType.Compilation
         else:
-            album.albumtype = AlbumType.Album
+            album.album_type = AlbumType.Album
         if "genre" in album_obj:
-            album.tags = [album_obj["genre"]["name"]]
+            album.metadata["genre"] = album_obj["genre"]["name"]
         if album_obj.get("image"):
             for key in ["extralarge", "large", "medium", "small"]:
                 if album_obj["image"].get(key):
@@ -495,12 +504,12 @@ class QobuzProvider(MusicProvider):
                     break
         if len(album_obj["upc"]) == 13:
             # qobuz writes ean as upc ?!
-            album.external_ids["ean"] = album_obj["upc"]
-            album.external_ids["upc"] = album_obj["upc"][1:]
+            album.metadata["ean"] = album_obj["upc"]
+            album.upc = album_obj["upc"][1:]
         else:
-            album.external_ids["upc"] = album_obj["upc"]
+            album.upc = album_obj["upc"]
         if "label" in album_obj:
-            album.labels = album_obj["label"]["name"].split("/")
+            album.metadata["label"] = album_obj["label"]["name"]
         if album_obj.get("released_at"):
             album.year = datetime.datetime.fromtimestamp(album_obj["released_at"]).year
         if album_obj.get("copyright"):
@@ -515,17 +524,13 @@ class QobuzProvider(MusicProvider):
 
     async def __async_parse_track(self, track_obj):
         """Parse qobuz track object to generic layout."""
-        track = Track()
-        if (
-            not track_obj
-            or not track_obj.get("id")
-            or not track_obj["streamable"]
-            or not track_obj["displayable"]
-        ):
-            # do not return unavailable items
-            return None
-        track.item_id = str(track_obj["id"])
-        track.provider = PROV_ID
+        track = Track(
+            item_id=str(track_obj["id"]),
+            provider=PROV_ID,
+            disc_number=track_obj["media_number"],
+            track_number=track_obj["track_number"],
+            duration=track_obj["duration"],
+        )
         if track_obj.get("performer") and "Various " not in track_obj["performer"]:
             artist = await self.__async_parse_artist(track_obj["performer"])
             if artist:
@@ -554,19 +559,16 @@ class QobuzProvider(MusicProvider):
         track.name, track.version = parse_title_and_version(
             track_obj["title"], track_obj.get("version")
         )
-        track.duration = track_obj["duration"]
         if "album" in track_obj:
             album = await self.__async_parse_album(track_obj["album"])
             if album:
                 track.album = album
-        track.disc_number = track_obj["media_number"]
-        track.track_number = track_obj["track_number"]
         if track_obj.get("hires"):
             track.metadata["hires"] = "true"
         if track_obj.get("url"):
             track.metadata["qobuz_url"] = track_obj["url"]
         if track_obj.get("isrc"):
-            track.external_ids["isrc"] = track_obj["isrc"]
+            track.isrc = track_obj["isrc"]
         if track_obj.get("performers"):
             track.metadata["performers"] = track_obj["performers"]
         if track_obj.get("copyright"):
@@ -589,24 +591,23 @@ class QobuzProvider(MusicProvider):
                 provider=PROV_ID,
                 item_id=str(track_obj["id"]),
                 quality=quality,
-                details=f'{track_obj["maximum_sampling_rate"]}kHz \
-                    {track_obj["maximum_bit_depth"]}bit',
+                details=f'{track_obj["maximum_sampling_rate"]}kHz {track_obj["maximum_bit_depth"]}bit',
+                available=track_obj["streamable"] and track_obj["displayable"],
             )
         )
         return track
 
     async def __async_parse_playlist(self, playlist_obj):
         """Parse qobuz playlist object to generic layout."""
-        playlist = Playlist()
-        if not playlist_obj or not playlist_obj.get("id"):
-            return None
-        playlist.item_id = playlist_obj["id"]
-        playlist.provider = PROV_ID
+        playlist = Playlist(
+            item_id=playlist_obj["id"],
+            provider=PROV_ID,
+            name=playlist_obj["name"],
+            owner=playlist_obj["owner"]["name"],
+        )
         playlist.provider_ids.append(
             MediaItemProviderId(provider=PROV_ID, item_id=str(playlist_obj["id"]))
         )
-        playlist.name = playlist_obj["name"]
-        playlist.owner = playlist_obj["owner"]["name"]
         playlist.is_editable = (
             playlist_obj["owner"]["id"] == self.__user_auth_info["user"]["id"]
             or playlist_obj["is_collaborative"]
@@ -641,17 +642,20 @@ class QobuzProvider(MusicProvider):
             params = {}
         limit = 50
         offset = 0
+        all_items = []
         while True:
             params["limit"] = limit
             params["offset"] = offset
             result = await self.__async_get_data(endpoint, params=params)
             offset += limit
-            if not result or key not in result or "items" not in result[key]:
+            if not result:
                 break
-            for item in result[key]["items"]:
-                yield item
+            if not result.get(key) or not result[key].get("items"):
+                break
+            all_items += result[key]["items"]
             if len(result[key]["items"]) < limit:
                 break
+        return all_items
 
     async def __async_get_data(self, endpoint, params=None, sign_request=False):
         """Get data from api."""

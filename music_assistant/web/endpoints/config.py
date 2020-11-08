@@ -2,7 +2,7 @@
 
 from json.decoder import JSONDecodeError
 
-from aiohttp.web import Request, Response, RouteTableDef, json_response
+from aiohttp.web import Request, RouteTableDef
 from aiohttp_jwt import login_required
 from music_assistant.constants import (
     CONF_KEY_BASE,
@@ -12,7 +12,7 @@ from music_assistant.constants import (
     CONF_KEY_PLAYER_SETTINGS,
     CONF_KEY_PLUGINS,
 )
-from music_assistant.helpers.util import json_serializer
+from music_assistant.helpers.web import async_json_response
 
 routes = RouteTableDef()
 
@@ -32,7 +32,7 @@ async def async_get_config(request: Request):
             CONF_KEY_PLAYER_SETTINGS,
         ]
     }
-    return Response(body=json_serializer(conf), content_type="application/json")
+    return await async_json_response(conf)
 
 
 @routes.get("/api/config/{base}")
@@ -42,7 +42,7 @@ async def async_get_config_base_item(request: Request):
     language = request.rel_url.query.get("lang", "en")
     conf_base = request.match_info.get("base")
     conf = request.app["mass"].config[conf_base].all_items(language)
-    return Response(body=json_serializer(conf), content_type="application/json")
+    return await async_json_response(conf)
 
 
 @routes.get("/api/config/{base}/{item}")
@@ -53,7 +53,7 @@ async def async_get_config_item(request: Request):
     conf_base = request.match_info.get("base")
     conf_item = request.match_info.get("item")
     conf = request.app["mass"].config[conf_base][conf_item].all_items(language)
-    return Response(body=json_serializer(conf), content_type="application/json")
+    return await async_json_response(conf)
 
 
 @routes.put("/api/config/{base}/{key}/{entry_key}")
@@ -73,4 +73,6 @@ async def async_put_config(request: Request):
             .default_value
         )
     request.app["mass"].config[conf_base][conf_key][entry_key] = new_value
-    return json_response(True)
+    return await async_json_response(
+        request.app["mass"].config[conf_base][conf_key][entry_key]
+    )

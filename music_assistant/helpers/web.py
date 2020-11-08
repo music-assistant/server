@@ -1,37 +1,15 @@
 """Various helpers for web requests."""
 
+import asyncio
 import ipaddress
+from datetime import datetime
 from functools import wraps
-from typing import AsyncGenerator
+from typing import Any
 
+import ujson
 from aiohttp import web
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.helpers.util import json_serializer
 from music_assistant.models.media_types import MediaType
-
-
-async def async_stream_json(request: web.Request, generator: AsyncGenerator):
-    """Stream items from async generator as json object."""
-    resp = web.StreamResponse(
-        status=200, reason="OK", headers={"Content-Type": "application/json"}
-    )
-    await resp.prepare(request)
-    # write json open tag
-    await resp.write(b'{ "items": [')
-    count = 0
-    async for item in generator:
-        # write each item into the items object of the json
-        if count:
-            json_response = b"," + json_serializer(item).encode()
-        else:
-            json_response = json_serializer(item).encode()
-        await resp.write(json_response)
-        count += 1
-    # write json close tag
-    msg = '], "count": %s }' % count
-    await resp.write(msg.encode())
-    await resp.write_eof()
-    return resp
 
 
 async def async_media_items_from_body(mass: MusicAssistantType, data: dict):
@@ -43,7 +21,7 @@ async def async_media_items_from_body(mass: MusicAssistantType, data: dict):
         media_item = await mass.music.async_get_item(
             item["item_id"],
             item["provider"],
-            MediaType.from_string(item["media_type"]),
+            MediaType(item["media_type"]),
             lazy=True,
         )
         media_items.append(media_item)
@@ -71,3 +49,44 @@ def require_local_subnet(func):
         return await func(*args, **kwargs)
 
     return wrapped
+
+
+def serialize_values(obj):
+    """Recursively create serializable values for (custom) data types."""
+
+    def get_val(val):
+        if hasattr(val, "to_dict"):
+            return val.to_dict()
+        if isinstance(val, list):
+            return [get_val(x) for x in val]
+        if isinstance(val, datetime):
+            return val.isoformat()
+        if isinstance(val, dict):
+            return {key: get_val(value) for key, value in val.items()}
+        return val
+
+    return get_val(obj)
+
+
+def json_serializer(obj):
+    """Json serializer to recursively create serializable values for custom data types."""
+    return ujson.dumps(serialize_values(obj))
+
+
+def json_response(data: Any, status: int = 200):
+    """Return json in web request."""
+    # return web.json_response(data, dumps=json_serializer)
+    return web.Response(
+        body=json_serializer(data), status=200, content_type="application/json"
+    )
+
+
+async def async_json_response(data: Any, status: int = 200):
+    """Return json in web request."""
+    if isinstance(data, list):
+        # we could potentially receive a large list of objects to serialize
+        # which is blocking IO so run it in executor to be safe
+        return await asyncio.get_running_loop().run_in_executor(
+            None, json_response, data
+        )
+    return json_response(data)

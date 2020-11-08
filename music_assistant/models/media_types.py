@@ -1,46 +1,47 @@
 """Models and helpers for media items."""
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, List
+from enum import Enum, IntEnum
+from typing import Any, List, Mapping
 
+import ujson
 from mashumaro import DataClassDictMixin
-from music_assistant.helpers.util import CustomIntEnum
+from music_assistant.helpers.util import get_sort_name
 
 
-class MediaType(CustomIntEnum):
+class MediaType(Enum):
     """Enum for MediaType."""
 
-    Artist = 1
-    Album = 2
-    Track = 3
-    Playlist = 4
-    Radio = 5
+    Artist = "artist"
+    Album = "album"
+    Track = "track"
+    Playlist = "playlist"
+    Radio = "radio"
 
 
-class ContributorRole(CustomIntEnum):
+class ContributorRole(Enum):
     """Enum for Contributor Role."""
 
-    Artist = 1
-    Writer = 2
-    Producer = 3
+    Artist = "artist"
+    Writer = "writer"
+    Producer = "producer"
 
 
-class AlbumType(CustomIntEnum):
+class AlbumType(Enum):
     """Enum for Album type."""
 
-    Album = 1
-    Single = 2
-    Compilation = 3
+    Album = "album"
+    Single = "single"
+    Compilation = "compilation"
 
 
-class TrackQuality(CustomIntEnum):
+class TrackQuality(IntEnum):
     """Enum for Track Quality."""
 
     LOSSY_MP3 = 0
     LOSSY_OGG = 1
     LOSSY_AAC = 2
-    FLAC_LOSSLESS = 6  # 44.1/48khz 16 bits HI-RES
+    FLAC_LOSSLESS = 6  # 44.1/48khz 16 bits
     FLAC_LOSSLESS_HI_RES_1 = 7  # 44.1/48khz 24 bits HI-RES
     FLAC_LOSSLESS_HI_RES_2 = 8  # 88.2/96khz 24 bits HI-RES
     FLAC_LOSSLESS_HI_RES_3 = 9  # 176/192khz 24 bits HI-RES
@@ -56,14 +57,7 @@ class MediaItemProviderId(DataClassDictMixin):
     item_id: str
     quality: TrackQuality = TrackQuality.UNKNOWN
     details: str = None
-
-
-class ExternalId(Enum):
-    """Enum with external id's."""
-
-    MUSICBRAINZ = "musicbrainz"
-    UPC = "upc"
-    ISRC = "isrc"
+    available: bool = True
 
 
 @dataclass
@@ -74,12 +68,33 @@ class MediaItem(DataClassDictMixin):
     provider: str = ""
     name: str = ""
     metadata: Any = field(default_factory=dict)
-    tags: List[str] = field(default_factory=list)
-    external_ids: Any = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
-    in_library: List[str] = field(default_factory=list)
+    in_library: bool = False
     is_lazy: bool = False
-    available: bool = True
+
+    @classmethod
+    def from_db_row(cls, db_row: Mapping):
+        """Create MediaItem object from database row."""
+        db_row = dict(db_row)
+        for key in ["artists", "artist", "album", "metadata", "provider_ids"]:
+            if key in db_row:
+                db_row[key] = ujson.loads(db_row[key])
+        db_row["provider"] = "database"
+        if "in_library" in db_row:
+            db_row["in_library"] = bool(db_row["in_library"])
+        return cls.from_dict(db_row)
+
+    @property
+    def sort_name(self):
+        """Return sort name."""
+        return get_sort_name(self.name)
+
+    @property
+    def available(self):
+        """Return (calculated) availability."""
+        for item in self.provider_ids:
+            if item.available:
+                return True
 
 
 @dataclass
@@ -87,7 +102,17 @@ class Artist(MediaItem):
     """Model for an artist."""
 
     media_type: MediaType = MediaType.Artist
-    sort_name: str = ""
+    musicbrainz_id: str = ""
+
+
+@dataclass
+class AlbumArtist(DataClassDictMixin):
+    """Representation of a minimized artist object."""
+
+    item_id: str = ""
+    provider: str = ""
+    name: str = ""
+    media_type: MediaType = MediaType.Artist
 
 
 @dataclass
@@ -97,9 +122,29 @@ class Album(MediaItem):
     media_type: MediaType = MediaType.Album
     version: str = ""
     year: int = 0
-    artist: Artist = None
-    labels: List[str] = field(default_factory=list)
+    artist: AlbumArtist = None
     album_type: AlbumType = AlbumType.Album
+    upc: str = ""
+
+
+@dataclass
+class TrackArtist(DataClassDictMixin):
+    """Representation of a minimized artist object."""
+
+    item_id: str = ""
+    provider: str = ""
+    name: str = ""
+    media_type: MediaType = MediaType.Artist
+
+
+@dataclass
+class TrackAlbum(DataClassDictMixin):
+    """Representation of a minimized album object."""
+
+    item_id: str = ""
+    provider: str = ""
+    name: str = ""
+    media_type: MediaType = MediaType.Album
 
 
 @dataclass
@@ -109,10 +154,12 @@ class Track(MediaItem):
     media_type: MediaType = MediaType.Track
     duration: int = 0
     version: str = ""
-    artists: List[Artist] = field(default_factory=list)
-    album: Album = None
+    artists: List[TrackArtist] = field(default_factory=list)
+    album: TrackAlbum = None
     disc_number: int = 1
     track_number: int = 1
+    position: int = 0
+    isrc: str = ""
 
 
 @dataclass

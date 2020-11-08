@@ -25,7 +25,7 @@ async def async_get_provider_icon(request: Request):
 async def async_get_image(request: Request):
     """Get (resized) thumb image."""
     media_type_str = request.match_info.get("media_type")
-    media_type = MediaType.from_string(media_type_str)
+    media_type = MediaType(media_type_str)
     media_id = request.match_info.get("media_id")
     provider = request.rel_url.query.get("provider")
     if media_id is None or provider is None:

@@ -2,8 +2,7 @@
 
 from aiohttp.web import Request, Response, RouteTableDef
 from aiohttp_jwt import login_required
-from music_assistant.helpers.util import json_serializer
-from music_assistant.helpers.web import async_stream_json
+from music_assistant.helpers.web import async_json_response
 
 routes = RouteTableDef()
 
@@ -12,8 +11,8 @@ routes = RouteTableDef()
 @login_required
 async def async_tracks(request: Request):
     """Get all tracks known in the database."""
-    generator = request.app["mass"].database.async_get_tracks()
-    return await async_stream_json(request, generator)
+    result = await request.app["mass"].database.async_get_tracks()
+    return await async_json_response(result)
 
 
 @routes.get("/api/tracks/{item_id}/versions")
@@ -24,8 +23,8 @@ async def async_track_versions(request: Request):
     provider = request.rel_url.query.get("provider")
     if item_id is None or provider is None:
         return Response(text="invalid item_id or provider", status=501)
-    generator = request.app["mass"].music.async_get_track_versions(item_id, provider)
-    return await async_stream_json(request, generator)
+    result = await request.app["mass"].music.async_get_track_versions(item_id, provider)
+    return await async_json_response(result)
 
 
 @routes.get("/api/tracks/{item_id}")
@@ -40,4 +39,4 @@ async def async_track(request: Request):
     result = await request.app["mass"].music.async_get_track(
         item_id, provider, lazy=lazy
     )
-    return Response(body=json_serializer(result), content_type="application/json")
+    return await async_json_response(result)

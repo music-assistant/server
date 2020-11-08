@@ -8,8 +8,6 @@ import socket
 import struct
 import tempfile
 import urllib.request
-from datetime import datetime
-from enum import Enum
 from io import BytesIO
 from typing import Any, Callable, TypeVar
 
@@ -90,7 +88,7 @@ def get_sort_name(name):
     for item in ["The ", "De ", "de ", "Les "]:
         if name.startswith(item):
             sort_name = "".join(name.split(item)[1:])
-    return sort_name
+    return get_compare_string(sort_name)
 
 
 def try_parse_int(possible_int):
@@ -236,28 +234,6 @@ def get_folder_size(folderpath):
     return total_size_gb
 
 
-def serialize_values(obj):
-    """Recursively create serializable values for (custom) data types."""
-
-    def get_val(val):
-        if hasattr(val, "to_dict"):
-            return val.to_dict()
-        if isinstance(val, list):
-            return [get_val(x) for x in val]
-        if isinstance(val, datetime):
-            return val.isoformat()
-        if isinstance(val, dict):
-            return {key: get_val(value) for key, value in val.items()}
-        return val
-
-    return get_val(obj)
-
-
-def json_serializer(obj):
-    """Json serializer to recursively create serializable values for custom data types."""
-    return ujson.dumps(serialize_values(obj))
-
-
 def get_compare_string(input_str):
     """Return clean lowered string for compare actions."""
     unaccented_string = unidecode.unidecode(input_str)
@@ -272,14 +248,27 @@ def compare_strings(str1, str2, strict=False):
     return match
 
 
-def merge_dict(base_dict: dict, new_dict: dict):
+def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
     """Merge dict without overwriting existing values."""
+    final_dict = base_dict.copy()
     for key, value in new_dict.items():
-        if base_dict.get(key) and isinstance(value, dict):
-            base_dict[key] = merge_dict(base_dict[key], value)
-        elif not base_dict.get(key):
-            base_dict[key] = value
-    return base_dict
+        if final_dict.get(key) and isinstance(value, dict):
+            final_dict[key] = merge_dict(final_dict[key], value)
+        if final_dict.get(key) and isinstance(value, list):
+            final_dict[key] = merge_list(final_dict[key], value)
+        elif not final_dict.get(key) or allow_overwite:
+            final_dict[key] = value
+    return final_dict
+
+
+def merge_list(base_list: list, new_list: list):
+    """Merge 2 lists."""
+    final_list = []
+    final_list += base_list
+    for item in new_list:
+        if item not in final_list:
+            final_list.append(item)
+    return final_list
 
 
 def try_load_json_file(jsonfile):
@@ -308,35 +297,6 @@ async def async_yield_chunks(_obj, chunk_size):
     chunk_size = int(chunk_size)
     for i in range(0, len(_obj), chunk_size):
         yield _obj[i : i + chunk_size]
-
-
-class CustomIntEnum(int, Enum):
-    """Base for IntEnum with some helpers."""
-
-    # when serializing we prefer the string (name) representation
-    # internally (database) we use the int value
-
-    def __int__(self):
-        """Return integer value."""
-        return super().value
-
-    def __str__(self):
-        """Return string value."""
-        # pylint: disable=no-member
-        return self._name_.lower()
-
-    @property
-    def value(self):
-        """Return the (json friendly) string name."""
-        return self.__str__()
-
-    @classmethod
-    def from_string(cls, string):
-        """Create IntEnum from it's string equivalent."""
-        for key, value in cls.__dict__.items():
-            if key.lower() == string or value == try_parse_int(string):
-                return value
-        return KeyError
 
 
 def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=3600):
