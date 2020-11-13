@@ -14,7 +14,7 @@ async def async_library_artists(request: Request):
     orderby = request.query.get("orderby", "name")
 
     return await async_json_response(
-        await request.app["mass"].music.async_get_library_artists(orderby=orderby)
+        await request.app["mass"].library.async_get_library_artists(orderby=orderby)
     )
 
 
@@ -25,7 +25,7 @@ async def async_library_albums(request: Request):
     orderby = request.query.get("orderby", "name")
 
     return await async_json_response(
-        await request.app["mass"].music.async_get_library_albums(orderby=orderby)
+        await request.app["mass"].library.async_get_library_albums(orderby=orderby)
     )
 
 
@@ -36,7 +36,7 @@ async def async_library_tracks(request: Request):
     orderby = request.query.get("orderby", "name")
 
     return await async_json_response(
-        await request.app["mass"].music.async_get_library_tracks(orderby=orderby)
+        await request.app["mass"].library.async_get_library_tracks(orderby=orderby)
     )
 
 
@@ -47,7 +47,7 @@ async def async_library_radios(request: Request):
     orderby = request.query.get("orderby", "name")
 
     return await async_json_response(
-        await request.app["mass"].music.async_get_library_radios(orderby=orderby)
+        await request.app["mass"].library.async_get_library_radios(orderby=orderby)
     )
 
 
@@ -58,7 +58,7 @@ async def async_library_playlists(request: Request):
     orderby = request.query.get("orderby", "name")
 
     return await async_json_response(
-        await request.app["mass"].music.async_get_library_playlists(orderby=orderby)
+        await request.app["mass"].library.async_get_library_playlists(orderby=orderby)
     )
 
 
@@ -68,7 +68,7 @@ async def async_library_add(request: Request):
     """Add item(s) to the library."""
     body = await request.json()
     media_items = await async_media_items_from_body(request.app["mass"], body)
-    result = await request.app["mass"].music.async_library_add(media_items)
+    result = await request.app["mass"].library.async_library_add(media_items)
     return await async_json_response(result)
 
 
@@ -78,5 +78,5 @@ async def async_library_remove(request: Request):
     """Remove item(s) from the library."""
     body = await request.json()
     media_items = await async_media_items_from_body(request.app["mass"], body)
-    result = await request.app["mass"].music.async_library_remove(media_items)
+    result = await request.app["mass"].library.async_library_remove(media_items)
     return await async_json_response(result)

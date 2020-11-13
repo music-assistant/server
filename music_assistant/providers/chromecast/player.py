@@ -6,8 +6,9 @@ from typing import List, Optional
 
 import pychromecast
 from asyncio_throttle import Throttler
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.helpers.util import async_yield_chunks, compare_strings
+from music_assistant.helpers.util import async_yield_chunks
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import (
     DeviceInfo,
@@ -390,9 +391,7 @@ class ChromecastPlayer(Player):
         player_queue = self.mass.players.get_player_queue(self.player_id)
         if player_queue.use_queue_stream:
             # create CC queue so that skip and previous will work
-            queue_item = QueueItem()
-            queue_item.name = "Music Assistant"
-            queue_item.uri = uri
+            queue_item = QueueItem(name="Music Assistant", uri=uri)
             return await self.async_cmd_queue_load([queue_item, queue_item])
         await self.__async_try_chromecast_command(
             self._chromecast.play_media, uri, "audio/flac"

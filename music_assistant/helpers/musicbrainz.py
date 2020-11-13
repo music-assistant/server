@@ -8,7 +8,7 @@ from typing import Optional
 import aiohttp
 from asyncio_throttle import Throttler
 from music_assistant.helpers.cache import async_use_cache
-from music_assistant.helpers.util import compare_strings, get_compare_string
+from music_assistant.helpers.compare import compare_strings, get_compare_string
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 

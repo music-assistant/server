@@ -113,6 +113,54 @@ async def async_websocket_handler(request: Request):
     return ws_response
 
 
+@ws_command("players")
+async def async_players(mass: MusicAssistantType, msg_details: dict):
+    """Return players."""
+    if msg_details and msg_details.get("player_id"):
+        return mass.players.get_player_state(msg_details["player_id"])
+    return mass.players.player_states
+
+
+@ws_command("tracks")
+async def tracks(mass: MusicAssistantType, msg_details: dict):
+    """Return tracks."""
+    if msg_details and msg_details.get("item_id"):
+        return await mass.music.async_get_track(msg_details["item_id"])
+    return await mass.music.async_get_library_tracks()
+
+
+@ws_command("albums")
+async def albums(mass: MusicAssistantType, msg_details: dict):
+    """Return albums."""
+    if msg_details and msg_details.get("item_id"):
+        return await mass.music.async_get_album(msg_details["item_id"])
+    return await mass.music.async_get_library_albums()
+
+
+@ws_command("artists")
+async def artists(mass: MusicAssistantType, msg_details: dict):
+    """Return artists."""
+    if msg_details and msg_details.get("item_id"):
+        return await mass.music.async_get_artist(msg_details["item_id"])
+    return await mass.music.async_get_library_artists()
+
+
+@ws_command("playlists")
+async def playlists(mass: MusicAssistantType, msg_details: dict):
+    """Return playlists."""
+    if msg_details and msg_details.get("item_id"):
+        return await mass.music.async_get_playlist(msg_details["item_id"])
+    return await mass.music.async_get_library_playlists()
+
+
+@ws_command("radios")
+async def radios(mass: MusicAssistantType, msg_details: dict):
+    """Return radios."""
+    if msg_details and msg_details.get("item_id"):
+        return await mass.music.async_get_radio(msg_details["item_id"])
+    return await mass.music.async_get_library_radios()
+
+
 @ws_command("player_command")
 async def async_player_command(mass: MusicAssistantType, msg_details: dict):
     """Handle player command."""

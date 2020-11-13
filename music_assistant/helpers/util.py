@@ -3,7 +3,6 @@ import asyncio
 import logging
 import os
 import platform
-import re
 import socket
 import struct
 import tempfile
@@ -13,7 +12,6 @@ from typing import Any, Callable, TypeVar
 
 import memory_tempfile
 import ujson
-import unidecode
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -80,15 +78,6 @@ def run_async_background_task(executor, corofn, *args):
         return res
 
     return asyncio.get_event_loop().run_in_executor(executor, run_task, corofn, *args)
-
-
-def get_sort_name(name):
-    """Create a sort name for an artist/title."""
-    sort_name = name
-    for item in ["The ", "De ", "de ", "Les "]:
-        if name.startswith(item):
-            sort_name = "".join(name.split(item)[1:])
-    return get_compare_string(sort_name)
 
 
 def try_parse_int(possible_int):
@@ -234,20 +223,6 @@ def get_folder_size(folderpath):
     return total_size_gb
 
 
-def get_compare_string(input_str):
-    """Return clean lowered string for compare actions."""
-    unaccented_string = unidecode.unidecode(input_str)
-    return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string).lower()
-
-
-def compare_strings(str1, str2, strict=False):
-    """Compare strings and return True if we have an (almost) perfect match."""
-    match = str1.lower() == str2.lower()
-    if not match and not strict:
-        match = get_compare_string(str1) == get_compare_string(str2)
-    return match
-
-
 def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
     """Merge dict without overwriting existing values."""
     final_dict = base_dict.copy()
@@ -266,9 +241,18 @@ def merge_list(base_list: list, new_list: list):
     final_list = []
     final_list += base_list
     for item in new_list:
+        if hasattr(item, "item_id"):
+            for prov_item in final_list:
+                if prov_item.item_id == item.item_id:
+                    prov_item = item
         if item not in final_list:
             final_list.append(item)
     return final_list
+
+
+def unique_item_ids(objects):
+    """Filter duplicate item id's from list of items."""
+    return list({object_.item_id: object_ for object_ in objects}.values())
 
 
 def try_load_json_file(jsonfile):

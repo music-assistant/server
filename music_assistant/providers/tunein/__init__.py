@@ -94,7 +94,7 @@ class TuneInProvider(MusicProvider):
         # TODO: search for radio stations
         return result
 
-    async def async_get_radios(self) -> List[Radio]:
+    async def async_get_library_radios(self) -> List[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         params = {"c": "presets"}
         result = await self.__async_get_data("Browse.ashx", params)

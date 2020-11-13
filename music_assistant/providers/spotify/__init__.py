@@ -133,25 +133,29 @@ class SpotifyProvider(MusicProvider):
         searchresult = await self.__async_get_data("search", params=params)
         if searchresult:
             if "artists" in searchresult:
-                for item in searchresult["artists"]["items"]:
-                    artist = await self.__async_parse_artist(item)
-                    if artist:
-                        result.artists.append(artist)
+                result.artists = [
+                    await self.__async_parse_artist(item)
+                    for item in searchresult["artists"]["items"]
+                    if (item and item["id"])
+                ]
             if "albums" in searchresult:
-                for item in searchresult["albums"]["items"]:
-                    album = await self.__async_parse_album(item)
-                    if album:
-                        result.albums.append(album)
+                result.albums = [
+                    await self.__async_parse_album(item)
+                    for item in searchresult["albums"]["items"]
+                    if (item and item["id"])
+                ]
             if "tracks" in searchresult:
-                for item in searchresult["tracks"]["items"]:
-                    track = await self.__async_parse_track(item)
-                    if track:
-                        result.tracks.append(track)
+                result.tracks = [
+                    await self.__async_parse_track(item)
+                    for item in searchresult["tracks"]["items"]
+                    if (item and item["id"])
+                ]
             if "playlists" in searchresult:
-                for item in searchresult["playlists"]["items"]:
-                    playlist = await self.__async_parse_playlist(item)
-                    if playlist:
-                        result.playlists.append(playlist)
+                result.playlists = [
+                    await self.__async_parse_playlist(item)
+                    for item in searchresult["playlists"]["items"]
+                    if (item and item["id"])
+                ]
         return result
 
     async def async_get_library_artists(self) -> List[Artist]:
@@ -196,22 +200,22 @@ class SpotifyProvider(MusicProvider):
     async def async_get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self.__async_get_data("artists/%s" % prov_artist_id)
-        return await self.__async_parse_artist(artist_obj)
+        return await self.__async_parse_artist(artist_obj) if artist_obj else None
 
     async def async_get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         album_obj = await self.__async_get_data("albums/%s" % prov_album_id)
-        return await self.__async_parse_album(album_obj)
+        return await self.__async_parse_album(album_obj) if album_obj else None
 
     async def async_get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         track_obj = await self.__async_get_data("tracks/%s" % prov_track_id)
-        return await self.__async_parse_track(track_obj)
+        return await self.__async_parse_track(track_obj) if track_obj else None
 
     async def async_get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         playlist_obj = await self.__async_get_data(f"playlists/{prov_playlist_id}")
-        return await self.__async_parse_playlist(playlist_obj)
+        return await self.__async_parse_playlist(playlist_obj) if playlist_obj else None
 
     async def async_get_album_tracks(self, prov_album_id) -> List[Track]:
         """Get all album tracks for given album id."""
@@ -407,7 +411,7 @@ class SpotifyProvider(MusicProvider):
             track.artists.append(artist)
         for track_artist in track_obj.get("artists", []):
             artist = await self.__async_parse_artist(track_artist)
-            if artist:
+            if artist and artist.item_id not in [x.item_id for x in track.artists]:
                 track.artists.append(artist)
         track.name, track.version = parse_title_and_version(track_obj["name"])
         track.metadata["explicit"] = str(track_obj["explicit"]).lower()
@@ -468,7 +472,7 @@ class SpotifyProvider(MusicProvider):
             LOGGER.info("Succesfully logged in to Spotify as %s", self.sp_user["id"])
             self.__auth_token = tokeninfo
         else:
-            raise Exception("Can't get Spotify token for user %s" % self._username)
+            LOGGER.error("Login failed for user %s", self._username)
         return tokeninfo
 
     async def __async_get_token(self):

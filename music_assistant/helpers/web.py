@@ -8,24 +8,43 @@ from typing import Any
 
 import ujson
 from aiohttp import web
+from mashumaro.exceptions import MissingField
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.models.media_types import MediaType
+from music_assistant.models.media_types import (
+    Album,
+    Artist,
+    FullAlbum,
+    FullTrack,
+    Playlist,
+    Radio,
+    Track,
+)
 
 
 async def async_media_items_from_body(mass: MusicAssistantType, data: dict):
     """Convert posted body data into media items."""
     if not isinstance(data, list):
         data = [data]
-    media_items = []
-    for item in data:
-        media_item = await mass.music.async_get_item(
-            item["item_id"],
-            item["provider"],
-            MediaType(item["media_type"]),
-            lazy=True,
-        )
-        media_items.append(media_item)
-    return media_items
+
+    def media_item_from_dict(media_item):
+        if media_item["media_type"] == "artist":
+            return Artist.from_dict(media_item)
+        if media_item["media_type"] == "album":
+            try:
+                return FullAlbum.from_dict(media_item)
+            except MissingField:
+                return Album.from_dict(media_item)
+        if media_item["media_type"] == "track":
+            try:
+                return FullTrack.from_dict(media_item)
+            except MissingField:
+                return Track.from_dict(media_item)
+        if media_item["media_type"] == "playlist":
+            return Playlist.from_dict(media_item)
+        if media_item["media_type"] == "radio":
+            return Radio.from_dict(media_item)
+
+    return [media_item_from_dict(x) for x in data]
 
 
 def require_local_subnet(func):
@@ -57,7 +76,7 @@ def serialize_values(obj):
     def get_val(val):
         if hasattr(val, "to_dict"):
             return val.to_dict()
-        if isinstance(val, list):
+        if isinstance(val, (list, set, filter)):
             return [get_val(x) for x in val]
         if isinstance(val, datetime):
             return val.isoformat()

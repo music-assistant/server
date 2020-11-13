@@ -15,7 +15,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import callback, run_periodic, try_parse_int
-from music_assistant.models.media_types import MediaItem, MediaType, Track
+from music_assistant.models.media_types import MediaItem, MediaType
 from music_assistant.models.player import (
     PlaybackState,
     Player,
@@ -277,7 +277,7 @@ class PlayerManager:
             for track in tracks:
                 if not track.available:
                     continue
-                queue_item = QueueItem(track)
+                queue_item = QueueItem.from_track(track)
                 # generate uri for this queue item
                 queue_item.uri = "%s/stream/queue/%s/%s" % (
                     self.mass.web.url,
@@ -314,13 +314,7 @@ class PlayerManager:
                 QueueOption.Next -> Play item(s) after current playing item
                 QueueOption.Add -> Append new items at end of the queue
         """
-        queue_item = QueueItem(
-            Track(
-                item_id=uri,
-                provider="uri",
-                name=uri,
-            )
-        )
+        queue_item = QueueItem(item_id=uri, provider="uri", name=uri)
         # generate uri for this queue item
         queue_item.uri = "%s/stream/%s/%s" % (
             self.mass.web.url,

@@ -5,8 +5,8 @@ from enum import Enum, IntEnum
 from typing import Any, List, Mapping
 
 import ujson
+import unidecode
 from mashumaro import DataClassDictMixin
-from music_assistant.helpers.util import get_sort_name
 
 
 class MediaType(Enum):
@@ -70,24 +70,29 @@ class MediaItem(DataClassDictMixin):
     metadata: Any = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: bool = False
-    is_lazy: bool = False
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):
         """Create MediaItem object from database row."""
         db_row = dict(db_row)
-        for key in ["artists", "artist", "album", "metadata", "provider_ids"]:
+        for key in ["artists", "artist", "album", "metadata", "provider_ids", "albums"]:
             if key in db_row:
                 db_row[key] = ujson.loads(db_row[key])
         db_row["provider"] = "database"
         if "in_library" in db_row:
             db_row["in_library"] = bool(db_row["in_library"])
+        if db_row.get("albums"):
+            db_row["album"] = db_row["albums"][0]
         return cls.from_dict(db_row)
 
     @property
     def sort_name(self):
         """Return sort name."""
-        return get_sort_name(self.name)
+        sort_name = self.name
+        for item in ["The ", "De ", "de ", "Les "]:
+            if self.name.startswith(item):
+                sort_name = "".join(self.name.split(item)[1:])
+        return unidecode.unidecode(sort_name).lower()
 
     @property
     def available(self):
@@ -106,13 +111,18 @@ class Artist(MediaItem):
 
 
 @dataclass
-class AlbumArtist(DataClassDictMixin):
-    """Representation of a minimized artist object."""
+class ItemMapping(DataClassDictMixin):
+    """Representation of a minimized item object."""
 
     item_id: str = ""
     provider: str = ""
     name: str = ""
     media_type: MediaType = MediaType.Artist
+
+    @classmethod
+    def from_item(cls, item: Mapping):
+        """Create ItemMapping object from regular item."""
+        return cls.from_dict(item.to_dict())
 
 
 @dataclass
@@ -122,29 +132,16 @@ class Album(MediaItem):
     media_type: MediaType = MediaType.Album
     version: str = ""
     year: int = 0
-    artist: AlbumArtist = None
+    artist: ItemMapping = None
     album_type: AlbumType = AlbumType.Album
     upc: str = ""
 
 
 @dataclass
-class TrackArtist(DataClassDictMixin):
-    """Representation of a minimized artist object."""
+class FullAlbum(Album):
+    """Model for an album with full details."""
 
-    item_id: str = ""
-    provider: str = ""
-    name: str = ""
-    media_type: MediaType = MediaType.Artist
-
-
-@dataclass
-class TrackAlbum(DataClassDictMixin):
-    """Representation of a minimized album object."""
-
-    item_id: str = ""
-    provider: str = ""
-    name: str = ""
-    media_type: MediaType = MediaType.Album
+    artist: Artist = None
 
 
 @dataclass
@@ -154,12 +151,24 @@ class Track(MediaItem):
     media_type: MediaType = MediaType.Track
     duration: int = 0
     version: str = ""
-    artists: List[TrackArtist] = field(default_factory=list)
-    album: TrackAlbum = None
-    disc_number: int = 1
-    track_number: int = 1
-    position: int = 0
     isrc: str = ""
+    artists: List[ItemMapping] = field(default_factory=list)
+    albums: List[ItemMapping] = field(default_factory=list)
+    # album track only
+    album: ItemMapping = None
+    disc_number: int = 0
+    track_number: int = 0
+    # playlist track only
+    position: int = 0
+
+
+@dataclass
+class FullTrack(Track):
+    """Model for an album with full details."""
+
+    artists: List[Artist] = field(default_factory=list)
+    albums: List[Album] = field(default_factory=list)
+    album: Album = None
 
 
 @dataclass

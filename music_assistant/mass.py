@@ -6,7 +6,7 @@ import importlib
 import logging
 import os
 import threading
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Union
 
 import aiohttp
 from music_assistant.constants import (
@@ -16,9 +16,11 @@ from music_assistant.constants import (
     EVENT_SHUTDOWN,
 )
 from music_assistant.helpers.cache import Cache
+from music_assistant.helpers.migration import check_migrations
 from music_assistant.helpers.util import callback, get_ip_pton, is_callback
 from music_assistant.managers.config import ConfigManager
 from music_assistant.managers.database import DatabaseManager
+from music_assistant.managers.library import LibraryManager
 from music_assistant.managers.metadata import MetaDataManager
 from music_assistant.managers.music import MusicManager
 from music_assistant.managers.players import PlayerManager
@@ -54,6 +56,7 @@ class MusicAssistant:
         self._http_session = None
         self._event_listeners = []
         self._providers = {}
+        self._background_tasks = None
 
         # init core managers/controllers
         self._config = ConfigManager(self, datapath)
@@ -62,6 +65,7 @@ class MusicAssistant:
         self._metadata = MetaDataManager(self)
         self._web = WebServer(self, port)
         self._music = MusicManager(self)
+        self._library = LibraryManager(self)
         self._players = PlayerManager(self)
         self._streams = StreamManager(self)
         # shared zeroconf instance
@@ -78,13 +82,16 @@ class MusicAssistant:
             loop=self.loop,
             connector=aiohttp.TCPConnector(enable_cleanup_closed=True, ssl=False),
         )
-        await self._database.async_setup()
+        # run migrations if needed
+        await check_migrations(self)
         await self._cache.async_setup()
         await self._music.async_setup()
         await self._players.async_setup()
         await self.__async_preload_providers()
         await self.__async_setup_discovery()
         await self._web.async_setup()
+        await self._library.async_setup()
+        self.loop.create_task(self.__process_background_tasks())
 
     async def async_stop(self):
         """Stop running the music assistant server."""
@@ -118,6 +125,11 @@ class MusicAssistant:
     def music(self) -> MusicManager:
         """Return the Music controller/manager."""
         return self._music
+
+    @property
+    def library(self) -> LibraryManager:
+        """Return the Library controller/manager."""
+        return self._library
 
     @property
     def config(self) -> ConfigManager:
@@ -250,6 +262,16 @@ class MusicAssistant:
         return remove_listener
 
     @callback
+    def add_background_task(self, task: Coroutine):
+        """Add a coroutine/task to the end of the job queue.
+
+        target: target to call.
+        args: parameters for method to call.
+        """
+        if self._background_tasks:
+            self._background_tasks.put_nowait(task)
+
+    @callback
     def add_job(
         self, target: Callable[..., Any], *args: Any, **kwargs: Any
     ) -> Optional[asyncio.Task]:
@@ -291,6 +313,14 @@ class MusicAssistant:
             else:
                 task = self.loop.run_in_executor(None, target, *args, *kwargs)  # type: ignore
         return task
+
+    async def __process_background_tasks(self):
+        """Background tasks that takes care of slowly handling jobs in the queue."""
+        self._background_tasks = asyncio.Queue()
+        while not self.exit:
+            task = await self._background_tasks.get()
+            await task
+            await asyncio.sleep(1)
 
     async def __async_setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""

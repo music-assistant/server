@@ -42,7 +42,8 @@ class WebServer:
         self.mass = mass
         self._port = port
         # load/create/update config
-        self._local_ip = get_ip()
+        # self._hostname = get_hostname() or get_ip()
+        self._hostname = get_ip()
         self._device_id = f"{uuid.getnode()}_{get_hostname()}"
         self.config = mass.config.base["web"]
         self._runner = None
@@ -107,7 +108,7 @@ class WebServer:
     @property
     def host(self):
         """Return the local IP address/host for this Music Assistant instance."""
-        return self._local_ip
+        return self._hostname
 
     @property
     def port(self):

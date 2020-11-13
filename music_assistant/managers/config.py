@@ -418,7 +418,7 @@ class PlayerSettings(ConfigBaseItem):
 
 
 class ProviderSettings(ConfigBaseItem):
-    """Configuration class that holds the music provider settings."""
+    """Configuration class that holds the provider settings."""
 
     def all_keys(self):
         """Return all possible keys of this Config object."""

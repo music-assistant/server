@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
@@ -21,7 +21,7 @@ from music_assistant.helpers.typing import (
     PlayerType,
 )
 from music_assistant.helpers.util import callback
-from music_assistant.models.media_types import Track
+from music_assistant.models.media_types import Radio, Track
 from music_assistant.models.player import PlaybackState, PlayerFeature
 from music_assistant.models.streamdetails import StreamDetails
 
@@ -49,14 +49,14 @@ class QueueItem(Track):
     uri: str = ""
     queue_item_id: str = ""
 
-    def __init__(self, media_item=None) -> None:
-        """Initialize class."""
-        super().__init__()
+    def __post_init__(self):
+        """Generate unique id for the QueueItem."""
         self.queue_item_id = str(uuid.uuid4())
-        # if existing media_item given, load those values
-        if media_item:
-            for key, value in media_item.__dict__.items():
-                setattr(self, key, value)
+
+    @classmethod
+    def from_track(cls, track: Union[Track, Radio]):
+        """Construct QueueItem from track/raio item."""
+        return cls.from_dict(track.to_dict())
 
 
 class PlayerQueue:
@@ -99,7 +99,7 @@ class PlayerQueue:
         return self._player_id
 
     def get_stream_url(self) -> str:
-        """Return the full stream url for this QueueStream."""
+        """Return the full stream url for the player's Queue Stream."""
         uri = f"{self.mass.web.url}/stream/queue/{self.player_id}"
         # we set the checksum just to invalidate cache stuf
         uri += f"?checksum={time.time()}"

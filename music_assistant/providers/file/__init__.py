@@ -395,9 +395,7 @@ class FileProvider(MusicProvider):
             prov_id = uri.split("://")[0]
             prov_item_id = uri.split("/")[-1].split(".")[0].split(":")[-1]
             try:
-                return await self.mass.music.async_get_track(
-                    prov_item_id, prov_id, lazy=False
-                )
+                return await self.mass.music.async_get_track(prov_item_id, prov_id)
             except Exception as exc:
                 LOGGER.warning("Could not parse uri %s to track: %s", uri, str(exc))
                 return None
