@@ -3,20 +3,21 @@
 import os
 import shutil
 
+from pkg_resources import packaging
+
 import aiosqlite
 from music_assistant.constants import __version__ as app_version
 from music_assistant.helpers.typing import MusicAssistantType
-from packaging import version
 
 
 async def check_migrations(mass: MusicAssistantType):
     """Check for any migrations that need to be done."""
 
     is_fresh_setup = len(mass.config.stored_config.keys()) == 0
-    prev_version = version.parse(mass.config.stored_config.get("version", ""))
+    prev_version = packaging.version.parse(mass.config.stored_config.get("version", ""))
 
     # perform version specific migrations
-    if not is_fresh_setup and prev_version < version.parse("0.0.64"):
+    if not is_fresh_setup and prev_version < packaging.version.parse("0.0.64"):
         await run_migration_0064(mass)
 
     # store version in config
