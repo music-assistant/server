@@ -1,7 +1,7 @@
 """PlayerManager: Orchestrates all players from player providers."""
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from music_assistant.constants import (
     CONF_POWER_CONTROL,
@@ -15,6 +15,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import callback, run_periodic, try_parse_int
+from music_assistant.helpers.web import api_route
 from music_assistant.models.media_types import MediaItem, MediaType
 from music_assistant.models.player import (
     PlaybackState,
@@ -54,6 +55,8 @@ class PlayerManager:
     async def async_setup(self):
         """Async initialize of module."""
         self.mass.add_job(self.poll_task())
+        self.mass.web.register_api_route("players", self._player_states.values)
+        self.mass.web.register_api_route("players/queues", self._player_queues.values)
 
     async def async_close(self):
         """Handle stop/shutdown."""
@@ -97,6 +100,7 @@ class PlayerManager:
         return self.mass.get_providers(ProviderType.PLAYER_PROVIDER)
 
     @callback
+    @api_route("players/:player_id")
     def get_player_state(self, player_id: str) -> PlayerState:
         """Return PlayerState by player_id or None if player does not exist."""
         return self._player_states.get(player_id)
@@ -116,6 +120,7 @@ class PlayerManager:
         return self.mass.get_provider(player.provider_id) if player else None
 
     @callback
+    @api_route("players/:player_id/queue")
     def get_player_queue(self, player_id: str) -> PlayerQueue:
         """Return player's queue by player_id or None if player does not exist."""
         player_state = self.get_player_state(player_id)
@@ -125,6 +130,13 @@ class PlayerManager:
         return self._player_queues.get(player_state.active_queue)
 
     @callback
+    @api_route("players/:queue_id/queue/items")
+    def get_player_queue_items(self, queue_id: str) -> List[QueueItem]:
+        """Return player's queueitems by player_id or None if player does not exist."""
+        return self.get_player_queue(queue_id).items
+
+    @callback
+    @api_route("players/controls/:control_id")
     def get_player_control(self, control_id: str) -> PlayerControl:
         """Return PlayerControl by id."""
         if control_id not in self._controls:
@@ -133,6 +145,7 @@ class PlayerManager:
         return self._controls[control_id]
 
     @callback
+    @api_route("players/controls")
     def get_player_controls(
         self, filter_type: Optional[PlayerControlType] = None
     ) -> List[PlayerControl]:
@@ -239,17 +252,18 @@ class PlayerManager:
 
     # SERVICE CALLS / PLAYER COMMANDS
 
+    @api_route("players/:player_id/play_media")
     async def async_play_media(
         self,
         player_id: str,
-        media_items: List[MediaItem],
+        items: Union[MediaItem, List[MediaItem]],
         queue_opt: QueueOption = QueueOption.Play,
     ):
         """
         Play media item(s) on the given player.
 
             :param player_id: player_id of the player to handle the command.
-            :param media_item: media item(s) that should be played (single item or list of items)
+            :param items: media item(s) that should be played (single item or list of items)
             :param queue_opt:
                 QueueOption.Play -> Insert new items in queue and start playing at inserted position
                 QueueOption.Replace -> Replace queue contents with these items
@@ -257,8 +271,10 @@ class PlayerManager:
                 QueueOption.Add -> Append new items at end of the queue
         """
         # a single item or list of items may be provided
+        if not isinstance(items, list):
+            items = [items]
         queue_items = []
-        for media_item in media_items:
+        for media_item in items:
             # collect tracks to play
             if media_item.media_type == MediaType.Artist:
                 tracks = await self.mass.music.async_get_artist_toptracks(
@@ -273,7 +289,12 @@ class PlayerManager:
                     media_item.item_id, provider_id=media_item.provider
                 )
             else:
-                tracks = [media_item]  # single track
+                # single track
+                tracks = [
+                    await self.mass.music.async_get_track(
+                        media_item.item_id, provider_id=media_item.provider
+                    )
+                ]
             for track in tracks:
                 if not track.available:
                     continue
@@ -300,6 +321,7 @@ class PlayerManager:
         if queue_opt == QueueOption.Add:
             return await player_queue.async_append(queue_items)
 
+    @api_route("players/:player_id/play_uri")
     async def async_cmd_play_uri(self, player_id: str, uri: str):
         """
         Play the specified uri/url on the given player.
@@ -327,6 +349,7 @@ class PlayerManager:
         player_queue = self.get_player_queue(player_id)
         return await player_queue.async_insert([queue_item], 0)
 
+    @api_route("players/:player_id/cmd/stop")
     async def async_cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
@@ -336,10 +359,11 @@ class PlayerManager:
         player_state = self.get_player_state(player_id)
         if not player_state:
             return
-        queue_player_id = player_state.active_queue
-        queue_player = self.get_player(queue_player_id)
+        queue_id = player_state.active_queue
+        queue_player = self.get_player(queue_id)
         return await queue_player.async_cmd_stop()
 
+    @api_route("players/:player_id/cmd/play")
     async def async_cmd_play(self, player_id: str) -> None:
         """
         Send PLAY command to given player.
@@ -349,15 +373,16 @@ class PlayerManager:
         player_state = self.get_player_state(player_id)
         if not player_state:
             return
-        queue_player_id = player_state.active_queue
-        queue_player = self.get_player(queue_player_id)
+        queue_id = player_state.active_queue
+        queue_player = self.get_player(queue_id)
         # unpause if paused else resume queue
         if queue_player.state == PlaybackState.Paused:
             return await queue_player.async_cmd_play()
         # power on at play request
         await self.async_cmd_power_on(player_id)
-        return await self._player_queues[queue_player_id].async_resume()
+        return await self._player_queues[queue_id].async_resume()
 
+    @api_route("players/:player_id/cmd/pause")
     async def async_cmd_pause(self, player_id: str):
         """
         Send PAUSE command to given player.
@@ -367,10 +392,11 @@ class PlayerManager:
         player_state = self.get_player_state(player_id)
         if not player_state:
             return
-        queue_player_id = player_state.active_queue
-        queue_player = self.get_player(queue_player_id)
+        queue_id = player_state.active_queue
+        queue_player = self.get_player(queue_id)
         return await queue_player.async_cmd_pause()
 
+    @api_route("players/:player_id/cmd/play_pause")
     async def async_cmd_play_pause(self, player_id: str):
         """
         Toggle play/pause on given player.
@@ -384,6 +410,7 @@ class PlayerManager:
             return await self.async_cmd_pause(player_id)
         return await self.async_cmd_play(player_id)
 
+    @api_route("players/:player_id/cmd/next")
     async def async_cmd_next(self, player_id: str):
         """
         Send NEXT TRACK command to given player.
@@ -393,9 +420,10 @@ class PlayerManager:
         player_state = self.get_player_state(player_id)
         if not player_state:
             return
-        queue_player_id = player_state.active_queue
-        return await self.get_player_queue(queue_player_id).async_next()
+        queue_id = player_state.active_queue
+        return await self.get_player_queue(queue_id).async_next()
 
+    @api_route("players/:player_id/cmd/previous")
     async def async_cmd_previous(self, player_id: str):
         """
         Send PREVIOUS TRACK command to given player.
@@ -405,9 +433,10 @@ class PlayerManager:
         player_state = self.get_player_state(player_id)
         if not player_state:
             return
-        queue_player_id = player_state.active_queue
-        return await self.get_player_queue(queue_player_id).async_previous()
+        queue_id = player_state.active_queue
+        return await self.get_player_queue(queue_id).async_previous()
 
+    @api_route("players/:player_id/cmd/power_on")
     async def async_cmd_power_on(self, player_id: str) -> None:
         """
         Send POWER ON command to given player.
@@ -426,6 +455,7 @@ class PlayerManager:
             if control:
                 await control.async_set_state(True)
 
+    @api_route("players/:player_id/cmd/power_off")
     async def async_cmd_power_off(self, player_id: str) -> None:
         """
         Send POWER OFF command to given player.
@@ -472,6 +502,7 @@ class PlayerManager:
                 if not has_powered_players:
                     self.mass.add_job(self.async_cmd_power_off(parent_player_id))
 
+    @api_route("players/:player_id/cmd/power_toggle")
     async def async_cmd_power_toggle(self, player_id: str):
         """
         Send POWER TOGGLE command to given player.
@@ -485,6 +516,7 @@ class PlayerManager:
             return await self.async_cmd_power_off(player_id)
         return await self.async_cmd_power_on(player_id)
 
+    @api_route("players/:player_id/cmd/volume_set/:volume_level")
     async def async_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
         Send volume level command to given player.
@@ -529,6 +561,7 @@ class PlayerManager:
         else:
             await player_state.player.async_cmd_volume_set(volume_level)
 
+    @api_route("players/:player_id/cmd/volume_up")
     async def async_cmd_volume_up(self, player_id: str):
         """
         Send volume UP command to given player.
@@ -543,6 +576,7 @@ class PlayerManager:
             new_level = 100
         return await self.async_cmd_volume_set(player_id, new_level)
 
+    @api_route("players/:player_id/cmd/volume_down")
     async def async_cmd_volume_down(self, player_id: str):
         """
         Send volume DOWN command to given player.
@@ -557,7 +591,8 @@ class PlayerManager:
             new_level = 0
         return await self.async_cmd_volume_set(player_id, new_level)
 
-    async def async_cmd_volume_mute(self, player_id: str, is_muted=False):
+    @api_route("players/:player_id/cmd/volume_mute/:is_muted")
+    async def async_cmd_volume_mute(self, player_id: str, is_muted: bool = False):
         """
         Send MUTE command to given player.
 
@@ -569,6 +604,36 @@ class PlayerManager:
             return
         # TODO: handle mute on volumecontrol?
         return await player_state.player.async_cmd_volume_mute(is_muted)
+
+    @api_route("players/:queue_id/queue/cmd/shuffle_enabled/:enable_shuffle")
+    async def async_player_queue_cmd_set_shuffle(
+        self, queue_id: str, enable_shuffle: bool = False
+    ):
+        """
+        Send enable/disable shuffle command to given playerqueue.
+
+            :param queue_id: player_id of the playerqueue to handle the command.
+            :param enable_shuffle: bool with the new ahuffle state.
+        """
+        player_queue = self.get_player_queue(queue_id)
+        if not player_queue:
+            return
+        return await player_queue.async_set_shuffle_enabled(enable_shuffle)
+
+    @api_route("players/:queue_id/queue/cmd/repeat_enabled/:enable_repeat")
+    async def async_player_queue_cmd_set_repeat(
+        self, queue_id: str, enable_repeat: bool = False
+    ):
+        """
+        Send enable/disable repeat command to given playerqueue.
+
+            :param queue_id: player_id of the playerqueue to handle the command.
+            :param enable_repeat: bool with the new ahuffle state.
+        """
+        player_queue = self.get_player_queue(queue_id)
+        if not player_queue:
+            return
+        return await player_queue.async_set_repeat_enabled(enable_repeat)
 
     # OTHER/HELPER FUNCTIONS
 

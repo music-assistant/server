@@ -242,7 +242,7 @@ class SpotifyProvider(MusicProvider):
         return [
             await self.__async_parse_album(item)
             for item in await self.__async_get_all_items(
-                f"artists/{prov_artist_id}/albums"
+                f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation"
             )
             if (item and item["id"])
         ]

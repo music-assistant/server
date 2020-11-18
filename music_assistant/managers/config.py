@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import shutil
-from typing import List
+from typing import Any, List
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
@@ -32,6 +32,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.encryption import decrypt_string, encrypt_string
 from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import merge_dict, try_load_json_file
+from music_assistant.helpers.web import api_route
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import PlayerControlType
 from music_assistant.models.provider import ProviderType
@@ -155,6 +156,41 @@ class ConfigManager:
         self._translations = self.__get_all_translations()
         self.__load()
 
+    async def async_setup(self):
+        """Async initialize of module."""
+        self.mass.web.register_api_route(
+            "config/translations", self.__get_all_translations
+        )
+
+    @api_route("config/:conf_base?/:conf_key?")
+    def all_items(
+        self, conf_base: str = "", conf_key: str = "", translation: str = "en"
+    ) -> dict:
+        """Return entire config as dict."""
+        if conf_base and conf_key:
+            return getattr(self, conf_base)[conf_key].all_items(translation)
+        if conf_base:
+            return getattr(self, conf_base).all_items(translation)
+        return {
+            key: getattr(self, key).all_items(translation)
+            for key in [
+                CONF_KEY_BASE,
+                CONF_KEY_MUSIC_PROVIDERS,
+                CONF_KEY_PLAYER_PROVIDERS,
+                CONF_KEY_METADATA_PROVIDERS,
+                CONF_KEY_PLUGINS,
+                CONF_KEY_PLAYER_SETTINGS,
+            ]
+        }
+
+    @api_route("config/:conf_base/:conf_key/:conf_val")
+    def set_config(
+        self, conf_base: str, conf_key: str, conf_val: str, new_value: Any
+    ) -> dict:
+        """Set value of the given config item."""
+        self[conf_base][conf_key][conf_val] = new_value
+        return self[conf_base][conf_key].all_items()
+
     @property
     def data_path(self):
         """Return the path where all (configuration) data is stored."""
@@ -248,6 +284,7 @@ class ConfigManager:
         return org_string
 
     @staticmethod
+    @api_route("config/translations")
     def __get_all_translations() -> dict:
         """Build a list of all translations."""
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

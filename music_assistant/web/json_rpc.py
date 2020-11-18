@@ -1,19 +1,15 @@
 """JSON RPC API endpoint."""
 
-from aiohttp.web import Request, Response, RouteTableDef
+from aiohttp.web import Request, Response
 from music_assistant.helpers.web import require_local_subnet
 
-routes = RouteTableDef()
 
-
-@routes.route("get", "/jsonrpc.js")
-@routes.route("post", "/jsonrpc.js")
 @require_local_subnet
-async def async_json_rpc(request: Request):
+async def json_rpc_endpoint(request: Request):
     """
-    Implement LMS jsonrpc interface.
+    Implement basic jsonrpc interface compatible with LMS.
 
-    for some compatability with tools that talk to lms
+    for some compatability with tools that talk to LMS
     only support for basic commands
     """
     # pylint: disable=too-many-branches

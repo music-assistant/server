@@ -1,4 +1,4 @@
-"""Players API endpoints."""
+"""Audio streaming endpoints."""
 
 from aiohttp.web import Request, Response, RouteTableDef, StreamResponse
 from music_assistant.helpers.web import require_local_subnet

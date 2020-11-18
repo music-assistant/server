@@ -37,7 +37,7 @@ def main():
     # setup logger
     logger = logging.getLogger()
     logformat = logging.Formatter(
-        "%(asctime)-15s %(levelname)-5s %(name)s -- %(message)s"
+        "%(asctime)-15s %(levelname)-5s %(name)s.%(funcName)s  -- %(message)s"
     )
     consolehandler = logging.StreamHandler()
     consolehandler.setFormatter(logformat)

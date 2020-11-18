@@ -545,6 +545,20 @@ class DatabaseManager:
             return item
         return None
 
+    async def async_get_albums_from_provider_ids(
+        self, provider_id: Union[str, List[str]], prov_item_ids: List[str]
+    ) -> dict:
+        """Get album records for the given prov_ids."""
+        provider_ids = provider_id if isinstance(provider_id, list) else [provider_id]
+        prov_id_str = ",".join([f'"{x}"' for x in provider_ids])
+        prov_item_id_str = ",".join([f'"{x}"' for x in prov_item_ids])
+        sql_query = f"""WHERE item_id in
+            (SELECT item_id FROM provider_mappings
+                WHERE provider in ({prov_id_str}) AND media_type = 'album'
+                AND prov_item_id in ({prov_item_id_str})
+            )"""
+        return await self.async_get_albums(sql_query)
+
     async def async_add_album(self, album: Album):
         """Add a new album record to the database."""
         async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:

@@ -1,50 +1,14 @@
 """Various helpers for web requests."""
 
 import asyncio
+import inspect
 import ipaddress
 from datetime import datetime
 from functools import wraps
-from typing import Any
+from typing import Any, Callable, Union, get_args, get_origin
 
 import ujson
 from aiohttp import web
-from mashumaro.exceptions import MissingField
-from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.models.media_types import (
-    Album,
-    Artist,
-    FullAlbum,
-    FullTrack,
-    Playlist,
-    Radio,
-    Track,
-)
-
-
-async def async_media_items_from_body(mass: MusicAssistantType, data: dict):
-    """Convert posted body data into media items."""
-    if not isinstance(data, list):
-        data = [data]
-
-    def media_item_from_dict(media_item):
-        if media_item["media_type"] == "artist":
-            return Artist.from_dict(media_item)
-        if media_item["media_type"] == "album":
-            try:
-                return FullAlbum.from_dict(media_item)
-            except MissingField:
-                return Album.from_dict(media_item)
-        if media_item["media_type"] == "track":
-            try:
-                return FullTrack.from_dict(media_item)
-            except MissingField:
-                return Track.from_dict(media_item)
-        if media_item["media_type"] == "playlist":
-            return Playlist.from_dict(media_item)
-        if media_item["media_type"] == "radio":
-            return Radio.from_dict(media_item)
-
-    return [media_item_from_dict(x) for x in data]
 
 
 def require_local_subnet(func):
@@ -76,7 +40,7 @@ def serialize_values(obj):
     def get_val(val):
         if hasattr(val, "to_dict"):
             return val.to_dict()
-        if isinstance(val, (list, set, filter)):
+        if isinstance(val, (list, set, filter, {}.values().__class__)):
             return [get_val(x) for x in val]
         if isinstance(val, datetime):
             return val.isoformat()
@@ -109,3 +73,73 @@ async def async_json_response(data: Any, status: int = 200):
             None, json_response, data
         )
     return json_response(data)
+
+
+def api_route(ws_cmd_path):
+    """Decorate a function as websocket command."""
+
+    def decorate(func):
+        func.ws_cmd_path = ws_cmd_path
+        return func
+
+    return decorate
+
+
+def get_typed_signature(call: Callable) -> inspect.Signature:
+    """Parse signature of function to do type vaildation and/or api spec generation."""
+    signature = inspect.signature(call)
+    typed_params = [
+        inspect.Parameter(
+            name=param.name,
+            kind=param.kind,
+            default=param.default,
+            annotation=param.annotation,
+        )
+        for param in signature.parameters.values()
+    ]
+    typed_signature = inspect.Signature(typed_params)
+    return typed_signature
+
+
+def parse_arguments(call: Callable, args: dict):
+    """Parse (and convert) incoming arguments to correct types."""
+    final_args = {}
+    if isinstance(call, type({}.values)):
+        return args
+    func_sig = get_typed_signature(call)
+    for key, value in args.items():
+        if key not in func_sig.parameters:
+            raise KeyError("Invalid parameter: '%s'" % key)
+        arg_type = func_sig.parameters[key].annotation
+        final_args[key] = convert_value(key, value, arg_type)
+    # check for missing args
+    for key, value in func_sig.parameters.items():
+        if value.default is inspect.Parameter.empty:
+            if key not in final_args:
+                raise KeyError("Missing parameter: '%s'" % key)
+    return final_args
+
+
+def convert_value(arg_key, value, arg_type):
+    """Convert dict value to one of our models."""
+    if arg_type == inspect.Parameter.empty:
+        return value
+    if get_origin(arg_type) is list:
+        return [
+            convert_value(arg_key, subval, get_args(arg_type)[0]) for subval in value
+        ]
+    if get_origin(arg_type) is Union:
+        # try all possible types
+        for sub_arg_type in get_args(arg_type):
+            try:
+                return convert_value(arg_key, value, sub_arg_type)
+            except Exception:  # pylint: disable=broad-except
+                pass
+        raise ValueError("Error parsing '%s', possibly wrong type?" % arg_key)
+    if hasattr(arg_type, "from_dict"):
+        return arg_type.from_dict(value)
+    if value is None:
+        return value
+    if arg_type is Any:
+        return value
+    return arg_type(value)

@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import uuid
 
 from pkg_resources import packaging
 
@@ -22,6 +23,9 @@ async def check_migrations(mass: MusicAssistantType):
 
     # store version in config
     mass.config.stored_config["version"] = app_version
+    # create unique server id
+    if "server_id" not in mass.config.stored_config:
+        mass.config.stored_config["server_id"] = str(uuid.getnode())
     mass.config.save()
 
     # create default db tables (if needed)

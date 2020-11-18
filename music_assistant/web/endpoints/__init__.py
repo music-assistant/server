@@ -1,1 +1,0 @@
-"""Web endpoints package."""
