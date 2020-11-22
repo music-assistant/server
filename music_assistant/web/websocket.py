@@ -40,36 +40,33 @@ class WebSocketHandler(View):
             if msg.type == WSMsgType.text:
                 if msg.data == "close":
                     await websocket.close()
-                else:
-                    try:
-                        json_msg = msg.json(loads=ujson.loads)
-                        if "command" in json_msg and "data" in json_msg:
-                            # handle command
-                            await self.handle_command(
-                                json_msg["command"],
-                                json_msg["data"],
-                                json_msg.get("id"),
-                            )
-                        elif "event" in json_msg:
-                            # handle event
-                            await self.handle_event(
-                                json_msg["event"], json_msg.get("data")
-                            )
-                        else:
-                            raise KeyError
-                    except (KeyError, ValueError):
-                        await self.send(
-                            error='commands must be issued in json format \
-                                {"command": "command", "data":" optional data"}',
+                    break
+                try:
+                    json_msg = msg.json(loads=ujson.loads)
+                    if "command" in json_msg and "data" in json_msg:
+                        # handle command
+                        await self.handle_command(
+                            json_msg["command"],
+                            json_msg["data"],
+                            json_msg.get("id"),
                         )
+                    elif "event" in json_msg:
+                        # handle event
+                        await self.handle_event(json_msg["event"], json_msg.get("data"))
+                    else:
+                        raise KeyError
+                except (KeyError, ValueError):
+                    await self.send(
+                        error='commands must be issued in json format \
+                            {"command": "command", "data":" optional data"}',
+                    )
             elif msg.type == WSMsgType.error:
                 LOGGER.warning(
                     "ws connection closed with exception %s", websocket.exception()
                 )
 
         # websocket disconnected
-        self.request.app["websockets"].remove(self)
-        LOGGER.debug("websocket connection closed: %s", self.request.remote)
+        await self.close()
         return websocket
 
     async def send(self, **kwargs):
@@ -79,7 +76,11 @@ class WebSocketHandler(View):
 
     async def close(self, reason=""):
         """Close websocket connection."""
-        await self._ws.close(message=reason.encode())
+        try:
+            await self._ws.close(message=reason.encode())
+        finally:
+            self.request.app["websockets"].remove(self)
+            LOGGER.debug("websocket connection closed: %s", self.request.remote)
 
     async def handle_command(self, command: str, data: Optional[dict], id: Any = None):
         """Handle websocket command."""
@@ -125,6 +126,8 @@ class WebSocketHandler(View):
 
     async def auth(self, token: str):
         """Handle authentication with JWT token."""
-        token_info = jwt.decode(token, self.mass.web.device_id)
+        token_info = jwt.decode(token, self.mass.web.jwt_key)
+        if self.mass.web.is_token_revoked(None, token_info):
+            raise Exception("Token is revoked")
         self.authenticated = True
         return token_info

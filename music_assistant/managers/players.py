@@ -7,11 +7,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
     EVENT_PLAYER_ADDED,
-    EVENT_PLAYER_CONTROL_REGISTERED,
-    EVENT_PLAYER_CONTROL_UPDATED,
     EVENT_PLAYER_REMOVED,
-    EVENT_REGISTER_PLAYER_CONTROL,
-    EVENT_UNREGISTER_PLAYER_CONTROL,
 )
 from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import callback, run_periodic, try_parse_int
@@ -43,14 +39,14 @@ class PlayerManager:
         self._player_queues = {}
         self._poll_ticks = 0
         self._controls = {}
-        self.mass.add_event_listener(
-            self.__handle_websocket_player_control_event,
-            [
-                EVENT_REGISTER_PLAYER_CONTROL,
-                EVENT_UNREGISTER_PLAYER_CONTROL,
-                EVENT_PLAYER_CONTROL_UPDATED,
-            ],
-        )
+        # self.mass.add_event_listener(
+        #     self.__handle_websocket_player_control_event,
+        #     [
+        #         EVENT_REGISTER_PLAYER_CONTROL,
+        #         EVENT_UNREGISTER_PLAYER_CONTROL,
+        #         EVENT_PLAYER_CONTROL_UPDATED,
+        #     ],
+        # )
 
     async def async_setup(self):
         """Async initialize of module."""
@@ -202,12 +198,14 @@ class PlayerManager:
         if player:
             await self._player_states[player.player_id].async_update(player)
 
-    async def async_register_player_control(self, control: PlayerControl):
+    @api_route("players/controls/:control_id/register")
+    async def async_register_player_control(
+        self, control_id: str, control: PlayerControl
+    ):
         """Register a playercontrol with the player manager."""
-        # control.mass = self.mass
         control.mass = self.mass
         control.type = PlayerControlType(control.type)
-        self._controls[control.control_id] = control
+        self._controls[control_id] = control
         LOGGER.info(
             "New PlayerControl (%s) registered: %s\\%s",
             control.type,
@@ -217,7 +215,7 @@ class PlayerManager:
         # update all players using this playercontrol
         for player_state in self.player_states:
             conf = self.mass.config.player_settings[player_state.player_id]
-            if control.control_id in [
+            if control_id in [
                 conf.get(CONF_POWER_CONTROL),
                 conf.get(CONF_VOLUME_CONTROL),
             ]:
@@ -225,14 +223,17 @@ class PlayerManager:
                     self.async_trigger_player_update(player_state.player_id)
                 )
 
-    async def async_update_player_control(self, control: PlayerControl):
+    @api_route("players/controls/:control_id/update")
+    async def async_update_player_control(
+        self, control_id: str, control: PlayerControl
+    ):
         """Update a playercontrol's state on the player manager."""
-        if control.control_id not in self._controls:
-            return await self.async_register_player_control(control)
+        if control_id not in self._controls:
+            return await self.async_register_player_control(control_id, control)
         new_state = control.state
-        if self._controls[control.control_id].state == new_state:
+        if self._controls[control_id].state == new_state:
             return
-        self._controls[control.control_id].state = new_state
+        self._controls[control_id].state = new_state
         LOGGER.debug(
             "PlayerControl %s\\%s updated - new state: %s",
             control.provider,
@@ -242,7 +243,7 @@ class PlayerManager:
         # update all players using this playercontrol
         for player_state in self.player_states:
             conf = self.mass.config.player_settings[player_state.player_id]
-            if control.control_id in [
+            if control_id in [
                 conf.get(CONF_POWER_CONTROL),
                 conf.get(CONF_VOLUME_CONTROL),
             ]:
@@ -550,6 +551,8 @@ class PlayerManager:
             else:
                 volume_dif_percent = volume_dif / cur_volume
             for child_player_id in player_state.group_childs:
+                if child_player_id == player_id:
+                    continue
                 child_player = self.get_player_state(child_player_id)
                 if child_player and child_player.available and child_player.powered:
                     cur_child_volume = child_player.volume_level
@@ -656,12 +659,12 @@ class PlayerManager:
         gain_correct = round(gain_correct, 2)
         return gain_correct
 
-    async def __handle_websocket_player_control_event(self, msg, msg_details):
-        """Handle player controls over the websockets api."""
-        if msg in [EVENT_REGISTER_PLAYER_CONTROL, EVENT_PLAYER_CONTROL_UPDATED]:
-            # create or update a playercontrol registered through the websockets api
-            control = PlayerControl(**msg_details)
-            await self.async_update_player_control(control)
-            # send confirmation to the client that the register was successful
-            if msg == EVENT_PLAYER_CONTROL_REGISTERED:
-                self.mass.signal_event(EVENT_PLAYER_CONTROL_REGISTERED, control)
+    # async def __handle_websocket_player_control_event(self, msg, msg_details):
+    #     """Handle player controls over the websockets api."""
+    #     if msg in [EVENT_REGISTER_PLAYER_CONTROL, EVENT_PLAYER_CONTROL_UPDATED]:
+    #         # create or update a playercontrol registered through the websockets api
+    #         control = PlayerControl(**msg_details)
+    #         await self.async_update_player_control(control)
+    #         # send confirmation to the client that the register was successful
+    #         if msg == EVENT_PLAYER_CONTROL_REGISTERED:
+    #             self.mass.signal_event(EVENT_PLAYER_CONTROL_REGISTERED, control)

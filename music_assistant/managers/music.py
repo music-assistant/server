@@ -477,7 +477,7 @@ class MusicManager:
         Perform global search for media items on all providers.
 
             :param search_query: Search query.
-            :param media_types: A list of media_types to include. All types if None.
+            :param media_types: A list of media_types to include.
             :param limit: number of items to return in the search (per type).
         """
         result = SearchResult([], [], [], [], [])

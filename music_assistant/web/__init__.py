@@ -1,11 +1,19 @@
-"""The web module handles serving the frontend and the rest/websocket api's."""
+"""
+The web module handles serving the frontend and the rest/websocket api's.
+
+API is available with both HTTP json rest endpoints AND WebSockets.
+All MusicAssistant clients communicate with the websockets api.
+For now, we do not yet support SSL/HTTPS directly, to prevent messing with certificates etc.
+The server is intended to be used locally only and not exposed outside.
+Users may use reverse proxy etc. to add ssl themselves.
+"""
 import asyncio
 import datetime
 import logging
 import os
 import uuid
 from base64 import b64encode
-from typing import Awaitable, Optional, Union
+from typing import Any, Awaitable, Optional, Union
 
 import aiohttp_cors
 import jwt
@@ -13,8 +21,16 @@ import ujson
 from aiohttp import web
 from aiohttp.web_request import Request
 from aiohttp_jwt import JWTMiddleware, login_required
+from music_assistant.constants import (
+    CONF_KEY_SECURITY,
+    CONF_KEY_SECURITY_APP_TOKENS,
+    CONF_KEY_SECURITY_LOGIN,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+)
 from music_assistant.constants import __version__ as MASS_VERSION
 from music_assistant.helpers import repath
+from music_assistant.helpers.encryption import decrypt_string
 from music_assistant.helpers.images import async_get_image_url, async_get_thumb_file
 from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import get_hostname, get_ip
@@ -38,6 +54,7 @@ class WebServer:
 
     def __init__(self, mass: MusicAssistantType, port: int):
         """Initialize class."""
+        self.jwt_key = None
         self.app = None
         self.mass = mass
         self._port = port
@@ -49,15 +66,20 @@ class WebServer:
 
     async def async_setup(self):
         """Perform async setup."""
-
+        self.jwt_key = decrypt_string(self.mass.config.stored_config["jwt_key"])
         jwt_middleware = JWTMiddleware(
-            self.device_id, request_property="user", credentials_required=False
+            self.jwt_key,
+            request_property="user",
+            credentials_required=False,
+            is_revoked=self.is_token_revoked,
         )
         self.app = web.Application(middlewares=[jwt_middleware])
         self.app["mass"] = self.mass
         self.app["websockets"] = []
-        # add routes
+        # add all routes routes
         self.app.add_routes(stream_routes)
+        if not self.mass.config.stored_config["initialized"]:
+            self.app.router.add_post("/setup", self.setup)
         self.app.router.add_post("/login", self.login)
         self.app.router.add_get("/jsonrpc.js", json_rpc_endpoint)
         self.app.router.add_post("/jsonrpc.js", json_rpc_endpoint)
@@ -117,7 +139,7 @@ class WebServer:
         await self._runner.setup()
         http_site = web.TCPSite(self._runner, "0.0.0.0", self.port)
         await http_site.start()
-        LOGGER.info("Started HTTP webserver on port %s", self.port)
+        LOGGER.info("Started Music Assistant server on %s", self.url)
         self.mass.add_event_listener(self.__async_handle_mass_events)
 
     async def async_stop(self):
@@ -130,7 +152,7 @@ class WebServer:
         pattern = repath.pattern(cmd)
         self.api_routes[pattern] = func
 
-    def register_api_routes(self, cls):
+    def register_api_routes(self, cls: Any):
         """Register all methods of a class (instance) that are decorated with api_route."""
         for item in dir(cls):
             func = getattr(cls, item)
@@ -155,7 +177,7 @@ class WebServer:
         return f"http://{self.host}:{self.port}"
 
     @property
-    def device_id(self):
+    def server_id(self):
         """Return the device ID for this Music Assistant Server."""
         return self.mass.config.stored_config["server_id"]
 
@@ -163,54 +185,80 @@ class WebServer:
     async def discovery_info(self):
         """Return (discovery) info about this instance."""
         return {
-            "id": self.device_id,
+            "id": self.server_id,
             "url": self.url,
             "host": self.host,
             "port": self.port,
             "version": MASS_VERSION,
             "friendly_name": get_hostname(),
+            "initialized": self.mass.config.stored_config["initialized"],
         }
 
     async def login(self, request: Request):
-        """Handle user login by form post."""
+        """Handle user login by form/json post. Will issue JWT token."""
         form = await request.post()
         try:
             username = form["username"]
             password = form["password"]
+            app_id = form.get("app_id")
         except KeyError:
             data = await request.json()
             username = data["username"]
             password = data["password"]
-        token_info = await self.get_token(username, password)
+            app_id = data.get("app_id")
+        token_info = await self.get_token(username, password, app_id)
         if token_info:
             return web.Response(
                 body=json_serializer(token_info), content_type="application/json"
             )
         return web.HTTPUnauthorized(body="Invalid username and/or password provided!")
 
-    async def get_token(self, username: str, password: str, appname: str = "") -> dict:
-        """Validate given credentials and return JWT token."""
-        verified = self.mass.config.validate_credentials(username, password)
+    async def get_token(self, username: str, password: str, app_id: str = "") -> dict:
+        """
+        Validate given credentials and return JWT token.
+
+        If app_id is provided, a long lived token will be issued which can be withdrawn by the user.
+        """
+        verified = self.mass.config.security.validate_credentials(username, password)
         if verified:
-            if appname:
-                token_expires = datetime.datetime.utcnow() + datetime.timedelta(
+            client_id = str(uuid.uuid4())
+            token_info = {
+                "username": username,
+                "server_id": self.server_id,
+                "client_id": client_id,
+                "app_id": app_id,
+            }
+            if app_id:
+                token_info["exp"] = datetime.datetime.utcnow() + datetime.timedelta(
                     days=365 * 10
                 )
             else:
-                token_expires = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
-            client_id = str(uuid.uuid4())
-            token = jwt.encode(
-                {"username": username, "client_id": client_id, "exp": token_expires},
-                self.device_id,
-            )
-            return {
-                "user": username,
-                "token": token.decode(),
-                "expires": token_expires.isoformat(),
-                "appname": appname,
-                "client_id": client_id,
-            }
+                token_info["exp"] = datetime.datetime.utcnow() + datetime.timedelta(
+                    hours=8
+                )
+            token = jwt.encode(token_info, self.jwt_key).decode()
+            if app_id:
+                self.mass.config.stored_config[CONF_KEY_SECURITY][
+                    CONF_KEY_SECURITY_APP_TOKENS
+                ][client_id] = token_info
+                self.mass.config.save()
+            token_info["token"] = token
+            return token_info
         return None
+
+    async def setup(self, request: Request):
+        """Handle first-time server setup through onboarding wizard."""
+        if self.mass.config.stored_config["initialized"]:
+            return web.HTTPUnauthorized()
+        form = await request.post()
+        username = form["username"]
+        password = form["password"]
+        # save credentials in config
+        self.mass.config.security[CONF_KEY_SECURITY_LOGIN][CONF_USERNAME] = username
+        self.mass.config.security[CONF_KEY_SECURITY_LOGIN][CONF_PASSWORD] = password
+        self.mass.config.stored_config["initialized"] = True
+        self.mass.config.save()
+        return web.Response(status=200)
 
     @login_required
     async def handle_api_request(self, request: Request):
@@ -242,11 +290,15 @@ class WebServer:
     async def index(self, request: web.Request):
         """Get the index page, redirect if we do not have a web directory."""
         # pylint: disable=unused-argument
+        if not self.mass.config.stored_config["initialized"]:
+            return web.FileResponse(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup.html")
+            )
         html_app = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "static/index.html"
         )
         if not os.path.isfile(html_app):
-            raise web.HTTPFound("https://music-assistant.github.io/self.app")
+            raise web.HTTPFound("https://music-assistant.github.io/app")
         return web.FileResponse(html_app)
 
     async def __async_handle_mass_events(self, event, event_data):
@@ -254,7 +306,14 @@ class WebServer:
         for ws_client in self.app["websockets"]:
             if not ws_client.authenticated:
                 continue
-            await ws_client.send(event=event, data=event_data)
+            try:
+                await ws_client.send(event=event, data=event_data)
+            except ConnectionResetError:
+                # connection lost to this client, cleanup
+                await ws_client.close()
+            except Exception as exc:  # pylint: disable=broad-except
+                # log all other errors but continue sending to all other clients
+                LOGGER.exception(exc)
 
     @api_route("images/thumb")
     async def async_get_image_thumb(
@@ -292,3 +351,7 @@ class WebServer:
                 icon_data = b64encode(icon_data)
                 return "data:image/png;base64," + icon_data.decode()
         raise KeyError("Invalid provider: %s" % provider_id)
+
+    def is_token_revoked(self, request: Request, token_info: dict):
+        """Return bool is token is revoked."""
+        return self.mass.config.security.is_token_revoked(token_info)

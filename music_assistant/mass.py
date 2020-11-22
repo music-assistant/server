@@ -84,6 +84,7 @@ class MusicAssistant:
         )
         # run migrations if needed
         await check_migrations(self)
+        await self._config.async_setup()
         await self._cache.async_setup()
         await self._music.async_setup()
         await self._players.async_setup()

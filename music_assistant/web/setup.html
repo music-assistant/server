@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <link href="https://fonts.googleapis.com/css?family=Roboto:100,300,400,500,700,900" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/@mdi/font@4.x/css/materialdesignicons.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/vuetify@2.x/dist/vuetify.min.css" rel="stylesheet">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, minimal-ui">
+</head>
+<body>
+  <div id="app">
+    <v-app>
+        <v-main>
+            <v-container fluid fill-height>
+              <v-layout align-center justify-center>
+                <v-flex sm8>
+                  <v-card class="elevation-12">
+                    <v-toolbar dark color="black">
+                      <v-toolbar-title>Setup MusicAssistant server</v-toolbar-title>
+                      <v-spacer></v-spacer>
+                    </v-toolbar>
+                    <v-card-text>
+                        <span>In order to use the MusicAssistant server, you must setup a username and password to protect the server.</span>
+                        <span>When you click submit, the server will be setup and you can login with the created credentials.</span>
+                        <br /><br />
+                        <v-form ref="form" v-model="valid" method="post">
+                        <v-text-field
+                          @keyup.enter="submit"
+                          v-model="username"
+                          prepend-icon="mdi-account"
+                          name="login"
+                          label="Username"
+                          type="text"
+                          required
+                          :rules="[v => !!v || 'Username is required']"
+                        ></v-text-field>
+                        <v-text-field
+                          @keyup.enter="submit"
+                          v-model="password1"
+                          prepend-icon="mdi-lock"
+                          name="password1"
+                          label="Password"
+                          id="password1"
+                          type="password"
+                          required
+                          :rules="[v => v.length >= 8 || 'Password must have minimum of 8 characters']"
+                        ></v-text-field>
+                        <v-text-field
+                          @keyup.enter="submit"
+                          v-model="password2"
+                          prepend-icon="mdi-lock"
+                          name="password2"
+                          label="Repeat password"
+                          id="password"
+                          type="password"
+                          required
+                          :rules="[
+                                password1 === password2 || 'Passwords do not match'
+                            ]"
+                        ></v-text-field>
+                      </v-form>
+                      <v-alert type="success" v-if="success"
+                        >Useraccount created and server is ready. You will be redirected to the webinterface.
+                        Login with your newly created credentials and configure the other aspects of the server to get going!
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions>
+                      <v-spacer></v-spacer>
+                      <v-btn type="submit" :disabled="!valid" color="success" @click="submit"
+                      class="mr-4">Submit</v-btn>
+                    </v-card-actions>
+                  </v-card>
+                </v-flex>
+              </v-layout>
+            </v-container>
+          </v-main>
+    </v-app>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/vue@2.x/dist/vue.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vuetify@2.x/dist/vuetify.js"></script>
+  <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+  <script>
+    new Vue({
+      el: '#app',
+      vuetify: new Vuetify(),
+      data: () => ({
+            username: '',
+            password1: '',
+            password2: '',
+            valid: true,
+            success: false
+        }),
+      methods: {
+          submit () {
+            const formData = new FormData()
+            formData.append('username', this.username)
+            formData.append('password', this.password1)
+            axios.post('/setup', formData)
+                .then(function (response) {
+                this.success = true
+                // refresh page, server will redirect to webapp
+                setTimeout(function() {
+                        document.location.reload()
+                    }, 5000);
+            }.bind(this))
+            .catch(function (error) {
+                console.log('error', error)
+            });
+        }
+      }
+    })
+  </script>
+</body>
+</html>

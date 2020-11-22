@@ -13,12 +13,14 @@ from music_assistant.constants import (
     CONF_FALLBACK_GAIN_CORRECT,
     CONF_GROUP_DELAY,
     CONF_KEY_BASE,
-    CONF_KEY_BASE_SECURITY,
     CONF_KEY_METADATA_PROVIDERS,
     CONF_KEY_MUSIC_PROVIDERS,
     CONF_KEY_PLAYER_PROVIDERS,
     CONF_KEY_PLAYER_SETTINGS,
     CONF_KEY_PLUGINS,
+    CONF_KEY_SECURITY,
+    CONF_KEY_SECURITY_APP_TOKENS,
+    CONF_KEY_SECURITY_LOGIN,
     CONF_MAX_SAMPLE_RATE,
     CONF_NAME,
     CONF_PASSWORD,
@@ -30,7 +32,6 @@ from music_assistant.constants import (
     EVENT_CONFIG_CHANGED,
 )
 from music_assistant.helpers.encryption import decrypt_string, encrypt_string
-from music_assistant.helpers.typing import MusicAssistantType
 from music_assistant.helpers.util import merge_dict, try_load_json_file
 from music_assistant.helpers.web import api_route
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
@@ -107,14 +108,10 @@ DEFAULT_PROVIDER_CONFIG_ENTRIES = [
     )
 ]
 
-DEFAULT_BASE_CONFIG_ENTRIES = {
-    CONF_KEY_BASE_SECURITY: [
-        ConfigEntry(
-            entry_key="__name__",
-            entry_type=ConfigEntryType.LABEL,
-            label=CONF_KEY_BASE_SECURITY,
-            hidden=True,
-        ),
+DEFAULT_BASE_CONFIG_ENTRIES = {}
+
+DEFAULT_SECURITY_CONFIG_ENTRIES = {
+    CONF_KEY_SECURITY_LOGIN: [
         ConfigEntry(
             entry_key=CONF_USERNAME,
             entry_type=ConfigEntryType.STRING,
@@ -131,6 +128,7 @@ DEFAULT_BASE_CONFIG_ENTRIES = {
             store_hashed=True,
         ),
     ],
+    CONF_KEY_SECURITY_APP_TOKENS: [],
 }
 
 
@@ -149,32 +147,35 @@ class ConfigManager:
         """Initialize class."""
         self._data_path = data_path
         self._stored_config = {}
+        self._translations = {}
         self.loading = False
         self.mass = mass
         if not os.path.isdir(data_path):
             raise FileNotFoundError(f"data directory {data_path} does not exist!")
-        self._translations = self.__get_all_translations()
         self.__load()
 
     async def async_setup(self):
         """Async initialize of module."""
-        self.mass.web.register_api_route(
-            "config/translations", self.__get_all_translations
-        )
+        self._translations = await self.__async_fetch_translations()
 
     @api_route("config/:conf_base?/:conf_key?")
-    def all_items(
-        self, conf_base: str = "", conf_key: str = "", translation: str = "en"
-    ) -> dict:
+    def all_items(self, conf_base: str = "", conf_key: str = "") -> dict:
         """Return entire config as dict."""
         if conf_base and conf_key:
-            return getattr(self, conf_base)[conf_key].all_items(translation)
+            obj = getattr(self, conf_base)[conf_key]
+            if isinstance(obj, dict):
+                return obj
+            return obj.all_items()
         if conf_base:
-            return getattr(self, conf_base).all_items(translation)
+            obj = getattr(self, conf_base)
+            if isinstance(obj, dict):
+                return obj
+            return obj.all_items()
         return {
-            key: getattr(self, key).all_items(translation)
+            key: getattr(self, key).all_items()
             for key in [
                 CONF_KEY_BASE,
+                CONF_KEY_SECURITY,
                 CONF_KEY_MUSIC_PROVIDERS,
                 CONF_KEY_PLAYER_PROVIDERS,
                 CONF_KEY_METADATA_PROVIDERS,
@@ -188,7 +189,10 @@ class ConfigManager:
         self, conf_base: str, conf_key: str, conf_val: str, new_value: Any
     ) -> dict:
         """Set value of the given config item."""
-        self[conf_base][conf_key][conf_val] = new_value
+        if new_value is None:
+            self[conf_base][conf_key].pop(conf_val)
+        else:
+            self[conf_base][conf_key][conf_val] = new_value
         return self[conf_base][conf_key].all_items()
 
     @property
@@ -197,14 +201,19 @@ class ConfigManager:
         return self._data_path
 
     @property
-    def translations(self):
-        """Return all translations."""
-        return self._translations
+    def server_id(self):
+        """Return the unique identifier for this server."""
+        return self.stored_config["server_id"]
 
     @property
     def base(self):
         """Return base config."""
         return BaseSettings(self)
+
+    @property
+    def security(self):
+        """Return security config."""
+        return SecuritySettings(self)
 
     @property
     def player_settings(self):
@@ -236,6 +245,11 @@ class ConfigManager:
         """Return the config that is actually stored on disk."""
         return self._stored_config
 
+    @property
+    def translations(self):
+        """Return all translations."""
+        return self._translations
+
     def get_provider_config(self, provider_id: str, provider_type: ProviderType = None):
         """Return config for given provider."""
         if not provider_type:
@@ -256,17 +270,6 @@ class ConfigManager:
         """Return config for given player."""
         return self.player_settings[player_id]
 
-    def validate_credentials(self, username: str, password: str) -> bool:
-        """Check if credentials matches."""
-        if username != self.base["security"]["username"]:
-            return False
-        if not password and not self.base["security"]["password"]:
-            return True
-        try:
-            return pbkdf2_sha256.verify(password, self.base["security"]["password"])
-        except ValueError:
-            return False
-
     def __getitem__(self, item_key):
         """Return item value by key."""
         return getattr(self, item_key)
@@ -275,17 +278,25 @@ class ConfigManager:
         """Save config on exit."""
         self.save()
 
-    def get_translation(self, org_string: str, language: str):
-        """Get translated value for a string, fallback to english."""
-        for lang in [language, "en"]:
-            translated_value = self._translations.get(lang, {}).get(org_string)
-            if translated_value:
-                return translated_value
-        return org_string
+    def save(self):
+        """Save config to file."""
+        if self.loading:
+            LOGGER.warning("save already running")
+            return
+        self.loading = True
+        # backup existing file
+        conf_file = os.path.join(self.data_path, "config.json")
+        conf_file_backup = os.path.join(self.data_path, "config.json.backup")
+        if os.path.isfile(conf_file):
+            shutil.move(conf_file, conf_file_backup)
+        # write current config to file
+        with open(conf_file, "w") as _file:
+            _file.write(json.dumps(self._stored_config, indent=4))
+        LOGGER.info("Config saved!")
+        self.loading = False
 
     @staticmethod
-    @api_route("config/translations")
-    def __get_all_translations() -> dict:
+    async def __async_fetch_translations() -> dict:
         """Build a list of all translations."""
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # get base translations
@@ -307,23 +318,6 @@ class ConfigManager:
             if res is not None:
                 translations = merge_dict(translations, res)
         return translations
-
-    def save(self):
-        """Save config to file."""
-        if self.loading:
-            LOGGER.warning("save already running")
-            return
-        self.loading = True
-        # backup existing file
-        conf_file = os.path.join(self.data_path, "config.json")
-        conf_file_backup = os.path.join(self.data_path, "config.json.backup")
-        if os.path.isfile(conf_file):
-            shutil.move(conf_file, conf_file_backup)
-        # write current config to file
-        with open(conf_file, "w") as _file:
-            _file.write(json.dumps(self._stored_config, indent=4))
-        LOGGER.info("Config saved!")
-        self.loading = False
 
     def __load(self):
         """Load stored config from file."""
@@ -357,10 +351,10 @@ class ConfigBaseItem:
         """Return ConfigSubItem for given key."""
         return ConfigSubItem(self, item_key)
 
-    def all_items(self, translation="en") -> dict:
+    def all_items(self) -> dict:
         """Return entire config as dict."""
         return {
-            key: copy.deepcopy(ConfigSubItem(self, key).all_items(translation))
+            key: copy.deepcopy(ConfigSubItem(self, key).all_items())
             for key in self.all_keys()
         }
 
@@ -368,9 +362,9 @@ class ConfigBaseItem:
 class BaseSettings(ConfigBaseItem):
     """Configuration class that holds the base settings."""
 
-    def __init__(self, mass: MusicAssistantType):
+    def __init__(self, conf_mgr: ConfigManager):
         """Initialize class."""
-        super().__init__(mass, CONF_KEY_BASE)
+        super().__init__(conf_mgr, CONF_KEY_BASE)
 
     def all_keys(self):
         """Return all possible keys of this Config object."""
@@ -382,12 +376,79 @@ class BaseSettings(ConfigBaseItem):
         return list(DEFAULT_BASE_CONFIG_ENTRIES[child_key])
 
 
+class SecuritySettings(ConfigBaseItem):
+    """Configuration class that holds the security settings."""
+
+    def __init__(self, conf_mgr: ConfigManager):
+        """Initialize class."""
+        super().__init__(conf_mgr, CONF_KEY_SECURITY)
+        # make sure the keys exist in config dict
+        if CONF_KEY_SECURITY not in conf_mgr.stored_config:
+            conf_mgr.stored_config[CONF_KEY_SECURITY][CONF_KEY_SECURITY_APP_TOKENS] = {}
+        if (
+            CONF_KEY_SECURITY_APP_TOKENS
+            not in conf_mgr.stored_config[CONF_KEY_SECURITY]
+        ):
+            conf_mgr.stored_config[CONF_KEY_SECURITY][CONF_KEY_SECURITY_APP_TOKENS] = {}
+
+    def all_keys(self):
+        """Return all possible keys of this Config object."""
+        return [CONF_KEY_SECURITY_LOGIN, CONF_KEY_SECURITY_APP_TOKENS]
+
+    def add_app_token(self, token_info: dict):
+        """Add token to config."""
+        client_id = token_info["client_id"]
+        self[CONF_KEY_SECURITY_APP_TOKENS][client_id] = token_info
+
+    def revoke_app_token(self, client_id):
+        """Revoke a token registered for an app."""
+        self[CONF_KEY_SECURITY_APP_TOKENS].pop(client_id)
+
+    def is_token_revoked(self, token_info: dict):
+        """Return bool is token is revoked."""
+        if not token_info.get("app_id"):
+            # short lived token does not have app_id and is not stored so can't be revoked
+            return False
+        return self[CONF_KEY_SECURITY_APP_TOKENS].get(token_info["client_id"]) is None
+
+    def validate_credentials(self, username: str, password: str) -> bool:
+        """Check if credentials matches."""
+        if username != self[CONF_KEY_SECURITY_LOGIN][CONF_USERNAME]:
+            return False
+        try:
+            return pbkdf2_sha256.verify(
+                password, self[CONF_KEY_SECURITY_LOGIN][CONF_PASSWORD]
+            )
+        except ValueError:
+            return False
+
+    def get_config_entries(self, child_key) -> List[ConfigEntry]:
+        """Return all base config entries."""
+        if child_key == CONF_KEY_SECURITY_LOGIN:
+            return list(DEFAULT_SECURITY_CONFIG_ENTRIES[CONF_KEY_SECURITY_LOGIN])
+        if child_key == CONF_KEY_SECURITY_APP_TOKENS:
+            return [
+                ConfigEntry(
+                    entry_key=client_id,
+                    entry_type=ConfigEntryType.DICT,
+                    default_value={},
+                    label=token_info["app_id"],
+                    description="App connected to MusicAssistant API",
+                    store_hashed=False,
+                )
+                for client_id, token_info in self.conf_mgr.stored_config[
+                    CONF_KEY_SECURITY
+                ][CONF_KEY_SECURITY_APP_TOKENS].items()
+            ]
+        return []
+
+
 class PlayerSettings(ConfigBaseItem):
     """Configuration class that holds the player settings."""
 
-    def __init__(self, mass: MusicAssistantType):
+    def __init__(self, conf_mgr: ConfigManager):
         """Initialize class."""
-        super().__init__(mass, CONF_KEY_PLAYER_SETTINGS)
+        super().__init__(conf_mgr, CONF_KEY_PLAYER_SETTINGS)
 
     def all_keys(self):
         """Return all possible keys of this Config object."""
@@ -469,13 +530,7 @@ class ProviderSettings(ConfigBaseItem):
         """Return all config entries for the given provider."""
         provider = self.mass.get_provider(child_key)
         if provider:
-            # append a hidden label with the provider's name
-            specials = [
-                ConfigEntry(
-                    "__name__", ConfigEntryType.LABEL, label=provider.name, hidden=True
-                )
-            ]
-            return specials + DEFAULT_PROVIDER_CONFIG_ENTRIES + provider.config_entries
+            return DEFAULT_PROVIDER_CONFIG_ENTRIES + provider.config_entries
         return DEFAULT_PROVIDER_CONFIG_ENTRIES
 
 
@@ -493,10 +548,10 @@ class ConfigSubItem:
         self.conf_mgr = conf_parent.conf_mgr
         self.parent_conf_key = conf_parent.conf_key
 
-    def all_items(self, translation="en") -> dict:
+    def all_items(self) -> dict:
         """Return entire config as dict."""
         return {
-            item.entry_key: self.get_entry(item.entry_key, translation)
+            item.entry_key: self.get_entry(item.entry_key)
             for item in self.conf_parent.get_config_entries(self.conf_key)
         }
 
@@ -519,7 +574,7 @@ class ConfigSubItem:
                 return decrypted_value
         return entry.value
 
-    def get_entry(self, key, translation=None):
+    def get_entry(self, key):
         """Return complete ConfigEntry for specified key."""
         stored_config = self.conf_mgr.stored_config.get(self.conf_parent.conf_key, {})
         stored_config = stored_config.get(self.conf_key, {})
@@ -531,17 +586,6 @@ class ConfigSubItem:
                 else:
                     # use default value for config entry
                     conf_entry.value = conf_entry.default_value
-                # get translated labels
-                if translation is not None:
-                    for entry_subkey in ["label", "description", "__name__"]:
-                        org_value = getattr(conf_entry, entry_subkey, None)
-                        if not org_value:
-                            org_value = conf_entry.entry_key
-                        translated_value = self.conf_parent.conf_mgr.get_translation(
-                            org_value, translation
-                        )
-                        if translated_value and translated_value != org_value:
-                            setattr(conf_entry, entry_subkey, translated_value)
                 return conf_entry
         raise KeyError(
             "%s\\%s has no key %s!" % (self.conf_parent.conf_key, self.conf_key, key)
@@ -609,3 +653,13 @@ class ConfigSubItem:
             return
         # raise KeyError if we're trying to set a value not defined as ConfigEntry
         raise KeyError
+
+    def pop(self, key):
+        """Delete ConfigEntry for specified key if exists."""
+        stored_config = self.conf_mgr.stored_config.get(self.conf_parent.conf_key, {})
+        stored_config = stored_config.get(self.conf_key, {})
+        cur_val = stored_config.get(key, None)
+        if cur_val:
+            del stored_config[key]
+            self.conf_mgr.save()
+        return cur_val

@@ -16,6 +16,7 @@ class ConfigEntryType(Enum):
     INT = "integer"
     FLOAT = "float"
     LABEL = "label"
+    DICT = "dict"
 
 
 @dataclass
