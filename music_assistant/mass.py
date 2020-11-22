@@ -84,6 +84,7 @@ class MusicAssistant:
         )
         # run migrations if needed
         await check_migrations(self)
+        await self._config.async_setup()
         await self._cache.async_setup()
         await self._music.async_setup()
         await self._players.async_setup()
@@ -268,8 +269,9 @@ class MusicAssistant:
         target: target to call.
         args: parameters for method to call.
         """
-        if self._background_tasks:
-            self._background_tasks.put_nowait(task)
+        if self._background_tasks is None:
+            self._background_tasks = asyncio.Queue()
+        self._background_tasks.put_nowait(task)
 
     @callback
     def add_job(
@@ -316,7 +318,8 @@ class MusicAssistant:
 
     async def __process_background_tasks(self):
         """Background tasks that takes care of slowly handling jobs in the queue."""
-        self._background_tasks = asyncio.Queue()
+        if self._background_tasks is None:
+            self._background_tasks = asyncio.Queue()
         while not self.exit:
             task = await self._background_tasks.get()
             await task
@@ -325,7 +328,7 @@ class MusicAssistant:
     async def __async_setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
         zeroconf_type = "_music-assistant._tcp.local."
-        discovery_info = self.web.discovery_info
+        discovery_info = await self.web.discovery_info()
         name = discovery_info["id"].lower()
         info = ServiceInfo(
             zeroconf_type,

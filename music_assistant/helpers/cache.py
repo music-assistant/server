@@ -6,7 +6,6 @@ import logging
 import os
 import pickle
 import time
-from functools import reduce
 from typing import Awaitable
 
 import aiosqlite
@@ -131,7 +130,7 @@ class Cache:
         if not stringinput:
             return 0
         stringinput = str(stringinput)
-        return reduce(lambda x, y: x + y, map(ord, stringinput))
+        return functools.reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
 async def async_cached(

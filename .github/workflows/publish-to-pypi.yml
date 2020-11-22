@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
-      - name: Set up Python 3.7
+      - name: Set up Python 3.8
         uses: actions/setup-python@v2.1.4
         with:
-          python-version: 3.7
+          python-version: 3.8
       - name: Include frontend-app in the release package
         run: |
           cd /tmp

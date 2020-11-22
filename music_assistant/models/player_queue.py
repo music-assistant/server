@@ -65,7 +65,7 @@ class PlayerQueue:
     def __init__(self, mass: MusicAssistantType, player_id: str) -> None:
         """Initialize class."""
         self.mass = mass
-        self._player_id = player_id
+        self._queue_id = player_id
         self._items = []
         self._shuffle_enabled = False
         self._repeat_enabled = False
@@ -85,22 +85,22 @@ class PlayerQueue:
 
     @property
     def player(self) -> PlayerType:
-        """Return handle to player."""
-        return self.mass.players.get_player(self._player_id)
+        """Return handle to (master) player of this queue."""
+        return self.mass.players.get_player(self._queue_id)
 
     @property
     def player_state(self) -> PlayerType:
         """Return handle to player state."""
-        return self.mass.players.get_player_state(self._player_id)
+        return self.mass.players.get_player_state(self._queue_id)
 
     @property
-    def player_id(self) -> str:
-        """Return the player's id."""
-        return self._player_id
+    def queue_id(self) -> str:
+        """Return the Queue's id."""
+        return self._queue_id
 
     def get_stream_url(self) -> str:
         """Return the full stream url for the player's Queue Stream."""
-        uri = f"{self.mass.web.url}/stream/queue/{self.player_id}"
+        uri = f"{self.mass.web.url}/stream/queue/{self.queue_id}"
         # we set the checksum just to invalidate cache stuf
         uri += f"?checksum={time.time()}"
         return uri
@@ -110,8 +110,7 @@ class PlayerQueue:
         """Return shuffle enabled property."""
         return self._shuffle_enabled
 
-    @shuffle_enabled.setter
-    def shuffle_enabled(self, enable_shuffle: bool) -> None:
+    async def async_set_shuffle_enabled(self, enable_shuffle: bool) -> None:
         """Set shuffle."""
         if not self._shuffle_enabled and enable_shuffle:
             # shuffle requested
@@ -137,8 +136,7 @@ class PlayerQueue:
         """Return if crossfade is enabled for this player."""
         return self._repeat_enabled
 
-    @repeat_enabled.setter
-    def repeat_enabled(self, enable_repeat: bool) -> None:
+    async def async_set_repeat_enabled(self, enable_repeat: bool) -> None:
         """Set the repeat mode for this queue."""
         if self._repeat_enabled != enable_repeat:
             self._repeat_enabled = enable_repeat
@@ -240,7 +238,7 @@ class PlayerQueue:
     @property
     def crossfade_duration(self) -> int:
         """Return crossfade duration (if enabled)."""
-        player_settings = self.mass.config.get_player_config(self.player_id)
+        player_settings = self.mass.config.get_player_config(self.queue_id)
         if player_settings:
             return player_settings.get(CONF_CROSSFADE_DURATION, 0)
         return 0
@@ -306,7 +304,7 @@ class PlayerQueue:
                 await self.async_play_index(prev_index)
         else:
             LOGGER.warning(
-                "resume queue requested for %s but queue is empty", self.player_id
+                "resume queue requested for %s but queue is empty", self.queue_id
             )
 
     async def async_play_index(self, index: int) -> None:
@@ -466,7 +464,7 @@ class PlayerQueue:
 
     async def async_clear(self) -> None:
         """Clear all items in the queue."""
-        await self.mass.players.async_cmd_stop(self.player_id)
+        await self.mass.players.async_cmd_stop(self.queue_id)
         self._items = []
         if self.supports_queue:
             # send queue cmd to player's own implementation
@@ -521,7 +519,7 @@ class PlayerQueue:
             self._cur_item_time = track_time
             self.mass.signal_event(
                 EVENT_QUEUE_TIME_UPDATED,
-                {"player_id": self.player_id, "cur_item_time": track_time},
+                {"queue_id": self.queue_id, "cur_item_time": track_time},
             )
 
     async def async_start_queue_stream(self) -> None:
@@ -533,7 +531,7 @@ class PlayerQueue:
     def to_dict(self) -> dict:
         """Instance attributes as dict so it can be serialized to json."""
         return {
-            "player_id": self.player.player_id,
+            "queue_id": self.player.player_id,
             "shuffle_enabled": self.shuffle_enabled,
             "repeat_enabled": self.repeat_enabled,
             "crossfade_enabled": self.crossfade_enabled,
@@ -587,7 +585,7 @@ class PlayerQueue:
 
     async def __async_restore_saved_state(self) -> None:
         """Try to load the saved queue for this player from cache file."""
-        cache_str = "queue_state_%s" % self.player.player_id
+        cache_str = "queue_state_%s" % self.queue_id
         cache_data = await self.mass.cache.async_get(cache_str)
         if cache_data:
             self._shuffle_enabled = cache_data["shuffle_enabled"]
@@ -600,7 +598,7 @@ class PlayerQueue:
 
     async def __async_save_state(self) -> None:
         """Save current queue settings to file."""
-        cache_str = "queue_state_%s" % self.player_id
+        cache_str = "queue_state_%s" % self.queue_id
         cache_data = {
             "shuffle_enabled": self._shuffle_enabled,
             "repeat_enabled": self._repeat_enabled,
@@ -609,4 +607,4 @@ class PlayerQueue:
             "next_queue_index": self._next_queue_startindex,
         }
         await self.mass.cache.async_set(cache_str, cache_data)
-        LOGGER.info("queue state saved to file for player %s", self.player_id)
+        LOGGER.info("queue state saved to file for player %s", self.queue_id)

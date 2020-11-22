@@ -32,8 +32,10 @@ CONF_KEY_MUSIC_PROVIDERS = "music_providers"
 CONF_KEY_PLAYER_PROVIDERS = "player_providers"
 CONF_KEY_METADATA_PROVIDERS = "metadata_providers"
 CONF_KEY_PLUGINS = "plugins"
-CONF_KEY_BASE_WEBSERVER = "web"
-CONF_KEY_BASE_SECURITY = "security"
+CONF_KEY_SECURITY = "security"
+CONF_KEY_SECURITY_LOGIN = "login"
+CONF_KEY_SECURITY_APP_TOKENS = "app_tokens"
+CONF_KEY_BASE_INFO = "info"
 
 # events
 EVENT_PLAYER_ADDED = "player added"
@@ -49,15 +51,6 @@ EVENT_QUEUE_TIME_UPDATED = "queue time updated"
 EVENT_SHUTDOWN = "application shutdown"
 EVENT_PROVIDER_REGISTERED = "provider registered"
 EVENT_PROVIDER_UNREGISTERED = "provider unregistered"
-EVENT_PLAYER_CONTROL_REGISTERED = "player control registered"
-EVENT_PLAYER_CONTROL_UNREGISTERED = "player control unregistered"
-EVENT_PLAYER_CONTROL_UPDATED = "player control updated"
-EVENT_SET_PLAYER_CONTROL_STATE = "set player control state"
-
-# websocket commands
-EVENT_REGISTER_PLAYER_CONTROL = "register player control"
-EVENT_UNREGISTER_PLAYER_CONTROL = "unregister player control"
-EVENT_UPDATE_PLAYER_CONTROL = "update player control"
 
 # player attributes
 ATTR_PLAYER_ID = "player_id"

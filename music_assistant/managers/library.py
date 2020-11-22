@@ -7,6 +7,7 @@ from typing import Any, List
 
 from music_assistant.constants import EVENT_MUSIC_SYNC_STATUS, EVENT_PROVIDER_REGISTERED
 from music_assistant.helpers.util import callback, run_periodic
+from music_assistant.helpers.web import api_route
 from music_assistant.models.media_types import (
     Album,
     Artist,
@@ -80,24 +81,29 @@ class LibraryManager:
 
     ################ GET MediaItems that are added in the library ################
 
+    @api_route("library/artists")
     async def async_get_library_artists(self, orderby: str = "name") -> List[Artist]:
         """Return all library artists, optionally filtered by provider."""
         return await self.mass.database.async_get_library_artists(orderby=orderby)
 
+    @api_route("library/albums")
     async def async_get_library_albums(self, orderby: str = "name") -> List[Album]:
         """Return all library albums, optionally filtered by provider."""
         return await self.mass.database.async_get_library_albums(orderby=orderby)
 
+    @api_route("library/tracks")
     async def async_get_library_tracks(self, orderby: str = "name") -> List[Track]:
         """Return all library tracks, optionally filtered by provider."""
         return await self.mass.database.async_get_library_tracks(orderby=orderby)
 
+    @api_route("library/playlists")
     async def async_get_library_playlists(
         self, orderby: str = "name"
     ) -> List[Playlist]:
         """Return all library playlists, optionally filtered by provider."""
         return await self.mass.database.async_get_library_playlists(orderby=orderby)
 
+    @api_route("library/radios")
     async def async_get_library_radios(self, orderby: str = "name") -> List[Playlist]:
         """Return all library radios, optionally filtered by provider."""
         return await self.mass.database.async_get_library_radios(orderby=orderby)
@@ -116,10 +122,11 @@ class LibraryManager:
                 return radio
         return None
 
-    async def async_library_add(self, media_items: List[MediaItem]):
+    @api_route("library/add")
+    async def async_library_add(self, items: List[MediaItem]):
         """Add media item(s) to the library."""
         result = False
-        for media_item in media_items:
+        for media_item in items:
             # add to provider's libraries
             for prov in media_item.provider_ids:
                 provider = self.mass.get_provider(prov.provider)
@@ -134,10 +141,11 @@ class LibraryManager:
                 )
         return result
 
-    async def async_library_remove(self, media_items: List[MediaItem]):
+    @api_route("library/remove")
+    async def async_library_remove(self, items: List[MediaItem]):
         """Remove media item(s) from the library."""
         result = False
-        for media_item in media_items:
+        for media_item in items:
             # remove from provider's libraries
             for prov in media_item.provider_ids:
                 provider = self.mass.get_provider(prov.provider)
@@ -152,6 +160,7 @@ class LibraryManager:
                 )
         return result
 
+    @api_route("library/playlists/:db_playlist_id/tracks/add")
     async def async_add_playlist_tracks(self, db_playlist_id: int, tracks: List[Track]):
         """Add tracks to playlist - make sure we dont add duplicates."""
         # we can only edit playlists that are in the database (marked as editable)
@@ -194,9 +203,8 @@ class LibraryManager:
         # actually add the tracks to the playlist on the provider
         if track_ids_to_add:
             # invalidate cache
-            await self.mass.database.async_update_playlist(
-                playlist.item_id, "checksum", str(time.time())
-            )
+            playlist.checksum = str(time.time())
+            await self.mass.database.async_update_playlist(playlist.item_id, playlist)
             # return result of the action on the provider
             provider = self.mass.get_provider(playlist_prov.provider)
             return await provider.async_add_playlist_tracks(
@@ -204,6 +212,7 @@ class LibraryManager:
             )
         return False
 
+    @api_route("library/playlists/:db_playlist_id/tracks/remove")
     async def async_remove_playlist_tracks(self, db_playlist_id, tracks: List[Track]):
         """Remove tracks from playlist."""
         # we can only edit playlists that are in the database (marked as editable)
@@ -221,9 +230,8 @@ class LibraryManager:
         # actually remove the tracks from the playlist on the provider
         if track_ids_to_remove:
             # invalidate cache
-            await self.mass.database.async_update_playlist(
-                playlist.item_id, "checksum", str(time.time())
-            )
+            playlist.checksum = str(time.time())
+            await self.mass.database.async_update_playlist(playlist.item_id, playlist)
             provider = self.mass.get_provider(prov_playlist.provider)
             return await provider.async_remove_playlist_tracks(
                 prov_playlist.item_id, track_ids_to_remove
@@ -266,9 +274,10 @@ class LibraryManager:
         for item in await music_provider.async_get_library_artists():
             db_item = await self.mass.music.async_get_artist(item.item_id, provider_id)
             cur_db_ids.append(db_item.item_id)
-            await self.mass.database.async_add_to_library(
-                db_item.item_id, MediaType.Artist, provider_id
-            )
+            if not db_item.in_library:
+                await self.mass.database.async_add_to_library(
+                    db_item.item_id, MediaType.Artist, provider_id
+                )
         # process deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
@@ -291,9 +300,10 @@ class LibraryManager:
                 # album availability changed, sort this out with auto matching magic
                 db_album = await self.mass.music.async_match_album(db_album)
             cur_db_ids.append(db_album.item_id)
-            await self.mass.database.async_add_to_library(
-                db_album.item_id, MediaType.Album, provider_id
-            )
+            if not db_album.in_library:
+                await self.mass.database.async_add_to_library(
+                    db_album.item_id, MediaType.Album, provider_id
+                )
             # precache album tracks
             for album_track in await self.mass.music.async_get_album_tracks(
                 item.item_id, provider_id
@@ -326,7 +336,7 @@ class LibraryManager:
                 # track availability changed, sort this out with auto matching magic
                 db_item = await self.mass.music.async_add_track(item)
             cur_db_ids.append(db_item.item_id)
-            if db_item.item_id not in prev_db_ids:
+            if not db_item.in_library:
                 await self.mass.database.async_add_to_library(
                     db_item.item_id, MediaType.Track, provider_id
                 )

@@ -70,6 +70,23 @@ class MediaItem(DataClassDictMixin):
     metadata: Any = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: bool = False
+    media_type: MediaType = MediaType.Track
+
+    @classmethod
+    def from_dict(cls, dict_obj):
+        # pylint: disable=arguments-differ
+        """Parse MediaItem from dict."""
+        if dict_obj["media_type"] == "artist":
+            return Artist.from_dict(dict_obj)
+        if dict_obj["media_type"] == "album":
+            return Album.from_dict(dict_obj)
+        if dict_obj["media_type"] == "track":
+            return Track.from_dict(dict_obj)
+        if dict_obj["media_type"] == "playlist":
+            return Playlist.from_dict(dict_obj)
+        if dict_obj["media_type"] == "radio":
+            return Radio.from_dict(dict_obj)
+        return super().from_dict(dict_obj)
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):
@@ -83,6 +100,7 @@ class MediaItem(DataClassDictMixin):
             db_row["in_library"] = bool(db_row["in_library"])
         if db_row.get("albums"):
             db_row["album"] = db_row["albums"][0]
+        db_row["item_id"] = str(db_row["item_id"])
         return cls.from_dict(db_row)
 
     @property
