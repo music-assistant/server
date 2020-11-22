@@ -78,9 +78,13 @@ class WebSocketHandler(View):
         """Close websocket connection."""
         try:
             await self._ws.close(message=reason.encode())
-        finally:
+        except Exception:  # pylint: disable=broad-except
+            pass
+        try:
             self.request.app["websockets"].remove(self)
-            LOGGER.debug("websocket connection closed: %s", self.request.remote)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        LOGGER.debug("websocket connection closed: %s", self.request.remote)
 
     async def handle_command(self, command: str, data: Optional[dict], id: Any = None):
         """Handle websocket command."""

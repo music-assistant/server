@@ -331,11 +331,6 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
             :param uri: Url/Uri that can be played by a player.
-            :param queue_opt:
-                QueueOption.Play -> Insert new items in queue and start playing at inserted position
-                QueueOption.Replace -> Replace queue contents with these items
-                QueueOption.Next -> Play item(s) after current playing item
-                QueueOption.Add -> Append new items at end of the queue
         """
         queue_item = QueueItem(item_id=uri, provider="uri", name=uri)
         # generate uri for this queue item

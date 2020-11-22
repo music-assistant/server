@@ -384,7 +384,7 @@ class SecuritySettings(ConfigBaseItem):
         super().__init__(conf_mgr, CONF_KEY_SECURITY)
         # make sure the keys exist in config dict
         if CONF_KEY_SECURITY not in conf_mgr.stored_config:
-            conf_mgr.stored_config[CONF_KEY_SECURITY][CONF_KEY_SECURITY_APP_TOKENS] = {}
+            conf_mgr.stored_config[CONF_KEY_SECURITY] = {}
         if (
             CONF_KEY_SECURITY_APP_TOKENS
             not in conf_mgr.stored_config[CONF_KEY_SECURITY]
