@@ -18,5 +18,5 @@ zeroconf==0.28.6
 passlib==1.7.4
 cryptography==3.2
 ujson==4.0.1
-mashumaro==1.13
+mashumaro==1.15
 
