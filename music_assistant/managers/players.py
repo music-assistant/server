@@ -633,6 +633,20 @@ class PlayerManager:
             return
         return await player_queue.async_set_repeat_enabled(enable_repeat)
 
+    @api_route("players/:queue_id/queue/cmd/clear")
+    async def async_player_queue_cmd_clear(
+        self, queue_id: str, enable_repeat: bool = False
+    ):
+        """
+        Clear all items in player's queue.
+
+            :param queue_id: player_id of the playerqueue to handle the command.
+        """
+        player_queue = self.get_player_queue(queue_id)
+        if not player_queue:
+            return
+        return await player_queue.async_clear()
+
     # OTHER/HELPER FUNCTIONS
 
     async def async_get_gain_correct(
@@ -653,13 +667,3 @@ class PlayerManager:
             gain_correct = target_gain - track_loudness
         gain_correct = round(gain_correct, 2)
         return gain_correct
-
-    # async def __handle_websocket_player_control_event(self, msg, msg_details):
-    #     """Handle player controls over the websockets api."""
-    #     if msg in [EVENT_REGISTER_PLAYER_CONTROL, EVENT_PLAYER_CONTROL_UPDATED]:
-    #         # create or update a playercontrol registered through the websockets api
-    #         control = PlayerControl(**msg_details)
-    #         await self.async_update_player_control(control)
-    #         # send confirmation to the client that the register was successful
-    #         if msg == EVENT_PLAYER_CONTROL_REGISTERED:
-    #             self.mass.signal_event(EVENT_PLAYER_CONTROL_REGISTERED, control)

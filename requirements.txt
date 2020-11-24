@@ -19,4 +19,4 @@ passlib==1.7.4
 cryptography==3.2
 ujson==4.0.1
 mashumaro==1.13
-repath==0.9.0
+
