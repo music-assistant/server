@@ -1,5 +1,5 @@
 argparse==1.4.0
-aiohttp[speedups]==3.7.2
+aiohttp[speedups]==3.7.3
 pychromecast==7.5.1
 asyncio-throttle==1.0.1
 aiofile==3.1.0
