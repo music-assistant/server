@@ -264,11 +264,7 @@ class MusicAssistant:
 
     @callback
     def add_background_task(self, task: Coroutine):
-        """Add a coroutine/task to the end of the job queue.
-
-        target: target to call.
-        args: parameters for method to call.
-        """
+        """Add a coroutine/task to the end of the job queue."""
         if self._background_tasks is None:
             self._background_tasks = asyncio.Queue()
         self._background_tasks.put_nowait(task)

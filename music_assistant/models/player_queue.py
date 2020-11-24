@@ -130,6 +130,7 @@ class PlayerQueue:
                 items = played_items + [self.cur_item] + next_items
                 self.mass.add_job(self.async_update(items))
         self.mass.add_job(self.async_update_state())
+        self.mass.signal_event(EVENT_QUEUE_UPDATED, self.to_dict())
 
     @property
     def repeat_enabled(self) -> bool:
@@ -142,6 +143,7 @@ class PlayerQueue:
             self._repeat_enabled = enable_repeat
             self.mass.add_job(self.async_update_state())
             self.mass.add_job(self.__async_save_state())
+            self.mass.signal_event(EVENT_QUEUE_UPDATED, self.to_dict())
 
     @property
     def cur_index(self) -> OptionalInt:
@@ -307,8 +309,8 @@ class PlayerQueue:
                 "resume queue requested for %s but queue is empty", self.queue_id
             )
 
-    async def async_play_index(self, index: int) -> None:
-        """Play item at index X in queue."""
+    async def async_play_index(self, index: Union[int, str]) -> None:
+        """Play item at index (or item_id) X in queue."""
         if not isinstance(index, int):
             index = self.__index_by_id(index)
         if not len(self.items) > index:
@@ -336,7 +338,7 @@ class PlayerQueue:
 
         param pos_shift: move item x positions down if positive value
                          move item x positions up if negative value
-                         move item to top of queue as next item
+                         move item to top of queue as next item if 0
         """
         items = self.items.copy()
         item_index = self.__index_by_id(queue_item_id)
@@ -458,7 +460,7 @@ class PlayerQueue:
                     "cmd_queue_update not supported by player, fallback to cmd_queue_load "
                 )
                 self._items = self._items[self.cur_index :]
-                return await self.player.async_cmd_queue_load(self._items)
+                await self.player.async_cmd_queue_load(self._items)
         self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
         self.mass.add_job(self.__async_save_state())
 

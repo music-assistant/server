@@ -35,7 +35,7 @@ RUN pip wheel uvloop cchardet aiodns brotlipy \
     && pip wheel -r /tmp/requirements.txt \
     # Include frontend-app in the source files
     && curl -L https://github.com/music-assistant/app/archive/master.tar.gz | tar xz \
-    && mv app-master/docs /tmp/music_assistant/web/static \
+    && mv app-master/build /tmp/music_assistant/web/static \
     && pip wheel /tmp
     
 #### FINAL IMAGE

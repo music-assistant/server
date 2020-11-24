@@ -512,7 +512,7 @@ class PlayerManager:
             return await self.async_cmd_power_off(player_id)
         return await self.async_cmd_power_on(player_id)
 
-    @api_route("players/:player_id/cmd/volume_set/:volume_level")
+    @api_route("players/:player_id/cmd/volume_set/:volume_level?")
     async def async_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
         Send volume level command to given player.
@@ -603,7 +603,7 @@ class PlayerManager:
         # TODO: handle mute on volumecontrol?
         return await player_state.player.async_cmd_volume_mute(is_muted)
 
-    @api_route("players/:queue_id/queue/cmd/shuffle_enabled/:enable_shuffle")
+    @api_route("players/:queue_id/queue/cmd/shuffle_enabled/:enable_shuffle?")
     async def async_player_queue_cmd_set_shuffle(
         self, queue_id: str, enable_shuffle: bool = False
     ):
@@ -618,7 +618,7 @@ class PlayerManager:
             return
         return await player_queue.async_set_shuffle_enabled(enable_shuffle)
 
-    @api_route("players/:queue_id/queue/cmd/repeat_enabled/:enable_repeat")
+    @api_route("players/:queue_id/queue/cmd/repeat_enabled/:enable_repeat?")
     async def async_player_queue_cmd_set_repeat(
         self, queue_id: str, enable_repeat: bool = False
     ):
@@ -632,6 +632,54 @@ class PlayerManager:
         if not player_queue:
             return
         return await player_queue.async_set_repeat_enabled(enable_repeat)
+
+    @api_route("players/:queue_id/queue/cmd/next")
+    async def async_player_queue_cmd_next(self, queue_id: str):
+        """
+        Send next track command to given playerqueue.
+
+            :param queue_id: player_id of the playerqueue to handle the command.
+        """
+        player_queue = self.get_player_queue(queue_id)
+        if not player_queue:
+            return
+        return await player_queue.async_next()
+
+    @api_route("players/:queue_id/queue/cmd/previous")
+    async def async_player_queue_cmd_previous(self, queue_id: str):
+        """
+        Send previous track command to given playerqueue.
+
+            :param queue_id: player_id of the playerqueue to handle the command.
+        """
+        player_queue = self.get_player_queue(queue_id)
+        if not player_queue:
+            return
+        return await player_queue.async_previous()
+
+    @api_route("players/:queue_id/queue/cmd/move/:queue_item_id?/:pos_shift?")
+    async def async_player_queue_cmd_move_item(
+        self, queue_id: str, queue_item_id: str, pos_shift: int = 1
+    ):
+        """
+        Move queue item x up/down the queue.
+
+        param pos_shift: move item x positions down if positive value
+                         move item x positions up if negative value
+                         move item to top of queue as next item if 0
+        """
+        player_queue = self.get_player_queue(queue_id)
+        if not player_queue:
+            return
+        return await player_queue.async_move_item(queue_item_id, pos_shift)
+
+    @api_route("players/:queue_id/queue/cmd/play_index/:index?")
+    async def async_play_index(self, queue_id: str, index: Union[int, str]) -> None:
+        """Play item at index (or item_id) X in queue."""
+        player_queue = self.get_player_queue(queue_id)
+        if not player_queue:
+            return
+        return await player_queue.async_play_index(index)
 
     @api_route("players/:queue_id/queue/cmd/clear")
     async def async_player_queue_cmd_clear(
