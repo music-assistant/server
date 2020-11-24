@@ -16,7 +16,7 @@ PyJWT==1.7.1
 aiohttp_jwt==0.6.1
 zeroconf==0.28.6
 passlib==1.7.4
-cryptography==3.2
+cryptography==3.2.1
 ujson==4.0.1
 mashumaro==1.15
 
