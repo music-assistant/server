@@ -5,10 +5,17 @@ import inspect
 import ipaddress
 from datetime import datetime
 from functools import wraps
-from typing import Any, Callable, Union, get_args, get_origin
+from typing import Any, Callable, Union
 
 import ujson
 from aiohttp import web
+
+try:
+    # python 3.8+
+    from typing import get_args, get_origin
+except ImportError:
+    # python 3.7
+    from typing_inspect import get_args, get_origin
 
 
 def require_local_subnet(func):
