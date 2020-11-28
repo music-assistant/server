@@ -10,6 +10,7 @@ from PIL import Image
 
 async def async_get_thumb_file(mass: MusicAssistantType, url, size: int = 150):
     """Get path to (resized) thumbnail image for given image url."""
+    assert url
     cache_folder = os.path.join(mass.config.data_path, ".thumbs")
     cache_id = await mass.database.async_get_thumbnail_id(url, size)
     cache_file = os.path.join(cache_folder, f"{cache_id}.png")

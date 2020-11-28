@@ -20,6 +20,22 @@ def compare_strings(str1, str2, strict=False):
     return match
 
 
+def compare_version(left_version: str, right_version: str):
+    """Compare version string."""
+    if not left_version and not right_version:
+        return True
+    if not left_version and right_version:
+        return False
+    if left_version and not right_version:
+        return False
+    if " " not in left_version:
+        return compare_strings(left_version, right_version)
+    # do this the hard way as sometimes the version string is in the wrong order
+    left_versions = left_version.lower().split(" ").sort()
+    right_versions = right_version.lower().split(" ").sort()
+    return left_versions == right_versions
+
+
 def compare_artists(left_artists: List[Artist], right_artists: List[Artist]):
     """Compare two lists of artist and return True if a match was found."""
     for left_artist in left_artists:
@@ -40,21 +56,21 @@ def compare_albums(left_albums: List[Album], right_albums: List[Album]):
 
 def compare_album(left_album: Album, right_album: Album):
     """Compare two album items and return True if they match."""
+    # do not match on year and albumtype as this info is often inaccurate on providers
     if (
         left_album.provider == right_album.provider
         and left_album.item_id == right_album.item_id
     ):
         return True
-    if left_album.upc and left_album.upc == right_album.upc:
-        # UPC is always 100% accurate match
-        return True
+    if left_album.upc and right_album.upc:
+        if left_album.upc in right_album.upc or right_album.upc in left_album.upc:
+            # UPC is always 100% accurate match
+            return True
     if not compare_strings(left_album.name, right_album.name):
         return False
-    if not compare_strings(left_album.version, right_album.version):
+    if not compare_version(left_album.version, right_album.version):
         return False
     if not compare_strings(left_album.artist.name, right_album.artist.name):
-        return False
-    if left_album.year != right_album.year:
         return False
     # 100% match, all criteria passed
     return True
@@ -73,7 +89,7 @@ def compare_track(left_track: Track, right_track: Track):
     # track name and version must match
     if not compare_strings(left_track.name, right_track.name):
         return False
-    if not compare_strings(left_track.version, right_track.version):
+    if not compare_version(left_track.version, right_track.version):
         return False
     # track artist(s) must match
     if not compare_artists(left_track.artists, right_track.artists):

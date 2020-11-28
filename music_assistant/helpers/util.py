@@ -141,13 +141,15 @@ def parse_title_and_version(track_title, track_version=None):
                     "remix",
                     "mix",
                     "acoustic",
-                    " instrumental",
+                    "instrumental",
                     "karaoke",
                     "remaster",
                     "versie",
                     "radio",
                     "unplugged",
                     "disco",
+                    "akoestisch",
+                    "deluxe",
                 ]:
                     if version_str in title_part:
                         version = title_part
@@ -156,6 +158,8 @@ def parse_title_and_version(track_title, track_version=None):
     if not version and track_version:
         version = track_version
     version = get_version_substitute(version).title()
+    if version == title:
+        version = ""
     return title, version
 
 

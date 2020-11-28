@@ -39,5 +39,5 @@ class MetaDataManager:
                 self.cache, cache_key, provider.async_get_artist_images, mb_artist_id
             )
             if res:
-                merge_dict(metadata, res)
+                metadata = merge_dict(metadata, res)
         return metadata

@@ -272,7 +272,9 @@ class LibraryManager:
         prev_db_ids = await self.mass.cache.async_get(cache_key, default=[])
         cur_db_ids = []
         for item in await music_provider.async_get_library_artists():
-            db_item = await self.mass.music.async_get_artist(item.item_id, provider_id)
+            db_item = await self.mass.music.async_get_artist(
+                item.item_id, provider_id, lazy=False
+            )
             cur_db_ids.append(db_item.item_id)
             if not db_item.in_library:
                 await self.mass.database.async_add_to_library(
@@ -295,8 +297,10 @@ class LibraryManager:
         prev_db_ids = await self.mass.cache.async_get(cache_key, default=[])
         cur_db_ids = []
         for item in await music_provider.async_get_library_albums():
-            db_album = await self.mass.music.async_get_album(item.item_id, provider_id)
-            if db_album.available != item.available:
+            db_album = await self.mass.music.async_get_album(
+                item.item_id, provider_id, lazy=False
+            )
+            if not db_album.available and not item.available:
                 # album availability changed, sort this out with auto matching magic
                 db_album = await self.mass.music.async_match_album(db_album)
             cur_db_ids.append(db_album.item_id)
@@ -305,15 +309,7 @@ class LibraryManager:
                     db_album.item_id, MediaType.Album, provider_id
                 )
             # precache album tracks
-            for album_track in await self.mass.music.async_get_album_tracks(
-                item.item_id, provider_id
-            ):
-                # try to find substitutes for unavailable tracks with matching technique
-                if not album_track.available:
-                    if album_track.provider == "database":
-                        await self.mass.music.async_match_track(album_track)
-                    else:
-                        await self.mass.music.async_add_track(album_track)
+            await self.mass.music.async_get_album_tracks(item.item_id, provider_id)
         # process album deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
@@ -331,8 +327,10 @@ class LibraryManager:
         prev_db_ids = await self.mass.cache.async_get(cache_key, default=[])
         cur_db_ids = []
         for item in await music_provider.async_get_library_tracks():
-            db_item = await self.mass.music.async_get_track(item.item_id, provider_id)
-            if db_item.available != item.available:
+            db_item = await self.mass.music.async_get_track(
+                item.item_id, provider_id, lazy=False
+            )
+            if not db_item.available and not item.available:
                 # track availability changed, sort this out with auto matching magic
                 db_item = await self.mass.music.async_add_track(item)
             cur_db_ids.append(db_item.item_id)
@@ -358,7 +356,7 @@ class LibraryManager:
         cur_db_ids = []
         for playlist in await music_provider.async_get_library_playlists():
             db_item = await self.mass.music.async_get_playlist(
-                playlist.item_id, provider_id
+                playlist.item_id, provider_id, lazy=False
             )
             if db_item.checksum != playlist.checksum:
                 db_item = await self.mass.database.async_add_playlist(playlist)
@@ -371,7 +369,7 @@ class LibraryManager:
                 playlist.item_id, provider_id
             ):
                 # try to find substitutes for unavailable tracks with matching technique
-                if not playlist_track.available:
+                if not db_item.available and not playlist_track.available:
                     if playlist_track.provider == "database":
                         await self.mass.music.async_match_track(playlist_track)
                     else:
@@ -393,7 +391,9 @@ class LibraryManager:
         prev_db_ids = await self.mass.cache.async_get(cache_key, default=[])
         cur_db_ids = []
         for item in await music_provider.async_get_library_radios():
-            db_radio = await self.mass.music.async_get_radio(item.item_id, provider_id)
+            db_radio = await self.mass.music.async_get_radio(
+                item.item_id, provider_id, lazy=False
+            )
             cur_db_ids.append(db_radio.item_id)
             await self.mass.database.async_add_to_library(
                 db_radio.item_id, MediaType.Radio, provider_id

@@ -55,7 +55,7 @@ class QueueItem(Track):
 
     @classmethod
     def from_track(cls, track: Union[Track, Radio]):
-        """Construct QueueItem from track/raio item."""
+        """Construct QueueItem from track/radio item."""
         return cls.from_dict(track.to_dict())
 
 
@@ -302,8 +302,8 @@ class PlayerQueue:
             else:
                 # at this point we don't know if the queue is synced with the player
                 # so just to be safe we send the queue_items to the player
-                await self.player.async_cmd_queue_load(self.items)
-                await self.async_play_index(prev_index)
+                self._items = self._items[prev_index:]
+                return await self.player.async_cmd_queue_load(self._items)
         else:
             LOGGER.warning(
                 "resume queue requested for %s but queue is empty", self.queue_id

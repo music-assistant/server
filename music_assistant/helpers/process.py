@@ -14,11 +14,9 @@ in uvloop is resolved.
 import asyncio
 import logging
 import subprocess
-import threading
-import time
 from typing import AsyncGenerator, List, Optional
 
-LOGGER = logging.getLogger("mass.helpers.process")
+LOGGER = logging.getLogger("AsyncProcess")
 
 
 class AsyncProcess:
@@ -27,149 +25,89 @@ class AsyncProcess:
     def __init__(
         self,
         process_args: List,
-        chunksize=512000,
         enable_write: bool = False,
         enable_shell=False,
     ):
         """Initialize."""
-        self._process_args = process_args
-        self._chunksize = chunksize
-        self._enable_write = enable_write
-        self._enable_shell = enable_shell
+        self._proc = subprocess.Popen(
+            process_args,
+            shell=enable_shell,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE if enable_write else None,
+        )
         self.loop = asyncio.get_running_loop()
-        self.__queue_in = asyncio.Queue(4)
-        self.__queue_out = asyncio.Queue(8)
-        self.__proc_task = None
-        self._exit = False
-        self._id = int(time.time())  # some identifier for logging
+        self._cancelled = False
 
     async def __aenter__(self) -> "AsyncProcess":
-        """Enter context manager, start running the process in executor."""
-        self.__proc_task = self.loop.run_in_executor(None, self.__run_proc)
+        """Enter context manager."""
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
         """Exit context manager."""
-        if exc_type:
-            LOGGER.debug(
-                "[%s] Context manager exit with exception %s (%s)",
-                self._id,
-                exc_type,
-                str(exc_value),
-            )
+        self._cancelled = True
+        if await self.loop.run_in_executor(None, self._proc.poll) is None:
+            # prevent subprocess deadlocking, send terminate and read remaining bytes
+            await self.loop.run_in_executor(None, self._proc.kill)
+            self.loop.run_in_executor(None, self.__read)
+        del self._proc
 
-        self._exit = True
-        # prevent a deadlock by clearing the queues
-        while self.__queue_in.qsize():
-            await self.__queue_in.get()
-            self.__queue_in.task_done()
-        self.__queue_in.put_nowait(b"")
-        while self.__queue_out.qsize():
-            await self.__queue_out.get()
-            self.__queue_out.task_done()
-        await self.__proc_task
-        return True
-
-    async def iterate_chunks(self) -> AsyncGenerator[bytes, None]:
-        """Yield chunks from the output Queue. Generator."""
+    async def iterate_chunks(
+        self, chunksize: int = 512000
+    ) -> AsyncGenerator[bytes, None]:
+        """Yield chunks from the process stdout. Generator."""
         while True:
-            chunk = await self.read()
-            yield chunk
-            if not chunk or len(chunk) < self._chunksize:
+            chunk = await self.read(chunksize)
+            if not chunk:
                 break
+            yield chunk
 
-    async def read(self) -> bytes:
-        """Read single chunk from the output Queue."""
-        if self._exit:
-            raise RuntimeError("Already exited")
-        data = await self.__queue_out.get()
-        self.__queue_out.task_done()
-        return data
+    async def read(self, chunksize: int = -1) -> bytes:
+        """Read x bytes from the process stdout."""
+        if self._cancelled:
+            raise asyncio.CancelledError()
+        return await self.loop.run_in_executor(None, self.__read, chunksize)
+
+    def __read(self, chunksize: int = -1):
+        """Try read chunk from process."""
+        try:
+            return self._proc.stdout.read(chunksize)
+        except (BrokenPipeError, ValueError, AttributeError):
+            # Process already exited
+            return b""
 
     async def write(self, data: bytes) -> None:
-        """Write data to process."""
-        if self._exit:
-            raise RuntimeError("Already exited")
-        await self.__queue_in.put(data)
+        """Write data to process stdin."""
+        if self._cancelled:
+            raise asyncio.CancelledError()
+
+        def __write():
+            try:
+                self._proc.stdin.write(data)
+            except (BrokenPipeError, ValueError, AttributeError):
+                # Process already exited
+                pass
+
+        await self.loop.run_in_executor(None, __write)
 
     async def write_eof(self) -> None:
         """Write eof to process."""
-        await self.__queue_in.put(b"")
+        if self._cancelled:
+            raise asyncio.CancelledError()
+
+        def __write_eof():
+            try:
+                self._proc.stdin.close()
+            except (BrokenPipeError, ValueError, AttributeError):
+                # Process already exited
+                pass
+
+        await self.loop.run_in_executor(None, __write_eof)
 
     async def communicate(self, input_data: Optional[bytes] = None) -> bytes:
         """Write bytes to process and read back results."""
-        if not self._enable_write and input_data:
-            raise RuntimeError("Write is disabled")
-        if input_data:
-            await self.write(input_data)
-            await self.write_eof()
-        output = b""
-        async for chunk in self.iterate_chunks():
-            output += chunk
-        return output
-
-    def __run_proc(self):
-        """Run process in executor."""
-        try:
-            proc = subprocess.Popen(
-                self._process_args,
-                shell=self._enable_shell,
-                stdout=subprocess.PIPE,
-                stdin=subprocess.PIPE if self._enable_write else None,
-            )
-            if self._enable_write:
-                threading.Thread(
-                    target=self.__write_stdin,
-                    args=(proc.stdin,),
-                    name=f"AsyncProcess_{self._id}_write_stdin",
-                    daemon=True,
-                ).start()
-            threading.Thread(
-                target=self.__read_stdout,
-                args=(proc.stdout,),
-                name=f"AsyncProcess_{self._id}_read_stdout",
-                daemon=True,
-            ).start()
-            proc.wait()
-
-        except Exception as exc:  # pylint: disable=broad-except
-            LOGGER.warning("[%s] process exiting abormally: %s", self._id, str(exc))
-            LOGGER.exception(exc)
-        finally:
-            if proc.poll() is None:
-                proc.terminate()
-                proc.communicate()
-
-    def __write_stdin(self, _stdin):
-        """Put chunks from queue to stdin."""
-        try:
-            while True:
-                chunk = asyncio.run_coroutine_threadsafe(
-                    self.__queue_in.get(), self.loop
-                ).result()
-                self.__queue_in.task_done()
-                if not chunk:
-                    _stdin.close()
-                    break
-                _stdin.write(chunk)
-        except Exception as exc:  # pylint: disable=broad-except
-            LOGGER.debug(
-                "[%s] write to stdin aborted with exception: %s", self._id, str(exc)
-            )
-
-    def __read_stdout(self, _stdout):
-        """Put chunks from stdout to queue."""
-        try:
-            while True:
-                chunk = _stdout.read(self._chunksize)
-                asyncio.run_coroutine_threadsafe(
-                    self.__queue_out.put(chunk), self.loop
-                ).result()
-                if not chunk or len(chunk) < self._chunksize:
-                    break
-            # write empty chunk just in case
-            asyncio.run_coroutine_threadsafe(self.__queue_out.put(b""), self.loop)
-        except Exception as exc:  # pylint: disable=broad-except
-            LOGGER.debug(
-                "[%s] read from stdout aborted with exception: %s", self._id, str(exc)
-            )
+        if self._cancelled:
+            raise asyncio.CancelledError()
+        stdout, _ = await self.loop.run_in_executor(
+            None, self._proc.communicate, input_data
+        )
+        return stdout

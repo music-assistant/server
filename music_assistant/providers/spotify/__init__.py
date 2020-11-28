@@ -371,7 +371,7 @@ class SpotifyProvider(MusicProvider):
             album.album_type = AlbumType.Single
         elif album_obj["album_type"] == "compilation":
             album.album_type = AlbumType.Compilation
-        else:
+        elif album_obj["album_type"] == "album":
             album.album_type = AlbumType.Album
         if "genres" in album_obj:
             album.metadata["genres"] = album_obj["genres"]
@@ -419,6 +419,8 @@ class SpotifyProvider(MusicProvider):
             track.isrc = track_obj["external_ids"]["isrc"]
         if "album" in track_obj:
             track.album = await self.__async_parse_album(track_obj["album"])
+            if track_obj["album"].get("images"):
+                track.metadata["image"] = track_obj["album"]["images"][0]["url"]
         if track_obj.get("copyright"):
             track.metadata["copyright"] = track_obj["copyright"]
         if track_obj.get("explicit"):

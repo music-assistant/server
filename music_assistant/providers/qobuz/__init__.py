@@ -267,8 +267,20 @@ class QobuzProvider(MusicProvider):
 
     async def async_get_artist_toptracks(self, prov_artist_id) -> List[Track]:
         """Get a list of most popular tracks for the given artist."""
-        # artist toptracks not supported on Qobuz, so use search instead
-        # assuming qobuz returns results sorted by popularity
+        params = {
+            "artist_id": prov_artist_id,
+            "extra": "playlists",
+            "offset": 0,
+            "limit": 25,
+        }
+        result = await self.__async_get_data("artist/get", params)
+        if result and result["playlists"]:
+            return [
+                await self.__async_parse_track(item)
+                for item in result["playlists"][0]["tracks"]["items"]
+                if (item and item["id"])
+            ]
+        # fallback to search
         artist = await self.async_get_artist(prov_artist_id)
         params = {"query": artist.name, "limit": 25, "type": "tracks"}
         searchresult = await self.__async_get_data("catalog/search", params)
@@ -282,6 +294,10 @@ class QobuzProvider(MusicProvider):
                 and str(item["performer"]["id"]) == str(prov_artist_id)
             )
         ]
+
+    async def async_get_similar_artists(self, prov_artist_id):
+        """Get similar artists for given artist."""
+        # https://www.qobuz.com/api.json/0.2/artist/getSimilarArtists?artist_id=220020&offset=0&limit=3
 
     async def async_library_add(self, prov_item_id, media_type: MediaType):
         """Add item to library."""
@@ -397,6 +413,8 @@ class QobuzProvider(MusicProvider):
         if not self.__user_auth_info:
             return
         # TODO: need to figure out if the streamed track is purchased by user
+        # https://www.qobuz.com/api.json/0.2/purchase/getUserPurchasesIds?limit=5000&user_id=xxxxxxx
+        # {"albums":{"total":0,"items":[]},"tracks":{"total":0,"items":[]},"user":{"id":xxxx,"login":"xxxxx"}}
         if msg == EVENT_STREAM_STARTED and msg_details.provider == PROV_ID:
             # report streaming started to qobuz
             device_id = self.__user_auth_info["user"]["device"]["id"]
@@ -440,15 +458,7 @@ class QobuzProvider(MusicProvider):
         artist.provider_ids.append(
             MediaItemProviderId(provider=PROV_ID, item_id=str(artist_obj["id"]))
         )
-        if artist_obj.get("image"):
-            for key in ["extralarge", "large", "medium", "small"]:
-                if artist_obj["image"].get(key):
-                    if (
-                        "2a96cbd8b46e442fc41c2b86b821562f"
-                        not in artist_obj["image"][key]
-                    ):
-                        artist.metadata["image"] = artist_obj["image"][key]
-                        break
+        artist.metadata["image"] = self.__get_image(artist_obj)
         if artist_obj.get("biography"):
             artist.metadata["biography"] = artist_obj["biography"].get("content", "")
         if artist_obj.get("url"):
@@ -486,22 +496,24 @@ class QobuzProvider(MusicProvider):
             album.artist = artist_obj
         else:
             album.artist = await self.__async_parse_artist(album_obj["artist"])
-        if album_obj.get("product_type", "") == "single":
+        if (
+            album_obj.get("product_type", "") == "single"
+            or album_obj.get("release_type", "") == "single"
+        ):
             album.album_type = AlbumType.Single
         elif (
             album_obj.get("product_type", "") == "compilation"
             or "Various" in album.artist.name
         ):
             album.album_type = AlbumType.Compilation
-        else:
+        elif (
+            album_obj.get("product_type", "") == "album"
+            or album_obj.get("release_type", "") == "album"
+        ):
             album.album_type = AlbumType.Album
         if "genre" in album_obj:
             album.metadata["genre"] = album_obj["genre"]["name"]
-        if album_obj.get("image"):
-            for key in ["extralarge", "large", "medium", "small"]:
-                if album_obj["image"].get(key):
-                    album.metadata["image"] = album_obj["image"][key]
-                    break
+        album.metadata["image"] = self.__get_image(album_obj)
         if len(album_obj["upc"]) == 13:
             # qobuz writes ean as upc ?!
             album.metadata["ean"] = album_obj["upc"]
@@ -573,6 +585,13 @@ class QobuzProvider(MusicProvider):
             track.metadata["performers"] = track_obj["performers"]
         if track_obj.get("copyright"):
             track.metadata["copyright"] = track_obj["copyright"]
+        if track_obj.get("audio_info"):
+            track.metadata["replaygain"] = track_obj["audio_info"][
+                "replaygain_track_gain"
+            ]
+        if track_obj.get("parental_warning"):
+            track.metadata["explicit"] = True
+        track.metadata["image"] = self.__get_image(track_obj)
         # get track quality
         if track_obj["maximum_sampling_rate"] > 192:
             quality = TrackQuality.FLAC_LOSSLESS_HI_RES_4
@@ -612,8 +631,7 @@ class QobuzProvider(MusicProvider):
             playlist_obj["owner"]["id"] == self.__user_auth_info["user"]["id"]
             or playlist_obj["is_collaborative"]
         )
-        if playlist_obj.get("images300"):
-            playlist.metadata["image"] = playlist_obj["images300"][0]
+        playlist.metadata["image"] = self.__get_image(playlist_obj)
         if playlist_obj.get("url"):
             playlist.metadata["qobuz_url"] = playlist_obj["url"]
         playlist.checksum = playlist_obj["updated_at"]
@@ -713,3 +731,20 @@ class QobuzProvider(MusicProvider):
                 LOGGER.error("%s - %s", endpoint, result)
                 return None
             return result
+
+    def __get_image(self, obj: dict) -> Optional[str]:
+        """Try to parse image from Qobuz media object."""
+        if obj.get("image"):
+            for key in ["extralarge", "large", "medium", "small"]:
+                if obj["image"].get(key):
+                    if "2a96cbd8b46e442fc41c2b86b821562f" in obj["image"][key]:
+                        continue
+                    return obj["image"][key]
+        if obj.get("images300"):
+            # playlists seem to use this strange format
+            return obj["images300"][0]
+        if obj.get("album"):
+            return self.__get_image(obj["album"])
+        if obj.get("artist"):
+            return self.__get_image(obj["artist"])
+        return None

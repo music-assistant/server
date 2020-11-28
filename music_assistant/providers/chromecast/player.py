@@ -319,7 +319,7 @@ class ChromecastPlayer(Player):
     async def async_cmd_stop(self) -> None:
         """Send stop command to player."""
         if self._chromecast and self._chromecast.media_controller:
-            await self.async_chromecast_command(self._chromecast.media_controller.stop)
+            await self.async_chromecast_command(self._chromecast.quit_app)
 
     async def async_cmd_play(self) -> None:
         """Send play command to player."""
@@ -351,12 +351,7 @@ class ChromecastPlayer(Player):
 
     async def async_cmd_power_off(self) -> None:
         """Send power OFF command to player."""
-        if self.media_status and (
-            self.media_status.player_is_playing
-            or self.media_status.player_is_paused
-            or self.media_status.player_is_idle
-        ):
-            await self.async_chromecast_command(self._chromecast.media_controller.stop)
+        await self.async_cmd_stop()
         # chromecast has no real poweroff so we send mute instead
         await self.async_chromecast_command(self._chromecast.set_volume_muted, True)
 

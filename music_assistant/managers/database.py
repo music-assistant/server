@@ -10,6 +10,7 @@ from music_assistant.helpers.util import merge_dict, merge_list, try_parse_int
 from music_assistant.helpers.web import json_serializer
 from music_assistant.models.media_types import (
     Album,
+    AlbumType,
     Artist,
     FullAlbum,
     FullTrack,
@@ -637,11 +638,16 @@ class DatabaseManager:
             )
             metadata = merge_dict(cur_item.metadata, album.metadata)
             provider_ids = merge_list(cur_item.provider_ids, album.provider_ids)
+            if cur_item.album_type == AlbumType.Unknown:
+                album_type = album.album_type
+            else:
+                album_type = cur_item.album_type
             sql_query = """UPDATE albums
                 SET upc=?,
                     artist=?,
                     metadata=?,
-                    provider_ids=?
+                    provider_ids=?,
+                    album_type=?
                 WHERE item_id=?;"""
             await db_conn.execute(
                 sql_query,
@@ -650,6 +656,7 @@ class DatabaseManager:
                     json_serializer(album_artist),
                     json_serializer(metadata),
                     json_serializer(provider_ids),
+                    album_type.value,
                     item_id,
                 ),
             )

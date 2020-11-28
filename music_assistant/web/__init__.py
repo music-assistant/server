@@ -327,12 +327,13 @@ class WebServer:
             url = await async_get_image_url(
                 self.mass, item.item_id, item.provider, item.media_type
             )
-        img_file = await async_get_thumb_file(self.mass, url, size)
-        if img_file:
-            with open(img_file, "rb") as _file:
-                icon_data = _file.read()
-                icon_data = b64encode(icon_data)
-                return "data:image/png;base64," + icon_data.decode()
+        if url:
+            img_file = await async_get_thumb_file(self.mass, url, size)
+            if img_file:
+                with open(img_file, "rb") as _file:
+                    icon_data = _file.read()
+                    icon_data = b64encode(icon_data)
+                    return "data:image/png;base64," + icon_data.decode()
         raise KeyError("Invalid item or url")
 
     @api_route("images/provider-icons/:provider_id?")

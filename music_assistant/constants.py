@@ -1,6 +1,6 @@
 """All constants for Music Assistant."""
 
-__version__ = "0.0.69"
+__version__ = "0.0.70"
 REQUIRED_PYTHON_VER = "3.7"
 
 # configuration keys/attributes
@@ -51,6 +51,11 @@ EVENT_QUEUE_TIME_UPDATED = "queue time updated"
 EVENT_SHUTDOWN = "application shutdown"
 EVENT_PROVIDER_REGISTERED = "provider registered"
 EVENT_PROVIDER_UNREGISTERED = "provider unregistered"
+EVENT_ARTIST_ADDED = "artist added"
+EVENT_ALBUM_ADDED = "album added"
+EVENT_TRACK_ADDED = "track added"
+EVENT_PLAYLIST_ADDED = "playlist added"
+EVENT_RADIO_ADDED = "radio added"
 
 # player attributes
 ATTR_PLAYER_ID = "player_id"

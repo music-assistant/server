@@ -5,7 +5,6 @@ from enum import Enum, IntEnum
 from typing import Any, List, Mapping
 
 import ujson
-import unidecode
 from mashumaro import DataClassDictMixin
 
 
@@ -33,6 +32,7 @@ class AlbumType(Enum):
     Album = "album"
     Single = "single"
     Compilation = "compilation"
+    Unknown = "unknown"
 
 
 class TrackQuality(IntEnum):
@@ -110,7 +110,7 @@ class MediaItem(DataClassDictMixin):
         for item in ["The ", "De ", "de ", "Les "]:
             if self.name.startswith(item):
                 sort_name = "".join(self.name.split(item)[1:])
-        return unidecode.unidecode(sort_name).lower()
+        return sort_name.lower()
 
     @property
     def available(self):
@@ -151,7 +151,7 @@ class Album(MediaItem):
     version: str = ""
     year: int = 0
     artist: ItemMapping = None
-    album_type: AlbumType = AlbumType.Album
+    album_type: AlbumType = AlbumType.Unknown
     upc: str = ""
 
 
