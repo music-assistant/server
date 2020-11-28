@@ -54,7 +54,7 @@ class ChromecastPlayer(Player):
         self._available = False
         self._status_listener: Optional[CastStatusListener] = None
         self._is_speaker_group = False
-        self._throttler = Throttler(rate_limit=2, period=1)
+        self._throttler = Throttler(rate_limit=1, period=0.25)
 
     @property
     def player_id(self) -> str:
@@ -192,22 +192,20 @@ class ChromecastPlayer(Player):
         """Return player specific config entries (if any)."""
         return PLAYER_CONFIG_ENTRIES
 
-    def set_cast_info(self, cast_info: ChromecastInfo) -> None:
+    async def async_set_cast_info(self, cast_info: ChromecastInfo) -> None:
         """Set the cast information and set up the chromecast object."""
         self._cast_info = cast_info
-        if self._chromecast and not self._available:
-            try:
-                self.disconnect()
-            except Exception:  # pylint: disable=broad-except
-                pass
-        elif self._chromecast is not None:
+        # Only setup the chromecast once, changes will automatically be picked up.
+        if self._chromecast is not None:
             return
         LOGGER.debug(
             "[%s] Connecting to cast device by service %s",
             self._cast_info.friendly_name,
             self.services,
         )
-        chromecast = pychromecast.get_chromecast_from_service(
+        chromecast = await self.mass.loop.run_in_executor(
+            None,
+            pychromecast.get_chromecast_from_service,
             (
                 self.services,
                 cast_info.uuid,
@@ -230,20 +228,23 @@ class ChromecastPlayer(Player):
         chromecast.mz_controller = mz_controller
         self._chromecast.start()
 
-    def disconnect(self) -> None:
+    async def async_disconnect(self):
         """Disconnect Chromecast object if it is set."""
-        self._available = False
         if self._chromecast is None:
+            # Can't disconnect if not connected.
             return
-        LOGGER.warning(
-            "[%s] Disconnecting from chromecast socket", self._cast_info.friendly_name
+        LOGGER.debug(
+            "[%s %s] Disconnecting from chromecast socket",
+            self.player_id,
+            self._cast_info.friendly_name,
         )
-        if (
-            self._chromecast.socket_client
-            and not self._chromecast.socket_client.is_stopped
-        ):
-            self._chromecast.disconnect()
+        self._available = False
+        self.update_state()
+
+        await self.mass.loop.run_in_executor(None, self._chromecast.disconnect)
+
         self._invalidate()
+        self.update_state()
 
     def _invalidate(self) -> None:
         """Invalidate some attributes."""
@@ -258,7 +259,7 @@ class ChromecastPlayer(Player):
 
     async def async_on_remove(self) -> None:
         """Call when player is removed from the player manager."""
-        self.mass.add_job(self.disconnect)
+        await self.async_disconnect()
 
     # ========== Callbacks ==========
 
@@ -301,7 +302,7 @@ class ChromecastPlayer(Player):
             self._available = new_available
             self.update_state()
             if self._cast_info.is_audio_group and new_available:
-                self.chromecast_command(self._chromecast.mz_controller.update_members)
+                self.mass.add_job(self._chromecast.mz_controller.update_members)
 
     async def async_on_update(self) -> None:
         """Call when player is periodically polled by the player manager (should_poll=True)."""
@@ -406,11 +407,7 @@ class ChromecastPlayer(Player):
 
     def __create_queue_items(self, tracks) -> None:
         """Create list of CC queue items from tracks."""
-        queue_items = []
-        for track in tracks:
-            queue_item = self.__create_queue_item(track)
-            queue_items.append(queue_item)
-        return queue_items
+        return [self.__create_queue_item(track) for track in tracks]
 
     def __create_queue_item(self, track):
         """Create CC queue item from track info."""
@@ -457,10 +454,6 @@ class ChromecastPlayer(Player):
             )
         else:
             send_queue()
-
-    def chromecast_command(self, func, *args, **kwargs):
-        """Try to execute Chromecast command."""
-        self.mass.add_job(self.async_chromecast_command(func, *args, **kwargs))
 
     async def async_chromecast_command(self, func, *args, **kwargs):
         """Execute command on Chromecast."""

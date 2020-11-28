@@ -94,7 +94,7 @@ class ChromecastProvider(PlayerProvider):
         if not player:
             player = ChromecastPlayer(self.mass, cast_info)
         # if player was already added, it player will take care of reconnects itself.
-        self.mass.add_job(player.set_cast_info, cast_info)
+        self.mass.add_job(player.async_set_cast_info, cast_info)
         self.mass.add_job(self.mass.players.async_add_player(player))
 
     @staticmethod
@@ -104,4 +104,4 @@ class ChromecastProvider(PlayerProvider):
         player_id = str(cast_service[1])
         friendly_name = cast_service[3]
         LOGGER.debug("Chromecast removed: %s - %s", friendly_name, player_id)
-        # we ignore this event completely as the Chromecast socket clients handles this on its own
+        # we ignore this event completely as the Chromecast socket client handles this itself
