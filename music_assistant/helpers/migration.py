@@ -52,9 +52,13 @@ async def run_migration_0070(mass: MusicAssistantType):
                 db_conn.row_factory = aiosqlite.Row
                 sql_query = "SELECT * FROM track_loudness"
                 for db_row in await db_conn.execute_fetchall(sql_query, ()):
+                    if "provider_track_id" in db_row.keys():
+                        track_id = db_row["provider_track_id"]
+                    else:
+                        track_id = db_row["item_id"]
                     tracks_loudness.append(
                         (
-                            db_row["provider_track_id"],
+                            track_id,
                             db_row["provider"],
                             db_row["loudness"],
                         )
