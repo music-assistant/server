@@ -14,6 +14,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.cache import async_cached
 from music_assistant.helpers.compare import (
     compare_album,
+    compare_artists,
     compare_strings,
     compare_track,
 )
@@ -322,16 +323,20 @@ class MusicManager:
         provider_ids = [
             item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
         ]
-        search_query = f"{album.artist.name} - {album.name}"
-        result = []
-        for prov_id in provider_ids:
-            provider_result = await self.async_search_provider(
-                search_query, prov_id, [MediaType.Album], 25
+        search_query = f"{album.artist.name} {album.name}"
+        return [
+            prov_item
+            for prov_items in await asyncio.gather(
+                *[
+                    self.async_search_provider(
+                        search_query, prov_id, [MediaType.Album], 25
+                    )
+                    for prov_id in provider_ids
+                ]
             )
-            for item in provider_result.albums:
-                if compare_strings(item.artist.name, album.artist.name):
-                    result.append(item)
-        return result
+            for prov_item in prov_items.albums
+            if compare_strings(prov_item.artist.name, album.artist.name)
+        ]
 
     @api_route("tracks/:provider_id/:item_id/versions")
     async def async_get_track_versions(
@@ -342,21 +347,20 @@ class MusicManager:
         provider_ids = [
             item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
         ]
-        search_query = f"{track.artists[0].name} - {track.name}"
-        result = []
-        for prov_id in provider_ids:
-            provider_result = await self.async_search_provider(
-                search_query, prov_id, [MediaType.Track], 25
+        search_query = f"{track.artists[0].name} {track.name}"
+        return [
+            prov_item
+            for prov_items in await asyncio.gather(
+                *[
+                    self.async_search_provider(
+                        search_query, prov_id, [MediaType.Track], 25
+                    )
+                    for prov_id in provider_ids
+                ]
             )
-            for item in provider_result.tracks:
-                if not compare_strings(item.name, track.name):
-                    continue
-                for artist in item.artists:
-                    # artist must match
-                    if compare_strings(artist.name, track.artists[0].name):
-                        result.append(item)
-                        break
-        return result
+            for prov_item in prov_items.tracks
+            if compare_artists(prov_item.artists, track.artists)
+        ]
 
     @api_route("playlists/:provider_id/:item_id/tracks")
     async def async_get_playlist_tracks(
