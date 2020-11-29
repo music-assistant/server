@@ -233,7 +233,6 @@ class WebsocketsPlayer(Player):
 
     async def async_cmd_power_off(self) -> None:
         """Send POWER OFF command to player."""
-        await self.async_cmd_stop()
         self._powered = False
         self.update_state()
 

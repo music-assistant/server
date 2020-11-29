@@ -155,7 +155,6 @@ class SonosProvider(PlayerProvider):
         player = self._players.get(player_id)
         if player:
             # power is not supported so abuse mute instead
-            self.mass.add_job(player.soco.stop)
             player.soco.mute = True
             player.powered = False
         else:

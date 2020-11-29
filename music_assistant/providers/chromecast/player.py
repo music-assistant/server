@@ -352,7 +352,6 @@ class ChromecastPlayer(Player):
 
     async def async_cmd_power_off(self) -> None:
         """Send power OFF command to player."""
-        await self.async_cmd_stop()
         # chromecast has no real poweroff so we send mute instead
         await self.async_chromecast_command(self._chromecast.set_volume_muted, True)
 
