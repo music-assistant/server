@@ -137,7 +137,8 @@ class WebServer:
         self.app.on_response_prepare.append(on_prepare)
         self._runner = web.AppRunner(self.app, access_log=None)
         await self._runner.setup()
-        http_site = web.TCPSite(self._runner, "0.0.0.0", self.port)
+        # set host to None to bind to all addresses on both IPv4 and IPv6
+        http_site = web.TCPSite(self._runner, host=None, port=self.port)
         await http_site.start()
         LOGGER.info("Started Music Assistant server on %s", self.url)
         self.mass.add_event_listener(self.__async_handle_mass_events)
