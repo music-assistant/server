@@ -14,7 +14,7 @@ aiohttp_cors==0.7.0
 unidecode==1.1.1
 PyJWT==1.7.1
 aiohttp_jwt==0.6.1
-zeroconf==0.28.6
+zeroconf==0.28.7
 passlib==1.7.4
 cryptography==3.2.1
 ujson==4.0.1
