@@ -54,7 +54,7 @@ class ChromecastPlayer(Player):
         self._available = False
         self._status_listener: Optional[CastStatusListener] = None
         self._is_speaker_group = False
-        self._throttler = Throttler(rate_limit=1, period=0.25)
+        self._throttler = Throttler(rate_limit=1, period=0.1)
 
     @property
     def player_id(self) -> str:
@@ -148,7 +148,7 @@ class ChromecastPlayer(Player):
     @property
     def volume_level(self) -> int:
         """Return volume_level of this player."""
-        return int(self.cast_status.volume_level * 100 if self.cast_status else 0)
+        return self.cast_status.volume_level * 100 if self.cast_status else 0
 
     @property
     def muted(self) -> bool:

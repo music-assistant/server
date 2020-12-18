@@ -20,7 +20,6 @@ class ContentType(Enum):
     OGG = "ogg"
     FLAC = "flac"
     MP3 = "mp3"
-    RAW = "raw"
     AAC = "aac"
     MPEG = "mpeg"
 
@@ -39,7 +38,7 @@ class StreamDetails:
     player_id: str = ""
     details: Any = None
     seconds_played: int = 0
-    sox_options: str = None
+    gain_correct: float = 0
 
     def to_dict(
         self,
@@ -54,6 +53,6 @@ class StreamDetails:
             "content_type": self.content_type.value,
             "sample_rate": self.sample_rate,
             "bit_depth": self.bit_depth,
-            "sox_options": self.sox_options,
+            "gain_correct": self.gain_correct,
             "seconds_played": self.seconds_played,
         }

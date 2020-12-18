@@ -395,7 +395,7 @@ class PlayerState:
             ATTR_STATE: self.state.value,
             ATTR_AVAILABLE: self.available,
             ATTR_CURRENT_URI: self.current_uri,
-            ATTR_VOLUME_LEVEL: self.volume_level,
+            ATTR_VOLUME_LEVEL: int(self.volume_level),
             ATTR_MUTED: self.muted,
             ATTR_IS_GROUP_PLAYER: self.is_group_player,
             ATTR_GROUP_CHILDS: self.group_childs,

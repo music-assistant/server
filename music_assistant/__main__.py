@@ -24,6 +24,13 @@ def get_arguments():
         help="Directory that contains the MusicAssistant configuration",
     )
     parser.add_argument(
+        "-p",
+        "--port",
+        metavar="port",
+        default=8095,
+        help="TCP port on which the server should be run.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Start MusicAssistant with verbose debug logging",
@@ -57,7 +64,7 @@ def main():
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     logging.getLogger("aiosqlite").setLevel(logging.INFO)
 
-    mass = MusicAssistant(data_dir, args.debug)
+    mass = MusicAssistant(data_dir, args.debug, int(args.port))
 
     def on_shutdown(loop):
         logger.info("shutdown requested!")

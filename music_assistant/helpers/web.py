@@ -82,11 +82,12 @@ async def async_json_response(data: Any, status: int = 200):
     return json_response(data)
 
 
-def api_route(ws_cmd_path):
+def api_route(ws_cmd_path, ws_require_auth=True):
     """Decorate a function as websocket command."""
 
     def decorate(func):
         func.ws_cmd_path = ws_cmd_path
+        func.ws_require_auth = ws_require_auth
         return func
 
     return decorate

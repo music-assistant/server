@@ -322,7 +322,7 @@ class SpotifyProvider(MusicProvider):
         await self.async_get_token()
         spotty = self.get_spotty_binary()
         spotty_exec = (
-            '%s -n temp -c "%s" --pass-through --single-track spotify://track:%s'
+            '%s -n temp -c "%s" -b 320 --pass-through --single-track spotify://track:%s'
             % (
                 spotty,
                 self.mass.config.data_path,
@@ -558,6 +558,8 @@ class SpotifyProvider(MusicProvider):
         params["market"] = "from_token"
         params["country"] = "from_token"
         token = await self.async_get_token()
+        if not token:
+            return None
         headers = {"Authorization": "Bearer %s" % token["accessToken"]}
         async with self._throttler:
             async with self.mass.http_session.get(
@@ -575,6 +577,8 @@ class SpotifyProvider(MusicProvider):
             params = {}
         url = "https://api.spotify.com/v1/%s" % endpoint
         token = await self.async_get_token()
+        if not token:
+            return None
         headers = {"Authorization": "Bearer %s" % token["accessToken"]}
         async with self.mass.http_session.delete(
             url, headers=headers, params=params, json=data, verify_ssl=False
@@ -587,6 +591,8 @@ class SpotifyProvider(MusicProvider):
             params = {}
         url = "https://api.spotify.com/v1/%s" % endpoint
         token = await self.async_get_token()
+        if not token:
+            return None
         headers = {"Authorization": "Bearer %s" % token["accessToken"]}
         async with self.mass.http_session.put(
             url, headers=headers, params=params, json=data, verify_ssl=False
@@ -599,6 +605,8 @@ class SpotifyProvider(MusicProvider):
             params = {}
         url = "https://api.spotify.com/v1/%s" % endpoint
         token = await self.async_get_token()
+        if not token:
+            return None
         headers = {"Authorization": "Bearer %s" % token["accessToken"]}
         async with self.mass.http_session.post(
             url, headers=headers, params=params, json=data, verify_ssl=False

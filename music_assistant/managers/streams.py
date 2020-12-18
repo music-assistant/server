@@ -22,7 +22,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistantType
-from music_assistant.helpers.util import create_tempfile, get_ip, try_parse_int
+from music_assistant.helpers.util import create_tempfile, get_ip
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 
 LOGGER = logging.getLogger("stream_manager")
@@ -54,7 +54,7 @@ class StreamManager:
         output_format: SoxOutputFormat = SoxOutputFormat.FLAC,
         resample: Optional[int] = None,
         gain_db_adjust: Optional[float] = None,
-        chunk_size: int = 1024000,
+        chunk_size: int = 512000,
     ) -> AsyncGenerator[Tuple[bool, bytes], None]:
         """Get the sox manipulated audio data for the given streamdetails."""
         # collect all args for sox
@@ -112,10 +112,9 @@ class StreamManager:
 
     async def async_queue_stream_flac(self, player_id) -> AsyncGenerator[bytes, None]:
         """Stream the PlayerQueue's tracks as constant feed in flac format."""
-        chunk_size = 512000
-
         player_conf = self.mass.config.get_player_config(player_id)
         sample_rate = player_conf.get(CONF_MAX_SAMPLE_RATE, 96000)
+        chunk_size = sample_rate * 2 * 10
 
         args = [
             "sox",
@@ -186,6 +185,8 @@ class StreamManager:
             gain_correct = await self.mass.players.async_get_gain_correct(
                 player_id, streamdetails.item_id, streamdetails.provider
             )
+            streamdetails.gain_correct = gain_correct
+
             LOGGER.debug(
                 "Start Streaming queue track: %s (%s) for player %s",
                 queue_track.item_id,
@@ -335,6 +336,8 @@ class StreamManager:
         gain_correct = await self.mass.players.async_get_gain_correct(
             player_id, streamdetails.item_id, streamdetails.provider
         )
+        streamdetails.gain_correct = gain_correct
+
         # start streaming
         LOGGER.debug("Start streaming %s (%s)", queue_item_id, queue_item.name)
         async for _, audio_chunk in self.async_get_sox_stream(
@@ -373,10 +376,7 @@ class StreamManager:
 
         if stream_type == StreamType.URL:
             async with self.mass.http_session.get(stream_path) as response:
-                while True:
-                    chunk = await response.content.read(chunk_size)
-                    if not chunk:
-                        break
+                async for chunk, _ in response.content.iter_chunks():
                     yield chunk
                     if needs_analyze and len(audio_data) < 100000000:
                         audio_data += chunk
@@ -409,29 +409,6 @@ class StreamManager:
         # send analyze job to background worker
         if needs_analyze and audio_data:
             self.mass.add_job(self.__analyze_audio, streamdetails, audio_data)
-
-    def __get_player_sox_options(
-        self, player_id: str, streamdetails: StreamDetails
-    ) -> str:
-        """Get player specific sox effect options."""
-        sox_options = []
-        player_conf = self.mass.config.get_player_config(player_id)
-        # volume normalisation
-        gain_correct = self.mass.add_job(
-            self.mass.players.async_get_gain_correct(
-                player_id, streamdetails.item_id, streamdetails.provider
-            )
-        ).result()
-        if gain_correct != 0:
-            sox_options.append("vol %s dB " % gain_correct)
-        # downsample if needed
-        if player_conf["max_sample_rate"]:
-            max_sample_rate = try_parse_int(player_conf["max_sample_rate"])
-            if max_sample_rate < streamdetails.sample_rate:
-                sox_options.append(f"rate -v {max_sample_rate}")
-        if player_conf.get("sox_options"):
-            sox_options.append(player_conf["sox_options"])
-        return " ".join(sox_options)
 
     def __analyze_audio(self, streamdetails, audio_data) -> None:
         """Analyze track audio, for now we only calculate EBU R128 loudness."""

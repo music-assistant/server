@@ -39,14 +39,6 @@ class PlayerManager:
         self._player_queues = {}
         self._poll_ticks = 0
         self._controls = {}
-        # self.mass.add_event_listener(
-        #     self.__handle_websocket_player_control_event,
-        #     [
-        #         EVENT_REGISTER_PLAYER_CONTROL,
-        #         EVENT_UNREGISTER_PLAYER_CONTROL,
-        #         EVENT_PLAYER_CONTROL_UPDATED,
-        #     ],
-        # )
 
     async def async_setup(self):
         """Async initialize of module."""
@@ -195,8 +187,9 @@ class PlayerManager:
     async def async_trigger_player_update(self, player_id: str):
         """Trigger update of an existing player.."""
         player = self.get_player(player_id)
-        if player:
-            await self._player_states[player.player_id].async_update(player)
+        player_state = self.get_player_state(player_id)
+        if player and player_state:
+            await player_state.async_update(player)
 
     @api_route("players/controls/:control_id/register")
     async def async_register_player_control(
@@ -301,8 +294,8 @@ class PlayerManager:
                     continue
                 queue_item = QueueItem.from_track(track)
                 # generate uri for this queue item
-                queue_item.uri = "%s/stream/queue/%s/%s" % (
-                    self.mass.web.url,
+                queue_item.uri = "%s/queue/%s/%s" % (
+                    self.mass.web.stream_url,
                     player_id,
                     queue_item.queue_item_id,
                 )
@@ -334,8 +327,8 @@ class PlayerManager:
         """
         queue_item = QueueItem(item_id=uri, provider="uri", name=uri)
         # generate uri for this queue item
-        queue_item.uri = "%s/stream/%s/%s" % (
-            self.mass.web.url,
+        queue_item.uri = "%s/%s/%s" % (
+            self.mass.web.stream_url,
             player_id,
             queue_item.queue_item_id,
         )
@@ -569,7 +562,11 @@ class PlayerManager:
         player_state = self.get_player_state(player_id)
         if not player_state:
             return
-        new_level = player_state.volume_level + 1
+        if player_state.volume_level <= 10 or player_state.volume_level >= 90:
+            step_size = 2
+        else:
+            step_size = 5
+        new_level = player_state.volume_level + step_size
         if new_level > 100:
             new_level = 100
         return await self.async_cmd_volume_set(player_id, new_level)
@@ -584,7 +581,11 @@ class PlayerManager:
         player_state = self.get_player_state(player_id)
         if not player_state:
             return
-        new_level = player_state.volume_level - 1
+        if player_state.volume_level <= 10 or player_state.volume_level >= 90:
+            step_size = 2
+        else:
+            step_size = 5
+        new_level = player_state.volume_level - step_size
         if new_level < 0:
             new_level = 0
         return await self.async_cmd_volume_set(player_id, new_level)

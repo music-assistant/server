@@ -241,7 +241,7 @@ class GroupPlayer(Player):
         for child_player_id in self.group_childs:
             child_player = self.mass.players.get_player(child_player_id)
             if child_player:
-                queue_stream_uri = f"{self.mass.web.url}/stream/group/{self.player_id}?player_id={child_player_id}"
+                queue_stream_uri = f"{self.mass.web.stream_url}/group/{self.player_id}?player_id={child_player_id}"
                 await child_player.async_cmd_play_uri(queue_stream_uri)
         self.update_state()
         self.stream_task = self.mass.add_job(self.async_queue_stream_task())

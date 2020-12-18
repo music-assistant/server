@@ -10,6 +10,7 @@ import aiosqlite
 from music_assistant.constants import __version__ as app_version
 from music_assistant.helpers.encryption import encrypt_string
 from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.util import get_hostname
 
 
 async def check_migrations(mass: MusicAssistantType):
@@ -31,6 +32,8 @@ async def check_migrations(mass: MusicAssistantType):
         mass.config.stored_config["jwt_key"] = encrypt_string(str(uuid.uuid4()))
     if "initialized" not in mass.config.stored_config:
         mass.config.stored_config["initialized"] = False
+    if "friendly_name" not in mass.config.stored_config:
+        mass.config.stored_config["friendly_name"] = get_hostname()
     mass.config.save()
 
     # create default db tables (if needed)

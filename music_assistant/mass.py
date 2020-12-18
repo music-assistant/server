@@ -26,8 +26,8 @@ from music_assistant.managers.music import MusicManager
 from music_assistant.managers.players import PlayerManager
 from music_assistant.managers.streams import StreamManager
 from music_assistant.models.provider import Provider, ProviderType
-from music_assistant.web import WebServer
-from zeroconf import NonUniqueNameException, ServiceInfo, Zeroconf
+from music_assistant.web.server import WebServer
+from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 
 LOGGER = logging.getLogger("mass")
 
@@ -69,7 +69,7 @@ class MusicAssistant:
         self._players = PlayerManager(self)
         self._streams = StreamManager(self)
         # shared zeroconf instance
-        self.zeroconf = Zeroconf()
+        self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
 
     async def async_start(self):
         """Start running the music assistant server."""
@@ -89,7 +89,7 @@ class MusicAssistant:
         await self._music.async_setup()
         await self._players.async_setup()
         await self.__async_preload_providers()
-        await self.__async_setup_discovery()
+        await self.async_setup_discovery()
         await self._web.async_setup()
         await self._library.async_setup()
         self.loop.create_task(self.__process_background_tasks())
@@ -321,25 +321,34 @@ class MusicAssistant:
             await task
             await asyncio.sleep(1)
 
-    async def __async_setup_discovery(self) -> None:
+    async def async_setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
-        zeroconf_type = "_music-assistant._tcp.local."
-        discovery_info = await self.web.discovery_info()
-        name = discovery_info["id"].lower()
-        info = ServiceInfo(
-            zeroconf_type,
-            name=f"{name}.{zeroconf_type}",
-            addresses=[get_ip_pton()],
-            port=discovery_info["port"],
-            properties=discovery_info,
-        )
-        LOGGER.debug("Starting Zeroconf broadcast...")
-        try:
-            self.zeroconf.register_service(info)
-        except NonUniqueNameException:
-            LOGGER.error(
-                "Music Assistant instance with identical name present in the local network"
+
+        def setup_discovery():
+            zeroconf_type = "_music-assistant._tcp.local."
+
+            info = ServiceInfo(
+                zeroconf_type,
+                name=f"{self.web.server_id}.{zeroconf_type}",
+                addresses=[get_ip_pton()],
+                port=self.web.port,
+                properties=self.web.discovery_info,
+                server="musicassistant.local.",
             )
+            LOGGER.debug("Starting Zeroconf broadcast...")
+            try:
+                existing = getattr(self, "mass_zc_service_set", None)
+                if existing:
+                    self.zeroconf.update_service(info)
+                else:
+                    self.zeroconf.register_service(info)
+                setattr(self, "mass_zc_service_set", True)
+            except NonUniqueNameException:
+                LOGGER.error(
+                    "Music Assistant instance with identical name present in the local network!"
+                )
+
+        self.add_job(setup_discovery)
 
     async def __async_preload_providers(self):
         """Dynamically load all providermodules."""
