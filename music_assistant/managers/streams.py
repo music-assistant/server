@@ -308,13 +308,13 @@ class StreamManager:
                 player_id,
             )
             # run garbage collect manually to avoid too much memory fragmentation
-            gc.collect()
+            self.mass.add_job(gc.collect)
         # end of queue reached, pass last fadeout bits to final output
         yield last_fadeout_data
         del last_fadeout_data
         # END OF QUEUE STREAM
         # run garbage collect manually to avoid too much memory fragmentation
-        gc.collect()
+        self.mass.add_job(gc.collect)
         LOGGER.info("streaming of queue for player %s completed", player_id)
 
     async def async_stream_queue_item(

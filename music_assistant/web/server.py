@@ -175,10 +175,6 @@ class WebServer:
     async def async_index(self, request: web.Request):
         """Get the index page, redirect if we do not have a web directory."""
         # pylint: disable=unused-argument
-        if not self.mass.config.stored_config["initialized"]:
-            return web.FileResponse(
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup.html")
-            )
         html_app = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "static/index.html"
         )
