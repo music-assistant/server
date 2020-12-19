@@ -1,4 +1,9 @@
-"""Helper functionalities for path detection in api routes."""
+"""
+Helper functionalities for path detection in api routes.
+
+Based on the original work by nickcoutsos and synacor
+https://github.com/nickcoutsos/python-repath
+"""
 import re
 import urllib
 import urllib.parse
@@ -102,8 +107,7 @@ def tokens_to_function(tokens):
             if value is None:
                 if key["optional"]:
                     continue
-                else:
-                    raise KeyError('Expected "{name}" to be defined'.format(**key))
+                raise KeyError('Expected "{name}" to be defined'.format(**key))
 
             if isinstance(value, list):
                 if not key["repeat"]:
@@ -112,10 +116,7 @@ def tokens_to_function(tokens):
                 if not value:
                     if key["optional"]:
                         continue
-                    else:
-                        raise ValueError(
-                            'Expected "{name}" to not be empty'.format(**key)
-                        )
+                    raise ValueError('Expected "{name}" to not be empty'.format(**key))
 
                 for i, val in enumerate(value):
                     val = str(val)
@@ -178,10 +179,10 @@ def tokens_to_pattern(tokens, options=None):
     strict = options.get("strict")
     end = options.get("end") is not False
     route = ""
-    lastToken = tokens[-1]
-    endsWithSlash = isinstance(lastToken, str) and lastToken.endswith("/")
+    last_token = tokens[-1]
+    ends_with_slash = isinstance(last_token, str) and last_token.endswith("/")
 
-    PATTERNS = dict(
+    patterns = dict(
         REPEAT="(?:{prefix}{capture})*",
         OPTIONAL="(?:{prefix}({name}{capture}))?",
         REQUIRED="{prefix}({name}{capture})",
@@ -202,19 +203,19 @@ def tokens_to_pattern(tokens, options=None):
             parts["name"] = "?P<%s>" % re.escape(token["name"])
 
         if token["repeat"]:
-            parts["capture"] += PATTERNS["REPEAT"].format(**parts)
+            parts["capture"] += patterns["REPEAT"].format(**parts)
 
-        template = PATTERNS["OPTIONAL" if token["optional"] else "REQUIRED"]
+        template = patterns["OPTIONAL" if token["optional"] else "REQUIRED"]
         route += template.format(**parts)
 
     if not strict:
-        route = route[:-1] if endsWithSlash else route
+        route = route[:-1] if ends_with_slash else route
         route += "(?:/(?=$))?"
 
     if end:
         route += "$"
     else:
-        route += "" if strict and endsWithSlash else "(?=/|$)"
+        route += "" if strict and ends_with_slash else "(?=/|$)"
 
     return "^%s" % route
 
@@ -258,16 +259,6 @@ def path_to_pattern(path, keys=None, options=None):
     return string_to_pattern(path, keys, options)
 
 
-def compile(string):
-    """Compile a string to a template function for the path."""
-    return tokens_to_function(parse(string))
-
-
-def match(pattrn, requested_url_path):
+def match_pattern(pattrn, requested_url_path):
     """Return shorthand to match function."""
     return re.match(pattrn, requested_url_path)
-
-
-def pattern(pathstr):
-    """Return shorthand to pattern function."""
-    return path_to_pattern(pathstr)

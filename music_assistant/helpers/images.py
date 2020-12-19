@@ -69,7 +69,7 @@ async def async_get_image_url(
         return await async_get_image_url(
             mass, item.album.item_id, item.album.provider, MediaType.Album
         )
-    elif media_type == MediaType.Album and item.artist:
+    if media_type == MediaType.Album and item.artist:
         # try artist instead for albums
         return await async_get_image_url(
             mass, item.artist.item_id, item.artist.provider, MediaType.Artist

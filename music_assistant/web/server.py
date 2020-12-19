@@ -56,7 +56,6 @@ class WebServer:
         self.config = mass.config.base["web"]
         self._runner = None
         self.api_routes = {}
-        self._discovered_servers = []
 
     async def async_setup(self):
         """Perform async setup."""
@@ -106,7 +105,7 @@ class WebServer:
 
     def register_api_route(self, cmd: str, func: Awaitable):
         """Register a command(handler) to the websocket api."""
-        pattern = repath.pattern(cmd)
+        pattern = repath.path_to_pattern(cmd)
         self.api_routes[pattern] = func
 
     def register_api_routes(self, cls: Any):
@@ -218,9 +217,6 @@ class WebServer:
         self.mass.config.save()
         # fix discovery info
         await self.mass.async_setup_discovery()
-        for item in self._discovered_servers:
-            if item["id"] == self.server_id:
-                item["initialized"] = True
         return True
 
     @api_route("images/thumb")
@@ -321,7 +317,7 @@ class WebServer:
             return await self.__async_handle_auth(ws_client, data)
         # work out handler for the given path/command
         for key in self.api_routes:
-            match = repath.match(key, command)
+            match = repath.match_pattern(key, command)
             if match:
                 params = match.groupdict()
                 handler = self.api_routes[key]
