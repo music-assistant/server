@@ -333,7 +333,7 @@ class MusicAssistant:
                 addresses=[get_ip_pton()],
                 port=self.web.port,
                 properties=self.web.discovery_info,
-                server="musicassistant.local.",
+                server=f"mass_{self.web.server_id}.local.",
             )
             LOGGER.debug("Starting Zeroconf broadcast...")
             try:

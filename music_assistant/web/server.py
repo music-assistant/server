@@ -78,7 +78,7 @@ class WebServer:
         ]:
             self.register_api_routes(cls)
 
-        # Add server discovery on root/index including CORS support
+        # Add server discovery on info including CORS support
         cors = aiohttp_cors.setup(
             self.app,
             defaults={
@@ -88,7 +88,14 @@ class WebServer:
                 )
             },
         )
-        cors.add(self.app.router.add_get("/", self.async_info))
+        cors.add(self.app.router.add_get("/info", self.async_info))
+        # Host the frontend app
+        webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static/")
+        if os.path.isdir(webdir):
+            self.app.router.add_get("/", self.async_index)
+            self.app.router.add_static("/", webdir, append_version=True)
+        else:
+            self.app.router.add_get("/", self.async_info)
 
         self._runner = web.AppRunner(self.app, access_log=None)
         await self._runner.setup()
@@ -121,8 +128,8 @@ class WebServer:
     def hostname(self):
         """Return the hostname for this Music Assistant instance."""
         if not self._hostname.endswith(".local"):
-            # probably running in docker ?
-            return "musicassistant.local"
+            # probably running in docker, use mdns name instead
+            return f"mass_{self.server_id}.local"
         return self._hostname
 
     @property
@@ -164,6 +171,18 @@ class WebServer:
             "friendly_name": self.mass.config.stored_config["friendly_name"],
             "initialized": self.mass.config.stored_config["initialized"],
         }
+
+    async def async_index(self, request: web.Request):
+        """Get the index page, redirect if we do not have a web directory."""
+        # pylint: disable=unused-argument
+        if not self.mass.config.stored_config["initialized"]:
+            return web.FileResponse(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup.html")
+            )
+        html_app = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "static/index.html"
+        )
+        return web.FileResponse(html_app)
 
     @api_route("info", False)
     async def async_info(self, request: web.Request = None):
