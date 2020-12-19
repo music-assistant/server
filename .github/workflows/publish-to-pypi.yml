@@ -20,7 +20,7 @@ jobs:
           curl https://github.com/music-assistant/app/archive/master.zip -LOk
           unzip master.zip
           cd /tmp/app-master
-          mv build /home/runner/work/server/server/music_assistant/web/static
+          mv docs /home/runner/work/server/server/music_assistant/web/static
           cd /home/runner/work/server/server/
       - name: Install wheel
         run: >-
