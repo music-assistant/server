@@ -114,12 +114,15 @@ class WebServer:
             func = getattr(cls, item)
             if not hasattr(func, "ws_cmd_path"):
                 continue
-            # method is decorated with our websocket decorator
+            # method is decorated with our api decorator
             self.register_api_route(func.ws_cmd_path, func)
 
     @property
     def hostname(self):
         """Return the hostname for this Music Assistant instance."""
+        if not self._hostname.endswith(".local"):
+            # probably running in docker ?
+            return "musicassistant.local"
         return self._hostname
 
     @property
@@ -162,7 +165,7 @@ class WebServer:
             "initialized": self.mass.config.stored_config["initialized"],
         }
 
-    @api_route("info")
+    @api_route("info", False)
     async def async_info(self, request: web.Request = None):
         """Return discovery info on index page."""
         if request:
