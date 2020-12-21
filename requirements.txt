@@ -11,7 +11,7 @@ aiorun==2020.11.1
 soco==0.20
 pillow==8.0.1
 aiohttp_cors==0.7.0
-unidecode==1.1.1
+unidecode==1.1.2
 PyJWT==1.7.1
 zeroconf==0.28.7
 passlib==1.7.4
