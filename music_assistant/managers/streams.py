@@ -54,7 +54,7 @@ class StreamManager:
         output_format: SoxOutputFormat = SoxOutputFormat.FLAC,
         resample: Optional[int] = None,
         gain_db_adjust: Optional[float] = None,
-        chunk_size: int = 512000,
+        chunk_size: int = 1000000,
     ) -> AsyncGenerator[Tuple[bool, bytes], None]:
         """Get the sox manipulated audio data for the given streamdetails."""
         # collect all args for sox
@@ -92,6 +92,7 @@ class StreamManager:
                 await sox_proc.write_eof()
 
             fill_buffer_task = self.mass.loop.create_task(fill_buffer())
+            await asyncio.sleep(1)
             # yield chunks from stdout
             # we keep 1 chunk behind to detect end of stream properly
             prev_chunk = b""
@@ -114,7 +115,6 @@ class StreamManager:
         """Stream the PlayerQueue's tracks as constant feed in flac format."""
         player_conf = self.mass.config.get_player_config(player_id)
         sample_rate = player_conf.get(CONF_MAX_SAMPLE_RATE, 96000)
-        chunk_size = sample_rate * 2 * 10
 
         args = [
             "sox",
@@ -144,7 +144,7 @@ class StreamManager:
             fill_buffer_task = self.mass.loop.create_task(fill_buffer())
 
             # start yielding audio chunks
-            async for chunk in sox_proc.iterate_chunks(chunk_size):
+            async for chunk in sox_proc.iterate_chunks(8000000):
                 yield chunk
             await asyncio.wait([fill_buffer_task])
 
@@ -341,7 +341,7 @@ class StreamManager:
         # start streaming
         LOGGER.debug("Start streaming %s (%s)", queue_item_id, queue_item.name)
         async for _, audio_chunk in self.async_get_sox_stream(
-            streamdetails, gain_db_adjust=gain_correct
+            streamdetails, gain_db_adjust=gain_correct, chunk_size=8000000
         ):
             yield audio_chunk
         LOGGER.debug("Finished streaming %s (%s)", queue_item_id, queue_item.name)
@@ -353,7 +353,6 @@ class StreamManager:
         stream_path = streamdetails.path
         stream_type = StreamType(streamdetails.type)
         audio_data = b""
-        chunk_size = 512000
         track_loudness = await self.mass.database.async_get_track_loudness(
             streamdetails.item_id, streamdetails.provider
         )
@@ -373,27 +372,25 @@ class StreamManager:
             streamdetails.item_id,
             streamdetails.type,
         )
-
+        # stream from URL
         if stream_type == StreamType.URL:
             async with self.mass.http_session.get(stream_path) as response:
-                async for chunk, _ in response.content.iter_chunks():
+                async for chunk in response.content.iter_chunks():
                     yield chunk
                     if needs_analyze and len(audio_data) < 100000000:
                         audio_data += chunk
+        # stream from file
         elif stream_type == StreamType.FILE:
             async with AIOFile(stream_path) as afp:
-                async for chunk in Reader(afp, chunk_size=chunk_size):
-                    if not chunk:
-                        break
+                async for chunk in Reader(afp):
                     yield chunk
                     if needs_analyze and len(audio_data) < 100000000:
                         audio_data += chunk
+        # stream from executable's stdout
         elif stream_type == StreamType.EXECUTABLE:
             args = shlex.split(stream_path)
             async with AsyncProcess(args) as process:
-                async for chunk in process.iterate_chunks(chunk_size):
-                    if not chunk:
-                        break
+                async for chunk in process.iterate_chunks():
                     yield chunk
                     if needs_analyze and len(audio_data) < 100000000:
                         audio_data += chunk
@@ -407,6 +404,8 @@ class StreamManager:
         )
 
         # send analyze job to background worker
+        # TODO: feed audio chunks to analyzer while streaming
+        # so we don't have to load this large chunk in memory
         if needs_analyze and audio_data:
             self.mass.add_job(self.__analyze_audio, streamdetails, audio_data)
 
@@ -466,7 +465,7 @@ async def async_crossfade_pcm_parts(
     args = ["sox", "-m", "-v", "1.0", "-t"] + pcm_args + [fadeoutfile.name, "-v", "1.0"]
     args += ["-t"] + pcm_args + [fadeinfile.name, "-t"] + pcm_args + ["-"]
     async with AsyncProcess(args, enable_write=False) as sox_proc:
-        crossfade_part = await sox_proc.communicate()
+        crossfade_part, _ = await sox_proc.communicate()
     fadeinfile.close()
     fadeoutfile.close()
     del fadeinfile
@@ -485,5 +484,5 @@ async def async_strip_silence(
     if reverse:
         args.append("reverse")
     async with AsyncProcess(args, enable_write=True) as sox_proc:
-        stripped_data = await sox_proc.communicate(audio_data)
+        stripped_data, _ = await sox_proc.communicate(audio_data)
     return stripped_data

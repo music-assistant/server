@@ -18,9 +18,13 @@ from typing import AsyncGenerator, List, Optional
 
 LOGGER = logging.getLogger("AsyncProcess")
 
+DEFAULT_CHUNKSIZE = 1000000
+
 
 class AsyncProcess:
     """Implementation of a (truly) non blocking subprocess."""
+
+    # workaround that is compatible with uvloop
 
     def __init__(
         self,
@@ -34,6 +38,8 @@ class AsyncProcess:
             shell=enable_shell,
             stdout=subprocess.PIPE,
             stdin=subprocess.PIPE if enable_write else None,
+            # bufsize needs to be very high for smooth playback
+            bufsize=64000000,
         )
         self.loop = asyncio.get_running_loop()
         self._cancelled = False
@@ -47,12 +53,13 @@ class AsyncProcess:
         self._cancelled = True
         if await self.loop.run_in_executor(None, self._proc.poll) is None:
             # prevent subprocess deadlocking, send terminate and read remaining bytes
-            await self.loop.run_in_executor(None, self._proc.kill)
-            self.loop.run_in_executor(None, self.__read)
+            await self.loop.run_in_executor(None, self._proc.terminate)
+            await self.loop.run_in_executor(None, self.__read)
+        LOGGER.debug("process finished")
         del self._proc
 
     async def iterate_chunks(
-        self, chunksize: int = 512000
+        self, chunksize: int = DEFAULT_CHUNKSIZE
     ) -> AsyncGenerator[bytes, None]:
         """Yield chunks from the process stdout. Generator."""
         while True:
@@ -61,13 +68,13 @@ class AsyncProcess:
                 break
             yield chunk
 
-    async def read(self, chunksize: int = -1) -> bytes:
+    async def read(self, chunksize: int = DEFAULT_CHUNKSIZE) -> bytes:
         """Read x bytes from the process stdout."""
         if self._cancelled:
             raise asyncio.CancelledError()
         return await self.loop.run_in_executor(None, self.__read, chunksize)
 
-    def __read(self, chunksize: int = -1):
+    def __read(self, chunksize: int = DEFAULT_CHUNKSIZE):
         """Try read chunk from process."""
         try:
             return self._proc.stdout.read(chunksize)
@@ -111,3 +118,78 @@ class AsyncProcess:
             None, self._proc.communicate, input_data
         )
         return stdout
+
+
+class AsyncProcessBroken:
+    """Implementation of a (truly) non blocking subprocess."""
+
+    # this version is not compatible with uvloop
+
+    def __init__(self, process_args: List, enable_write: bool = False):
+        """Initialize."""
+        self._proc = None
+        self._process_args = process_args
+        self._enable_write = enable_write
+        self._cancelled = False
+
+    async def __aenter__(self) -> "AsyncProcess":
+        """Enter context manager."""
+        self._proc = await asyncio.create_subprocess_exec(
+            *self._process_args,
+            stdin=asyncio.subprocess.PIPE if self._enable_write else None,
+            stdout=asyncio.subprocess.PIPE,
+            limit=64000000
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+        """Exit context manager."""
+        self._cancelled = True
+        LOGGER.debug("subprocess exit requested")
+        if self._proc.returncode is None:
+            # prevent subprocess deadlocking, send terminate and read remaining bytes
+            if self._enable_write and self._proc.stdin.can_write_eof():
+                self._proc.stdin.write_eof()
+            self._proc.terminate()
+            await self._proc.stdout.read()
+        del self._proc
+        LOGGER.debug("subprocess exited")
+
+    async def iterate_chunks(
+        self, chunk_size: int = DEFAULT_CHUNKSIZE
+    ) -> AsyncGenerator[bytes, None]:
+        """Yield chunks from the process stdout. Generator."""
+        while True:
+            chunk = await self.read(chunk_size)
+            yield chunk
+            if len(chunk) < chunk_size:
+                break
+
+    async def read(self, chunk_size: int = DEFAULT_CHUNKSIZE) -> bytes:
+        """Read x bytes from the process stdout."""
+        if self._cancelled:
+            raise asyncio.CancelledError()
+        try:
+            return await self._proc.stdout.readexactly(chunk_size)
+        except asyncio.IncompleteReadError as err:
+            return err.partial
+
+    async def write(self, data: bytes) -> None:
+        """Write data to process stdin."""
+        if self._cancelled:
+            raise asyncio.CancelledError()
+        self._proc.stdin.write(data)
+        await self._proc.stdin.drain()
+
+    async def write_eof(self) -> None:
+        """Write eof to process."""
+        if self._cancelled:
+            raise asyncio.CancelledError()
+        if self._proc.stdin.can_write_eof():
+            self._proc.stdin.write_eof()
+
+    async def communicate(self, input_data: Optional[bytes] = None) -> bytes:
+        """Write bytes to process and read back results."""
+        if self._cancelled:
+            raise asyncio.CancelledError()
+        return await self._proc.communicate(input_data)
