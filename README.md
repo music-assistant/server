@@ -2,7 +2,7 @@
         :target: https://pypi.python.org/pypi/music_assistant
 
 .. image:: https://img.shields.io/pypi/pyversions/music_assistant.svg
-        :target: https://github.com/Tinche/music_assistant
+        :target: https://github.com/music-assistant/server
         :alt: Supported Python versions
 
 # Music Assistant Server
