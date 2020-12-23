@@ -1,6 +1,6 @@
 argparse==1.4.0
 aiohttp[speedups]==3.7.3
-pychromecast==7.5.1
+pychromecast==7.6.0
 asyncio-throttle==1.0.1
 aiofile==3.3.3
 aiosqlite==0.16.0
@@ -11,12 +11,12 @@ aiorun==2020.11.1
 soco==0.20
 pillow==8.0.1
 aiohttp_cors==0.7.0
-unidecode==1.1.1
+unidecode==1.1.2
 PyJWT==1.7.1
 zeroconf==0.28.7
 passlib==1.7.4
 cryptography==3.2.1
 ujson==4.0.1
-mashumaro==1.15
+mashumaro==1.16
 typing-inspect==0.6.0; python_version < '3.8'
 uvloop==0.14.0; sys_platform != 'win32'
