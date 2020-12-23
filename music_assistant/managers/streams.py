@@ -54,7 +54,7 @@ class StreamManager:
         output_format: SoxOutputFormat = SoxOutputFormat.FLAC,
         resample: Optional[int] = None,
         gain_db_adjust: Optional[float] = None,
-        chunk_size: int = 1000000,
+        chunk_size: int = 4000000,
     ) -> AsyncGenerator[Tuple[bool, bytes], None]:
         """Get the sox manipulated audio data for the given streamdetails."""
         # collect all args for sox
@@ -86,13 +86,10 @@ class StreamManager:
                 """Forward audio chunks to sox stdin."""
                 # feed audio data into sox stdin for processing
                 async for chunk in self.async_get_media_stream(streamdetails):
-                    if not chunk:
-                        break
                     await sox_proc.write(chunk)
                 await sox_proc.write_eof()
 
             fill_buffer_task = self.mass.loop.create_task(fill_buffer())
-            await asyncio.sleep(1)
             # yield chunks from stdout
             # we keep 1 chunk behind to detect end of stream properly
             prev_chunk = b""
@@ -137,8 +134,6 @@ class StreamManager:
                 async for chunk in self.async_queue_stream_pcm(
                     player_id, sample_rate, 32
                 ):
-                    if not chunk:
-                        break
                     await sox_proc.write(chunk)
 
             fill_buffer_task = self.mass.loop.create_task(fill_buffer())

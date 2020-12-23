@@ -27,10 +27,7 @@ class AsyncProcess:
     # workaround that is compatible with uvloop
 
     def __init__(
-        self,
-        process_args: List,
-        enable_write: bool = False,
-        enable_shell=False,
+        self, process_args: List, enable_write: bool = False, enable_shell=False
     ):
         """Initialize."""
         self._proc = subprocess.Popen(
@@ -55,8 +52,8 @@ class AsyncProcess:
             # prevent subprocess deadlocking, send terminate and read remaining bytes
             await self.loop.run_in_executor(None, self._proc.terminate)
             await self.loop.run_in_executor(None, self.__read)
-        LOGGER.debug("process finished")
         del self._proc
+        return exc_type not in (GeneratorExit, asyncio.CancelledError)
 
     async def iterate_chunks(
         self, chunksize: int = DEFAULT_CHUNKSIZE
@@ -64,9 +61,10 @@ class AsyncProcess:
         """Yield chunks from the process stdout. Generator."""
         while True:
             chunk = await self.read(chunksize)
-            if not chunk:
-                break
             yield chunk
+            if len(chunk) < chunksize:
+                # last chunk
+                break
 
     async def read(self, chunksize: int = DEFAULT_CHUNKSIZE) -> bytes:
         """Read x bytes from the process stdout."""
@@ -114,10 +112,7 @@ class AsyncProcess:
         """Write bytes to process and read back results."""
         if self._cancelled:
             raise asyncio.CancelledError()
-        stdout, _ = await self.loop.run_in_executor(
-            None, self._proc.communicate, input_data
-        )
-        return stdout
+        return await self.loop.run_in_executor(None, self._proc.communicate, input_data)
 
 
 class AsyncProcessBroken:

@@ -597,7 +597,7 @@ class MusicManager:
                 full_track = media_item
             else:
                 full_track = await self.async_get_track(
-                    media_item.item_id, media_item.provider, refresh=True
+                    media_item.item_id, media_item.provider
                 )
             # sort by quality and check track availability
             for prov_media in sorted(
