@@ -375,7 +375,7 @@ class StreamManager:
         # stream from URL
         if stream_type == StreamType.URL:
             async with self.mass.http_session.get(stream_path) as response:
-                async for chunk in response.content.iter_chunks():
+                async for chunk in response.content.iter_any():
                     yield chunk
                     if needs_analyze and len(audio_data) < 100000000:
                         audio_data += chunk
