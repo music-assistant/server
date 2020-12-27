@@ -18,7 +18,7 @@ from typing import AsyncGenerator, List, Optional
 
 LOGGER = logging.getLogger("AsyncProcess")
 
-DEFAULT_CHUNKSIZE = 1000000
+DEFAULT_CHUNKSIZE = 512000
 
 
 class AsyncProcess:
@@ -48,11 +48,14 @@ class AsyncProcess:
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
         """Exit context manager."""
         self._cancelled = True
-        if await self.loop.run_in_executor(None, self._proc.poll) is None:
+        if self._proc.poll() is None:
             # prevent subprocess deadlocking, send terminate and read remaining bytes
-            await self.loop.run_in_executor(None, self._proc.terminate)
-            await self.loop.run_in_executor(None, self.__read)
-        del self._proc
+            def close_proc():
+                self._proc.terminate()
+                self._proc.stdin.close()
+                self._proc.stdout.read(-1)
+
+            await self.loop.run_in_executor(None, close_proc)
         return exc_type not in (GeneratorExit, asyncio.CancelledError)
 
     async def iterate_chunks(

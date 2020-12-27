@@ -139,7 +139,8 @@ class StreamManager:
             fill_buffer_task = self.mass.loop.create_task(fill_buffer())
 
             # start yielding audio chunks
-            async for chunk in sox_proc.iterate_chunks(8000000):
+            chunk_size = sample_rate * 4 * 2 * 10
+            async for chunk in sox_proc.iterate_chunks(chunk_size):
                 yield chunk
             await asyncio.wait([fill_buffer_task])
 
@@ -336,7 +337,7 @@ class StreamManager:
         # start streaming
         LOGGER.debug("Start streaming %s (%s)", queue_item_id, queue_item.name)
         async for _, audio_chunk in self.async_get_sox_stream(
-            streamdetails, gain_db_adjust=gain_correct, chunk_size=8000000
+            streamdetails, gain_db_adjust=gain_correct, chunk_size=4000000
         ):
             yield audio_chunk
         LOGGER.debug("Finished streaming %s (%s)", queue_item_id, queue_item.name)
