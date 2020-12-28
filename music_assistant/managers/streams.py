@@ -139,8 +139,7 @@ class StreamManager:
             fill_buffer_task = self.mass.loop.create_task(fill_buffer())
 
             # start yielding audio chunks
-            chunk_size = sample_rate * 4 * 2 * 10
-            async for chunk in sox_proc.iterate_chunks(chunk_size):
+            async for chunk in sox_proc.iterate_chunks():
                 yield chunk
             await asyncio.wait([fill_buffer_task])
 
