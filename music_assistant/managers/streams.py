@@ -66,11 +66,12 @@ class StreamManager:
             output_format = [output_format.value, "-c", "2"]
         else:
             output_format = [output_format.value]
-        args = (
-            ["sox", "-t", streamdetails.content_type.value, "-", "-t"]
-            + output_format
-            + ["-"]
-        )
+        if streamdetails.content_type in [ContentType.AAC, ContentType.MPEG]:
+            input_format = "flac"
+        else:
+            input_format = streamdetails.content_type.value
+
+        args = ["sox", "-t", input_format, "-", "-t"] + output_format + ["-"]
         if gain_db_adjust:
             args += ["vol", str(gain_db_adjust), "dB"]
         if resample:
@@ -356,7 +357,6 @@ class StreamManager:
         # support for AAC/MPEG created with ffmpeg in between
         if streamdetails.content_type in [ContentType.AAC, ContentType.MPEG]:
             stream_type = StreamType.EXECUTABLE
-            streamdetails.content_type = ContentType.FLAC
             stream_path = f'ffmpeg -v quiet -i "{stream_path}" -f flac -'
 
         # signal start of stream event

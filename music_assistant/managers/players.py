@@ -282,6 +282,13 @@ class PlayerManager:
                 tracks = await self.mass.music.async_get_playlist_tracks(
                     media_item.item_id, provider_id=media_item.provider
                 )
+            elif media_item.media_type == MediaType.Radio:
+                # single radio
+                tracks = [
+                    await self.mass.music.async_get_radio(
+                        media_item.item_id, provider_id=media_item.provider
+                    )
+                ]
             else:
                 # single track
                 tracks = [

@@ -37,7 +37,7 @@ class AsyncProcess:
             stdout=subprocess.PIPE,
             stdin=subprocess.PIPE if enable_write else None,
             # bufsize needs to be very high for smooth playback
-            bufsize=64000000,
+            bufsize=4000000,
         )
         self.loop = asyncio.get_running_loop()
         self._cancelled = False
@@ -53,7 +53,7 @@ class AsyncProcess:
             # process needs to be cleaned up..
             await self.loop.run_in_executor(None, self.__close)
 
-        return exc_type not in (GeneratorExit, asyncio.CancelledError)
+        return exc_type
 
     async def iterate_chunks(
         self, chunksize: int = DEFAULT_CHUNKSIZE
@@ -93,9 +93,7 @@ class AsyncProcess:
     def __read(self, chunksize: int = DEFAULT_CHUNKSIZE):
         """Try read chunk from process."""
         try:
-            chunk = self._proc.stdout.read(chunksize)
-            self._proc.stdout.flush()
-            return chunk
+            return self._proc.stdout.read(chunksize)
         except (BrokenPipeError, ValueError, AttributeError):
             # Process already exited
             return b""
@@ -104,6 +102,7 @@ class AsyncProcess:
         """Write data to process stdin."""
         try:
             self._proc.stdin.write(data)
+            self._proc.stdin.flush()
         except (BrokenPipeError, ValueError, AttributeError):
             # Process already exited
             pass
@@ -119,17 +118,27 @@ class AsyncProcess:
     def __close(self):
         """Prevent subprocess deadlocking, make sure it closes."""
         LOGGER.debug("Cleaning up process %s...", self._id)
-        try:
-            self._proc.stdout.close()
-        except BrokenPipeError:
-            pass
-        if self._proc.stdin:
+        # close stdout
+        if not self._proc.stdout.closed:
+            try:
+                self._proc.stdout.close()
+            except BrokenPipeError:
+                pass
+        # close stdin if needed
+        if self._proc.stdin and not self._proc.stdin.closed:
             try:
                 self._proc.stdin.close()
             except BrokenPipeError:
                 pass
-        self._proc.kill()
-        self._proc.wait()
+        # send terminate
+        self._proc.terminate()
+        # wait for exit
+        try:
+            self._proc.wait(5)
+            LOGGER.debug("Process %s exited with %s.", self._id, self._proc.returncode)
+        except subprocess.TimeoutExpired:
+            LOGGER.error("Process %s did not terminate in time.", self._id)
+            self._proc.kill()
         LOGGER.debug("Process %s closed.", self._id)
 
 
