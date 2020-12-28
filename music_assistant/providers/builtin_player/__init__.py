@@ -22,9 +22,9 @@ CONFIG_ENTRIES = []
 PLAYER_CONFIG_ENTRIES = []
 PLAYER_FEATURES = []
 
-EVENT_WEBPLAYER_CMD = "webplayer command"
-EVENT_WEBPLAYER_STATE = "webplayer state"
-EVENT_WEBPLAYER_REGISTER = "webplayer register"
+WS_COMMAND_WSPLAYER_CMD = "wsplayer command"
+WS_COMMAND_WSPLAYER_STATE = "wsplayer state"
+WS_COMMAND_WSPLAYER_REGISTER = "wsplayer register"
 
 
 async def async_setup(mass):
@@ -57,12 +57,14 @@ class MassPlayerProvider(PlayerProvider):
 
     async def async_on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
-        # listen for websockets events to dynamically create players
-        self.mass.add_event_listener(
-            self.async_handle_mass_event,
-            [EVENT_WEBPLAYER_STATE, EVENT_WEBPLAYER_REGISTER],
-        )
+        # listen for websockets commands to dynamically create players
         self.mass.add_job(self.async_check_players())
+        self.mass.web.register_api_route(
+            WS_COMMAND_WSPLAYER_REGISTER, self.async_handle_ws_player_state
+        )
+        self.mass.web.register_api_route(
+            WS_COMMAND_WSPLAYER_STATE, self.async_handle_ws_player_state
+        )
         return True
 
     async def async_on_stop(self):
@@ -70,16 +72,14 @@ class MassPlayerProvider(PlayerProvider):
         for player in self.players:
             await player.async_cmd_stop()
 
-    async def async_handle_mass_event(self, msg, msg_details):
-        """Handle received event for the webplayer component."""
-        player = self.mass.players.get_player(msg_details["player_id"])
+    async def async_handle_ws_player_state(self, player_id: str, details: dict):
+        """Handle state message from ws player."""
+        player = self.mass.players.get_player(player_id)
         if not player:
             # register new player
-            player = WebsocketsPlayer(
-                self.mass, msg_details["player_id"], msg_details["name"]
-            )
+            player = WebsocketsPlayer(self.mass, player_id, details["name"])
             await self.mass.players.async_add_player(player)
-        await player.handle_player_state(msg_details)
+        await player.handle_player_state(details)
 
     @run_periodic(30)
     async def async_check_players(self) -> None:
@@ -105,7 +105,7 @@ class WebsocketsPlayer(Player):
     """
 
     def __init__(self, mass: MusicAssistantType, player_id: str, player_name: str):
-        """Initialize the webplayer."""
+        """Initialize the wsplayer."""
         self._player_id = player_id
         self._player_name = player_name
         self._powered = True
@@ -209,22 +209,22 @@ class WebsocketsPlayer(Player):
             :param uri: uri/url to send to the player.
         """
         data = {"player_id": self.player_id, "cmd": "play_uri", "uri": uri}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
     async def async_cmd_stop(self) -> None:
         """Send STOP command to player."""
         data = {"player_id": self.player_id, "cmd": "stop"}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
     async def async_cmd_play(self) -> None:
         """Send PLAY command to player."""
         data = {"player_id": self.player_id, "cmd": "play"}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
     async def async_cmd_pause(self) -> None:
         """Send PAUSE command to player."""
         data = {"player_id": self.player_id, "cmd": "pause"}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
     async def async_cmd_power_on(self) -> None:
         """Send POWER ON command to player."""
@@ -247,7 +247,7 @@ class WebsocketsPlayer(Player):
             "cmd": "volume_set",
             "volume_level": volume_level,
         }
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
     async def async_cmd_volume_mute(self, is_muted: bool = False) -> None:
         """
@@ -256,4 +256,4 @@ class WebsocketsPlayer(Player):
             :param is_muted: bool with new mute state.
         """
         data = {"player_id": self.player_id, "cmd": "volume_mute", "is_muted": is_muted}
-        self.mass.signal_event(EVENT_WEBPLAYER_CMD, data)
+        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)

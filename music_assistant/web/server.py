@@ -310,10 +310,13 @@ class WebServer:
                     await self.__async_handle_event(
                         ws_client, json_msg["event"], json_msg.get("data")
                     )
-        except Exception as exc:  # pylint:disable=broad-except
-            # log the error and disconnect client
+        except AuthenticationError as exc:  # pylint:disable=broad-except
+            # disconnect client on auth errors
             await self.__async_send_json(ws_client, error=str(exc), **json_msg)
             await ws_client.close(message=str(exc).encode())
+        except Exception as exc:  # pylint:disable=broad-except
+            # log the error only
+            await self.__async_send_json(ws_client, error=str(exc), **json_msg)
             LOGGER.debug("Error with WS client", exc_info=exc)
 
         # websocket disconnected
