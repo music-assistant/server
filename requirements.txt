@@ -12,10 +12,10 @@ soco==0.20
 pillow==8.0.1
 aiohttp_cors==0.7.0
 unidecode==1.1.2
-PyJWT==1.7.1
+PyJWT==2.0.0
 zeroconf==0.28.7
 passlib==1.7.4
-cryptography==3.2.1
+cryptography==3.3.1
 ujson==4.0.1
 mashumaro==1.17
 typing-inspect==0.6.0; python_version < '3.8'
