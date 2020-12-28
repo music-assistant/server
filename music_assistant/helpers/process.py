@@ -59,7 +59,7 @@ class AsyncProcess:
         self, chunksize: int = DEFAULT_CHUNKSIZE
     ) -> AsyncGenerator[bytes, None]:
         """Yield chunks from the process stdout. Generator."""
-        while not self._cancelled:
+        while True:
             chunk = await self.read(chunksize)
             yield chunk
             if len(chunk) < chunksize:
