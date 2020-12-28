@@ -1,6 +1,7 @@
 """All classes and helpers for the Configuration."""
 
 import copy
+import datetime
 import json
 import logging
 import os
@@ -398,14 +399,38 @@ class SecuritySettings(ConfigBaseItem):
     def add_app_token(self, token_info: dict):
         """Add token to config."""
         client_id = token_info["client_id"]
-        self[CONF_KEY_SECURITY_APP_TOKENS][client_id] = token_info
+        self.conf_mgr.stored_config[CONF_KEY_SECURITY][CONF_KEY_SECURITY_APP_TOKENS][
+            client_id
+        ] = token_info
+        self.conf_mgr.save()
+
+    def set_last_login(self, client_id: str):
+        """Set last login to client."""
+        if (
+            client_id
+            not in self.conf_mgr.stored_config[CONF_KEY_SECURITY][
+                CONF_KEY_SECURITY_APP_TOKENS
+            ]
+        ):
+            return
+        self.conf_mgr.stored_config[CONF_KEY_SECURITY][CONF_KEY_SECURITY_APP_TOKENS][
+            client_id
+        ]["last_login"] = datetime.datetime.utcnow().timestamp()
+        self.conf_mgr.save()
 
     def revoke_app_token(self, client_id):
         """Revoke a token registered for an app."""
-        self[CONF_KEY_SECURITY_APP_TOKENS].pop(client_id)
+        return_info = self.conf_mgr.stored_config[CONF_KEY_SECURITY][
+            CONF_KEY_SECURITY_APP_TOKENS
+        ].pop(client_id)
+        self.conf_mgr.save()
+        self.conf_mgr.mass.signal_event(
+            EVENT_CONFIG_CHANGED, (CONF_KEY_SECURITY, CONF_KEY_SECURITY_APP_TOKENS)
+        )
+        return return_info
 
     def is_token_revoked(self, token_info: dict):
-        """Return bool is token is revoked."""
+        """Return bool if token is revoked."""
         if not token_info.get("app_id"):
             # short lived token does not have app_id and is not stored so can't be revoked
             return False
@@ -435,6 +460,10 @@ class SecuritySettings(ConfigBaseItem):
                     label=token_info["app_id"],
                     description="App connected to MusicAssistant API",
                     store_hashed=False,
+                    value={
+                        "expires": token_info.get("exp"),
+                        "last_login": token_info.get("last_login"),
+                    },
                 )
                 for client_id, token_info in self.conf_mgr.stored_config[
                     CONF_KEY_SECURITY

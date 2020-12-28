@@ -14,6 +14,7 @@
     "crossfade_duration": "Enable crossfade",
     "group_delay": "Correction of groupdelay",
     "security": "Security",
+    "app_tokens": "App tokens",
     "power_control": "Power Control",
     "volume_control": "Volume Control",
 
@@ -43,6 +44,7 @@
     "desc_player_name": "Stel een aangepaste naam in voor deze speler.",
     "crossfade_duration": "Crossfade inschakelen",
     "security": "Beveiliging",
+    "app_tokens": "App tokens",
     "group_delay": "Correctie van groepsvertraging",
     "power_control": "Power Control",
     "volume_control": "Volume Control",

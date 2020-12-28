@@ -189,6 +189,14 @@ async def async_create_db_tables(db_file):
         )
 
         await db_conn.execute(
+            """CREATE TABLE IF NOT EXISTS playlog(
+                item_id INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                timestamp REAL,
+                UNIQUE(item_id, provider));"""
+        )
+
+        await db_conn.execute(
             """CREATE TABLE IF NOT EXISTS thumbs(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL,

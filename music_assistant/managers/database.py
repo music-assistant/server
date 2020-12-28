@@ -2,6 +2,7 @@
 # pylint: disable=too-many-lines
 import logging
 import os
+from datetime import datetime
 from typing import List, Optional, Union
 
 import aiosqlite
@@ -848,6 +849,15 @@ class DatabaseManager:
             if result:
                 return result[0]
         return None
+
+    async def async_mark_item_played(self, item_id: str, provider: str):
+        """Mark item as played in playlog."""
+        timestamp = datetime.utcnow().timestamp()
+        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+            sql_query = """INSERT or REPLACE INTO playlog
+                (item_id, provider, timestamp) VALUES(?,?,?);"""
+            await db_conn.execute(sql_query, (item_id, provider, timestamp))
+            await db_conn.commit()
 
     async def async_get_thumbnail_id(self, url, size):
         """Get/create id for thumbnail."""

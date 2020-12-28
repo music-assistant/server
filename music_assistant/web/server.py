@@ -20,8 +20,6 @@ import ujson
 from aiohttp import WSMsgType, web
 from aiohttp.web import WebSocketResponse
 from music_assistant.constants import (
-    CONF_KEY_SECURITY,
-    CONF_KEY_SECURITY_APP_TOKENS,
     CONF_KEY_SECURITY_LOGIN,
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -187,6 +185,11 @@ class WebServer:
             return web.json_response(self.discovery_info)
         return self.discovery_info
 
+    @api_route("revoke_token")
+    async def async_revoke_token(self, client_id: str):
+        """Revoke token for client."""
+        return self.mass.config.security.revoke_app_token(client_id)
+
     @api_route("get_token", False)
     async def async_get_token(
         self, username: str, password: str, app_id: str = ""
@@ -206,19 +209,17 @@ class WebServer:
                 "app_id": app_id,
             }
             if app_id:
-                token_info["exp"] = datetime.datetime.utcnow() + datetime.timedelta(
-                    days=365 * 10
-                )
+                token_info["enabled"] = True
+                token_info["exp"] = (
+                    datetime.datetime.utcnow() + datetime.timedelta(days=365 * 10)
+                ).timestamp()
             else:
-                token_info["exp"] = datetime.datetime.utcnow() + datetime.timedelta(
-                    hours=8
-                )
-            token = jwt.encode(token_info, self.jwt_key).decode()
+                token_info["exp"] = (
+                    datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+                ).timestamp()
+            token = jwt.encode(token_info, self.jwt_key, algorithm="HS256")
             if app_id:
-                self.mass.config.stored_config[CONF_KEY_SECURITY][
-                    CONF_KEY_SECURITY_APP_TOKENS
-                ][client_id] = token_info
-                self.mass.config.save()
+                self.mass.config.security.add_app_token(token_info)
             token_info["token"] = token
             return token_info
         raise AuthenticationError("Invalid credentials")
@@ -317,7 +318,7 @@ class WebServer:
         except Exception as exc:  # pylint:disable=broad-except
             # log the error only
             await self.__async_send_json(ws_client, error=str(exc), **json_msg)
-            LOGGER.debug("Error with WS client", exc_info=exc)
+            LOGGER.error("Error with WS client", exc_info=exc)
 
         # websocket disconnected
         request.app["clients"].remove(ws_client)
@@ -370,10 +371,11 @@ class WebServer:
 
     async def __async_handle_auth(self, ws_client: WebSocketResponse, token: str):
         """Handle authentication with JWT token."""
-        token_info = jwt.decode(token, self.mass.web.jwt_key)
+        token_info = jwt.decode(token, self.mass.web.jwt_key, algorithms=["HS256"])
         if self.mass.config.security.is_token_revoked(token_info):
             raise AuthenticationError("Token is revoked")
         ws_client.authenticated = True
+        self.mass.config.security.set_last_login(token_info["client_id"])
         # TODO: store token/app_id on ws_client obj and periodiclaly check if token is expired or revoked
         await self.__async_send_json(ws_client, result="auth", data=token_info)
 

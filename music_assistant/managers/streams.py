@@ -397,6 +397,9 @@ class StreamManager:
             streamdetails.provider,
             streamdetails.item_id,
         )
+        await self.mass.database.async_mark_item_played(
+            streamdetails.item_id, streamdetails.provider
+        )
 
         # send analyze job to background worker
         # TODO: feed audio chunks to analyzer while streaming
