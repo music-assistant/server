@@ -13,7 +13,7 @@ pillow==8.1.0
 aiohttp_cors==0.7.0
 unidecode==1.1.2
 PyJWT==2.0.0
-zeroconf==0.28.7
+zeroconf==0.28.8
 passlib==1.7.4
 cryptography==3.3.2
 ujson==4.0.1
