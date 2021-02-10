@@ -1,6 +1,6 @@
 argparse==1.4.0
 aiohttp[speedups]==3.7.3
-pychromecast==8.0.0
+pychromecast==8.1.0
 asyncio-throttle==1.0.1
 aiofile==3.3.3
 aiosqlite==0.16.0
