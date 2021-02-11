@@ -192,9 +192,8 @@ class ChromecastPlayer(Player):
         """Return player specific config entries (if any)."""
         return PLAYER_CONFIG_ENTRIES
 
-    async def async_set_cast_info(self, cast_info: ChromecastInfo) -> None:
-        """Set the cast information and set up the chromecast object."""
-        self._cast_info = cast_info
+    async def async_on_add(self) -> None:
+        """Call when player is added to the player manager."""
         # Only setup the chromecast once, changes will automatically be picked up.
         if self._chromecast is not None:
             return
@@ -208,9 +207,9 @@ class ChromecastPlayer(Player):
             pychromecast.get_chromecast_from_service,
             (
                 self.services,
-                cast_info.uuid,
-                cast_info.model_name,
-                cast_info.friendly_name,
+                self._cast_info.uuid,
+                self._cast_info.model_name,
+                self._cast_info.friendly_name,
                 None,
                 None,
             ),
@@ -227,6 +226,10 @@ class ChromecastPlayer(Player):
         chromecast.register_handler(mz_controller)
         chromecast.mz_controller = mz_controller
         self._chromecast.start()
+
+    async def async_set_cast_info(self, cast_info: ChromecastInfo) -> None:
+        """Set (or update) the cast discovery info."""
+        self._cast_info = cast_info
 
     async def async_disconnect(self):
         """Disconnect Chromecast object if it is set."""

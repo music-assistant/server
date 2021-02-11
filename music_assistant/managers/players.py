@@ -4,6 +4,7 @@ import logging
 from typing import List, Optional, Union
 
 from music_assistant.constants import (
+    CONF_ENABLED,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
     EVENT_PLAYER_ADDED,
@@ -152,10 +153,19 @@ class PlayerManager:
             return
         if player.player_id in self._player_states:
             return await self.async_update_player(player)
-        # set the mass object on the player
+        player_enabled = self.mass.config.get_player_config(player.player_id)[
+            CONF_ENABLED
+        ]
+        if not player_enabled:
+            # do not add the player to states if it's disabled/unavailable
+            return
+        # set the mass object on the player and call on_add function
         player.mass = self.mass
+        await player.async_on_add()
         # create playerstate and queue object
-        self._player_states[player.player_id] = PlayerState(self.mass, player)
+        player_state = PlayerState(self.mass, player)
+        self._player_states[player.player_id] = player_state
+
         self._player_queues[player.player_id] = PlayerQueue(self.mass, player.player_id)
         # TODO: turn on player if it was previously turned on ?
         LOGGER.info(

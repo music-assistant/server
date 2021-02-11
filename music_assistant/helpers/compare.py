@@ -37,12 +37,13 @@ def compare_version(left_version: str, right_version: str):
 
 
 def compare_artists(left_artists: List[Artist], right_artists: List[Artist]):
-    """Compare two lists of artist and return True if a match was found."""
+    """Compare two lists of artist and return True if both lists match."""
+    matches = 0
     for left_artist in left_artists:
         for right_artist in right_artists:
             if compare_strings(left_artist.name, right_artist.name):
-                return True
-    return False
+                matches += 1
+    return len(left_artists) == matches
 
 
 def compare_albums(left_albums: List[Album], right_albums: List[Album]):
@@ -97,10 +98,10 @@ def compare_track(left_track: Track, right_track: Track):
     # album match OR near exact duration match
     left_albums = left_track.albums or [left_track.album]
     right_albums = right_track.albums or [right_track.album]
-    if not (
+    if (
         compare_albums(left_albums, right_albums)
-        or abs(left_track.duration - right_track.duration) <= 3
-    ):
-        return False
-    # 100% match, all criteria passed
-    return True
+        and abs(left_track.duration - right_track.duration) < 3
+    ) or abs(left_track.duration - right_track.duration) < 1:
+        # 100% match, all criteria passed
+        return True
+    return False

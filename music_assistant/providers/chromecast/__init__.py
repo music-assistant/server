@@ -93,7 +93,7 @@ class ChromecastProvider(PlayerProvider):
         player = self.mass.players.get_player(player_id)
         if not player:
             player = ChromecastPlayer(self.mass, cast_info)
-        # if player was already added, it player will take care of reconnects itself.
+        # if player was already added, the player will take care of reconnects itself.
         self.mass.add_job(player.async_set_cast_info, cast_info)
         self.mass.add_job(self.mass.players.async_add_player(player))
 

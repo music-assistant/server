@@ -150,6 +150,9 @@ class Player:
         """Call when player is periodically polled by the player manager (should_poll=True)."""
         self.update_state()
 
+    async def async_on_add(self) -> None:
+        """Call when player is added to the player manager."""
+
     async def async_on_remove(self) -> None:
         """Call when player is removed from the player manager."""
 
