@@ -149,15 +149,14 @@ class PlayerManager:
 
     async def async_add_player(self, player: Player) -> None:
         """Register a new player or update an existing one."""
-        if not player or not player.available or self.mass.exit:
+        # guard for invalid data or exit in progress
+        if not player or self.mass.exit:
             return
+        # redirect to update if player already exists
         if player.player_id in self._player_states:
             return await self.async_update_player(player)
-        player_enabled = self.mass.config.get_player_config(player.player_id)[
-            CONF_ENABLED
-        ]
-        if not player_enabled:
-            # do not add the player to states if it's disabled/unavailable
+        # do not add the player to states if it's disabled/unavailable
+        if not self.mass.config.get_player_config(player.player_id)[CONF_ENABLED]:
             return
         # set the mass object on the player and call on_add function
         player.mass = self.mass

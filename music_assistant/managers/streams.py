@@ -152,17 +152,17 @@ class StreamManager:
 
         LOGGER.info("Start Queue Stream for player %s ", player_id)
 
-        is_start = True
         last_fadeout_data = b""
+        queue_index = None
         while True:
 
             # get the (next) track in queue
-            if is_start:
+            if queue_index is None:
                 # report start of queue playback so we can calculate current track/duration etc.
-                queue_track = await player_queue.async_start_queue_stream()
-                is_start = False
+                queue_index = await player_queue.async_queue_stream_start()
             else:
-                queue_track = player_queue.next_item
+                queue_index = await player_queue.async_queue_stream_next(queue_index)
+            queue_track = player_queue.get_item(queue_index)
             if not queue_track:
                 LOGGER.info("no (more) tracks left in queue")
                 break

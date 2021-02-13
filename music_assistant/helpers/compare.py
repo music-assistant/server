@@ -64,7 +64,7 @@ def compare_album(left_album: Album, right_album: Album):
     ):
         return True
     if left_album.upc and right_album.upc:
-        if left_album.upc in right_album.upc or right_album.upc in left_album.upc:
+        if (left_album.upc in right_album.upc) or (right_album.upc in left_album.upc):
             # UPC is always 100% accurate match
             return True
     if not compare_strings(left_album.name, right_album.name):

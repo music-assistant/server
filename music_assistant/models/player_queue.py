@@ -72,8 +72,8 @@ class PlayerQueue:
         self._cur_index = 0
         self._cur_item_time = 0
         self._last_item = None
-        self._next_queue_startindex = 0
-        self._last_queue_startindex = 0
+        self._queue_stream_start_index = 0
+        self._queue_stream_next_index = 0
         self._last_player_state = PlaybackState.Stopped
         # load previous queue settings from disk
         self.mass.add_job(self.__async_restore_saved_state())
@@ -315,8 +315,9 @@ class PlayerQueue:
             index = self.__index_by_id(index)
         if not len(self.items) > index:
             return
+        self._cur_index = index
+        self._queue_stream_next_index = index
         if self.use_queue_stream:
-            self._next_queue_startindex = index
             queue_stream_uri = self.get_stream_url()
             return await self.player.async_cmd_play_uri(queue_stream_uri)
         if self.supports_queue:
@@ -502,7 +503,6 @@ class PlayerQueue:
         # process new index
         if self._cur_index != new_index:
             # queue track updated
-            self._next_queue_startindex = self.next_index
             self._cur_index = new_index
         # check if a new track is loaded, wait for the streamdetails
         if (
@@ -524,11 +524,22 @@ class PlayerQueue:
                 {"queue_id": self.queue_id, "cur_item_time": track_time},
             )
 
-    async def async_start_queue_stream(self) -> None:
+    async def async_queue_stream_start(self) -> None:
         """Call when queue_streamer starts playing the queue stream."""
-        self._last_queue_startindex = self._next_queue_startindex
         self._cur_item_time = 0
-        return self.get_item(self._next_queue_startindex)
+        self._cur_index = self._queue_stream_next_index
+        return self._queue_stream_next_index
+
+    async def async_queue_stream_next(self, cur_index: int) -> None:
+        """Call when queue_streamer loads next track in buffer."""
+        next_index = 0
+        if len(self.items) > (next_index):
+            next_index = cur_index + 1
+        elif self._repeat_enabled:
+            # repeat enabled, start queue at beginning
+            next_index = 0
+        self._queue_stream_next_index = next_index + 1
+        return next_index
 
     def to_dict(self) -> dict:
         """Instance attributes as dict so it can be serialized to json."""
@@ -555,9 +566,9 @@ class PlayerQueue:
         elapsed_time_queue = self.player.elapsed_time
         total_time = 0
         track_time = 0
-        if self.items and len(self.items) > self._last_queue_startindex:
+        if self.items and len(self.items) > self._queue_stream_start_index:
             queue_index = (
-                self._last_queue_startindex
+                self._queue_stream_start_index
             )  # holds the last starting position
             queue_track = None
             while len(self.items) > queue_index:
@@ -593,8 +604,8 @@ class PlayerQueue:
             self._shuffle_enabled = cache_data["shuffle_enabled"]
             self._repeat_enabled = cache_data["repeat_enabled"]
             self._items = cache_data["items"]
-            self._cur_index = cache_data["cur_item"]
-            self._next_queue_startindex = cache_data["next_queue_index"]
+            self._cur_index = cache_data.get("cur_index", 0)
+            self._queue_stream_next_index = self._cur_index
 
     # pylint: enable=unused-argument
 
@@ -605,8 +616,7 @@ class PlayerQueue:
             "shuffle_enabled": self._shuffle_enabled,
             "repeat_enabled": self._repeat_enabled,
             "items": self._items,
-            "cur_item": self._cur_index,
-            "next_queue_index": self._next_queue_startindex,
+            "cur_index": self._cur_index,
         }
         await self.mass.cache.async_set(cache_str, cache_data)
         LOGGER.info("queue state saved to file for player %s", self.queue_id)

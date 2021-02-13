@@ -194,14 +194,6 @@ class ChromecastPlayer(Player):
 
     async def async_on_add(self) -> None:
         """Call when player is added to the player manager."""
-        # Only setup the chromecast once, changes will automatically be picked up.
-        if self._chromecast is not None:
-            return
-        LOGGER.debug(
-            "[%s] Connecting to cast device by service %s",
-            self._cast_info.friendly_name,
-            self.services,
-        )
         chromecast = await self.mass.loop.run_in_executor(
             None,
             pychromecast.get_chromecast_from_service,
@@ -227,7 +219,7 @@ class ChromecastPlayer(Player):
         chromecast.mz_controller = mz_controller
         self._chromecast.start()
 
-    async def async_set_cast_info(self, cast_info: ChromecastInfo) -> None:
+    def set_cast_info(self, cast_info: ChromecastInfo) -> None:
         """Set (or update) the cast discovery info."""
         self._cast_info = cast_info
 

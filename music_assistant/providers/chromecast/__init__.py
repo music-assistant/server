@@ -1,7 +1,6 @@
 """ChromeCast playerprovider."""
 
 import logging
-import uuid
 from typing import List
 
 import pychromecast
@@ -74,8 +73,8 @@ class ChromecastProvider(PlayerProvider):
     def __chromecast_add_update_callback(self, cast_uuid, cast_service_name):
         """Handle zeroconf discovery of a new or updated chromecast."""
         # pylint: disable=unused-argument
-        if uuid is None:
-            return  # Discovered chromecast without uuid
+        if cast_uuid is None:
+            return  # Discovered chromecast without uuid?
 
         service = self._listener.services[cast_uuid]
         cast_info = ChromecastInfo(
@@ -94,7 +93,7 @@ class ChromecastProvider(PlayerProvider):
         if not player:
             player = ChromecastPlayer(self.mass, cast_info)
         # if player was already added, the player will take care of reconnects itself.
-        self.mass.add_job(player.async_set_cast_info, cast_info)
+        player.set_cast_info(cast_info)
         self.mass.add_job(self.mass.players.async_add_player(player))
 
     @staticmethod
