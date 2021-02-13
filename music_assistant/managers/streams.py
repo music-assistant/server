@@ -14,7 +14,7 @@ import subprocess
 from enum import Enum
 from typing import AsyncGenerator, List, Optional, Tuple
 
-from aiofile import AIOFile, Reader
+import aiofiles
 from music_assistant.constants import (
     CONF_MAX_SAMPLE_RATE,
     EVENT_STREAM_ENDED,
@@ -376,8 +376,8 @@ class StreamManager:
                         audio_data += chunk
         # stream from file
         elif stream_type == StreamType.FILE:
-            async with AIOFile(stream_path) as afp:
-                async for chunk in Reader(afp):
+            async with aiofiles.open(stream_path) as afp:
+                async for chunk in afp:
                     yield chunk
                     if needs_analyze and len(audio_data) < 100000000:
                         audio_data += chunk

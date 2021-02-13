@@ -2,7 +2,7 @@
     "python.linting.pylintEnabled": true,
     "python.linting.pylintArgs": ["--rcfile=${workspaceFolder}/setup.cfg"],
     "python.linting.enabled": true,
-    "python.pythonPath": "venv/bin/python",
+    "python.pythonPath": "/Users/marcelvanderveldt/Workdir/music-assistant/server/.venv/bin/python3",
     "python.linting.flake8Enabled": true,
     "python.linting.flake8Args": ["--config=${workspaceFolder}/setup.cfg"],
     "python.linting.mypyEnabled": false,

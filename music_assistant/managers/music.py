@@ -596,8 +596,9 @@ class MusicManager:
             if media_item.media_type == MediaType.Radio:
                 full_track = media_item
             else:
-                full_track = await self.async_get_track(
-                    media_item.item_id, media_item.provider
+                full_track = (
+                    await self.async_get_track(media_item.item_id, media_item.provider)
+                    or media_item
                 )
             # sort by quality and check track availability
             for prov_media in sorted(

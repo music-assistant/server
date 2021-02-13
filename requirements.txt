@@ -2,7 +2,7 @@ argparse==1.4.0
 aiohttp[speedups]==3.7.3
 pychromecast==8.1.0
 asyncio-throttle==1.0.1
-aiofile==3.3.3
+aiofiles==0.6.0
 aiosqlite==0.16.0
 pytaglib==1.4.6
 python-slugify==4.0.1
