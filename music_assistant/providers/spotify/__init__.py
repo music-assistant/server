@@ -234,7 +234,7 @@ class SpotifyProvider(MusicProvider):
             for item in await self.__async_get_all_items(
                 f"playlists/{prov_playlist_id}/tracks"
             )
-            if (item and item["track"]["id"])
+            if (item and item["track"] and item["track"]["id"])
         ]
 
     async def async_get_artist_albums(self, prov_artist_id) -> List[Album]:
