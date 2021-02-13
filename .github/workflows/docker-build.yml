@@ -1,4 +1,4 @@
-name: Build multiarch Docker image (Debian based)
+name: Build multiarch Docker image
 
 on:
   push:
