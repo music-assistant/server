@@ -529,6 +529,7 @@ class PlayerQueue:
         self._cur_item_time = 0
         self._cur_index = self._queue_stream_next_index
         self._queue_stream_next_index += 1
+        self._queue_stream_start_index = self._cur_index
         return self._cur_index
 
     async def async_queue_stream_next(self, cur_index: int) -> None:

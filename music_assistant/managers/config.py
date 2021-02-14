@@ -191,10 +191,14 @@ class ConfigManager:
     ) -> dict:
         """Set value of the given config item."""
         if new_value is None:
-            self[conf_base][conf_key].pop(conf_val)
-        else:
-            self[conf_base][conf_key][conf_val] = new_value
+            return self[conf_base][conf_key].pop(conf_val)
+        self[conf_base][conf_key][conf_val] = new_value
         return self[conf_base][conf_key].all_items()
+
+    @api_route("config/delete/:conf_base/:conf_key")
+    def delete_config(self, conf_base: str, conf_key: str) -> dict:
+        """Delete value from stored configuration."""
+        return self[conf_base].pop(conf_key)
 
     @property
     def data_path(self):
@@ -343,10 +347,9 @@ class ConfigBaseItem:
         self.mass = conf_mgr.mass
         self.conf_key = conf_key
 
-    @classmethod
-    def all_keys(cls):
+    def all_keys(self):
         """Return all possible keys of this Config object."""
-        return []
+        return {key for key in self.conf_mgr.stored_config.get(self.conf_key, {}).keys()}
 
     def __getitem__(self, item_key: str):
         """Return ConfigSubItem for given key."""
@@ -481,7 +484,11 @@ class PlayerSettings(ConfigBaseItem):
 
     def all_keys(self):
         """Return all possible keys of this Config object."""
-        return (item.player_id for item in self.mass.players.players)
+        all_keys = super().all_keys()
+        for player_id in self.mass.players.players:
+            if player_id not in all_keys:
+                all_keys.add(player_id)
+        return all_keys
 
     def get_config_entries(self, child_key: str) -> List[ConfigEntry]:
         """Return all config entries for the given child entry."""
@@ -629,6 +636,8 @@ class ConfigSubItem:
             # do some simple type checking
             if entry.multi_value:
                 # multi value item
+                if value is None:
+                    value = []
                 if not isinstance(value, list):
                     raise ValueError
             else:
@@ -636,18 +645,24 @@ class ConfigSubItem:
                 if entry.entry_type == ConfigEntryType.STRING and not isinstance(
                     value, str
                 ):
-                    if not value:
+                    if value is None:
                         value = ""
                     else:
                         raise ValueError
                 if entry.entry_type == ConfigEntryType.BOOL and not isinstance(
                     value, bool
                 ):
-                    raise ValueError
+                    if value is None:
+                        value = False
+                    else:
+                        raise ValueError
                 if entry.entry_type == ConfigEntryType.FLOAT and not isinstance(
                     value, (float, int)
                 ):
-                    raise ValueError
+                    if value is None:
+                        value = 0
+                    else:
+                        raise ValueError
             if value != self[key]:
                 if entry.store_hashed:
                     value = pbkdf2_sha256.hash(value)
