@@ -328,7 +328,7 @@ class LibraryManager:
         cur_db_ids = []
         for item in await music_provider.async_get_library_tracks():
             db_item = await self.mass.music.async_get_track(
-                item.item_id, provider_id, lazy=False
+                item.item_id, provider_id, track_details=item, lazy=False
             )
             if not db_item.available and not item.available:
                 # track availability changed, sort this out with auto matching magic

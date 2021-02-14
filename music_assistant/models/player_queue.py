@@ -528,7 +528,8 @@ class PlayerQueue:
         """Call when queue_streamer starts playing the queue stream."""
         self._cur_item_time = 0
         self._cur_index = self._queue_stream_next_index
-        return self._queue_stream_next_index
+        self._queue_stream_next_index += 1
+        return self._cur_index
 
     async def async_queue_stream_next(self, cur_index: int) -> None:
         """Call when queue_streamer loads next track in buffer."""
