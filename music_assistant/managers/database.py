@@ -684,8 +684,10 @@ class DatabaseManager:
             ]
 
     async def get_tracks_from_provider_ids(
-        self, provider_id: Union[str, List[str]], prov_item_ids: List[str]
-    ) -> dict:
+        self,
+        provider_id: Union[str, List[str], Set[str]],
+        prov_item_ids: Union[List[str], Set[str]],
+    ) -> List[Track]:
         """Get track records for the given prov_ids."""
         provider_ids = provider_id if isinstance(provider_id, list) else [provider_id]
         prov_id_str = ",".join([f'"{x}"' for x in provider_ids])

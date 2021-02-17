@@ -357,8 +357,10 @@ class ChromecastPlayer(Player):
         """Play single uri on player."""
         player_queue = self.mass.players.get_player_queue(self.player_id)
         if player_queue.use_queue_stream:
-            # create CC queue so that skip and previous will work
-            queue_item = QueueItem(name="Music Assistant", uri=uri)
+            # create (fake) CC queue so that skip and previous will work
+            queue_item = QueueItem(
+                item_id=uri, provider="mass", name="Music Assistant", uri=uri
+            )
             return await self.cmd_queue_load([queue_item, queue_item])
         await self.chromecast_command(self._chromecast.play_media, uri, "audio/flac")
 

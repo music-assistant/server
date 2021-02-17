@@ -258,7 +258,7 @@ class QobuzProvider(MusicProvider):
         return [
             await self._parse_album(item)
             for item in await self._get_all_items(endpoint, params, key="albums")
-            if (item and item["id"])
+            if (item and item["id"] and str(item["artist"]["id"]) == prov_artist_id)
         ]
 
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
@@ -348,6 +348,7 @@ class QobuzProvider(MusicProvider):
         params = {
             "playlist_id": prov_playlist_id,
             "track_ids": ",".join(prov_track_ids),
+            "playlist_track_ids": ",".join(prov_track_ids),
         }
         return await self._get_data("playlist/addTracks", params)
 
@@ -356,11 +357,11 @@ class QobuzProvider(MusicProvider):
         playlist_track_ids = set()
         params = {"playlist_id": prov_playlist_id, "extra": "tracks"}
         for track in await self._get_all_items("playlist/get", params, key="tracks"):
-            if track["id"] in prov_track_ids:
-                playlist_track_ids.add(track["playlist_track_id"])
+            if str(track["id"]) in prov_track_ids:
+                playlist_track_ids.add(str(track["playlist_track_id"]))
         params = {
             "playlist_id": prov_playlist_id,
-            "track_ids": ",".join(playlist_track_ids),
+            "playlist_track_ids": ",".join(playlist_track_ids),
         }
         return await self._get_data("playlist/deleteTracks", params)
 
@@ -611,7 +612,7 @@ class QobuzProvider(MusicProvider):
     async def _parse_playlist(self, playlist_obj):
         """Parse qobuz playlist object to generic layout."""
         playlist = Playlist(
-            item_id=playlist_obj["id"],
+            item_id=str(playlist_obj["id"]),
             provider=PROV_ID,
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["name"],

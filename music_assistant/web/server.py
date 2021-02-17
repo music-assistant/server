@@ -282,9 +282,9 @@ class WebServer:
         await ws_client.prepare(request)
         request.app["clients"].append(ws_client)
 
-        try:
-            # handle incoming messages
-            async for msg in ws_client:
+        # handle incoming messages
+        async for msg in ws_client:
+            try:
                 if msg.type == WSMsgType.error:
                     LOGGER.warning(
                         "ws connection closed with exception %s", ws_client.exception()
@@ -309,14 +309,14 @@ class WebServer:
                     await self._handle_event(
                         ws_client, json_msg["event"], json_msg.get("data")
                     )
-        except AuthenticationError as exc:  # pylint:disable=broad-except
-            # disconnect client on auth errors
-            await self._send_json(ws_client, error=str(exc), **json_msg)
-            await ws_client.close(message=str(exc).encode())
-        except Exception as exc:  # pylint:disable=broad-except
-            # log the error only
-            await self._send_json(ws_client, error=str(exc), **json_msg)
-            LOGGER.error("Error with WS client", exc_info=exc)
+            except AuthenticationError as exc:  # pylint:disable=broad-except
+                # disconnect client on auth errors
+                await self._send_json(ws_client, error=str(exc), **json_msg)
+                await ws_client.close(message=str(exc).encode())
+            except Exception as exc:  # pylint:disable=broad-except
+                # log the error only
+                await self._send_json(ws_client, error=str(exc), **json_msg)
+                LOGGER.error("Error with WS client", exc_info=exc)
 
         # websocket disconnected
         request.app["clients"].remove(ws_client)

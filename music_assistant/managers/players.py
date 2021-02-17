@@ -202,7 +202,6 @@ class PlayerManager:
     async def register_player_control(self, control_id: str, control: PlayerControl):
         """Register a playercontrol with the player manager."""
         control.mass = self.mass
-        control.type = PlayerControlType(control.type)
         self._controls[control_id] = control
         LOGGER.info(
             "New PlayerControl (%s) registered: %s\\%s",
@@ -310,9 +309,9 @@ class PlayerManager:
         await self.cmd_power_on(player_id)
         # load items into the queue
         player_queue = self.get_player_queue(player_id)
-        if queue_opt == QueueOption.Replace or (
-            len(queue_items) > 10 and queue_opt in [QueueOption.Play, QueueOption.Next]
-        ):
+        if queue_opt == QueueOption.Replace:
+            return await player_queue.load(queue_items)
+        if queue_opt in [QueueOption.Play, QueueOption.Next] and len(queue_items) > 100:
             return await player_queue.load(queue_items)
         if queue_opt == QueueOption.Next:
             return await player_queue.insert(queue_items, 1)

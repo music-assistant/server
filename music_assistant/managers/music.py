@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import List
+from typing import List, Set, Tuple
 
 from music_assistant.constants import (
     EVENT_ALBUM_ADDED,
@@ -19,7 +19,6 @@ from music_assistant.helpers.compare import (
     compare_track,
 )
 from music_assistant.helpers.musicbrainz import MusicBrainz
-from music_assistant.helpers.util import unique_item_ids
 from music_assistant.helpers.web import api_route
 from music_assistant.models.media_types import (
     Album,
@@ -53,7 +52,7 @@ class MusicManager:
         """Async initialize of module."""
 
     @property
-    def providers(self) -> List[MusicProvider]:
+    def providers(self) -> Tuple[MusicProvider]:
         """Return all providers of type musicprovider."""
         return self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
 
@@ -276,8 +275,8 @@ class MusicManager:
         )
         # retrieve list of db items
         db_tracks = await self.mass.database.get_tracks_from_provider_ids(
-            [x.provider for x in album.provider_ids],
-            [x.item_id for x in all_prov_tracks],
+            {x.provider for x in album.provider_ids},
+            {x.item_id for x in all_prov_tracks},
         )
         # combine provider tracks with db tracks
         return [
@@ -292,14 +291,14 @@ class MusicManager:
         ]
 
     @api_route("albums/:provider_id/:item_id/versions")
-    async def get_album_versions(self, item_id: str, provider_id: str) -> List[Album]:
+    async def get_album_versions(self, item_id: str, provider_id: str) -> Set[Album]:
         """Return all versions of an album we can find on all providers."""
         album = await self.get_album(item_id, provider_id)
-        provider_ids = [
+        provider_ids = {
             item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
-        ]
+        }
         search_query = f"{album.artist.name} {album.name}"
-        return [
+        return {
             prov_item
             for prov_items in await asyncio.gather(
                 *[
@@ -309,17 +308,18 @@ class MusicManager:
             )
             for prov_item in prov_items.albums
             if compare_strings(prov_item.artist.name, album.artist.name)
-        ]
+        }
 
     @api_route("tracks/:provider_id/:item_id/versions")
-    async def get_track_versions(self, item_id: str, provider_id: str) -> List[Track]:
+    async def get_track_versions(self, item_id: str, provider_id: str) -> Set[Track]:
         """Return all versions of a track we can find on all providers."""
         track = await self.get_track(item_id, provider_id)
-        provider_ids = [
+        provider_ids = {
             item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
-        ]
-        search_query = f"{track.artists[0].name} {track.name}"
-        return [
+        }
+        first_artist = next(iter(track.artists))
+        search_query = f"{first_artist.name} {track.name}"
+        return {
             prov_item
             for prov_items in await asyncio.gather(
                 *[
@@ -329,7 +329,7 @@ class MusicManager:
             )
             for prov_item in prov_items.tracks
             if compare_artists(prov_item.artists, track.artists)
-        ]
+        }
 
     @api_route("playlists/:provider_id/:item_id/tracks")
     async def get_playlist_tracks(self, item_id: str, provider_id: str) -> List[Track]:
@@ -355,7 +355,7 @@ class MusicManager:
             checksum=cache_checksum,
         )
         db_tracks = await self.mass.database.get_tracks_from_provider_ids(
-            provider_id, [x.item_id for x in playlist_tracks]
+            provider_id, {x.item_id for x in playlist_tracks}
         )
         # combine provider tracks with db tracks
         return [
@@ -374,7 +374,7 @@ class MusicManager:
     ):
         """Return combined result of provider item and db result."""
         for db_item in db_items:
-            if item.item_id in [x.item_id for x in db_item.provider_ids]:
+            if item.item_id in {x.item_id for x in db_item.provider_ids}:
                 item = db_item
                 break
         if index is not None and not item.position:
@@ -385,17 +385,14 @@ class MusicManager:
             item.disc_number = disc_number
         if track_number is not None:
             item.track_number = track_number
-        # make sure artists are unique
-        # if hasattr(item, "artists"):
-        #     item.artists = unique_item_ids(item.artists)
         return item
 
     @api_route("artists/:provider_id/:item_id/tracks")
-    async def get_artist_toptracks(self, item_id: str, provider_id: str) -> List[Track]:
+    async def get_artist_toptracks(self, item_id: str, provider_id: str) -> Set[Track]:
         """Return top tracks for an artist."""
         artist = await self.get_artist(item_id, provider_id)
         # get results from all providers
-        all_prov_tracks = [
+        all_prov_tracks = {
             track
             for prov_tracks in await asyncio.gather(
                 *[
@@ -404,17 +401,14 @@ class MusicManager:
                 ]
             )
             for track in prov_tracks
-        ]
+        }
         # retrieve list of db items
         db_tracks = await self.mass.database.get_tracks_from_provider_ids(
-            [x.provider for x in artist.provider_ids],
-            [x.item_id for x in all_prov_tracks],
+            {x.provider for x in artist.provider_ids},
+            {x.item_id for x in all_prov_tracks},
         )
         # combine provider tracks with db tracks and filter duplicate itemid's
         return {await self.__process_item(item, db_tracks) for item in all_prov_tracks}
-        # return unique_item_ids(
-        #     [await self.__process_item(item, db_tracks) for item in all_prov_tracks]
-        # )
 
     async def _get_provider_artist_toptracks(
         self, item_id: str, provider_id: str
@@ -433,11 +427,11 @@ class MusicManager:
         )
 
     @api_route("artists/:provider_id/:item_id/albums")
-    async def get_artist_albums(self, item_id: str, provider_id: str) -> List[Album]:
+    async def get_artist_albums(self, item_id: str, provider_id: str) -> Set[Album]:
         """Return (all) albums for an artist."""
         artist = await self.get_artist(item_id, provider_id)
         # get results from all providers
-        all_prov_albums = [
+        all_prov_albums = {
             album
             for prov_albums in await asyncio.gather(
                 *[
@@ -446,16 +440,14 @@ class MusicManager:
                 ]
             )
             for album in prov_albums
-        ]
+        }
         # retrieve list of db items
         db_tracks = await self.mass.database.get_albums_from_provider_ids(
             [x.provider for x in artist.provider_ids],
             [x.item_id for x in all_prov_albums],
         )
         # combine provider tracks with db tracks and filter duplicate itemid's
-        return unique_item_ids(
-            [await self.__process_item(item, db_tracks) for item in all_prov_albums]
-        )
+        return {await self.__process_item(item, db_tracks) for item in all_prov_albums}
 
     async def _get_provider_artist_albums(
         self, item_id: str, provider_id: str
@@ -465,7 +457,7 @@ class MusicManager:
         if not provider or not provider.available:
             LOGGER.error("Provider %s is not available", provider_id)
             return []
-        cache_key = f"{provider_id}.artist_albums.{item_id}"
+        cache_key = f"{provider_id}.artistalbums.{item_id}"
         return await cached(
             self.cache,
             cache_key,
@@ -736,7 +728,7 @@ class MusicManager:
         artist_albums = await self.get_artist_albums(
             db_artist.item_id, db_artist.provider
         )
-        for ref_album in artist_albums[:50]:
+        for ref_album in artist_albums:
             if ref_album.album_type == AlbumType.Compilation:
                 continue
             searchstr = "%s %s" % (db_artist.name, ref_album.name)

@@ -28,7 +28,7 @@ class PlaybackState(Enum):
     Off = "off"
 
 
-@dataclass
+@dataclass(frozen=True)
 class DeviceInfo(DataClassDictMixin):
     """Model for a player's deviceinfo."""
 
@@ -62,20 +62,22 @@ class PlayerControl(DataClassDictMixin):
     structure to override common player commands.
     """
 
-    # pylint: disable=no-member
-
-    type: PlayerControlType = PlayerControlType.UNKNOWN
-    control_id: str = ""
-    provider: str = ""
-    name: str = ""
+    type: PlayerControlType
+    control_id: str
+    provider: str
+    name: str
     state: Any = None
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.type, self.provider, self.control_id))
 
     async def set_state(self, new_state: Any) -> None:
         """Handle command to set the state for a player control."""
         # by default we just signal an event on the eventbus
         # pickup this event (e.g. from the websocket api)
         # or override this method with your own implementation.
-
+        # pylint: disable=no-member
         self.mass.signal_event(f"players/controls/{self.control_id}/state", new_state)
 
 
@@ -99,6 +101,10 @@ class PlayerState(DataClassDictMixin):
     group_parents: Set[str] = field(default_factory=set)
     features: Set[PlayerFeature] = field(default_factory=set)
     active_queue: str = None
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.provider_id, self.player_id))
 
     def update(self, new_obj: "PlayerState") -> Set[str]:
         """Update state from other PlayerState instance and return changed keys."""

@@ -253,11 +253,6 @@ def merge_list(base_list: list, new_list: list) -> Set:
     return final_list
 
 
-def unique_item_ids(objects):
-    """Filter duplicate item id's from list of items."""
-    return set({object_.item_id for object_ in objects})
-
-
 def try_load_json_file(jsonfile):
     """Try to load json from file."""
     try:

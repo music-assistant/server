@@ -358,20 +358,22 @@ class LibraryManager:
             )
             if db_item.checksum != playlist.checksum:
                 db_item = await self.mass.database.add_playlist(playlist)
+                # precache playlist tracks
+                for playlist_track in await self.mass.music.get_playlist_tracks(
+                    playlist.item_id, provider_id
+                ):
+                    # try to find substitutes for unavailable tracks with matching technique
+                    if not playlist_track.available:
+                        await self.mass.music.get_track(
+                            playlist_track.item_id,
+                            playlist_track.provider,
+                            playlist_track,
+                        )
             cur_db_ids.add(db_item.item_id)
             await self.mass.database.add_to_library(
                 db_item.item_id, MediaType.Playlist, playlist.provider
             )
-            # precache playlist tracks
-            for playlist_track in await self.mass.music.get_playlist_tracks(
-                playlist.item_id, provider_id
-            ):
-                # try to find substitutes for unavailable tracks with matching technique
-                if not db_item.available and not playlist_track.available:
-                    if playlist_track.provider == "database":
-                        await self.mass.music.match_track(playlist_track)
-                    else:
-                        await self.mass.music.add_track(playlist_track)
+
         # process playlist deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:

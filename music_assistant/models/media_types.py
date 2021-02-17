@@ -68,8 +68,8 @@ class MediaItemProviderId(DataClassDictMixin):
 class MediaItem(DataClassDictMixin):
     """Representation of a media item."""
 
-    item_id: str = ""
-    provider: str = ""
+    item_id: str
+    provider: str
     name: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
     provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
@@ -127,7 +127,7 @@ class MediaItem(DataClassDictMixin):
 
 
 @dataclass
-class Artist(MediaItem, DataClassDictMixin):
+class Artist(MediaItem):
     """Model for an artist."""
 
     media_type: MediaType = MediaType.Artist
@@ -142,8 +142,8 @@ class Artist(MediaItem, DataClassDictMixin):
 class ItemMapping(DataClassDictMixin):
     """Representation of a minimized item object."""
 
-    item_id: str = ""
-    provider: str = ""
+    item_id: str
+    provider: str
     name: str = ""
     media_type: MediaType = MediaType.Artist
 
@@ -158,7 +158,7 @@ class ItemMapping(DataClassDictMixin):
 
 
 @dataclass
-class Album(MediaItem, DataClassDictMixin):
+class Album(MediaItem):
     """Model for an album."""
 
     media_type: MediaType = MediaType.Album

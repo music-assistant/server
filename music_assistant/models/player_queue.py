@@ -374,12 +374,7 @@ class PlayerQueue:
             :param offset: offset from current queue position
         """
 
-        if (
-            not self.items
-            or self.cur_index is None
-            or self.cur_index == 0
-            or (self.cur_index + offset > len(self.items))
-        ):
+        if not self.items or self.cur_index is None:
             return await self.load(queue_items)
         insert_at_index = self.cur_index + offset
         for index, item in enumerate(queue_items):
@@ -411,7 +406,7 @@ class PlayerQueue:
                 LOGGER.debug(
                     "cmd_queue_insert not supported by player, fallback to cmd_queue_load "
                 )
-                self._items = self._items[self.cur_index :]
+                self._items = self._items[self.cur_index + offset :]
                 return await self.player.cmd_queue_load(self._items)
         self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
         self.mass.add_job(self._save_state())
