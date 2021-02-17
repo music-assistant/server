@@ -3,7 +3,7 @@
 from .sonos import SonosProvider
 
 
-async def async_setup(mass):
+async def setup(mass):
     """Perform async setup of this Plugin/Provider."""
     prov = SonosProvider()
-    await mass.async_register_provider(prov)
+    await mass.register_provider(prov)

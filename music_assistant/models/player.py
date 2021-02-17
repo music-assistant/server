@@ -1,12 +1,20 @@
 """Models and helpers for a player."""
 
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum, IntEnum
-from typing import Any, List, Optional
+from typing import Any, Optional, Set
 
 from mashumaro import DataClassDictMixin
-from music_assistant.helpers.typing import MusicAssistantType, QueueItems
+from music_assistant.constants import (
+    CONF_ENABLED,
+    CONF_NAME,
+    CONF_POWER_CONTROL,
+    CONF_VOLUME_CONTROL,
+    EVENT_PLAYER_CHANGED,
+)
+from music_assistant.helpers.typing import ConfigSubItem, MusicAssistant, QueueItems
 from music_assistant.helpers.util import callback
 from music_assistant.models.config_entry import ConfigEntry
 
@@ -37,10 +45,76 @@ class PlayerFeature(IntEnum):
     CROSSFADE = 2
 
 
+class PlayerControlType(Enum):
+    """Enum with different player control types."""
+
+    POWER = 0
+    VOLUME = 1
+    UNKNOWN = 99
+
+
+@dataclass
+class PlayerControl(DataClassDictMixin):
+    """
+    Model for a player control.
+
+    Allows for a plugin-like
+    structure to override common player commands.
+    """
+
+    # pylint: disable=no-member
+
+    type: PlayerControlType = PlayerControlType.UNKNOWN
+    control_id: str = ""
+    provider: str = ""
+    name: str = ""
+    state: Any = None
+
+    async def set_state(self, new_state: Any) -> None:
+        """Handle command to set the state for a player control."""
+        # by default we just signal an event on the eventbus
+        # pickup this event (e.g. from the websocket api)
+        # or override this method with your own implementation.
+
+        self.mass.signal_event(f"players/controls/{self.control_id}/state", new_state)
+
+
+@dataclass
+class PlayerState(DataClassDictMixin):
+    """Model for a (calculated) player state."""
+
+    player_id: str = None
+    provider_id: str = None
+    name: str = None
+    powered: bool = False
+    state: PlaybackState = PlaybackState.Off
+    available: bool = False
+    volume_level: int = 0
+    elapsed_time: int = 0
+    muted: bool = False
+    is_group_player: bool = False
+    group_childs: Set[str] = field(default_factory=set)
+    device_info: DeviceInfo = field(default_factory=DeviceInfo)
+    updated_at: datetime = None
+    group_parents: Set[str] = field(default_factory=set)
+    features: Set[PlayerFeature] = field(default_factory=set)
+    active_queue: str = None
+
+    def update(self, new_obj: "PlayerState") -> Set[str]:
+        """Update state from other PlayerState instance and return changed keys."""
+        changed_keys = set()
+        # pylint: disable=no-member
+        for key in self.__dataclass_fields__.keys():
+            new_val = getattr(new_obj, key)
+            if getattr(self, key) != new_val:
+                setattr(self, key, new_val)
+                if key != "updated_at":
+                    changed_keys.add(key)
+        return changed_keys
+
+
 class Player:
     """Model for a music player."""
-
-    mass: MusicAssistantType = None  # will be set by player manager
 
     # Public properties: should be overriden with provider specific implementation
 
@@ -120,9 +194,9 @@ class Player:
         return False
 
     @property
-    def group_childs(self) -> List[str]:
+    def group_childs(self) -> Set[str]:
         """Return list of child player id's if player is a group player."""
-        return []
+        return {}
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -135,28 +209,28 @@ class Player:
         return False
 
     @property
-    def features(self) -> List[PlayerFeature]:
+    def features(self) -> Set[PlayerFeature]:
         """Return list of features this player supports."""
-        return []
+        return {}
 
     @property
-    def config_entries(self) -> List[ConfigEntry]:
+    def config_entries(self) -> Set[ConfigEntry]:
         """Return player specific config entries (if any)."""
-        return []
+        return {}
 
     # Public methods / player commands: should be overriden with provider specific implementation
 
-    async def async_on_update(self) -> None:
+    async def on_poll(self) -> None:
         """Call when player is periodically polled by the player manager (should_poll=True)."""
         self.update_state()
 
-    async def async_on_add(self) -> None:
+    async def on_add(self) -> None:
         """Call when player is added to the player manager."""
 
-    async def async_on_remove(self) -> None:
+    async def on_remove(self) -> None:
         """Call when player is removed from the player manager."""
 
-    async def async_cmd_play_uri(self, uri: str) -> None:
+    async def cmd_play_uri(self, uri: str) -> None:
         """
         Play the specified uri/url on the player.
 
@@ -164,35 +238,35 @@ class Player:
         """
         raise NotImplementedError
 
-    async def async_cmd_stop(self) -> None:
+    async def cmd_stop(self) -> None:
         """Send STOP command to player."""
         raise NotImplementedError
 
-    async def async_cmd_play(self) -> None:
+    async def cmd_play(self) -> None:
         """Send PLAY command to player."""
         raise NotImplementedError
 
-    async def async_cmd_pause(self) -> None:
+    async def cmd_pause(self) -> None:
         """Send PAUSE command to player."""
         raise NotImplementedError
 
-    async def async_cmd_next(self) -> None:
+    async def cmd_next(self) -> None:
         """Send NEXT TRACK command to player."""
         raise NotImplementedError
 
-    async def async_cmd_previous(self) -> None:
+    async def cmd_previous(self) -> None:
         """Send PREVIOUS TRACK command to player."""
         raise NotImplementedError
 
-    async def async_cmd_power_on(self) -> None:
+    async def cmd_power_on(self) -> None:
         """Send POWER ON command to player."""
         raise NotImplementedError
 
-    async def async_cmd_power_off(self) -> None:
+    async def cmd_power_off(self) -> None:
         """Send POWER OFF command to player."""
         raise NotImplementedError
 
-    async def async_cmd_volume_set(self, volume_level: int) -> None:
+    async def cmd_volume_set(self, volume_level: int) -> None:
         """
         Send volume level command to player.
 
@@ -200,7 +274,7 @@ class Player:
         """
         raise NotImplementedError
 
-    async def async_cmd_volume_mute(self, is_muted: bool = False) -> None:
+    async def cmd_volume_mute(self, is_muted: bool = False) -> None:
         """
         Send volume MUTE command to given player.
 
@@ -210,7 +284,7 @@ class Player:
 
     # OPTIONAL: QUEUE SERVICE CALLS/COMMANDS - OVERRIDE ONLY IF SUPPORTED BY PROVIDER
 
-    async def async_cmd_queue_play_index(self, index: int) -> None:
+    async def cmd_queue_play_index(self, index: int) -> None:
         """
         Play item at index X on player's queue.
 
@@ -219,7 +293,7 @@ class Player:
         if PlayerFeature.QUEUE in self.features:
             raise NotImplementedError
 
-    async def async_cmd_queue_load(self, queue_items: QueueItems) -> None:
+    async def cmd_queue_load(self, queue_items: QueueItems) -> None:
         """
         Load/overwrite given items in the player's queue implementation.
 
@@ -228,7 +302,7 @@ class Player:
         if PlayerFeature.QUEUE in self.features:
             raise NotImplementedError
 
-    async def async_cmd_queue_insert(
+    async def cmd_queue_insert(
         self, queue_items: QueueItems, insert_at_index: int
     ) -> None:
         """
@@ -241,7 +315,7 @@ class Player:
         if PlayerFeature.QUEUE in self.features:
             raise NotImplementedError
 
-    async def async_cmd_queue_append(self, queue_items: QueueItems) -> None:
+    async def cmd_queue_append(self, queue_items: QueueItems) -> None:
         """
         Append new items at the end of the queue.
 
@@ -250,7 +324,7 @@ class Player:
         if PlayerFeature.QUEUE in self.features:
             raise NotImplementedError
 
-    async def async_cmd_queue_update(self, queue_items: QueueItems) -> None:
+    async def cmd_queue_update(self, queue_items: QueueItems) -> None:
         """
         Overwrite the existing items in the queue, used for reordering.
 
@@ -259,48 +333,189 @@ class Player:
         if PlayerFeature.QUEUE in self.features:
             raise NotImplementedError
 
-    async def async_cmd_queue_clear(self) -> None:
+    async def cmd_queue_clear(self) -> None:
         """Clear the player's queue."""
         if PlayerFeature.QUEUE in self.features:
             raise NotImplementedError
 
-    # Do not override below this point
+    # Private properties and methods
+    # Do not override below this point!
+
+    @property
+    def active_queue(self) -> str:
+        """Return the active parent player/queue for a player."""
+        return self._cur_state.active_queue or self.player_id
+
+    @property
+    def group_parents(self) -> Set[str]:
+        """Return all groups this player belongs to."""
+        return self._cur_state.group_parents
+
+    @property
+    def config(self) -> ConfigSubItem:
+        """Return this player's configuration."""
+        return self.mass.config.get_player_config(self.player_id)
+
+    @property
+    def enabled(self):
+        """Return True if this player is enabled."""
+        return self.config[CONF_ENABLED]
+
+    @property
+    def power_control(self) -> Optional[PlayerControl]:
+        """Return this player's Power Control."""
+        player_control_conf = self.config.get(CONF_POWER_CONTROL)
+        if player_control_conf:
+            return self.mass.players.get_player_control(player_control_conf)
+        return None
+
+    @property
+    def volume_control(self) -> Optional[PlayerControl]:
+        """Return this player's Volume Control."""
+        player_control_conf = self.config.get(CONF_VOLUME_CONTROL)
+        if player_control_conf:
+            return self.mass.players.get_player_control(player_control_conf)
+        return None
+
+    @property
+    def player_state(self) -> PlayerState:
+        """Return calculated/final state for this player."""
+        return self._cur_state
 
     @callback
     def update_state(self) -> None:
-        """Call to store current player state in the player manager."""
-        self.mass.add_job(self.mass.players.async_update_player(self))
+        """Call to update current player state in the player manager."""
+        if not self.added_to_mass:
+            if self.enabled:
+                # player is now enabled and can be added
+                self.mass.add_job(self.mass.players.add_player(self))
+            return
+        new_state = self.create_state()
+        changed_keys = self._cur_state.update(new_state)
+        # basic throttle: do not send state changed events if player did not change
+        if not changed_keys:
+            return
+        self._cur_state = new_state
+        # always update the player queue
+        player_queue = self.mass.players.get_player_queue(self.active_queue)
+        if player_queue:
+            self.mass.add_job(player_queue.update_state)
+        if len(changed_keys) == 1 and "elapsed_time" in changed_keys:
+            # no need to send player update if only the elapsed time changes
+            # this is already handled by the queue manager
+            return
+        self.mass.signal_event(EVENT_PLAYER_CHANGED, new_state)
+        # update group player childs when parent updates
+        for child_player_id in self.group_childs:
+            self.mass.add_job(self.mass.players.trigger_player_update(child_player_id))
+        # update group player when child updates
+        for group_player_id in self._cur_state.group_parents:
+            self.mass.add_job(self.mass.players.trigger_player_update(group_player_id))
 
+    @callback
+    def _get_name(self) -> str:
+        """Return final/calculated player name."""
+        conf_name = self.config.get(CONF_NAME)
+        return conf_name if conf_name else self.name
 
-class PlayerControlType(Enum):
-    """Enum with different player control types."""
+    @callback
+    def _get_powered(self) -> bool:
+        """Return final/calculated player's power state."""
+        if not self.available or not self.enabled:
+            return False
+        power_control = self.power_control
+        if power_control:
+            return power_control.state
+        return self.powered
 
-    POWER = 0
-    VOLUME = 1
-    UNKNOWN = 99
+    @callback
+    def _get_state(self) -> PlaybackState:
+        """Return final/calculated player's playback state."""
+        if self.powered and self.active_queue != self.player_id:
+            # use group state
+            return self.mass.players.get_player(self.active_queue).state
+        if self.state == PlaybackState.Stopped and not self.powered:
+            return PlaybackState.Off
+        return self.state
 
+    @callback
+    def _get_available(self) -> bool:
+        """Return current availablity of player."""
+        return False if not self.enabled else self.available
 
-@dataclass
-class PlayerControl(DataClassDictMixin):
-    """
-    Model for a player control.
+    @callback
+    def _get_volume_level(self) -> int:
+        """Return final/calculated player's volume_level."""
+        if not self.available or not self.enabled:
+            return 0
+        # handle volume control
+        volume_control = self.volume_control
+        if volume_control:
+            return volume_control.state
+        # handle group volume
+        if self.is_group_player:
+            group_volume = 0
+            active_players = 0
+            for child_player_id in self.group_childs:
+                child_player = self.mass.players.get_player(child_player_id)
+                if child_player:
+                    group_volume += child_player.player_state.volume_level
+                    active_players += 1
+            if active_players:
+                group_volume = group_volume / active_players
+            return int(group_volume)
+        return int(self.volume_level)
 
-    Allows for a plugin-like
-    structure to override common player commands.
-    """
+    @callback
+    def _get_group_parents(self) -> Set[str]:
+        """Return all group players this player belongs to."""
+        if self.is_group_player:
+            return {}
+        return {
+            player.player_id
+            for player in self.mass.players
+            if player.is_group_player and self.player_id in player.group_childs
+        }
 
-    # pylint: disable=no-member
+    @callback
+    def _get_active_queue(self) -> str:
+        """Return the active parent player/queue for a player."""
+        # if a group is powered on, all of it's childs will have/use
+        # the parent's player's queue.
+        for group_player_id in self.group_parents:
+            group_player = self.mass.players.get_player(group_player_id)
+            if group_player and group_player.powered:
+                return group_player_id
+        return self.player_id
 
-    type: PlayerControlType = PlayerControlType.UNKNOWN
-    control_id: str = ""
-    provider: str = ""
-    name: str = ""
-    state: Any = None
+    @callback
+    def create_state(self) -> PlayerState:
+        """Create PlayerState."""
+        return PlayerState(
+            player_id=self.player_id,
+            provider_id=self.provider_id,
+            name=self._get_name(),
+            powered=self._get_powered(),
+            state=self.state,
+            available=self._get_available(),
+            volume_level=self._get_volume_level(),
+            elapsed_time=self.elapsed_time,
+            muted=self.muted,
+            is_group_player=self.is_group_player,
+            group_childs=self.group_childs,
+            device_info=self.device_info,
+            group_parents=self._get_group_parents(),
+            features=self.features,
+            active_queue=self._get_active_queue(),
+            updated_at=datetime.now(),
+        )
 
-    async def async_set_state(self, new_state: Any) -> None:
-        """Handle command to set the state for a player control."""
-        # by default we just signal an event on the eventbus
-        # pickup this event (e.g. from the websocket api)
-        # or override this method with your own implementation.
+    def to_dict(self) -> dict:
+        """Return playerstate for compatability with json serializer."""
+        return self._cur_state.to_dict()
 
-        self.mass.signal_event(f"players/controls/{self.control_id}/state", new_state)
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize a Player instance."""
+        self.mass: Optional[MusicAssistant] = None
+        self.added_to_mass = False
+        self._cur_state = PlayerState()

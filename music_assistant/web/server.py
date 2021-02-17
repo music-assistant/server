@@ -27,8 +27,8 @@ from music_assistant.constants import (
 from music_assistant.constants import __version__ as MASS_VERSION
 from music_assistant.helpers import repath
 from music_assistant.helpers.encryption import decrypt_string
-from music_assistant.helpers.images import async_get_image_url, async_get_thumb_file
-from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.images import get_image_url, get_thumb_file
+from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_hostname, get_ip
 from music_assistant.helpers.web import api_route, json_serializer, parse_arguments
 from music_assistant.models.media_types import ItemMapping, MediaItem
@@ -42,7 +42,7 @@ LOGGER = logging.getLogger("webserver")
 class WebServer:
     """Webserver and json/websocket api."""
 
-    def __init__(self, mass: MusicAssistantType, port: int):
+    def __init__(self, mass: MusicAssistant, port: int):
         """Initialize class."""
         self.jwt_key = None
         self.app = None
@@ -55,16 +55,16 @@ class WebServer:
         self._runner = None
         self.api_routes = {}
 
-    async def async_setup(self):
+    async def setup(self):
         """Perform async setup."""
-        self.jwt_key = decrypt_string(self.mass.config.stored_config["jwt_key"])
+        self.jwt_key = await decrypt_string(self.mass.config.stored_config["jwt_key"])
         self.app = web.Application()
         self.app["mass"] = self.mass
         self.app["clients"] = []
         # add all routes
         self.app.add_routes(stream_routes)
         self.app.router.add_route("*", "/jsonrpc.js", json_rpc_endpoint)
-        self.app.router.add_get("/ws", self.__async_websocket_handler)
+        self.app.router.add_get("/ws", self._websocket_handler)
 
         # register all methods decorated as api_route
         for cls in [
@@ -86,14 +86,14 @@ class WebServer:
                 )
             },
         )
-        cors.add(self.app.router.add_get("/info", self.async_info))
+        cors.add(self.app.router.add_get("/info", self.info))
         # Host the frontend app
         webdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static/")
         if os.path.isdir(webdir):
-            self.app.router.add_get("/", self.async_index)
+            self.app.router.add_get("/", self.index)
             self.app.router.add_static("/", webdir, append_version=True)
         else:
-            self.app.router.add_get("/", self.async_info)
+            self.app.router.add_get("/", self.info)
 
         self._runner = web.AppRunner(self.app, access_log=None)
         await self._runner.setup()
@@ -101,9 +101,9 @@ class WebServer:
         http_site = web.TCPSite(self._runner, host=None, port=self.port)
         await http_site.start()
         LOGGER.info("Started Music Assistant server on port %s", self.port)
-        self.mass.add_event_listener(self.__async_handle_mass_events)
+        self.mass.add_event_listener(self._handle_mass_events)
 
-    async def async_stop(self):
+    async def stop(self):
         """Stop the webserver."""
         for ws_client in self.app["clients"]:
             await ws_client.close(message=b"server shutdown")
@@ -170,7 +170,7 @@ class WebServer:
             "initialized": self.mass.config.stored_config["initialized"],
         }
 
-    async def async_index(self, request: web.Request):
+    async def index(self, request: web.Request):
         """Get the index page."""
         # pylint: disable=unused-argument
         html_app = os.path.join(
@@ -179,21 +179,19 @@ class WebServer:
         return web.FileResponse(html_app)
 
     @api_route("info", False)
-    async def async_info(self, request: web.Request = None):
+    async def info(self, request: web.Request = None):
         """Return discovery info on index page."""
         if request:
             return web.json_response(self.discovery_info)
         return self.discovery_info
 
     @api_route("revoke_token")
-    async def async_revoke_token(self, client_id: str):
+    async def revoke_token(self, client_id: str):
         """Revoke token for client."""
         return self.mass.config.security.revoke_app_token(client_id)
 
     @api_route("get_token", False)
-    async def async_get_token(
-        self, username: str, password: str, app_id: str = ""
-    ) -> dict:
+    async def get_token(self, username: str, password: str, app_id: str = "") -> dict:
         """
         Validate given credentials and return JWT token.
 
@@ -225,7 +223,7 @@ class WebServer:
         raise AuthenticationError("Invalid credentials")
 
     @api_route("setup", False)
-    async def async_create_user_setup(self, username: str, password: str):
+    async def create_user_setup(self, username: str, password: str):
         """Handle first-time server setup through onboarding wizard."""
         if self.mass.config.stored_config["initialized"]:
             raise AuthenticationError("Already initialized")
@@ -235,11 +233,11 @@ class WebServer:
         self.mass.config.stored_config["initialized"] = True
         self.mass.config.save()
         # fix discovery info
-        await self.mass.async_setup_discovery()
+        await self.mass.setup_discovery()
         return True
 
     @api_route("images/thumb")
-    async def async_get_image_thumb(
+    async def get_image_thumb(
         self,
         size: int,
         url: Optional[str] = "",
@@ -247,11 +245,11 @@ class WebServer:
     ):
         """Get (resized) thumb image for given URL or media item as base64 encoded string."""
         if not url and item:
-            url = await async_get_image_url(
+            url = await get_image_url(
                 self.mass, item.item_id, item.provider, item.media_type
             )
         if url:
-            img_file = await async_get_thumb_file(self.mass, url, size)
+            img_file = await get_thumb_file(self.mass, url, size)
             if img_file:
                 with open(img_file, "rb") as _file:
                     icon_data = _file.read()
@@ -260,11 +258,11 @@ class WebServer:
         raise KeyError("Invalid item or url")
 
     @api_route("images/provider-icons/:provider_id?")
-    async def async_get_provider_icon(self, provider_id: Optional[str]):
+    async def get_provider_icon(self, provider_id: Optional[str]):
         """Get Provider icon as base64 encoded string."""
         if not provider_id:
             return {
-                prov.id: await self.async_get_provider_icon(prov.id)
+                prov.id: await self.get_provider_icon(prov.id)
                 for prov in self.mass.get_providers(include_unavailable=True)
             }
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -276,7 +274,7 @@ class WebServer:
                 return "data:image/png;base64," + icon_data.decode()
         raise KeyError("Invalid provider: %s" % provider_id)
 
-    async def __async_websocket_handler(self, request: web.Request):
+    async def _websocket_handler(self, request: web.Request):
         """Handle websocket client."""
 
         ws_client = WebSocketResponse()
@@ -300,7 +298,7 @@ class WebServer:
                 json_msg = msg.json(loads=ujson.loads)
                 if "command" in json_msg and "data" in json_msg:
                     # handle command
-                    await self.__async_handle_command(
+                    await self._handle_command(
                         ws_client,
                         json_msg["command"],
                         json_msg["data"],
@@ -308,16 +306,16 @@ class WebServer:
                     )
                 elif "event" in json_msg:
                     # handle event
-                    await self.__async_handle_event(
+                    await self._handle_event(
                         ws_client, json_msg["event"], json_msg.get("data")
                     )
         except AuthenticationError as exc:  # pylint:disable=broad-except
             # disconnect client on auth errors
-            await self.__async_send_json(ws_client, error=str(exc), **json_msg)
+            await self._send_json(ws_client, error=str(exc), **json_msg)
             await ws_client.close(message=str(exc).encode())
         except Exception as exc:  # pylint:disable=broad-except
             # log the error only
-            await self.__async_send_json(ws_client, error=str(exc), **json_msg)
+            await self._send_json(ws_client, error=str(exc), **json_msg)
             LOGGER.error("Error with WS client", exc_info=exc)
 
         # websocket disconnected
@@ -326,7 +324,7 @@ class WebServer:
 
         return ws_client
 
-    async def __async_handle_command(
+    async def _handle_command(
         self,
         ws_client: WebSocketResponse,
         command: str,
@@ -336,7 +334,7 @@ class WebServer:
         """Handle websocket command."""
         res = None
         if command == "auth":
-            return await self.__async_handle_auth(ws_client, data)
+            return await self._handle_auth(ws_client, data)
         # work out handler for the given path/command
         for key in self.api_routes:
             match = repath.match_pattern(key, command)
@@ -356,20 +354,18 @@ class WebServer:
                 if asyncio.iscoroutine(res):
                     res = await res
                 # return result of command to client
-                return await self.__async_send_json(
+                return await self._send_json(
                     ws_client, id=msg_id, result=command, data=res
                 )
         raise KeyError("Unknown command")
 
-    async def __async_handle_event(
-        self, ws_client: WebSocketResponse, event: str, data: Any
-    ):
+    async def _handle_event(self, ws_client: WebSocketResponse, event: str, data: Any):
         """Handle event message from ws client."""
         LOGGER.info("received event %s", event)
         if ws_client.authenticated:
             self.mass.signal_event(event, data)
 
-    async def __async_handle_auth(self, ws_client: WebSocketResponse, token: str):
+    async def _handle_auth(self, ws_client: WebSocketResponse, token: str):
         """Handle authentication with JWT token."""
         token_info = jwt.decode(token, self.mass.web.jwt_key, algorithms=["HS256"])
         if self.mass.config.security.is_token_revoked(token_info):
@@ -377,19 +373,19 @@ class WebServer:
         ws_client.authenticated = True
         self.mass.config.security.set_last_login(token_info["client_id"])
         # TODO: store token/app_id on ws_client obj and periodiclaly check if token is expired or revoked
-        await self.__async_send_json(ws_client, result="auth", data=token_info)
+        await self._send_json(ws_client, result="auth", data=token_info)
 
-    async def __async_send_json(self, ws_client: WebSocketResponse, **kwargs):
+    async def _send_json(self, ws_client: WebSocketResponse, **kwargs):
         """Send message (back) to websocket client."""
         await ws_client.send_str(json_serializer(kwargs))
 
-    async def __async_handle_mass_events(self, event: str, event_data: Any):
+    async def _handle_mass_events(self, event: str, event_data: Any):
         """Broadcast events to connected clients."""
         for ws_client in self.app["clients"]:
             if not ws_client.authenticated:
                 continue
             try:
-                await self.__async_send_json(ws_client, event=event, data=event_data)
+                await self._send_json(ws_client, event=event, data=event_data)
             except ConnectionResetError:
                 # client is already disconnected
                 self.app["clients"].remove(ws_client)

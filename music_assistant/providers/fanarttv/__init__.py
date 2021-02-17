@@ -20,10 +20,10 @@ LOGGER = logging.getLogger(PROV_ID)
 CONFIG_ENTRIES = []
 
 
-async def async_setup(mass) -> None:
+async def setup(mass) -> None:
     """Perform async setup of this Plugin/Provider."""
     prov = FanartTvProvider(mass)
-    await mass.async_register_provider(prov)
+    await mass.register_provider(prov)
 
 
 class FanartTvProvider(MetadataProvider):
@@ -34,7 +34,7 @@ class FanartTvProvider(MetadataProvider):
         self.mass = mass
         self.throttler = Throttler(rate_limit=1, period=2)
 
-    async def async_on_start(self) -> bool:
+    async def on_start(self) -> bool:
         """
         Handle initialization of the provider based on config.
 
@@ -57,10 +57,10 @@ class FanartTvProvider(MetadataProvider):
         """Return Config Entries for this provider."""
         return CONFIG_ENTRIES
 
-    async def async_get_artist_images(self, mb_artist_id: str) -> Dict:
+    async def get_artist_images(self, mb_artist_id: str) -> Dict:
         """Retrieve images by musicbrainz artist id."""
         metadata = {}
-        data = await self.__async_get_data("music/%s" % mb_artist_id)
+        data = await self._get_data("music/%s" % mb_artist_id)
         if data:
             if data.get("hdmusiclogo"):
                 metadata["logo"] = data["hdmusiclogo"][0]["url"]
@@ -79,7 +79,7 @@ class FanartTvProvider(MetadataProvider):
                 metadata["banner"] = data["musicbanner"][0]["url"]
         return metadata
 
-    async def __async_get_data(self, endpoint, params=None):
+    async def _get_data(self, endpoint, params=None):
         """Get data from api."""
         if params is None:
             params = {}

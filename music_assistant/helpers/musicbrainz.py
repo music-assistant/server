@@ -7,7 +7,7 @@ from typing import Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
-from music_assistant.helpers.cache import async_use_cache
+from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings, get_compare_string
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
@@ -24,7 +24,7 @@ class MusicBrainz:
         self.cache = mass.cache
         self.throttler = Throttler(rate_limit=1, period=1)
 
-    async def async_get_mb_artist_id(
+    async def get_mb_artist_id(
         self,
         artistname,
         albumname=None,
@@ -44,7 +44,7 @@ class MusicBrainz:
         )
         mb_artist_id = None
         if album_upc:
-            mb_artist_id = await self.async_search_artist_by_album(
+            mb_artist_id = await self.search_artist_by_album(
                 artistname, None, album_upc
             )
             if mb_artist_id:
@@ -55,7 +55,7 @@ class MusicBrainz:
                     mb_artist_id,
                 )
         if not mb_artist_id and track_isrc:
-            mb_artist_id = await self.async_search_artist_by_track(
+            mb_artist_id = await self.search_artist_by_track(
                 artistname, None, track_isrc
             )
             if mb_artist_id:
@@ -66,9 +66,7 @@ class MusicBrainz:
                     mb_artist_id,
                 )
         if not mb_artist_id and albumname:
-            mb_artist_id = await self.async_search_artist_by_album(
-                artistname, albumname
-            )
+            mb_artist_id = await self.search_artist_by_album(artistname, albumname)
             if mb_artist_id:
                 LOGGER.debug(
                     "Got MusicbrainzArtistId for %s after search on albumname %s --> %s",
@@ -77,9 +75,7 @@ class MusicBrainz:
                     mb_artist_id,
                 )
         if not mb_artist_id and trackname:
-            mb_artist_id = await self.async_search_artist_by_track(
-                artistname, trackname
-            )
+            mb_artist_id = await self.search_artist_by_track(artistname, trackname)
             if mb_artist_id:
                 LOGGER.debug(
                     "Got MusicbrainzArtistId for %s after search on trackname %s --> %s",
@@ -89,9 +85,7 @@ class MusicBrainz:
                 )
         return mb_artist_id
 
-    async def async_search_artist_by_album(
-        self, artistname, albumname=None, album_upc=None
-    ):
+    async def search_artist_by_album(self, artistname, albumname=None, album_upc=None):
         """Retrieve musicbrainz artist id by providing the artist name and albumname or upc."""
         for searchartist in [
             re.sub(LUCENE_SPECIAL, r"\\\1", artistname),
@@ -107,7 +101,7 @@ class MusicBrainz:
                     "query": 'artist:"%s" AND release:"%s"'
                     % (searchartist, searchalbum)
                 }
-            result = await self.async_get_data(endpoint, params)
+            result = await self.get_data(endpoint, params)
             if result and "releases" in result:
                 for strictness in [True, False]:
                     for item in result["releases"]:
@@ -126,9 +120,7 @@ class MusicBrainz:
                                         return artist["id"]
         return ""
 
-    async def async_search_artist_by_track(
-        self, artistname, trackname=None, track_isrc=None
-    ):
+    async def search_artist_by_track(self, artistname, trackname=None, track_isrc=None):
         """Retrieve artist id by providing the artist name and trackname or track isrc."""
         endpoint = "recording"
         searchartist = re.sub(LUCENE_SPECIAL, r"\\\1", artistname)
@@ -140,7 +132,7 @@ class MusicBrainz:
             searchtrack = re.sub(LUCENE_SPECIAL, r"\\\1", trackname)
             endpoint = "recording"
             params = {"query": '"%s" AND artist:"%s"' % (searchtrack, searchartist)}
-        result = await self.async_get_data(endpoint, params)
+        result = await self.get_data(endpoint, params)
         if result and "recordings" in result:
             for strictness in [True, False]:
                 for item in result["recordings"]:
@@ -159,8 +151,8 @@ class MusicBrainz:
                                     return artist["id"]
         return ""
 
-    @async_use_cache(2)
-    async def async_get_data(self, endpoint: str, params: Optional[dict] = None):
+    @use_cache(2)
+    async def get_data(self, endpoint: str, params: Optional[dict] = None):
         """Get data from api."""
         if params is None:
             params = {}

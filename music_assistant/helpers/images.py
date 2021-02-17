@@ -3,16 +3,16 @@
 import os
 from io import BytesIO
 
-from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.media_types import MediaType
 from PIL import Image
 
 
-async def async_get_thumb_file(mass: MusicAssistantType, url, size: int = 150):
+async def get_thumb_file(mass: MusicAssistant, url, size: int = 150):
     """Get path to (resized) thumbnail image for given image url."""
     assert url
     cache_folder = os.path.join(mass.config.data_path, ".thumbs")
-    cache_id = await mass.database.async_get_thumbnail_id(url, size)
+    cache_id = await mass.database.get_thumbnail_id(url, size)
     cache_file = os.path.join(cache_folder, f"{cache_id}.png")
     if os.path.isfile(cache_file):
         # return file from cache
@@ -39,11 +39,11 @@ async def async_get_thumb_file(mass: MusicAssistantType, url, size: int = 150):
     return cache_file
 
 
-async def async_get_image_url(
-    mass: MusicAssistantType, item_id: str, provider_id: str, media_type: MediaType
+async def get_image_url(
+    mass: MusicAssistant, item_id: str, provider_id: str, media_type: MediaType
 ):
     """Get url to image for given media item."""
-    item = await mass.music.async_get_item(item_id, provider_id, media_type)
+    item = await mass.music.get_item(item_id, provider_id, media_type)
     if not item:
         return None
     if item and item.metadata.get("image"):
@@ -66,12 +66,12 @@ async def async_get_image_url(
         return item.album.metadata["image"]
     if media_type == MediaType.Track and item.album:
         # try album instead for tracks
-        return await async_get_image_url(
+        return await get_image_url(
             mass, item.album.item_id, item.album.provider, MediaType.Album
         )
     if media_type == MediaType.Album and item.artist:
         # try artist instead for albums
-        return await async_get_image_url(
+        return await get_image_url(
             mass, item.artist.item_id, item.artist.provider, MediaType.Artist
         )
     return None

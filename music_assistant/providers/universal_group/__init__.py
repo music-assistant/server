@@ -1,10 +1,10 @@
-"""Group player provider: enables grouping of all playertypes."""
+"""Group player provider: enables grouping of all Players."""
 
 import asyncio
 import logging
 from typing import List
 
-from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import DeviceInfo, PlaybackState, Player
 from music_assistant.models.provider import PlayerProvider
@@ -28,10 +28,10 @@ CONFIG_ENTRIES = [
 ]
 
 
-async def async_setup(mass):
+async def setup(mass):
     """Perform async setup of this Plugin/Provider."""
     prov = GroupPlayerProvider()
-    await mass.async_register_provider(prov)
+    await mass.register_provider(prov)
 
 
 class GroupPlayerProvider(PlayerProvider):
@@ -52,25 +52,26 @@ class GroupPlayerProvider(PlayerProvider):
         """Return Config Entries for this provider."""
         return CONFIG_ENTRIES
 
-    async def async_on_start(self) -> bool:
+    async def on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
         conf = self.mass.config.player_providers[PROV_ID]
         for index in range(conf[CONF_PLAYER_COUNT]):
             player = GroupPlayer(self.mass, index)
-            self.mass.add_job(self.mass.players.async_add_player(player))
+            self.mass.add_job(self.mass.players.add_player(player))
         return True
 
-    async def async_on_stop(self):
+    async def on_stop(self):
         """Handle correct close/cleanup of the provider on exit. Called on shutdown."""
         for player in self.players:
-            await player.async_cmd_stop()
+            await player.cmd_stop()
 
 
 class GroupPlayer(Player):
     """Model for a group player."""
 
-    def __init__(self, mass: MusicAssistantType, player_index: int):
+    def __init__(self, mass: MusicAssistant, player_index: int):
         """Initialize."""
+        super().__init__()
         self.mass = mass
         self._player_index = player_index
         self._player_id = f"{PROV_ID}_{player_index}"
@@ -171,7 +172,7 @@ class GroupPlayer(Player):
         """Return config entries for this group player."""
         return self._config_entries
 
-    async def async_on_update(self) -> None:
+    async def on_poll(self) -> None:
         """Call when player is periodically polled by the player manager (should_poll=True)."""
         self._config_entries = self.__get_config_entries()
         self._group_childs = self.__get_group_childs()
@@ -188,7 +189,7 @@ class GroupPlayer(Player):
         """Return config entries for this group player."""
         all_players = [
             {"text": item.name, "value": item.player_id}
-            for item in self.mass.players.player_states
+            for item in self.mass.players
             if item.player_id is not self._player_id
         ]
         selected_players_ids = self.mass.config.get_player_config(self.player_id).get(
@@ -197,10 +198,10 @@ class GroupPlayer(Player):
         # selected_players_ids = []
         selected_players = []
         for player_id in selected_players_ids:
-            player_state = self.mass.players.get_player_state(player_id)
-            if player_state:
+            player = self.mass.players.get_player(player_id)
+            if player:
                 selected_players.append(
-                    {"text": player_state.name, "value": player_state.player_id}
+                    {"text": player.name, "value": player.player_id}
                 )
         default_master = ""
         if selected_players:
@@ -229,9 +230,9 @@ class GroupPlayer(Player):
 
     # SERVICE CALLS / PLAYER COMMANDS
 
-    async def async_cmd_play_uri(self, uri: str):
+    async def cmd_play_uri(self, uri: str):
         """Play the specified uri/url on the player."""
-        await self.async_cmd_stop()
+        await self.cmd_stop()
         self._current_uri = uri
         self._state = PlaybackState.Playing
         self._powered = True
@@ -242,11 +243,11 @@ class GroupPlayer(Player):
             child_player = self.mass.players.get_player(child_player_id)
             if child_player:
                 queue_stream_uri = f"{self.mass.web.stream_url}/group/{self.player_id}?player_id={child_player_id}"
-                await child_player.async_cmd_play_uri(queue_stream_uri)
+                await child_player.cmd_play_uri(queue_stream_uri)
         self.update_state()
-        self.stream_task = self.mass.add_job(self.async_queue_stream_task())
+        self.stream_task = self.mass.add_job(self.queue_stream_task())
 
-    async def async_cmd_stop(self) -> None:
+    async def cmd_stop(self) -> None:
         """Send STOP command to player."""
         self._state = PlaybackState.Stopped
         if self.stream_task:
@@ -261,10 +262,10 @@ class GroupPlayer(Player):
         for child_player_id in self.group_childs:
             child_player = self.mass.players.get_player(child_player_id)
             if child_player:
-                await child_player.async_cmd_stop()
+                await child_player.cmd_stop()
         self.update_state()
 
-    async def async_cmd_play(self) -> None:
+    async def cmd_play(self) -> None:
         """Send PLAY command to player."""
         if not self.state == PlaybackState.Paused:
             return
@@ -272,31 +273,31 @@ class GroupPlayer(Player):
         for child_player_id in self.group_childs:
             child_player = self.mass.players.get_player(child_player_id)
             if child_player:
-                await child_player.async_cmd_play()
+                await child_player.cmd_play()
         self._state = PlaybackState.Playing
         self.update_state()
 
-    async def async_cmd_pause(self):
+    async def cmd_pause(self):
         """Send PAUSE command to player."""
         # forward this command to each child player
         for child_player_id in self.group_childs:
             child_player = self.mass.players.get_player(child_player_id)
             if child_player:
-                await child_player.async_cmd_pause()
+                await child_player.cmd_pause()
         self._state = PlaybackState.Paused
         self.update_state()
 
-    async def async_cmd_power_on(self) -> None:
+    async def cmd_power_on(self) -> None:
         """Send POWER ON command to player."""
         self._powered = True
         self.update_state()
 
-    async def async_cmd_power_off(self) -> None:
+    async def cmd_power_off(self) -> None:
         """Send POWER OFF command to player."""
         self._powered = False
         self.update_state()
 
-    async def async_cmd_volume_set(self, volume_level: int) -> None:
+    async def cmd_volume_set(self, volume_level: int) -> None:
         """
         Send volume level command to player.
 
@@ -304,14 +305,14 @@ class GroupPlayer(Player):
         """
         # this is already handled by the player manager
 
-    async def async_cmd_volume_mute(self, is_muted=False):
+    async def cmd_volume_mute(self, is_muted=False):
         """
         Send volume MUTE command to given player.
 
             :param is_muted: bool with new mute state.
         """
         for child_player_id in self.group_childs:
-            self.mass.players.async_cmd_volume_mute(child_player_id)
+            self.mass.players.cmd_volume_mute(child_player_id)
         self.muted = is_muted
 
     async def subscribe_stream_client(self, child_player_id):
@@ -347,7 +348,7 @@ class GroupPlayer(Player):
                 child_player_id,
             )
 
-    async def async_queue_stream_task(self):
+    async def queue_stream_task(self):
         """Handle streaming queue to connected child players."""
         ticks = 0
         while ticks < 60 and len(self.connected_clients) != len(self.group_childs):
@@ -362,9 +363,7 @@ class GroupPlayer(Player):
         )
         self.sync_task = asyncio.create_task(self.__synchronize_players())
 
-        async for audio_chunk in self.mass.streams.async_queue_stream_flac(
-            self.player_id
-        ):
+        async for audio_chunk in self.mass.streams.queue_stream_flac(self.player_id):
 
             # make sure we still have clients connected
             if not self.connected_clients:
@@ -447,12 +446,12 @@ class GroupPlayer(Player):
                             avg_lag,
                         )
                         # we correct the lag by pausing the master player for a very short time
-                        await master_player.async_cmd_pause()
+                        await master_player.cmd_pause()
                         # sending the command takes some time, account for that too
                         if avg_lag > 20:
                             sleep_time = avg_lag - 20
                             await asyncio.sleep(sleep_time / 1000)
-                        asyncio.create_task(master_player.async_cmd_play())
+                        asyncio.create_task(master_player.cmd_play())
                         break  # no more processing this round if we've just corrected a lag
 
                 # calculate drift (player is going faster in relation to the master)
@@ -475,12 +474,12 @@ class GroupPlayer(Player):
                             avg_drift,
                         )
                         # we correct the drift by pausing the player for a very short time
-                        # this is not the best approach but works with all playertypes
+                        # this is not the best approach but works with all Players
                         # temporary solution until I find something better like sending more/less pcm chunks
-                        await child_player.async_cmd_pause()
+                        await child_player.cmd_pause()
                         # sending the command takes some time, account for that too
                         if avg_drift > 20:
                             sleep_time = drift - 20
                             await asyncio.sleep(sleep_time / 1000)
-                        await child_player.async_cmd_play()
+                        await child_player.cmd_play()
                         break  # no more processing this round if we've just corrected a lag

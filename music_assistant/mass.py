@@ -6,7 +6,7 @@ import importlib
 import logging
 import os
 import threading
-from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Coroutine, Dict, Optional, Tuple, Union
 
 import aiohttp
 from music_assistant.constants import (
@@ -37,13 +37,16 @@ def global_exception_handler(loop: asyncio.AbstractEventLoop, context: Dict) -> 
     LOGGER.exception(
         "Caught exception: %s", context.get("exception", context["message"])
     )
+    if "Broken pipe" in str(context.get("exception")):
+        # fix for the spamming subprocess
+        return
     loop.default_exception_handler(context)
 
 
 class MusicAssistant:
     """Main MusicAssistant object."""
 
-    def __init__(self, datapath: str, debug: bool = False, port: int = 8095):
+    def __init__(self, datapath: str, debug: bool = False, port: int = 8095) -> None:
         """
         Create an instance of MusicAssistant.
 
@@ -71,7 +74,7 @@ class MusicAssistant:
         # shared zeroconf instance
         self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
 
-    async def async_start(self):
+    async def start(self) -> None:
         """Start running the music assistant server."""
         # initialize loop
         self._loop = asyncio.get_event_loop()
@@ -84,26 +87,26 @@ class MusicAssistant:
         )
         # run migrations if needed
         await check_migrations(self)
-        await self._config.async_setup()
-        await self._cache.async_setup()
-        await self._music.async_setup()
-        await self._players.async_setup()
-        await self.__async_preload_providers()
-        await self.async_setup_discovery()
-        await self._web.async_setup()
-        await self._library.async_setup()
+        await self._config.setup()
+        await self._cache.setup()
+        await self._music.setup()
+        await self._players.setup()
+        await self._preload_providers()
+        await self.setup_discovery()
+        await self._web.setup()
+        await self._library.setup()
         self.loop.create_task(self.__process_background_tasks())
 
-    async def async_stop(self):
+    async def stop(self) -> None:
         """Stop running the music assistant server."""
         self._exit = True
         LOGGER.info("Application shutdown")
         self.signal_event(EVENT_SHUTDOWN)
-        await self.config.async_close()
-        await self._web.async_stop()
+        await self.config.close()
+        await self._web.stop()
         for prov in self._providers.values():
-            await prov.async_on_stop()
-        await self._players.async_close()
+            await prov.on_stop()
+        await self._players.close()
         await self._http_session.connector.close()
         self._http_session.detach()
 
@@ -167,7 +170,7 @@ class MusicAssistant:
         """Return the default http session."""
         return self._http_session
 
-    async def async_register_provider(self, provider: Provider) -> None:
+    async def register_provider(self, provider: Provider) -> None:
         """Register a new Provider/Plugin."""
         assert provider.id and provider.name
         if provider.id in self._providers:
@@ -177,7 +180,7 @@ class MusicAssistant:
         provider.available = False
         self._providers[provider.id] = provider
         if self.config.get_provider_config(provider.id, provider.type)[CONF_ENABLED]:
-            if await provider.async_on_start() is not False:
+            if await provider.on_start() is not False:
                 provider.available = True
                 LOGGER.debug("Provider registered: %s", provider.name)
                 self.signal_event(EVENT_PROVIDER_REGISTERED, provider.id)
@@ -188,24 +191,24 @@ class MusicAssistant:
         else:
             LOGGER.debug("Not loading provider %s as it is disabled", provider.name)
 
-    async def async_unregister_provider(self, provider_id: str) -> None:
+    async def unregister_provider(self, provider_id: str) -> None:
         """Unregister an existing Provider/Plugin."""
         if provider_id in self._providers:
             # unload it if it's loaded
-            await self._providers[provider_id].async_on_stop()
+            await self._providers[provider_id].on_stop()
             LOGGER.debug("Provider unregistered: %s", provider_id)
             self.signal_event(EVENT_PROVIDER_UNREGISTERED, provider_id)
         return self._providers.pop(provider_id, None)
 
-    async def async_reload_provider(self, provider_id: str) -> None:
+    async def reload_provider(self, provider_id: str) -> None:
         """Reload an existing Provider/Plugin."""
-        provider = await self.async_unregister_provider(provider_id)
+        provider = await self.unregister_provider(provider_id)
         if provider is not None:
             # simply re-register the same provider again
-            await self.async_register_provider(provider)
+            await self.register_provider(provider)
         else:
             # try preloading all providers
-            self.add_job(self.__async_preload_providers())
+            self.add_job(self._preload_providers())
 
     @callback
     def get_provider(self, provider_id: str) -> Provider:
@@ -220,14 +223,14 @@ class MusicAssistant:
         self,
         filter_type: Optional[ProviderType] = None,
         include_unavailable: bool = False,
-    ) -> List[Provider]:
+    ) -> Tuple[Provider]:
         """Return all providers, optionally filtered by type."""
-        return [
+        return (
             item
             for item in self._providers.values()
             if (filter_type is None or item.type == filter_type)
             and (include_unavailable or item.available)
-        ]
+        )
 
     @callback
     def signal_event(self, event_msg: str, event_details: Any = None) -> None:
@@ -245,7 +248,7 @@ class MusicAssistant:
     def add_event_listener(
         self,
         cb_func: Callable[..., Union[None, Awaitable]],
-        event_filter: Union[None, str, List] = None,
+        event_filter: Union[None, str, Tuple] = None,
     ) -> Callable:
         """
         Add callback to event listeners.
@@ -321,10 +324,10 @@ class MusicAssistant:
             await task
             await asyncio.sleep(1)
 
-    async def async_setup_discovery(self) -> None:
+    async def setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
 
-        def setup_discovery():
+        def _setup_discovery():
             zeroconf_type = "_music-assistant._tcp.local."
 
             info = ServiceInfo(
@@ -348,9 +351,9 @@ class MusicAssistant:
                     "Music Assistant instance with identical name present in the local network!"
                 )
 
-        self.add_job(setup_discovery)
+        self.add_job(_setup_discovery)
 
-    async def __async_preload_providers(self):
+    async def _preload_providers(self) -> None:
         """Dynamically load all providermodules."""
         base_dir = os.path.dirname(os.path.abspath(__file__))
         modules_path = os.path.join(base_dir, "providers")
@@ -374,7 +377,7 @@ class MusicAssistant:
                     prov_mod = importlib.import_module(
                         f".{module_name}", "music_assistant.providers"
                     )
-                    await prov_mod.async_setup(self)
+                    await prov_mod.setup(self)
                 # pylint: disable=broad-except
                 except Exception as exc:
                     LOGGER.exception("Error preloading module %s: %s", module_name, exc)

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Any, List, Mapping
+from typing import Any, Dict, List, Mapping, Set
 
 import ujson
 from mashumaro import DataClassDictMixin
@@ -59,6 +59,10 @@ class MediaItemProviderId(DataClassDictMixin):
     details: str = None
     available: bool = True
 
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.provider, self.item_id, self.quality))
+
 
 @dataclass
 class MediaItem(DataClassDictMixin):
@@ -67,8 +71,8 @@ class MediaItem(DataClassDictMixin):
     item_id: str = ""
     provider: str = ""
     name: str = ""
-    metadata: Any = field(default_factory=dict)
-    provider_ids: List[MediaItemProviderId] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
     in_library: bool = False
     media_type: MediaType = MediaType.Track
 
@@ -115,17 +119,23 @@ class MediaItem(DataClassDictMixin):
     @property
     def available(self):
         """Return (calculated) availability."""
-        for item in self.provider_ids:
-            if item.available:
-                return True
+        return any(x.available for x in self.provider_ids)
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
 
 
 @dataclass
-class Artist(MediaItem):
+class Artist(MediaItem, DataClassDictMixin):
     """Model for an artist."""
 
     media_type: MediaType = MediaType.Artist
     musicbrainz_id: str = ""
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
 
 
 @dataclass
@@ -142,9 +152,13 @@ class ItemMapping(DataClassDictMixin):
         """Create ItemMapping object from regular item."""
         return cls.from_dict(item.to_dict())
 
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
+
 
 @dataclass
-class Album(MediaItem):
+class Album(MediaItem, DataClassDictMixin):
     """Model for an album."""
 
     media_type: MediaType = MediaType.Album
@@ -154,12 +168,20 @@ class Album(MediaItem):
     album_type: AlbumType = AlbumType.Unknown
     upc: str = ""
 
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
+
 
 @dataclass
 class FullAlbum(Album):
     """Model for an album with full details."""
 
     artist: Artist = None
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
 
 
 @dataclass
@@ -170,8 +192,8 @@ class Track(MediaItem):
     duration: int = 0
     version: str = ""
     isrc: str = ""
-    artists: List[ItemMapping] = field(default_factory=list)
-    albums: List[ItemMapping] = field(default_factory=list)
+    artists: Set[ItemMapping] = field(default_factory=set)
+    albums: Set[ItemMapping] = field(default_factory=set)
     # album track only
     album: ItemMapping = None
     disc_number: int = 0
@@ -179,14 +201,22 @@ class Track(MediaItem):
     # playlist track only
     position: int = 0
 
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
+
 
 @dataclass
 class FullTrack(Track):
     """Model for an album with full details."""
 
-    artists: List[Artist] = field(default_factory=list)
-    albums: List[Album] = field(default_factory=list)
+    artists: Set[Artist] = field(default_factory=set)
+    albums: Set[Album] = field(default_factory=set)
     album: Album = None
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
 
 
 @dataclass
@@ -198,6 +228,10 @@ class Playlist(MediaItem):
     checksum: str = ""  # some value to detect playlist track changes
     is_editable: bool = False
 
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
+
 
 @dataclass
 class Radio(MediaItem):
@@ -205,6 +239,10 @@ class Radio(MediaItem):
 
     media_type: MediaType = MediaType.Radio
     duration: int = 86400
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
 
 
 @dataclass

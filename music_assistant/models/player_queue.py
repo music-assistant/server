@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
@@ -15,10 +15,10 @@ from music_assistant.constants import (
     EVENT_QUEUE_UPDATED,
 )
 from music_assistant.helpers.typing import (
-    MusicAssistantType,
+    MusicAssistant,
     OptionalInt,
     OptionalStr,
-    PlayerType,
+    Player,
 )
 from music_assistant.helpers.util import callback
 from music_assistant.models.media_types import Radio, Track
@@ -62,7 +62,7 @@ class QueueItem(Track):
 class PlayerQueue:
     """Class that holds the queue items for a player."""
 
-    def __init__(self, mass: MusicAssistantType, player_id: str) -> None:
+    def __init__(self, mass: MusicAssistant, player_id: str) -> None:
         """Initialize class."""
         self.mass = mass
         self._queue_id = player_id
@@ -74,24 +74,19 @@ class PlayerQueue:
         self._last_item = None
         self._queue_stream_start_index = 0
         self._queue_stream_next_index = 0
-        self._last_player_state = PlaybackState.Stopped
+        self._last_player = PlaybackState.Stopped
         # load previous queue settings from disk
-        self.mass.add_job(self.__async_restore_saved_state())
+        self.mass.add_job(self._restore_saved_state())
 
-    async def async_close(self) -> None:
+    async def close(self) -> None:
         """Handle shutdown/close."""
         # pylint: disable=unused-argument
-        await self.__async_save_state()
+        await self._save_state()
 
     @property
-    def player(self) -> PlayerType:
+    def player(self) -> Player:
         """Return handle to (master) player of this queue."""
         return self.mass.players.get_player(self._queue_id)
-
-    @property
-    def player_state(self) -> PlayerType:
-        """Return handle to player state."""
-        return self.mass.players.get_player_state(self._queue_id)
 
     @property
     def queue_id(self) -> str:
@@ -110,7 +105,7 @@ class PlayerQueue:
         """Return shuffle enabled property."""
         return self._shuffle_enabled
 
-    async def async_set_shuffle_enabled(self, enable_shuffle: bool) -> None:
+    async def set_shuffle_enabled(self, enable_shuffle: bool) -> None:
         """Set shuffle."""
         if not self._shuffle_enabled and enable_shuffle:
             # shuffle requested
@@ -119,7 +114,7 @@ class PlayerQueue:
                 played_items = self.items[: self.cur_index]
                 next_items = self.__shuffle_items(self.items[self.cur_index + 1 :])
                 items = played_items + [self.cur_item] + next_items
-                self.mass.add_job(self.async_update(items))
+                self.mass.add_job(self.update(items))
         elif self._shuffle_enabled and not enable_shuffle:
             # unshuffle
             self._shuffle_enabled = False
@@ -128,22 +123,22 @@ class PlayerQueue:
                 next_items = self.items[self.cur_index + 1 :]
                 next_items.sort(key=lambda x: x.sort_index, reverse=False)
                 items = played_items + [self.cur_item] + next_items
-                self.mass.add_job(self.async_update(items))
-        self.mass.add_job(self.async_update_state())
-        self.mass.signal_event(EVENT_QUEUE_UPDATED, self.to_dict())
+                self.mass.add_job(self.update(items))
+        self.update_state()
+        self.mass.signal_event(EVENT_QUEUE_UPDATED, self)
 
     @property
     def repeat_enabled(self) -> bool:
         """Return if crossfade is enabled for this player."""
         return self._repeat_enabled
 
-    async def async_set_repeat_enabled(self, enable_repeat: bool) -> None:
+    async def set_repeat_enabled(self, enable_repeat: bool) -> None:
         """Set the repeat mode for this queue."""
         if self._repeat_enabled != enable_repeat:
             self._repeat_enabled = enable_repeat
-            self.mass.add_job(self.async_update_state())
-            self.mass.add_job(self.__async_save_state())
-            self.mass.signal_event(EVENT_QUEUE_UPDATED, self.to_dict())
+            self.update_state()
+            self.mass.add_job(self._save_state())
+            self.mass.signal_event(EVENT_QUEUE_UPDATED, self)
 
     @property
     def cur_index(self) -> OptionalInt:
@@ -277,39 +272,39 @@ class PlayerQueue:
                 return item
         return None
 
-    async def async_next(self) -> None:
+    async def next(self) -> None:
         """Play the next track in the queue."""
         if self.cur_index is None:
             return
         if self.use_queue_stream:
-            return await self.async_play_index(self.cur_index + 1)
-        return await self.player.async_cmd_next()
+            return await self.play_index(self.cur_index + 1)
+        return await self.player.cmd_next()
 
-    async def async_previous(self) -> None:
+    async def previous(self) -> None:
         """Play the previous track in the queue."""
         if self.cur_index is None:
             return
         if self.use_queue_stream:
-            return await self.async_play_index(self.cur_index - 1)
-        return await self.player.async_cmd_previous()
+            return await self.play_index(self.cur_index - 1)
+        return await self.player.cmd_previous()
 
-    async def async_resume(self) -> None:
+    async def resume(self) -> None:
         """Resume previous queue."""
         if self.items:
             prev_index = self.cur_index
             if self.use_queue_stream or not self.supports_queue:
-                await self.async_play_index(prev_index)
+                await self.play_index(prev_index)
             else:
                 # at this point we don't know if the queue is synced with the player
                 # so just to be safe we send the queue_items to the player
                 self._items = self._items[prev_index:]
-                return await self.player.async_cmd_queue_load(self._items)
+                return await self.player.cmd_queue_load(self._items)
         else:
             LOGGER.warning(
                 "resume queue requested for %s but queue is empty", self.queue_id
             )
 
-    async def async_play_index(self, index: Union[int, str]) -> None:
+    async def play_index(self, index: Union[int, str]) -> None:
         """Play item at index (or item_id) X in queue."""
         if not isinstance(index, int):
             index = self.__index_by_id(index)
@@ -319,21 +314,21 @@ class PlayerQueue:
         self._queue_stream_next_index = index
         if self.use_queue_stream:
             queue_stream_uri = self.get_stream_url()
-            return await self.player.async_cmd_play_uri(queue_stream_uri)
+            return await self.player.cmd_play_uri(queue_stream_uri)
         if self.supports_queue:
             try:
-                return await self.player.async_cmd_queue_play_index(index)
+                return await self.player.cmd_queue_play_index(index)
             except NotImplementedError:
                 # not supported by player, use load queue instead
                 LOGGER.debug(
                     "cmd_queue_insert not supported by player, fallback to cmd_queue_load "
                 )
                 self._items = self._items[index:]
-                return await self.player.async_cmd_queue_load(self._items)
+                return await self.player.cmd_queue_load(self._items)
         else:
-            return await self.player.async_cmd_play_uri(self._items[index].uri)
+            return await self.player.cmd_play_uri(self._items[index].uri)
 
-    async def async_move_item(self, queue_item_id: str, pos_shift: int = 1) -> None:
+    async def move_item(self, queue_item_id: str, pos_shift: int = 1) -> None:
         """
         Move queue item x up/down the queue.
 
@@ -353,11 +348,9 @@ class PlayerQueue:
             return
         # move the item in the list
         items.insert(new_index, items.pop(item_index))
-        await self.async_update(items)
-        if pos_shift == 0:
-            await self.async_play_index(new_index)
+        await self.update(items)
 
-    async def async_load(self, queue_items: List[QueueItem]) -> None:
+    async def load(self, queue_items: List[QueueItem]) -> None:
         """Load (overwrite) queue with new items."""
         for index, item in enumerate(queue_items):
             item.sort_index = index
@@ -365,13 +358,13 @@ class PlayerQueue:
             queue_items = self.__shuffle_items(queue_items)
         self._items = queue_items
         if self.use_queue_stream or not self.supports_queue:
-            await self.async_play_index(0)
+            await self.play_index(0)
         else:
-            await self.player.async_cmd_queue_load(queue_items)
-        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
-        self.mass.add_job(self.__async_save_state())
+            await self.player.cmd_queue_load(queue_items)
+        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        self.mass.add_job(self._save_state())
 
-    async def async_insert(self, queue_items: List[QueueItem], offset: int = 0) -> None:
+    async def insert(self, queue_items: List[QueueItem], offset: int = 0) -> None:
         """
         Insert new items at offset x from current position.
 
@@ -387,7 +380,7 @@ class PlayerQueue:
             or self.cur_index == 0
             or (self.cur_index + offset > len(self.items))
         ):
-            return await self.async_load(queue_items)
+            return await self.load(queue_items)
         insert_at_index = self.cur_index + offset
         for index, item in enumerate(queue_items):
             item.sort_index = insert_at_index + index
@@ -408,22 +401,22 @@ class PlayerQueue:
             )
         if self.use_queue_stream:
             if offset == 0:
-                await self.async_play_index(insert_at_index)
+                await self.play_index(insert_at_index)
         else:
             # send queue to player's own implementation
             try:
-                await self.player.async_cmd_queue_insert(queue_items, insert_at_index)
+                await self.player.cmd_queue_insert(queue_items, insert_at_index)
             except NotImplementedError:
                 # not supported by player, use load queue instead
                 LOGGER.debug(
                     "cmd_queue_insert not supported by player, fallback to cmd_queue_load "
                 )
                 self._items = self._items[self.cur_index :]
-                return await self.player.async_cmd_queue_load(self._items)
-        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
-        self.mass.add_job(self.__async_save_state())
+                return await self.player.cmd_queue_load(self._items)
+        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        self.mass.add_job(self._save_state())
 
-    async def async_append(self, queue_items: List[QueueItem]) -> None:
+    async def append(self, queue_items: List[QueueItem]) -> None:
         """Append new items at the end of the queue."""
         for index, item in enumerate(queue_items):
             item.sort_index = len(self.items) + index
@@ -432,57 +425,58 @@ class PlayerQueue:
             next_items = self.items[self.cur_index + 1 :] + queue_items
             next_items = self.__shuffle_items(next_items)
             items = played_items + [self.cur_item] + next_items
-            return await self.async_update(items)
+            return await self.update(items)
         self._items = self._items + queue_items
         if self.supports_queue and not self.use_queue_stream:
             # send queue to player's own implementation
             try:
-                await self.player.async_cmd_queue_append(queue_items)
+                await self.player.cmd_queue_append(queue_items)
             except NotImplementedError:
                 # not supported by player, use load queue instead
                 LOGGER.debug(
                     "cmd_queue_append not supported by player, fallback to cmd_queue_load "
                 )
                 self._items = self._items[self.cur_index :]
-                return await self.player.async_cmd_queue_load(self._items)
-        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
-        self.mass.add_job(self.__async_save_state())
+                return await self.player.cmd_queue_load(self._items)
+        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        self.mass.add_job(self._save_state())
 
-    async def async_update(self, queue_items: List[QueueItem]) -> None:
+    async def update(self, queue_items: List[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
         self._items = queue_items
         if self.supports_queue and not self.use_queue_stream:
             # send queue to player's own implementation
             try:
-                await self.player.async_cmd_queue_update(queue_items)
+                await self.player.cmd_queue_update(queue_items)
             except NotImplementedError:
                 # not supported by player, use load queue instead
                 LOGGER.debug(
                     "cmd_queue_update not supported by player, fallback to cmd_queue_load "
                 )
                 self._items = self._items[self.cur_index :]
-                await self.player.async_cmd_queue_load(self._items)
-        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
-        self.mass.add_job(self.__async_save_state())
+                await self.player.cmd_queue_load(self._items)
+        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        self.mass.add_job(self._save_state())
 
-    async def async_clear(self) -> None:
+    async def clear(self) -> None:
         """Clear all items in the queue."""
-        await self.mass.players.async_cmd_stop(self.queue_id)
+        await self.mass.players.cmd_stop(self.queue_id)
         self._items = []
         if self.supports_queue:
             # send queue cmd to player's own implementation
             try:
-                await self.player.async_cmd_queue_clear()
+                await self.player.cmd_queue_clear()
             except NotImplementedError:
                 # not supported by player, try update instead
                 try:
-                    await self.player.async_cmd_queue_update([])
+                    await self.player.cmd_queue_update([])
                 except NotImplementedError:
                     # not supported by player, ignore
                     pass
-        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self.to_dict())
+        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
 
-    async def async_update_state(self) -> None:
+    @callback
+    def update_state(self) -> None:
         """Update queue details, called when player updates."""
         new_index = self._cur_index
         track_time = self._cur_item_time
@@ -511,7 +505,7 @@ class PlayerQueue:
             and self.cur_item.streamdetails
         ):
             # new active item in queue
-            self.mass.signal_event(EVENT_QUEUE_UPDATED, self.to_dict())
+            self.mass.signal_event(EVENT_QUEUE_UPDATED, self)
             # invalidate previous streamdetails
             if self._last_item:
                 self._last_item.streamdetails = None
@@ -524,7 +518,7 @@ class PlayerQueue:
                 {"queue_id": self.queue_id, "cur_item_time": track_time},
             )
 
-    async def async_queue_stream_start(self) -> None:
+    async def queue_stream_start(self) -> None:
         """Call when queue_streamer starts playing the queue stream."""
         self._cur_item_time = 0
         self._cur_index = self._queue_stream_next_index
@@ -532,7 +526,7 @@ class PlayerQueue:
         self._queue_stream_start_index = self._cur_index
         return self._cur_index
 
-    async def async_queue_stream_next(self, cur_index: int) -> None:
+    async def queue_stream_next(self, cur_index: int) -> None:
         """Call when queue_streamer loads next track in buffer."""
         next_index = 0
         if len(self.items) > (next_index):
@@ -543,7 +537,7 @@ class PlayerQueue:
         self._queue_stream_next_index = next_index + 1
         return next_index
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Instance attributes as dict so it can be serialized to json."""
         return {
             "queue_id": self.player.player_id,
@@ -598,10 +592,10 @@ class PlayerQueue:
                 item_index = index
         return item_index
 
-    async def __async_restore_saved_state(self) -> None:
+    async def _restore_saved_state(self) -> None:
         """Try to load the saved queue for this player from cache file."""
         cache_str = "queue_state_%s" % self.queue_id
-        cache_data = await self.mass.cache.async_get(cache_str)
+        cache_data = await self.mass.cache.get(cache_str)
         if cache_data:
             self._shuffle_enabled = cache_data["shuffle_enabled"]
             self._repeat_enabled = cache_data["repeat_enabled"]
@@ -611,7 +605,7 @@ class PlayerQueue:
 
     # pylint: enable=unused-argument
 
-    async def __async_save_state(self) -> None:
+    async def _save_state(self) -> None:
         """Save current queue settings to file."""
         cache_str = "queue_state_%s" % self.queue_id
         cache_data = {
@@ -620,5 +614,5 @@ class PlayerQueue:
             "items": self._items,
             "cur_index": self._cur_index,
         }
-        await self.mass.cache.async_set(cache_str, cache_data)
+        await self.mass.cache.set(cache_str, cache_data)
         LOGGER.info("queue state saved to file for player %s", self.queue_id)

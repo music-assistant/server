@@ -15,10 +15,8 @@ async def stream_media(request: Request):
         return Response(status=404, reason="Media item is not playable!")
     item_id = request.match_info["item_id"]
     provider = request.rel_url.query.get("provider", "database")
-    media_item = await request.app["mass"].music.async_get_item(
-        item_id, provider, media_type
-    )
-    streamdetails = await request.app["mass"].music.async_get_stream_details(media_item)
+    media_item = await request.app["mass"].music.get_item(item_id, provider, media_type)
+    streamdetails = await request.app["mass"].music.get_stream_details(media_item)
 
     # prepare request
     content_type = streamdetails.content_type.value
@@ -28,7 +26,7 @@ async def stream_media(request: Request):
     await resp.prepare(request)
 
     # stream track
-    async for audio_chunk in request.app["mass"].streams.async_get_media_stream(
+    async for audio_chunk in request.app["mass"].streams.get_media_stream(
         streamdetails
     ):
         await resp.write(audio_chunk)
@@ -50,9 +48,7 @@ async def stream_queue(request: Request):
     await resp.prepare(request)
 
     # stream queue
-    async for audio_chunk in request.app["mass"].streams.async_queue_stream_flac(
-        player_id
-    ):
+    async for audio_chunk in request.app["mass"].streams.queue_stream_flac(player_id):
         await resp.write(audio_chunk)
     return resp
 
@@ -70,7 +66,7 @@ async def stream_queue_item(request: Request):
     )
     await resp.prepare(request)
 
-    async for audio_chunk in request.app["mass"].streams.async_stream_queue_item(
+    async for audio_chunk in request.app["mass"].streams.stream_queue_item(
         player_id, queue_item_id
     ):
         await resp.write(audio_chunk)
@@ -93,7 +89,7 @@ async def stream_group(request: Request):
     await resp.prepare(request)
 
     # stream queue
-    player_state = request.app["mass"].players.get_player(group_player_id)
-    async for audio_chunk in player_state.subscribe_stream_client(child_player_id):
+    player = request.app["mass"].players.get_player(group_player_id)
+    async for audio_chunk in player.subscribe_stream_client(child_player_id):
         await resp.write(audio_chunk)
     return resp

@@ -1,27 +1,29 @@
 """Typing helper."""
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Optional, Set
 
 # pylint: disable=invalid-name
 if TYPE_CHECKING:
-    from music_assistant.mass import MusicAssistant as MusicAssistantType
+    from music_assistant.mass import MusicAssistant
     from music_assistant.models.player_queue import (
-        QueueItem as QueueItemType,
-        PlayerQueue as PlayerQueueType,
+        QueueItem,
+        PlayerQueue,
     )
-    from music_assistant.models.streamdetails import StreamDetails as StreamDetailsType
-    from music_assistant.models.player import Player as PlayerType
+    from music_assistant.models.streamdetails import StreamDetails
+    from music_assistant.models.player import Player
+    from music_assistant.managers.config import ConfigSubItem
 
 else:
-    MusicAssistantType = "MusicAssistant"
-    QueueItemType = "QueueItem"
-    PlayerQueueType = "PlayerQueue"
-    StreamDetailsType = "StreamDetailsType"
-    PlayerType = "PlayerType"
+    MusicAssistant = "MusicAssistant"
+    QueueItem = "QueueItem"
+    PlayerQueue = "PlayerQueue"
+    StreamDetails = "StreamDetails"
+    Player = "Player"
+    ConfigSubItem = "ConfigSubItem"
 
 
-QueueItems = List[QueueItemType]
-Players = List[PlayerType]
+QueueItems = Set[QueueItem]
+Players = Set[Player]
 
 OptionalInt = Optional[int]
 OptionalStr = Optional[str]

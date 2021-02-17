@@ -8,7 +8,7 @@ import time
 from enum import Enum
 from typing import Callable
 
-from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import run_periodic
 
 from .constants import PROV_ID
@@ -50,7 +50,7 @@ class SqueezeSocketClient:
 
     def __init__(
         self,
-        mass: MusicAssistantType,
+        mass: MusicAssistant,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         event_callback: Callable = None,
@@ -74,8 +74,8 @@ class SqueezeSocketClient:
         self._connected = True
         self._event_callbacks = []
         self._tasks = [
-            asyncio.create_task(self.__async_socket_reader()),
-            asyncio.create_task(self.__async_send_heartbeat()),
+            asyncio.create_task(self._socket_reader()),
+            asyncio.create_task(self._send_heartbeat()),
         ]
 
     def disconnect(self) -> None:
@@ -163,60 +163,60 @@ class SqueezeSocketClient:
         """Return uri of currently loaded track."""
         return self._current_uri
 
-    async def __async_initialize_player(self):
+    async def _initialize_player(self):
         """Set some startup settings for the player."""
         # send version
-        await self.__async_send_frame(b"vers", b"7.8")
-        await self.__async_send_frame(b"setd", struct.pack("B", 0))
-        await self.__async_send_frame(b"setd", struct.pack("B", 4))
+        await self._send_frame(b"vers", b"7.8")
+        await self._send_frame(b"setd", struct.pack("B", 0))
+        await self._send_frame(b"setd", struct.pack("B", 4))
 
-    async def async_cmd_stop(self):
+    async def cmd_stop(self):
         """Send stop command to player."""
         data = self.__pack_stream(b"q", autostart=b"0", flags=0)
-        await self.__async_send_frame(b"strm", data)
+        await self._send_frame(b"strm", data)
 
-    async def async_cmd_play(self):
+    async def cmd_play(self):
         """Send play (unpause) command to player."""
         data = self.__pack_stream(b"u", autostart=b"0", flags=0)
-        await self.__async_send_frame(b"strm", data)
+        await self._send_frame(b"strm", data)
 
-    async def async_cmd_pause(self):
+    async def cmd_pause(self):
         """Send pause command to player."""
         data = self.__pack_stream(b"p", autostart=b"0", flags=0)
-        await self.__async_send_frame(b"strm", data)
+        await self._send_frame(b"strm", data)
 
-    async def async_cmd_power(self, powered: bool = True):
+    async def cmd_power(self, powered: bool = True):
         """Send power command to player."""
         # power is not supported so abuse mute instead
         power_int = 1 if powered else 0
-        await self.__async_send_frame(b"aude", struct.pack("2B", power_int, 1))
+        await self._send_frame(b"aude", struct.pack("2B", power_int, 1))
         self._powered = powered
         self.signal_event(SqueezeEvent.STATE_UPDATED)
 
-    async def async_cmd_volume_set(self, volume_level: int):
+    async def cmd_volume_set(self, volume_level: int):
         """Send new volume level command to player."""
         self._volume_control.volume = volume_level
         old_gain = self._volume_control.old_gain()
         new_gain = self._volume_control.new_gain()
-        await self.__async_send_frame(
+        await self._send_frame(
             b"audg",
             struct.pack("!LLBBLL", old_gain, old_gain, 1, 255, new_gain, new_gain),
         )
 
-    async def async_cmd_mute(self, muted: bool = False):
+    async def cmd_mute(self, muted: bool = False):
         """Send mute command to player."""
         muted_int = 0 if muted else 1
-        await self.__async_send_frame(b"aude", struct.pack("2B", muted_int, 0))
+        await self._send_frame(b"aude", struct.pack("2B", muted_int, 0))
         self.muted = muted
         self.signal_event(SqueezeEvent.STATE_UPDATED)
 
-    async def async_play_uri(
+    async def play_uri(
         self, uri: str, send_flush: bool = True, crossfade_duration: int = 0
     ):
         """Request player to start playing a single uri."""
         if send_flush:
             data = self.__pack_stream(b"f", autostart=b"0", flags=0)
-            await self.__async_send_frame(b"strm", data)
+            await self._send_frame(b"strm", data)
         self._current_uri = uri
         self._powered = True
         enable_crossfade = crossfade_duration > 0
@@ -246,18 +246,18 @@ class SqueezeSocketClient:
         headers = f"Connection: close\r\nAccept: */*\r\nHost: {host}:{port}\r\n"
         request = "GET %s HTTP/1.1\r\n%s\r\n" % (uri, headers)
         data = data + request.encode("utf-8")
-        await self.__async_send_frame(b"strm", data)
+        await self._send_frame(b"strm", data)
 
     @run_periodic(5)
-    async def __async_send_heartbeat(self):
+    async def _send_heartbeat(self):
         """Send periodic heartbeat message to player."""
         if not self._connected:
             return
         timestamp = int(time.time())
         data = self.__pack_stream(b"t", replay_gain=timestamp, flags=0)
-        await self.__async_send_frame(b"strm", data)
+        await self._send_frame(b"strm", data)
 
-    async def __async_send_frame(self, command, data):
+    async def _send_frame(self, command, data):
         """Send command to Squeeze player."""
         if self._reader.at_eof() or self._writer.is_closing():
             LOGGER.debug("Socket is disconnected.")
@@ -271,7 +271,7 @@ class SqueezeSocketClient:
             self._connected = False
             self.signal_event(SqueezeEvent.DISCONNECTED)
 
-    async def __async_socket_reader(self):
+    async def _socket_reader(self):
         """Handle incoming data from socket."""
         buffer = b""
         # keep reading bytes from the socket
@@ -341,7 +341,7 @@ class SqueezeSocketClient:
         self._player_id = str(device_mac).lower()
         self._device_type = DEVICE_TYPE.get(dev_id, "unknown device")
         LOGGER.debug("Player connected: %s", self.name)
-        asyncio.create_task(self.__async_initialize_player())
+        asyncio.create_task(self._initialize_player())
         self.signal_event(SqueezeEvent.CONNECTED)
 
     def _process_stat(self, data):
@@ -458,7 +458,7 @@ class SqueezeSocketClient:
         """Process incoming RESP message: Response received at player."""
         # pylint: disable=unused-argument
         # send continue
-        asyncio.create_task(self.__async_send_frame(b"cont", b"0"))
+        asyncio.create_task(self._send_frame(b"cont", b"0"))
 
     def _process_setd(self, data):
         """Process incoming SETD message: Get/set player firmware settings."""

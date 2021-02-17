@@ -32,7 +32,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALISATION,
     EVENT_CONFIG_CHANGED,
 )
-from music_assistant.helpers.encryption import decrypt_string, encrypt_string
+from music_assistant.helpers.encryption import _decrypt_string, _encrypt_string
 from music_assistant.helpers.util import merge_dict, try_load_json_file
 from music_assistant.helpers.web import api_route
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
@@ -155,9 +155,9 @@ class ConfigManager:
             raise FileNotFoundError(f"data directory {data_path} does not exist!")
         self.__load()
 
-    async def async_setup(self):
+    async def setup(self):
         """Async initialize of module."""
-        self._translations = await self.__async_fetch_translations()
+        self._translations = await self._fetch_translations()
 
     @api_route("config/:conf_base?/:conf_key?")
     def all_items(self, conf_base: str = "", conf_key: str = "") -> dict:
@@ -279,7 +279,7 @@ class ConfigManager:
         """Return item value by key."""
         return getattr(self, item_key)
 
-    async def async_close(self):
+    async def close(self):
         """Save config on exit."""
         self.save()
 
@@ -301,7 +301,7 @@ class ConfigManager:
         self.loading = False
 
     @staticmethod
-    async def __async_fetch_translations() -> dict:
+    async def _fetch_translations() -> dict:
         """Build a list of all translations."""
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # get base translations
@@ -349,7 +349,7 @@ class ConfigBaseItem:
 
     def all_keys(self):
         """Return all possible keys of this Config object."""
-        return {key for key in self.conf_mgr.stored_config.get(self.conf_key, {}).keys()}
+        return self.conf_mgr.stored_config.get(self.conf_key, {}).keys()
 
     def __getitem__(self, item_key: str):
         """Return ConfigSubItem for given key."""
@@ -397,7 +397,7 @@ class SecuritySettings(ConfigBaseItem):
 
     def all_keys(self):
         """Return all possible keys of this Config object."""
-        return [CONF_KEY_SECURITY_LOGIN, CONF_KEY_SECURITY_APP_TOKENS]
+        return DEFAULT_SECURITY_CONFIG_ENTRIES.keys()
 
     def add_app_token(self, token_info: dict):
         """Add token to config."""
@@ -484,19 +484,15 @@ class PlayerSettings(ConfigBaseItem):
 
     def all_keys(self):
         """Return all possible keys of this Config object."""
-        all_keys = super().all_keys()
-        for player_id in self.mass.players.players:
-            if player_id not in all_keys:
-                all_keys.add(player_id)
-        return all_keys
+        return {player.player_id for player in self.mass.players}
 
     def get_config_entries(self, child_key: str) -> List[ConfigEntry]:
         """Return all config entries for the given child entry."""
         entries = []
         entries += DEFAULT_PLAYER_CONFIG_ENTRIES
-        player_state = self.mass.players.get_player_state(child_key)
-        if player_state:
-            entries += player_state.player.config_entries
+        player = self.mass.players.get_player(child_key)
+        if player:
+            entries += player.config_entries
             # append power control config entries
             power_controls = self.mass.players.get_player_controls(
                 PlayerControlType.POWER
@@ -534,8 +530,8 @@ class PlayerSettings(ConfigBaseItem):
                     )
                 )
             # append special group player entries
-            for parent_id in player_state.group_parents:
-                parent_player = self.mass.players.get_player_state(parent_id)
+            for parent_id in player.group_parents:
+                parent_player = self.mass.players.get_player(parent_id)
                 if parent_player and parent_player.provider_id == "group_player":
                     entries.append(
                         ConfigEntry(
@@ -605,7 +601,7 @@ class ConfigSubItem:
         entry = self.get_entry(key)
         if entry.entry_type == ConfigEntryType.PASSWORD:
             # decrypted password is only returned if explicitly asked for this key
-            decrypted_value = decrypt_string(entry.value)
+            decrypted_value = _decrypt_string(entry.value)
             if decrypted_value:
                 return decrypted_value
         return entry.value
@@ -667,7 +663,7 @@ class ConfigSubItem:
                 if entry.store_hashed:
                     value = pbkdf2_sha256.hash(value)
                 if entry.entry_type == ConfigEntryType.PASSWORD:
-                    value = encrypt_string(value)
+                    value = _encrypt_string(value)
 
                 # write value to stored config
                 stored_conf = self.conf_mgr.stored_config
@@ -681,14 +677,12 @@ class ConfigSubItem:
                 # reload provider/plugin if value changed
                 if self.parent_conf_key in PROVIDER_TYPE_MAPPINGS:
                     self.conf_mgr.mass.add_job(
-                        self.conf_mgr.mass.async_reload_provider(self.conf_key)
+                        self.conf_mgr.mass.reload_provider(self.conf_key)
                     )
                 if self.parent_conf_key == CONF_KEY_PLAYER_SETTINGS:
                     # force update of player if it's config changed
                     self.conf_mgr.mass.add_job(
-                        self.conf_mgr.mass.players.async_trigger_player_update(
-                            self.conf_key
-                        )
+                        self.conf_mgr.mass.players.trigger_player_update(self.conf_key)
                     )
                 # signal config changed event
                 self.conf_mgr.mass.signal_event(

@@ -4,7 +4,7 @@ from abc import abstractmethod
 from enum import Enum
 from typing import Dict, List, Optional
 
-from music_assistant.helpers.typing import MusicAssistantType, Players
+from music_assistant.helpers.typing import MusicAssistant, Players
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.media_types import (
     Album,
@@ -30,9 +30,7 @@ class ProviderType(Enum):
 class Provider:
     """Base model for a provider/plugin."""
 
-    mass: MusicAssistantType = (
-        None  # will be set automagically while loading the provider
-    )
+    mass: MusicAssistant = None  # will be set automagically while loading the provider
     available: bool = False  # will be set automagically while loading the provider
 
     @property
@@ -56,7 +54,7 @@ class Provider:
         """Return Config Entries for this provider."""
 
     @abstractmethod
-    async def async_on_start(self) -> bool:
+    async def on_start(self) -> bool:
         """
         Handle initialization of the provider based on config.
 
@@ -65,7 +63,7 @@ class Provider:
         raise NotImplementedError
 
     @abstractmethod
-    async def async_on_stop(self) -> None:
+    async def on_stop(self) -> None:
         """Handle correct close/cleanup of the provider on exit. Called on shutdown/reload."""
 
 
@@ -98,11 +96,7 @@ class PlayerProvider(Provider):
     def players(self) -> Players:
         """Return all players belonging to this provider."""
         # pylint: disable=no-member
-        return [
-            player
-            for player in self.mass.players.players
-            if player.provider_id == self.id
-        ]
+        return [player for player in self.mass.players if player.provider_id == self.id]
 
 
 class MetadataProvider(Provider):
@@ -117,11 +111,11 @@ class MetadataProvider(Provider):
         """Return ProviderType."""
         return ProviderType.METADATA_PROVIDER
 
-    async def async_get_artist_images(self, mb_artist_id: str) -> Dict:
+    async def get_artist_images(self, mb_artist_id: str) -> Dict:
         """Retrieve artist metadata as dict by musicbrainz artist id."""
         raise NotImplementedError
 
-    async def async_get_album_images(self, mb_album_id: str) -> Dict:
+    async def get_album_images(self, mb_album_id: str) -> Dict:
         """Retrieve album metadata as dict by musicbrainz album id."""
         raise NotImplementedError
 
@@ -149,7 +143,7 @@ class MusicProvider(Provider):
             MediaType.Track,
         ]
 
-    async def async_search(
+    async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
     ) -> SearchResult:
         """
@@ -161,100 +155,98 @@ class MusicProvider(Provider):
         """
         raise NotImplementedError
 
-    async def async_get_library_artists(self) -> List[Artist]:
+    async def get_library_artists(self) -> List[Artist]:
         """Retrieve library artists from the provider."""
         if MediaType.Artist in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_library_albums(self) -> List[Album]:
+    async def get_library_albums(self) -> List[Album]:
         """Retrieve library albums from the provider."""
         if MediaType.Album in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_library_tracks(self) -> List[Track]:
+    async def get_library_tracks(self) -> List[Track]:
         """Retrieve library tracks from the provider."""
         if MediaType.Track in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_library_playlists(self) -> List[Playlist]:
+    async def get_library_playlists(self) -> List[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
         if MediaType.Playlist in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_radios(self) -> List[Radio]:
+    async def get_radios(self) -> List[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         if MediaType.Radio in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_artist(self, prov_artist_id: str) -> Artist:
+    async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         if MediaType.Artist in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_artist_albums(self, prov_artist_id: str) -> List[Album]:
+    async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
         """Get a list of all albums for the given artist."""
         if MediaType.Album in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
+    async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
         """Get a list of most popular tracks for the given artist."""
         if MediaType.Track in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_album(self, prov_album_id: str) -> Album:
+    async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         if MediaType.Album in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_track(self, prov_track_id: str) -> Track:
+    async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         if MediaType.Track in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_playlist(self, prov_playlist_id: str) -> Playlist:
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if MediaType.Playlist in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_radio(self, prov_radio_id: str) -> Radio:
+    async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         if MediaType.Radio in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_album_tracks(self, prov_album_id: str) -> List[Track]:
+    async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
         """Get album tracks for given album id."""
         if MediaType.Album in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
         if MediaType.Playlist in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add item to provider's library. Return true on succes."""
         raise NotImplementedError
 
-    async def async_library_remove(
-        self, prov_item_id: str, media_type: MediaType
-    ) -> bool:
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from provider's library. Return true on succes."""
         raise NotImplementedError
 
-    async def async_add_playlist_tracks(
+    async def add_playlist_tracks(
         self, prov_playlist_id: str, prov_track_ids: List[str]
     ) -> bool:
         """Add track(s) to playlist. Return true on succes."""
         if MediaType.Playlist in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_remove_playlist_tracks(
+    async def remove_playlist_tracks(
         self, prov_playlist_id: str, prov_track_ids: List[str]
     ) -> bool:
         """Remove track(s) from playlist. Return true on succes."""
         if MediaType.Playlist in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def async_get_stream_details(self, item_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         raise NotImplementedError

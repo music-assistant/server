@@ -33,10 +33,10 @@ CONFIG_ENTRIES = [
 ]
 
 
-async def async_setup(mass):
+async def setup(mass):
     """Perform async setup of this Plugin/Provider."""
     prov = TuneInProvider()
-    await mass.async_register_provider(prov)
+    await mass.register_provider(prov)
 
 
 class TuneInProvider(MusicProvider):
@@ -68,7 +68,7 @@ class TuneInProvider(MusicProvider):
         """Return MediaTypes the provider supports."""
         return [MediaType.Radio]
 
-    async def async_on_start(self) -> bool:
+    async def on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
         # pylint: disable=attribute-defined-outside-init
         config = self.mass.config.get_provider_config(self.id)
@@ -80,7 +80,7 @@ class TuneInProvider(MusicProvider):
         self._throttler = Throttler(rate_limit=1, period=1)
         return True
 
-    async def async_search(
+    async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
     ) -> SearchResult:
         """
@@ -94,29 +94,29 @@ class TuneInProvider(MusicProvider):
         # TODO: search for radio stations
         return result
 
-    async def async_get_library_radios(self) -> List[Radio]:
+    async def get_library_radios(self) -> List[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         params = {"c": "presets"}
-        result = await self.__async_get_data("Browse.ashx", params)
+        result = await self._get_data("Browse.ashx", params)
         if result and "body" in result:
             return [
-                await self.__async_parse_radio(item)
+                await self._parse_radio(item)
                 for item in result["body"]
                 if item["type"] == "audio"
             ]
         return []
 
-    async def async_get_radio(self, prov_radio_id: str) -> Radio:
+    async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
         radio = None
         params = {"c": "composite", "detail": "listing", "id": prov_radio_id}
-        result = await self.__async_get_data("Describe.ashx", params)
+        result = await self._get_data("Describe.ashx", params)
         if result and result.get("body") and result["body"][0].get("children"):
             item = result["body"][0]["children"][0]
-            radio = await self.__async_parse_radio(item)
+            radio = await self._parse_radio(item)
         return radio
 
-    async def __async_parse_radio(self, details: dict) -> Radio:
+    async def _parse_radio(self, details: dict) -> Radio:
         """Parse Radio object from json obj returned from api."""
         radio = Radio(item_id=details["preset_id"], provider=PROV_ID)
         if "name" in details:
@@ -129,7 +129,7 @@ class TuneInProvider(MusicProvider):
             name = name.split(" (")[0]
             radio.name = name
         # parse stream urls and format
-        stream_info = await self.__async_get_stream_urls(radio.item_id)
+        stream_info = await self._get_stream_urls(radio.item_id)
         for stream in stream_info["body"]:
             if stream["media_type"] == "aac":
                 quality = TrackQuality.LOSSY_AAC
@@ -137,7 +137,7 @@ class TuneInProvider(MusicProvider):
                 quality = TrackQuality.LOSSY_OGG
             else:
                 quality = TrackQuality.LOSSY_MP3
-            radio.provider_ids.append(
+            radio.provider_ids.add(
                 MediaItemProviderId(
                     provider=PROV_ID,
                     item_id="%s--%s" % (details["preset_id"], stream["media_type"]),
@@ -152,20 +152,20 @@ class TuneInProvider(MusicProvider):
             radio.metadata["image"] = details["logo"]
         return radio
 
-    async def __async_get_stream_urls(self, radio_id):
+    async def _get_stream_urls(self, radio_id):
         """Return the stream urls for the given radio id."""
         params = {"id": radio_id}
-        res = await self.__async_get_data("Tune.ashx", params)
+        res = await self._get_data("Tune.ashx", params)
         return res
 
-    async def async_get_stream_details(self, item_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a radio station."""
         radio_id = item_id.split("--")[0]
         if len(item_id.split("--")) > 1:
             media_type = item_id.split("--")[1]
         else:
             media_type = ""
-        stream_info = await self.__async_get_stream_urls(radio_id)
+        stream_info = await self._get_stream_urls(radio_id)
         for stream in stream_info["body"]:
             if stream["media_type"] == media_type or not media_type:
                 return StreamDetails(
@@ -180,7 +180,7 @@ class TuneInProvider(MusicProvider):
                 )
         return None
 
-    async def __async_get_data(self, endpoint, params=None):
+    async def _get_data(self, endpoint, params=None):
         """Get data from api."""
         if not params:
             params = {}

@@ -15,11 +15,11 @@ from .player import ChromecastPlayer
 LOGGER = logging.getLogger(PROV_ID)
 
 
-async def async_setup(mass):
+async def setup(mass):
     """Perform async setup of this Plugin/Provider."""
     logging.getLogger("pychromecast").setLevel(logging.WARNING)
     prov = ChromecastProvider()
-    await mass.async_register_provider(prov)
+    await mass.register_provider(prov)
 
 
 class ChromecastProvider(PlayerProvider):
@@ -47,7 +47,7 @@ class ChromecastProvider(PlayerProvider):
         """Return Config Entries for this provider."""
         return PROVIDER_CONFIG_ENTRIES
 
-    async def async_on_start(self) -> bool:
+    async def on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
         self._listener = pychromecast.CastListener(
             self.__chromecast_add_update_callback,
@@ -63,7 +63,7 @@ class ChromecastProvider(PlayerProvider):
         self.mass.add_job(start_discovery)
         return True
 
-    async def async_on_stop(self):
+    async def on_stop(self):
         """Handle correct close/cleanup of the provider on exit."""
         if not self._browser:
             return
@@ -94,7 +94,7 @@ class ChromecastProvider(PlayerProvider):
             player = ChromecastPlayer(self.mass, cast_info)
         # if player was already added, the player will take care of reconnects itself.
         player.set_cast_info(cast_info)
-        self.mass.add_job(self.mass.players.async_add_player(player))
+        self.mass.add_job(self.mass.players.add_player(player))
 
     @staticmethod
     def __chromecast_remove_callback(cast_uuid, cast_service_name, cast_service):

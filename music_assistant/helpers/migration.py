@@ -9,11 +9,11 @@ from pkg_resources import packaging
 import aiosqlite
 from music_assistant.constants import __version__ as app_version
 from music_assistant.helpers.encryption import encrypt_string
-from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_hostname
 
 
-async def check_migrations(mass: MusicAssistantType):
+async def check_migrations(mass: MusicAssistant):
     """Check for any migrations that need to be done."""
 
     is_fresh_setup = len(mass.config.stored_config.keys()) == 0
@@ -29,7 +29,7 @@ async def check_migrations(mass: MusicAssistantType):
     if "server_id" not in mass.config.stored_config:
         mass.config.stored_config["server_id"] = str(uuid.getnode())
     if "jwt_key" not in mass.config.stored_config:
-        mass.config.stored_config["jwt_key"] = encrypt_string(str(uuid.uuid4()))
+        mass.config.stored_config["jwt_key"] = await encrypt_string(str(uuid.uuid4()))
     if "initialized" not in mass.config.stored_config:
         mass.config.stored_config["initialized"] = False
     if "friendly_name" not in mass.config.stored_config:
@@ -37,10 +37,10 @@ async def check_migrations(mass: MusicAssistantType):
     mass.config.save()
 
     # create default db tables (if needed)
-    await async_create_db_tables(mass.database.db_file)
+    await create_db_tables(mass.database.db_file)
 
 
-async def run_migration_0070(mass: MusicAssistantType):
+async def run_migration_0070(mass: MusicAssistant):
     """Run migration for version 0.0.70."""
     # 0.0.70 introduced major changes to all data models and db structure
     # a full refresh of data is unavoidable
@@ -82,7 +82,7 @@ async def run_migration_0070(mass: MusicAssistantType):
             shutil.rmtree(dirname, True)
 
     # create default db tables (if needed)
-    await async_create_db_tables(mass.database.db_file)
+    await create_db_tables(mass.database.db_file)
 
     # restore loudness measurements
     if tracks_loudness:
@@ -94,7 +94,7 @@ async def run_migration_0070(mass: MusicAssistantType):
             await db_conn.commit()
 
 
-async def async_create_db_tables(db_file):
+async def create_db_tables(db_file):
     """Async initialization."""
     async with aiosqlite.connect(db_file, timeout=120) as db_conn:
 

@@ -8,7 +8,7 @@ import struct
 import tempfile
 import urllib.request
 from io import BytesIO
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Dict, Optional, Set, TypeVar
 
 import memory_tempfile
 import ujson
@@ -36,12 +36,12 @@ def run_periodic(period):
     """Run a coroutine at interval."""
 
     def scheduler(fcn):
-        async def async_wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs):
             while True:
                 asyncio.create_task(fcn(*args, **kwargs))
                 await asyncio.sleep(period)
 
-        return async_wrapper
+        return wrapper
 
     return scheduler
 
@@ -66,7 +66,7 @@ def run_background_task(corofn, *args, executor=None):
     return asyncio.get_event_loop().run_in_executor(executor, corofn, *args)
 
 
-def run_async_background_task(executor, corofn, *args):
+def run__background_task(executor, corofn, *args):
     """Run async task in background."""
 
     def run_task(corofn, *args):
@@ -88,7 +88,7 @@ def try_parse_int(possible_int):
         return 0
 
 
-async def async_iter_items(items):
+async def iter_items(items):
     """Fake async iterator for compatability reasons."""
     if not isinstance(items, list):
         yield items
@@ -240,23 +240,22 @@ def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
     return final_dict
 
 
-def merge_list(base_list: list, new_list: list):
+def merge_list(base_list: list, new_list: list) -> Set:
     """Merge 2 lists."""
-    final_list = []
-    final_list += base_list
+    final_list = set(base_list)
     for item in new_list:
         if hasattr(item, "item_id"):
             for prov_item in final_list:
                 if prov_item.item_id == item.item_id:
                     prov_item = item
         if item not in final_list:
-            final_list.append(item)
+            final_list.add(item)
     return final_list
 
 
 def unique_item_ids(objects):
     """Filter duplicate item id's from list of items."""
-    return list({object_.item_id: object_ for object_ in objects}.values())
+    return set({object_.item_id for object_ in objects})
 
 
 def try_load_json_file(jsonfile):
@@ -280,11 +279,28 @@ def create_tempfile():
     return tempfile.NamedTemporaryFile(buffering=0)
 
 
-async def async_yield_chunks(_obj, chunk_size):
+async def yield_chunks(_obj, chunk_size):
     """Yield successive n-sized chunks from list/str/bytes."""
     chunk_size = int(chunk_size)
     for i in range(0, len(_obj), chunk_size):
         yield _obj[i : i + chunk_size]
+
+
+def get_changed_keys(
+    dict1: Dict[str, Any], dict2: Dict[str, Any], ignore_keys: Optional[Set[str]] = None
+) -> Set[str]:
+    """Compare 2 dicts and return set of changed keys."""
+    if not dict2:
+        return set(dict1.keys())
+    changed_keys = set()
+    for key, value in dict2.items():
+        if ignore_keys and key in ignore_keys:
+            continue
+        if isinstance(value, dict):
+            changed_keys.update(get_changed_keys(dict1[key], value))
+        elif dict1[key] != value:
+            changed_keys.add(key)
+    return changed_keys
 
 
 def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=3600):

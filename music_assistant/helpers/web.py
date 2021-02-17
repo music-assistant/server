@@ -1,9 +1,7 @@
 """Various helpers for web requests."""
 
-import asyncio
 import inspect
 import ipaddress
-from datetime import datetime
 from functools import wraps
 from typing import Any, Callable, Union
 
@@ -47,10 +45,10 @@ def serialize_values(obj):
     def get_val(val):
         if hasattr(val, "to_dict"):
             return val.to_dict()
-        if isinstance(val, (list, set, filter, {}.values().__class__)):
+        if isinstance(val, (list, set, filter, tuple)):
             return [get_val(x) for x in val]
-        if isinstance(val, datetime):
-            return val.isoformat()
+        if val.__class__ == "dict_valueiterator":
+            return [get_val(x) for x in val]
         if isinstance(val, dict):
             return {key: get_val(value) for key, value in val.items()}
         return val
@@ -61,25 +59,14 @@ def serialize_values(obj):
 def json_serializer(obj):
     """Json serializer to recursively create serializable values for custom data types."""
     return ujson.dumps(serialize_values(obj))
+    # return ujson.dumps(obj)
 
 
 def json_response(data: Any, status: int = 200):
     """Return json in web request."""
-    # return web.json_response(data, dumps=json_serializer)
     return web.Response(
         body=json_serializer(data), status=200, content_type="application/json"
     )
-
-
-async def async_json_response(data: Any, status: int = 200):
-    """Return json in web request."""
-    if isinstance(data, list):
-        # we could potentially receive a large list of objects to serialize
-        # which is blocking IO so run it in executor to be safe
-        return await asyncio.get_running_loop().run_in_executor(
-            None, json_response, data
-        )
-    return json_response(data)
 
 
 def api_route(ws_cmd_path, ws_require_auth=True):

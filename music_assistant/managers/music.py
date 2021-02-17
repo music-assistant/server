@@ -11,7 +11,7 @@ from music_assistant.constants import (
     EVENT_RADIO_ADDED,
     EVENT_TRACK_ADDED,
 )
-from music_assistant.helpers.cache import async_cached
+from music_assistant.helpers.cache import cached
 from music_assistant.helpers.compare import (
     compare_album,
     compare_artists,
@@ -49,7 +49,7 @@ class MusicManager:
         self.cache = mass.cache
         self.musicbrainz = MusicBrainz(mass)
 
-    async def async_setup(self):
+    async def setup(self):
         """Async initialize of module."""
 
     @property
@@ -60,7 +60,7 @@ class MusicManager:
     ################ GET MediaItem(s) by id and provider #################
 
     @api_route("items/:media_type/:provider_id/:item_id")
-    async def async_get_item(
+    async def get_item(
         self,
         item_id: str,
         provider_id: str,
@@ -70,58 +70,52 @@ class MusicManager:
     ):
         """Get single music item by id and media type."""
         if media_type == MediaType.Artist:
-            return await self.async_get_artist(
+            return await self.get_artist(
                 item_id, provider_id, refresh=refresh, lazy=lazy
             )
         if media_type == MediaType.Album:
-            return await self.async_get_album(
+            return await self.get_album(
                 item_id, provider_id, refresh=refresh, lazy=lazy
             )
         if media_type == MediaType.Track:
-            return await self.async_get_track(
+            return await self.get_track(
                 item_id, provider_id, refresh=refresh, lazy=lazy
             )
         if media_type == MediaType.Playlist:
-            return await self.async_get_playlist(
+            return await self.get_playlist(
                 item_id, provider_id, refresh=refresh, lazy=lazy
             )
         if media_type == MediaType.Radio:
-            return await self.async_get_radio(
+            return await self.get_radio(
                 item_id, provider_id, refresh=refresh, lazy=lazy
             )
         return None
 
     @api_route("artists/:provider_id/:item_id")
-    async def async_get_artist(
+    async def get_artist(
         self, item_id: str, provider_id: str, refresh: bool = False, lazy: bool = True
     ) -> Artist:
         """Return artist details for the given provider artist id."""
         if provider_id == "database" and not refresh:
-            return await self.mass.database.async_get_artist(item_id)
-        db_item = await self.mass.database.async_get_artist_by_prov_id(
-            provider_id, item_id
-        )
+            return await self.mass.database.get_artist(item_id)
+        db_item = await self.mass.database.get_artist_by_prov_id(provider_id, item_id)
         if db_item and refresh:
             provider_id, item_id = await self.__get_provider_id(db_item)
         elif db_item:
             return db_item
-        artist = await self.__async_get_provider_artist(item_id, provider_id)
+        artist = await self._get_provider_artist(item_id, provider_id)
         if not lazy:
-            return await self.async_add_artist(artist)
-        self.mass.add_background_task(self.async_add_artist(artist))
+            return await self.add_artist(artist)
+        self.mass.add_background_task(self.add_artist(artist))
         return db_item if db_item else artist
 
-    async def __async_get_provider_artist(
-        self, item_id: str, provider_id: str
-    ) -> Artist:
+    async def _get_provider_artist(self, item_id: str, provider_id: str) -> Artist:
         """Return artist details for the given provider artist id."""
         provider = self.mass.get_provider(provider_id)
         if not provider or not provider.available:
             raise Exception("Provider %s is not available!" % provider_id)
         cache_key = f"{provider_id}.get_artist.{item_id}"
-        artist = await async_cached(
-            self.cache, cache_key, provider.async_get_artist, item_id
-        )
+        artist = await cached(self.cache, cache_key, provider.get_artist, item_id)
         if not artist:
             raise Exception(
                 "Artist %s not found on provider %s" % (item_id, provider_id)
@@ -129,34 +123,30 @@ class MusicManager:
         return artist
 
     @api_route("albums/:provider_id/:item_id")
-    async def async_get_album(
+    async def get_album(
         self, item_id: str, provider_id: str, refresh: bool = False, lazy: bool = True
     ) -> Album:
         """Return album details for the given provider album id."""
         if provider_id == "database" and not refresh:
-            return await self.mass.database.async_get_album(item_id)
-        db_item = await self.mass.database.async_get_album_by_prov_id(
-            provider_id, item_id
-        )
+            return await self.mass.database.get_album(item_id)
+        db_item = await self.mass.database.get_album_by_prov_id(provider_id, item_id)
         if db_item and refresh:
             provider_id, item_id = await self.__get_provider_id(db_item)
         elif db_item:
             return db_item
-        album = await self.__async_get_provider_album(item_id, provider_id)
+        album = await self._get_provider_album(item_id, provider_id)
         if not lazy:
-            return await self.async_add_album(album)
-        self.mass.add_background_task(self.async_add_album(album))
+            return await self.add_album(album)
+        self.mass.add_background_task(self.add_album(album))
         return db_item if db_item else album
 
-    async def __async_get_provider_album(self, item_id: str, provider_id: str) -> Album:
+    async def _get_provider_album(self, item_id: str, provider_id: str) -> Album:
         """Return album details for the given provider album id."""
         provider = self.mass.get_provider(provider_id)
         if not provider or not provider.available:
             raise Exception("Provider %s is not available!" % provider_id)
         cache_key = f"{provider_id}.get_album.{item_id}"
-        album = await async_cached(
-            self.cache, cache_key, provider.async_get_album, item_id
-        )
+        album = await cached(self.cache, cache_key, provider.get_album, item_id)
         if not album:
             raise Exception(
                 "Album %s not found on provider %s" % (item_id, provider_id)
@@ -164,7 +154,7 @@ class MusicManager:
         return album
 
     @api_route("tracks/:provider_id/:item_id")
-    async def async_get_track(
+    async def get_track(
         self,
         item_id: str,
         provider_id: str,
@@ -175,32 +165,28 @@ class MusicManager:
     ) -> Track:
         """Return track details for the given provider track id."""
         if provider_id == "database" and not refresh:
-            return await self.mass.database.async_get_track(item_id)
-        db_item = await self.mass.database.async_get_track_by_prov_id(
-            provider_id, item_id
-        )
+            return await self.mass.database.get_track(item_id)
+        db_item = await self.mass.database.get_track_by_prov_id(provider_id, item_id)
         if db_item and refresh:
             provider_id, item_id = await self.__get_provider_id(db_item)
         elif db_item:
             return db_item
         if not track_details:
-            track_details = await self.__async_get_provider_track(item_id, provider_id)
+            track_details = await self._get_provider_track(item_id, provider_id)
         if album_details:
             track_details.album = album_details
         if not lazy:
-            return await self.async_add_track(track_details)
-        self.mass.add_background_task(self.async_add_track(track_details))
+            return await self.add_track(track_details)
+        self.mass.add_background_task(self.add_track(track_details))
         return db_item if db_item else track_details
 
-    async def __async_get_provider_track(self, item_id: str, provider_id: str) -> Track:
+    async def _get_provider_track(self, item_id: str, provider_id: str) -> Track:
         """Return track details for the given provider track id."""
         provider = self.mass.get_provider(provider_id)
         if not provider or not provider.available:
             raise Exception("Provider %s is not available!" % provider_id)
         cache_key = f"{provider_id}.get_track.{item_id}"
-        track = await async_cached(
-            self.cache, cache_key, provider.async_get_track, item_id
-        )
+        track = await cached(self.cache, cache_key, provider.get_track, item_id)
         if not track:
             raise Exception(
                 "Track %s not found on provider %s" % (item_id, provider_id)
@@ -208,36 +194,32 @@ class MusicManager:
         return track
 
     @api_route("playlists/:provider_id/:item_id")
-    async def async_get_playlist(
+    async def get_playlist(
         self, item_id: str, provider_id: str, refresh: bool = False, lazy: bool = True
     ) -> Playlist:
         """Return playlist details for the given provider playlist id."""
         assert item_id and provider_id
-        db_item = await self.mass.database.async_get_playlist_by_prov_id(
-            provider_id, item_id
-        )
+        db_item = await self.mass.database.get_playlist_by_prov_id(provider_id, item_id)
         if db_item and refresh:
             provider_id, item_id = await self.__get_provider_id(db_item)
         elif db_item:
             return db_item
-        playlist = await self.__async_get_provider_playlist(item_id, provider_id)
+        playlist = await self._get_provider_playlist(item_id, provider_id)
         if not lazy:
-            return await self.async_add_playlist(playlist)
-        self.mass.add_background_task(self.async_add_playlist(playlist))
+            return await self.add_playlist(playlist)
+        self.mass.add_background_task(self.add_playlist(playlist))
         return db_item if db_item else playlist
 
-    async def __async_get_provider_playlist(
-        self, item_id: str, provider_id: str
-    ) -> Playlist:
+    async def _get_provider_playlist(self, item_id: str, provider_id: str) -> Playlist:
         """Return playlist details for the given provider playlist id."""
         provider = self.mass.get_provider(provider_id)
         if not provider or not provider.available:
             raise Exception("Provider %s is not available!" % provider_id)
         cache_key = f"{provider_id}.get_playlist.{item_id}"
-        playlist = await async_cached(
+        playlist = await cached(
             self.cache,
             cache_key,
-            provider.async_get_playlist,
+            provider.get_playlist,
             item_id,
             expires=86400 * 2,
         )
@@ -248,33 +230,29 @@ class MusicManager:
         return playlist
 
     @api_route("radios/:provider_id/:item_id")
-    async def async_get_radio(
+    async def get_radio(
         self, item_id: str, provider_id: str, refresh: bool = False, lazy: bool = True
     ) -> Radio:
         """Return radio details for the given provider radio id."""
         assert item_id and provider_id
-        db_item = await self.mass.database.async_get_radio_by_prov_id(
-            provider_id, item_id
-        )
+        db_item = await self.mass.database.get_radio_by_prov_id(provider_id, item_id)
         if db_item and refresh:
             provider_id, item_id = await self.__get_provider_id(db_item)
         elif db_item:
             return db_item
-        radio = await self.__async_get_provider_radio(item_id, provider_id)
+        radio = await self._get_provider_radio(item_id, provider_id)
         if not lazy:
-            return await self.async_add_radio(radio)
-        self.mass.add_background_task(self.async_add_radio(radio))
+            return await self.add_radio(radio)
+        self.mass.add_background_task(self.add_radio(radio))
         return db_item if db_item else radio
 
-    async def __async_get_provider_radio(self, item_id: str, provider_id: str) -> Radio:
+    async def _get_provider_radio(self, item_id: str, provider_id: str) -> Radio:
         """Return radio details for the given provider playlist id."""
         provider = self.mass.get_provider(provider_id)
         if not provider or not provider.available:
             raise Exception("Provider %s is not available!" % provider_id)
         cache_key = f"{provider_id}.get_radio.{item_id}"
-        radio = await async_cached(
-            self.cache, cache_key, provider.async_get_radio, item_id
-        )
+        radio = await cached(self.cache, cache_key, provider.get_radio, item_id)
         if not radio:
             raise Exception(
                 "Radio %s not found on provider %s" % (item_id, provider_id)
@@ -282,23 +260,22 @@ class MusicManager:
         return radio
 
     @api_route("albums/:provider_id/:item_id/tracks")
-    async def async_get_album_tracks(
-        self, item_id: str, provider_id: str
-    ) -> List[Track]:
+    async def get_album_tracks(self, item_id: str, provider_id: str) -> List[Track]:
         """Return album tracks for the given provider album id."""
         assert item_id and provider_id
-        album = await self.async_get_album(item_id, provider_id)
+        album = await self.get_album(item_id, provider_id)
         if album.provider == "database":
             # album tracks are not stored in db, we always fetch them (cached) from the provider.
-            provider_id = album.provider_ids[0].provider
-            item_id = album.provider_ids[0].item_id
+            prov_id = next(iter(album.provider_ids))
+            provider_id = prov_id.provider
+            item_id = prov_id.item_id
         provider = self.mass.get_provider(provider_id)
         cache_key = f"{provider_id}.album_tracks.{item_id}"
-        all_prov_tracks = await async_cached(
-            self.cache, cache_key, provider.async_get_album_tracks, item_id
+        all_prov_tracks = await cached(
+            self.cache, cache_key, provider.get_album_tracks, item_id
         )
         # retrieve list of db items
-        db_tracks = await self.mass.database.async_get_tracks_from_provider_ids(
+        db_tracks = await self.mass.database.get_tracks_from_provider_ids(
             [x.provider for x in album.provider_ids],
             [x.item_id for x in all_prov_tracks],
         )
@@ -315,11 +292,9 @@ class MusicManager:
         ]
 
     @api_route("albums/:provider_id/:item_id/versions")
-    async def async_get_album_versions(
-        self, item_id: str, provider_id: str
-    ) -> List[Album]:
+    async def get_album_versions(self, item_id: str, provider_id: str) -> List[Album]:
         """Return all versions of an album we can find on all providers."""
-        album = await self.async_get_album(item_id, provider_id)
+        album = await self.get_album(item_id, provider_id)
         provider_ids = [
             item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
         ]
@@ -328,9 +303,7 @@ class MusicManager:
             prov_item
             for prov_items in await asyncio.gather(
                 *[
-                    self.async_search_provider(
-                        search_query, prov_id, [MediaType.Album], 25
-                    )
+                    self.search_provider(search_query, prov_id, [MediaType.Album], 25)
                     for prov_id in provider_ids
                 ]
             )
@@ -339,11 +312,9 @@ class MusicManager:
         ]
 
     @api_route("tracks/:provider_id/:item_id/versions")
-    async def async_get_track_versions(
-        self, item_id: str, provider_id: str
-    ) -> List[Track]:
+    async def get_track_versions(self, item_id: str, provider_id: str) -> List[Track]:
         """Return all versions of a track we can find on all providers."""
-        track = await self.async_get_track(item_id, provider_id)
+        track = await self.get_track(item_id, provider_id)
         provider_ids = [
             item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
         ]
@@ -352,9 +323,7 @@ class MusicManager:
             prov_item
             for prov_items in await asyncio.gather(
                 *[
-                    self.async_search_provider(
-                        search_query, prov_id, [MediaType.Track], 25
-                    )
+                    self.search_provider(search_query, prov_id, [MediaType.Track], 25)
                     for prov_id in provider_ids
                 ]
             )
@@ -363,30 +332,29 @@ class MusicManager:
         ]
 
     @api_route("playlists/:provider_id/:item_id/tracks")
-    async def async_get_playlist_tracks(
-        self, item_id: str, provider_id: str
-    ) -> List[Track]:
+    async def get_playlist_tracks(self, item_id: str, provider_id: str) -> List[Track]:
         """Return playlist tracks for the given provider playlist id."""
         assert item_id and provider_id
         if provider_id == "database":
             # playlist tracks are not stored in db, we always fetch them (cached) from the provider.
-            playlist = await self.mass.database.async_get_playlist(item_id)
-            provider_id = playlist.provider_ids[0].provider
-            item_id = playlist.provider_ids[0].item_id
+            playlist = await self.mass.database.get_playlist(item_id)
+            prov_id = next(iter(playlist.provider_ids))
+            provider_id = prov_id.provider
+            item_id = prov_id.item_id
             provider = self.mass.get_provider(provider_id)
         else:
             provider = self.mass.get_provider(provider_id)
-            playlist = await provider.async_get_playlist(item_id)
+            playlist = await provider.get_playlist(item_id)
         cache_checksum = playlist.checksum
         cache_key = f"{provider_id}.playlist_tracks.{item_id}"
-        playlist_tracks = await async_cached(
+        playlist_tracks = await cached(
             self.cache,
             cache_key,
-            provider.async_get_playlist_tracks,
+            provider.get_playlist_tracks,
             item_id,
             checksum=cache_checksum,
         )
-        db_tracks = await self.mass.database.async_get_tracks_from_provider_ids(
+        db_tracks = await self.mass.database.get_tracks_from_provider_ids(
             provider_id, [x.item_id for x in playlist_tracks]
         )
         # combine provider tracks with db tracks
@@ -418,40 +386,37 @@ class MusicManager:
         if track_number is not None:
             item.track_number = track_number
         # make sure artists are unique
-        if hasattr(item, "artists"):
-            item.artists = unique_item_ids(item.artists)
+        # if hasattr(item, "artists"):
+        #     item.artists = unique_item_ids(item.artists)
         return item
 
     @api_route("artists/:provider_id/:item_id/tracks")
-    async def async_get_artist_toptracks(
-        self, item_id: str, provider_id: str
-    ) -> List[Track]:
+    async def get_artist_toptracks(self, item_id: str, provider_id: str) -> List[Track]:
         """Return top tracks for an artist."""
-        artist = await self.async_get_artist(item_id, provider_id)
+        artist = await self.get_artist(item_id, provider_id)
         # get results from all providers
         all_prov_tracks = [
             track
             for prov_tracks in await asyncio.gather(
                 *[
-                    self.__async_get_provider_artist_toptracks(
-                        item.item_id, item.provider
-                    )
+                    self._get_provider_artist_toptracks(item.item_id, item.provider)
                     for item in artist.provider_ids
                 ]
             )
             for track in prov_tracks
         ]
         # retrieve list of db items
-        db_tracks = await self.mass.database.async_get_tracks_from_provider_ids(
+        db_tracks = await self.mass.database.get_tracks_from_provider_ids(
             [x.provider for x in artist.provider_ids],
             [x.item_id for x in all_prov_tracks],
         )
         # combine provider tracks with db tracks and filter duplicate itemid's
-        return unique_item_ids(
-            [await self.__process_item(item, db_tracks) for item in all_prov_tracks]
-        )
+        return {await self.__process_item(item, db_tracks) for item in all_prov_tracks}
+        # return unique_item_ids(
+        #     [await self.__process_item(item, db_tracks) for item in all_prov_tracks]
+        # )
 
-    async def __async_get_provider_artist_toptracks(
+    async def _get_provider_artist_toptracks(
         self, item_id: str, provider_id: str
     ) -> List[Track]:
         """Return top tracks for an artist on given provider."""
@@ -460,32 +425,30 @@ class MusicManager:
             LOGGER.error("Provider %s is not available", provider_id)
             return []
         cache_key = f"{provider_id}.artist_toptracks.{item_id}"
-        return await async_cached(
+        return await cached(
             self.cache,
             cache_key,
-            provider.async_get_artist_toptracks,
+            provider.get_artist_toptracks,
             item_id,
         )
 
     @api_route("artists/:provider_id/:item_id/albums")
-    async def async_get_artist_albums(
-        self, item_id: str, provider_id: str
-    ) -> List[Album]:
+    async def get_artist_albums(self, item_id: str, provider_id: str) -> List[Album]:
         """Return (all) albums for an artist."""
-        artist = await self.async_get_artist(item_id, provider_id)
+        artist = await self.get_artist(item_id, provider_id)
         # get results from all providers
         all_prov_albums = [
             album
             for prov_albums in await asyncio.gather(
                 *[
-                    self.__async_get_provider_artist_albums(item.item_id, item.provider)
+                    self._get_provider_artist_albums(item.item_id, item.provider)
                     for item in artist.provider_ids
                 ]
             )
             for album in prov_albums
         ]
         # retrieve list of db items
-        db_tracks = await self.mass.database.async_get_albums_from_provider_ids(
+        db_tracks = await self.mass.database.get_albums_from_provider_ids(
             [x.provider for x in artist.provider_ids],
             [x.item_id for x in all_prov_albums],
         )
@@ -494,7 +457,7 @@ class MusicManager:
             [await self.__process_item(item, db_tracks) for item in all_prov_albums]
         )
 
-    async def __async_get_provider_artist_albums(
+    async def _get_provider_artist_albums(
         self, item_id: str, provider_id: str
     ) -> List[Album]:
         """Return albums for an artist on given provider."""
@@ -503,15 +466,15 @@ class MusicManager:
             LOGGER.error("Provider %s is not available", provider_id)
             return []
         cache_key = f"{provider_id}.artist_albums.{item_id}"
-        return await async_cached(
+        return await cached(
             self.cache,
             cache_key,
-            provider.async_get_artist_albums,
+            provider.get_artist_albums,
             item_id,
         )
 
     @api_route("search/:provider_id")
-    async def async_search_provider(
+    async def search_provider(
         self,
         search_query: str,
         provider_id: str,
@@ -528,20 +491,20 @@ class MusicManager:
         """
         if provider_id == "database":
             # get results from database
-            return await self.mass.database.async_search(search_query, media_types)
+            return await self.mass.database.search(search_query, media_types)
         provider = self.mass.get_provider(provider_id)
         cache_key = f"{provider_id}.search.{search_query}.{media_types}.{limit}"
-        return await async_cached(
+        return await cached(
             self.cache,
             cache_key,
-            provider.async_search,
+            provider.search,
             search_query,
             media_types,
             limit,
         )
 
     @api_route("search")
-    async def async_global_search(
+    async def global_search(
         self, search_query, media_types: List[MediaType], limit: int = 10
     ) -> SearchResult:
         """
@@ -557,7 +520,7 @@ class MusicManager:
             item.id for item in self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
         ]
         for provider_id in provider_ids:
-            provider_result = await self.async_search_provider(
+            provider_result = await self.search_provider(
                 search_query, provider_id, media_types, limit
             )
             result.artists += provider_result.artists
@@ -568,7 +531,7 @@ class MusicManager:
             # TODO: sort by name and filter out duplicates ?
         return result
 
-    async def async_get_stream_details(
+    async def get_stream_details(
         self, media_item: MediaItem, player_id: str = ""
     ) -> StreamDetails:
         """
@@ -597,7 +560,7 @@ class MusicManager:
                 full_track = media_item
             else:
                 full_track = (
-                    await self.async_get_track(media_item.item_id, media_item.provider)
+                    await self.get_track(media_item.item_id, media_item.provider)
                     or media_item
                 )
             # sort by quality and check track availability
@@ -611,8 +574,8 @@ class MusicManager:
                 if not music_prov or not music_prov.available:
                     continue  # provider temporary unavailable ?
 
-                streamdetails: StreamDetails = (
-                    await music_prov.async_get_stream_details(prov_media.item_id)
+                streamdetails: StreamDetails = await music_prov.get_stream_details(
+                    prov_media.item_id
                 )
                 if streamdetails:
                     try:
@@ -635,65 +598,65 @@ class MusicManager:
 
     ################ ADD MediaItem(s) to database helpers ################
 
-    async def async_add_artist(self, artist: Artist) -> Artist:
+    async def add_artist(self, artist: Artist) -> Artist:
         """Add artist to local db and return the database item."""
         if not artist.musicbrainz_id:
-            artist.musicbrainz_id = await self.__async_get_artist_musicbrainz_id(artist)
+            artist.musicbrainz_id = await self._get_artist_musicbrainz_id(artist)
         # grab additional metadata
-        artist.metadata = await self.mass.metadata.async_get_artist_metadata(
+        artist.metadata = await self.mass.metadata.get_artist_metadata(
             artist.musicbrainz_id, artist.metadata
         )
-        db_item = await self.mass.database.async_add_artist(artist)
+        db_item = await self.mass.database.add_artist(artist)
         # also fetch same artist on all providers
-        await self.async_match_artist(db_item)
+        await self.match_artist(db_item)
         self.mass.signal_event(EVENT_ARTIST_ADDED, db_item)
         return db_item
 
-    async def async_add_album(self, album: Album) -> Album:
+    async def add_album(self, album: Album) -> Album:
         """Add album to local db and return the database item."""
         # make sure we have an artist
         assert album.artist
-        db_item = await self.mass.database.async_add_album(album)
+        db_item = await self.mass.database.add_album(album)
         # also fetch same album on all providers
-        await self.async_match_album(db_item)
+        await self.match_album(db_item)
         self.mass.signal_event(EVENT_ALBUM_ADDED, db_item)
         return db_item
 
-    async def async_add_track(self, track: Track) -> Track:
+    async def add_track(self, track: Track) -> Track:
         """Add track to local db and return the new database item."""
         # make sure we have artists
         assert track.artists
         # make sure we have an album
         assert track.album or track.albums
-        db_item = await self.mass.database.async_add_track(track)
+        db_item = await self.mass.database.add_track(track)
         # also fetch same track on all providers (will also get other quality versions)
-        await self.async_match_track(db_item)
+        await self.match_track(db_item)
         self.mass.signal_event(EVENT_TRACK_ADDED, db_item)
         return db_item
 
-    async def async_add_playlist(self, playlist: Playlist) -> Playlist:
+    async def add_playlist(self, playlist: Playlist) -> Playlist:
         """Add playlist to local db and return the new database item."""
-        db_item = await self.mass.database.async_add_playlist(playlist)
+        db_item = await self.mass.database.add_playlist(playlist)
         self.mass.signal_event(EVENT_PLAYLIST_ADDED, db_item)
         return db_item
 
-    async def async_add_radio(self, radio: Radio) -> Radio:
+    async def add_radio(self, radio: Radio) -> Radio:
         """Add radio to local db and return the new database item."""
-        db_item = await self.mass.database.async_add_radio(radio)
+        db_item = await self.mass.database.add_radio(radio)
         self.mass.signal_event(EVENT_RADIO_ADDED, db_item)
         return db_item
 
-    async def __async_get_artist_musicbrainz_id(self, artist: Artist):
+    async def _get_artist_musicbrainz_id(self, artist: Artist):
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         # try with album first
-        for lookup_album in await self.__async_get_provider_artist_albums(
+        for lookup_album in await self._get_provider_artist_albums(
             artist.item_id, artist.provider
         ):
             if not lookup_album:
                 continue
             if artist.name != lookup_album.artist.name:
                 continue
-            musicbrainz_id = await self.musicbrainz.async_get_mb_artist_id(
+            musicbrainz_id = await self.musicbrainz.get_mb_artist_id(
                 artist.name,
                 albumname=lookup_album.name,
                 album_upc=lookup_album.upc,
@@ -701,12 +664,12 @@ class MusicManager:
             if musicbrainz_id:
                 return musicbrainz_id
         # fallback to track
-        for lookup_track in await self.__async_get_provider_artist_toptracks(
+        for lookup_track in await self._get_provider_artist_toptracks(
             artist.item_id, artist.provider
         ):
             if not lookup_track:
                 continue
-            musicbrainz_id = await self.musicbrainz.async_get_mb_artist_id(
+            musicbrainz_id = await self.musicbrainz.get_mb_artist_id(
                 artist.name,
                 trackname=lookup_track.name,
                 track_isrc=lookup_track.isrc,
@@ -717,7 +680,7 @@ class MusicManager:
         LOGGER.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
         return artist.name
 
-    async def async_match_artist(self, db_artist: Artist):
+    async def match_artist(self, db_artist: Artist):
         """
         Try to find matching artists on all providers for the provided (database) item_id.
 
@@ -732,31 +695,27 @@ class MusicManager:
                 continue
             if MediaType.Artist not in provider.supported_mediatypes:
                 continue
-            if not await self.__async_match_prov_artist(db_artist, provider):
+            if not await self._match_prov_artist(db_artist, provider):
                 LOGGER.debug(
                     "Could not find match for Artist %s on provider %s",
                     db_artist.name,
                     provider.name,
                 )
 
-    async def __async_match_prov_artist(
-        self, db_artist: Artist, provider: MusicProvider
-    ):
+    async def _match_prov_artist(self, db_artist: Artist, provider: MusicProvider):
         """Try to find matching artists on given provider for the provided (database) artist."""
         LOGGER.debug(
             "Trying to match artist %s on provider %s", db_artist.name, provider.name
         )
         # try to get a match with some reference tracks of this artist
-        for ref_track in await self.async_get_artist_toptracks(
+        for ref_track in await self.get_artist_toptracks(
             db_artist.item_id, db_artist.provider
         ):
             # make sure we have a full track
             if isinstance(ref_track.album, ItemMapping):
-                ref_track = await self.async_get_track(
-                    ref_track.item_id, ref_track.provider
-                )
+                ref_track = await self.get_track(ref_track.item_id, ref_track.provider)
             searchstr = "%s %s" % (db_artist.name, ref_track.name)
-            search_results = await self.async_search_provider(
+            search_results = await self.search_provider(
                 searchstr, provider.id, [MediaType.Track], limit=25
             )
             for search_result_item in search_results.tracks:
@@ -766,22 +725,22 @@ class MusicManager:
                         if compare_strings(db_artist.name, search_item_artist.name):
                             # 100% album match
                             # get full artist details so we have all metadata
-                            prov_artist = await self.__async_get_provider_artist(
+                            prov_artist = await self._get_provider_artist(
                                 search_item_artist.item_id, search_item_artist.provider
                             )
-                            await self.mass.database.async_update_artist(
+                            await self.mass.database.update_artist(
                                 db_artist.item_id, prov_artist
                             )
                             return True
         # try to get a match with some reference albums of this artist
-        artist_albums = await self.async_get_artist_albums(
+        artist_albums = await self.get_artist_albums(
             db_artist.item_id, db_artist.provider
         )
         for ref_album in artist_albums[:50]:
             if ref_album.album_type == AlbumType.Compilation:
                 continue
             searchstr = "%s %s" % (db_artist.name, ref_album.name)
-            search_result = await self.async_search_provider(
+            search_result = await self.search_provider(
                 searchstr, provider.id, [MediaType.Album], limit=25
             )
             for search_result_item in search_result.albums:
@@ -791,17 +750,17 @@ class MusicManager:
                 if compare_album(search_result_item, ref_album):
                     # 100% album match
                     # get full artist details so we have all metadata
-                    prov_artist = await self.__async_get_provider_artist(
+                    prov_artist = await self._get_provider_artist(
                         search_result_item.artist.item_id,
                         search_result_item.artist.provider,
                     )
-                    await self.mass.database.async_update_artist(
+                    await self.mass.database.update_artist(
                         db_artist.item_id, prov_artist
                     )
                     return True
         return False
 
-    async def async_match_album(self, db_album: Album):
+    async def match_album(self, db_album: Album):
         """
         Try to find matching album on all providers for the provided (database) album_id.
 
@@ -812,7 +771,7 @@ class MusicManager:
         ), "Matching only supported for database items!"
         if not isinstance(db_album, FullAlbum):
             # matching only works if we have a full album object
-            db_album = await self.mass.database.async_get_album(db_album.item_id)
+            db_album = await self.mass.database.get_album(db_album.item_id)
 
         async def find_prov_match(provider):
             LOGGER.debug(
@@ -822,7 +781,7 @@ class MusicManager:
             searchstr = "%s %s" % (db_album.artist.name, db_album.name)
             if db_album.version:
                 searchstr += " " + db_album.version
-            search_result = await self.async_search_provider(
+            search_result = await self.search_provider(
                 searchstr, provider.id, [MediaType.Album], limit=25
             )
             for search_result_item in search_result.albums:
@@ -831,21 +790,19 @@ class MusicManager:
                 if not compare_album(search_result_item, db_album):
                     continue
                 # we must fetch the full album version, search results are simplified objects
-                prov_album = await self.__async_get_provider_album(
+                prov_album = await self._get_provider_album(
                     search_result_item.item_id, search_result_item.provider
                 )
                 if compare_album(prov_album, db_album):
                     # 100% match, we can simply update the db with additional provider ids
-                    await self.mass.database.async_update_album(
-                        db_album.item_id, prov_album
-                    )
+                    await self.mass.database.update_album(db_album.item_id, prov_album)
                     match_found = True
                     # while we're here, also match the artist
                     if db_album.artist.provider == "database":
-                        prov_artist = await self.__async_get_provider_artist(
+                        prov_artist = await self._get_provider_artist(
                             prov_album.artist.item_id, prov_album.artist.provider
                         )
-                        await self.mass.database.async_update_artist(
+                        await self.mass.database.update_artist(
                             db_album.artist.item_id, prov_artist
                         )
 
@@ -863,7 +820,7 @@ class MusicManager:
             if MediaType.Album in provider.supported_mediatypes:
                 await find_prov_match(provider)
 
-    async def async_match_track(self, db_track: Track):
+    async def match_track(self, db_track: Track):
         """
         Try to find matching track on all providers for the provided (database) track_id.
 
@@ -874,7 +831,7 @@ class MusicManager:
         ), "Matching only supported for database items!"
         if isinstance(db_track.album, ItemMapping):
             # matching only works if we have a full track object
-            db_track = await self.mass.database.async_get_track(db_track.item_id)
+            db_track = await self.mass.database.get_track(db_track.item_id)
         for provider in self.mass.get_providers(ProviderType.MUSIC_PROVIDER):
             if MediaType.Track not in provider.supported_mediatypes:
                 continue
@@ -888,7 +845,7 @@ class MusicManager:
                 searchstr = "%s %s" % (db_track_artist.name, db_track.name)
                 if db_track.version:
                     searchstr += " " + db_track.version
-                search_result = await self.async_search_provider(
+                search_result = await self.search_provider(
                     searchstr, provider.id, [MediaType.Track], limit=25
                 )
                 for search_result_item in search_result.tracks:
@@ -897,7 +854,7 @@ class MusicManager:
                     if compare_track(search_result_item, db_track):
                         # 100% match, we can simply update the db with additional provider ids
                         match_found = True
-                        await self.mass.database.async_update_track(
+                        await self.mass.database.update_track(
                             db_track.item_id, search_result_item
                         )
                         # while we're here, also match the artist
@@ -907,10 +864,10 @@ class MusicManager:
                                     db_track_artist.name, artist.name
                                 ):
                                     continue
-                                prov_artist = await self.__async_get_provider_artist(
+                                prov_artist = await self._get_provider_artist(
                                     artist.item_id, artist.provider
                                 )
-                                await self.mass.database.async_update_artist(
+                                await self.mass.database.update_artist(
                                     db_track_artist.item_id, prov_artist
                                 )
 
@@ -924,7 +881,7 @@ class MusicManager:
     async def __get_provider_id(self, media_item: MediaItem) -> tuple:
         """Return provider and item id."""
         if media_item.provider == "database":
-            media_item = await self.mass.database.async_get_item_by_prov_id(
+            media_item = await self.mass.database.get_item_by_prov_id(
                 "database", media_item.item_id, media_item.media_type
             )
             for prov in media_item.provider_ids:

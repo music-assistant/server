@@ -25,7 +25,7 @@ class Cache:
         self._dbfile = os.path.join(mass.config.data_path, ".cache.db")
         self._mem_cache = {}
 
-    async def async_setup(self):
+    async def setup(self):
         """Async initialize of cache module."""
         async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
             await db_conn.execute(
@@ -35,9 +35,9 @@ class Cache:
             await db_conn.commit()
             await db_conn.execute("VACUUM;")
             await db_conn.commit()
-        self.mass.add_job(self.async_auto_cleanup())
+        self.mass.add_job(self.auto_cleanup())
 
-    async def async_get(self, cache_key, checksum="", default=None):
+    async def get(self, cache_key, checksum="", default=None):
         """
         Get object from cache and return the results.
 
@@ -80,7 +80,7 @@ class Cache:
         LOGGER.debug("no cache data for %s", cache_key)
         return default
 
-    async def async_set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
+    async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
         """Set data in cache."""
         checksum = self._get_checksum(checksum)
         expires = int(time.time() + expiration)
@@ -94,7 +94,7 @@ class Cache:
             await db_conn.execute(sql_query, (cache_key, expires, data, checksum))
             await db_conn.commit()
 
-    async def async_delete(self, cache_key):
+    async def delete(self, cache_key):
         """Delete data from cache."""
         self._mem_cache.pop(cache_key, None)
         sql_query = "DELETE FROM simplecache WHERE id = ?"
@@ -103,7 +103,7 @@ class Cache:
             await db_conn.commit()
 
     @run_periodic(3600)
-    async def async_auto_cleanup(self):
+    async def auto_cleanup(self):
         """Sceduled auto cleanup task."""
         # for now we simply rest the memory cache
         self._mem_cache = {}
@@ -133,7 +133,7 @@ class Cache:
         return functools.reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
-async def async_cached(
+async def cached(
     cache,
     cache_key: str,
     coro_func: Awaitable,
@@ -142,31 +142,31 @@ async def async_cached(
     checksum=None
 ):
     """Return helper method to store results of a coroutine in the cache."""
-    cache_result = await cache.async_get(cache_key, checksum)
+    cache_result = await cache.get(cache_key, checksum)
     if cache_result is not None:
         return cache_result
     result = await coro_func(*args)
-    asyncio.create_task(cache.async_set(cache_key, result, checksum, expires))
+    asyncio.create_task(cache.set(cache_key, result, checksum, expires))
     return result
 
 
-def async_use_cache(cache_days=14, cache_checksum=None):
+def use_cache(cache_days=14, cache_checksum=None):
     """Return decorator that can be used to cache a method's result."""
 
     def wrapper(func):
         @functools.wraps(func)
-        async def async_wrapped(*args, **kwargs):
+        async def wrapped(*args, **kwargs):
             method_class = args[0]
             method_class_name = method_class.__class__.__name__
             cache_str = "%s.%s" % (method_class_name, func.__name__)
             cache_str += __cache_id_from_args(*args, **kwargs)
             cache_str = cache_str.lower()
-            cachedata = await method_class.cache.async_get(cache_str)
+            cachedata = await method_class.cache.get(cache_str)
             if cachedata is not None:
                 return cachedata
             result = await func(*args, **kwargs)
             asyncio.create_task(
-                method_class.cache.async_set(
+                method_class.cache.set(
                     cache_str,
                     result,
                     checksum=cache_checksum,
@@ -175,7 +175,7 @@ def async_use_cache(cache_days=14, cache_checksum=None):
             )
             return result
 
-        return async_wrapped
+        return wrapped
 
     return wrapper
 

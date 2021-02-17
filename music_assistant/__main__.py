@@ -44,7 +44,7 @@ def main():
     # setup logger
     logger = logging.getLogger()
     logformat = logging.Formatter(
-        "%(asctime)-15s %(levelname)-5s %(name)s.%(funcName)s  -- %(message)s"
+        "%(asctime)-15s %(levelname)-5s %(name)s  -- %(message)s"
     )
     consolehandler = logging.StreamHandler()
     consolehandler.setFormatter(logformat)
@@ -68,10 +68,10 @@ def main():
 
     def on_shutdown(loop):
         logger.info("shutdown requested!")
-        loop.run_until_complete(mass.async_stop())
+        loop.run_until_complete(mass.stop())
 
     run(
-        mass.async_start(),
+        mass.start(),
         use_uvloop=True,
         shutdown_callback=on_shutdown,
         executor_workers=64,

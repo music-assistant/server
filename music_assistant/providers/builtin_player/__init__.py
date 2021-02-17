@@ -3,7 +3,7 @@ import logging
 import time
 from typing import List
 
-from music_assistant.helpers.typing import MusicAssistantType
+from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import run_periodic
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import (
@@ -23,14 +23,14 @@ PLAYER_CONFIG_ENTRIES = []
 PLAYER_FEATURES = []
 
 WS_COMMAND_WSPLAYER_CMD = "wsplayer command"
-WS_COMMAND_WSPLAYER_STATE = "wsplayer state"
+WS_COMMAND_WSplayer = "wsplayer state"
 WS_COMMAND_WSPLAYER_REGISTER = "wsplayer register"
 
 
-async def async_setup(mass):
+async def setup(mass):
     """Perform async setup of this Plugin/Provider."""
     prov = MassPlayerProvider()
-    await mass.async_register_provider(prov)
+    await mass.register_provider(prov)
 
 
 class MassPlayerProvider(PlayerProvider):
@@ -55,44 +55,42 @@ class MassPlayerProvider(PlayerProvider):
         """Return Config Entries for this provider."""
         return []
 
-    async def async_on_start(self) -> bool:
+    async def on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
         # listen for websockets commands to dynamically create players
-        self.mass.add_job(self.async_check_players())
+        self.mass.add_job(self.check_players())
         self.mass.web.register_api_route(
-            WS_COMMAND_WSPLAYER_REGISTER, self.async_handle_ws_player_state
+            WS_COMMAND_WSPLAYER_REGISTER, self.handle_ws_player
         )
-        self.mass.web.register_api_route(
-            WS_COMMAND_WSPLAYER_STATE, self.async_handle_ws_player_state
-        )
+        self.mass.web.register_api_route(WS_COMMAND_WSplayer, self.handle_ws_player)
         return True
 
-    async def async_on_stop(self):
+    async def on_stop(self):
         """Handle correct close/cleanup of the provider on exit."""
         for player in self.players:
-            await player.async_cmd_stop()
+            await player.cmd_stop()
 
-    async def async_handle_ws_player_state(self, player_id: str, details: dict):
+    async def handle_ws_player(self, player_id: str, details: dict):
         """Handle state message from ws player."""
         player = self.mass.players.get_player(player_id)
         if not player:
             # register new player
             player = WebsocketsPlayer(self.mass, player_id, details["name"])
-            await self.mass.players.async_add_player(player)
-        await player.handle_player_state(details)
+            await self.mass.players.add_player(player)
+        await player.handle_player(details)
 
     @run_periodic(30)
-    async def async_check_players(self) -> None:
+    async def check_players(self) -> None:
         """Invalidate players that did not send a heartbeat message in a while."""
         cur_time = time.time()
-        offline_players = []
+        offline_players = set()
         for player in self.players:
             if not isinstance(player, WebsocketsPlayer):
                 continue
             if cur_time - player.last_message > 30:
-                offline_players.append(player.player_id)
+                offline_players.add(player.player_id)
         for player_id in offline_players:
-            await self.mass.players.async_remove_player(player_id)
+            await self.mass.players.remove_player(player_id)
 
 
 class WebsocketsPlayer(Player):
@@ -104,7 +102,7 @@ class WebsocketsPlayer(Player):
     and our internal event bus.
     """
 
-    def __init__(self, mass: MusicAssistantType, player_id: str, player_name: str):
+    def __init__(self, mass: MusicAssistant, player_id: str, player_name: str):
         """Initialize the wsplayer."""
         self._player_id = player_id
         self._player_name = player_name
@@ -117,7 +115,7 @@ class WebsocketsPlayer(Player):
         self._device_info = DeviceInfo()
         self.last_message = time.time()
 
-    async def handle_player_state(self, data: dict):
+    async def handle_player(self, data: dict):
         """Handle state event from player."""
         if "volume_level" in data:
             self._volume_level = data["volume_level"]
@@ -202,7 +200,7 @@ class WebsocketsPlayer(Player):
         """Return player specific config entries (if any)."""
         return PLAYER_CONFIG_ENTRIES
 
-    async def async_cmd_play_uri(self, uri: str) -> None:
+    async def cmd_play_uri(self, uri: str) -> None:
         """
         Play the specified uri/url on the player.
 
@@ -211,32 +209,32 @@ class WebsocketsPlayer(Player):
         data = {"player_id": self.player_id, "cmd": "play_uri", "uri": uri}
         self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
-    async def async_cmd_stop(self) -> None:
+    async def cmd_stop(self) -> None:
         """Send STOP command to player."""
         data = {"player_id": self.player_id, "cmd": "stop"}
         self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
-    async def async_cmd_play(self) -> None:
+    async def cmd_play(self) -> None:
         """Send PLAY command to player."""
         data = {"player_id": self.player_id, "cmd": "play"}
         self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
-    async def async_cmd_pause(self) -> None:
+    async def cmd_pause(self) -> None:
         """Send PAUSE command to player."""
         data = {"player_id": self.player_id, "cmd": "pause"}
         self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
-    async def async_cmd_power_on(self) -> None:
+    async def cmd_power_on(self) -> None:
         """Send POWER ON command to player."""
         self._powered = True
         self.update_state()
 
-    async def async_cmd_power_off(self) -> None:
+    async def cmd_power_off(self) -> None:
         """Send POWER OFF command to player."""
         self._powered = False
         self.update_state()
 
-    async def async_cmd_volume_set(self, volume_level: int) -> None:
+    async def cmd_volume_set(self, volume_level: int) -> None:
         """
         Send volume level command to player.
 
@@ -249,7 +247,7 @@ class WebsocketsPlayer(Player):
         }
         self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
-    async def async_cmd_volume_mute(self, is_muted: bool = False) -> None:
+    async def cmd_volume_mute(self, is_muted: bool = False) -> None:
         """
         Send volume MUTE command to given player.
 
