@@ -20,8 +20,8 @@ async def check_migrations(mass: MusicAssistant):
     prev_version = packaging.version.parse(mass.config.stored_config.get("version", ""))
 
     # perform version specific migrations
-    if not is_fresh_setup and prev_version < packaging.version.parse("0.0.70"):
-        await run_migration_0070(mass)
+    if not is_fresh_setup and prev_version < packaging.version.parse("0.1.1"):
+        await run_migration_1(mass)
 
     # store version in config
     mass.config.stored_config["version"] = app_version
@@ -40,9 +40,9 @@ async def check_migrations(mass: MusicAssistant):
     await create_db_tables(mass.database.db_file)
 
 
-async def run_migration_0070(mass: MusicAssistant):
-    """Run migration for version 0.0.70."""
-    # 0.0.70 introduced major changes to all data models and db structure
+async def run_migration_1(mass: MusicAssistant):
+    """Run migration for version 0.1.1."""
+    # 0.1.0 introduced major changes to all data models and db structure
     # a full refresh of data is unavoidable
     data_path = mass.config.data_path
     tracks_loudness = []
