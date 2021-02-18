@@ -1,7 +1,6 @@
 """Representation of a Cast device on the network."""
 import logging
 import uuid
-from datetime import datetime
 from typing import List, Optional
 
 import pychromecast
@@ -111,30 +110,6 @@ class ChromecastPlayer(Player):
             return self.media_status.adjusted_current_time
         # Not playing, return last reported seek time
         return self.media_status.current_time
-
-    @property
-    def elapsed_milliseconds(self) -> int:
-        """Return (realtime) elapsed time of current playing media in milliseconds."""
-        if self.media_status is None or not (
-            self.media_status.player_is_playing
-            or self.media_status.player_is_paused
-            or self.media_status.player_is_idle
-        ):
-            return 0
-        if self.media_status.player_is_playing:
-            # Add time since last update
-            return int(
-                (
-                    self.media_status.current_time
-                    + (
-                        datetime.utcnow().timestamp()
-                        - self.media_status.last_updated.timestamp()
-                    )
-                )
-                * 1000
-            )
-        # Not playing, return last reported seek time
-        return self.media_status.current_time * 1000
 
     @property
     def available(self) -> bool:
@@ -299,15 +274,6 @@ class ChromecastPlayer(Player):
             self.update_state()
             if self._cast_info.is_audio_group and new_available:
                 self.mass.add_job(self._chromecast.mz_controller.update_members)
-
-    async def on_poll(self) -> None:
-        """Call when player is periodically polled by the player manager (should_poll=True)."""
-        if self.active_queue.startswith("group_player"):
-            # the group player wants very accurate elapsed_time state so we request it very often
-            await self.chromecast_command(
-                self._chromecast.media_controller.update_status
-            )
-        self.update_state()
 
     # ========== Service Calls ==========
 

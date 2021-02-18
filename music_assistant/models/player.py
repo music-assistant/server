@@ -97,7 +97,7 @@ class PlayerState(DataClassDictMixin):
     is_group_player: bool = False
     group_childs: Set[str] = field(default_factory=set)
     device_info: DeviceInfo = field(default_factory=DeviceInfo)
-    updated_at: datetime = None
+    updated_at: datetime = datetime.now()
     group_parents: Set[str] = field(default_factory=set)
     features: Set[PlayerFeature] = field(default_factory=set)
     active_queue: str = None
@@ -116,6 +116,8 @@ class PlayerState(DataClassDictMixin):
                 setattr(self, key, new_val)
                 if key != "updated_at":
                     changed_keys.add(key)
+        if changed_keys:
+            self.updated_at = datetime.now()
         return changed_keys
 
 
@@ -502,7 +504,7 @@ class Player:
             provider_id=self.provider_id,
             name=self._get_name(),
             powered=self._get_powered(),
-            state=self.state,
+            state=self._get_state(),
             available=self._get_available(),
             volume_level=self._get_volume_level(),
             elapsed_time=self.elapsed_time,
@@ -513,7 +515,6 @@ class Player:
             group_parents=self._get_group_parents(),
             features=self.features,
             active_queue=self._get_active_queue(),
-            updated_at=datetime.now(),
         )
 
     def to_dict(self) -> dict:

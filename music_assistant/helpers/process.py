@@ -22,27 +22,27 @@ class AsyncProcess:
         self._proc = None
         self._process_args = process_args
         self._enable_write = enable_write
-        self._cancelled = False
 
     async def __aenter__(self) -> "AsyncProcess":
         """Enter context manager."""
         self._proc = await asyncio.create_subprocess_exec(
             *self._process_args,
             stdin=asyncio.subprocess.PIPE if self._enable_write else None,
-            stdout=asyncio.subprocess.PIPE,
-            limit=4000000
+            stdout=asyncio.subprocess.PIPE
         )
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
         """Exit context manager."""
-        self._cancelled = True
         if self._proc.returncode is None:
             # prevent subprocess deadlocking, send terminate and read remaining bytes
-            if self._enable_write and self._proc.stdin.can_write_eof():
-                self._proc.stdin.write_eof()
-            self._proc.terminate()
-            await self._proc.stdout.read()
+            await self.write_eof()
+            try:
+                self._proc.terminate()
+                await self._proc.stdout.read()
+                self._proc.kill()
+            except (ProcessLookupError, BrokenPipeError):
+                pass
         del self._proc
 
     async def iterate_chunks(
@@ -57,8 +57,6 @@ class AsyncProcess:
 
     async def read(self, chunk_size: int = DEFAULT_CHUNKSIZE) -> bytes:
         """Read x bytes from the process stdout."""
-        if self._cancelled:
-            raise asyncio.CancelledError()
         try:
             return await self._proc.stdout.readexactly(chunk_size)
         except asyncio.IncompleteReadError as err:
@@ -66,25 +64,21 @@ class AsyncProcess:
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
-        if self._cancelled or not self._proc:
-            raise asyncio.CancelledError()
-        if self._proc.stdin.is_closing():
-            raise asyncio.CancelledError()
-        self._proc.stdin.write(data)
         try:
+            self._proc.stdin.write(data)
             await self._proc.stdin.drain()
         except BrokenPipeError:
             pass
 
     async def write_eof(self) -> None:
         """Write eof to process."""
-        if self._cancelled:
-            raise asyncio.CancelledError()
-        if self._proc.stdin.can_write_eof():
+        if not (self._enable_write and self._proc.stdin.can_write_eof()):
+            return
+        try:
             self._proc.stdin.write_eof()
+        except BrokenPipeError:
+            pass
 
     async def communicate(self, input_data: Optional[bytes] = None) -> bytes:
         """Write bytes to process and read back results."""
-        if self._cancelled:
-            raise asyncio.CancelledError()
         return await self._proc.communicate(input_data)

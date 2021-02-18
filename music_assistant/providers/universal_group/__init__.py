@@ -351,7 +351,7 @@ class GroupPlayer(Player):
     async def queue_stream_task(self):
         """Handle streaming queue to connected child players."""
         ticks = 0
-        while ticks < 60 and len(self.connected_clients) != len(self.group_childs):
+        while ticks < 60 and (len(self.connected_clients) != len(self.group_childs)):
             # TODO: Support situation where not all clients of the group are powered
             await asyncio.sleep(0.1)
             ticks += 1

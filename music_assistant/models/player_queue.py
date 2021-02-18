@@ -536,6 +536,7 @@ class PlayerQueue:
         """Instance attributes as dict so it can be serialized to json."""
         return {
             "queue_id": self.player.player_id,
+            "queue_name": self.player.player_state.name,
             "shuffle_enabled": self.shuffle_enabled,
             "repeat_enabled": self.repeat_enabled,
             "crossfade_enabled": self.crossfade_enabled,

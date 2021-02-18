@@ -7,7 +7,6 @@ of music with crossfade/gapless support (queue stream).
 All audio is processed by the SoX executable, using various subprocess streams.
 """
 import asyncio
-import gc
 import logging
 import shlex
 import subprocess
@@ -54,7 +53,7 @@ class StreamManager:
         output_format: SoxOutputFormat = SoxOutputFormat.FLAC,
         resample: Optional[int] = None,
         gain_db_adjust: Optional[float] = None,
-        chunk_size: int = 4000000,
+        chunk_size: int = 512000,
     ) -> AsyncGenerator[Tuple[bool, bytes], None]:
         """Get the sox manipulated audio data for the given streamdetails."""
         # collect all args for sox
@@ -93,21 +92,28 @@ class StreamManager:
             fill_buffer_task = self.mass.loop.create_task(fill_buffer())
             # yield chunks from stdout
             # we keep 1 chunk behind to detect end of stream properly
-            prev_chunk = b""
-            async for chunk in sox_proc.iterate_chunks(chunk_size):
-                if len(chunk) < chunk_size:
-                    # last chunk
-                    yield (True, prev_chunk + chunk)
-                    break
-                if prev_chunk:
-                    yield (False, prev_chunk)
-                prev_chunk = chunk
-            await asyncio.wait([fill_buffer_task])
-            LOGGER.debug(
-                "finished sox stream for: %s/%s",
-                streamdetails.provider,
-                streamdetails.item_id,
-            )
+            try:
+                prev_chunk = b""
+                async for chunk in sox_proc.iterate_chunks(chunk_size):
+                    if prev_chunk:
+                        yield (False, prev_chunk)
+                    prev_chunk = chunk
+                # send last chunk
+                yield (True, prev_chunk)
+            except (asyncio.CancelledError, GeneratorExit) as err:
+                LOGGER.debug(
+                    "get_sox_stream aborted for: %s/%s",
+                    streamdetails.provider,
+                    streamdetails.item_id,
+                )
+                fill_buffer_task.cancel()
+                raise err
+            else:
+                LOGGER.debug(
+                    "finished sox stream for: %s/%s",
+                    streamdetails.provider,
+                    streamdetails.item_id,
+                )
 
     async def queue_stream_flac(self, player_id) -> AsyncGenerator[bytes, None]:
         """Stream the PlayerQueue's tracks as constant feed in flac format."""
@@ -138,9 +144,21 @@ class StreamManager:
             fill_buffer_task = self.mass.loop.create_task(fill_buffer())
 
             # start yielding audio chunks
-            async for chunk in sox_proc.iterate_chunks():
-                yield chunk
-            await asyncio.wait([fill_buffer_task])
+            try:
+                async for chunk in sox_proc.iterate_chunks():
+                    yield chunk
+            except (asyncio.CancelledError, GeneratorExit) as err:
+                LOGGER.debug(
+                    "queue_stream_flac aborted for: %s",
+                    player_id,
+                )
+                fill_buffer_task.cancel()
+                raise err
+            else:
+                LOGGER.debug(
+                    "finished queue_stream_flac for: %s",
+                    player_id,
+                )
 
     async def queue_stream_pcm(
         self, player_id, sample_rate=96000, bit_depth=32
@@ -204,10 +222,10 @@ class StreamManager:
                 # HANDLE FIRST PART OF TRACK
                 if not chunk and bytes_written == 0:
                     # stream error: got empy first chunk
-                    # prevent player queue get stuck by sending next track command
-                    self.mass.add_job(player_queue.next())
                     LOGGER.error("Stream error on track %s", queue_track.item_id)
-                    return
+                    # prevent player queue get stuck by just skipping to the next track
+                    queue_track.duration = 0
+                    continue
                 if cur_chunk <= 2 and not last_fadeout_data:
                     # no fadeout_part available so just pass it to the output directly
                     yield chunk
@@ -253,15 +271,17 @@ class StreamManager:
                         # part is too short after the strip action
                         # so we just use the entire original data
                         last_part = prev_chunk + chunk
-                        if len(last_part) < buffer_size:
-                            LOGGER.warning(
-                                "Not enough data for crossfade: %s", len(last_part)
-                            )
                     if (
                         not player_queue.crossfade_enabled
                         or len(last_part) < buffer_size
                     ):
-                        # crossfading is not enabled so just pass the (stripped) audio data
+                        # crossfading is not enabled or not enough data,
+                        # so just pass the (stripped) audio data
+                        if not player_queue.crossfade_enabled:
+                            LOGGER.warning(
+                                "Not enough data for crossfade: %s", len(last_part)
+                            )
+
                         yield last_part
                         bytes_written += len(last_part)
                         del last_part
@@ -272,8 +292,9 @@ class StreamManager:
                         last_fadeout_data = last_part[-buffer_size:]
                         remaining_bytes = last_part[:-buffer_size]
                         # write remaining bytes
-                        yield remaining_bytes
-                        bytes_written += len(remaining_bytes)
+                        if remaining_bytes:
+                            yield remaining_bytes
+                            bytes_written += len(remaining_bytes)
                         del last_part
                         del remaining_bytes
                         del chunk
@@ -299,14 +320,11 @@ class StreamManager:
                 queue_track.name,
                 player_id,
             )
-            # run garbage collect manually to avoid too much memory fragmentation
-            self.mass.add_job(gc.collect)
         # end of queue reached, pass last fadeout bits to final output
-        yield last_fadeout_data
+        if last_fadeout_data:
+            yield last_fadeout_data
         del last_fadeout_data
         # END OF QUEUE STREAM
-        # run garbage collect manually to avoid too much memory fragmentation
-        self.mass.add_job(gc.collect)
         LOGGER.info("streaming of queue for player %s completed", player_id)
 
     async def stream_queue_item(
@@ -364,7 +382,7 @@ class StreamManager:
         # stream from URL
         if stream_type == StreamType.URL:
             async with self.mass.http_session.get(stream_path) as response:
-                async for chunk in response.content.iter_any():
+                async for chunk, _ in response.content.iter_chunks():
                     yield chunk
                     if needs_analyze and len(audio_data) < 100000000:
                         audio_data += chunk

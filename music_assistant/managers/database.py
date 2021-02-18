@@ -2,6 +2,7 @@
 # pylint: disable=too-many-lines
 import logging
 import os
+import statistics
 from datetime import datetime
 from typing import List, Optional, Set, Union
 
@@ -840,6 +841,23 @@ class DatabaseManager:
                 result = await cursor.fetchone()
             if result:
                 return result[0]
+        return None
+
+    async def get_provider_loudness(self, provider) -> Optional[float]:
+        """Get average integrated loudness for tracks of given provider."""
+        all_items = []
+        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+            sql_query = """SELECT loudness FROM track_loudness WHERE provider = ?"""
+            async with db_conn.execute(sql_query, (provider,)) as cursor:
+                result = await cursor.fetchone()
+            if result:
+                return result[0]
+        sql_query = """SELECT loudness FROM track_loudness WHERE provider = ?"""
+        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+            for db_row in await db_conn.execute_fetchall(sql_query, (provider,)):
+                all_items.append(db_row[0])
+        if all_items:
+            return statistics.fmean(all_items)
         return None
 
     async def mark_item_played(self, item_id: str, provider: str):

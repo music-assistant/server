@@ -34,9 +34,7 @@ LOGGER = logging.getLogger("mass")
 
 def global_exception_handler(loop: asyncio.AbstractEventLoop, context: Dict) -> None:
     """Global exception handler."""
-    LOGGER.exception(
-        "Caught exception: %s", context.get("exception", context["message"])
-    )
+    LOGGER.debug("Caught exception: %s", context.get("exception", context["message"]))
     if "Broken pipe" in str(context.get("exception")):
         # fix for the spamming subprocess
         return
@@ -225,7 +223,7 @@ class MusicAssistant:
         include_unavailable: bool = False,
     ) -> Tuple[Provider]:
         """Return all providers, optionally filtered by type."""
-        return (
+        return tuple(
             item
             for item in self._providers.values()
             if (filter_type is None or item.type == filter_type)

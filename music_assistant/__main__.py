@@ -56,7 +56,7 @@ def main():
     if not os.path.isdir(data_dir):
         os.makedirs(data_dir)
     # config debug settings if needed
-    if args.debug:
+    if args.debug or bool(os.environ.get("DEBUG")):
         logger.setLevel(logging.DEBUG)
     else:
         logger.setLevel(logging.INFO)

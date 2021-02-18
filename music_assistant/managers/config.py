@@ -11,7 +11,6 @@ from typing import Any, List
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENABLED,
-    CONF_FALLBACK_GAIN_CORRECT,
     CONF_GROUP_DELAY,
     CONF_KEY_BASE,
     CONF_KEY_METADATA_PROVIDERS,
@@ -78,15 +77,6 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = [
         default_value=-23,
         label=CONF_TARGET_VOLUME,
         description="desc_target_volume",
-        depends_on=CONF_VOLUME_NORMALISATION,
-    ),
-    ConfigEntry(
-        entry_key=CONF_FALLBACK_GAIN_CORRECT,
-        entry_type=ConfigEntryType.INT,
-        range=(-20, 0),
-        default_value=-12,
-        label=CONF_FALLBACK_GAIN_CORRECT,
-        description="desc_gain_correct",
         depends_on=CONF_VOLUME_NORMALISATION,
     ),
     ConfigEntry(

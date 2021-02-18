@@ -36,7 +36,6 @@ class PlayerManager:
         self._players = {}
         self._providers = {}
         self._player_queues = {}
-        self._poll_ticks = 0
         self._controls = {}
 
     async def setup(self) -> None:
@@ -50,21 +49,15 @@ class PlayerManager:
         for player in self:
             await player.on_remove()
 
-    @run_periodic(1)
+    @run_periodic(30)
     async def poll_task(self):
         """Check for updates on players that need to be polled."""
         for player in self:
             if not player.player_state.available:
                 continue
-            if player.should_poll and (
-                self._poll_ticks >= POLL_INTERVAL
-                or player.state == PlaybackState.Playing
-            ):
-                await player.on_poll()
-        if self._poll_ticks >= POLL_INTERVAL:
-            self._poll_ticks = 0
-        else:
-            self._poll_ticks += 1
+            if not player.should_poll:
+                continue
+            await player.on_poll()
 
     @property
     def players(self) -> Dict[str, Player]:
@@ -711,13 +704,15 @@ class PlayerManager:
         if not player_conf["volume_normalisation"]:
             return 0
         target_gain = int(player_conf["target_volume"])
-        fallback_gain = int(player_conf["fallback_gain_correct"])
         track_loudness = await self.mass.database.get_track_loudness(
             item_id, provider_id
         )
         if track_loudness is None:
-            gain_correct = fallback_gain
-        else:
-            gain_correct = target_gain - track_loudness
+            # fallback to provider average
+            track_loudness = await self.mass.database.get_provider_loudness(provider_id)
+            if track_loudness is None:
+                # fallback to some (hopefully sane) average value for now
+                track_loudness = -8.5
+        gain_correct = target_gain - track_loudness
         gain_correct = round(gain_correct, 2)
         return gain_correct

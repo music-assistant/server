@@ -1,7 +1,7 @@
 """All constants for Music Assistant."""
 
-__version__ = "0.1.2"
-REQUIRED_PYTHON_VER = "3.7"
+__version__ = "0.1.3"
+REQUIRED_PYTHON_VER = "3.8"
 
 # configuration keys/attributes
 CONF_USERNAME = "username"
@@ -13,7 +13,6 @@ CONF_TOKEN = "token"
 CONF_URL = "url"
 CONF_NAME = "name"
 CONF_CROSSFADE_DURATION = "crossfade_duration"
-CONF_FALLBACK_GAIN_CORRECT = "fallback_gain_correct"
 CONF_GROUP_DELAY = "group_delay"
 CONF_VOLUME_CONTROL = "volume_control"
 CONF_POWER_CONTROL = "power_control"
