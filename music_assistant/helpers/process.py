@@ -9,9 +9,12 @@ import asyncio
 import logging
 from typing import AsyncGenerator, List, Optional
 
+from async_timeout import timeout
+
 LOGGER = logging.getLogger("AsyncProcess")
 
 DEFAULT_CHUNKSIZE = 512000
+DEFAULT_TIMEOUT = 5
 
 
 class AsyncProcess:
@@ -55,10 +58,13 @@ class AsyncProcess:
             if len(chunk) < chunk_size:
                 break
 
-    async def read(self, chunk_size: int = DEFAULT_CHUNKSIZE) -> bytes:
+    async def read(
+        self, chunk_size: int = DEFAULT_CHUNKSIZE, time_out: int = DEFAULT_TIMEOUT
+    ) -> bytes:
         """Read x bytes from the process stdout."""
         try:
-            return await self._proc.stdout.readexactly(chunk_size)
+            async with timeout(time_out):
+                return await self._proc.stdout.readexactly(chunk_size)
         except asyncio.IncompleteReadError as err:
             return err.partial
 

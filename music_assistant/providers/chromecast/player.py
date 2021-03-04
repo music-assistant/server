@@ -76,6 +76,8 @@ class ChromecastPlayer(Player):
     @property
     def powered(self) -> bool:
         """Return power state of this player."""
+        if self.is_group_player:
+            return self._chromecast.is_idle
         return not self.cast_status.volume_muted if self.cast_status else False
 
     @property
@@ -172,8 +174,8 @@ class ChromecastPlayer(Player):
         """Call when player is added to the player manager."""
         chromecast = await self.mass.loop.run_in_executor(
             None,
-            pychromecast.get_chromecast_from_service,
-            (
+            pychromecast.get_chromecast_from_cast_info,
+            pychromecast.discovery.CastInfo(
                 self.services,
                 self._cast_info.uuid,
                 self._cast_info.model_name,
@@ -193,7 +195,7 @@ class ChromecastPlayer(Player):
         mz_controller = MultizoneController(chromecast.uuid)
         chromecast.register_handler(mz_controller)
         chromecast.mz_controller = mz_controller
-        self._chromecast.start()
+        chromecast.start()
 
     def set_cast_info(self, cast_info: ChromecastInfo) -> None:
         """Set (or update) the cast discovery info."""

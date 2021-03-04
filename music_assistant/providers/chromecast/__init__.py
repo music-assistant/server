@@ -85,6 +85,7 @@ class ChromecastProvider(PlayerProvider):
             host=service[4],
             port=service[5],
         )
+        cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
         player_id = cast_info.uuid
         LOGGER.debug(
             "Chromecast discovered: %s (%s)", cast_info.friendly_name, player_id

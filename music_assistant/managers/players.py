@@ -1,5 +1,6 @@
 """PlayerManager: Orchestrates all players from player providers."""
 
+import asyncio
 import logging
 from typing import Dict, List, Optional, Set, Tuple, Union
 
@@ -10,7 +11,7 @@ from music_assistant.constants import (
     EVENT_PLAYER_REMOVED,
 )
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import callback, run_periodic, try_parse_int
+from music_assistant.helpers.util import callback, try_parse_int
 from music_assistant.helpers.web import api_route
 from music_assistant.models.media_types import MediaItem, MediaType
 from music_assistant.models.player import (
@@ -49,15 +50,22 @@ class PlayerManager:
         for player in self:
             await player.on_remove()
 
-    @run_periodic(30)
     async def poll_task(self):
         """Check for updates on players that need to be polled."""
-        for player in self:
-            if not player.player_state.available:
-                continue
-            if not player.should_poll:
-                continue
-            await player.on_poll()
+        count = 0
+        while True:
+            for player in self:
+                if not player.player_state.available:
+                    continue
+                if not player.should_poll:
+                    continue
+                if player.state == PlaybackState.Playing or count == POLL_INTERVAL:
+                    await player.on_poll()
+            if count == POLL_INTERVAL:
+                count = 0
+            else:
+                count += 1
+            await asyncio.sleep(1)
 
     @property
     def players(self) -> Dict[str, Player]:

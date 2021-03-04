@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
+from pychromecast import dial
 from pychromecast.const import CAST_MANUFACTURERS
 
 from .const import PROV_ID
@@ -23,11 +24,14 @@ class ChromecastInfo:
     """
 
     services: Optional[set] = field(default_factory=set)
+    uuid: Optional[str] = None
+    model_name: str = ""
+    friendly_name: Optional[str] = None
+    is_dynamic_group: bool = False
+    manufacturer: Optional[str] = None
     host: Optional[str] = ""
     port: Optional[int] = 0
-    uuid: Optional[str] = ""
-    model_name: str = ""
-    friendly_name: Optional[str] = ""
+    _info_requested: bool = field(init=False, default=False)
 
     def __post_init__(self):
         """Convert UUID to string."""
@@ -43,12 +47,46 @@ class ChromecastInfo:
         """Return the host+port tuple."""
         return self.host, self.port
 
-    @property
-    def manufacturer(self) -> str:
-        """Return the manufacturer."""
-        if not self.model_name:
-            return None
-        return CAST_MANUFACTURERS.get(self.model_name.lower(), "Google Inc.")
+    def fill_out_missing_chromecast_info(self, zconf) -> None:
+        """Lookup missing info for the Chromecast player."""
+        http_device_status = None
+
+        if self._info_requested:
+            return
+
+        # Fill out missing group information via HTTP API.
+        if self.is_audio_group:
+            http_group_status = None
+            if self.uuid:
+                http_group_status = dial.get_multizone_status(
+                    self.host,
+                    services=self.services,
+                    zconf=zconf,
+                )
+                if http_group_status is not None:
+                    self.is_dynamic_group = any(
+                        str(g.uuid) == self.uuid
+                        for g in http_group_status.dynamic_groups
+                    )
+        else:
+            # Fill out some missing information (friendly_name, uuid) via HTTP dial.
+            http_device_status = dial.get_device_status(
+                self.host, services=self.services, zconf=zconf
+            )
+        if not self.uuid and http_device_status:
+            self.uuid = http_device_status.uuid
+        if not self.friendly_name and http_device_status:
+            self.friendly_name = http_device_status.friendly_name
+        if not self.model_name and http_device_status:
+            self.model_name = http_device_status.model_name
+        if not self.manufacturer and http_device_status:
+            self.manufacturer = http_device_status.manufacturer
+        if not self.manufacturer and self.model_name:
+            self.manufacturer = CAST_MANUFACTURERS.get(
+                self.model_name.lower(), "Google Inc."
+            )
+
+        self._info_requested = True
 
 
 class CastStatusListener:
