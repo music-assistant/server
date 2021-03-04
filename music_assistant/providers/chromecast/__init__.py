@@ -73,9 +73,6 @@ class ChromecastProvider(PlayerProvider):
     def __chromecast_add_update_callback(self, cast_uuid, cast_service_name):
         """Handle zeroconf discovery of a new or updated chromecast."""
         # pylint: disable=unused-argument
-        if cast_uuid is None:
-            return  # Discovered chromecast without uuid?
-
         service = self._listener.services[cast_uuid]
         cast_info = ChromecastInfo(
             services=service[0],
@@ -86,11 +83,18 @@ class ChromecastProvider(PlayerProvider):
             port=service[5],
         )
         cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
+        if cast_info.uuid is None:
+            return  # Discovered chromecast without uuid?
         player_id = cast_info.uuid
         LOGGER.debug(
             "Chromecast discovered: %s (%s)", cast_info.friendly_name, player_id
         )
         player = self.mass.players.get_player(player_id)
+        if not player and cast_info.is_audio_group:
+            # audio groups may reappear with new uuid, try to handle that
+            player = self.mass.players.get_player_by_name(
+                cast_info.friendly_name, PROV_ID
+            )
         if not player:
             player = ChromecastPlayer(self.mass, cast_info)
         # if player was already added, the player will take care of reconnects itself.

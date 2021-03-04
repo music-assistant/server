@@ -104,6 +104,18 @@ class PlayerManager:
         return self._players.get(player_id)
 
     @callback
+    def get_player_by_name(
+        self, name: str, provider_id: Optional[str] = None
+    ) -> Optional[Player]:
+        """Return Player by name."""
+        for player in self:
+            if provider_id is not None and player.provider_id != provider_id:
+                continue
+            if player.name == name or player.player_state.name == name:
+                return player
+        return None
+
+    @callback
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return provider by player_id or None if player does not exist."""
         player = self.get_player(player_id)

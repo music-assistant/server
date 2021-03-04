@@ -59,7 +59,7 @@ class ChromecastInfo:
             http_group_status = None
             if self.uuid:
                 http_group_status = dial.get_multizone_status(
-                    self.host,
+                    None,
                     services=self.services,
                     zconf=zconf,
                 )
@@ -71,10 +71,10 @@ class ChromecastInfo:
         else:
             # Fill out some missing information (friendly_name, uuid) via HTTP dial.
             http_device_status = dial.get_device_status(
-                self.host, services=self.services, zconf=zconf
+                None, services=self.services, zconf=zconf
             )
-        if not self.uuid and http_device_status:
-            self.uuid = http_device_status.uuid
+        if http_device_status:
+            self.uuid = str(http_device_status.uuid)
         if not self.friendly_name and http_device_status:
             self.friendly_name = http_device_status.friendly_name
         if not self.model_name and http_device_status:

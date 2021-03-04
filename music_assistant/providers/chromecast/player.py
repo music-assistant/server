@@ -76,9 +76,15 @@ class ChromecastPlayer(Player):
     @property
     def powered(self) -> bool:
         """Return power state of this player."""
+        if not self._chromecast or not self.cast_status:
+            return False
         if self.is_group_player:
-            return self._chromecast.is_idle
-        return not self.cast_status.volume_muted if self.cast_status else False
+            return (
+                self.media_status.player_is_playing
+                or self.media_status.player_is_paused
+                or self.media_status.player_is_idle
+            )
+        return not self.cast_status.volume_muted and not self.cast_status.is_stand_by
 
     @property
     def should_poll(self) -> bool:
@@ -88,6 +94,8 @@ class ChromecastPlayer(Player):
     @property
     def state(self) -> PlaybackState:
         """Return the state of the player."""
+        if self.cast_status and self.cast_status.is_stand_by:
+            return PlaybackState.Off
         if self.media_status is None:
             return PlaybackState.Stopped
         if self.media_status.player_is_playing:
@@ -192,10 +200,11 @@ class ChromecastPlayer(Player):
         self._available = False
         self.cast_status = chromecast.status
         self.media_status = chromecast.media_controller.status
-        mz_controller = MultizoneController(chromecast.uuid)
-        chromecast.register_handler(mz_controller)
-        chromecast.mz_controller = mz_controller
-        chromecast.start()
+        if self._cast_info.is_audio_group:
+            mz_controller = MultizoneController(chromecast.uuid)
+            chromecast.register_handler(mz_controller)
+            chromecast.mz_controller = mz_controller
+        self._chromecast.start()
 
     def set_cast_info(self, cast_info: ChromecastInfo) -> None:
         """Set (or update) the cast discovery info."""
