@@ -488,11 +488,14 @@ class Player:
     @callback
     def _get_active_queue(self) -> str:
         """Return the active parent player/queue for a player."""
-        # if a group is powered on, all of it's childs will have/use
+        # if a group is playing, all of it's childs will have/use
         # the parent's player's queue.
         for group_player_id in self.group_parents:
             group_player = self.mass.players.get_player(group_player_id)
-            if group_player and group_player.powered:
+            if group_player and group_player.state in [
+                PlaybackState.Playing,
+                PlaybackState.Paused,
+            ]:
                 return group_player_id
         return self.player_id
 
