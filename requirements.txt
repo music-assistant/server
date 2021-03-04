@@ -1,9 +1,9 @@
 argparse==1.4.0
-aiohttp[speedups]==3.7.3
 pychromecast==9.1.1
+aiohttp[speedups]==3.7.4
 asyncio-throttle==1.0.1
 aiofiles==0.6.0
-aiosqlite==0.16.0
+aiosqlite==0.17.0
 pytaglib==1.4.6
 python-slugify==4.0.1
 memory-tempfile==2.2.3
@@ -12,11 +12,11 @@ soco==0.20
 pillow==8.1.0
 aiohttp_cors==0.7.0
 unidecode==1.1.2
-PyJWT==2.0.0
+PyJWT==2.0.1
 zeroconf==0.28.8
 passlib==1.7.4
-cryptography==3.3.2
-ujson==4.0.1
-mashumaro==1.24
+cryptography==3.4.6
+ujson==4.0.2
+mashumaro==2.0
 typing-inspect==0.6.0; python_version < '3.8'
-uvloop==0.15.1; sys_platform != 'win32'
+uvloop==0.15.2; sys_platform != 'win32'
