@@ -69,9 +69,7 @@ class ChromecastPlayer(Player):
     @property
     def name(self) -> str:
         """Return name of this player."""
-        return (
-            self._chromecast.name if self._chromecast else self._cast_info.friendly_name
-        )
+        return self._cast_info.friendly_name
 
     @property
     def powered(self) -> bool:
@@ -84,7 +82,8 @@ class ChromecastPlayer(Player):
                 or self.media_status.player_is_paused
                 or self.media_status.player_is_idle
             )
-        return not self.cast_status.volume_muted and not self.cast_status.is_stand_by
+        # Chromecast does not support power so we (ab)use mute instead
+        return not self.cast_status.volume_muted
 
     @property
     def should_poll(self) -> bool:
@@ -94,8 +93,6 @@ class ChromecastPlayer(Player):
     @property
     def state(self) -> PlaybackState:
         """Return the state of the player."""
-        if self.cast_status and self.cast_status.is_stand_by:
-            return PlaybackState.Off
         if self.media_status is None:
             return PlaybackState.Stopped
         if self.media_status.player_is_playing:

@@ -286,9 +286,6 @@ class MusicAssistant:
         while isinstance(check_target, functools.partial):
             check_target = check_target.func
 
-        if self._exit:
-            LOGGER.debug("scheduling job %s while exiting!", check_target.__name__)
-
         if threading.current_thread() is not threading.main_thread():
             # called from other thread
             if asyncio.iscoroutine(check_target):

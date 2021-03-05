@@ -393,6 +393,8 @@ class Player:
     @callback
     def update_state(self) -> None:
         """Call to update current player state in the player manager."""
+        if self.mass.exit:
+            return
         if not self.added_to_mass:
             if self.enabled:
                 # player is now enabled and can be added
