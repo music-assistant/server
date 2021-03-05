@@ -317,7 +317,12 @@ class MusicAssistant:
         while not self.exit:
             task = await self._background_tasks.get()
             await task
-            await asyncio.sleep(1)
+            if self._background_tasks.qsize() > 200:
+                await asyncio.sleep(0.5)
+            elif self._background_tasks.qsize() == 0:
+                await asyncio.sleep(10)
+            else:
+                await asyncio.sleep(1)
 
     async def setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""

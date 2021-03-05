@@ -37,14 +37,14 @@ def sync_task(desc):
                         "Syncjob %s for provider %s is already running!", desc, prov_id
                     )
                     return
-            LOGGER.debug("Start syncjob %s for provider %s.", desc, prov_id)
+            LOGGER.info("Start syncjob %s for provider %s.", desc, prov_id)
             sync_job = (prov_id, desc)
             method_class.running_sync_jobs.add(sync_job)
             method_class.mass.signal_event(
                 EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs
             )
             await func(*args)
-            LOGGER.debug("Finished syncing %s for provider %s", desc, prov_id)
+            LOGGER.info("Finished syncing %s for provider %s", desc, prov_id)
             method_class.running_sync_jobs.remove(sync_job)
             method_class.mass.signal_event(
                 EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs

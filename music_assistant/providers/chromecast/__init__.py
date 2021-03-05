@@ -90,8 +90,8 @@ class ChromecastProvider(PlayerProvider):
             "Chromecast discovered: %s (%s)", cast_info.friendly_name, player_id
         )
         player = self.mass.players.get_player(player_id)
-        if not player and cast_info.is_audio_group:
-            # audio groups may reappear with new uuid, try to handle that
+        if not player:
+            # cast players may reappear with new uuid, try to handle that
             player = self.mass.players.get_player_by_name(
                 cast_info.friendly_name, PROV_ID
             )

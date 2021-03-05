@@ -163,37 +163,46 @@ class PlayerManager:
 
     async def add_player(self, player: Player) -> None:
         """Register a new player or update an existing one."""
+        player_id = player.player_id
+
         # guard for invalid data or exit in progress
         if not player or self.mass.exit:
             return
+
         # redirect to update if player is already added
-        if player.added_to_mass:
-            return await self.trigger_player_update(player.player_id)
-        # make sure that the mass instance is set on the player
-        player.mass = self.mass
-        self._players[player.player_id] = player
+        if player_id in self._players:
+            player = self._players[player_id]
+            if player.added_to_mass:
+                await self.trigger_player_update(player_id)
+                return
+        else:
+            self._players[player.player_id] = player
+            # make sure that the mass instance is set on the player
+            player.mass = self.mass
+
         # make sure that the player state is created/updated
         player.player_state.update(player.create_state())
+
         # Fully initialize only if player is enabled
-        if player.enabled:
-            await player.on_add()
-            player.added_to_mass = True
-            # create playerqueue instance
-            self._player_queues[player.player_id] = PlayerQueue(
-                self.mass, player.player_id
-            )
-            LOGGER.info(
-                "Player added: %s/%s",
-                player.provider_id,
-                player.name,
-            )
-            self.mass.signal_event(EVENT_PLAYER_ADDED, player)
-        else:
+        if not player.enabled:
             LOGGER.debug(
                 "Ignoring player: %s/%s because it's disabled",
                 player.provider_id,
                 player.name,
             )
+            return
+
+        # new player
+        player.added_to_mass = True
+        await player.on_add()
+        # create playerqueue instance
+        self._player_queues[player.player_id] = PlayerQueue(self.mass, player.player_id)
+        LOGGER.info(
+            "Player added: %s/%s",
+            player.provider_id,
+            player.name,
+        )
+        self.mass.signal_event(EVENT_PLAYER_ADDED, player)
 
     async def remove_player(self, player_id: str):
         """Remove a player from the registry."""

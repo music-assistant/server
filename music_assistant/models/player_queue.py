@@ -611,4 +611,4 @@ class PlayerQueue:
             "cur_index": self._cur_index,
         }
         await self.mass.cache.set(cache_str, cache_data)
-        LOGGER.info("queue state saved to file for player %s", self.queue_id)
+        LOGGER.debug("queue state saved to file for player %s", self.queue_id)
