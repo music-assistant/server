@@ -1,8 +1,6 @@
 name: Build multiarch Docker image
 
 on:
-  push:
-    branches: master
   release:
     types: [published, prereleased]
   workflow_dispatch:
