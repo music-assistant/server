@@ -6,7 +6,7 @@ RUN cd /tmp \
     # Include frontend-app in the source files
     && curl -L https://github.com/music-assistant/app/archive/master.tar.gz | tar xz \
     && mv app-master/docs /tmp/music_assistant/web/static \
-    && pip install --no-cache-dir music_assistant \
+    && pip install --no-cache-dir . \
     # cleanup
     && rm -rf /tmp/*
 
