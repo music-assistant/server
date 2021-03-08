@@ -1,7 +1,7 @@
 argparse==1.4.0
 async-timeout==3.0.1
 pychromecast==9.1.1
-aiohttp[speedups]==3.7.4
+aiohttp[speedups]==3.7.4.post0
 asyncio-throttle==1.0.1
 aiofiles==0.6.0
 aiosqlite==0.17.0
