@@ -9,7 +9,7 @@ pytaglib==1.4.6
 python-slugify==4.0.1
 memory-tempfile==2.2.3
 aiorun==2020.12.1
-soco==0.20
+soco==0.22.1
 pillow==8.1.0
 aiohttp_cors==0.7.0
 unidecode==1.1.2
