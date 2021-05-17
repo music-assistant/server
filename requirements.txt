@@ -3,7 +3,7 @@ async-timeout==3.0.1
 pychromecast==9.1.1
 aiohttp[speedups]==3.7.4
 asyncio-throttle==1.0.1
-aiofiles==0.6.0
+aiofiles==0.7.0
 aiosqlite==0.17.0
 pytaglib==1.4.6
 python-slugify==4.0.1
