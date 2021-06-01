@@ -14,10 +14,10 @@ pillow==8.1.0
 aiohttp_cors==0.7.0
 unidecode==1.1.2
 PyJWT==2.0.1
-zeroconf==0.28.8
+zeroconf==0.31.0
 passlib==1.7.4
 cryptography==3.4.6
 ujson==4.0.2
-mashumaro==2.0
+mashumaro==2.5
 typing-inspect==0.6.0; python_version < '3.8'
 uvloop==0.15.2; sys_platform != 'win32'
