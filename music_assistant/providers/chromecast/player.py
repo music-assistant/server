@@ -83,7 +83,10 @@ class ChromecastPlayer(Player):
                 or self.media_status.player_is_idle
             )
         # Chromecast does not support power so we (ab)use mute instead
-        return not self.cast_status.volume_muted
+        return (
+            not self.cast_status.display_name
+            or self.cast_status.display_name == "Default Media Receiver"
+        ) and not self.cast_status.volume_muted
 
     @property
     def should_poll(self) -> bool:
@@ -93,6 +96,8 @@ class ChromecastPlayer(Player):
     @property
     def state(self) -> PlaybackState:
         """Return the state of the player."""
+        if not self.powered:
+            return PlaybackState.Off
         if self.media_status is None:
             return PlaybackState.Stopped
         if self.media_status.player_is_playing:

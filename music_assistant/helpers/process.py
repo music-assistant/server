@@ -14,7 +14,7 @@ from async_timeout import timeout
 LOGGER = logging.getLogger("AsyncProcess")
 
 DEFAULT_CHUNKSIZE = 512000
-DEFAULT_TIMEOUT = 5
+DEFAULT_TIMEOUT = 60
 
 
 class AsyncProcess:
@@ -67,6 +67,8 @@ class AsyncProcess:
                 return await self._proc.stdout.readexactly(chunk_size)
         except asyncio.IncompleteReadError as err:
             return err.partial
+        except AttributeError:
+            raise asyncio.CancelledError()
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
@@ -75,6 +77,8 @@ class AsyncProcess:
             await self._proc.stdin.drain()
         except BrokenPipeError:
             pass
+        except AttributeError:
+            raise asyncio.CancelledError()
 
     async def write_eof(self) -> None:
         """Write eof to process."""

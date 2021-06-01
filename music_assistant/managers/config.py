@@ -73,7 +73,7 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = [
     ConfigEntry(
         entry_key=CONF_TARGET_VOLUME,
         entry_type=ConfigEntryType.INT,
-        range=(-30, 0),
+        range=(-40, 0),
         default_value=-23,
         label=CONF_TARGET_VOLUME,
         description="desc_target_volume",
