@@ -18,6 +18,6 @@ zeroconf==0.28.8
 passlib==1.7.4
 cryptography==3.4.6
 ujson==4.0.2
-mashumaro==2.0
+mashumaro==2.5
 typing-inspect==0.6.0; python_version < '3.8'
 uvloop==0.15.2; sys_platform != 'win32'
