@@ -16,7 +16,7 @@ unidecode==1.1.2
 PyJWT==2.1.0
 zeroconf==0.31.0
 passlib==1.7.4
-cryptography==3.4.6
+cryptography==3.4.7
 ujson==4.0.2
 mashumaro==2.5
 typing-inspect==0.6.0; python_version < '3.8'
