@@ -2,21 +2,21 @@ argparse==1.4.0
 async-timeout==3.0.1
 pychromecast==9.2.0
 aiohttp[speedups]==3.7.4
-asyncio-throttle==1.0.1
+asyncio-throttle==1.0.2
 aiofiles==0.7.0
 aiosqlite==0.17.0
 pytaglib==1.4.6
-python-slugify==4.0.1
+python-slugify==5.0.2
 memory-tempfile==2.2.3
 aiorun==2020.12.1
 soco==0.22.3
 pillow==8.2.0
 aiohttp_cors==0.7.0
 unidecode==1.1.2
-PyJWT==2.0.1
+PyJWT==2.1.0
 zeroconf==0.31.0
 passlib==1.7.4
-cryptography==3.4.6
+cryptography==3.4.7
 ujson==4.0.2
 mashumaro==2.5
 typing-inspect==0.6.0; python_version < '3.8'
