@@ -602,7 +602,7 @@ class MusicManager:
         db_item = await self.mass.database.add_artist(artist)
         # also fetch same artist on all providers
         await self.match_artist(db_item)
-        self.mass.eventbus.signal_event(EVENT_ARTIST_ADDED, db_item)
+        self.mass.eventbus.signal(EVENT_ARTIST_ADDED, db_item)
         return db_item
 
     async def add_album(self, album: Album) -> Album:
@@ -612,7 +612,7 @@ class MusicManager:
         db_item = await self.mass.database.add_album(album)
         # also fetch same album on all providers
         await self.match_album(db_item)
-        self.mass.eventbus.signal_event(EVENT_ALBUM_ADDED, db_item)
+        self.mass.eventbus.signal(EVENT_ALBUM_ADDED, db_item)
         return db_item
 
     async def add_track(self, track: Track) -> Track:
@@ -624,19 +624,19 @@ class MusicManager:
         db_item = await self.mass.database.add_track(track)
         # also fetch same track on all providers (will also get other quality versions)
         await self.match_track(db_item)
-        self.mass.eventbus.signal_event(EVENT_TRACK_ADDED, db_item)
+        self.mass.eventbus.signal(EVENT_TRACK_ADDED, db_item)
         return db_item
 
     async def add_playlist(self, playlist: Playlist) -> Playlist:
         """Add playlist to local db and return the new database item."""
         db_item = await self.mass.database.add_playlist(playlist)
-        self.mass.eventbus.signal_event(EVENT_PLAYLIST_ADDED, db_item)
+        self.mass.eventbus.signal(EVENT_PLAYLIST_ADDED, db_item)
         return db_item
 
     async def add_radio(self, radio: Radio) -> Radio:
         """Add radio to local db and return the new database item."""
         db_item = await self.mass.database.add_radio(radio)
-        self.mass.eventbus.signal_event(EVENT_RADIO_ADDED, db_item)
+        self.mass.eventbus.signal(EVENT_RADIO_ADDED, db_item)
         return db_item
 
     async def _get_artist_musicbrainz_id(self, artist: Artist):

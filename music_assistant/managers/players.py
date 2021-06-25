@@ -202,7 +202,7 @@ class PlayerManager:
             player.provider_id,
             player.name,
         )
-        self.mass.eventbus.signal_event(EVENT_PLAYER_ADDED, player)
+        self.mass.eventbus.signal(EVENT_PLAYER_ADDED, player)
 
     async def remove_player(self, player_id: str):
         """Remove a player from the registry."""
@@ -212,7 +212,7 @@ class PlayerManager:
             await player.on_remove()
         player_name = player.name if player else player_id
         LOGGER.info("Player removed: %s", player_name)
-        self.mass.eventbus.signal_event(EVENT_PLAYER_REMOVED, {"player_id": player_id})
+        self.mass.eventbus.signal(EVENT_PLAYER_REMOVED, {"player_id": player_id})
 
     async def trigger_player_update(self, player_id: str):
         """Trigger update of an existing player.."""

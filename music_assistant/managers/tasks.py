@@ -117,7 +117,7 @@ class TaskManager:
         """Handle adding a task to the task queue."""
         LOGGER.debug("Adding task %s to Task Queue...", task_info.name)
         self._queue.put_nowait(task_info)
-        self.mass.eventbus.signal_event(EVENT_TASK_UPDATED, task_info)
+        self.mass.eventbus.signal(EVENT_TASK_UPDATED, task_info)
 
     def __task_done_callback(self, future: Future):
         task_info: TaskInfo = future.task_info
@@ -135,7 +135,7 @@ class TaskManager:
             )
         else:
             task_info.status = TaskStatus.FINISHED
-            self.mass.eventbus.signal_event(EVENT_TASK_UPDATED, task_info)
+            self.mass.eventbus.signal(EVENT_TASK_UPDATED, task_info)
             LOGGER.debug("Task finished: %s", task_info.name)
         # reschedule if the task is periodic
         if task_info.periodic:
@@ -149,7 +149,7 @@ class TaskManager:
             task = create_task(next_task.target, *next_task.args, **next_task.kwargs)
             setattr(task, "task_info", next_task)
             task.add_done_callback(self.__task_done_callback)
-            self.mass.eventbus.signal_event(EVENT_TASK_UPDATED, next_task)
+            self.mass.eventbus.signal(EVENT_TASK_UPDATED, next_task)
             await asyncio.sleep(1)
 
 

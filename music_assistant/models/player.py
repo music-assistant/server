@@ -78,7 +78,7 @@ class PlayerControl(DataClassDictMixin):
         # pickup this event (e.g. from the websocket api)
         # or override this method with your own implementation.
         # pylint: disable=no-member
-        self.mass.eventbus.signal_event(
+        self.mass.eventbus.signal(
             f"players/controls/{self.control_id}/state", new_state
         )
 
@@ -418,7 +418,7 @@ class Player:
             # no need to send player update if only the elapsed time changes
             # this is already handled by the queue manager
             return
-        self.mass.eventbus.signal_event(EVENT_PLAYER_CHANGED, new_state)
+        self.mass.eventbus.signal(EVENT_PLAYER_CHANGED, new_state)
         # update group player childs when parent updates
         for child_player_id in self.group_childs:
             create_task(self.mass.players.trigger_player_update(child_player_id))

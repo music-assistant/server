@@ -125,7 +125,7 @@ class PlayerQueue:
                 items = played_items + [self.cur_item] + next_items
                 await self.update(items)
         self.update_state()
-        self.mass.eventbus.signal_event(EVENT_QUEUE_UPDATED, self)
+        self.mass.eventbus.signal(EVENT_QUEUE_UPDATED, self)
 
     @property
     def repeat_enabled(self) -> bool:
@@ -138,7 +138,7 @@ class PlayerQueue:
             self._repeat_enabled = enable_repeat
             self.update_state()
             create_task(self._save_state())
-            self.mass.eventbus.signal_event(EVENT_QUEUE_UPDATED, self)
+            self.mass.eventbus.signal(EVENT_QUEUE_UPDATED, self)
 
     @property
     def cur_index(self) -> OptionalInt:
@@ -361,7 +361,7 @@ class PlayerQueue:
             await self.play_index(0)
         else:
             await self.player.cmd_queue_load(queue_items)
-        self.mass.eventbus.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        self.mass.eventbus.signal(EVENT_QUEUE_ITEMS_UPDATED, self)
         create_task(self._save_state())
 
     async def insert(self, queue_items: List[QueueItem], offset: int = 0) -> None:
@@ -408,7 +408,7 @@ class PlayerQueue:
                 )
                 self._items = self._items[self.cur_index + offset :]
                 return await self.player.cmd_queue_load(self._items)
-        self.mass.eventbus.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        self.mass.eventbus.signal(EVENT_QUEUE_ITEMS_UPDATED, self)
         create_task(self._save_state())
 
     async def append(self, queue_items: List[QueueItem]) -> None:
@@ -433,7 +433,7 @@ class PlayerQueue:
                 )
                 self._items = self._items[self.cur_index :]
                 return await self.player.cmd_queue_load(self._items)
-        self.mass.eventbus.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        self.mass.eventbus.signal(EVENT_QUEUE_ITEMS_UPDATED, self)
         create_task(self._save_state())
 
     async def update(self, queue_items: List[QueueItem]) -> None:
@@ -450,7 +450,7 @@ class PlayerQueue:
                 )
                 self._items = self._items[self.cur_index :]
                 await self.player.cmd_queue_load(self._items)
-        self.mass.eventbus.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        self.mass.eventbus.signal(EVENT_QUEUE_ITEMS_UPDATED, self)
         create_task(self._save_state())
 
     async def clear(self) -> None:
@@ -468,7 +468,7 @@ class PlayerQueue:
                 except NotImplementedError:
                     # not supported by player, ignore
                     pass
-        self.mass.eventbus.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        self.mass.eventbus.signal(EVENT_QUEUE_ITEMS_UPDATED, self)
 
     @callback
     def update_state(self) -> None:
@@ -500,7 +500,7 @@ class PlayerQueue:
             and self.cur_item.streamdetails
         ):
             # new active item in queue
-            self.mass.eventbus.signal_event(EVENT_QUEUE_UPDATED, self)
+            self.mass.eventbus.signal(EVENT_QUEUE_UPDATED, self)
             # invalidate previous streamdetails
             if self._last_item:
                 self._last_item.streamdetails = None
@@ -508,7 +508,7 @@ class PlayerQueue:
         # update vars
         if self._cur_item_time != track_time:
             self._cur_item_time = track_time
-            self.mass.eventbus.signal_event(
+            self.mass.eventbus.signal(
                 EVENT_QUEUE_TIME_UPDATED,
                 {"queue_id": self.queue_id, "cur_item_time": track_time},
             )

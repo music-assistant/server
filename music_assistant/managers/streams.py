@@ -372,7 +372,7 @@ class StreamManager:
             stream_path = f'ffmpeg -v quiet -i "{stream_path}" -f flac -'
 
         # signal start of stream event
-        self.mass.eventbus.signal_event(EVENT_STREAM_STARTED, streamdetails)
+        self.mass.eventbus.signal(EVENT_STREAM_STARTED, streamdetails)
         LOGGER.debug(
             "start media stream for: %s/%s (%s)",
             streamdetails.provider,
@@ -403,7 +403,7 @@ class StreamManager:
                         audio_data += chunk
 
         # signal end of stream event
-        self.mass.eventbus.signal_event(EVENT_STREAM_ENDED, streamdetails)
+        self.mass.eventbus.signal(EVENT_STREAM_ENDED, streamdetails)
         LOGGER.debug(
             "finished media stream for: %s/%s",
             streamdetails.provider,

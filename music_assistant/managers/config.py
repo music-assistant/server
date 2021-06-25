@@ -418,7 +418,7 @@ class SecuritySettings(ConfigBaseItem):
             CONF_KEY_SECURITY_APP_TOKENS
         ].pop(client_id)
         self.conf_mgr.save()
-        self.conf_mgr.mass.eventbus.signal_event(
+        self.conf_mgr.mass.eventbus.signal(
             EVENT_CONFIG_CHANGED, (CONF_KEY_SECURITY, CONF_KEY_SECURITY_APP_TOKENS)
         )
         return return_info
@@ -676,7 +676,7 @@ class ConfigSubItem:
                         self.conf_mgr.mass.players.trigger_player_update(self.conf_key)
                     )
                 # signal config changed event
-                self.conf_mgr.mass.eventbus.signal_event(
+                self.conf_mgr.mass.eventbus.signal(
                     EVENT_CONFIG_CHANGED, (self.parent_conf_key, self.conf_key)
                 )
             return

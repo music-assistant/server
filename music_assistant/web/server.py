@@ -363,7 +363,7 @@ class WebServer:
     async def _handle_event(self, ws_client: WebSocketResponse, event: str, data: Any):
         """Handle event message from ws client."""
         if ws_client.authenticated:
-            self.mass.eventbus.signal_event(event, data)
+            self.mass.eventbus.signal(event, data)
 
     async def _handle_auth(self, ws_client: WebSocketResponse, token: str):
         """Handle authentication with JWT token."""
