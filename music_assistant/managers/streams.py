@@ -21,7 +21,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import create_tempfile, get_ip
+from music_assistant.helpers.util import create_task, create_tempfile, get_ip
 from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 
 LOGGER = logging.getLogger("stream_manager")
@@ -89,7 +89,7 @@ class StreamManager:
                     await sox_proc.write(chunk)
                 await sox_proc.write_eof()
 
-            fill_buffer_task = self.mass.loop.create_task(fill_buffer())
+            fill_buffer_task = create_task(fill_buffer())
             # yield chunks from stdout
             # we keep 1 chunk behind to detect end of stream properly
             try:
@@ -141,7 +141,7 @@ class StreamManager:
                 async for chunk in self.queue_stream_pcm(player_id, sample_rate, 32):
                     await sox_proc.write(chunk)
 
-            fill_buffer_task = self.mass.loop.create_task(fill_buffer())
+            fill_buffer_task = create_task(fill_buffer())
 
             # start yielding audio chunks
             try:
@@ -372,7 +372,7 @@ class StreamManager:
             stream_path = f'ffmpeg -v quiet -i "{stream_path}" -f flac -'
 
         # signal start of stream event
-        self.mass.signal_event(EVENT_STREAM_STARTED, streamdetails)
+        self.mass.eventbus.signal_event(EVENT_STREAM_STARTED, streamdetails)
         LOGGER.debug(
             "start media stream for: %s/%s (%s)",
             streamdetails.provider,
@@ -403,7 +403,7 @@ class StreamManager:
                         audio_data += chunk
 
         # signal end of stream event
-        self.mass.signal_event(EVENT_STREAM_ENDED, streamdetails)
+        self.mass.eventbus.signal_event(EVENT_STREAM_ENDED, streamdetails)
         LOGGER.debug(
             "finished media stream for: %s/%s",
             streamdetails.provider,
@@ -417,7 +417,7 @@ class StreamManager:
         # TODO: feed audio chunks to analyzer while streaming
         # so we don't have to load this large chunk in memory
         if needs_analyze and audio_data:
-            self.mass.add_job(self.__analyze_audio, streamdetails, audio_data)
+            create_task(self.__analyze_audio, streamdetails, audio_data)
 
     def __analyze_audio(self, streamdetails, audio_data) -> None:
         """Analyze track audio, for now we only calculate EBU R128 loudness."""
@@ -427,10 +427,11 @@ class StreamManager:
         self.analyze_jobs[item_key] = True
 
         # get track loudness
-        track_loudness = self.mass.add_job(
+        track_loudness = asyncio.run_coroutine_threadsafe(
             self.mass.database.get_track_loudness(
                 streamdetails.item_id, streamdetails.provider
-            )
+            ),
+            loop=self.mass.loop,
         ).result()
         if track_loudness is None:
             # only when needed we do the analyze stuff
@@ -444,7 +445,7 @@ class StreamManager:
                 input=audio_data,
             )
             loudness = float(value.decode().strip())
-            self.mass.add_job(
+            create_task(
                 self.mass.database.set_track_loudness(
                     streamdetails.item_id, streamdetails.provider, loudness
                 )

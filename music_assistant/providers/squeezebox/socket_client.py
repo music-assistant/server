@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Callable
 
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import run_periodic
+from music_assistant.helpers.util import create_task, run_periodic
 
 from .constants import PROV_ID
 
@@ -74,8 +74,8 @@ class SqueezeSocketClient:
         self._connected = True
         self._event_callbacks = []
         self._tasks = [
-            asyncio.create_task(self._socket_reader()),
-            asyncio.create_task(self._send_heartbeat()),
+            create_task(self._socket_reader()),
+            create_task(self._send_heartbeat()),
         ]
 
     def disconnect(self) -> None:
@@ -341,7 +341,7 @@ class SqueezeSocketClient:
         self._player_id = str(device_mac).lower()
         self._device_type = DEVICE_TYPE.get(dev_id, "unknown device")
         LOGGER.debug("Player connected: %s", self.name)
-        asyncio.create_task(self._initialize_player())
+        create_task(self._initialize_player())
         self.signal_event(SqueezeEvent.CONNECTED)
 
     def _process_stat(self, data):
@@ -355,7 +355,7 @@ class SqueezeSocketClient:
         if event_handler is None:
             LOGGER.debug("Unhandled event: %s - event_data: %s", event, event_data)
         else:
-            self.mass.add_job(event_handler, data[4:])
+            create_task(event_handler, data[4:])
 
     def _process_stat_aude(self, data):
         """Process incoming stat AUDe message (power level and mute)."""
@@ -458,7 +458,7 @@ class SqueezeSocketClient:
         """Process incoming RESP message: Response received at player."""
         # pylint: disable=unused-argument
         # send continue
-        asyncio.create_task(self._send_frame(b"cont", b"0"))
+        create_task(self._send_frame(b"cont", b"0"))
 
     def _process_setd(self, data):
         """Process incoming SETD message: Get/set player firmware settings."""

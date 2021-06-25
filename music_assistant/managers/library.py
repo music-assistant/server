@@ -1,12 +1,11 @@
 """LibraryManager: Orchestrates synchronisation of music providers into the library."""
-import asyncio
-import functools
+
 import logging
 import time
-from typing import Any, List
+from typing import Any, List, Optional
 
-from music_assistant.constants import EVENT_MUSIC_SYNC_STATUS, EVENT_PROVIDER_REGISTERED
-from music_assistant.helpers.util import callback, run_periodic
+from music_assistant.constants import EVENT_PROVIDER_REGISTERED
+from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.web import api_route
 from music_assistant.models.media_types import (
     Album,
@@ -22,62 +21,34 @@ from music_assistant.models.provider import ProviderType
 LOGGER = logging.getLogger("music_manager")
 
 
-def sync_task(desc):
-    """Return decorator to report a sync task."""
-
-    def wrapper(func):
-        @functools.wraps(func)
-        async def wrapped(*args):
-            method_class = args[0]
-            prov_id = args[1]
-            # check if this sync task is not already running
-            for sync_prov_id, sync_desc in method_class.running_sync_jobs:
-                if sync_prov_id == prov_id and sync_desc == desc:
-                    LOGGER.debug(
-                        "Syncjob %s for provider %s is already running!", desc, prov_id
-                    )
-                    return
-            LOGGER.info("Start syncjob %s for provider %s.", desc, prov_id)
-            sync_job = (prov_id, desc)
-            method_class.running_sync_jobs.add(sync_job)
-            method_class.mass.signal_event(
-                EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs
-            )
-            await func(*args)
-            LOGGER.info("Finished syncing %s for provider %s", desc, prov_id)
-            method_class.running_sync_jobs.remove(sync_job)
-            method_class.mass.signal_event(
-                EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs
-            )
-
-        return wrapped
-
-    return wrapper
-
-
 class LibraryManager:
     """Manage sync of musicproviders to library."""
 
-    def __init__(self, mass):
+    def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.running_sync_jobs = set()
         self.mass = mass
         self.cache = mass.cache
-        self.mass.add_event_listener(self.mass_event, EVENT_PROVIDER_REGISTERED)
+        self._sync_tasks = set()
+        self.mass.eventbus.add_listener(self.mass_event, EVENT_PROVIDER_REGISTERED)
 
     async def setup(self):
         """Async initialize of module."""
-        # schedule sync task
-        self.mass.add_job(self._music_providers_sync())
+        # schedule sync task for each provider that is already registered at startup
+        for prov in self.mass.get_providers(ProviderType.MUSIC_PROVIDER):
+            if prov.id not in self._sync_tasks:
+                self._sync_tasks.add(prov.id)
+                await self.music_provider_sync(prov.id)
 
-    @callback
-    def mass_event(self, msg: str, msg_details: Any):
+    async def mass_event(self, msg: str, msg_details: Any):
         """Handle message on eventbus."""
         if msg == EVENT_PROVIDER_REGISTERED:
-            # schedule a sync task when a new provider registers
+            # schedule the sync task when a new provider registers
             provider = self.mass.get_provider(msg_details)
             if provider.type == ProviderType.MUSIC_PROVIDER:
-                self.mass.add_job(self.music_provider_sync(msg_details))
+                if msg_details not in self._sync_tasks:
+                    self._sync_tasks.add(msg_details)
+                    await self.music_provider_sync(msg_details, periodic=3 * 3600)
 
     ################ GET MediaItems that are added in the library ################
 
@@ -235,14 +206,7 @@ class LibraryManager:
                 prov_playlist.item_id, track_ids_to_remove
             )
 
-    @run_periodic(3600 * 3)
-    async def _music_providers_sync(self):
-        """Periodic sync of all music providers."""
-        await asyncio.sleep(10)
-        for prov in self.mass.get_providers(ProviderType.MUSIC_PROVIDER):
-            await self.music_provider_sync(prov.id)
-
-    async def music_provider_sync(self, prov_id: str):
+    async def music_provider_sync(self, prov_id: str, periodic: Optional[int] = None):
         """
         Sync a music provider.
 
@@ -252,17 +216,41 @@ class LibraryManager:
         if not provider:
             return
         if MediaType.Album in provider.supported_mediatypes:
-            await self.library_albums_sync(prov_id)
+            self.mass.tasks.add(
+                self.library_albums_sync,
+                prov_id,
+                name=f"Library sync of albums for provider {provider.name}",
+                periodic=periodic,
+            )
         if MediaType.Track in provider.supported_mediatypes:
-            await self.library_tracks_sync(prov_id)
+            self.mass.tasks.add(
+                self.library_tracks_sync,
+                prov_id,
+                name=f"Library sync of tracks for provider {provider.name}",
+                periodic=periodic,
+            )
         if MediaType.Artist in provider.supported_mediatypes:
-            await self.library_artists_sync(prov_id)
+            self.mass.tasks.add(
+                self.library_artists_sync,
+                prov_id,
+                name=f"Library sync of artists for provider {provider.name}",
+                periodic=periodic,
+            )
         if MediaType.Playlist in provider.supported_mediatypes:
-            await self.library_playlists_sync(prov_id)
+            self.mass.tasks.add(
+                self.library_playlists_sync,
+                prov_id,
+                name=f"Library sync of playlists for provider {provider.name}",
+                periodic=periodic,
+            )
         if MediaType.Radio in provider.supported_mediatypes:
-            await self.library_radios_sync(prov_id)
+            self.mass.tasks.add(
+                self.library_radios_sync,
+                prov_id,
+                name=f"Library sync of radio for provider {provider.name}",
+                periodic=periodic,
+            )
 
-    @sync_task("artists")
     async def library_artists_sync(self, provider_id: str):
         """Sync library artists for given provider."""
         music_provider = self.mass.get_provider(provider_id)
@@ -287,7 +275,6 @@ class LibraryManager:
         # store ids in cache for next sync
         await self.mass.cache.set(cache_key, cur_db_ids)
 
-    @sync_task("albums")
     async def library_albums_sync(self, provider_id: str):
         """Sync library albums for given provider."""
         music_provider = self.mass.get_provider(provider_id)
@@ -317,7 +304,6 @@ class LibraryManager:
         # store ids in cache for next sync
         await self.mass.cache.set(cache_key, cur_db_ids)
 
-    @sync_task("tracks")
     async def library_tracks_sync(self, provider_id: str):
         """Sync library tracks for given provider."""
         music_provider = self.mass.get_provider(provider_id)
@@ -345,7 +331,6 @@ class LibraryManager:
         # store ids in cache for next sync
         await self.mass.cache.set(cache_key, cur_db_ids)
 
-    @sync_task("playlists")
     async def library_playlists_sync(self, provider_id: str):
         """Sync library playlists for given provider."""
         music_provider = self.mass.get_provider(provider_id)
@@ -383,7 +368,6 @@ class LibraryManager:
         # store ids in cache for next sync
         await self.mass.cache.set(cache_key, cur_db_ids)
 
-    @sync_task("radios")
     async def library_radios_sync(self, provider_id: str):
         """Sync library radios for given provider."""
         music_provider = self.mass.get_provider(provider_id)

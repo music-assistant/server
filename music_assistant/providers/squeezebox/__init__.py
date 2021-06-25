@@ -6,7 +6,7 @@ from typing import List
 
 from music_assistant.constants import CONF_CROSSFADE_DURATION
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import callback
+from music_assistant.helpers.util import callback, create_task
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import (
     DeviceInfo,
@@ -60,18 +60,10 @@ class PySqueezeProvider(PlayerProvider):
     async def on_start(self) -> bool:
         """Handle initialization of the provider. Called on startup."""
         # start slimproto server
-        self._tasks.append(
-            self.mass.add_job(
-                asyncio.start_server(self._client_connected, "0.0.0.0", 3483)
-            )
-        )
-        # setup discovery
-        self._tasks.append(self.mass.add_job(self.start_discovery()))
+        create_task(asyncio.start_server(self._client_connected, "0.0.0.0", 3483))
 
-    async def on_stop(self):
-        """Handle correct close/cleanup of the provider on exit."""
-        for task in self._tasks:
-            task.cancel()
+        # setup discovery
+        create_task(self.start_discovery())
 
     async def start_discovery(self):
         """Start discovery for players."""
@@ -335,7 +327,7 @@ class SqueezePlayer(Player):
         """Process incoming event from the socket client."""
         if event == SqueezeEvent.CONNECTED:
             # restore previous power/volume
-            self.mass.add_job(self.restore_states())
+            create_task(self.restore_states())
         elif event == SqueezeEvent.DECODER_READY:
             # tell player to load next queue track
             queue = self.mass.players.get_player_queue(self.player_id)
@@ -345,7 +337,7 @@ class SqueezePlayer(Player):
                     crossfade = self.mass.config.player_settings[self.player_id][
                         CONF_CROSSFADE_DURATION
                     ]
-                    self.mass.add_job(
+                    create_task(
                         self.socket_client.play_uri(
                             next_item.uri,
                             send_flush=False,

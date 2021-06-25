@@ -32,7 +32,8 @@ from music_assistant.constants import (
     EVENT_CONFIG_CHANGED,
 )
 from music_assistant.helpers.encryption import _decrypt_string, _encrypt_string
-from music_assistant.helpers.util import merge_dict, try_load_json_file
+from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.util import create_task, merge_dict, try_load_json_file
 from music_assistant.helpers.web import api_route
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import PlayerControlType
@@ -134,7 +135,7 @@ PROVIDER_TYPE_MAPPINGS = {
 class ConfigManager:
     """Class which holds our configuration."""
 
-    def __init__(self, mass, data_path: str):
+    def __init__(self, mass: MusicAssistant, data_path: str):
         """Initialize class."""
         self._data_path = data_path
         self._stored_config = {}
@@ -417,7 +418,7 @@ class SecuritySettings(ConfigBaseItem):
             CONF_KEY_SECURITY_APP_TOKENS
         ].pop(client_id)
         self.conf_mgr.save()
-        self.conf_mgr.mass.signal_event(
+        self.conf_mgr.mass.eventbus.signal_event(
             EVENT_CONFIG_CHANGED, (CONF_KEY_SECURITY, CONF_KEY_SECURITY_APP_TOKENS)
         )
         return return_info
@@ -663,19 +664,19 @@ class ConfigSubItem:
                     stored_conf[self.parent_conf_key][self.conf_key] = {}
                 stored_conf[self.parent_conf_key][self.conf_key][key] = value
 
-                self.conf_mgr.mass.add_job(self.conf_mgr.save)
+                self.conf_mgr.mass.tasks.add(
+                    self.conf_mgr.save, description="Save configuration"
+                )
                 # reload provider/plugin if value changed
                 if self.parent_conf_key in PROVIDER_TYPE_MAPPINGS:
-                    self.conf_mgr.mass.add_job(
-                        self.conf_mgr.mass.reload_provider(self.conf_key)
-                    )
+                    self.conf_mgr.mass.reload_provider(self.conf_key)
                 if self.parent_conf_key == CONF_KEY_PLAYER_SETTINGS:
                     # force update of player if it's config changed
-                    self.conf_mgr.mass.add_job(
+                    create_task(
                         self.conf_mgr.mass.players.trigger_player_update(self.conf_key)
                     )
                 # signal config changed event
-                self.conf_mgr.mass.signal_event(
+                self.conf_mgr.mass.eventbus.signal_event(
                     EVENT_CONFIG_CHANGED, (self.parent_conf_key, self.conf_key)
                 )
             return

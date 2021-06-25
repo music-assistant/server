@@ -20,7 +20,7 @@ from music_assistant.helpers.typing import (
     OptionalStr,
     Player,
 )
-from music_assistant.helpers.util import callback
+from music_assistant.helpers.util import callback, create_task
 from music_assistant.models.media_types import Radio, Track
 from music_assistant.models.player import PlaybackState, PlayerFeature
 from music_assistant.models.streamdetails import StreamDetails
@@ -76,7 +76,7 @@ class PlayerQueue:
         self._queue_stream_next_index = 0
         self._last_player = PlaybackState.Stopped
         # load previous queue settings from disk
-        self.mass.add_job(self._restore_saved_state())
+        create_task(self._restore_saved_state())
 
     async def close(self) -> None:
         """Handle shutdown/close."""
@@ -114,7 +114,7 @@ class PlayerQueue:
                 played_items = self.items[: self.cur_index]
                 next_items = self.__shuffle_items(self.items[self.cur_index + 1 :])
                 items = played_items + [self.cur_item] + next_items
-                self.mass.add_job(self.update(items))
+                await self.update(items)
         elif self._shuffle_enabled and not enable_shuffle:
             # unshuffle
             self._shuffle_enabled = False
@@ -123,9 +123,9 @@ class PlayerQueue:
                 next_items = self.items[self.cur_index + 1 :]
                 next_items.sort(key=lambda x: x.sort_index, reverse=False)
                 items = played_items + [self.cur_item] + next_items
-                self.mass.add_job(self.update(items))
+                await self.update(items)
         self.update_state()
-        self.mass.signal_event(EVENT_QUEUE_UPDATED, self)
+        self.mass.eventbus.signal_event(EVENT_QUEUE_UPDATED, self)
 
     @property
     def repeat_enabled(self) -> bool:
@@ -137,8 +137,8 @@ class PlayerQueue:
         if self._repeat_enabled != enable_repeat:
             self._repeat_enabled = enable_repeat
             self.update_state()
-            self.mass.add_job(self._save_state())
-            self.mass.signal_event(EVENT_QUEUE_UPDATED, self)
+            create_task(self._save_state())
+            self.mass.eventbus.signal_event(EVENT_QUEUE_UPDATED, self)
 
     @property
     def cur_index(self) -> OptionalInt:
@@ -361,8 +361,8 @@ class PlayerQueue:
             await self.play_index(0)
         else:
             await self.player.cmd_queue_load(queue_items)
-        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
-        self.mass.add_job(self._save_state())
+        self.mass.eventbus.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        create_task(self._save_state())
 
     async def insert(self, queue_items: List[QueueItem], offset: int = 0) -> None:
         """
@@ -408,8 +408,8 @@ class PlayerQueue:
                 )
                 self._items = self._items[self.cur_index + offset :]
                 return await self.player.cmd_queue_load(self._items)
-        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
-        self.mass.add_job(self._save_state())
+        self.mass.eventbus.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        create_task(self._save_state())
 
     async def append(self, queue_items: List[QueueItem]) -> None:
         """Append new items at the end of the queue."""
@@ -433,8 +433,8 @@ class PlayerQueue:
                 )
                 self._items = self._items[self.cur_index :]
                 return await self.player.cmd_queue_load(self._items)
-        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
-        self.mass.add_job(self._save_state())
+        self.mass.eventbus.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        create_task(self._save_state())
 
     async def update(self, queue_items: List[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
@@ -450,8 +450,8 @@ class PlayerQueue:
                 )
                 self._items = self._items[self.cur_index :]
                 await self.player.cmd_queue_load(self._items)
-        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
-        self.mass.add_job(self._save_state())
+        self.mass.eventbus.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        create_task(self._save_state())
 
     async def clear(self) -> None:
         """Clear all items in the queue."""
@@ -468,7 +468,7 @@ class PlayerQueue:
                 except NotImplementedError:
                     # not supported by player, ignore
                     pass
-        self.mass.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
+        self.mass.eventbus.signal_event(EVENT_QUEUE_ITEMS_UPDATED, self)
 
     @callback
     def update_state(self) -> None:
@@ -500,7 +500,7 @@ class PlayerQueue:
             and self.cur_item.streamdetails
         ):
             # new active item in queue
-            self.mass.signal_event(EVENT_QUEUE_UPDATED, self)
+            self.mass.eventbus.signal_event(EVENT_QUEUE_UPDATED, self)
             # invalidate previous streamdetails
             if self._last_item:
                 self._last_item.streamdetails = None
@@ -508,7 +508,7 @@ class PlayerQueue:
         # update vars
         if self._cur_item_time != track_time:
             self._cur_item_time = track_time
-            self.mass.signal_event(
+            self.mass.eventbus.signal_event(
                 EVENT_QUEUE_TIME_UPDATED,
                 {"queue_id": self.queue_id, "cur_item_time": track_time},
             )

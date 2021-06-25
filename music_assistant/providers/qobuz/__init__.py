@@ -94,7 +94,7 @@ class QobuzProvider(MusicProvider):
         self.__user_auth_info = None
         self.__logged_in = False
         self._throttler = Throttler(rate_limit=4, period=1)
-        self.mass.add_event_listener(
+        self.mass.eventbus.add_listener(
             self.mass_event, (EVENT_STREAM_STARTED, EVENT_STREAM_ENDED)
         )
         return True

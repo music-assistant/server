@@ -9,7 +9,8 @@ import time
 from typing import Awaitable
 
 import aiosqlite
-from music_assistant.helpers.util import run_periodic
+from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.util import create_task
 
 LOGGER = logging.getLogger("cache")
 
@@ -19,13 +20,13 @@ class Cache:
 
     _db = None
 
-    def __init__(self, mass):
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize our caching class."""
         self.mass = mass
         self._dbfile = os.path.join(mass.config.data_path, ".cache.db")
         self._mem_cache = {}
 
-    async def setup(self):
+    async def setup(self) -> None:
         """Async initialize of cache module."""
         async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
             await db_conn.execute(
@@ -35,7 +36,7 @@ class Cache:
             await db_conn.commit()
             await db_conn.execute("VACUUM;")
             await db_conn.commit()
-        self.mass.add_job(self.auto_cleanup())
+        self.mass.tasks.add(self.auto_cleanup, name="Cleanup cache", periodic=3600)
 
     async def get(self, cache_key, checksum="", default=None):
         """
@@ -102,13 +103,11 @@ class Cache:
             await db_conn.execute(sql_query, (cache_key,))
             await db_conn.commit()
 
-    @run_periodic(3600)
     async def auto_cleanup(self):
         """Sceduled auto cleanup task."""
         # for now we simply rest the memory cache
         self._mem_cache = {}
         cur_timestamp = int(time.time())
-        LOGGER.debug("Running cleanup...")
         sql_query = "SELECT id, expires FROM simplecache"
         async with aiosqlite.connect(self._dbfile, timeout=600) as db_conn:
             db_conn.row_factory = aiosqlite.Row
@@ -122,7 +121,6 @@ class Cache:
                     await db_conn.execute(sql_query, (cache_id,))
             # compact db
             await db_conn.commit()
-        LOGGER.debug("Auto cleanup done")
 
     @staticmethod
     def _get_checksum(stringinput):
@@ -146,7 +144,7 @@ async def cached(
     if cache_result is not None:
         return cache_result
     result = await coro_func(*args)
-    asyncio.create_task(cache.set(cache_key, result, checksum, expires))
+    create_task(cache.set(cache_key, result, checksum, expires))
     return result
 
 
@@ -165,7 +163,7 @@ def use_cache(cache_days=14, cache_checksum=None):
             if cachedata is not None:
                 return cachedata
             result = await func(*args, **kwargs)
-            asyncio.create_task(
+            create_task(
                 method_class.cache.set(
                     cache_str,
                     result,

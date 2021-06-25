@@ -55,6 +55,7 @@ EVENT_ALBUM_ADDED = "album added"
 EVENT_TRACK_ADDED = "track added"
 EVENT_PLAYLIST_ADDED = "playlist added"
 EVENT_RADIO_ADDED = "radio added"
+EVENT_TASK_UPDATED = "task_updated"
 
 # player attributes
 ATTR_PLAYER_ID = "player_id"

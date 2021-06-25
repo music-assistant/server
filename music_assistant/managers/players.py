@@ -11,7 +11,7 @@ from music_assistant.constants import (
     EVENT_PLAYER_REMOVED,
 )
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import callback, try_parse_int
+from music_assistant.helpers.util import callback, create_task, try_parse_int
 from music_assistant.helpers.web import api_route
 from music_assistant.models.media_types import MediaItem, MediaType
 from music_assistant.models.player import (
@@ -41,7 +41,7 @@ class PlayerManager:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self.mass.add_job(self.poll_task())
+        asyncio.create_task(self.poll_task())
 
     async def close(self) -> None:
         """Handle stop/shutdown."""
@@ -202,7 +202,7 @@ class PlayerManager:
             player.provider_id,
             player.name,
         )
-        self.mass.signal_event(EVENT_PLAYER_ADDED, player)
+        self.mass.eventbus.signal_event(EVENT_PLAYER_ADDED, player)
 
     async def remove_player(self, player_id: str):
         """Remove a player from the registry."""
@@ -212,7 +212,7 @@ class PlayerManager:
             await player.on_remove()
         player_name = player.name if player else player_id
         LOGGER.info("Player removed: %s", player_name)
-        self.mass.signal_event(EVENT_PLAYER_REMOVED, {"player_id": player_id})
+        self.mass.eventbus.signal_event(EVENT_PLAYER_REMOVED, {"player_id": player_id})
 
     async def trigger_player_update(self, player_id: str):
         """Trigger update of an existing player.."""
@@ -238,7 +238,7 @@ class PlayerManager:
                 conf.get(CONF_POWER_CONTROL),
                 conf.get(CONF_VOLUME_CONTROL),
             ]:
-                self.mass.add_job(self.trigger_player_update(player.player_id))
+                create_task(self.trigger_player_update(player.player_id))
 
     @api_route("players/controls/:control_id/update")
     async def update_player_control(self, control_id: str, control: PlayerControl):
@@ -262,7 +262,7 @@ class PlayerManager:
                 conf.get(CONF_POWER_CONTROL),
                 conf.get(CONF_VOLUME_CONTROL),
             ]:
-                self.mass.add_job(self.trigger_player_update(player.player_id))
+                create_task(self.trigger_player_update(player.player_id))
 
     # SERVICE CALLS / PLAYER COMMANDS
 
@@ -501,7 +501,7 @@ class PlayerManager:
             for child_player_id in player.group_childs:
                 child_player = self.get_player(child_player_id)
                 if child_player and child_player.player_state.powered:
-                    self.mass.add_job(self.cmd_power_off(child_player_id))
+                    create_task(self.cmd_power_off(child_player_id))
         else:
             # if this was the last powered player in the group, turn off group
             for parent_player_id in player.group_parents:
@@ -516,7 +516,7 @@ class PlayerManager:
                     if child_player and child_player.player_state.powered:
                         has_powered_players = True
                 if not has_powered_players:
-                    self.mass.add_job(self.cmd_power_off(parent_player_id))
+                    create_task(self.cmd_power_off(parent_player_id))
 
     @api_route("players/:player_id/cmd/power_toggle")
     async def cmd_power_toggle(self, player_id: str):

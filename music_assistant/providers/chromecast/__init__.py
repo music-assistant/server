@@ -4,6 +4,7 @@ import logging
 from typing import List
 
 import pychromecast
+from music_assistant.helpers.util import create_task
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.provider import PlayerProvider
 from pychromecast.controllers.multizone import MultizoneManager
@@ -60,7 +61,7 @@ class ChromecastProvider(PlayerProvider):
                 self._listener, self.mass.zeroconf
             )
 
-        self.mass.add_job(start_discovery)
+        create_task(start_discovery)
         return True
 
     async def on_stop(self):
@@ -68,7 +69,7 @@ class ChromecastProvider(PlayerProvider):
         if not self._browser:
             return
         # stop discovery
-        self.mass.add_job(pychromecast.stop_discovery, self._browser)
+        create_task(pychromecast.stop_discovery, self._browser)
 
     def __chromecast_add_update_callback(self, cast_uuid, cast_service_name):
         """Handle zeroconf discovery of a new or updated chromecast."""
@@ -99,7 +100,7 @@ class ChromecastProvider(PlayerProvider):
             player = ChromecastPlayer(self.mass, cast_info)
         # if player was already added, the player will take care of reconnects itself.
         player.set_cast_info(cast_info)
-        self.mass.add_job(self.mass.players.add_player(player))
+        create_task(self.mass.players.add_player(player))
 
     @staticmethod
     def __chromecast_remove_callback(cast_uuid, cast_service_name, cast_service):

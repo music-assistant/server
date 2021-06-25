@@ -4,7 +4,7 @@ import time
 from typing import List
 
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import run_periodic
+from music_assistant.helpers.util import create_task, run_periodic
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import (
     DeviceInfo,
@@ -58,7 +58,7 @@ class MassPlayerProvider(PlayerProvider):
     async def on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
         # listen for websockets commands to dynamically create players
-        self.mass.add_job(self.check_players())
+        create_task(self.check_players())
         self.mass.web.register_api_route(
             WS_COMMAND_WSPLAYER_REGISTER, self.handle_ws_player
         )
@@ -207,22 +207,22 @@ class WebsocketsPlayer(Player):
             :param uri: uri/url to send to the player.
         """
         data = {"player_id": self.player_id, "cmd": "play_uri", "uri": uri}
-        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
+        self.mass.eventbus.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
     async def cmd_stop(self) -> None:
         """Send STOP command to player."""
         data = {"player_id": self.player_id, "cmd": "stop"}
-        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
+        self.mass.eventbus.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
     async def cmd_play(self) -> None:
         """Send PLAY command to player."""
         data = {"player_id": self.player_id, "cmd": "play"}
-        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
+        self.mass.eventbus.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
     async def cmd_pause(self) -> None:
         """Send PAUSE command to player."""
         data = {"player_id": self.player_id, "cmd": "pause"}
-        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
+        self.mass.eventbus.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
     async def cmd_power_on(self) -> None:
         """Send POWER ON command to player."""
@@ -245,7 +245,7 @@ class WebsocketsPlayer(Player):
             "cmd": "volume_set",
             "volume_level": volume_level,
         }
-        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
+        self.mass.eventbus.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
 
     async def cmd_volume_mute(self, is_muted: bool = False) -> None:
         """
@@ -254,4 +254,4 @@ class WebsocketsPlayer(Player):
             :param is_muted: bool with new mute state.
         """
         data = {"player_id": self.player_id, "cmd": "volume_mute", "is_muted": is_muted}
-        self.mass.signal_event(WS_COMMAND_WSPLAYER_CMD, data)
+        self.mass.eventbus.signal_event(WS_COMMAND_WSPLAYER_CMD, data)

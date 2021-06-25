@@ -15,7 +15,7 @@ from music_assistant.constants import (
     EVENT_PLAYER_CHANGED,
 )
 from music_assistant.helpers.typing import ConfigSubItem, MusicAssistant, QueueItems
-from music_assistant.helpers.util import callback
+from music_assistant.helpers.util import callback, create_task
 from music_assistant.models.config_entry import ConfigEntry
 
 
@@ -78,7 +78,9 @@ class PlayerControl(DataClassDictMixin):
         # pickup this event (e.g. from the websocket api)
         # or override this method with your own implementation.
         # pylint: disable=no-member
-        self.mass.signal_event(f"players/controls/{self.control_id}/state", new_state)
+        self.mass.eventbus.signal_event(
+            f"players/controls/{self.control_id}/state", new_state
+        )
 
 
 @dataclass
@@ -398,7 +400,9 @@ class Player:
         if not self.added_to_mass:
             if self.enabled:
                 # player is now enabled and can be added
-                self.mass.add_job(self.mass.players.add_player(self))
+                self.mass.tasks.add(
+                    self.mass.players.add_player(self), name=f"Add player {self.name}"
+                )
             return
         new_state = self.create_state()
         changed_keys = self._cur_state.update(new_state)
@@ -409,18 +413,18 @@ class Player:
         # always update the player queue
         player_queue = self.mass.players.get_player_queue(self.active_queue)
         if player_queue:
-            self.mass.add_job(player_queue.update_state)
+            create_task(player_queue.update_state)
         if len(changed_keys) == 1 and "elapsed_time" in changed_keys:
             # no need to send player update if only the elapsed time changes
             # this is already handled by the queue manager
             return
-        self.mass.signal_event(EVENT_PLAYER_CHANGED, new_state)
+        self.mass.eventbus.signal_event(EVENT_PLAYER_CHANGED, new_state)
         # update group player childs when parent updates
         for child_player_id in self.group_childs:
-            self.mass.add_job(self.mass.players.trigger_player_update(child_player_id))
+            create_task(self.mass.players.trigger_player_update(child_player_id))
         # update group player when child updates
         for group_player_id in self._cur_state.group_parents:
-            self.mass.add_job(self.mass.players.trigger_player_update(group_player_id))
+            create_task(self.mass.players.trigger_player_update(group_player_id))
 
     @callback
     def _get_name(self) -> str:

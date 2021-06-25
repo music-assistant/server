@@ -7,7 +7,7 @@ import pychromecast
 from asyncio_throttle import Throttler
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import yield_chunks
+from music_assistant.helpers.util import create_task, yield_chunks
 from music_assistant.models.config_entry import ConfigEntry
 from music_assistant.models.player import (
     DeviceInfo,
@@ -286,7 +286,7 @@ class ChromecastPlayer(Player):
             self._available = new_available
             self.update_state()
             if self._cast_info.is_audio_group and new_available:
-                self.mass.add_job(self._chromecast.mz_controller.update_members)
+                create_task(self._chromecast.mz_controller.update_members)
 
     # ========== Service Calls ==========
 
@@ -431,4 +431,4 @@ class ChromecastPlayer(Player):
             )
             return
         async with self._throttler:
-            self.mass.add_job(func, *args, **kwargs)
+            create_task(func, *args, **kwargs)

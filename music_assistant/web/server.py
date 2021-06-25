@@ -73,6 +73,7 @@ class WebServer:
             self.mass.players,
             self.mass.config,
             self.mass.library,
+            self.mass.tasks,
         ]:
             self.register_api_routes(cls)
 
@@ -101,7 +102,7 @@ class WebServer:
         http_site = web.TCPSite(self._runner, host=None, port=self.port)
         await http_site.start()
         LOGGER.info("Started Music Assistant server on port %s", self.port)
-        self.mass.add_event_listener(self._handle_mass_events)
+        self.mass.eventbus.add_listener(self._handle_mass_events)
 
     async def stop(self):
         """Stop the webserver."""
@@ -361,9 +362,8 @@ class WebServer:
 
     async def _handle_event(self, ws_client: WebSocketResponse, event: str, data: Any):
         """Handle event message from ws client."""
-        LOGGER.info("received event %s", event)
         if ws_client.authenticated:
-            self.mass.signal_event(event, data)
+            self.mass.eventbus.signal_event(event, data)
 
     async def _handle_auth(self, ws_client: WebSocketResponse, token: str):
         """Handle authentication with JWT token."""

@@ -5,6 +5,7 @@ import logging
 from typing import List
 
 from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.util import create_task
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import DeviceInfo, PlaybackState, Player
 from music_assistant.models.provider import PlayerProvider
@@ -57,7 +58,7 @@ class GroupPlayerProvider(PlayerProvider):
         conf = self.mass.config.player_providers[PROV_ID]
         for index in range(conf[CONF_PLAYER_COUNT]):
             player = GroupPlayer(self.mass, index)
-            self.mass.add_job(self.mass.players.add_player(player))
+            await self.mass.players.add_player(player)
         return True
 
     async def on_stop(self):
@@ -245,7 +246,7 @@ class GroupPlayer(Player):
                 queue_stream_uri = f"{self.mass.web.stream_url}/group/{self.player_id}?player_id={child_player_id}"
                 await child_player.cmd_play_uri(queue_stream_uri)
         self.update_state()
-        self.stream_task = self.mass.add_job(self.queue_stream_task())
+        self.stream_task = create_task(self.queue_stream_task())
 
     async def cmd_stop(self) -> None:
         """Send STOP command to player."""
@@ -361,7 +362,7 @@ class GroupPlayer(Player):
         LOGGER.debug(
             "start queue stream with %s connected clients", len(self.connected_clients)
         )
-        self.sync_task = asyncio.create_task(self.__synchronize_players())
+        self.sync_task = create_task(self.__synchronize_players())
 
         async for audio_chunk in self.mass.streams.queue_stream_flac(self.player_id):
 
@@ -373,7 +374,7 @@ class GroupPlayer(Player):
             # send the audio chunk to all connected players
             tasks = []
             for _queue in self.connected_clients.values():
-                tasks.append(self.mass.add_job(_queue.put(audio_chunk)))
+                tasks.append(create_task(_queue.put(audio_chunk)))
             # wait for clients to consume the data
             await asyncio.wait(tasks)
 
@@ -451,7 +452,7 @@ class GroupPlayer(Player):
                         if avg_lag > 20:
                             sleep_time = avg_lag - 20
                             await asyncio.sleep(sleep_time / 1000)
-                        asyncio.create_task(master_player.cmd_play())
+                        create_task(master_player.cmd_play())
                         break  # no more processing this round if we've just corrected a lag
 
                 # calculate drift (player is going faster in relation to the master)
