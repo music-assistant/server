@@ -10,7 +10,7 @@ python-slugify==5.0.2
 memory-tempfile==2.2.3
 aiorun==2020.12.1
 soco==0.22.6
-pillow==8.2.0
+pillow==8.3.1
 aiohttp_cors==0.7.0
 unidecode==1.1.2
 PyJWT==2.1.0
