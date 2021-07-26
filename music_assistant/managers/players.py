@@ -59,7 +59,7 @@ class PlayerManager:
                     continue
                 if not player.should_poll:
                     continue
-                if player.state == PlaybackState.Playing or count == POLL_INTERVAL:
+                if player.state == PlaybackState.PLAYING or count == POLL_INTERVAL:
                     await player.on_poll()
             if count == POLL_INTERVAL:
                 count = 0
@@ -99,6 +99,7 @@ class PlayerManager:
         return tuple(self._player_queues.values())
 
     @callback
+    @api_route("players/:player_id")
     def get_player(self, player_id: str) -> Player:
         """Return Player by player_id or None if player does not exist."""
         return self._players.get(player_id)
@@ -271,7 +272,7 @@ class PlayerManager:
         self,
         player_id: str,
         items: Union[MediaItem, List[MediaItem]],
-        queue_opt: QueueOption = QueueOption.Play,
+        queue_opt: QueueOption = QueueOption.PLAY,
     ):
         """
         Play media item(s) on the given player.
@@ -279,10 +280,10 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
             :param items: media item(s) that should be played (single item or list of items)
             :param queue_opt:
-                QueueOption.Play -> Insert new items in queue and start playing at inserted position
-                QueueOption.Replace -> Replace queue contents with these items
-                QueueOption.Next -> Play item(s) after current playing item
-                QueueOption.Add -> Append new items at end of the queue
+                QueueOption.PLAY -> Insert new items in queue and start playing at inserted position
+                QueueOption.REPLACE -> Replace queue contents with these items
+                QueueOption.NEXT -> Play item(s) after current playing item
+                QueueOption.ADD -> Append new items at end of the queue
         """
         # a single item or list of items may be provided
         if not isinstance(items, list):
@@ -290,19 +291,19 @@ class PlayerManager:
         queue_items = []
         for media_item in items:
             # collect tracks to play
-            if media_item.media_type == MediaType.Artist:
+            if media_item.media_type == MediaType.ARTIST:
                 tracks = await self.mass.music.get_artist_toptracks(
                     media_item.item_id, provider_id=media_item.provider
                 )
-            elif media_item.media_type == MediaType.Album:
+            elif media_item.media_type == MediaType.ALBUM:
                 tracks = await self.mass.music.get_album_tracks(
                     media_item.item_id, provider_id=media_item.provider
                 )
-            elif media_item.media_type == MediaType.Playlist:
+            elif media_item.media_type == MediaType.PLAYLIST:
                 tracks = await self.mass.music.get_playlist_tracks(
                     media_item.item_id, provider_id=media_item.provider
                 )
-            elif media_item.media_type == MediaType.Radio:
+            elif media_item.media_type == MediaType.RADIO:
                 # single radio
                 tracks = [
                     await self.mass.music.get_radio(
@@ -328,18 +329,20 @@ class PlayerManager:
                 )
                 queue_items.append(queue_item)
         # turn on player
-        await self.cmd_power_on(player_id)
+        player = self.get_player(player_id)
+        if not player.player_state.powered:
+            await self.cmd_power_on(player_id)
         # load items into the queue
         player_queue = self.get_player_queue(player_id)
-        if queue_opt == QueueOption.Replace:
+        if queue_opt == QueueOption.REPLACE:
             return await player_queue.load(queue_items)
-        if queue_opt in [QueueOption.Play, QueueOption.Next] and len(queue_items) > 100:
+        if queue_opt in [QueueOption.PLAY, QueueOption.NEXT] and len(queue_items) > 100:
             return await player_queue.load(queue_items)
-        if queue_opt == QueueOption.Next:
+        if queue_opt == QueueOption.NEXT:
             return await player_queue.insert(queue_items, 1)
-        if queue_opt == QueueOption.Play:
+        if queue_opt == QueueOption.PLAY:
             return await player_queue.insert(queue_items, 0)
-        if queue_opt == QueueOption.Add:
+        if queue_opt == QueueOption.ADD:
             return await player_queue.append(queue_items)
 
     @api_route("players/:player_id/play_uri")
@@ -352,18 +355,77 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
             :param uri: Url/Uri that can be played by a player.
         """
-        queue_item = QueueItem(item_id=uri, provider="uri", name=uri)
-        # generate uri for this queue item
-        queue_item.uri = "%s/%s/%s" % (
-            self.mass.web.stream_url,
-            player_id,
-            queue_item.queue_item_id,
-        )
+        # TODO: find out url of uri request (e.q. spotify://)
+        queue_item = QueueItem(item_id=uri, provider="url", name=uri, uri=uri)
         # turn on player
-        await self.cmd_power_on(player_id)
+        player = self.get_player(player_id)
+        if not player.player_state.powered:
+            await self.cmd_power_on(player_id)
         # load item into the queue
         player_queue = self.get_player_queue(player_id)
         return await player_queue.insert([queue_item], 0)
+
+    @api_route("players/:player_id/play_alert")
+    async def cmd_play_alert(
+        self,
+        player_id: str,
+        url: str,
+        volume_offset: int = 0,
+        force: bool = True,
+        duration: int = 10,
+    ):
+        """
+        Play alert (e.g. tts message) on selected player.
+
+        Will pause the current playing queue and resume after the alert is played.
+
+            :param player_id: player_id of the player to handle the command.
+            :param url: Url to the sound effect/tts message that should be played.
+            :param volume_offset: Increase volume of player (or decrease if negative value).
+            :param force: Play alert even if player is currently powered off.
+            :param duration: Number of seconds to wait until resume the queue again.
+        """
+        player = self.get_player(player_id)
+        prev_volume = player.player_state.volume_level
+        prev_state = player.player_state.state
+        if not player.player_state.powered:
+            if not force:
+                LOGGER.debug(
+                    "Ignore alert playback: Player %s is powered off.",
+                    player.player_state.name,
+                )
+                return
+            await self.cmd_power_on(player_id)
+        if prev_state == PlaybackState.PLAYING:
+            await self.cmd_pause(player_id)
+        # adjust volume if needed
+        if volume_offset != 0:
+            await self.cmd_volume_set(player_id, prev_volume + volume_offset)
+        # play alert directly to player
+        await player.cmd_play_uri(url)
+        # wait until playback completed
+        playback_started = False
+        while True:
+            await player.on_poll()
+            if (
+                not playback_started
+                and player.player_state.state == PlaybackState.PLAYING
+            ):
+                playback_started = True
+            elif (
+                playback_started and player.player_state.state != PlaybackState.PLAYING
+            ):
+                break
+            await asyncio.sleep(0.1)
+        # restore volume
+        if volume_offset != 0:
+            await self.cmd_volume_set(player_id, prev_volume)
+        # resume queue
+        if prev_state == PlaybackState.PLAYING:
+            player_queue = self.get_player_queue(player_id)
+            await player_queue.resume()
+        elif prev_state == PlaybackState.OFF:
+            await self.cmd_power_off(player_id)
 
     @api_route("players/:player_id/cmd/stop")
     async def cmd_stop(self, player_id: str) -> None:
@@ -392,7 +454,7 @@ class PlayerManager:
         queue_id = player.active_queue
         queue_player = self.get_player(queue_id)
         # unpause if paused else resume queue
-        if queue_player.state == PlaybackState.Paused:
+        if queue_player.state == PlaybackState.PAUSED:
             return await queue_player.cmd_play()
         # power on at play request
         await self.cmd_power_on(player_id)
@@ -422,7 +484,7 @@ class PlayerManager:
         player = self.get_player(player_id)
         if not player:
             return
-        if player.state == PlaybackState.Playing:
+        if player.state == PlaybackState.PLAYING:
             return await self.cmd_pause(player_id)
         return await self.cmd_play(player_id)
 
@@ -483,8 +545,8 @@ class PlayerManager:
             return
         # send stop if player is playing
         if player.active_queue == player_id and player.state in [
-            PlaybackState.Playing,
-            PlaybackState.Paused,
+            PlaybackState.PLAYING,
+            PlaybackState.PAUSED,
         ]:
             await self.cmd_stop(player_id)
         player_config = self.mass.config.player_settings[player.player_id]
@@ -714,7 +776,7 @@ class PlayerManager:
         return await player_queue.play_index(index)
 
     @api_route("players/:queue_id/queue/cmd/clear")
-    async def player_queue_cmd_clear(self, queue_id: str, enable_repeat: bool = False):
+    async def player_queue_cmd_clear(self, queue_id: str):
         """
         Clear all items in player's queue.
 

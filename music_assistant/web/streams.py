@@ -11,7 +11,7 @@ routes = RouteTableDef()
 async def stream_media(request: Request):
     """Stream a single audio track."""
     media_type = MediaType(request.match_info["media_type"])
-    if media_type not in [MediaType.Track, MediaType.Radio]:
+    if media_type not in [MediaType.TRACK, MediaType.RADIO]:
         return Response(status=404, reason="Media item is not playable!")
     item_id = request.match_info["item_id"]
     provider = request.rel_url.query.get("provider", "database")

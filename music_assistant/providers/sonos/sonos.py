@@ -53,9 +53,7 @@ class SonosProvider(PlayerProvider):
 
     async def on_start(self) -> bool:
         """Handle initialization of the provider."""
-        self.mass.tasks.add(
-            self.__run_discovery, name="Run Sonos discovery", periodic=1800
-        )
+        self.mass.tasks.add("Run Sonos discovery", self.__run_discovery, periodic=1800)
 
     async def on_stop(self):
         """Handle correct close/cleanup of the provider on exit."""
@@ -350,7 +348,7 @@ class SonosProvider(PlayerProvider):
             )
             rel_time = __timespan_secs(position_info.get("RelTime"))
             player.elapsed_time = rel_time
-            if player.state == PlaybackState.Playing:
+            if player.state == PlaybackState.PLAYING:
                 create_task(self._report_progress(player_id))
         player.update_state()
 
@@ -384,7 +382,7 @@ class SonosProvider(PlayerProvider):
         # so we need to send it in periodically
         player = self._players[player_id]
         player.should_poll = True
-        while player and player.state == PlaybackState.Playing:
+        while player and player.state == PlaybackState.PLAYING:
             time_diff = time.time() - player.media_position_updated_at
             adjusted_current_time = player.elapsed_time + time_diff
             player.elapsed_time = adjusted_current_time
@@ -396,12 +394,12 @@ class SonosProvider(PlayerProvider):
 def __convert_state(sonos_state: str) -> PlaybackState:
     """Convert Sonos state to PlaybackState."""
     if sonos_state == "PLAYING":
-        return PlaybackState.Playing
+        return PlaybackState.PLAYING
     if sonos_state == "TRANSITIONING":
-        return PlaybackState.Playing
+        return PlaybackState.PLAYING
     if sonos_state == "PAUSED_PLAYBACK":
-        return PlaybackState.Paused
-    return PlaybackState.Stopped
+        return PlaybackState.PAUSED
+    return PlaybackState.STOPPED
 
 
 def __timespan_secs(timespan):

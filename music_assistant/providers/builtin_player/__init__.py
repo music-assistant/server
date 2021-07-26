@@ -108,7 +108,7 @@ class WebsocketsPlayer(Player):
         self._player_name = player_name
         self._powered = True
         self._elapsed_time = 0
-        self._state = PlaybackState.Stopped
+        self._state = PlaybackState.STOPPED
         self._current_uri = ""
         self._volume_level = 100
         self._muted = False

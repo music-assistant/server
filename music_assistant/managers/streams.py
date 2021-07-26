@@ -180,7 +180,7 @@ class StreamManager:
                 queue_index = await player_queue.queue_stream_next(queue_index)
             queue_track = player_queue.get_item(queue_index)
             if not queue_track:
-                LOGGER.info("no (more) tracks left in queue")
+                LOGGER.info("no (more) tracks in queue")
                 break
 
             # get crossfade details
@@ -193,6 +193,7 @@ class StreamManager:
             streamdetails = await self.mass.music.get_stream_details(
                 queue_track, player_id
             )
+
             # get gain correct / replaygain
             gain_correct = await self.mass.players.get_gain_correct(
                 player_id, streamdetails.item_id, streamdetails.provider

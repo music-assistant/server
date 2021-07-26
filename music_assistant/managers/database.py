@@ -49,15 +49,15 @@ class DatabaseManager:
         media_type: MediaType,
     ) -> Optional[MediaItem]:
         """Get the database item for the given prov_id."""
-        if media_type == MediaType.Artist:
+        if media_type == MediaType.ARTIST:
             return await self.get_artist_by_prov_id(provider_id, prov_item_id)
-        if media_type == MediaType.Album:
+        if media_type == MediaType.ALBUM:
             return await self.get_album_by_prov_id(provider_id, prov_item_id)
-        if media_type == MediaType.Track:
+        if media_type == MediaType.TRACK:
             return await self.get_track_by_prov_id(provider_id, prov_item_id)
-        if media_type == MediaType.Playlist:
+        if media_type == MediaType.PLAYLIST:
             return await self.get_playlist_by_prov_id(provider_id, prov_item_id)
-        if media_type == MediaType.Radio:
+        if media_type == MediaType.RADIO:
             return await self.get_radio_by_prov_id(provider_id, prov_item_id)
         return None
 
@@ -145,19 +145,19 @@ class DatabaseManager:
         """Search library for the given searchphrase."""
         result = SearchResult([], [], [], [], [])
         searchquery = "%" + searchquery + "%"
-        if media_types is None or MediaType.Artist in media_types:
+        if media_types is None or MediaType.ARTIST in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
             result.artists = await self.get_artists(sql_query)
-        if media_types is None or MediaType.Album in media_types:
+        if media_types is None or MediaType.ALBUM in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
             result.albums = await self.get_albums(sql_query)
-        if media_types is None or MediaType.Track in media_types:
+        if media_types is None or MediaType.TRACK in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
             result.tracks = await self.get_tracks(sql_query)
-        if media_types is None or MediaType.Playlist in media_types:
+        if media_types is None or MediaType.PLAYLIST in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
             result.playlists = await self.get_playlists(sql_query)
-        if media_types is None or MediaType.Radio in media_types:
+        if media_types is None or MediaType.RADIO in media_types:
             sql_query = ' WHERE name LIKE "%s"' % searchquery
             result.radios = await self.get_radios(sql_query)
         return result
@@ -195,7 +195,7 @@ class DatabaseManager:
         orderby: str = "name",
     ) -> List[Playlist]:
         """Get all playlists from database."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             sql_query = "SELECT * FROM playlists"
             if filter_query:
@@ -224,7 +224,7 @@ class DatabaseManager:
         if filter_query:
             sql_query += " " + filter_query
         sql_query += " ORDER BY %s" % orderby
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             return [
                 Radio.from_db_row(db_row)
@@ -241,7 +241,7 @@ class DatabaseManager:
     async def add_playlist(self, playlist: Playlist):
         """Add a new playlist record to the database."""
         assert playlist.name
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             cur_item = await self.__execute_fetchone(
                 "SELECT (item_id) FROM playlists WHERE name=? AND owner=?;",
@@ -275,7 +275,7 @@ class DatabaseManager:
                     db_conn,
                 )
             await self._add_prov_ids(
-                new_item[0], MediaType.Playlist, playlist.provider_ids, db_conn=db_conn
+                new_item[0], MediaType.PLAYLIST, playlist.provider_ids, db_conn=db_conn
             )
             await db_conn.commit()
         LOGGER.debug("added playlist %s to database", playlist.name)
@@ -284,7 +284,7 @@ class DatabaseManager:
 
     async def update_playlist(self, item_id: int, playlist: Playlist):
         """Update a playlist record in the database."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             cur_item = Playlist.from_db_row(
                 await self.__execute_fetchone(
@@ -316,7 +316,7 @@ class DatabaseManager:
                 ),
             )
             await self._add_prov_ids(
-                item_id, MediaType.Playlist, playlist.provider_ids, db_conn=db_conn
+                item_id, MediaType.PLAYLIST, playlist.provider_ids, db_conn=db_conn
             )
             LOGGER.debug("updated playlist %s in database: %s", playlist.name, item_id)
             await db_conn.commit()
@@ -326,7 +326,7 @@ class DatabaseManager:
     async def add_radio(self, radio: Radio):
         """Add a new radio record to the database."""
         assert radio.name
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             cur_item = await self.__execute_fetchone(
                 "SELECT (item_id) FROM radios WHERE name=?;", (radio.name,), db_conn
@@ -353,7 +353,7 @@ class DatabaseManager:
                     db_conn,
                 )
             await self._add_prov_ids(
-                new_item[0], MediaType.Radio, radio.provider_ids, db_conn=db_conn
+                new_item[0], MediaType.RADIO, radio.provider_ids, db_conn=db_conn
             )
             await db_conn.commit()
         LOGGER.debug("added radio %s to database", radio.name)
@@ -362,7 +362,7 @@ class DatabaseManager:
 
     async def update_radio(self, item_id: int, radio: Radio):
         """Update a radio record in the database."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             cur_item = Radio.from_db_row(
                 await self.__execute_fetchone(
@@ -388,16 +388,16 @@ class DatabaseManager:
                 ),
             )
             await self._add_prov_ids(
-                item_id, MediaType.Radio, radio.provider_ids, db_conn=db_conn
+                item_id, MediaType.RADIO, radio.provider_ids, db_conn=db_conn
             )
             LOGGER.debug("updated radio %s in database: %s", radio.name, item_id)
             await db_conn.commit()
         # return updated object
         return await self.get_radio(item_id)
 
-    async def add_to_library(self, item_id: int, media_type: MediaType, provider: str):
+    async def add_to_library(self, item_id: int, media_type: MediaType):
         """Add an item to the library (item must already be present in the db!)."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             item_id = try_parse_int(item_id)
             db_name = media_type.value + "s"
             sql_query = f"UPDATE {db_name} SET in_library=1 WHERE item_id=?;"
@@ -405,10 +405,12 @@ class DatabaseManager:
             await db_conn.commit()
 
     async def remove_from_library(
-        self, item_id: int, media_type: MediaType, provider: str
+        self,
+        item_id: int,
+        media_type: MediaType,
     ):
         """Remove item from the library."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             item_id = try_parse_int(item_id)
             db_name = media_type.value + "s"
             sql_query = f"UPDATE {db_name} SET in_library=0 WHERE item_id=?;"
@@ -426,7 +428,7 @@ class DatabaseManager:
         if filter_query:
             sql_query += " " + filter_query
         sql_query += " ORDER BY %s" % orderby
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             return [
                 Artist.from_db_row(db_row)
@@ -442,7 +444,7 @@ class DatabaseManager:
 
     async def add_artist(self, artist: Artist):
         """Add a new artist record to the database."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             cur_item = await self.__execute_fetchone(
                 "SELECT (item_id) FROM artists WHERE musicbrainz_id=?;",
@@ -473,7 +475,7 @@ class DatabaseManager:
                     db_conn,
                 )
             await self._add_prov_ids(
-                new_item[0], MediaType.Artist, artist.provider_ids, db_conn=db_conn
+                new_item[0], MediaType.ARTIST, artist.provider_ids, db_conn=db_conn
             )
             await db_conn.commit()
             LOGGER.debug("added artist %s to database", artist.name)
@@ -482,7 +484,7 @@ class DatabaseManager:
 
     async def update_artist(self, item_id: int, artist: Artist):
         """Update a artist record in the database."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             db_row = await self.__execute_fetchone(
                 "SELECT * FROM artists WHERE item_id=?;", (item_id,), db_conn
@@ -505,7 +507,7 @@ class DatabaseManager:
                 ),
             )
             await self._add_prov_ids(
-                item_id, MediaType.Artist, artist.provider_ids, db_conn=db_conn
+                item_id, MediaType.ARTIST, artist.provider_ids, db_conn=db_conn
             )
             LOGGER.debug("updated artist %s in database: %s", artist.name, item_id)
             await db_conn.commit()
@@ -523,7 +525,7 @@ class DatabaseManager:
         if filter_query:
             sql_query += " " + filter_query
         sql_query += " ORDER BY %s" % orderby
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             return [
                 Album.from_db_row(db_row)
@@ -560,7 +562,7 @@ class DatabaseManager:
 
     async def add_album(self, album: Album):
         """Add a new album record to the database."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             cur_item = None
             # always try to grab existing item by external_id
@@ -613,7 +615,7 @@ class DatabaseManager:
                     db_conn,
                 )
             await self._add_prov_ids(
-                new_item[0], MediaType.Album, album.provider_ids, db_conn=db_conn
+                new_item[0], MediaType.ALBUM, album.provider_ids, db_conn=db_conn
             )
             await db_conn.commit()
             LOGGER.debug("added album %s to database", album.name)
@@ -622,7 +624,7 @@ class DatabaseManager:
 
     async def update_album(self, item_id: int, album: Album):
         """Update a album record in the database."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             cur_item = await self.get_album(item_id)
             album_artist = ItemMapping.from_item(
@@ -636,7 +638,7 @@ class DatabaseManager:
             )
             metadata = merge_dict(cur_item.metadata, album.metadata)
             provider_ids = merge_list(cur_item.provider_ids, album.provider_ids)
-            if cur_item.album_type == AlbumType.Unknown:
+            if cur_item.album_type == AlbumType.UNKNOWN:
                 album_type = album.album_type
             else:
                 album_type = cur_item.album_type
@@ -659,7 +661,7 @@ class DatabaseManager:
                 ),
             )
             await self._add_prov_ids(
-                item_id, MediaType.Album, album.provider_ids, db_conn=db_conn
+                item_id, MediaType.ALBUM, album.provider_ids, db_conn=db_conn
             )
             LOGGER.debug("updated album %s in database: %s", album.name, item_id)
             await db_conn.commit()
@@ -677,7 +679,7 @@ class DatabaseManager:
         if filter_query:
             sql_query += " " + filter_query
         sql_query += " ORDER BY %s" % orderby
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             return [
                 Track.from_db_row(db_row)
@@ -728,7 +730,7 @@ class DatabaseManager:
         """Add a new track record to the database."""
         assert track.album, "Track is missing album"
         assert track.artists, "Track is missing artist(s)"
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             cur_item = None
             # always try to grab existing item by matching
@@ -777,7 +779,7 @@ class DatabaseManager:
                     db_conn,
                 )
             await self._add_prov_ids(
-                new_item[0], MediaType.Track, track.provider_ids, db_conn=db_conn
+                new_item[0], MediaType.TRACK, track.provider_ids, db_conn=db_conn
             )
             await db_conn.commit()
             LOGGER.debug("added track %s to database", track.name)
@@ -786,7 +788,7 @@ class DatabaseManager:
 
     async def update_track(self, item_id: int, track: Track):
         """Update a track record in the database."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             db_conn.row_factory = aiosqlite.Row
             cur_item = await self.get_track(item_id)
 
@@ -815,7 +817,7 @@ class DatabaseManager:
                 ),
             )
             await self._add_prov_ids(
-                item_id, MediaType.Track, track.provider_ids, db_conn=db_conn
+                item_id, MediaType.TRACK, track.provider_ids, db_conn=db_conn
             )
             LOGGER.debug("updated track %s in database: %s", track.name, item_id)
             await db_conn.commit()
@@ -824,7 +826,7 @@ class DatabaseManager:
 
     async def set_track_loudness(self, item_id: str, provider: str, loudness: int):
         """Set integrated loudness for a track in db."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             sql_query = """INSERT or REPLACE INTO track_loudness
                 (item_id, provider, loudness) VALUES(?,?,?);"""
             await db_conn.execute(sql_query, (item_id, provider, loudness))
@@ -832,7 +834,7 @@ class DatabaseManager:
 
     async def get_track_loudness(self, provider_item_id, provider):
         """Get integrated loudness for a track in db."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             sql_query = """SELECT loudness FROM track_loudness WHERE
                 item_id = ? AND provider = ?"""
             async with db_conn.execute(
@@ -846,14 +848,14 @@ class DatabaseManager:
     async def get_provider_loudness(self, provider) -> Optional[float]:
         """Get average integrated loudness for tracks of given provider."""
         all_items = []
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             sql_query = """SELECT loudness FROM track_loudness WHERE provider = ?"""
             async with db_conn.execute(sql_query, (provider,)) as cursor:
                 result = await cursor.fetchone()
             if result:
                 return result[0]
         sql_query = """SELECT loudness FROM track_loudness WHERE provider = ?"""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             for db_row in await db_conn.execute_fetchall(sql_query, (provider,)):
                 all_items.append(db_row[0])
         if all_items:
@@ -863,7 +865,7 @@ class DatabaseManager:
     async def mark_item_played(self, item_id: str, provider: str):
         """Mark item as played in playlog."""
         timestamp = datetime.utcnow().timestamp()
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             sql_query = """INSERT or REPLACE INTO playlog
                 (item_id, provider, timestamp) VALUES(?,?,?);"""
             await db_conn.execute(sql_query, (item_id, provider, timestamp))
@@ -871,7 +873,7 @@ class DatabaseManager:
 
     async def get_thumbnail_id(self, url, size):
         """Get/create id for thumbnail."""
-        async with aiosqlite.connect(self._dbfile, timeout=120) as db_conn:
+        async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             sql_query = """SELECT id FROM thumbs WHERE
                 url = ? AND size = ?"""
             async with db_conn.execute(sql_query, (url, size)) as cursor:

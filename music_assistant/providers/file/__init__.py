@@ -83,7 +83,7 @@ class FileProvider(MusicProvider):
     @property
     def supported_mediatypes(self) -> List[MediaType]:
         """Return MediaTypes the provider supports."""
-        return [MediaType.Album, MediaType.Artist, MediaType.Playlist, MediaType.Track]
+        return [MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST, MediaType.TRACK]
 
     async def on_start(self) -> bool:
         """Handle initialization of the provider based on config."""

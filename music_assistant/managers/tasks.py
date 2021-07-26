@@ -46,7 +46,7 @@ class TaskInfo:
         self.periodic = periodic
         self.status = TaskStatus.PENDING
         self.error_details = ""
-        self.timestamp = int(time.time())
+        self.timestamp = 0
         self.id = str(uuid4())
 
     def to_dict(self) -> Dict[str, Any]:
@@ -54,10 +54,15 @@ class TaskInfo:
         return {
             "id": self.id,
             "name": self.name,
-            "status": self.status.name,
+            "status": self.status,
             "error_details": self.error_details,
             "timestamp": self.timestamp,
         }
+
+    @property
+    def dupe_hash(self):
+        """Return simple hash to identify duplicate tasks."""
+        return f"{self.name}.{self.target.__qualname__}.{self.args}"
 
 
 class TaskManager:
@@ -76,17 +81,19 @@ class TaskManager:
 
     def add(
         self,
+        name: str,
         target: Union[Callable, Awaitable],
         *args: Any,
-        name: str = None,
         periodic: Optional[int] = None,
-        **kwargs: Any
-    ) -> Optional[asyncio.Task]:
+        prevent_duplicate: bool = True,
+        **kwargs: Any,
+    ) -> TaskInfo:
         """Add a job/task to the task manager.
 
-        target: target to call (coroutine function or callable).
         name: A name to identify this task in the task queue.
-        periodic: [optional] run this task every X seconds,
+        target: target to call (coroutine function or callable).
+        periodic: [optional] run this task every X seconds.
+        prevent_duplicate: [default true] prevent same task running at same time
         args: [optional] parameters for method to call.
         kwargs: [optional] parameters for method to call.
         """
@@ -101,12 +108,18 @@ class TaskManager:
                 "Provide a coroutine function and not a coroutine itself"
             )
 
-        if not name:
-            name = target.__qualname__.replace(".", ": ").replace("_", " ").strip()
         task_info = TaskInfo(
             name, periodic=periodic, target=target, args=args, kwargs=kwargs
         )
+        if prevent_duplicate:
+            for task in self._queue.progress_items + self._queue.pending_items:
+                if task.dupe_hash == task_info.dupe_hash:
+                    LOGGER.debug(
+                        "Ignoring task %s as it is already running....", task_info.name
+                    )
+                    return task
         self._add_task(task_info)
+        return task_info
 
     @api_route("tasks")
     def get_all_tasks(self) -> List[TaskInfo]:
@@ -116,6 +129,7 @@ class TaskManager:
     def _add_task(self, task_info: TaskInfo) -> None:
         """Handle adding a task to the task queue."""
         LOGGER.debug("Adding task %s to Task Queue...", task_info.name)
+        task_info.timestamp = int(time.time())
         self._queue.put_nowait(task_info)
         self.mass.eventbus.signal(EVENT_TASK_UPDATED, task_info)
 
@@ -135,8 +149,8 @@ class TaskManager:
             )
         else:
             task_info.status = TaskStatus.FINISHED
-            self.mass.eventbus.signal(EVENT_TASK_UPDATED, task_info)
             LOGGER.debug("Task finished: %s", task_info.name)
+        self.mass.eventbus.signal(EVENT_TASK_UPDATED, task_info)
         # reschedule if the task is periodic
         if task_info.periodic:
             self.mass.loop.call_later(task_info.periodic, self._add_task, task_info)
@@ -150,7 +164,6 @@ class TaskManager:
             setattr(task, "task_info", next_task)
             task.add_done_callback(self.__task_done_callback)
             self.mass.eventbus.signal(EVENT_TASK_UPDATED, next_task)
-            await asyncio.sleep(1)
 
 
 class TasksQueue:
@@ -185,6 +198,8 @@ class TasksQueue:
 
     def put_nowait(self, item: TaskInfo) -> None:
         """Put item in the queue to progress."""
+        if item in self._finished_items:
+            self._finished_items.remove(item)
         return self._pending_items.put_nowait(item)
 
     async def put(self, item: TaskInfo) -> None:

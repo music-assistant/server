@@ -282,6 +282,7 @@ class WebServer:
         ws_client.authenticated = False
         await ws_client.prepare(request)
         request.app["clients"].append(ws_client)
+        await self._send_json(ws_client, type="info", data=self.discovery_info)
 
         # handle incoming messages
         async for msg in ws_client:
@@ -295,28 +296,43 @@ class WebServer:
                 if msg.data == "close":
                     await ws_client.close()
                     break
-                # regular message
+                # process message
                 json_msg = msg.json(loads=ujson.loads)
-                if "command" in json_msg and "data" in json_msg:
-                    # handle command
+                # handle auth command
+                if json_msg["command"] == "auth":
+                    token_info = jwt.decode(
+                        json_msg["data"], self.mass.web.jwt_key, algorithms=["HS256"]
+                    )
+                    if self.mass.config.security.is_token_revoked(token_info):
+                        raise AuthenticationError("Token is revoked")
+                    ws_client.authenticated = True
+                    self.mass.config.security.set_last_login(token_info["client_id"])
+                    # TODO: store token/app_id on ws_client obj and periodiclaly check if token is expired or revoked
+                    await self._send_json(
+                        ws_client,
+                        type="auth",
+                        msg_id=json_msg.get("id"),
+                        data=token_info,
+                    )
+                # handle regular command
+                else:
                     await self._handle_command(
                         ws_client,
-                        json_msg["command"],
-                        json_msg["data"],
-                        json_msg.get("id"),
-                    )
-                elif "event" in json_msg:
-                    # handle event
-                    await self._handle_event(
-                        ws_client, json_msg["event"], json_msg.get("data")
+                        command=json_msg["command"],
+                        data=json_msg.get("data"),
+                        msg_id=json_msg.get("id"),
                     )
             except AuthenticationError as exc:  # pylint:disable=broad-except
                 # disconnect client on auth errors
-                await self._send_json(ws_client, error=str(exc), **json_msg)
+                await self._send_json(
+                    ws_client, type="error", msg_id=json_msg.get("id"), data=str(exc)
+                )
                 await ws_client.close(message=str(exc).encode())
             except Exception as exc:  # pylint:disable=broad-except
                 # log the error only
-                await self._send_json(ws_client, error=str(exc), **json_msg)
+                await self._send_json(
+                    ws_client, type="error", msg_id=json_msg.get("id"), data=str(exc)
+                )
                 LOGGER.error("Error with WS client", exc_info=exc)
 
         # websocket disconnected
@@ -333,9 +349,8 @@ class WebServer:
         msg_id: Any = None,
     ):
         """Handle websocket command."""
+        LOGGER.debug("Handling command %s", command)
         res = None
-        if command == "auth":
-            return await self._handle_auth(ws_client, data)
         # work out handler for the given path/command
         for key in self.api_routes:
             match = repath.match_pattern(key, command)
@@ -356,28 +371,26 @@ class WebServer:
                     res = await res
                 # return result of command to client
                 return await self._send_json(
-                    ws_client, id=msg_id, result=command, data=res
+                    ws_client, type="result", msg_id=msg_id, data=res
                 )
-        raise KeyError("Unknown command")
+        raise KeyError(f"Unknown command: {command}")
 
     async def _handle_event(self, ws_client: WebSocketResponse, event: str, data: Any):
         """Handle event message from ws client."""
         if ws_client.authenticated:
             self.mass.eventbus.signal(event, data)
 
-    async def _handle_auth(self, ws_client: WebSocketResponse, token: str):
-        """Handle authentication with JWT token."""
-        token_info = jwt.decode(token, self.mass.web.jwt_key, algorithms=["HS256"])
-        if self.mass.config.security.is_token_revoked(token_info):
-            raise AuthenticationError("Token is revoked")
-        ws_client.authenticated = True
-        self.mass.config.security.set_last_login(token_info["client_id"])
-        # TODO: store token/app_id on ws_client obj and periodiclaly check if token is expired or revoked
-        await self._send_json(ws_client, result="auth", data=token_info)
-
-    async def _send_json(self, ws_client: WebSocketResponse, **kwargs):
+    async def _send_json(
+        self,
+        ws_client: WebSocketResponse,
+        type: str,  # pylint:disable=redefined-builtin
+        msg_id: Optional[int] = None,  # pylint:disable=redefined-builtin
+        data: Optional[Any] = None,
+    ):
         """Send message (back) to websocket client."""
-        await ws_client.send_str(json_serializer(kwargs))
+        await ws_client.send_str(
+            json_serializer({"type": type, "id": msg_id, "data": data})
+        )
 
     async def _handle_mass_events(self, event: str, event_data: Any):
         """Broadcast events to connected clients."""
@@ -385,7 +398,11 @@ class WebServer:
             if not ws_client.authenticated:
                 continue
             try:
-                await self._send_json(ws_client, event=event, data=event_data)
+                await self._send_json(
+                    ws_client,
+                    type="event",
+                    data={"event": event, "event_data": event_data},
+                )
             except ConnectionResetError:
                 # client is already disconnected
                 self.app["clients"].remove(ws_client)

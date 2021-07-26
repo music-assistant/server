@@ -79,7 +79,7 @@ class GroupPlayer(Player):
         self._provider_id = PROV_ID
         self._name = f"{PROV_NAME} {player_index}"
         self._powered = False
-        self._state = PlaybackState.Stopped
+        self._state = PlaybackState.STOPPED
         self._available = True
         self._current_uri = ""
         self._volume_level = 0
@@ -138,7 +138,7 @@ class GroupPlayer(Player):
     @property
     def elapsed_time(self):
         """Return elapsed time for first child player."""
-        if self.state in [PlaybackState.Playing, PlaybackState.Paused]:
+        if self.state in [PlaybackState.PLAYING, PlaybackState.PAUSED]:
             for player_id in self.group_childs:
                 player = self.mass.players.get_player(player_id)
                 if player:
@@ -235,7 +235,7 @@ class GroupPlayer(Player):
         """Play the specified uri/url on the player."""
         await self.cmd_stop()
         self._current_uri = uri
-        self._state = PlaybackState.Playing
+        self._state = PlaybackState.PLAYING
         self._powered = True
         # forward this command to each child player
         # TODO: Only start playing on powered players ?
@@ -250,7 +250,7 @@ class GroupPlayer(Player):
 
     async def cmd_stop(self) -> None:
         """Send STOP command to player."""
-        self._state = PlaybackState.Stopped
+        self._state = PlaybackState.STOPPED
         if self.stream_task:
             # cancel existing stream task if any
             self.stream_task.cancel()
@@ -268,14 +268,14 @@ class GroupPlayer(Player):
 
     async def cmd_play(self) -> None:
         """Send PLAY command to player."""
-        if not self.state == PlaybackState.Paused:
+        if not self.state == PlaybackState.PAUSED:
             return
         # forward this command to each child player
         for child_player_id in self.group_childs:
             child_player = self.mass.players.get_player(child_player_id)
             if child_player:
                 await child_player.cmd_play()
-        self._state = PlaybackState.Playing
+        self._state = PlaybackState.PLAYING
         self.update_state()
 
     async def cmd_pause(self):
@@ -285,7 +285,7 @@ class GroupPlayer(Player):
             child_player = self.mass.players.get_player(child_player_id)
             if child_player:
                 await child_player.cmd_pause()
-        self._state = PlaybackState.Paused
+        self._state = PlaybackState.PAUSED
         self.update_state()
 
     async def cmd_power_on(self) -> None:
@@ -398,7 +398,7 @@ class GroupPlayer(Player):
         )
 
         # wait until master is playing
-        while master_player.state != PlaybackState.Playing:
+        while master_player.state != PlaybackState.PLAYING:
             await asyncio.sleep(0.1)
         await asyncio.sleep(0.5)
 
@@ -418,7 +418,7 @@ class GroupPlayer(Player):
 
                 if (
                     not child_player
-                    or child_player.state != PlaybackState.Playing
+                    or child_player.state != PlaybackState.PLAYING
                     or child_player.elapsed_milliseconds is None
                 ):
                     continue

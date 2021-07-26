@@ -21,6 +21,7 @@ from music_assistant.helpers.compare import (
 from music_assistant.helpers.musicbrainz import MusicBrainz
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.web import api_route
+from music_assistant.managers.tasks import TaskInfo
 from music_assistant.models.media_types import (
     Album,
     AlbumType,
@@ -48,6 +49,7 @@ class MusicManager:
         self.mass = mass
         self.cache = mass.cache
         self.musicbrainz = MusicBrainz(mass)
+        self._db_add_progress = set()
 
     async def setup(self):
         """Async initialize of module."""
@@ -69,23 +71,23 @@ class MusicManager:
         lazy: bool = True,
     ):
         """Get single music item by id and media type."""
-        if media_type == MediaType.Artist:
+        if media_type == MediaType.ARTIST:
             return await self.get_artist(
                 item_id, provider_id, refresh=refresh, lazy=lazy
             )
-        if media_type == MediaType.Album:
+        if media_type == MediaType.ALBUM:
             return await self.get_album(
                 item_id, provider_id, refresh=refresh, lazy=lazy
             )
-        if media_type == MediaType.Track:
+        if media_type == MediaType.TRACK:
             return await self.get_track(
                 item_id, provider_id, refresh=refresh, lazy=lazy
             )
-        if media_type == MediaType.Playlist:
+        if media_type == MediaType.PLAYLIST:
             return await self.get_playlist(
                 item_id, provider_id, refresh=refresh, lazy=lazy
             )
-        if media_type == MediaType.Radio:
+        if media_type == MediaType.RADIO:
             return await self.get_radio(
                 item_id, provider_id, refresh=refresh, lazy=lazy
             )
@@ -106,7 +108,9 @@ class MusicManager:
         artist = await self._get_provider_artist(item_id, provider_id)
         if not lazy:
             return await self.add_artist(artist)
-        self.mass.add_background_task(self.add_artist(artist))
+        self.mass.tasks.add(
+            f"Add artist {artist.uri} to database", self.add_artist, artist
+        )
         return db_item if db_item else artist
 
     async def _get_provider_artist(self, item_id: str, provider_id: str) -> Artist:
@@ -137,7 +141,7 @@ class MusicManager:
         album = await self._get_provider_album(item_id, provider_id)
         if not lazy:
             return await self.add_album(album)
-        self.mass.add_background_task(self.add_album(album))
+        self.mass.tasks.add(f"Add album {album.uri} to database", self.add_album, album)
         return db_item if db_item else album
 
     async def _get_provider_album(self, item_id: str, provider_id: str) -> Album:
@@ -177,7 +181,9 @@ class MusicManager:
             track_details.album = album_details
         if not lazy:
             return await self.add_track(track_details)
-        self.mass.add_background_task(self.add_track(track_details))
+        self.mass.tasks.add(
+            f"Add track {track_details.uri} to database", self.add_track, track_details
+        )
         return db_item if db_item else track_details
 
     async def _get_provider_track(self, item_id: str, provider_id: str) -> Track:
@@ -207,7 +213,9 @@ class MusicManager:
         playlist = await self._get_provider_playlist(item_id, provider_id)
         if not lazy:
             return await self.add_playlist(playlist)
-        self.mass.add_background_task(self.add_playlist(playlist))
+        self.mass.tasks.add(
+            f"Add playlist {playlist.name} to database", self.add_playlist, playlist
+        )
         return db_item if db_item else playlist
 
     async def _get_provider_playlist(self, item_id: str, provider_id: str) -> Playlist:
@@ -243,7 +251,9 @@ class MusicManager:
         radio = await self._get_provider_radio(item_id, provider_id)
         if not lazy:
             return await self.add_radio(radio)
-        self.mass.add_background_task(self.add_radio(radio))
+        self.mass.tasks.add(
+            f"Add radio station {radio.name} to database", self.add_radio, radio
+        )
         return db_item if db_item else radio
 
     async def _get_provider_radio(self, item_id: str, provider_id: str) -> Radio:
@@ -303,7 +313,7 @@ class MusicManager:
             prov_item
             for prov_items in await asyncio.gather(
                 *[
-                    self.search_provider(search_query, prov_id, [MediaType.Album], 25)
+                    self.search_provider(search_query, prov_id, [MediaType.ALBUM], 25)
                     for prov_id in provider_ids
                 ]
             )
@@ -324,7 +334,7 @@ class MusicManager:
             prov_item
             for prov_items in await asyncio.gather(
                 *[
-                    self.search_provider(search_query, prov_id, [MediaType.Track], 25)
+                    self.search_provider(search_query, prov_id, [MediaType.TRACK], 25)
                     for prov_id in provider_ids
                 ]
             )
@@ -524,6 +534,50 @@ class MusicManager:
             # TODO: sort by name and filter out duplicates ?
         return result
 
+    @api_route("items/refresh")
+    async def refresh_items(self, items: List[MediaItem]) -> List[TaskInfo]:
+        """
+        Refresh MediaItems to force retrieval of full info and matches.
+
+        Creates background tasks to process the action.
+        """
+        result = []
+        for media_item in items:
+            job_desc = f"Refresh metadata of {media_item.uri}"
+            result.append(self.mass.tasks.add(job_desc, self.refresh_item, media_item))
+        return result
+
+    async def refresh_item(
+        self,
+        media_item: MediaItem,
+    ):
+        """Try to refresh a mediaitem by requesting it's full object or search for substitutes."""
+        try:
+            return await self.get_item(
+                media_item.item_id,
+                media_item.provider,
+                media_item.media_type,
+                refresh=True,
+                lazy=False,
+            )
+        except Exception:  # pylint:disable=broad-except
+            pass
+        searchresult: SearchResult = await self.global_search(
+            media_item.name, [media_item.media_type], 20
+        )
+        for items in [
+            searchresult.artists,
+            searchresult.albums,
+            searchresult.tracks,
+            searchresult.playlists,
+            searchresult.radios,
+        ]:
+            for item in items:
+                if item.available:
+                    await self.get_item(
+                        item.item_id, item.provider, item.media_type, lazy=False
+                    )
+
     async def get_stream_details(
         self, media_item: MediaItem, player_id: str = ""
     ) -> StreamDetails:
@@ -535,11 +589,11 @@ class MusicManager:
             param media_item: The MediaItem (track/radio) for which to request the streamdetails for.
             param player_id: Optionally provide the player_id which will play this stream.
         """
-        if media_item.provider == "uri":
-            # special type: a plain uri was added to the queue
+        if media_item.provider == "url":
+            # special case: a plain url was added to the queue
             streamdetails = StreamDetails(
                 type=StreamType.URL,
-                provider="uri",
+                provider="url",
                 item_id=media_item.item_id,
                 path=media_item.item_id,
                 content_type=ContentType(media_item.item_id.split(".")[-1]),
@@ -549,7 +603,7 @@ class MusicManager:
         else:
             # always request the full db track as there might be other qualities available
             # except for radio
-            if media_item.media_type == MediaType.Radio:
+            if media_item.media_type == MediaType.RADIO:
                 full_track = media_item
             else:
                 full_track = (
@@ -602,6 +656,7 @@ class MusicManager:
         db_item = await self.mass.database.add_artist(artist)
         # also fetch same artist on all providers
         await self.match_artist(db_item)
+        db_item = await self.mass.database.get_artist(db_item.item_id)
         self.mass.eventbus.signal(EVENT_ARTIST_ADDED, db_item)
         return db_item
 
@@ -612,6 +667,7 @@ class MusicManager:
         db_item = await self.mass.database.add_album(album)
         # also fetch same album on all providers
         await self.match_album(db_item)
+        db_item = await self.mass.database.get_album(db_item.item_id)
         self.mass.eventbus.signal(EVENT_ALBUM_ADDED, db_item)
         return db_item
 
@@ -624,6 +680,7 @@ class MusicManager:
         db_item = await self.mass.database.add_track(track)
         # also fetch same track on all providers (will also get other quality versions)
         await self.match_track(db_item)
+        db_item = await self.mass.database.get_track(db_item.item_id)
         self.mass.eventbus.signal(EVENT_TRACK_ADDED, db_item)
         return db_item
 
@@ -686,7 +743,7 @@ class MusicManager:
         for provider in self.mass.get_providers(ProviderType.MUSIC_PROVIDER):
             if provider.id in cur_providers:
                 continue
-            if MediaType.Artist not in provider.supported_mediatypes:
+            if MediaType.ARTIST not in provider.supported_mediatypes:
                 continue
             if not await self._match_prov_artist(db_artist, provider):
                 LOGGER.debug(
@@ -709,7 +766,7 @@ class MusicManager:
                 ref_track = await self.get_track(ref_track.item_id, ref_track.provider)
             searchstr = "%s %s" % (db_artist.name, ref_track.name)
             search_results = await self.search_provider(
-                searchstr, provider.id, [MediaType.Track], limit=25
+                searchstr, provider.id, [MediaType.TRACK], limit=25
             )
             for search_result_item in search_results.tracks:
                 if compare_track(search_result_item, ref_track):
@@ -730,11 +787,11 @@ class MusicManager:
             db_artist.item_id, db_artist.provider
         )
         for ref_album in artist_albums:
-            if ref_album.album_type == AlbumType.Compilation:
+            if ref_album.album_type == AlbumType.COMPILATION:
                 continue
             searchstr = "%s %s" % (db_artist.name, ref_album.name)
             search_result = await self.search_provider(
-                searchstr, provider.id, [MediaType.Album], limit=25
+                searchstr, provider.id, [MediaType.ALBUM], limit=25
             )
             for search_result_item in search_result.albums:
                 # artist must match 100%
@@ -775,7 +832,7 @@ class MusicManager:
             if db_album.version:
                 searchstr += " " + db_album.version
             search_result = await self.search_provider(
-                searchstr, provider.id, [MediaType.Album], limit=25
+                searchstr, provider.id, [MediaType.ALBUM], limit=25
             )
             for search_result_item in search_result.albums:
                 if not search_result_item.available:
@@ -810,7 +867,7 @@ class MusicManager:
         # try to find match on all providers
         providers = self.mass.get_providers(ProviderType.MUSIC_PROVIDER)
         for provider in providers:
-            if MediaType.Album in provider.supported_mediatypes:
+            if MediaType.ALBUM in provider.supported_mediatypes:
                 await find_prov_match(provider)
 
     async def match_track(self, db_track: Track):
@@ -826,7 +883,7 @@ class MusicManager:
             # matching only works if we have a full track object
             db_track = await self.mass.database.get_track(db_track.item_id)
         for provider in self.mass.get_providers(ProviderType.MUSIC_PROVIDER):
-            if MediaType.Track not in provider.supported_mediatypes:
+            if MediaType.TRACK not in provider.supported_mediatypes:
                 continue
             LOGGER.debug(
                 "Trying to match track %s on provider %s", db_track.name, provider.name
@@ -839,7 +896,7 @@ class MusicManager:
                 if db_track.version:
                     searchstr += " " + db_track.version
                 search_result = await self.search_provider(
-                    searchstr, provider.id, [MediaType.Track], limit=25
+                    searchstr, provider.id, [MediaType.TRACK], limit=25
                 )
                 for search_result_item in search_result.tracks:
                     if not search_result_item.available:

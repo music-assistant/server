@@ -5,13 +5,13 @@ import random
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     EVENT_QUEUE_ITEMS_UPDATED,
-    EVENT_QUEUE_TIME_UPDATED,
     EVENT_QUEUE_UPDATED,
 )
 from music_assistant.helpers.typing import (
@@ -35,10 +35,10 @@ LOGGER = logging.getLogger("player_queue")
 class QueueOption(Enum):
     """Enum representation of the queue (play) options."""
 
-    Play = "play"
-    Replace = "replace"
-    Next = "next"
-    Add = "add"
+    PLAY = "play"
+    REPLACE = "replace"
+    NEXT = "next"
+    ADD = "add"
 
 
 @dataclass
@@ -51,6 +51,7 @@ class QueueItem(Track):
 
     def __post_init__(self):
         """Generate unique id for the QueueItem."""
+        super().__post_init__()
         self.queue_item_id = str(uuid.uuid4())
 
     @classmethod
@@ -74,7 +75,7 @@ class PlayerQueue:
         self._last_item = None
         self._queue_stream_start_index = 0
         self._queue_stream_next_index = 0
-        self._last_player = PlaybackState.Stopped
+        self._last_update_sent = 0
         # load previous queue settings from disk
         create_task(self._restore_saved_state())
 
@@ -125,6 +126,7 @@ class PlayerQueue:
                 items = played_items + [self.cur_item] + next_items
                 await self.update(items)
         self.update_state()
+        self._last_update_sent = time.time()
         self.mass.eventbus.signal(EVENT_QUEUE_UPDATED, self)
 
     @property
@@ -138,6 +140,7 @@ class PlayerQueue:
             self._repeat_enabled = enable_repeat
             self.update_state()
             create_task(self._save_state())
+            self._last_update_sent = time.time()
             self.mass.eventbus.signal(EVENT_QUEUE_UPDATED, self)
 
     @property
@@ -290,6 +293,7 @@ class PlayerQueue:
 
     async def resume(self) -> None:
         """Resume previous queue."""
+        # TODO: Support skipping to last known position
         if self.items:
             prev_index = self.cur_index
             if self.use_queue_stream or not self.supports_queue:
@@ -338,7 +342,7 @@ class PlayerQueue:
         """
         items = self.items.copy()
         item_index = self.__index_by_id(queue_item_id)
-        if pos_shift == 0 and self.player.state == PlaybackState.Playing:
+        if pos_shift == 0 and self.player.state == PlaybackState.PLAYING:
             new_index = self.cur_index + 1
         elif pos_shift == 0:
             new_index = self.cur_index
@@ -478,7 +482,7 @@ class PlayerQueue:
         # handle queue stream
         if (
             self.use_queue_stream
-            and self.player.state == PlaybackState.Playing
+            and self.player.state == PlaybackState.PLAYING
             and self.player.elapsed_time > 1
         ):
             new_index, track_time = self.__get_queue_stream_index()
@@ -500,18 +504,24 @@ class PlayerQueue:
             and self.cur_item.streamdetails
         ):
             # new active item in queue
+            self._last_update_sent = time.time()
             self.mass.eventbus.signal(EVENT_QUEUE_UPDATED, self)
             # invalidate previous streamdetails
             if self._last_item:
                 self._last_item.streamdetails = None
             self._last_item = self.cur_item
         # update vars
+        track_time = int(track_time)
         if self._cur_item_time != track_time:
             self._cur_item_time = track_time
-            self.mass.eventbus.signal(
-                EVENT_QUEUE_TIME_UPDATED,
-                {"queue_id": self.queue_id, "cur_item_time": track_time},
-            )
+            # only send media_position (cur_item_time) every 30 seconds
+            cur_time = time.time()
+            if cur_time - self._last_update_sent >= 30:
+                self._last_update_sent = cur_time
+                self.mass.eventbus.signal(
+                    EVENT_QUEUE_UPDATED,
+                    self,
+                )
 
     async def queue_stream_start(self) -> None:
         """Call when queue_streamer starts playing the queue stream."""
@@ -545,9 +555,9 @@ class PlayerQueue:
             "cur_index": self.cur_index,
             "next_index": self.next_index,
             "cur_item": self.cur_item.to_dict() if self.cur_item else None,
-            "cur_item_time": self.cur_item_time,
+            "cur_item_time": int(self.cur_item_time),
             "next_item": self.next_item.to_dict() if self.next_item else None,
-            "queue_stream_enabled": self.use_queue_stream,
+            "media_position_updated_at": int(datetime.utcnow().timestamp()),
         }
 
     @callback

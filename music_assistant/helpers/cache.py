@@ -36,7 +36,7 @@ class Cache:
             await db_conn.commit()
             await db_conn.execute("VACUUM;")
             await db_conn.commit()
-        self.mass.tasks.add(self.auto_cleanup, name="Cleanup cache", periodic=3600)
+        self.mass.tasks.add("Cleanup cache", self.auto_cleanup, periodic=3600)
 
     async def get(self, cache_key, checksum="", default=None):
         """

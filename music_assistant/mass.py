@@ -219,7 +219,7 @@ class MusicAssistant:
             await self.register_provider(provider)
         else:
             # try preloading all providers
-            self.tasks.add(self._preload_providers, description="Reload providers")
+            self.tasks.add("Reload providers", self._preload_providers)
 
     @callback
     def get_provider(self, provider_id: str) -> Provider:

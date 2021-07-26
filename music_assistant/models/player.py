@@ -22,10 +22,10 @@ from music_assistant.models.config_entry import ConfigEntry
 class PlaybackState(Enum):
     """Enum for the playstate of a player."""
 
-    Stopped = "stopped"
-    Paused = "paused"
-    Playing = "playing"
-    Off = "off"
+    STOPPED = "stopped"
+    PAUSED = "paused"
+    PLAYING = "playing"
+    OFF = "off"
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,7 @@ class PlayerState(DataClassDictMixin):
     provider_id: str = None
     name: str = None
     powered: bool = False
-    state: PlaybackState = PlaybackState.Off
+    state: PlaybackState = PlaybackState.OFF
     available: bool = False
     volume_level: int = 0
     elapsed_time: int = 0
@@ -172,7 +172,7 @@ class Player:
     @abstractmethod
     def state(self) -> PlaybackState:
         """Return current PlaybackState of player."""
-        return PlaybackState.Stopped
+        return PlaybackState.STOPPED
 
     @property
     def available(self) -> bool:
@@ -401,7 +401,7 @@ class Player:
             if self.enabled:
                 # player is now enabled and can be added
                 self.mass.tasks.add(
-                    self.mass.players.add_player(self), name=f"Add player {self.name}"
+                    f"Add player {self.name}", self.mass.players.add_player(self)
                 )
             return
         new_state = self.create_state()
@@ -448,8 +448,8 @@ class Player:
         if self.powered and self.active_queue != self.player_id:
             # use group state
             return self.mass.players.get_player(self.active_queue).state
-        if self.state == PlaybackState.Stopped and not self.powered:
-            return PlaybackState.Off
+        if self.state == PlaybackState.STOPPED and not self.powered:
+            return PlaybackState.OFF
         return self.state
 
     @callback
@@ -499,8 +499,8 @@ class Player:
         for group_player_id in self.group_parents:
             group_player = self.mass.players.get_player(group_player_id)
             if group_player and group_player.state in [
-                PlaybackState.Playing,
-                PlaybackState.Paused,
+                PlaybackState.PLAYING,
+                PlaybackState.PAUSED,
             ]:
                 return group_player_id
         return self.player_id

@@ -97,16 +97,16 @@ class ChromecastPlayer(Player):
     def state(self) -> PlaybackState:
         """Return the state of the player."""
         if not self.powered:
-            return PlaybackState.Off
+            return PlaybackState.OFF
         if self.media_status is None:
-            return PlaybackState.Stopped
+            return PlaybackState.STOPPED
         if self.media_status.player_is_playing:
-            return PlaybackState.Playing
+            return PlaybackState.PLAYING
         if self.media_status.player_is_paused:
-            return PlaybackState.Paused
+            return PlaybackState.PAUSED
         if self.media_status.player_is_idle:
-            return PlaybackState.Stopped
-        return PlaybackState.Stopped
+            return PlaybackState.STOPPED
+        return PlaybackState.STOPPED
 
     @property
     def elapsed_time(self) -> int:

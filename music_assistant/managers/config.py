@@ -664,9 +664,7 @@ class ConfigSubItem:
                     stored_conf[self.parent_conf_key][self.conf_key] = {}
                 stored_conf[self.parent_conf_key][self.conf_key][key] = value
 
-                self.conf_mgr.mass.tasks.add(
-                    self.conf_mgr.save, description="Save configuration"
-                )
+                self.conf_mgr.mass.tasks.add("Save configuration", self.conf_mgr.save)
                 # reload provider/plugin if value changed
                 if self.parent_conf_key in PROVIDER_TYPE_MAPPINGS:
                     self.conf_mgr.mass.reload_provider(self.conf_key)

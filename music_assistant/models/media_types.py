@@ -11,28 +11,29 @@ from mashumaro import DataClassDictMixin
 class MediaType(Enum):
     """Enum for MediaType."""
 
-    Artist = "artist"
-    Album = "album"
-    Track = "track"
-    Playlist = "playlist"
-    Radio = "radio"
+    ARTIST = "artist"
+    ALBUM = "album"
+    TRACK = "track"
+    PLAYLIST = "playlist"
+    RADIO = "radio"
+    UNKNOWN = "unknown"
 
 
 class ContributorRole(Enum):
     """Enum for Contributor Role."""
 
-    Artist = "artist"
-    Writer = "writer"
-    Producer = "producer"
+    ARTIST = "artist"
+    WRITER = "writer"
+    PRODUCER = "producer"
 
 
 class AlbumType(Enum):
     """Enum for Album type."""
 
-    Album = "album"
-    Single = "single"
-    Compilation = "compilation"
-    Unknown = "unknown"
+    ALBUM = "album"
+    SINGLE = "single"
+    COMPILATION = "compilation"
+    UNKNOWN = "unknown"
 
 
 class TrackQuality(IntEnum):
@@ -74,10 +75,16 @@ class MediaItem(DataClassDictMixin):
     metadata: Dict[str, Any] = field(default_factory=dict)
     provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
     in_library: bool = False
-    media_type: MediaType = MediaType.Track
+    media_type: MediaType = MediaType.UNKNOWN
+    uri: str = ""
+
+    def __post_init__(self):
+        """Call after init."""
+        if not self.uri:
+            self.uri = f"{self.provider}://{self.media_type.value}/{self.item_id}"
 
     @classmethod
-    def from_dict(cls, dict_obj):
+    def from_dict(cls, dict_obj: dict):
         # pylint: disable=arguments-differ
         """Parse MediaItem from dict."""
         if dict_obj["media_type"] == "artist":
@@ -130,7 +137,7 @@ class MediaItem(DataClassDictMixin):
 class Artist(MediaItem):
     """Model for an artist."""
 
-    media_type: MediaType = MediaType.Artist
+    media_type: MediaType = MediaType.ARTIST
     musicbrainz_id: str = ""
 
     def __hash__(self):
@@ -145,7 +152,7 @@ class ItemMapping(DataClassDictMixin):
     item_id: str
     provider: str
     name: str = ""
-    media_type: MediaType = MediaType.Artist
+    media_type: MediaType = MediaType.ARTIST
 
     @classmethod
     def from_item(cls, item: Mapping):
@@ -161,11 +168,11 @@ class ItemMapping(DataClassDictMixin):
 class Album(MediaItem):
     """Model for an album."""
 
-    media_type: MediaType = MediaType.Album
+    media_type: MediaType = MediaType.ALBUM
     version: str = ""
     year: int = 0
     artist: ItemMapping = None
-    album_type: AlbumType = AlbumType.Unknown
+    album_type: AlbumType = AlbumType.UNKNOWN
     upc: str = ""
 
     def __hash__(self):
@@ -188,7 +195,7 @@ class FullAlbum(Album):
 class Track(MediaItem):
     """Model for a track."""
 
-    media_type: MediaType = MediaType.Track
+    media_type: MediaType = MediaType.TRACK
     duration: int = 0
     version: str = ""
     isrc: str = ""
@@ -223,7 +230,7 @@ class FullTrack(Track):
 class Playlist(MediaItem):
     """Model for a playlist."""
 
-    media_type: MediaType = MediaType.Playlist
+    media_type: MediaType = MediaType.PLAYLIST
     owner: str = ""
     checksum: str = ""  # some value to detect playlist track changes
     is_editable: bool = False
@@ -237,7 +244,7 @@ class Playlist(MediaItem):
 class Radio(MediaItem):
     """Model for a radio station."""
 
-    media_type: MediaType = MediaType.Radio
+    media_type: MediaType = MediaType.RADIO
     duration: int = 86400
 
     def __hash__(self):
