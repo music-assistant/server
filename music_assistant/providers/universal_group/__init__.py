@@ -7,7 +7,7 @@ from typing import List
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
-from music_assistant.models.player import DeviceInfo, PlaybackState, Player
+from music_assistant.models.player import DeviceInfo, Player, PlayerState
 from music_assistant.models.provider import PlayerProvider
 
 PROV_ID = "universal_group"
@@ -79,7 +79,7 @@ class GroupPlayer(Player):
         self._provider_id = PROV_ID
         self._name = f"{PROV_NAME} {player_index}"
         self._powered = False
-        self._state = PlaybackState.STOPPED
+        self._state = PlayerState.IDLE
         self._available = True
         self._current_uri = ""
         self._volume_level = 0
@@ -111,8 +111,8 @@ class GroupPlayer(Player):
         return self._powered
 
     @property
-    def state(self) -> PlaybackState:
-        """Return current PlaybackState of player."""
+    def state(self) -> PlayerState:
+        """Return current PlayerState of player."""
         return self._state
 
     @property
@@ -138,7 +138,7 @@ class GroupPlayer(Player):
     @property
     def elapsed_time(self):
         """Return elapsed time for first child player."""
-        if self.state in [PlaybackState.PLAYING, PlaybackState.PAUSED]:
+        if self.state in [PlayerState.PLAYING, PlayerState.PAUSED]:
             for player_id in self.group_childs:
                 player = self.mass.players.get_player(player_id)
                 if player:
@@ -235,7 +235,7 @@ class GroupPlayer(Player):
         """Play the specified uri/url on the player."""
         await self.cmd_stop()
         self._current_uri = uri
-        self._state = PlaybackState.PLAYING
+        self._state = PlayerState.PLAYING
         self._powered = True
         # forward this command to each child player
         # TODO: Only start playing on powered players ?
@@ -250,7 +250,7 @@ class GroupPlayer(Player):
 
     async def cmd_stop(self) -> None:
         """Send STOP command to player."""
-        self._state = PlaybackState.STOPPED
+        self._state = PlayerState.IDLE
         if self.stream_task:
             # cancel existing stream task if any
             self.stream_task.cancel()
@@ -268,14 +268,14 @@ class GroupPlayer(Player):
 
     async def cmd_play(self) -> None:
         """Send PLAY command to player."""
-        if not self.state == PlaybackState.PAUSED:
+        if not self.state == PlayerState.PAUSED:
             return
         # forward this command to each child player
         for child_player_id in self.group_childs:
             child_player = self.mass.players.get_player(child_player_id)
             if child_player:
                 await child_player.cmd_play()
-        self._state = PlaybackState.PLAYING
+        self._state = PlayerState.PLAYING
         self.update_state()
 
     async def cmd_pause(self):
@@ -285,7 +285,7 @@ class GroupPlayer(Player):
             child_player = self.mass.players.get_player(child_player_id)
             if child_player:
                 await child_player.cmd_pause()
-        self._state = PlaybackState.PAUSED
+        self._state = PlayerState.PAUSED
         self.update_state()
 
     async def cmd_power_on(self) -> None:
@@ -398,7 +398,7 @@ class GroupPlayer(Player):
         )
 
         # wait until master is playing
-        while master_player.state != PlaybackState.PLAYING:
+        while master_player.state != PlayerState.PLAYING:
             await asyncio.sleep(0.1)
         await asyncio.sleep(0.5)
 
@@ -418,7 +418,7 @@ class GroupPlayer(Player):
 
                 if (
                     not child_player
-                    or child_player.state != PlaybackState.PLAYING
+                    or child_player.state != PlayerState.PLAYING
                     or child_player.elapsed_milliseconds is None
                 ):
                     continue

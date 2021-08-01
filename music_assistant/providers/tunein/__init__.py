@@ -176,6 +176,7 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType(stream["media_type"]),
                     sample_rate=44100,
                     bit_depth=16,
+                    media_type=MediaType.RADIO,
                     details=stream,
                 )
         return None

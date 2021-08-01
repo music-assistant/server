@@ -2,10 +2,11 @@
 
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Any, Dict, List, Mapping, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 import ujson
 from mashumaro import DataClassDictMixin
+from music_assistant.helpers.util import create_uri
 
 
 class MediaType(Enum):
@@ -67,7 +68,7 @@ class MediaItemProviderId(DataClassDictMixin):
 
 @dataclass
 class MediaItem(DataClassDictMixin):
-    """Representation of a media item."""
+    """Base representation of a media item."""
 
     item_id: str
     provider: str
@@ -81,7 +82,7 @@ class MediaItem(DataClassDictMixin):
     def __post_init__(self):
         """Call after init."""
         if not self.uri:
-            self.uri = f"{self.provider}://{self.media_type.value}/{self.item_id}"
+            self.uri = create_uri(self.media_type, self.provider, self.item_id)
 
     @classmethod
     def from_dict(cls, dict_obj: dict):
@@ -153,6 +154,12 @@ class ItemMapping(DataClassDictMixin):
     provider: str
     name: str = ""
     media_type: MediaType = MediaType.ARTIST
+    uri: str = ""
+
+    def __post_init__(self):
+        """Call after init."""
+        if not self.uri:
+            self.uri = create_uri(self.media_type, self.provider, self.item_id)
 
     @classmethod
     def from_item(cls, item: Mapping):
@@ -171,7 +178,7 @@ class Album(MediaItem):
     media_type: MediaType = MediaType.ALBUM
     version: str = ""
     year: int = 0
-    artist: ItemMapping = None
+    artist: Optional[ItemMapping] = None
     album_type: AlbumType = AlbumType.UNKNOWN
     upc: str = ""
 
@@ -184,7 +191,7 @@ class Album(MediaItem):
 class FullAlbum(Album):
     """Model for an album with full details."""
 
-    artist: Artist = None
+    artist: Optional[Artist] = None
 
     def __hash__(self):
         """Return custom hash."""
@@ -202,7 +209,7 @@ class Track(MediaItem):
     artists: Set[ItemMapping] = field(default_factory=set)
     albums: Set[ItemMapping] = field(default_factory=set)
     # album track only
-    album: ItemMapping = None
+    album: Optional[ItemMapping] = None
     disc_number: int = 0
     track_number: int = 0
     # playlist track only
@@ -219,7 +226,7 @@ class FullTrack(Track):
 
     artists: Set[Artist] = field(default_factory=set)
     albums: Set[Album] = field(default_factory=set)
-    album: Album = None
+    album: Optional[Album] = None
 
     def __hash__(self):
         """Return custom hash."""

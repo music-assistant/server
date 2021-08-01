@@ -1,7 +1,6 @@
 """All classes and helpers for the Configuration."""
 
 import copy
-import datetime
 import json
 import logging
 import os
@@ -31,6 +30,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALISATION,
     EVENT_CONFIG_CHANGED,
 )
+from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.encryption import _decrypt_string, _encrypt_string
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task, merge_dict, try_load_json_file
@@ -150,19 +150,25 @@ class ConfigManager:
         """Async initialize of module."""
         self._translations = await self._fetch_translations()
 
-    @api_route("config/:conf_base?/:conf_key?")
-    def all_items(self, conf_base: str = "", conf_key: str = "") -> dict:
+    @api_route("config/{conf_base}")
+    def base_items(self, conf_base: str) -> dict:
+        """Return config items."""
+        obj = getattr(self, conf_base)
+        if isinstance(obj, dict):
+            return obj
+        return obj.all_items()
+
+    @api_route("config/{conf_base}/{conf_key}")
+    def sub_items(self, conf_base: str, conf_key: str) -> dict:
+        """Return specific config entries."""
+        obj = getattr(self, conf_base)[conf_key]
+        if isinstance(obj, dict):
+            return obj
+        return obj.all_items()
+
+    @api_route("config")
+    def all_items(self) -> dict:
         """Return entire config as dict."""
-        if conf_base and conf_key:
-            obj = getattr(self, conf_base)[conf_key]
-            if isinstance(obj, dict):
-                return obj
-            return obj.all_items()
-        if conf_base:
-            obj = getattr(self, conf_base)
-            if isinstance(obj, dict):
-                return obj
-            return obj.all_items()
         return {
             key: getattr(self, key).all_items()
             for key in [
@@ -176,7 +182,7 @@ class ConfigManager:
             ]
         }
 
-    @api_route("config/:conf_base/:conf_key/:conf_val")
+    @api_route("config/{conf_base}/{conf_key}/{conf_val}", method="PUT")
     def set_config(
         self, conf_base: str, conf_key: str, conf_val: str, new_value: Any
     ) -> dict:
@@ -186,7 +192,7 @@ class ConfigManager:
         self[conf_base][conf_key][conf_val] = new_value
         return self[conf_base][conf_key].all_items()
 
-    @api_route("config/delete/:conf_base/:conf_key")
+    @api_route("config/{conf_base}/{conf_key}", method="DELETE")
     def delete_config(self, conf_base: str, conf_key: str) -> dict:
         """Delete value from stored configuration."""
         return self[conf_base].pop(conf_key)
@@ -409,7 +415,7 @@ class SecuritySettings(ConfigBaseItem):
             return
         self.conf_mgr.stored_config[CONF_KEY_SECURITY][CONF_KEY_SECURITY_APP_TOKENS][
             client_id
-        ]["last_login"] = datetime.datetime.utcnow().timestamp()
+        ]["last_login"] = utc_timestamp()
         self.conf_mgr.save()
 
     def revoke_app_token(self, client_id):
@@ -667,7 +673,7 @@ class ConfigSubItem:
                 self.conf_mgr.mass.tasks.add("Save configuration", self.conf_mgr.save)
                 # reload provider/plugin if value changed
                 if self.parent_conf_key in PROVIDER_TYPE_MAPPINGS:
-                    self.conf_mgr.mass.reload_provider(self.conf_key)
+                    create_task(self.conf_mgr.mass.reload_provider(self.conf_key))
                 if self.parent_conf_key == CONF_KEY_PLAYER_SETTINGS:
                     # force update of player if it's config changed
                     create_task(

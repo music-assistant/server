@@ -9,9 +9,10 @@ if TYPE_CHECKING:
         QueueItem,
         PlayerQueue,
     )
-    from music_assistant.models.streamdetails import StreamDetails
+    from music_assistant.models.streamdetails import StreamDetails, StreamType
     from music_assistant.models.player import Player
     from music_assistant.managers.config import ConfigSubItem
+    from music_assistant.models.media_types import MediaType
 
 else:
     MusicAssistant = "MusicAssistant"
@@ -20,6 +21,8 @@ else:
     StreamDetails = "StreamDetails"
     Player = "Player"
     ConfigSubItem = "ConfigSubItem"
+    MediaType = "MediaType"
+    StreamType = "StreamType"
 
 
 QueueItems = Set[QueueItem]

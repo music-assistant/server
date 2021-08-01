@@ -24,10 +24,9 @@ from music_assistant.managers.library import LibraryManager
 from music_assistant.managers.metadata import MetaDataManager
 from music_assistant.managers.music import MusicManager
 from music_assistant.managers.players import PlayerManager
-from music_assistant.managers.streams import StreamManager
 from music_assistant.managers.tasks import TaskManager
 from music_assistant.models.provider import Provider, ProviderType
-from music_assistant.web.server import WebServer
+from music_assistant.web import WebServer
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 
 LOGGER = logging.getLogger("mass")
@@ -70,7 +69,6 @@ class MusicAssistant:
         self._music = MusicManager(self)
         self._library = LibraryManager(self)
         self._players = PlayerManager(self)
-        self._streams = StreamManager(self)
         # shared zeroconf instance
         self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
 
@@ -97,6 +95,7 @@ class MusicAssistant:
         await self.setup_discovery()
         await self._web.setup()
         await self._library.setup()
+        self.tasks.add("Save config", self.config.save)
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -145,11 +144,6 @@ class MusicAssistant:
     def cache(self) -> Cache:
         """Return the Cache instance."""
         return self._cache
-
-    @property
-    def streams(self) -> StreamManager:
-        """Return the Streams controller/manager."""
-        return self._streams
 
     @property
     def database(self) -> DatabaseManager:

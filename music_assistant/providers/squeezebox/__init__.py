@@ -8,12 +8,7 @@ from music_assistant.constants import CONF_CROSSFADE_DURATION
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import callback, create_task
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.models.player import (
-    DeviceInfo,
-    PlaybackState,
-    Player,
-    PlayerFeature,
-)
+from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.provider import PlayerProvider
 
@@ -163,7 +158,7 @@ class SqueezePlayer(Player):
     @property
     def state(self):
         """Return current state of player."""
-        return PlaybackState(self.socket_client.state)
+        return PlayerState(self.socket_client.state)
 
     @property
     def elapsed_time(self):
@@ -245,7 +240,7 @@ class SqueezePlayer(Player):
         if queue:
             new_track = queue.get_item(queue.cur_index + 1)
             if new_track:
-                return await self.cmd_play_uri(new_track.uri)
+                return await self.cmd_play_uri(new_track.stream_url)
 
     async def cmd_previous(self):
         """Send PREVIOUS TRACK command to player."""
@@ -253,7 +248,7 @@ class SqueezePlayer(Player):
         if queue:
             new_track = queue.get_item(queue.cur_index - 1)
             if new_track:
-                return await self.cmd_play_uri(new_track.uri)
+                return await self.cmd_play_uri(new_track.stream_url)
 
     async def cmd_queue_play_index(self, index: int):
         """
@@ -265,7 +260,7 @@ class SqueezePlayer(Player):
         if queue:
             new_track = queue.get_item(index)
             if new_track:
-                return await self.cmd_play_uri(new_track.uri)
+                return await self.cmd_play_uri(new_track.stream_url)
 
     async def cmd_queue_load(self, queue_items: List[QueueItem]):
         """
@@ -274,8 +269,8 @@ class SqueezePlayer(Player):
             :param queue_items: a list of QueueItems
         """
         if queue_items:
-            await self.cmd_play_uri(queue_items[0].uri)
-            return await self.cmd_play_uri(queue_items[0].uri)
+            await self.cmd_play_uri(queue_items[0].stream_url)
+            return await self.cmd_play_uri(queue_items[0].stream_url)
 
     async def cmd_queue_insert(
         self, queue_items: List[QueueItem], insert_at_index: int
@@ -339,7 +334,7 @@ class SqueezePlayer(Player):
                     ]
                     create_task(
                         self.socket_client.play_uri(
-                            next_item.uri,
+                            next_item.stream_url,
                             send_flush=False,
                             crossfade_duration=crossfade,
                         )

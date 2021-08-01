@@ -8,7 +8,7 @@ from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import merge_dict
 from music_assistant.models.provider import MetadataProvider, ProviderType
 
-LOGGER = logging.getLogger("metadata_manager")
+LOGGER = logging.getLogger("metadata")
 
 
 class MetaDataManager:
@@ -32,10 +32,21 @@ class MetaDataManager:
             if "fanart" in metadata:
                 # no need to query (other) metadata providers if we already have a result
                 break
+            LOGGER.info(
+                "Fetching metadata for MusicBrainz Artist %s on provider %s",
+                mb_artist_id,
+                provider.name,
+            )
             cache_key = f"{provider.id}.artist_metadata.{mb_artist_id}"
             res = await cached(
                 self.cache, cache_key, provider.get_artist_images, mb_artist_id
             )
             if res:
                 metadata = merge_dict(metadata, res)
+                LOGGER.debug(
+                    "Found metadata for MusicBrainz Artist %s on provider %s: %s",
+                    mb_artist_id,
+                    provider.name,
+                    ", ".join(res.keys()),
+                )
         return metadata

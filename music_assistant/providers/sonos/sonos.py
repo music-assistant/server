@@ -8,12 +8,7 @@ from typing import List
 import soco
 from music_assistant.helpers.util import create_task
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.models.player import (
-    DeviceInfo,
-    PlaybackState,
-    Player,
-    PlayerFeature,
-)
+from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.provider import PlayerProvider
 
@@ -210,7 +205,7 @@ class SonosProvider(PlayerProvider):
         if player:
             create_task(player.soco.clear_queue)
             for pos, item in enumerate(queue_items):
-                create_task(player.soco.add_uri_to_queue, item.uri, pos)
+                create_task(player.soco.add_uri_to_queue, item.stream_url, pos)
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -229,7 +224,7 @@ class SonosProvider(PlayerProvider):
         if player:
             for pos, item in enumerate(queue_items):
                 create_task(
-                    player.soco.add_uri_to_queue, item.uri, insert_at_index + pos
+                    player.soco.add_uri_to_queue, item.stream_url, insert_at_index + pos
                 )
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
@@ -348,7 +343,7 @@ class SonosProvider(PlayerProvider):
             )
             rel_time = __timespan_secs(position_info.get("RelTime"))
             player.elapsed_time = rel_time
-            if player.state == PlaybackState.PLAYING:
+            if player.state == PlayerState.PLAYING:
                 create_task(self._report_progress(player_id))
         player.update_state()
 
@@ -382,7 +377,7 @@ class SonosProvider(PlayerProvider):
         # so we need to send it in periodically
         player = self._players[player_id]
         player.should_poll = True
-        while player and player.state == PlaybackState.PLAYING:
+        while player and player.state == PlayerState.PLAYING:
             time_diff = time.time() - player.media_position_updated_at
             adjusted_current_time = player.elapsed_time + time_diff
             player.elapsed_time = adjusted_current_time
@@ -391,15 +386,15 @@ class SonosProvider(PlayerProvider):
         self._report_progress_tasks.pop(player_id, None)
 
 
-def __convert_state(sonos_state: str) -> PlaybackState:
-    """Convert Sonos state to PlaybackState."""
+def __convert_state(sonos_state: str) -> PlayerState:
+    """Convert Sonos state to PlayerState."""
     if sonos_state == "PLAYING":
-        return PlaybackState.PLAYING
+        return PlayerState.PLAYING
     if sonos_state == "TRANSITIONING":
-        return PlaybackState.PLAYING
+        return PlayerState.PLAYING
     if sonos_state == "PAUSED_PLAYBACK":
-        return PlaybackState.PAUSED
-    return PlaybackState.STOPPED
+        return PlayerState.PAUSED
+    return PlayerState.IDLE
 
 
 def __timespan_secs(timespan):

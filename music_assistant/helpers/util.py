@@ -16,6 +16,8 @@ from typing import Any, Callable, Dict, Optional, Set, TypeVar, Union
 import memory_tempfile
 import ujson
 
+from .typing import MediaType
+
 # pylint: disable=invalid-name
 T = TypeVar("T")
 _UNDEF: dict = {}
@@ -41,7 +43,7 @@ def create_task(
     target: Callable[..., Any],
     *args: Any,
     loop: AbstractEventLoop = None,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> Union[asyncio.Task, asyncio.Future]:
     """Create Task on (main) event loop from Callable or awaitable.
 
@@ -334,6 +336,11 @@ def get_changed_keys(
         elif dict1[key] != value:
             changed_keys.add(key)
     return changed_keys
+
+
+def create_uri(media_type: MediaType, provider: str, item_id: str):
+    """Create uri for mediaitem."""
+    return f"{provider}://{media_type.value}/{item_id}"
 
 
 def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=3600):

@@ -3,11 +3,11 @@
 import logging
 import os
 import statistics
-from datetime import datetime
 from typing import List, Optional, Set, Union
 
 import aiosqlite
 from music_assistant.helpers.compare import compare_album, compare_track
+from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.util import merge_dict, merge_list, try_parse_int
 from music_assistant.helpers.web import json_serializer
 from music_assistant.models.media_types import (
@@ -864,7 +864,7 @@ class DatabaseManager:
 
     async def mark_item_played(self, item_id: str, provider: str):
         """Mark item as played in playlog."""
-        timestamp = datetime.utcnow().timestamp()
+        timestamp = utc_timestamp()
         async with aiosqlite.connect(self._dbfile, timeout=360) as db_conn:
             sql_query = """INSERT or REPLACE INTO playlog
                 (item_id, provider, timestamp) VALUES(?,?,?);"""

@@ -2,19 +2,21 @@
 
 import asyncio
 import logging
-import time
 from asyncio.futures import Future
-from collections import deque
 from enum import IntEnum
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
 from music_assistant.constants import EVENT_TASK_UPDATED
+from music_assistant.helpers.datetime import now
+from music_assistant.helpers.muli_state_queue import MultiStateQueue
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
 from music_assistant.helpers.web import api_route
 
 LOGGER = logging.getLogger("task_manager")
+
+MAX_SIMULTANEOUS_TASKS = 2
 
 
 class TaskStatus(IntEnum):
@@ -46,7 +48,8 @@ class TaskInfo:
         self.periodic = periodic
         self.status = TaskStatus.PENDING
         self.error_details = ""
-        self.timestamp = 0
+        self.updated_at = now()
+        self.execution_time = 0  # time in seconds it took to process
         self.id = str(uuid4())
 
     def to_dict(self) -> Dict[str, Any]:
@@ -56,7 +59,8 @@ class TaskInfo:
             "name": self.name,
             "status": self.status,
             "error_details": self.error_details,
-            "timestamp": self.timestamp,
+            "updated_at": self.updated_at.isoformat(),
+            "execution_time": self.execution_time,
         }
 
     @property
@@ -76,7 +80,8 @@ class TaskManager:
     async def setup(self):
         """Async initialize of module."""
         # queue can only be initialized when the loop is running
-        self._queue = TasksQueue()
+        MultiStateQueue.QUEUE_ITEM_TYPE = TaskInfo
+        self._queue = MultiStateQueue()
         create_task(self.__process_tasks())
 
     def add(
@@ -128,14 +133,18 @@ class TaskManager:
 
     def _add_task(self, task_info: TaskInfo) -> None:
         """Handle adding a task to the task queue."""
-        LOGGER.debug("Adding task %s to Task Queue...", task_info.name)
-        task_info.timestamp = int(time.time())
+        LOGGER.debug("Adding task [%s] to Task Queue...", task_info.name)
         self._queue.put_nowait(task_info)
         self.mass.eventbus.signal(EVENT_TASK_UPDATED, task_info)
 
     def __task_done_callback(self, future: Future):
         task_info: TaskInfo = future.task_info
         self._queue.mark_finished(task_info)
+        prev_timestamp = task_info.updated_at.timestamp()
+        task_info.updated_at = now()
+        task_info.execution_time = round(
+            task_info.updated_at.timestamp() - prev_timestamp, 2
+        )
         if future.cancelled():
             future.task_info.status = TaskStatus.CANCELLED
         elif future.exception():
@@ -143,13 +152,17 @@ class TaskManager:
             task_info.status = TaskStatus.ERROR
             task_info.error_details = repr(exc)
             LOGGER.debug(
-                "Error while running task %s",
+                "Error while running task [%s]",
                 task_info.name,
                 exc_info=exc,
             )
         else:
             task_info.status = TaskStatus.FINISHED
-            LOGGER.debug("Task finished: %s", task_info.name)
+            LOGGER.debug(
+                "Task finished: [%s] in %s seconds",
+                task_info.name,
+                task_info.execution_time,
+            )
         self.mass.eventbus.signal(EVENT_TASK_UPDATED, task_info)
         # reschedule if the task is periodic
         if task_info.periodic:
@@ -157,66 +170,13 @@ class TaskManager:
 
     async def __process_tasks(self):
         """Process handling of tasks in the queue."""
-        while True:
+        while not self.mass.exit:
+            while len(self._queue.progress_items) >= MAX_SIMULTANEOUS_TASKS:
+                await asyncio.sleep(1)
             next_task = await self._queue.get()
             next_task.status = TaskStatus.PROGRESS
+            next_task.updated_at = now()
             task = create_task(next_task.target, *next_task.args, **next_task.kwargs)
             setattr(task, "task_info", next_task)
             task.add_done_callback(self.__task_done_callback)
             self.mass.eventbus.signal(EVENT_TASK_UPDATED, next_task)
-
-
-class TasksQueue:
-    """Special queue-like to store tasks in different states."""
-
-    def __init__(self, max_finished_items: int = 50) -> None:
-        """Initialize class."""
-        self._pending_items = asyncio.Queue()
-        self._progress_items = deque()
-        self._finished_items = deque(maxlen=max_finished_items)
-
-    @property
-    def pending_items(self) -> List[TaskInfo]:
-        """Return all pending Queue items."""
-        # pylint: disable=protected-access
-        return list(self._pending_items._queue)
-
-    @property
-    def progress_items(self) -> List[TaskInfo]:
-        """Return all in-progress Queue items."""
-        return list(self._progress_items)
-
-    @property
-    def finished_items(self) -> List[TaskInfo]:
-        """Return all finished Queue items."""
-        return list(self._finished_items)
-
-    @property
-    def all_items(self) -> List[TaskInfo]:
-        """Return all Queue items."""
-        return list(self.pending_items + self.progress_items + self.finished_items)
-
-    def put_nowait(self, item: TaskInfo) -> None:
-        """Put item in the queue to progress."""
-        if item in self._finished_items:
-            self._finished_items.remove(item)
-        return self._pending_items.put_nowait(item)
-
-    async def put(self, item: TaskInfo) -> None:
-        """Put item in the queue to progress."""
-        return await self._pending_items.put(item)
-
-    async def get_nowait(self) -> Optional[TaskInfo]:
-        """Get next item in Queue, raises QueueEmpty if no items in Queue."""
-        return self._pending_items.get_nowait()
-
-    async def get(self) -> TaskInfo:
-        """Get next item in Queue, waits until item is available."""
-        next_item = await self._pending_items.get()
-        self._progress_items.append(next_item)
-        return next_item
-
-    def mark_finished(self, item: TaskInfo) -> None:
-        """Mark item as finished."""
-        self._progress_items.remove(item)
-        self._finished_items.append(item)

@@ -92,7 +92,7 @@ class LibraryManager:
                 return radio
         return None
 
-    @api_route("library/add")
+    @api_route("library", method="POST")
     async def library_add_items(self, items: List[MediaItem]) -> List[TaskInfo]:
         """
         Add media item(s) to the library.
@@ -121,7 +121,7 @@ class LibraryManager:
         # mark as library item in internal db
         await self.mass.database.add_to_library(item.item_id, item.media_type)
 
-    @api_route("library/remove")
+    @api_route("library", method="DELETE")
     async def library_remove_items(self, items: List[MediaItem]) -> List[TaskInfo]:
         """
         Remove media item(s) from the library.
@@ -147,7 +147,7 @@ class LibraryManager:
         if item.provider == "database":
             await self.mass.database.remove_from_library(item.item_id, item.media_type)
 
-    @api_route("library/playlists/:db_playlist_id/tracks/add")
+    @api_route("library/playlists/{db_playlist_id}/tracks", method="POST")
     async def add_playlist_tracks(
         self, db_playlist_id: int, tracks: List[Track]
     ) -> List[TaskInfo]:
@@ -233,7 +233,7 @@ class LibraryManager:
             playlist_prov.item_id, [track_id_to_add]
         )
 
-    @api_route("library/playlists/:db_playlist_id/tracks/remove")
+    @api_route("library/playlists/{db_playlist_id}/tracks", method="DELETE")
     async def remove_playlist_tracks(
         self, db_playlist_id: int, tracks: List[Track]
     ) -> List[TaskInfo]:
@@ -409,17 +409,6 @@ class LibraryManager:
             )
             if db_item.checksum != playlist.checksum:
                 db_item = await self.mass.database.add_playlist(playlist)
-                # precache playlist tracks
-                for playlist_track in await self.mass.music.get_playlist_tracks(
-                    playlist.item_id, provider_id
-                ):
-                    # try to find substitutes for unavailable tracks with matching technique
-                    if not playlist_track.available:
-                        await self.mass.music.get_track(
-                            playlist_track.item_id,
-                            playlist_track.provider,
-                            playlist_track,
-                        )
             cur_db_ids.add(db_item.item_id)
             await self.mass.database.add_to_library(db_item.item_id, MediaType.PLAYLIST)
 

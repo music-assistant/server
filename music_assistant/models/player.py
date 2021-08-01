@@ -2,7 +2,6 @@
 
 from abc import abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum, IntEnum
 from typing import Any, Optional, Set
 
@@ -19,10 +18,10 @@ from music_assistant.helpers.util import callback, create_task
 from music_assistant.models.config_entry import ConfigEntry
 
 
-class PlaybackState(Enum):
-    """Enum for the playstate of a player."""
+class PlayerState(Enum):
+    """Enum for the (playback)state of a player."""
 
-    STOPPED = "stopped"
+    IDLE = "idle"
     PAUSED = "paused"
     PLAYING = "playing"
     OFF = "off"
@@ -84,22 +83,20 @@ class PlayerControl(DataClassDictMixin):
 
 
 @dataclass
-class PlayerState(DataClassDictMixin):
+class CalculatedPlayerState(DataClassDictMixin):
     """Model for a (calculated) player state."""
 
     player_id: str = None
     provider_id: str = None
     name: str = None
     powered: bool = False
-    state: PlaybackState = PlaybackState.OFF
+    state: PlayerState = PlayerState.IDLE
     available: bool = False
     volume_level: int = 0
-    elapsed_time: int = 0
     muted: bool = False
     is_group_player: bool = False
     group_childs: Set[str] = field(default_factory=set)
     device_info: DeviceInfo = field(default_factory=DeviceInfo)
-    updated_at: datetime = datetime.now()
     group_parents: Set[str] = field(default_factory=set)
     features: Set[PlayerFeature] = field(default_factory=set)
     active_queue: str = None
@@ -116,10 +113,7 @@ class PlayerState(DataClassDictMixin):
             new_val = getattr(new_obj, key)
             if getattr(self, key) != new_val:
                 setattr(self, key, new_val)
-                if key != "updated_at":
-                    changed_keys.add(key)
-        if changed_keys:
-            self.updated_at = datetime.now()
+                changed_keys.add(key)
         return changed_keys
 
 
@@ -170,9 +164,9 @@ class Player:
 
     @property
     @abstractmethod
-    def state(self) -> PlaybackState:
-        """Return current PlaybackState of player."""
-        return PlaybackState.STOPPED
+    def state(self) -> PlayerState:
+        """Return current PlayerState of player."""
+        return PlayerState.IDLE
 
     @property
     def available(self) -> bool:
@@ -354,12 +348,12 @@ class Player:
     @property
     def active_queue(self) -> str:
         """Return the active parent player/queue for a player."""
-        return self._cur_state.active_queue or self.player_id
+        return self._calculated_state.active_queue or self.player_id
 
     @property
     def group_parents(self) -> Set[str]:
         """Return all groups this player belongs to."""
-        return self._cur_state.group_parents
+        return self._calculated_state.group_parents
 
     @property
     def config(self) -> ConfigSubItem:
@@ -388,9 +382,9 @@ class Player:
         return None
 
     @property
-    def player_state(self) -> PlayerState:
+    def calculated_state(self) -> CalculatedPlayerState:
         """Return calculated/final state for this player."""
-        return self._cur_state
+        return self._calculated_state
 
     @callback
     def update_state(self) -> None:
@@ -400,37 +394,25 @@ class Player:
         if not self.added_to_mass:
             if self.enabled:
                 # player is now enabled and can be added
-                self.mass.tasks.add(
-                    f"Add player {self.name}", self.mass.players.add_player(self)
-                )
+                create_task(self.mass.players.add_player(self))
             return
-        new_state = self.create_state()
-        changed_keys = self._cur_state.update(new_state)
-        # basic throttle: do not send state changed events if player did not change
-        if not changed_keys:
-            return
-        self._cur_state = new_state
+        new_state = self.create_calculated_state()
+        changed_keys = self._calculated_state.update(new_state)
         # always update the player queue
         player_queue = self.mass.players.get_player_queue(self.active_queue)
         if player_queue:
             create_task(player_queue.update_state)
-        if len(changed_keys) == 1 and "elapsed_time" in changed_keys:
-            # no need to send player update if only the elapsed time changes
-            # this is already handled by the queue manager
+        # basic throttle: do not send state changed events if player did not change
+        if not changed_keys:
             return
+        self._calculated_state = new_state
         self.mass.eventbus.signal(EVENT_PLAYER_CHANGED, new_state)
         # update group player childs when parent updates
         for child_player_id in self.group_childs:
             create_task(self.mass.players.trigger_player_update(child_player_id))
         # update group player when child updates
-        for group_player_id in self._cur_state.group_parents:
+        for group_player_id in self._calculated_state.group_parents:
             create_task(self.mass.players.trigger_player_update(group_player_id))
-
-    @callback
-    def _get_name(self) -> str:
-        """Return final/calculated player name."""
-        conf_name = self.config.get(CONF_NAME)
-        return conf_name if conf_name else self.name
 
     @callback
     def _get_powered(self) -> bool:
@@ -443,14 +425,12 @@ class Player:
         return self.powered
 
     @callback
-    def _get_state(self) -> PlaybackState:
-        """Return final/calculated player's playback state."""
-        if self.powered and self.active_queue != self.player_id:
+    def _get_state(self, powered: bool, active_queue: str) -> PlayerState:
+        """Return final/calculated player's PlayerState."""
+        if powered and active_queue != self.player_id:
             # use group state
-            return self.mass.players.get_player(self.active_queue).state
-        if self.state == PlaybackState.STOPPED and not self.powered:
-            return PlaybackState.OFF
-        return self.state
+            return self.mass.players.get_player(active_queue).state
+        return PlayerState.OFF if not powered else self.state
 
     @callback
     def _get_available(self) -> bool:
@@ -473,7 +453,7 @@ class Player:
             for child_player_id in self.group_childs:
                 child_player = self.mass.players.get_player(child_player_id)
                 if child_player:
-                    group_volume += child_player.player_state.volume_level
+                    group_volume += child_player.calculated_state.volume_level
                     active_players += 1
             if active_players:
                 group_volume = group_volume / active_players
@@ -499,39 +479,41 @@ class Player:
         for group_player_id in self.group_parents:
             group_player = self.mass.players.get_player(group_player_id)
             if group_player and group_player.state in [
-                PlaybackState.PLAYING,
-                PlaybackState.PAUSED,
+                PlayerState.PLAYING,
+                PlayerState.PAUSED,
             ]:
                 return group_player_id
         return self.player_id
 
     @callback
-    def create_state(self) -> PlayerState:
-        """Create PlayerState."""
-        return PlayerState(
+    def create_calculated_state(self) -> CalculatedPlayerState:
+        """Create CalculatedPlayerState."""
+        conf_name = self.config.get(CONF_NAME)
+        active_queue = self._get_active_queue()
+        powered = self._get_powered()
+        return CalculatedPlayerState(
             player_id=self.player_id,
             provider_id=self.provider_id,
-            name=self._get_name(),
-            powered=self._get_powered(),
-            state=self._get_state(),
+            name=conf_name if conf_name else self.name,
+            powered=powered,
+            state=self._get_state(powered, active_queue),
             available=self._get_available(),
             volume_level=self._get_volume_level(),
-            elapsed_time=self.elapsed_time,
             muted=self.muted,
             is_group_player=self.is_group_player,
             group_childs=self.group_childs,
             device_info=self.device_info,
             group_parents=self._get_group_parents(),
             features=self.features,
-            active_queue=self._get_active_queue(),
+            active_queue=active_queue,
         )
 
     def to_dict(self) -> dict:
         """Return playerstate for compatability with json serializer."""
-        return self._cur_state.to_dict()
+        return self._calculated_state.to_dict()
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize a Player instance."""
         self.mass: Optional[MusicAssistant] = None
         self.added_to_mass = False
-        self._cur_state = PlayerState()
+        self._calculated_state = CalculatedPlayerState()

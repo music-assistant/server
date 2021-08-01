@@ -36,7 +36,6 @@ from music_assistant.models.media_types import (
     Track,
 )
 from music_assistant.models.provider import MusicProvider, ProviderType
-from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 
 LOGGER = logging.getLogger("music_manager")
 
@@ -61,39 +60,7 @@ class MusicManager:
 
     ################ GET MediaItem(s) by id and provider #################
 
-    @api_route("items/:media_type/:provider_id/:item_id")
-    async def get_item(
-        self,
-        item_id: str,
-        provider_id: str,
-        media_type: MediaType,
-        refresh: bool = False,
-        lazy: bool = True,
-    ):
-        """Get single music item by id and media type."""
-        if media_type == MediaType.ARTIST:
-            return await self.get_artist(
-                item_id, provider_id, refresh=refresh, lazy=lazy
-            )
-        if media_type == MediaType.ALBUM:
-            return await self.get_album(
-                item_id, provider_id, refresh=refresh, lazy=lazy
-            )
-        if media_type == MediaType.TRACK:
-            return await self.get_track(
-                item_id, provider_id, refresh=refresh, lazy=lazy
-            )
-        if media_type == MediaType.PLAYLIST:
-            return await self.get_playlist(
-                item_id, provider_id, refresh=refresh, lazy=lazy
-            )
-        if media_type == MediaType.RADIO:
-            return await self.get_radio(
-                item_id, provider_id, refresh=refresh, lazy=lazy
-            )
-        return None
-
-    @api_route("artists/:provider_id/:item_id")
+    @api_route("artists/{provider_id}/{item_id}")
     async def get_artist(
         self, item_id: str, provider_id: str, refresh: bool = False, lazy: bool = True
     ) -> Artist:
@@ -126,7 +93,7 @@ class MusicManager:
             )
         return artist
 
-    @api_route("albums/:provider_id/:item_id")
+    @api_route("albums/{provider_id}/{item_id}")
     async def get_album(
         self, item_id: str, provider_id: str, refresh: bool = False, lazy: bool = True
     ) -> Album:
@@ -157,7 +124,7 @@ class MusicManager:
             )
         return album
 
-    @api_route("tracks/:provider_id/:item_id")
+    @api_route("tracks/{provider_id}/{item_id}")
     async def get_track(
         self,
         item_id: str,
@@ -199,7 +166,7 @@ class MusicManager:
             )
         return track
 
-    @api_route("playlists/:provider_id/:item_id")
+    @api_route("playlists/{provider_id}/{item_id}")
     async def get_playlist(
         self, item_id: str, provider_id: str, refresh: bool = False, lazy: bool = True
     ) -> Playlist:
@@ -237,7 +204,7 @@ class MusicManager:
             )
         return playlist
 
-    @api_route("radios/:provider_id/:item_id")
+    @api_route("radios/{provider_id}/{item_id}")
     async def get_radio(
         self, item_id: str, provider_id: str, refresh: bool = False, lazy: bool = True
     ) -> Radio:
@@ -269,7 +236,7 @@ class MusicManager:
             )
         return radio
 
-    @api_route("albums/:provider_id/:item_id/tracks")
+    @api_route("albums/{provider_id}/{item_id}/tracks")
     async def get_album_tracks(self, item_id: str, provider_id: str) -> List[Track]:
         """Return album tracks for the given provider album id."""
         assert item_id and provider_id
@@ -301,7 +268,7 @@ class MusicManager:
             for item in all_prov_tracks
         ]
 
-    @api_route("albums/:provider_id/:item_id/versions")
+    @api_route("albums/{provider_id}/{item_id}/versions")
     async def get_album_versions(self, item_id: str, provider_id: str) -> Set[Album]:
         """Return all versions of an album we can find on all providers."""
         album = await self.get_album(item_id, provider_id)
@@ -321,7 +288,7 @@ class MusicManager:
             if compare_strings(prov_item.artist.name, album.artist.name)
         }
 
-    @api_route("tracks/:provider_id/:item_id/versions")
+    @api_route("tracks/{provider_id}/{item_id}/versions")
     async def get_track_versions(self, item_id: str, provider_id: str) -> Set[Track]:
         """Return all versions of a track we can find on all providers."""
         track = await self.get_track(item_id, provider_id)
@@ -342,7 +309,7 @@ class MusicManager:
             if compare_artists(prov_item.artists, track.artists)
         }
 
-    @api_route("playlists/:provider_id/:item_id/tracks")
+    @api_route("playlists/{provider_id}/{item_id}/tracks")
     async def get_playlist_tracks(self, item_id: str, provider_id: str) -> List[Track]:
         """Return playlist tracks for the given provider playlist id."""
         assert item_id and provider_id
@@ -358,21 +325,13 @@ class MusicManager:
             playlist = await provider.get_playlist(item_id)
         cache_checksum = playlist.checksum
         cache_key = f"{provider_id}.playlist_tracks.{item_id}"
-        playlist_tracks = await cached(
+        return await cached(
             self.cache,
             cache_key,
             provider.get_playlist_tracks,
             item_id,
             checksum=cache_checksum,
         )
-        db_tracks = await self.mass.database.get_tracks_from_provider_ids(
-            provider_id, {x.item_id for x in playlist_tracks}
-        )
-        # combine provider tracks with db tracks
-        return [
-            await self.__process_item(item, db_tracks, index)
-            for index, item in enumerate(playlist_tracks)
-        ]
 
     async def __process_item(
         self,
@@ -398,11 +357,14 @@ class MusicManager:
             item.track_number = track_number
         return item
 
-    @api_route("artists/:provider_id/:item_id/tracks")
+    @api_route("artists/{provider_id}/{item_id}/tracks")
     async def get_artist_toptracks(self, item_id: str, provider_id: str) -> Set[Track]:
         """Return top tracks for an artist."""
+        if provider_id != "database":
+            return await self._get_provider_artist_toptracks(item_id, provider_id)
+
+        # db artist: get results from all providers
         artist = await self.get_artist(item_id, provider_id)
-        # get results from all providers
         all_prov_tracks = {
             track
             for prov_tracks in await asyncio.gather(
@@ -437,11 +399,13 @@ class MusicManager:
             item_id,
         )
 
-    @api_route("artists/:provider_id/:item_id/albums")
+    @api_route("artists/{provider_id}/{item_id}/albums")
     async def get_artist_albums(self, item_id: str, provider_id: str) -> Set[Album]:
         """Return (all) albums for an artist."""
+        if provider_id != "database":
+            return await self._get_provider_artist_albums(item_id, provider_id)
+        # db artist: get results from all providers
         artist = await self.get_artist(item_id, provider_id)
-        # get results from all providers
         all_prov_albums = {
             album
             for prov_albums in await asyncio.gather(
@@ -476,7 +440,7 @@ class MusicManager:
             item_id,
         )
 
-    @api_route("search/:provider_id")
+    @api_route("search/{provider_id}")
     async def search_provider(
         self,
         search_query: str,
@@ -534,7 +498,52 @@ class MusicManager:
             # TODO: sort by name and filter out duplicates ?
         return result
 
-    @api_route("items/refresh")
+    @api_route("items/by_uri")
+    async def get_item_by_uri(self, uri: str) -> MediaItem:
+        """Fetch MediaItem by uri."""
+        if "://" in uri:
+            provider = uri.split("://")[0]
+            item_id = uri.split("/")[-1]
+            media_type = MediaType(uri.split("/")[-2])
+        else:
+            # spotify new-style uri
+            provider, media_type, item_id = uri.split(":")
+            media_type = MediaType(media_type)
+        return await self.get_item(item_id, provider, media_type)
+
+    @api_route("items/{media_type}/{provider_id}/{item_id}")
+    async def get_item(
+        self,
+        item_id: str,
+        provider_id: str,
+        media_type: MediaType,
+        refresh: bool = False,
+        lazy: bool = True,
+    ) -> MediaItem:
+        """Get single music item by id and media type."""
+        if media_type == MediaType.ARTIST:
+            return await self.get_artist(
+                item_id, provider_id, refresh=refresh, lazy=lazy
+            )
+        if media_type == MediaType.ALBUM:
+            return await self.get_album(
+                item_id, provider_id, refresh=refresh, lazy=lazy
+            )
+        if media_type == MediaType.TRACK:
+            return await self.get_track(
+                item_id, provider_id, refresh=refresh, lazy=lazy
+            )
+        if media_type == MediaType.PLAYLIST:
+            return await self.get_playlist(
+                item_id, provider_id, refresh=refresh, lazy=lazy
+            )
+        if media_type == MediaType.RADIO:
+            return await self.get_radio(
+                item_id, provider_id, refresh=refresh, lazy=lazy
+            )
+        return None
+
+    @api_route("items/refresh", method="PUT")
     async def refresh_items(self, items: List[MediaItem]) -> List[TaskInfo]:
         """
         Refresh MediaItems to force retrieval of full info and matches.
@@ -577,71 +586,6 @@ class MusicManager:
                     await self.get_item(
                         item.item_id, item.provider, item.media_type, lazy=False
                     )
-
-    async def get_stream_details(
-        self, media_item: MediaItem, player_id: str = ""
-    ) -> StreamDetails:
-        """
-        Get streamdetails for the given media_item.
-
-        This is called just-in-time when a player/queue wants a MediaItem to be played.
-        Do not try to request streamdetails in advance as this is expiring data.
-            param media_item: The MediaItem (track/radio) for which to request the streamdetails for.
-            param player_id: Optionally provide the player_id which will play this stream.
-        """
-        if media_item.provider == "url":
-            # special case: a plain url was added to the queue
-            streamdetails = StreamDetails(
-                type=StreamType.URL,
-                provider="url",
-                item_id=media_item.item_id,
-                path=media_item.item_id,
-                content_type=ContentType(media_item.item_id.split(".")[-1]),
-                sample_rate=44100,
-                bit_depth=16,
-            )
-        else:
-            # always request the full db track as there might be other qualities available
-            # except for radio
-            if media_item.media_type == MediaType.RADIO:
-                full_track = media_item
-            else:
-                full_track = (
-                    await self.get_track(media_item.item_id, media_item.provider)
-                    or media_item
-                )
-            # sort by quality and check track availability
-            for prov_media in sorted(
-                full_track.provider_ids, key=lambda x: x.quality, reverse=True
-            ):
-                if not prov_media.available:
-                    continue
-                # get streamdetails from provider
-                music_prov = self.mass.get_provider(prov_media.provider)
-                if not music_prov or not music_prov.available:
-                    continue  # provider temporary unavailable ?
-
-                streamdetails: StreamDetails = await music_prov.get_stream_details(
-                    prov_media.item_id
-                )
-                if streamdetails:
-                    try:
-                        streamdetails.content_type = ContentType(
-                            streamdetails.content_type
-                        )
-                    except KeyError:
-                        LOGGER.warning("Invalid content type!")
-                    else:
-                        break
-
-        if streamdetails:
-            # set player_id on the streamdetails so we know what players stream
-            streamdetails.player_id = player_id
-            # set streamdetails as attribute on the media_item
-            # this way the app knows what content is playing
-            media_item.streamdetails = streamdetails
-            return streamdetails
-        return None
 
     ################ ADD MediaItem(s) to database helpers ################
 
