@@ -26,18 +26,11 @@ LOGGER = logging.getLogger("api")
 
 
 @api_route("images/{media_type}/{provider}/{item_id}")
-async def get_media_item_image_thumb(
-    mass: MusicAssistant,
-    media_type: MediaType,
-    provider: str,
-    item_id: str,
-    size: int = 150,
+async def get_media_item_image_url(
+    mass: MusicAssistant, media_type: MediaType, provider: str, item_id: str
 ) -> str:
-    """Get (resized) thumb image for given media item as base64 string."""
-    url = await get_image_url(mass, item_id, provider, media_type)
-    if url:
-        return await get_image_thumb(mass, url, size)
-    raise KeyError("Invalid item or url")
+    """Return image URL for given media item."""
+    return await get_image_url(mass, item_id, provider, media_type)
 
 
 @api_route("images/thumb")
