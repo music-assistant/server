@@ -44,8 +44,8 @@ class StreamDetails(DataClassDictMixin):
     seconds_played: int = 0
     gain_correct: float = 0
     loudness: Optional[float] = None
-    sample_rate: int = 44100
-    bit_depth: int = 16
+    sample_rate: Optional[int] = None
+    bit_depth: Optional[int] = None
     media_type: MediaType = MediaType.TRACK
 
     def to_dict(

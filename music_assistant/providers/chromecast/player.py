@@ -49,7 +49,7 @@ class ChromecastPlayer(Player):
         self._available = False
         self._status_listener: Optional[CastStatusListener] = None
         self._is_speaker_group = False
-        self._throttler = Throttler(rate_limit=1, period=0.2)
+        self._throttler = Throttler(rate_limit=1, period=0.1)
 
     @property
     def player_id(self) -> str:
@@ -339,7 +339,7 @@ class ChromecastPlayer(Player):
     async def cmd_queue_load(self, queue_items: List[QueueItem]) -> None:
         """Load (overwrite) queue with new items."""
         player_queue = self.mass.players.get_player_queue(self.player_id)
-        cc_queue_items = self.__create_queue_items(queue_items[:25])
+        cc_queue_items = self.__create_queue_items(queue_items[:50])
         repeat_enabled = player_queue.use_queue_stream or player_queue.repeat_enabled
         queuedata = {
             "type": "QUEUE_LOAD",
@@ -347,16 +347,16 @@ class ChromecastPlayer(Player):
             "shuffle": False,  # handled by our queue controller
             "queueType": "PLAYLIST",
             "startIndex": 0,  # Item index to play after this request or keep same item if undefined
-            "items": cc_queue_items,  # only load 25 tracks at once or the socket will crash
+            "items": cc_queue_items,  # only load 50 tracks at once or the socket will crash
         }
         await self.chromecast_command(self.__send_player_queue, queuedata)
         if len(queue_items) > 50:
-            await self.cmd_queue_append(queue_items[26:])
+            await self.cmd_queue_append(queue_items[51:])
 
     async def cmd_queue_append(self, queue_items: List[QueueItem]) -> None:
         """Append new items at the end of the queue."""
         cc_queue_items = self.__create_queue_items(queue_items)
-        async for chunk in yield_chunks(cc_queue_items, 25):
+        async for chunk in yield_chunks(cc_queue_items, 50):
             queuedata = {
                 "type": "QUEUE_INSERT",
                 "insertBefore": None,
@@ -374,7 +374,7 @@ class ChromecastPlayer(Player):
         return {
             "opt_itemId": queue_item.queue_item_id,
             "autoplay": True,
-            "preloadTime": 10,
+            "preloadTime": 0,
             "playbackDuration": int(queue_item.duration),
             "startTime": 0,
             "activeTrackIds": [],
@@ -389,9 +389,7 @@ class ChromecastPlayer(Player):
                 "streamType": "LIVE" if player_queue.use_queue_stream else "BUFFERED",
                 "metadata": {
                     "title": queue_item.name,
-                    "artist": next(iter(queue_item.artists)).name
-                    if queue_item.artists
-                    else "",
+                    "artist": "/".join(x.name for x in queue_item.artists),
                 },
                 "duration": int(queue_item.duration),
             },

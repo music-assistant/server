@@ -370,7 +370,7 @@ class PlayerQueue:
         """Load (overwrite) queue with new items."""
         for index, item in enumerate(queue_items):
             item.sort_index = index
-        if self._shuffle_enabled:
+        if self._shuffle_enabled and len(queue_items) > 2:
             queue_items = self.__shuffle_items(queue_items)
         self._items = queue_items
         if self.use_queue_stream:

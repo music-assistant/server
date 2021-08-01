@@ -6,6 +6,7 @@ import pathlib
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 from music_assistant.constants import (
+    CONF_CROSSFADE_DURATION,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
     EVENT_PLAYER_ADDED,
@@ -23,7 +24,6 @@ from music_assistant.models.player import (
 )
 from music_assistant.models.player_queue import PlayerQueue, QueueItem, QueueOption
 from music_assistant.models.provider import PlayerProvider, ProviderType
-from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
 
 POLL_INTERVAL = 30
 
@@ -397,9 +397,10 @@ class PlayerManager:
         self,
         player_id: str,
         url: str,
-        gain_adjust: int = 0,
+        volume: int = 0,
         force: bool = True,
         announce: bool = False,
+        duration: int = 10,
     ):
         """
         Play alert (e.g. tts message) on selected player.
@@ -408,14 +409,17 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
             :param url: Url to the sound effect/tts message that should be played.
-            :param gain_adjust: Adjust volume/gain of audio.
+            :param volume: Volume relative to current player's volume.
             :param force: Play alert even if player is currently powered off.
             :param announce: Prepend alert sound.
+            :param duration: Amount of time after which queue is restored, default 10 seconds.
         """
         player = self.get_player(player_id)
         player_queue = self.get_player_queue(player_id)
         prev_state = player.calculated_state.state
         prev_power = player.calculated_state.powered
+        prev_volume = player.calculated_state.volume_level
+        prev_repeat = player_queue.repeat_enabled
         if not player.calculated_state.powered:
             if not force:
                 LOGGER.debug(
@@ -424,7 +428,25 @@ class PlayerManager:
                 )
                 return
             await self.cmd_power_on(player_id)
+        # snapshot the queue
+        prev_queue_items = player_queue.items
+        prev_queue_index = player_queue.cur_index
+        prev_queue_crossfade = self.mass.config.get_player_config(
+            player_queue.queue_id
+        )[CONF_CROSSFADE_DURATION]
 
+        # pause playback
+        if prev_state == PlayerState.PLAYING:
+            await self.cmd_pause(player_queue.queue_id)
+        # disable crossfade and repeat if needed
+        if prev_queue_crossfade:
+            self.mass.config.player_settings[player_id][CONF_CROSSFADE_DURATION] = 0
+        if prev_repeat:
+            await player_queue.set_repeat_enabled(False)
+        # set alert volume
+        if volume != 0:
+            await self.cmd_volume_set(player_id, prev_volume + volume)
+        # load alert items in player queue
         queue_items = []
         if announce:
             alert_announce = (
@@ -437,15 +459,8 @@ class PlayerManager:
                 item_id="alert_announce",
                 provider="url",
                 name="alert",
-                duration=2,
-                streamdetails=StreamDetails(
-                    type=StreamType.URL,
-                    provider="url",
-                    item_id="alert_announce",
-                    path=str(alert_announce),
-                    content_type=ContentType(url.split(".")[-1]),
-                    gain_correct=10,
-                ),
+                duration=3,
+                uri=str(alert_announce),
             )
             queue_item.stream_url = "%s/queue/%s/%s" % (
                 self.mass.web.stream_url,
@@ -458,44 +473,37 @@ class PlayerManager:
             item_id="alert_sound",
             provider="url",
             name="alert",
-            duration=10,
-            streamdetails=StreamDetails(
-                type=StreamType.URL,
-                provider="url",
-                item_id="alert_sound",
-                path=url,
-                content_type=ContentType(url.split(".")[-1]),
-                gain_correct=gain_adjust,
-            ),
+            duration=duration,
+            uri=url,
         )
-        queue_item.stream_url = "%s/queue/%s/%s?alert=true" % (
+        queue_item.stream_url = "%s/queue/%s/%s" % (
             self.mass.web.stream_url,
             player_id,
             queue_item.queue_item_id,
         )
         queue_items.append(queue_item)
 
-        await player_queue.insert(queue_items, 0)
+        # load queue items
+        await player_queue.load(queue_items)
 
-        if prev_power and prev_state in [PlayerState.PLAYING, PlayerState.PAUSED]:
-            return
+        async def restore_queue():
+            # restore queue
+            if volume:
+                await self.cmd_volume_set(player_id, prev_volume)
+            if prev_queue_crossfade:
+                self.mass.config.player_settings[player_id][
+                    CONF_CROSSFADE_DURATION
+                ] = prev_queue_crossfade
+            await player_queue.set_repeat_enabled(prev_repeat)
+            # pylint: disable=protected-access
+            player_queue._items = prev_queue_items
+            player_queue._cur_index = prev_queue_index
+            if prev_power:
+                await player_queue.resume()
+            else:
+                await self.cmd_power_off(player_id)
 
-        # wait until playback completed
-        playback_started = False
-        count = 0
-        while True:
-            if not playback_started and player_queue.state == PlayerState.PLAYING:
-                playback_started = True
-            elif playback_started and (
-                player_queue.state != PlayerState.PLAYING
-                or (player_queue.cur_item and player_queue.cur_item.name != "alert")
-            ):
-                break
-            if count == 20:
-                break
-            count += 0.2
-            await asyncio.sleep(0.2)
-        await self.cmd_power_off(player_id)
+        self.mass.loop.call_later(duration, create_task, restore_queue)
 
     @api_route("players/{player_id}/cmd/stop", method="PUT")
     async def cmd_stop(self, player_id: str) -> None:
@@ -613,11 +621,8 @@ class PlayerManager:
         player = self.get_player(player_id)
         if not player:
             return
-        # send stop if player is playing
-        if player.active_queue == player_id and player.state in [
-            PlayerState.PLAYING,
-            PlayerState.PAUSED,
-        ]:
+        # send stop if player is active queue
+        if player.active_queue == player_id and player.state != PlayerState.OFF:
             await self.cmd_stop(player_id)
         player_config = self.mass.config.player_settings[player.player_id]
         # turn off player

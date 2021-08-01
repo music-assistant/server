@@ -129,8 +129,6 @@ async def get_stream_details(
                 item_id=queue_item.item_id,
                 path=queue_item.uri,
                 content_type=ContentType(queue_item.uri.split(".")[-1]),
-                sample_rate=44100,
-                bit_depth=16,
             )
     else:
         # always request the full db track as there might be other qualities available
@@ -171,12 +169,15 @@ async def get_stream_details(
         # set player_id on the streamdetails so we know what players stream
         streamdetails.player_id = player_id
         # get gain correct / replaygain
-        if not queue_item.name == "alert":
+        if queue_item.name == "alert":
+            loudness = 0
+            gain_correct = 0
+        else:
             loudness, gain_correct = await get_gain_correct(
                 mass, player_id, streamdetails.item_id, streamdetails.provider
             )
-            streamdetails.gain_correct = gain_correct
-            streamdetails.loudness = loudness
+        streamdetails.gain_correct = gain_correct
+        streamdetails.loudness = loudness
         # set streamdetails as attribute on the media_item
         # this way the app knows what content is playing
         queue_item.streamdetails = streamdetails

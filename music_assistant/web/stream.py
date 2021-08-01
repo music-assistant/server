@@ -98,7 +98,7 @@ async def stream_queue(request: Request):
                 "Queue stream finished for: %s",
                 player_queue.player.name,
             )
-            return resp
+    return resp
 
 
 @routes.get("/stream/queue/{player_id}/{queue_item_id}")
@@ -111,7 +111,7 @@ async def stream_single_queue_item(request: Request):
     player_queue = mass.players.get_player_queue(player_id)
     if not player_queue:
         raise HTTPNotFound(reason="invalid player_id")
-    if player_queue.use_queue_stream and not request.query.get("alert"):
+    if player_queue.use_queue_stream:
         # redirect request if player switched to queue streaming
         return await stream_queue(request)
     LOGGER.debug("Stream request for %s", player_queue.player.name)

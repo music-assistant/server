@@ -13,8 +13,8 @@ from async_timeout import timeout
 
 LOGGER = logging.getLogger("AsyncProcess")
 
-DEFAULT_CHUNKSIZE = 256000
-DEFAULT_TIMEOUT = 10
+DEFAULT_CHUNKSIZE = 512000
+DEFAULT_TIMEOUT = 120
 
 
 class AsyncProcess:
@@ -36,7 +36,7 @@ class AsyncProcess:
                 self._args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE,
-                limit=8000000,
+                limit=4000000,
                 close_fds=True,
             )
         else:
@@ -44,7 +44,7 @@ class AsyncProcess:
                 *self._args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE,
-                limit=8000000,
+                limit=4000000,
                 close_fds=True,
             )
         return self
@@ -76,8 +76,6 @@ class AsyncProcess:
 
     async def read(self, chunk_size: int = DEFAULT_CHUNKSIZE) -> bytes:
         """Read x bytes from the process stdout."""
-        if self._proc.stdout.at_eof() or self._proc.returncode is not None:
-            return b""
         try:
             async with timeout(DEFAULT_TIMEOUT):
                 if chunk_size is None:
