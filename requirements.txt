@@ -20,4 +20,4 @@ cryptography==3.4.7
 ujson==4.0.2
 mashumaro==2.5
 typing-inspect==0.6.0; python_version < '3.8'
-uvloop==0.15.2; sys_platform != 'win32'
+uvloop==0.15.3; sys_platform != 'win32'
