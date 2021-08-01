@@ -1,17 +1,22 @@
 """Helper and utility functions."""
 import asyncio
+import functools
 import logging
 import os
 import platform
 import socket
 import struct
 import tempfile
+import threading
 import urllib.request
+from asyncio.events import AbstractEventLoop
 from io import BytesIO
-from typing import Any, Callable, Dict, Optional, Set, TypeVar
+from typing import Any, Callable, Dict, Optional, Set, TypeVar, Union
 
 import memory_tempfile
 import ujson
+
+from .typing import MediaType
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -19,6 +24,8 @@ _UNDEF: dict = {}
 CALLABLE_T = TypeVar("CALLABLE_T", bound=Callable)
 CALLBACK_TYPE = Callable[[], None]
 # pylint: enable=invalid-name
+
+DEFAULT_LOOP = None
 
 
 def callback(func: CALLABLE_T) -> CALLABLE_T:
@@ -30,6 +37,58 @@ def callback(func: CALLABLE_T) -> CALLABLE_T:
 def is_callback(func: Callable[..., Any]) -> bool:
     """Check if function is safe to be called in the event loop."""
     return getattr(func, "_mass_callback", False) is True
+
+
+def create_task(
+    target: Callable[..., Any],
+    *args: Any,
+    loop: AbstractEventLoop = None,
+    **kwargs: Any,
+) -> Union[asyncio.Task, asyncio.Future]:
+    """Create Task on (main) event loop from Callable or awaitable.
+
+    target: target to call.
+    loop: Running (main) event loop, defaults to loop in current thread
+    args/kwargs: parameters for method to call.
+    """
+    try:
+        loop = loop or asyncio.get_running_loop()
+    except RuntimeError:
+        # try to fetch the default loop from global variable
+        loop = DEFAULT_LOOP
+
+    # Check for partials to properly determine if coroutine function
+    check_target = target
+    while isinstance(check_target, functools.partial):
+        check_target = check_target.func
+
+    async def cb_wrapper(_target: Callable, *_args, **_kwargs):
+        return _target(*_args, **_kwargs)
+
+    async def executor_wrapper(_target: Callable, *_args, **_kwargs):
+        return await loop.run_in_executor(None, _target, *_args, **_kwargs)
+
+    # called from other thread
+    if threading.current_thread() is not threading.main_thread():
+        if asyncio.iscoroutine(check_target):
+            return asyncio.run_coroutine_threadsafe(target, loop)
+        if asyncio.iscoroutinefunction(check_target):
+            return asyncio.run_coroutine_threadsafe(target(*args), loop)
+        if is_callback(check_target):
+            return asyncio.run_coroutine_threadsafe(
+                cb_wrapper(target, *args, **kwargs), loop
+            )
+        return asyncio.run_coroutine_threadsafe(
+            executor_wrapper(target, *args, **kwargs), loop
+        )
+
+    if asyncio.iscoroutine(check_target):
+        return loop.create_task(target)
+    if asyncio.iscoroutinefunction(check_target):
+        return loop.create_task(target(*args))
+    if is_callback(check_target):
+        return loop.create_task(cb_wrapper(target, *args, **kwargs))
+    return loop.create_task(executor_wrapper(target, *args, **kwargs))
 
 
 def run_periodic(period):
@@ -59,25 +118,6 @@ def filename_from_string(string):
     """Create filename from unsafe string."""
     keepcharacters = (" ", ".", "_")
     return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
-
-
-def run_background_task(corofn, *args, executor=None):
-    """Run non-async task in background."""
-    return asyncio.get_event_loop().run_in_executor(executor, corofn, *args)
-
-
-def run__background_task(executor, corofn, *args):
-    """Run async task in background."""
-
-    def run_task(corofn, *args):
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
-        coro = corofn(*args)
-        res = new_loop.run_until_complete(coro)
-        new_loop.close()
-        return res
-
-    return asyncio.get_event_loop().run_in_executor(executor, run_task, corofn, *args)
 
 
 def try_parse_int(possible_int):
@@ -296,6 +336,11 @@ def get_changed_keys(
         elif dict1[key] != value:
             changed_keys.add(key)
     return changed_keys
+
+
+def create_uri(media_type: MediaType, provider: str, item_id: str):
+    """Create uri for mediaitem."""
+    return f"{provider}://{media_type.value}/{item_id}"
 
 
 def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=3600):

@@ -7,32 +7,46 @@ even when properly handling reading/writes from different tasks.
 
 import asyncio
 import logging
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List, Optional, Union
 
 from async_timeout import timeout
 
 LOGGER = logging.getLogger("AsyncProcess")
 
-DEFAULT_CHUNKSIZE = 512000
-DEFAULT_TIMEOUT = 60
+DEFAULT_CHUNKSIZE = 256000
+DEFAULT_TIMEOUT = 10
 
 
 class AsyncProcess:
     """Implementation of a (truly) non blocking subprocess."""
 
-    def __init__(self, process_args: List, enable_write: bool = False):
+    def __init__(self, args: Union[List, str], enable_write: bool = False):
         """Initialize."""
         self._proc = None
-        self._process_args = process_args
+        self._args = args
         self._enable_write = enable_write
 
     async def __aenter__(self) -> "AsyncProcess":
         """Enter context manager."""
-        self._proc = await asyncio.create_subprocess_exec(
-            *self._process_args,
-            stdin=asyncio.subprocess.PIPE if self._enable_write else None,
-            stdout=asyncio.subprocess.PIPE
-        )
+        if "|" in self._args:
+            self._args = " ".join(self._args)
+
+        if isinstance(self._args, str):
+            self._proc = await asyncio.create_subprocess_shell(
+                self._args,
+                stdin=asyncio.subprocess.PIPE if self._enable_write else None,
+                stdout=asyncio.subprocess.PIPE,
+                limit=8000000,
+                close_fds=True,
+            )
+        else:
+            self._proc = await asyncio.create_subprocess_exec(
+                *self._args,
+                stdin=asyncio.subprocess.PIPE if self._enable_write else None,
+                stdout=asyncio.subprocess.PIPE,
+                limit=8000000,
+                close_fds=True,
+            )
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
@@ -54,21 +68,25 @@ class AsyncProcess:
         """Yield chunks from the process stdout. Generator."""
         while True:
             chunk = await self.read(chunk_size)
+            if not chunk:
+                break
             yield chunk
-            if len(chunk) < chunk_size:
+            if chunk_size is not None and len(chunk) < chunk_size:
                 break
 
-    async def read(
-        self, chunk_size: int = DEFAULT_CHUNKSIZE, time_out: int = DEFAULT_TIMEOUT
-    ) -> bytes:
+    async def read(self, chunk_size: int = DEFAULT_CHUNKSIZE) -> bytes:
         """Read x bytes from the process stdout."""
+        if self._proc.stdout.at_eof() or self._proc.returncode is not None:
+            return b""
         try:
-            async with timeout(time_out):
+            async with timeout(DEFAULT_TIMEOUT):
+                if chunk_size is None:
+                    return await self._proc.stdout.read(DEFAULT_CHUNKSIZE)
                 return await self._proc.stdout.readexactly(chunk_size)
         except asyncio.IncompleteReadError as err:
             return err.partial
-        except AttributeError:
-            raise asyncio.CancelledError()
+        except AttributeError as exc:
+            raise asyncio.CancelledError() from exc
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""

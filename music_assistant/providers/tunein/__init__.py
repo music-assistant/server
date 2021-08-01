@@ -66,7 +66,7 @@ class TuneInProvider(MusicProvider):
     @property
     def supported_mediatypes(self) -> List[MediaType]:
         """Return MediaTypes the provider supports."""
-        return [MediaType.Radio]
+        return [MediaType.RADIO]
 
     async def on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
@@ -176,6 +176,7 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType(stream["media_type"]),
                     sample_rate=44100,
                     bit_depth=16,
+                    media_type=MediaType.RADIO,
                     details=stream,
                 )
         return None

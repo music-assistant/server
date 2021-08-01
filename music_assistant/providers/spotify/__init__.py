@@ -84,11 +84,11 @@ class SpotifyProvider(MusicProvider):
     def supported_mediatypes(self) -> List[MediaType]:
         """Return MediaTypes the provider supports."""
         return [
-            MediaType.Album,
-            MediaType.Artist,
-            MediaType.Playlist,
-            # MediaType.Radio, # TODO!
-            MediaType.Track,
+            MediaType.ALBUM,
+            MediaType.ARTIST,
+            MediaType.PLAYLIST,
+            # MediaType.RADIO, # TODO!
+            MediaType.TRACK,
         ]
 
     async def on_start(self) -> bool:
@@ -120,13 +120,13 @@ class SpotifyProvider(MusicProvider):
         """
         result = SearchResult()
         searchtypes = []
-        if MediaType.Artist in media_types:
+        if MediaType.ARTIST in media_types:
             searchtypes.append("artist")
-        if MediaType.Album in media_types:
+        if MediaType.ALBUM in media_types:
             searchtypes.append("album")
-        if MediaType.Track in media_types:
+        if MediaType.TRACK in media_types:
             searchtypes.append("track")
-        if MediaType.Playlist in media_types:
+        if MediaType.PLAYLIST in media_types:
             searchtypes.append("playlist")
         searchtype = ",".join(searchtypes)
         params = {"q": search_query, "type": searchtype, "limit": limit}
@@ -257,15 +257,15 @@ class SpotifyProvider(MusicProvider):
     async def library_add(self, prov_item_id, media_type: MediaType):
         """Add item to library."""
         result = False
-        if media_type == MediaType.Artist:
+        if media_type == MediaType.ARTIST:
             result = await self._put_data(
                 "me/following", {"ids": prov_item_id, "type": "artist"}
             )
-        elif media_type == MediaType.Album:
+        elif media_type == MediaType.ALBUM:
             result = await self._put_data("me/albums", {"ids": prov_item_id})
-        elif media_type == MediaType.Track:
+        elif media_type == MediaType.TRACK:
             result = await self._put_data("me/tracks", {"ids": prov_item_id})
-        elif media_type == MediaType.Playlist:
+        elif media_type == MediaType.PLAYLIST:
             result = await self._put_data(
                 f"playlists/{prov_item_id}/followers", data={"public": False}
             )
@@ -274,15 +274,15 @@ class SpotifyProvider(MusicProvider):
     async def library_remove(self, prov_item_id, media_type: MediaType):
         """Remove item from library."""
         result = False
-        if media_type == MediaType.Artist:
+        if media_type == MediaType.ARTIST:
             result = await self._delete_data(
                 "me/following", {"ids": prov_item_id, "type": "artist"}
             )
-        elif media_type == MediaType.Album:
+        elif media_type == MediaType.ALBUM:
             result = await self._delete_data("me/albums", {"ids": prov_item_id})
-        elif media_type == MediaType.Track:
+        elif media_type == MediaType.TRACK:
             result = await self._delete_data("me/tracks", {"ids": prov_item_id})
-        elif media_type == MediaType.Playlist:
+        elif media_type == MediaType.PLAYLIST:
             result = await self._delete_data(f"playlists/{prov_item_id}/followers")
         return result
 
@@ -360,11 +360,11 @@ class SpotifyProvider(MusicProvider):
             if album.artist:
                 break
         if album_obj["album_type"] == "single":
-            album.album_type = AlbumType.Single
+            album.album_type = AlbumType.SINGLE
         elif album_obj["album_type"] == "compilation":
-            album.album_type = AlbumType.Compilation
+            album.album_type = AlbumType.COMPILATION
         elif album_obj["album_type"] == "album":
-            album.album_type = AlbumType.Album
+            album.album_type = AlbumType.ALBUM
         if "genres" in album_obj:
             album.metadata["genres"] = album_obj["genres"]
         if album_obj.get("images"):

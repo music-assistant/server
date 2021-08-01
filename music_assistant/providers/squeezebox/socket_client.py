@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Callable
 
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import run_periodic
+from music_assistant.helpers.util import create_task, run_periodic
 
 from .constants import PROV_ID
 
@@ -32,7 +32,7 @@ DEVICE_TYPE = {
 }
 
 STATE_PLAYING = "playing"
-STATE_STOPPED = "stopped"
+STATE_IDLE = "idle"
 STATE_PAUSED = "paused"
 
 
@@ -67,15 +67,15 @@ class SqueezeSocketClient:
         self._volume_control = PySqueezeVolume()
         self._powered = False
         self._muted = False
-        self._state = STATE_STOPPED
+        self._state = STATE_IDLE
         self._elapsed_seconds = 0
         self._elapsed_milliseconds = 0
         self._current_uri = ""
         self._connected = True
         self._event_callbacks = []
         self._tasks = [
-            asyncio.create_task(self._socket_reader()),
-            asyncio.create_task(self._send_heartbeat()),
+            create_task(self._socket_reader()),
+            create_task(self._send_heartbeat()),
         ]
 
     def disconnect(self) -> None:
@@ -172,18 +172,15 @@ class SqueezeSocketClient:
 
     async def cmd_stop(self):
         """Send stop command to player."""
-        data = self.__pack_stream(b"q", autostart=b"0", flags=0)
-        await self._send_frame(b"strm", data)
+        await self.send_strm(b"q")
 
     async def cmd_play(self):
         """Send play (unpause) command to player."""
-        data = self.__pack_stream(b"u", autostart=b"0", flags=0)
-        await self._send_frame(b"strm", data)
+        await self.send_strm(b"u")
 
     async def cmd_pause(self):
         """Send pause command to player."""
-        data = self.__pack_stream(b"p", autostart=b"0", flags=0)
-        await self._send_frame(b"strm", data)
+        await self.send_strm(b"p")
 
     async def cmd_power(self, powered: bool = True):
         """Send power command to player."""
@@ -215,25 +212,15 @@ class SqueezeSocketClient:
     ):
         """Request player to start playing a single uri."""
         if send_flush:
-            data = self.__pack_stream(b"f", autostart=b"0", flags=0)
-            await self._send_frame(b"strm", data)
+            await self.send_strm(b"f", autostart=b"0")
         self._current_uri = uri
         self._powered = True
         enable_crossfade = crossfade_duration > 0
         command = b"s"
         # we use direct stream for now so let the player do the messy work with buffers
-        autostart = b"3"
+        autostart = b"0"
         trans_type = b"1" if enable_crossfade else b"0"
-        formatbyte = b"f"  # fixed to flac
         uri = "/stream" + uri.split("/stream")[1]
-        data = self.__pack_stream(
-            command,
-            autostart=autostart,
-            flags=0x00,
-            formatbyte=formatbyte,
-            trans_type=trans_type,
-            trans_duration=crossfade_duration,
-        )
         # extract host and port from uri
         regex = "(?:http.*://)?(?P<host>[^:/ ]+).?(?P<port>[0-9]*).*"
         regex_result = re.search(regex, uri)
@@ -244,9 +231,14 @@ class SqueezeSocketClient:
         elif not port:
             port = 80
         headers = f"Connection: close\r\nAccept: */*\r\nHost: {host}:{port}\r\n"
-        request = "GET %s HTTP/1.1\r\n%s\r\n" % (uri, headers)
-        data = data + request.encode("utf-8")
-        await self._send_frame(b"strm", data)
+        httpreq = "GET %s HTTP/1.0\r\n%s\r\n" % (uri, headers)
+        await self.send_strm(
+            command,
+            autostart=autostart,
+            trans_type=trans_type,
+            trans_duration=crossfade_duration,
+            httpreq=httpreq.encode("utf-8"),
+        )
 
     @run_periodic(5)
     async def _send_heartbeat(self):
@@ -254,8 +246,7 @@ class SqueezeSocketClient:
         if not self._connected:
             return
         timestamp = int(time.time())
-        data = self.__pack_stream(b"t", replay_gain=timestamp, flags=0)
-        await self._send_frame(b"strm", data)
+        await self.send_strm(b"t", replay_gain=timestamp, flags=0)
 
     async def _send_frame(self, command, data):
         """Send command to Squeeze player."""
@@ -297,29 +288,36 @@ class SqueezeSocketClient:
         self._connected = False
         self.signal_event(SqueezeEvent.DISCONNECTED)
 
-    @staticmethod
-    def __pack_stream(
-        command,
-        autostart=b"1",
-        formatbyte=b"o",
-        pcmargs=(b"?", b"?", b"?", b"?"),
-        threshold=200,
+    async def send_strm(
+        self,
+        command=b"q",
+        formatbyte=b"f",
+        autostart=b"0",
+        samplesize=b"?",
+        samplerate=b"?",
+        channels=b"?",
+        endian=b"?",
+        threshold=0,
         spdif=b"0",
         trans_duration=0,
         trans_type=b"0",
-        flags=0x40,
+        flags=0x00,
         output_threshold=0,
         replay_gain=0,
         server_port=8095,
         server_ip=0,
+        httpreq=b"",
     ):
         """Create stream request message based on given arguments."""
-        return struct.pack(
+        data = struct.pack(
             "!cccccccBcBcBBBLHL",
             command,
             autostart,
             formatbyte,
-            *pcmargs,
+            samplesize,
+            samplerate,
+            channels,
+            endian,
             threshold,
             spdif,
             trans_duration,
@@ -331,6 +329,7 @@ class SqueezeSocketClient:
             server_port,
             server_ip,
         )
+        await self._send_frame(b"strm", data + httpreq)
 
     def _process_helo(self, data):
         """Process incoming HELO event from player (player connected)."""
@@ -341,7 +340,7 @@ class SqueezeSocketClient:
         self._player_id = str(device_mac).lower()
         self._device_type = DEVICE_TYPE.get(dev_id, "unknown device")
         LOGGER.debug("Player connected: %s", self.name)
-        asyncio.create_task(self._initialize_player())
+        create_task(self._initialize_player())
         self.signal_event(SqueezeEvent.CONNECTED)
 
     def _process_stat(self, data):
@@ -355,7 +354,7 @@ class SqueezeSocketClient:
         if event_handler is None:
             LOGGER.debug("Unhandled event: %s - event_data: %s", event, event_data)
         else:
-            self.mass.add_job(event_handler, data[4:])
+            create_task(event_handler, data[4:])
 
     def _process_stat_aude(self, data):
         """Process incoming stat AUDe message (power level and mute)."""
@@ -374,14 +373,14 @@ class SqueezeSocketClient:
     def _process_stat_stmd(self, data):
         """Process incoming stat STMd message (decoder ready)."""
         # pylint: disable=unused-argument
-        LOGGER.debug("STMu received - Decoder Ready for next track.")
+        LOGGER.debug("STMd received - Decoder Ready for next track.")
         self.signal_event(SqueezeEvent.DECODER_READY)
 
     def _process_stat_stmf(self, data):
         """Process incoming stat STMf message (connection closed)."""
         # pylint: disable=unused-argument
         LOGGER.debug("STMf received - connection closed.")
-        self._state = STATE_STOPPED
+        self._state = STATE_IDLE
         self._elapsed_milliseconds = 0
         self._elapsed_seconds = 0
         self.signal_event(SqueezeEvent.STATE_UPDATED)
@@ -394,7 +393,7 @@ class SqueezeSocketClient:
         No more decoded (uncompressed) data to play; triggers rebuffering.
         """
         # pylint: disable=unused-argument
-        LOGGER.debug("STMo received - output underrun.")
+        LOGGER.warning("STMo received - output underrun.")
 
     def _process_stat_stmp(self, data):
         """Process incoming stat STMp message: Pause confirmed."""
@@ -436,7 +435,7 @@ class SqueezeSocketClient:
             elapsed_seconds,
             voltage,
             elapsed_milliseconds,
-            server_timestamp,
+            timestamp,
             error_code,
         ) = struct.unpack("!BBBLLLLHLLLLHLLH", data)
         if self.state == STATE_PLAYING:
@@ -451,14 +450,26 @@ class SqueezeSocketClient:
         """Process incoming stat STMu message: Buffer underrun: Normal end of playback."""
         # pylint: disable=unused-argument
         LOGGER.debug("STMu received - end of playback.")
-        self._state = STATE_STOPPED
+        self._state = STATE_IDLE
         self.signal_event(SqueezeEvent.STATE_UPDATED)
+
+    def _process_stat_stml(self, data):
+        """Process incoming stat STMl message: Buffer threshold reached."""
+        # pylint: disable=unused-argument
+        LOGGER.debug("STMl received - Buffer threshold reached.")
+        # start playing by send unpause command when buffer full
+        create_task(self.send_strm(b"u"))
+
+    def _process_stat_stmn(self, data):
+        """Process incoming stat STMn message: player couldn't decode stream."""
+        # pylint: disable=unused-argument
+        LOGGER.debug("STMn received - player couldn't decode stream.")
+        # request next track when this happens
+        self.signal_event(SqueezeEvent.DECODER_READY)
 
     def _process_resp(self, data):
         """Process incoming RESP message: Response received at player."""
-        # pylint: disable=unused-argument
-        # send continue
-        asyncio.create_task(self._send_frame(b"cont", b"0"))
+        LOGGER.debug("RESP received - Response received at player.")
 
     def _process_setd(self, data):
         """Process incoming SETD message: Get/set player firmware settings."""

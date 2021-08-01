@@ -1,14 +1,13 @@
 """Main Music Assistant class."""
 
 import asyncio
-import functools
 import importlib
 import logging
 import os
-import threading
-from typing import Any, Awaitable, Callable, Coroutine, Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple
 
 import aiohttp
+import music_assistant.helpers.util as util
 from music_assistant.constants import (
     CONF_ENABLED,
     EVENT_PROVIDER_REGISTERED,
@@ -17,16 +16,17 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.cache import Cache
 from music_assistant.helpers.migration import check_migrations
-from music_assistant.helpers.util import callback, get_ip_pton, is_callback
+from music_assistant.helpers.util import callback, create_task, get_ip_pton
 from music_assistant.managers.config import ConfigManager
 from music_assistant.managers.database import DatabaseManager
+from music_assistant.managers.events import EventBus
 from music_assistant.managers.library import LibraryManager
 from music_assistant.managers.metadata import MetaDataManager
 from music_assistant.managers.music import MusicManager
 from music_assistant.managers.players import PlayerManager
-from music_assistant.managers.streams import StreamManager
+from music_assistant.managers.tasks import TaskManager
 from music_assistant.models.provider import Provider, ProviderType
-from music_assistant.web.server import WebServer
+from music_assistant.web import WebServer
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 
 LOGGER = logging.getLogger("mass")
@@ -55,12 +55,13 @@ class MusicAssistant:
         self._loop = None
         self._debug = debug
         self._http_session = None
-        self._event_listeners = []
+
         self._providers = {}
-        self._background_tasks = None
 
         # init core managers/controllers
+        self._eventbus = EventBus(self)
         self._config = ConfigManager(self, datapath)
+        self._tasks = TaskManager(self)
         self._database = DatabaseManager(self)
         self._cache = Cache(self)
         self._metadata = MetaDataManager(self)
@@ -68,7 +69,6 @@ class MusicAssistant:
         self._music = MusicManager(self)
         self._library = LibraryManager(self)
         self._players = PlayerManager(self)
-        self._streams = StreamManager(self)
         # shared zeroconf instance
         self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
 
@@ -76,6 +76,7 @@ class MusicAssistant:
         """Start running the music assistant server."""
         # initialize loop
         self._loop = asyncio.get_event_loop()
+        util.DEFAULT_LOOP = self._loop
         self._loop.set_exception_handler(global_exception_handler)
         self._loop.set_debug(self._debug)
         # create shared aiohttp ClientSession
@@ -85,6 +86,7 @@ class MusicAssistant:
         )
         # run migrations if needed
         await check_migrations(self)
+        await self._tasks.setup()
         await self._config.setup()
         await self._cache.setup()
         await self._music.setup()
@@ -93,13 +95,13 @@ class MusicAssistant:
         await self.setup_discovery()
         await self._web.setup()
         await self._library.setup()
-        self.loop.create_task(self.__process_background_tasks())
+        self.tasks.add("Save config", self.config.save)
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
         self._exit = True
         LOGGER.info("Application shutdown")
-        self.signal_event(EVENT_SHUTDOWN)
+        self._eventbus.signal(EVENT_SHUTDOWN)
         await self.config.close()
         await self._web.stop()
         for prov in self._providers.values():
@@ -144,11 +146,6 @@ class MusicAssistant:
         return self._cache
 
     @property
-    def streams(self) -> StreamManager:
-        """Return the Streams controller/manager."""
-        return self._streams
-
-    @property
     def database(self) -> DatabaseManager:
         """Return the Database controller/manager."""
         return self._database
@@ -157,6 +154,16 @@ class MusicAssistant:
     def metadata(self) -> MetaDataManager:
         """Return the Metadata controller/manager."""
         return self._metadata
+
+    @property
+    def tasks(self) -> TaskManager:
+        """Return the Tasks controller/manager."""
+        return self._tasks
+
+    @property
+    def eventbus(self) -> EventBus:
+        """Return the EventBus."""
+        return self._eventbus
 
     @property
     def web(self) -> WebServer:
@@ -181,7 +188,7 @@ class MusicAssistant:
             if await provider.on_start() is not False:
                 provider.available = True
                 LOGGER.debug("Provider registered: %s", provider.name)
-                self.signal_event(EVENT_PROVIDER_REGISTERED, provider.id)
+                self.eventbus.signal(EVENT_PROVIDER_REGISTERED, provider.id)
             else:
                 LOGGER.debug(
                     "Provider registered but loading failed: %s", provider.name
@@ -195,7 +202,7 @@ class MusicAssistant:
             # unload it if it's loaded
             await self._providers[provider_id].on_stop()
             LOGGER.debug("Provider unregistered: %s", provider_id)
-            self.signal_event(EVENT_PROVIDER_UNREGISTERED, provider_id)
+            self.eventbus.signal(EVENT_PROVIDER_UNREGISTERED, provider_id)
         return self._providers.pop(provider_id, None)
 
     async def reload_provider(self, provider_id: str) -> None:
@@ -206,7 +213,7 @@ class MusicAssistant:
             await self.register_provider(provider)
         else:
             # try preloading all providers
-            self.add_job(self._preload_providers())
+            self.tasks.add("Reload providers", self._preload_providers)
 
     @callback
     def get_provider(self, provider_id: str) -> Provider:
@@ -229,100 +236,6 @@ class MusicAssistant:
             if (filter_type is None or item.type == filter_type)
             and (include_unavailable or item.available)
         )
-
-    @callback
-    def signal_event(self, event_msg: str, event_details: Any = None) -> None:
-        """
-        Signal (systemwide) event.
-
-            :param event_msg: the eventmessage to signal
-            :param event_details: optional details to send with the event.
-        """
-        for cb_func, event_filter in self._event_listeners:
-            if not event_filter or event_msg in event_filter:
-                self.add_job(cb_func, event_msg, event_details)
-
-    @callback
-    def add_event_listener(
-        self,
-        cb_func: Callable[..., Union[None, Awaitable]],
-        event_filter: Union[None, str, Tuple] = None,
-    ) -> Callable:
-        """
-        Add callback to event listeners.
-
-        Returns function to remove the listener.
-            :param cb_func: callback function or coroutine
-            :param event_filter: Optionally only listen for these events
-        """
-        listener = (cb_func, event_filter)
-        self._event_listeners.append(listener)
-
-        def remove_listener():
-            self._event_listeners.remove(listener)
-
-        return remove_listener
-
-    @callback
-    def add_background_task(self, task: Coroutine):
-        """Add a coroutine/task to the end of the job queue."""
-        if self._background_tasks is None:
-            self._background_tasks = asyncio.Queue()
-        self._background_tasks.put_nowait(task)
-
-    @callback
-    def add_job(
-        self, target: Callable[..., Any], *args: Any, **kwargs: Any
-    ) -> Optional[asyncio.Task]:
-        """Add a job/task to the event loop.
-
-        target: target to call.
-        args: parameters for method to call.
-        """
-        task = None
-
-        # Check for partials to properly determine if coroutine function
-        check_target = target
-        while isinstance(check_target, functools.partial):
-            check_target = check_target.func
-
-        if threading.current_thread() is not threading.main_thread():
-            # called from other thread
-            if asyncio.iscoroutine(check_target):
-                task = asyncio.run_coroutine_threadsafe(target, self.loop)  # type: ignore
-            elif asyncio.iscoroutinefunction(check_target):
-                task = asyncio.run_coroutine_threadsafe(
-                    target(*args, **kwargs), self.loop
-                )
-            elif is_callback(check_target):
-                task = self.loop.call_soon_threadsafe(target, *args, **kwargs)
-            else:
-                task = self.loop.run_in_executor(None, target, *args, **kwargs)  # type: ignore
-        else:
-            # called from mainthread
-            if asyncio.iscoroutine(check_target):
-                task = self.loop.create_task(target)  # type: ignore
-            elif asyncio.iscoroutinefunction(check_target):
-                task = self.loop.create_task(target(*args, **kwargs))
-            elif is_callback(check_target):
-                task = self.loop.call_soon(target, *args, *kwargs)
-            else:
-                task = self.loop.run_in_executor(None, target, *args, *kwargs)  # type: ignore
-        return task
-
-    async def __process_background_tasks(self):
-        """Background tasks that takes care of slowly handling jobs in the queue."""
-        if self._background_tasks is None:
-            self._background_tasks = asyncio.Queue()
-        while not self.exit:
-            task = await self._background_tasks.get()
-            await task
-            if self._background_tasks.qsize() > 200:
-                await asyncio.sleep(0.5)
-            elif self._background_tasks.qsize() == 0:
-                await asyncio.sleep(10)
-            else:
-                await asyncio.sleep(1)
 
     async def setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
@@ -351,7 +264,7 @@ class MusicAssistant:
                     "Music Assistant instance with identical name present in the local network!"
                 )
 
-        self.add_job(_setup_discovery)
+        create_task(_setup_discovery)
 
     async def _preload_providers(self) -> None:
         """Dynamically load all providermodules."""

@@ -79,7 +79,7 @@ class QobuzProvider(MusicProvider):
     @property
     def supported_mediatypes(self) -> List[MediaType]:
         """Return MediaTypes the provider supports."""
-        return [MediaType.Album, MediaType.Artist, MediaType.Playlist, MediaType.Track]
+        return [MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST, MediaType.TRACK]
 
     async def on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
@@ -94,7 +94,7 @@ class QobuzProvider(MusicProvider):
         self.__user_auth_info = None
         self.__logged_in = False
         self._throttler = Throttler(rate_limit=4, period=1)
-        self.mass.add_event_listener(
+        self.mass.eventbus.add_listener(
             self.mass_event, (EVENT_STREAM_STARTED, EVENT_STREAM_ENDED)
         )
         return True
@@ -113,13 +113,13 @@ class QobuzProvider(MusicProvider):
         params = {"query": search_query, "limit": limit}
         if len(media_types) == 1:
             # qobuz does not support multiple searchtypes, falls back to all if no type given
-            if media_types[0] == MediaType.Artist:
+            if media_types[0] == MediaType.ARTIST:
                 params["type"] = "artists"
-            if media_types[0] == MediaType.Album:
+            if media_types[0] == MediaType.ALBUM:
                 params["type"] = "albums"
-            if media_types[0] == MediaType.Track:
+            if media_types[0] == MediaType.TRACK:
                 params["type"] = "tracks"
-            if media_types[0] == MediaType.Playlist:
+            if media_types[0] == MediaType.PLAYLIST:
                 params["type"] = "playlists"
         searchresult = await self._get_data("catalog/search", params)
         if searchresult:
@@ -298,19 +298,19 @@ class QobuzProvider(MusicProvider):
     async def library_add(self, prov_item_id, media_type: MediaType):
         """Add item to library."""
         result = None
-        if media_type == MediaType.Artist:
+        if media_type == MediaType.ARTIST:
             result = await self._get_data(
                 "favorite/create", {"artist_ids": prov_item_id}
             )
-        elif media_type == MediaType.Album:
+        elif media_type == MediaType.ALBUM:
             result = await self._get_data(
                 "favorite/create", {"album_ids": prov_item_id}
             )
-        elif media_type == MediaType.Track:
+        elif media_type == MediaType.TRACK:
             result = await self._get_data(
                 "favorite/create", {"track_ids": prov_item_id}
             )
-        elif media_type == MediaType.Playlist:
+        elif media_type == MediaType.PLAYLIST:
             result = await self._get_data(
                 "playlist/subscribe", {"playlist_id": prov_item_id}
             )
@@ -319,19 +319,19 @@ class QobuzProvider(MusicProvider):
     async def library_remove(self, prov_item_id, media_type: MediaType):
         """Remove item from library."""
         result = None
-        if media_type == MediaType.Artist:
+        if media_type == MediaType.ARTIST:
             result = await self._get_data(
                 "favorite/delete", {"artist_ids": prov_item_id}
             )
-        elif media_type == MediaType.Album:
+        elif media_type == MediaType.ALBUM:
             result = await self._get_data(
                 "favorite/delete", {"album_ids": prov_item_id}
             )
-        elif media_type == MediaType.Track:
+        elif media_type == MediaType.TRACK:
             result = await self._get_data(
                 "favorite/delete", {"track_ids": prov_item_id}
             )
-        elif media_type == MediaType.Playlist:
+        elif media_type == MediaType.PLAYLIST:
             playlist = await self.get_playlist(prov_item_id)
             if playlist.is_editable:
                 result = await self._get_data(
@@ -460,6 +460,9 @@ class QobuzProvider(MusicProvider):
 
     async def _parse_album(self, album_obj: dict, artist_obj: dict = None):
         """Parse qobuz album object to generic layout."""
+        if not artist_obj and "artist" not in album_obj:
+            # artist missing in album info, return full abum instead
+            return await self.get_album(album_obj["id"])
         album = Album(item_id=str(album_obj["id"]), provider=PROV_ID)
         if album_obj["maximum_sampling_rate"] > 192:
             quality = TrackQuality.FLAC_LOSSLESS_HI_RES_4
@@ -493,17 +496,17 @@ class QobuzProvider(MusicProvider):
             album_obj.get("product_type", "") == "single"
             or album_obj.get("release_type", "") == "single"
         ):
-            album.album_type = AlbumType.Single
+            album.album_type = AlbumType.SINGLE
         elif (
             album_obj.get("product_type", "") == "compilation"
             or "Various" in album.artist.name
         ):
-            album.album_type = AlbumType.Compilation
+            album.album_type = AlbumType.COMPILATION
         elif (
             album_obj.get("product_type", "") == "album"
             or album_obj.get("release_type", "") == "album"
         ):
-            album.album_type = AlbumType.Album
+            album.album_type = AlbumType.ALBUM
         if "genre" in album_obj:
             album.metadata["genre"] = album_obj["genre"]["name"]
         album.metadata["image"] = self.__get_image(album_obj)

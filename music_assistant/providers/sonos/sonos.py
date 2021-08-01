@@ -6,14 +6,9 @@ import time
 from typing import List
 
 import soco
-from music_assistant.helpers.util import run_periodic
+from music_assistant.helpers.util import create_task
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.models.player import (
-    DeviceInfo,
-    PlaybackState,
-    Player,
-    PlayerFeature,
-)
+from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.provider import PlayerProvider
 
@@ -53,7 +48,7 @@ class SonosProvider(PlayerProvider):
 
     async def on_start(self) -> bool:
         """Handle initialization of the provider."""
-        self._tasks.append(self.mass.add_job(self._periodic_discovery()))
+        self.mass.tasks.add("Run Sonos discovery", self.__run_discovery, periodic=1800)
 
     async def on_stop(self):
         """Handle correct close/cleanup of the provider on exit."""
@@ -68,7 +63,7 @@ class SonosProvider(PlayerProvider):
         """
         player = self._players.get(player_id)
         if player:
-            self.mass.add_job(player.soco.play_uri, uri)
+            create_task(player.soco.play_uri, uri)
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -80,7 +75,7 @@ class SonosProvider(PlayerProvider):
         """
         player = self._players.get(player_id)
         if player:
-            self.mass.add_job(player.soco.stop)
+            create_task(player.soco.stop)
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -92,7 +87,7 @@ class SonosProvider(PlayerProvider):
         """
         player = self._players.get(player_id)
         if player:
-            self.mass.add_job(player.soco.play)
+            create_task(player.soco.play)
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -104,7 +99,7 @@ class SonosProvider(PlayerProvider):
         """
         player = self._players.get(player_id)
         if player:
-            self.mass.add_job(player.soco.pause)
+            create_task(player.soco.pause)
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -116,7 +111,7 @@ class SonosProvider(PlayerProvider):
         """
         player = self._players.get(player_id)
         if player:
-            self.mass.add_job(player.soco.next)
+            create_task(player.soco.next)
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -128,7 +123,7 @@ class SonosProvider(PlayerProvider):
         """
         player = self._players.get(player_id)
         if player:
-            self.mass.add_job(player.soco.previous)
+            create_task(player.soco.previous)
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -195,7 +190,7 @@ class SonosProvider(PlayerProvider):
         """
         player = self._players.get(player_id)
         if player:
-            self.mass.add_job(player.soco.play_from_queue, index)
+            create_task(player.soco.play_from_queue, index)
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -208,9 +203,9 @@ class SonosProvider(PlayerProvider):
         """
         player = self._players.get(player_id)
         if player:
-            self.mass.add_job(player.soco.clear_queue)
+            create_task(player.soco.clear_queue)
             for pos, item in enumerate(queue_items):
-                self.mass.add_job(player.soco.add_uri_to_queue, item.uri, pos)
+                create_task(player.soco.add_uri_to_queue, item.stream_url, pos)
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
@@ -228,8 +223,8 @@ class SonosProvider(PlayerProvider):
         player = self._players.get(player_id)
         if player:
             for pos, item in enumerate(queue_items):
-                self.mass.add_job(
-                    player.soco.add_uri_to_queue, item.uri, insert_at_index + pos
+                create_task(
+                    player.soco.add_uri_to_queue, item.stream_url, insert_at_index + pos
                 )
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
@@ -256,14 +251,9 @@ class SonosProvider(PlayerProvider):
         """
         player = self._players.get(player_id)
         if player:
-            self.mass.add_job(player.soco.clear_queue)
+            create_task(player.soco.clear_queue)
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
-
-    @run_periodic(1800)
-    async def _periodic_discovery(self):
-        """Run Sonos discovery at interval."""
-        self._tasks.append(self.mass.add_job(None, self.__run_discovery))
 
     def __run_discovery(self):
         """Background Sonos discovery and handler, runs in executor thread."""
@@ -279,7 +269,7 @@ class SonosProvider(PlayerProvider):
         # remove any disconnected players...
         for player in list(self._players.values()):
             if not player.is_group and player.soco.uid not in new_device_ids:
-                self.mass.add_job(self.mass.players.remove_player(player.player_id))
+                create_task(self.mass.players.remove_player(player.player_id))
                 for sub in player.subscriptions:
                     sub.unsubscribe()
                 self._players.pop(player, None)
@@ -322,7 +312,7 @@ class SonosProvider(PlayerProvider):
         subscribe(soco_device.avTransport, self.__player_event)
         subscribe(soco_device.renderingControl, self.__player_event)
         subscribe(soco_device.zoneGroupTopology, self.__topology_changed)
-        self.mass.run_task(self.mass.players.add_player(player))
+        create_task(self.mass.players.add_player(player))
         return player
 
     def __player_event(self, player_id: str, event):
@@ -353,8 +343,8 @@ class SonosProvider(PlayerProvider):
             )
             rel_time = __timespan_secs(position_info.get("RelTime"))
             player.elapsed_time = rel_time
-            if player.state == PlaybackState.Playing:
-                self.mass.add_job(self._report_progress(player_id))
+            if player.state == PlayerState.PLAYING:
+                create_task(self._report_progress(player_id))
         player.update_state()
 
     def __process_groups(self, sonos_groups):
@@ -371,13 +361,13 @@ class SonosProvider(PlayerProvider):
             group_player.is_group_player = True
             group_player.name = group.label
             group_player.group_childs = [item.uid for item in group.members]
-            self.mass.run_task(self.mass.players.update_player(group_player))
+            create_task(self.mass.players.update_player(group_player))
 
     async def __topology_changed(self, player_id, event=None):
         """Received topology changed event from one of the sonos players."""
         # pylint: disable=unused-argument
         # Schedule discovery to work out the changes.
-        self.mass.add_job(self.__run_discovery)
+        create_task(self.__run_discovery)
 
     async def _report_progress(self, player_id: str):
         """Report current progress while playing."""
@@ -387,7 +377,7 @@ class SonosProvider(PlayerProvider):
         # so we need to send it in periodically
         player = self._players[player_id]
         player.should_poll = True
-        while player and player.state == PlaybackState.Playing:
+        while player and player.state == PlayerState.PLAYING:
             time_diff = time.time() - player.media_position_updated_at
             adjusted_current_time = player.elapsed_time + time_diff
             player.elapsed_time = adjusted_current_time
@@ -396,15 +386,15 @@ class SonosProvider(PlayerProvider):
         self._report_progress_tasks.pop(player_id, None)
 
 
-def __convert_state(sonos_state: str) -> PlaybackState:
-    """Convert Sonos state to PlaybackState."""
+def __convert_state(sonos_state: str) -> PlayerState:
+    """Convert Sonos state to PlayerState."""
     if sonos_state == "PLAYING":
-        return PlaybackState.Playing
+        return PlayerState.PLAYING
     if sonos_state == "TRANSITIONING":
-        return PlaybackState.Playing
+        return PlayerState.PLAYING
     if sonos_state == "PAUSED_PLAYBACK":
-        return PlaybackState.Paused
-    return PlaybackState.Stopped
+        return PlayerState.PAUSED
+    return PlayerState.IDLE
 
 
 def __timespan_secs(timespan):

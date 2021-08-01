@@ -64,14 +64,14 @@ async def get_image_url(
         and item.artist.metadata.get("image")
     ):
         return item.album.metadata["image"]
-    if media_type == MediaType.Track and item.album:
+    if media_type == MediaType.TRACK and item.album:
         # try album instead for tracks
         return await get_image_url(
-            mass, item.album.item_id, item.album.provider, MediaType.Album
+            mass, item.album.item_id, item.album.provider, MediaType.ALBUM
         )
-    if media_type == MediaType.Album and item.artist:
+    if media_type == MediaType.ALBUM and item.artist:
         # try artist instead for albums
         return await get_image_url(
-            mass, item.artist.item_id, item.artist.provider, MediaType.Artist
+            mass, item.artist.item_id, item.artist.provider, MediaType.ARTIST
         )
     return None

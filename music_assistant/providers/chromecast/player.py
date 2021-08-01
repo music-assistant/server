@@ -7,14 +7,9 @@ import pychromecast
 from asyncio_throttle import Throttler
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import yield_chunks
+from music_assistant.helpers.util import create_task, yield_chunks
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.models.player import (
-    DeviceInfo,
-    PlaybackState,
-    Player,
-    PlayerFeature,
-)
+from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
 from music_assistant.models.player_queue import QueueItem
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import (
@@ -54,7 +49,7 @@ class ChromecastPlayer(Player):
         self._available = False
         self._status_listener: Optional[CastStatusListener] = None
         self._is_speaker_group = False
-        self._throttler = Throttler(rate_limit=1, period=0.1)
+        self._throttler = Throttler(rate_limit=1, period=0.2)
 
     @property
     def player_id(self) -> str:
@@ -94,19 +89,17 @@ class ChromecastPlayer(Player):
         return self.media_status and self.media_status.player_is_playing
 
     @property
-    def state(self) -> PlaybackState:
+    def state(self) -> PlayerState:
         """Return the state of the player."""
-        if not self.powered:
-            return PlaybackState.Off
         if self.media_status is None:
-            return PlaybackState.Stopped
+            return PlayerState.IDLE
         if self.media_status.player_is_playing:
-            return PlaybackState.Playing
+            return PlayerState.PLAYING
         if self.media_status.player_is_paused:
-            return PlaybackState.Paused
+            return PlayerState.PAUSED
         if self.media_status.player_is_idle:
-            return PlaybackState.Stopped
-        return PlaybackState.Stopped
+            return PlayerState.IDLE
+        return PlayerState.IDLE
 
     @property
     def elapsed_time(self) -> int:
@@ -286,7 +279,7 @@ class ChromecastPlayer(Player):
             self._available = new_available
             self.update_state()
             if self._cast_info.is_audio_group and new_available:
-                self.mass.add_job(self._chromecast.mz_controller.update_members)
+                create_task(self._chromecast.mz_controller.update_members)
 
     # ========== Service Calls ==========
 
@@ -338,7 +331,7 @@ class ChromecastPlayer(Player):
         if player_queue.use_queue_stream:
             # create (fake) CC queue so that skip and previous will work
             queue_item = QueueItem(
-                item_id=uri, provider="mass", name="Music Assistant", uri=uri
+                item_id=uri, provider="mass", name="Music Assistant", stream_url=uri
             )
             return await self.cmd_queue_load([queue_item, queue_item])
         await self.chromecast_command(self._chromecast.play_media, uri, "audio/flac")
@@ -346,7 +339,7 @@ class ChromecastPlayer(Player):
     async def cmd_queue_load(self, queue_items: List[QueueItem]) -> None:
         """Load (overwrite) queue with new items."""
         player_queue = self.mass.players.get_player_queue(self.player_id)
-        cc_queue_items = self.__create_queue_items(queue_items[:50])
+        cc_queue_items = self.__create_queue_items(queue_items[:25])
         repeat_enabled = player_queue.use_queue_stream or player_queue.repeat_enabled
         queuedata = {
             "type": "QUEUE_LOAD",
@@ -354,16 +347,16 @@ class ChromecastPlayer(Player):
             "shuffle": False,  # handled by our queue controller
             "queueType": "PLAYLIST",
             "startIndex": 0,  # Item index to play after this request or keep same item if undefined
-            "items": cc_queue_items,  # only load 50 tracks at once or the socket will crash
+            "items": cc_queue_items,  # only load 25 tracks at once or the socket will crash
         }
         await self.chromecast_command(self.__send_player_queue, queuedata)
         if len(queue_items) > 50:
-            await self.cmd_queue_append(queue_items[51:])
+            await self.cmd_queue_append(queue_items[26:])
 
     async def cmd_queue_append(self, queue_items: List[QueueItem]) -> None:
         """Append new items at the end of the queue."""
         cc_queue_items = self.__create_queue_items(queue_items)
-        async for chunk in yield_chunks(cc_queue_items, 50):
+        async for chunk in yield_chunks(cc_queue_items, 25):
             queuedata = {
                 "type": "QUEUE_INSERT",
                 "insertBefore": None,
@@ -375,30 +368,32 @@ class ChromecastPlayer(Player):
         """Create list of CC queue items from tracks."""
         return [self.__create_queue_item(track) for track in tracks]
 
-    def __create_queue_item(self, track):
+    def __create_queue_item(self, queue_item: QueueItem):
         """Create CC queue item from track info."""
         player_queue = self.mass.players.get_player_queue(self.player_id)
         return {
-            "opt_itemId": track.queue_item_id,
+            "opt_itemId": queue_item.queue_item_id,
             "autoplay": True,
             "preloadTime": 10,
-            "playbackDuration": int(track.duration),
+            "playbackDuration": int(queue_item.duration),
             "startTime": 0,
             "activeTrackIds": [],
             "media": {
-                "contentId": track.uri,
+                "contentId": queue_item.stream_url,
                 "customData": {
-                    "provider": track.provider,
-                    "uri": track.uri,
-                    "item_id": track.queue_item_id,
+                    "provider": queue_item.provider,
+                    "uri": queue_item.stream_url,
+                    "item_id": queue_item.queue_item_id,
                 },
                 "contentType": "audio/flac",
                 "streamType": "LIVE" if player_queue.use_queue_stream else "BUFFERED",
                 "metadata": {
-                    "title": track.name,
-                    "artist": next(iter(track.artists)).name if track.artists else "",
+                    "title": queue_item.name,
+                    "artist": next(iter(queue_item.artists)).name
+                    if queue_item.artists
+                    else "",
                 },
-                "duration": int(track.duration),
+                "duration": int(queue_item.duration),
             },
         }
 
@@ -431,4 +426,4 @@ class ChromecastPlayer(Player):
             )
             return
         async with self._throttler:
-            self.mass.add_job(func, *args, **kwargs)
+            create_task(func, *args, **kwargs)

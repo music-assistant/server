@@ -1,19 +1,16 @@
 """Various helpers for web requests."""
 
+import asyncio
 import inspect
 import ipaddress
+import re
+from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Callable, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union, get_args, get_origin
 
 import ujson
 from aiohttp import web
-
-try:
-    # python 3.8+
-    from typing import get_args, get_origin
-except ImportError:
-    # python 3.7
-    from typing_inspect import get_args, get_origin
+from music_assistant.helpers.typing import MusicAssistant
 
 
 def require_local_subnet(func):
@@ -43,23 +40,33 @@ def serialize_values(obj):
     """Recursively create serializable values for (custom) data types."""
 
     def get_val(val):
-        if hasattr(val, "to_dict"):
-            return val.to_dict()
-        if isinstance(val, (list, set, filter, tuple)):
-            return [get_val(x) for x in val]
-        if val.__class__ == "dict_valueiterator":
+        if (
+            isinstance(val, (list, set, filter, tuple))
+            or val.__class__ == "dict_valueiterator"
+        ):
             return [get_val(x) for x in val]
         if isinstance(val, dict):
             return {key: get_val(value) for key, value in val.items()}
-        return val
+        try:
+            return val.to_dict()
+        except AttributeError:
+            return val
 
     return get_val(obj)
 
 
-def json_serializer(obj):
+def json_serializer(data):
     """Json serializer to recursively create serializable values for custom data types."""
-    return ujson.dumps(serialize_values(obj))
-    # return ujson.dumps(obj)
+    return ujson.dumps(serialize_values(data))
+
+
+async def async_json_serializer(data):
+    """Run json serializer in executor for large data."""
+    if isinstance(data, list) and len(data) > 100:
+        return await asyncio.get_running_loop().run_in_executor(
+            None, json_serializer, data
+        )
+    return json_serializer(data)
 
 
 def json_response(data: Any, status: int = 200):
@@ -69,39 +76,70 @@ def json_response(data: Any, status: int = 200):
     )
 
 
-def api_route(ws_cmd_path, ws_require_auth=True):
-    """Decorate a function as websocket command."""
+async def async_json_response(data: Any, status: int = 200):
+    """Return json in web request."""
+    return web.Response(
+        body=await async_json_serializer(data),
+        status=200,
+        content_type="application/json",
+    )
+
+
+def api_route(api_path, method="GET"):
+    """Decorate a function as API route/command."""
 
     def decorate(func):
-        func.ws_cmd_path = ws_cmd_path
-        func.ws_require_auth = ws_require_auth
+        func.api_path = api_path
+        func.api_method = method
         return func
 
     return decorate
 
 
+def get_match_pattern(api_path: str) -> Optional[re.Pattern]:
+    """Return match pattern for given path."""
+    if "{" in api_path and "}" in api_path:
+        regex_parts = []
+        for part in api_path.split("/"):
+            if part.startswith("{") and part.endswith("}"):
+                # path variable, create named capture group
+                regex_parts.append(part.replace("{", "(?P<").replace("}", ">[^{}/]+)"))
+            else:
+                # literal string
+                regex_parts.append(r"\b" + part + r"\b")
+        path_regex = "/" if api_path.startswith("/") else ""
+        path_regex += "/".join(regex_parts)
+        if api_path.endswith("/"):
+            path_regex += "/"
+        return re.compile(path_regex)
+    return None
+
+
+def create_api_route(
+    api_path: str,
+    handler: Callable,
+    method: str = "GET",
+):
+    """Create APIRoute instance from given params."""
+    return APIRoute(
+        path=api_path,
+        method=method,
+        pattern=get_match_pattern(api_path),
+        part_count=api_path.count("/"),
+        signature=get_typed_signature(handler),
+        target=handler,
+    )
+
+
 def get_typed_signature(call: Callable) -> inspect.Signature:
-    """Parse signature of function to do type vaildation and/or api spec generation."""
+    """Parse signature of function to do type validation and/or api spec generation."""
     signature = inspect.signature(call)
-    typed_params = [
-        inspect.Parameter(
-            name=param.name,
-            kind=param.kind,
-            default=param.default,
-            annotation=param.annotation,
-        )
-        for param in signature.parameters.values()
-    ]
-    typed_signature = inspect.Signature(typed_params)
-    return typed_signature
+    return signature
 
 
-def parse_arguments(call: Callable, args: dict):
+def parse_arguments(mass: MusicAssistant, func_sig: inspect.Signature, args: dict):
     """Parse (and convert) incoming arguments to correct types."""
     final_args = {}
-    if isinstance(call, type({}.values)):
-        return args
-    func_sig = get_typed_signature(call)
     for key, value in args.items():
         if key not in func_sig.parameters:
             raise KeyError("Invalid parameter: '%s'" % key)
@@ -109,7 +147,9 @@ def parse_arguments(call: Callable, args: dict):
         final_args[key] = convert_value(key, value, arg_type)
     # check for missing args
     for key, value in func_sig.parameters.items():
-        if value.default is inspect.Parameter.empty:
+        if key == "mass":
+            final_args[key] = mass
+        elif value.default is inspect.Parameter.empty:
             if key not in final_args:
                 raise KeyError("Missing parameter: '%s'" % key)
     return final_args
@@ -138,3 +178,34 @@ def convert_value(arg_key, value, arg_type):
     if arg_type is Any:
         return value
     return arg_type(value)
+
+
+@dataclass
+class APIRoute:
+    """Model for an API route."""
+
+    path: str
+    method: str
+    pattern: Optional[re.Pattern]
+    part_count: int
+    signature: inspect.Signature
+    target: Callable
+
+    def match(
+        self, matchpath: str, method: str
+    ) -> Optional[Tuple["APIRoute", Dict[str, str]]]:
+        """Match this route with given path and return the route and resolved params."""
+        if matchpath.endswith("/"):
+            matchpath = matchpath[0:-1]
+        if self.method.upper() != method.upper():
+            return None
+        if self.part_count != matchpath.count("/"):
+            return None
+        if self.pattern is not None:
+            match = re.match(self.pattern, matchpath)
+            if match:
+                return self, match.groupdict()
+        match = self.path.lower() == matchpath.lower()
+        if match:
+            return self, {}
+        return None

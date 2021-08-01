@@ -1,13 +1,13 @@
 """LibraryManager: Orchestrates synchronisation of music providers into the library."""
-import asyncio
-import functools
+
 import logging
 import time
-from typing import Any, List
+from typing import Any, List, Optional
 
-from music_assistant.constants import EVENT_MUSIC_SYNC_STATUS, EVENT_PROVIDER_REGISTERED
-from music_assistant.helpers.util import callback, run_periodic
+from music_assistant.constants import EVENT_PROVIDER_REGISTERED
+from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.web import api_route
+from music_assistant.managers.tasks import TaskInfo
 from music_assistant.models.media_types import (
     Album,
     Artist,
@@ -22,62 +22,34 @@ from music_assistant.models.provider import ProviderType
 LOGGER = logging.getLogger("music_manager")
 
 
-def sync_task(desc):
-    """Return decorator to report a sync task."""
-
-    def wrapper(func):
-        @functools.wraps(func)
-        async def wrapped(*args):
-            method_class = args[0]
-            prov_id = args[1]
-            # check if this sync task is not already running
-            for sync_prov_id, sync_desc in method_class.running_sync_jobs:
-                if sync_prov_id == prov_id and sync_desc == desc:
-                    LOGGER.debug(
-                        "Syncjob %s for provider %s is already running!", desc, prov_id
-                    )
-                    return
-            LOGGER.info("Start syncjob %s for provider %s.", desc, prov_id)
-            sync_job = (prov_id, desc)
-            method_class.running_sync_jobs.add(sync_job)
-            method_class.mass.signal_event(
-                EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs
-            )
-            await func(*args)
-            LOGGER.info("Finished syncing %s for provider %s", desc, prov_id)
-            method_class.running_sync_jobs.remove(sync_job)
-            method_class.mass.signal_event(
-                EVENT_MUSIC_SYNC_STATUS, method_class.running_sync_jobs
-            )
-
-        return wrapped
-
-    return wrapper
-
-
 class LibraryManager:
     """Manage sync of musicproviders to library."""
 
-    def __init__(self, mass):
+    def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.running_sync_jobs = set()
         self.mass = mass
         self.cache = mass.cache
-        self.mass.add_event_listener(self.mass_event, EVENT_PROVIDER_REGISTERED)
+        self._sync_tasks = set()
+        self.mass.eventbus.add_listener(self.mass_event, EVENT_PROVIDER_REGISTERED)
 
     async def setup(self):
         """Async initialize of module."""
-        # schedule sync task
-        self.mass.add_job(self._music_providers_sync())
+        # schedule sync task for each provider that is already registered at startup
+        for prov in self.mass.get_providers(ProviderType.MUSIC_PROVIDER):
+            if prov.id not in self._sync_tasks:
+                self._sync_tasks.add(prov.id)
+                await self.music_provider_sync(prov.id)
 
-    @callback
-    def mass_event(self, msg: str, msg_details: Any):
+    async def mass_event(self, msg: str, msg_details: Any):
         """Handle message on eventbus."""
         if msg == EVENT_PROVIDER_REGISTERED:
-            # schedule a sync task when a new provider registers
+            # schedule the sync task when a new provider registers
             provider = self.mass.get_provider(msg_details)
             if provider.type == ProviderType.MUSIC_PROVIDER:
-                self.mass.add_job(self.music_provider_sync(msg_details))
+                if msg_details not in self._sync_tasks:
+                    self._sync_tasks.add(msg_details)
+                    await self.music_provider_sync(msg_details, periodic=3 * 3600)
 
     ################ GET MediaItems that are added in the library ################
 
@@ -120,99 +92,169 @@ class LibraryManager:
                 return radio
         return None
 
-    @api_route("library/add")
-    async def library_add(self, items: List[MediaItem]):
-        """Add media item(s) to the library."""
-        result = False
+    @api_route("library", method="POST")
+    async def library_add_items(self, items: List[MediaItem]) -> List[TaskInfo]:
+        """
+        Add media item(s) to the library.
+
+        Creates background tasks to process the action.
+        """
+        result = []
         for media_item in items:
-            # add to provider's libraries
-            for prov in media_item.provider_ids:
-                provider = self.mass.get_provider(prov.provider)
-                if provider:
-                    result = await provider.library_add(
-                        prov.item_id, media_item.media_type
-                    )
-            # mark as library item in internal db
-            if media_item.provider == "database":
-                await self.mass.database.add_to_library(
-                    media_item.item_id, media_item.media_type, media_item.provider
-                )
+            job_desc = f"Add {media_item.uri} to library"
+            result.append(
+                self.mass.tasks.add(job_desc, self.library_add_item, media_item)
+            )
         return result
 
-    @api_route("library/remove")
-    async def library_remove(self, items: List[MediaItem]):
+    async def library_add_item(self, item: MediaItem):
+        """Add media item to the library."""
+        # make sure we have a valid full item
+        item = await self.mass.music.get_item(
+            item.item_id, item.provider, item.media_type, lazy=False
+        )
+        # add to provider's libraries
+        for prov in item.provider_ids:
+            provider = self.mass.get_provider(prov.provider)
+            if provider:
+                await provider.library_add(prov.item_id, item.media_type)
+        # mark as library item in internal db
+        await self.mass.database.add_to_library(item.item_id, item.media_type)
+
+    @api_route("library", method="DELETE")
+    async def library_remove_items(self, items: List[MediaItem]) -> List[TaskInfo]:
+        """
+        Remove media item(s) from the library.
+
+        Creates background tasks to process the action.
+        """
+        result = []
+        for media_item in items:
+            job_desc = f"Remove {media_item.uri} from library"
+            result.append(
+                self.mass.tasks.add(job_desc, self.library_remove_item, media_item)
+            )
+        return result
+
+    async def library_remove_item(self, item: MediaItem) -> None:
         """Remove media item(s) from the library."""
-        result = False
-        for media_item in items:
-            # remove from provider's libraries
-            for prov in media_item.provider_ids:
-                provider = self.mass.get_provider(prov.provider)
-                if provider:
-                    result = await provider.library_remove(
-                        prov.item_id, media_item.media_type
-                    )
-            # mark as library item in internal db
-            if media_item.provider == "database":
-                await self.mass.database.remove_from_library(
-                    media_item.item_id, media_item.media_type, media_item.provider
+        # remove from provider's libraries
+        for prov in item.provider_ids:
+            provider = self.mass.get_provider(prov.provider)
+            if provider:
+                await provider.library_remove(prov.item_id, item.media_type)
+        # mark as library item in internal db
+        if item.provider == "database":
+            await self.mass.database.remove_from_library(item.item_id, item.media_type)
+
+    @api_route("library/playlists/{db_playlist_id}/tracks", method="POST")
+    async def add_playlist_tracks(
+        self, db_playlist_id: int, tracks: List[Track]
+    ) -> List[TaskInfo]:
+        """Add multiple tracks to playlist. Creates background tasks to process the action."""
+        result = []
+        playlist = await self.mass.music.get_playlist(db_playlist_id, "database")
+        if not playlist:
+            raise RuntimeError("Playlist %s not found" % db_playlist_id)
+        if not playlist.is_editable:
+            raise RuntimeError("Playlist %s is not editable" % playlist.name)
+        for track in tracks:
+            job_desc = f"Add track {track.uri} to playlist {playlist.uri}"
+            result.append(
+                self.mass.tasks.add(
+                    job_desc, self.add_playlist_track, db_playlist_id, track
                 )
+            )
         return result
 
-    @api_route("library/playlists/:db_playlist_id/tracks/add")
-    async def add_playlist_tracks(self, db_playlist_id: int, tracks: List[Track]):
-        """Add tracks to playlist - make sure we dont add duplicates."""
+    async def add_playlist_track(self, db_playlist_id: int, track: Track) -> None:
+        """Add track to playlist - make sure we dont add duplicates."""
         # we can only edit playlists that are in the database (marked as editable)
         playlist = await self.mass.music.get_playlist(db_playlist_id, "database")
-        if not playlist or not playlist.is_editable:
-            return False
-        # playlist can only have one provider (for now)
+        if not playlist:
+            raise RuntimeError("Playlist %s not found" % db_playlist_id)
+        if not playlist.is_editable:
+            raise RuntimeError("Playlist %s is not editable" % playlist.name)
+        # make sure we have recent full track details
+        track = await self.mass.music.get_track(
+            track.item_id, track.provider, refresh=True, lazy=False
+        )
+        # a playlist can only have one provider (for now)
         playlist_prov = next(iter(playlist.provider_ids))
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = set()
         for item in await self.mass.music.get_playlist_tracks(
             playlist_prov.item_id, playlist_prov.provider
         ):
-            cur_playlist_track_ids.add(item.item_id)
-            cur_playlist_track_ids.update({i.item_id for i in item.provider_ids})
-        track_ids_to_add = set()
-        for track in tracks:
-            # check for duplicates
-            already_exists = track.item_id in cur_playlist_track_ids
-            for track_prov in track.provider_ids:
-                if track_prov.item_id in cur_playlist_track_ids:
-                    already_exists = True
-            if already_exists:
-                continue
-            # we can only add a track to a provider playlist if track is available on that provider
-            # this should all be handled in the frontend but these checks are here just to be safe
-            # a track can contain multiple versions on the same provider
-            # simply sort by quality and just add the first one (assuming track is still available)
-            for track_version in sorted(
-                track.provider_ids, key=lambda x: x.quality, reverse=True
-            ):
-                if track_version.provider == playlist_prov.provider:
-                    track_ids_to_add.add(track_version.item_id)
-                    break
-                if playlist_prov.provider == "file":
-                    # the file provider can handle uri's from all providers so simply add the uri
-                    uri = f"{track_version.provider}://{track_version.item_id}"
-                    track_ids_to_add.add(uri)
-                    break
-        # actually add the tracks to the playlist on the provider
-        if track_ids_to_add:
-            # invalidate cache
-            playlist.checksum = str(time.time())
-            await self.mass.database.update_playlist(playlist.item_id, playlist)
-            # return result of the action on the provider
-            provider = self.mass.get_provider(playlist_prov.provider)
-            return await provider.add_playlist_tracks(
-                playlist_prov.item_id, track_ids_to_add
+            cur_playlist_track_ids.update(
+                {
+                    i.item_id
+                    for i in item.provider_ids
+                    if i.provider == playlist_prov.provider
+                }
             )
-        return False
+        # check for duplicates
+        for track_prov in track.provider_ids:
+            if (
+                track_prov.provider == playlist_prov.provider
+                and track_prov.item_id in cur_playlist_track_ids
+            ):
+                raise RuntimeError(
+                    "Track already exists in playlist %s" % playlist.name
+                )
+        # add track to playlist
+        # we can only add a track to a provider playlist if track is available on that provider
+        # a track can contain multiple versions on the same provider
+        # simply sort by quality and just add the first one (assuming track is still available)
+        track_id_to_add = None
+        for track_version in sorted(
+            track.provider_ids, key=lambda x: x.quality, reverse=True
+        ):
+            if not track.available:
+                continue
+            if track_version.provider == playlist_prov.provider:
+                track_id_to_add = track_version.item_id
+                break
+            if playlist_prov.provider == "file":
+                # the file provider can handle uri's from all providers so simply add the uri
+                track_id_to_add = track.uri
+                break
+        if not track_id_to_add:
+            raise RuntimeError(
+                "Track is not available on provider %s" % playlist_prov.provider
+            )
+        # actually add the tracks to the playlist on the provider
+        # invalidate cache
+        playlist.checksum = str(time.time())
+        await self.mass.database.update_playlist(playlist.item_id, playlist)
+        # return result of the action on the provider
+        provider = self.mass.get_provider(playlist_prov.provider)
+        return await provider.add_playlist_tracks(
+            playlist_prov.item_id, [track_id_to_add]
+        )
 
-    @api_route("library/playlists/:db_playlist_id/tracks/remove")
-    async def remove_playlist_tracks(self, db_playlist_id, tracks: List[Track]):
-        """Remove tracks from playlist."""
+    @api_route("library/playlists/{db_playlist_id}/tracks", method="DELETE")
+    async def remove_playlist_tracks(
+        self, db_playlist_id: int, tracks: List[Track]
+    ) -> List[TaskInfo]:
+        """Remove multiple tracks from playlist. Creates background tasks to process the action."""
+        result = []
+        playlist = await self.mass.music.get_playlist(db_playlist_id, "database")
+        if not playlist:
+            raise RuntimeError("Playlist %s not found" % db_playlist_id)
+        if not playlist.is_editable:
+            raise RuntimeError("Playlist %s is not editable" % playlist.name)
+        for track in tracks:
+            job_desc = f"Remove track {track.uri} from playlist {playlist.uri}"
+            result.append(
+                self.mass.tasks.add(
+                    job_desc, self.remove_playlist_track, db_playlist_id, track
+                )
+            )
+        return result
+
+    async def remove_playlist_track(self, db_playlist_id, track: Track) -> None:
+        """Remove track from playlist."""
         # we can only edit playlists that are in the database (marked as editable)
         playlist = await self.mass.music.get_playlist(db_playlist_id, "database")
         if not playlist or not playlist.is_editable:
@@ -220,11 +262,10 @@ class LibraryManager:
         # playlist can only have one provider (for now)
         prov_playlist = next(iter(playlist.provider_ids))
         track_ids_to_remove = set()
-        for track in tracks:
-            # a track can contain multiple versions on the same provider, remove all
-            for track_provider in track.provider_ids:
-                if track_provider.provider == prov_playlist.provider:
-                    track_ids_to_remove.add(track_provider.item_id)
+        # a track can contain multiple versions on the same provider, remove all
+        for track_provider in track.provider_ids:
+            if track_provider.provider == prov_playlist.provider:
+                track_ids_to_remove.add(track_provider.item_id)
         # actually remove the tracks from the playlist on the provider
         if track_ids_to_remove:
             # invalidate cache
@@ -235,14 +276,7 @@ class LibraryManager:
                 prov_playlist.item_id, track_ids_to_remove
             )
 
-    @run_periodic(3600 * 3)
-    async def _music_providers_sync(self):
-        """Periodic sync of all music providers."""
-        await asyncio.sleep(10)
-        for prov in self.mass.get_providers(ProviderType.MUSIC_PROVIDER):
-            await self.music_provider_sync(prov.id)
-
-    async def music_provider_sync(self, prov_id: str):
+    async def music_provider_sync(self, prov_id: str, periodic: Optional[int] = None):
         """
         Sync a music provider.
 
@@ -251,18 +285,42 @@ class LibraryManager:
         provider = self.mass.get_provider(prov_id)
         if not provider:
             return
-        if MediaType.Album in provider.supported_mediatypes:
-            await self.library_albums_sync(prov_id)
-        if MediaType.Track in provider.supported_mediatypes:
-            await self.library_tracks_sync(prov_id)
-        if MediaType.Artist in provider.supported_mediatypes:
-            await self.library_artists_sync(prov_id)
-        if MediaType.Playlist in provider.supported_mediatypes:
-            await self.library_playlists_sync(prov_id)
-        if MediaType.Radio in provider.supported_mediatypes:
-            await self.library_radios_sync(prov_id)
+        if MediaType.ALBUM in provider.supported_mediatypes:
+            self.mass.tasks.add(
+                f"Library sync of albums for provider {provider.name}",
+                self.library_albums_sync,
+                prov_id,
+                periodic=periodic,
+            )
+        if MediaType.TRACK in provider.supported_mediatypes:
+            self.mass.tasks.add(
+                f"Library sync of tracks for provider {provider.name}",
+                self.library_tracks_sync,
+                prov_id,
+                periodic=periodic,
+            )
+        if MediaType.ARTIST in provider.supported_mediatypes:
+            self.mass.tasks.add(
+                f"Library sync of artists for provider {provider.name}",
+                self.library_artists_sync,
+                prov_id,
+                periodic=periodic,
+            )
+        if MediaType.PLAYLIST in provider.supported_mediatypes:
+            self.mass.tasks.add(
+                f"Library sync of playlists for provider {provider.name}",
+                self.library_playlists_sync,
+                prov_id,
+                periodic=periodic,
+            )
+        if MediaType.RADIO in provider.supported_mediatypes:
+            self.mass.tasks.add(
+                f"Library sync of radio for provider {provider.name}",
+                self.library_radios_sync,
+                prov_id,
+                periodic=periodic,
+            )
 
-    @sync_task("artists")
     async def library_artists_sync(self, provider_id: str):
         """Sync library artists for given provider."""
         music_provider = self.mass.get_provider(provider_id)
@@ -276,18 +334,15 @@ class LibraryManager:
             cur_db_ids.add(db_item.item_id)
             if not db_item.in_library:
                 await self.mass.database.add_to_library(
-                    db_item.item_id, MediaType.Artist, provider_id
+                    db_item.item_id, MediaType.ARTIST
                 )
         # process deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
-                await self.mass.database.remove_from_library(
-                    db_id, MediaType.Artist, provider_id
-                )
+                await self.mass.database.remove_from_library(db_id, MediaType.ARTIST)
         # store ids in cache for next sync
         await self.mass.cache.set(cache_key, cur_db_ids)
 
-    @sync_task("albums")
     async def library_albums_sync(self, provider_id: str):
         """Sync library albums for given provider."""
         music_provider = self.mass.get_provider(provider_id)
@@ -304,7 +359,7 @@ class LibraryManager:
             cur_db_ids.add(db_album.item_id)
             if not db_album.in_library:
                 await self.mass.database.add_to_library(
-                    db_album.item_id, MediaType.Album, provider_id
+                    db_album.item_id, MediaType.ALBUM
                 )
             # precache album tracks
             await self.mass.music.get_album_tracks(item.item_id, provider_id)
@@ -312,12 +367,11 @@ class LibraryManager:
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
                 await self.mass.database.remove_from_library(
-                    db_id, MediaType.Album, provider_id
+                    db_id, MediaType.ALBUM, provider_id
                 )
         # store ids in cache for next sync
         await self.mass.cache.set(cache_key, cur_db_ids)
 
-    @sync_task("tracks")
     async def library_tracks_sync(self, provider_id: str):
         """Sync library tracks for given provider."""
         music_provider = self.mass.get_provider(provider_id)
@@ -334,18 +388,15 @@ class LibraryManager:
             cur_db_ids.add(db_item.item_id)
             if not db_item.in_library:
                 await self.mass.database.add_to_library(
-                    db_item.item_id, MediaType.Track, provider_id
+                    db_item.item_id, MediaType.TRACK
                 )
         # process deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
-                await self.mass.database.remove_from_library(
-                    db_id, MediaType.Track, provider_id
-                )
+                await self.mass.database.remove_from_library(db_id, MediaType.TRACK)
         # store ids in cache for next sync
         await self.mass.cache.set(cache_key, cur_db_ids)
 
-    @sync_task("playlists")
     async def library_playlists_sync(self, provider_id: str):
         """Sync library playlists for given provider."""
         music_provider = self.mass.get_provider(provider_id)
@@ -358,32 +409,16 @@ class LibraryManager:
             )
             if db_item.checksum != playlist.checksum:
                 db_item = await self.mass.database.add_playlist(playlist)
-                # precache playlist tracks
-                for playlist_track in await self.mass.music.get_playlist_tracks(
-                    playlist.item_id, provider_id
-                ):
-                    # try to find substitutes for unavailable tracks with matching technique
-                    if not playlist_track.available:
-                        await self.mass.music.get_track(
-                            playlist_track.item_id,
-                            playlist_track.provider,
-                            playlist_track,
-                        )
             cur_db_ids.add(db_item.item_id)
-            await self.mass.database.add_to_library(
-                db_item.item_id, MediaType.Playlist, playlist.provider
-            )
+            await self.mass.database.add_to_library(db_item.item_id, MediaType.PLAYLIST)
 
         # process playlist deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
-                await self.mass.database.remove_from_library(
-                    db_id, MediaType.Playlist, provider_id
-                )
+                await self.mass.database.remove_from_library(db_id, MediaType.PLAYLIST)
         # store ids in cache for next sync
         await self.mass.cache.set(cache_key, cur_db_ids)
 
-    @sync_task("radios")
     async def library_radios_sync(self, provider_id: str):
         """Sync library radios for given provider."""
         music_provider = self.mass.get_provider(provider_id)
@@ -395,14 +430,13 @@ class LibraryManager:
                 item.item_id, provider_id, lazy=False
             )
             cur_db_ids.add(db_radio.item_id)
-            await self.mass.database.add_to_library(
-                db_radio.item_id, MediaType.Radio, provider_id
-            )
+            await self.mass.database.add_to_library(db_radio.item_id, MediaType.RADIO)
         # process deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
                 await self.mass.database.remove_from_library(
-                    db_id, MediaType.Radio, provider_id
+                    db_id,
+                    MediaType.RADIO,
                 )
         # store ids in cache for next sync
         await self.mass.cache.set(cache_key, cur_db_ids)

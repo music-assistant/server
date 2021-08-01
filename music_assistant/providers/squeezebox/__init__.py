@@ -6,14 +6,9 @@ from typing import List
 
 from music_assistant.constants import CONF_CROSSFADE_DURATION
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import callback
+from music_assistant.helpers.util import callback, create_task
 from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.models.player import (
-    DeviceInfo,
-    PlaybackState,
-    Player,
-    PlayerFeature,
-)
+from music_assistant.models.player import DeviceInfo, Player, PlayerFeature, PlayerState
 from music_assistant.models.player_queue import QueueItem
 from music_assistant.models.provider import PlayerProvider
 
@@ -60,18 +55,10 @@ class PySqueezeProvider(PlayerProvider):
     async def on_start(self) -> bool:
         """Handle initialization of the provider. Called on startup."""
         # start slimproto server
-        self._tasks.append(
-            self.mass.add_job(
-                asyncio.start_server(self._client_connected, "0.0.0.0", 3483)
-            )
-        )
-        # setup discovery
-        self._tasks.append(self.mass.add_job(self.start_discovery()))
+        create_task(asyncio.start_server(self._client_connected, "0.0.0.0", 3483))
 
-    async def on_stop(self):
-        """Handle correct close/cleanup of the provider on exit."""
-        for task in self._tasks:
-            task.cancel()
+        # setup discovery
+        create_task(self.start_discovery())
 
     async def start_discovery(self):
         """Start discovery for players."""
@@ -171,7 +158,7 @@ class SqueezePlayer(Player):
     @property
     def state(self):
         """Return current state of player."""
-        return PlaybackState(self.socket_client.state)
+        return PlayerState(self.socket_client.state)
 
     @property
     def elapsed_time(self):
@@ -253,7 +240,7 @@ class SqueezePlayer(Player):
         if queue:
             new_track = queue.get_item(queue.cur_index + 1)
             if new_track:
-                return await self.cmd_play_uri(new_track.uri)
+                return await self.cmd_play_uri(new_track.stream_url)
 
     async def cmd_previous(self):
         """Send PREVIOUS TRACK command to player."""
@@ -261,7 +248,7 @@ class SqueezePlayer(Player):
         if queue:
             new_track = queue.get_item(queue.cur_index - 1)
             if new_track:
-                return await self.cmd_play_uri(new_track.uri)
+                return await self.cmd_play_uri(new_track.stream_url)
 
     async def cmd_queue_play_index(self, index: int):
         """
@@ -273,7 +260,7 @@ class SqueezePlayer(Player):
         if queue:
             new_track = queue.get_item(index)
             if new_track:
-                return await self.cmd_play_uri(new_track.uri)
+                return await self.cmd_play_uri(new_track.stream_url)
 
     async def cmd_queue_load(self, queue_items: List[QueueItem]):
         """
@@ -282,8 +269,8 @@ class SqueezePlayer(Player):
             :param queue_items: a list of QueueItems
         """
         if queue_items:
-            await self.cmd_play_uri(queue_items[0].uri)
-            return await self.cmd_play_uri(queue_items[0].uri)
+            await self.cmd_play_uri(queue_items[0].stream_url)
+            return await self.cmd_play_uri(queue_items[0].stream_url)
 
     async def cmd_queue_insert(
         self, queue_items: List[QueueItem], insert_at_index: int
@@ -335,7 +322,7 @@ class SqueezePlayer(Player):
         """Process incoming event from the socket client."""
         if event == SqueezeEvent.CONNECTED:
             # restore previous power/volume
-            self.mass.add_job(self.restore_states())
+            create_task(self.restore_states())
         elif event == SqueezeEvent.DECODER_READY:
             # tell player to load next queue track
             queue = self.mass.players.get_player_queue(self.player_id)
@@ -345,9 +332,9 @@ class SqueezePlayer(Player):
                     crossfade = self.mass.config.player_settings[self.player_id][
                         CONF_CROSSFADE_DURATION
                     ]
-                    self.mass.add_job(
+                    create_task(
                         self.socket_client.play_uri(
-                            next_item.uri,
+                            next_item.stream_url,
                             send_flush=False,
                             crossfade_duration=crossfade,
                         )
