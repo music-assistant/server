@@ -172,7 +172,7 @@ async def get_stream_details(
         streamdetails.player_id = player_id
         # get gain correct / replaygain
         if queue_item.name == "alert":
-            loudness = 0
+            loudness = 5
             gain_correct = 0
         else:
             loudness, gain_correct = await get_gain_correct(

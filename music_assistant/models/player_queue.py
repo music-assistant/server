@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
+    EVENT_ALERT_FINISHED,
     EVENT_QUEUE_ITEMS_UPDATED,
     EVENT_QUEUE_UPDATED,
 )
@@ -526,8 +527,20 @@ class PlayerQueue:
         prev_item_time = int(self._cur_item_time)
         self._cur_item_time = int(track_time)
         if self._last_playback_state != self.state:
-            self._last_playback_state = self.state
+            # handle special usecase where an alert is played
+            if (
+                self._last_playback_state == PlayerState.PLAYING
+                and self.state == PlayerState.IDLE
+                and self.cur_item
+                and self.cur_item.name == "alert"
+            ):
+                self.mass.eventbus.signal(
+                    EVENT_ALERT_FINISHED,
+                    self.cur_item.queue_item_id,
+                )
+            # fire regular event with updated state
             self.signal_update()
+            self._last_playback_state = self.state
         elif abs(prev_item_time - self._cur_item_time) > 3:
             # only send media_position if it changed more then 3 seconds (e.g. skipping)
             self.signal_update()

@@ -9,6 +9,7 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
+    EVENT_ALERT_FINISHED,
     EVENT_PLAYER_ADDED,
     EVENT_PLAYER_REMOVED,
 )
@@ -110,11 +111,11 @@ class PlayerManager:
     def get_player_by_name(
         self, name: str, provider_id: Optional[str] = None
     ) -> Optional[Player]:
-        """Return Player by name."""
+        """Return Player by name or None if no match is found."""
         for player in self:
             if provider_id is not None and player.provider_id != provider_id:
                 continue
-            if player.name == name or player.calculated_state.name == name:
+            if name in (player.name, player.calculated_state.name):
                 return player
         return None
 
@@ -127,12 +128,21 @@ class PlayerManager:
     @callback
     @api_route("queues/{queue_id}")
     def get_player_queue(self, queue_id: str) -> PlayerQueue:
-        """Return player's queue by player_id or None if player does not exist."""
-        player = self.get_player(queue_id)
-        if not player:
+        """Return player Queue by queue id or None if queue does not exist."""
+        queue = self._player_queues.get(queue_id)
+        if not queue:
             LOGGER.warning("Player(queue) %s is not available!", queue_id)
             return None
-        return self._player_queues.get(player.active_queue)
+        return queue
+
+    @callback
+    @api_route("players/{player_id}/queue")
+    def get_active_player_queue(self, player_id: str) -> PlayerQueue:
+        """Return the active queue for given player id."""
+        player = self.get_player(player_id)
+        if player:
+            return self.get_player_queue(player.calculated_state.active_queue)
+        return None
 
     @callback
     @api_route("queues/{queue_id}/items")
@@ -337,7 +347,7 @@ class PlayerManager:
         if not player.calculated_state.powered:
             await self.cmd_power_on(player_id)
         # load items into the queue
-        player_queue = self.get_player_queue(player_id)
+        player_queue = self.get_active_player_queue(player_id)
         if queue_opt == QueueOption.REPLACE:
             return await player_queue.load(queue_items)
         if queue_opt in [QueueOption.PLAY, QueueOption.NEXT] and len(queue_items) > 100:
@@ -382,7 +392,7 @@ class PlayerManager:
         if not player.calculated_state.powered:
             await self.cmd_power_on(player_id)
         # load items into the queue
-        player_queue = self.get_player_queue(player_id)
+        player_queue = self.get_active_player_queue(player_id)
         if queue_opt == QueueOption.REPLACE:
             return await player_queue.load([queue_item])
         if queue_opt == QueueOption.NEXT:
@@ -397,10 +407,9 @@ class PlayerManager:
         self,
         player_id: str,
         url: str,
-        volume: int = 0,
+        volume: Optional[int] = None,
         force: bool = True,
         announce: bool = False,
-        duration: int = 10,
     ):
         """
         Play alert (e.g. tts message) on selected player.
@@ -409,14 +418,13 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
             :param url: Url to the sound effect/tts message that should be played.
-            :param volume: Volume relative to current player's volume.
+            :param volume: Force volume of player to this level during the alert.
             :param force: Play alert even if player is currently powered off.
-            :param announce: Prepend alert sound.
-            :param duration: Amount of time after which queue is restored, default 10 seconds.
+            :param announce: Announce the alert by prepending an alert sound.
         """
         player = self.get_player(player_id)
-        player_queue = self.get_player_queue(player_id)
-        prev_state = player.calculated_state.state
+        player_queue = self.get_active_player_queue(player_id)
+        prev_state = player_queue.state
         prev_power = player.calculated_state.powered
         prev_volume = player.calculated_state.volume_level
         prev_repeat = player_queue.repeat_enabled
@@ -428,7 +436,7 @@ class PlayerManager:
                 )
                 return
             await self.cmd_power_on(player_id)
-        # snapshot the queue
+        # snapshot the (active) queue
         prev_queue_items = player_queue.items
         prev_queue_index = player_queue.cur_index
         prev_queue_crossfade = self.mass.config.get_player_config(
@@ -440,12 +448,14 @@ class PlayerManager:
             await self.cmd_pause(player_queue.queue_id)
         # disable crossfade and repeat if needed
         if prev_queue_crossfade:
-            self.mass.config.player_settings[player_id][CONF_CROSSFADE_DURATION] = 0
+            self.mass.config.player_settings[player_queue.queue_id][
+                CONF_CROSSFADE_DURATION
+            ] = 0
         if prev_repeat:
             await player_queue.set_repeat_enabled(False)
         # set alert volume
-        if volume != 0:
-            await self.cmd_volume_set(player_id, prev_volume + volume)
+        if volume:
+            await self.cmd_volume_set(player_id, volume)
         # load alert items in player queue
         queue_items = []
         if announce:
@@ -464,7 +474,7 @@ class PlayerManager:
             )
             queue_item.stream_url = "%s/queue/%s/%s" % (
                 self.mass.web.stream_url,
-                player_id,
+                player_queue.queue_id,
                 queue_item.queue_item_id,
             )
             queue_items.append(queue_item)
@@ -473,12 +483,12 @@ class PlayerManager:
             item_id="alert_sound",
             provider="url",
             name="alert",
-            duration=duration,
+            duration=10,
             uri=url,
         )
         queue_item.stream_url = "%s/queue/%s/%s" % (
             self.mass.web.stream_url,
-            player_id,
+            player_queue.queue_id,
             queue_item.queue_item_id,
         )
         queue_items.append(queue_item)
@@ -486,24 +496,33 @@ class PlayerManager:
         # load queue items
         await player_queue.load(queue_items)
 
-        async def restore_queue():
+        # add listener when playback of alert finishes
+        async def restore_queue_listener(event: str, event_data: str):
+            """Restore queue after the alert was played."""
+            if event_data != queue_item.queue_item_id:
+                return
+            # player stopped playing
+            remove_cb()
             # restore queue
             if volume:
                 await self.cmd_volume_set(player_id, prev_volume)
             if prev_queue_crossfade:
-                self.mass.config.player_settings[player_id][
+                self.mass.config.player_settings[player_queue.queue_id][
                     CONF_CROSSFADE_DURATION
                 ] = prev_queue_crossfade
             await player_queue.set_repeat_enabled(prev_repeat)
             # pylint: disable=protected-access
             player_queue._items = prev_queue_items
             player_queue._cur_index = prev_queue_index
-            if prev_power:
+            if prev_state == PlayerState.PLAYING:
                 await player_queue.resume()
-            else:
+            if not prev_power:
                 await self.cmd_power_off(player_id)
+            player_queue.signal_update()
 
-        self.mass.loop.call_later(duration, create_task, restore_queue)
+        remove_cb = self.mass.eventbus.add_listener(
+            restore_queue_listener, EVENT_ALERT_FINISHED
+        )
 
     @api_route("players/{player_id}/cmd/stop", method="PUT")
     async def cmd_stop(self, player_id: str) -> None:

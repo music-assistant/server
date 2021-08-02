@@ -1,6 +1,6 @@
 """All constants for Music Assistant."""
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 REQUIRED_PYTHON_VER = "3.8"
 
 # configuration keys/attributes
@@ -55,6 +55,7 @@ EVENT_TRACK_ADDED = "track added"
 EVENT_PLAYLIST_ADDED = "playlist added"
 EVENT_RADIO_ADDED = "radio added"
 EVENT_TASK_UPDATED = "task updated"
+EVENT_ALERT_FINISHED = "alert finished"
 
 # player attributes
 ATTR_PLAYER_ID = "player_id"
