@@ -152,8 +152,8 @@ class WebServer:
 
     @property
     def address(self) -> str:
-        """Return the API connect address for this Music Assistant instance."""
-        return f"ws://{self.hostname}:{self.port}/ws"
+        """Return the base HTTP address for this Music Assistant instance."""
+        return f"http://{self.hostname}:{self.port}"
 
     @property
     def server_id(self) -> str:

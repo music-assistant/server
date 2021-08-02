@@ -53,7 +53,7 @@ class MusicAssistant:
 
         self._exit = False
         self._loop = None
-        self._debug = debug
+        self.debug = debug
         self._http_session = None
 
         self._providers = {}
@@ -78,7 +78,7 @@ class MusicAssistant:
         self._loop = asyncio.get_event_loop()
         util.DEFAULT_LOOP = self._loop
         self._loop.set_exception_handler(global_exception_handler)
-        self._loop.set_debug(self._debug)
+        self._loop.set_debug(self.debug)
         # create shared aiohttp ClientSession
         self._http_session = aiohttp.ClientSession(
             loop=self.loop,

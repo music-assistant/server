@@ -5,13 +5,11 @@ import logging
 import os
 import platform
 import socket
-import struct
 import tempfile
 import threading
 import urllib.request
 from asyncio.events import AbstractEventLoop
-from io import BytesIO
-from typing import Any, Callable, Dict, Optional, Set, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Union
 
 import memory_tempfile
 import ujson
@@ -225,7 +223,7 @@ def get_version_substitute(version_str):
 
 def get_ip():
     """Get primary IP-address for this host."""
-    # pylint: disable=broad-except
+    # pylint: disable=broad-except,no-member
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         # doesn't even have to be reachable
@@ -240,6 +238,7 @@ def get_ip():
 
 def get_ip_pton():
     """Return socket pton for local ip."""
+    # pylint:disable=no-member
     try:
         return socket.inet_pton(socket.AF_INET, get_ip())
     except OSError:
@@ -251,6 +250,7 @@ def get_ip_pton():
 
 def get_hostname():
     """Get hostname for this machine."""
+    # pylint:disable=no-member
     return socket.gethostname()
 
 
@@ -343,48 +343,49 @@ def create_uri(media_type: MediaType, provider: str, item_id: str):
     return f"{provider}://{media_type.value}/{item_id}"
 
 
-def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=3600):
-    """Generate a wave header from given params."""
-    file = BytesIO()
-    numsamples = samplerate * duration
+class LimitedList(list):
+    """Implementation of a size limited list."""
 
-    # Generate format chunk
-    format_chunk_spec = b"<4sLHHLLHH"
-    format_chunk = struct.pack(
-        format_chunk_spec,
-        b"fmt ",  # Chunk id
-        16,  # Size of this chunk (excluding chunk id and this field)
-        1,  # Audio format, 1 for PCM
-        channels,  # Number of channels
-        int(samplerate),  # Samplerate, 44100, 48000, etc.
-        int(samplerate * channels * (bitspersample / 8)),  # Byterate
-        int(channels * (bitspersample / 8)),  # Blockalign
-        bitspersample,  # 16 bits for two byte samples, etc.
-    )
-    # Generate data chunk
-    data_chunk_spec = b"<4sL"
-    datasize = int(numsamples * channels * (bitspersample / 8))
-    data_chunk = struct.pack(
-        data_chunk_spec,
-        b"data",  # Chunk id
-        int(datasize),  # Chunk size (excluding chunk id and this field)
-    )
-    sum_items = [
-        # "WAVE" string following size field
-        4,
-        # "fmt " + chunk size field + chunk size
-        struct.calcsize(format_chunk_spec),
-        # Size of data chunk spec + data size
-        struct.calcsize(data_chunk_spec) + datasize,
-    ]
-    # Generate main header
-    all_chunks_size = int(sum(sum_items))
-    main_header_spec = b"<4sL4s"
-    main_header = struct.pack(main_header_spec, b"RIFF", all_chunks_size, b"WAVE")
-    # Write all the contents in
-    file.write(main_header)
-    file.write(format_chunk)
-    file.write(data_chunk)
+    @property
+    def max_len(self):
+        """Return list's max length."""
+        return self._max_len
 
-    # return file.getvalue(), all_chunks_size + 8
-    return file.getvalue()
+    def __init__(self, lst: Optional[List] = None, max_len=500):
+        """Initialize instance."""
+        self._max_len = max_len
+        if lst is not None:
+            super().__init__(lst)
+        else:
+            super().__init__()
+
+    def _truncate(self):
+        """Call by various methods to reinforce the maximum length."""
+        dif = len(self) - self._max_len
+        if dif > 0:
+            self[:dif] = []
+
+    def append(self, x):
+        """Append item x to the list."""
+        super().append(x)
+        self._truncate()
+
+    def insert(self, *args):
+        """Insert items at position x to the list."""
+        super().insert(*args)
+        self._truncate()
+
+    def extend(self, x):
+        """Extend the list."""
+        super().extend(x)
+        self._truncate()
+
+    def __setitem__(self, *args):
+        """Internally set."""
+        super().__setitem__(*args)
+        self._truncate()
+
+    # def __setslice__(self, *args):
+    #     """Internally set slice."""
+    #     super().__setslice__(*args)
+    #     self._truncate()

@@ -105,6 +105,10 @@ class CalculatedPlayerState(DataClassDictMixin):
         """Return custom hash."""
         return hash((self.provider_id, self.player_id))
 
+    def __str__(self):
+        """Return string representation, used for logging."""
+        return f"{self.name} ({self.provider_id}/{self.player_id})"
+
     def update(self, new_obj: "PlayerState") -> Set[str]:
         """Update state from other PlayerState instance and return changed keys."""
         changed_keys = set()

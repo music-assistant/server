@@ -26,11 +26,8 @@ class EventBus:
             :param event_msg: the eventmessage to signal
             :param event_details: optional details to send with the event.
         """
-        if LOGGER.isEnabledFor(logging.DEBUG):
-            log_details = getattr(
-                event_details, "name", getattr(event_details, "id", event_details)
-            )
-            LOGGER.debug("%s: %s", event_msg, log_details)
+        if self.mass.debug:
+            LOGGER.debug("%s: %s", event_msg, str(event_details))
         for cb_func, event_filter in self._listeners:
             if not event_filter or event_msg in event_filter:
                 create_task(cb_func, event_msg, event_details)

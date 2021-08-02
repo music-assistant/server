@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import struct
+from io import BytesIO
 from typing import List, Tuple
 
 from music_assistant.helpers.process import AsyncProcess
@@ -205,3 +207,51 @@ async def get_gain_correct(
         gain_correct = target_gain - track_loudness
     gain_correct = round(gain_correct, 2)
     return (track_loudness, gain_correct)
+
+
+def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=3600):
+    """Generate a wave header from given params."""
+    # pylint: disable=no-member
+    file = BytesIO()
+    numsamples = samplerate * duration
+
+    # Generate format chunk
+    format_chunk_spec = b"<4sLHHLLHH"
+    format_chunk = struct.pack(
+        format_chunk_spec,
+        b"fmt ",  # Chunk id
+        16,  # Size of this chunk (excluding chunk id and this field)
+        1,  # Audio format, 1 for PCM
+        channels,  # Number of channels
+        int(samplerate),  # Samplerate, 44100, 48000, etc.
+        int(samplerate * channels * (bitspersample / 8)),  # Byterate
+        int(channels * (bitspersample / 8)),  # Blockalign
+        bitspersample,  # 16 bits for two byte samples, etc.
+    )
+    # Generate data chunk
+    data_chunk_spec = b"<4sL"
+    datasize = int(numsamples * channels * (bitspersample / 8))
+    data_chunk = struct.pack(
+        data_chunk_spec,
+        b"data",  # Chunk id
+        int(datasize),  # Chunk size (excluding chunk id and this field)
+    )
+    sum_items = [
+        # "WAVE" string following size field
+        4,
+        # "fmt " + chunk size field + chunk size
+        struct.calcsize(format_chunk_spec),
+        # Size of data chunk spec + data size
+        struct.calcsize(data_chunk_spec) + datasize,
+    ]
+    # Generate main header
+    all_chunks_size = int(sum(sum_items))
+    main_header_spec = b"<4sL4s"
+    main_header = struct.pack(main_header_spec, b"RIFF", all_chunks_size, b"WAVE")
+    # Write all the contents in
+    file.write(main_header)
+    file.write(format_chunk)
+    file.write(data_chunk)
+
+    # return file.getvalue(), all_chunks_size + 8
+    return file.getvalue()

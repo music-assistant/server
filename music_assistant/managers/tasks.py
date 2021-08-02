@@ -52,6 +52,10 @@ class TaskInfo:
         self.execution_time = 0  # time in seconds it took to process
         self.id = str(uuid4())
 
+    def __str__(self):
+        """Return string representation, used for logging."""
+        return f"{self.name} ({id})"
+
     def to_dict(self) -> Dict[str, Any]:
         """Return serializable dict."""
         return {

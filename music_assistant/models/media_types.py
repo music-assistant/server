@@ -133,6 +133,10 @@ class MediaItem(DataClassDictMixin):
         """Return custom hash."""
         return hash((self.media_type, self.provider, self.item_id))
 
+    def __str__(self):
+        """Return string representation, used for logging."""
+        return f"{self.name} ({self.uri})"
+
 
 @dataclass
 class Artist(MediaItem):

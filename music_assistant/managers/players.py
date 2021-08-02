@@ -205,7 +205,7 @@ class PlayerManager:
             player.provider_id,
             player.name,
         )
-        self.mass.eventbus.signal(EVENT_PLAYER_ADDED, player)
+        self.mass.eventbus.signal(EVENT_PLAYER_ADDED, player.calculated_state)
 
     async def remove_player(self, player_id: str):
         """Remove a player from the registry."""
