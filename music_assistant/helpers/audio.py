@@ -4,7 +4,7 @@ import asyncio
 import logging
 import struct
 from io import BytesIO
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistant, QueueItem
@@ -255,3 +255,69 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
 
     # return file.getvalue(), all_chunks_size + 8
     return file.getvalue()
+
+
+def get_sox_args(
+    streamdetails: StreamDetails,
+    output_format: Optional[ContentType] = None,
+    resample: Optional[int] = None,
+):
+    """Collect all args to send to the sox (or ffmpeg) process."""
+    stream_path = streamdetails.path
+    stream_type = StreamType(streamdetails.type)
+    content_type = streamdetails.content_type
+    if output_format is None:
+        output_format = streamdetails.content_type
+
+    # use ffmpeg if content not supported by SoX (e.g. AAC radio streams)
+    if not streamdetails.content_type.sox_supported():
+        # collect input args
+        input_args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", stream_path]
+        # collect output args
+        if output_format.is_pcm():
+            output_args = [
+                "-f",
+                output_format.value,
+                "-c:a",
+                output_format.name.lower(),
+                "-",
+            ]
+        else:
+            output_args = ["-f", output_format.value, "-"]
+        # collect filter args
+        filter_args = []
+        if streamdetails.gain_correct:
+            filter_args += ["-filter:a", "volume=%sdB" % streamdetails.gain_correct]
+        if resample:
+            filter_args += ["-ar", str(resample)]
+        return input_args + filter_args + output_args
+
+    # Prefer SoX for all other (=highest quality)
+    if stream_type == StreamType.EXECUTABLE:
+        # stream from executable
+        input_args = [
+            stream_path,
+            "|",
+            "sox",
+            "-t",
+            content_type.sox_format(),
+            "-",
+        ]
+    else:
+        input_args = ["sox", "-t", content_type.sox_format(), stream_path]
+    # collect output args
+    if output_format.is_pcm():
+        output_args = ["-t", output_format.sox_format(), "-c", "2", "-"]
+    elif output_format == ContentType.FLAC:
+        output_args = ["-t", "flac", "-C", "0", "-"]
+    else:
+        output_args = ["-t", output_format.sox_format(), "-"]
+    # collect filter args
+    filter_args = []
+    if streamdetails.gain_correct:
+        filter_args += ["vol", str(streamdetails.gain_correct), "dB"]
+    if resample:
+        filter_args += ["rate", "-v", str(resample)]
+    # TODO: still not sure about the order of the filter arguments in the chain
+    # assumption is they need to be at the end of the chain
+    return input_args + output_args + filter_args

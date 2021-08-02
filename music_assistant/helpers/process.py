@@ -29,22 +29,24 @@ class AsyncProcess:
     async def __aenter__(self) -> "AsyncProcess":
         """Enter context manager."""
         if "|" in self._args:
-            self._args = " ".join(self._args)
+            args = " ".join(self._args)
+        else:
+            args = self._args
 
-        if isinstance(self._args, str):
+        if isinstance(args, str):
             self._proc = await asyncio.create_subprocess_shell(
-                self._args,
+                args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE,
-                limit=4000000,
+                limit=DEFAULT_CHUNKSIZE,
                 close_fds=True,
             )
         else:
             self._proc = await asyncio.create_subprocess_exec(
-                *self._args,
+                *args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE,
-                limit=4000000,
+                limit=DEFAULT_CHUNKSIZE,
                 close_fds=True,
             )
         return self
@@ -53,7 +55,8 @@ class AsyncProcess:
         """Exit context manager."""
         if self._proc.returncode is None:
             # prevent subprocess deadlocking, send terminate and read remaining bytes
-            await self.write_eof()
+            if self._enable_write:
+                self._proc.stdin.close()
             try:
                 self._proc.terminate()
                 await self._proc.stdout.read()
@@ -95,15 +98,6 @@ class AsyncProcess:
             pass
         except AttributeError:
             raise asyncio.CancelledError()
-
-    async def write_eof(self) -> None:
-        """Write eof to process."""
-        if not (self._enable_write and self._proc.stdin.can_write_eof()):
-            return
-        try:
-            self._proc.stdin.write_eof()
-        except BrokenPipeError:
-            pass
 
     async def communicate(self, input_data: Optional[bytes] = None) -> bytes:
         """Write bytes to process and read back results."""

@@ -54,7 +54,7 @@ class TaskInfo:
 
     def __str__(self):
         """Return string representation, used for logging."""
-        return f"{self.name} ({id})"
+        return f"{self.name} ({self.id})"
 
     def to_dict(self) -> Dict[str, Any]:
         """Return serializable dict."""

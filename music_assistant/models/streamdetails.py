@@ -18,16 +18,32 @@ class StreamType(Enum):
 
 
 class ContentType(Enum):
-    """Enum with stream content types."""
+    """Enum with audio content types supported by ffmpeg."""
 
     OGG = "ogg"
     FLAC = "flac"
     MP3 = "mp3"
     AAC = "aac"
     MPEG = "mpeg"
-    S24 = "s24"
-    S32 = "s32"
-    S64 = "s64"
+    PCM_S16LE = "s16le"  # PCM signed 16-bit little-endian
+    PCM_S24LE = "s24le"  # PCM signed 24-bit little-endian
+    PCM_S32LE = "s32le"  # PCM signed 32-bit little-endian
+    PCM_F32LE = "f32le"  # PCM 32-bit floating-point little-endian
+    PCM_F64LE = "f64le"  # PCM 64-bit floating-point little-endian
+
+    def is_pcm(self):
+        """Return if contentype is PCM."""
+        return self.name.startswith("PCM")
+
+    def sox_supported(self):
+        """Return if ContentType is supported by SoX."""
+        return self not in [ContentType.AAC, ContentType.MPEG]
+
+    def sox_format(self):
+        """Convert the ContentType to SoX compatible format."""
+        if not self.sox_supported():
+            raise NotImplementedError
+        return self.value.replace("le", "")
 
 
 @dataclass
