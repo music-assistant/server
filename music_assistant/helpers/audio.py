@@ -122,16 +122,13 @@ async def get_stream_details(
     """
     if queue_item.provider == "url":
         # special case: a plain url was added to the queue
-        if queue_item.streamdetails is not None:
-            streamdetails = queue_item.streamdetails
-        else:
-            streamdetails = StreamDetails(
-                type=StreamType.URL,
-                provider="url",
-                item_id=queue_item.item_id,
-                path=queue_item.uri,
-                content_type=ContentType(queue_item.uri.split(".")[-1]),
-            )
+        streamdetails = StreamDetails(
+            type=StreamType.URL,
+            provider="url",
+            item_id=queue_item.item_id,
+            path=queue_item.uri if queue_item.uri else queue_item.item_id,
+            content_type=ContentType(queue_item.uri.split(".")[-1]),
+        )
     else:
         # always request the full db track as there might be other qualities available
         # except for radio
@@ -316,8 +313,10 @@ def get_sox_args(
     filter_args = []
     if streamdetails.gain_correct:
         filter_args += ["vol", str(streamdetails.gain_correct), "dB"]
-    if resample:
+    if resample and resample > 48000:
         filter_args += ["rate", "-v", str(resample)]
+    elif resample:
+        filter_args += ["rate", str(resample)]
     # TODO: still not sure about the order of the filter arguments in the chain
     # assumption is they need to be at the end of the chain
     return input_args + output_args + filter_args

@@ -9,7 +9,6 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
-    EVENT_ALERT_FINISHED,
     EVENT_PLAYER_ADDED,
     EVENT_PLAYER_REMOVED,
 )
@@ -29,6 +28,11 @@ from music_assistant.models.provider import PlayerProvider, ProviderType
 POLL_INTERVAL = 30
 
 LOGGER = logging.getLogger("player_manager")
+RESOURCES_DIR = (
+    pathlib.Path(__file__).parent.resolve().parent.resolve().joinpath("resources")
+)
+ALERT_ANNOUNCE_FILE = str(RESOURCES_DIR.joinpath("alert_announce.flac"))
+ALERT_FINISH_FILE = str(RESOURCES_DIR.joinpath("alert_finish.flac"))
 
 
 class PlayerManager:
@@ -297,6 +301,13 @@ class PlayerManager:
                 QueueOption.NEXT -> Play item(s) after current playing item
                 QueueOption.ADD -> Append new items at end of the queue
         """
+        # turn on player
+        player = self.get_player(player_id)
+        if not player:
+            raise FileNotFoundError("Player not found %s" % player_id)
+        if not player.calculated_state.powered:
+            await self.cmd_power_on(player_id)
+        player_queue = self.get_active_player_queue(player_id)
         # a single item or list of items may be provided
         if not isinstance(items, list):
             items = [items]
@@ -332,22 +343,10 @@ class PlayerManager:
             for track in tracks:
                 if not track.available:
                     continue
-                queue_item = QueueItem.from_track(track)
-                # generate url for this queue item
-                queue_item.stream_url = "%s/queue/%s/%s" % (
-                    self.mass.web.stream_url,
-                    player_id,
-                    queue_item.queue_item_id,
-                )
+                queue_item = player_queue.create_queue_item(track)
                 queue_items.append(queue_item)
-        # turn on player
-        player = self.get_player(player_id)
-        if not player:
-            raise FileNotFoundError("Player not found %s" % player_id)
-        if not player.calculated_state.powered:
-            await self.cmd_power_on(player_id)
+
         # load items into the queue
-        player_queue = self.get_active_player_queue(player_id)
         if queue_opt == QueueOption.REPLACE:
             return await player_queue.load(queue_items)
         if queue_opt in [QueueOption.PLAY, QueueOption.NEXT] and len(queue_items) > 100:
@@ -377,14 +376,6 @@ class PlayerManager:
             if item:
                 return await self.play_media(player_id, item, queue_opt)
             raise FileNotFoundError("Invalid uri: %s" % uri)
-        # fallback to regular url
-        queue_item = QueueItem(item_id=uri, provider="url", name=uri, uri=uri)
-        # generate url for this queue item
-        queue_item.stream_url = "%s/queue/%s/%s" % (
-            self.mass.web.stream_url,
-            player_id,
-            queue_item.queue_item_id,
-        )
         # turn on player
         player = self.get_player(player_id)
         if not player:
@@ -393,6 +384,9 @@ class PlayerManager:
             await self.cmd_power_on(player_id)
         # load items into the queue
         player_queue = self.get_active_player_queue(player_id)
+        queue_item = player_queue.create_queue_item(
+            item_id=uri, provider="url", name=uri, uri=uri
+        )
         if queue_opt == QueueOption.REPLACE:
             return await player_queue.load([queue_item])
         if queue_opt == QueueOption.NEXT:
@@ -459,50 +453,42 @@ class PlayerManager:
         # load alert items in player queue
         queue_items = []
         if announce:
-            alert_announce = (
-                pathlib.Path(__file__)
-                .parent.resolve()
-                .parent.resolve()
-                .joinpath("helpers", "alert.mp3")
+            queue_items.append(
+                player_queue.create_queue_item(
+                    item_id="alert_announce",
+                    provider="url",
+                    name="alert_announce",
+                    uri=ALERT_ANNOUNCE_FILE,
+                )
             )
-            queue_item = QueueItem(
-                item_id="alert_announce",
+        queue_items.append(
+            player_queue.create_queue_item(
+                item_id="alert", provider="url", name="alert", uri=url
+            )
+        )
+        queue_items.append(
+            # add a special (silent) file so we can detect finishing of the alert
+            player_queue.create_queue_item(
+                item_id="alert_finish",
                 provider="url",
-                name="alert",
-                duration=3,
-                uri=str(alert_announce),
+                name="alert_finish",
+                uri=ALERT_FINISH_FILE,
             )
-            queue_item.stream_url = "%s/queue/%s/%s" % (
-                self.mass.web.stream_url,
-                player_queue.queue_id,
-                queue_item.queue_item_id,
-            )
-            queue_items.append(queue_item)
-
-        queue_item = QueueItem(
-            item_id="alert_sound",
-            provider="url",
-            name="alert",
-            duration=10,
-            uri=url,
         )
-        queue_item.stream_url = "%s/queue/%s/%s" % (
-            self.mass.web.stream_url,
-            player_queue.queue_id,
-            queue_item.queue_item_id,
-        )
-        queue_items.append(queue_item)
-
         # load queue items
         await player_queue.load(queue_items)
 
         # add listener when playback of alert finishes
-        async def restore_queue_listener(event: str, event_data: str):
-            """Restore queue after the alert was played."""
-            if event_data != queue_item.queue_item_id:
-                return
-            # player stopped playing
-            remove_cb()
+        async def restore_queue():
+            count = 0
+            while count < 30:
+                if (
+                    player_queue.cur_item == queue_items[-1]
+                    and player_queue.cur_item_time > 2
+                ):
+                    break
+                count += 1
+                await asyncio.sleep(1)
             # restore queue
             if volume:
                 await self.cmd_volume_set(player_id, prev_volume)
@@ -520,9 +506,7 @@ class PlayerManager:
                 await self.cmd_power_off(player_id)
             player_queue.signal_update()
 
-        remove_cb = self.mass.eventbus.add_listener(
-            restore_queue_listener, EVENT_ALERT_FINISHED
-        )
+        create_task(restore_queue)
 
     @api_route("players/{player_id}/cmd/stop", method="PUT")
     async def cmd_stop(self, player_id: str) -> None:

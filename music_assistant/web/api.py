@@ -39,6 +39,8 @@ async def get_media_item_image_url(
     mass: MusicAssistant, media_type: MediaType, provider: str, item_id: str
 ) -> str:
     """Return image URL for given media item."""
+    if provider == "url":
+        return None
     return await get_image_url(mass, item_id, provider, media_type)
 
 

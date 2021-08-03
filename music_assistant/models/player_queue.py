@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
-    EVENT_ALERT_FINISHED,
     EVENT_QUEUE_ITEMS_UPDATED,
     EVENT_QUEUE_UPDATED,
 )
@@ -371,7 +370,7 @@ class PlayerQueue:
         """Load (overwrite) queue with new items."""
         for index, item in enumerate(queue_items):
             item.sort_index = index
-        if self._shuffle_enabled and len(queue_items) > 2:
+        if self._shuffle_enabled and len(queue_items) > 5:
             queue_items = self.__shuffle_items(queue_items)
         self._items = queue_items
         if self.use_queue_stream:
@@ -396,7 +395,7 @@ class PlayerQueue:
         insert_at_index = self.cur_index + offset
         for index, item in enumerate(queue_items):
             item.sort_index = insert_at_index + index
-        if self.shuffle_enabled and len(queue_items) > 10:
+        if self.shuffle_enabled and len(queue_items) > 5:
             queue_items = self.__shuffle_items(queue_items)
         if offset == 0:
             # replace current item with new
@@ -527,18 +526,7 @@ class PlayerQueue:
         prev_item_time = int(self._cur_item_time)
         self._cur_item_time = int(track_time)
         if self._last_playback_state != self.state:
-            # handle special usecase where an alert is played
-            if (
-                self._last_playback_state == PlayerState.PLAYING
-                and self.state == PlayerState.IDLE
-                and self.cur_item
-                and self.cur_item.name == "alert"
-            ):
-                self.mass.eventbus.signal(
-                    EVENT_ALERT_FINISHED,
-                    self.cur_item.queue_item_id,
-                )
-            # fire regular event with updated state
+            # fire event with updated state
             self.signal_update()
             self._last_playback_state = self.state
         elif abs(prev_item_time - self._cur_item_time) > 3:
@@ -640,6 +628,19 @@ class PlayerQueue:
             self._items = cache_data["items"]
             self._cur_index = cache_data.get("cur_index", 0)
             self._queue_stream_next_index = self._cur_index
+
+    def create_queue_item(self, *args, **kwargs):
+        """Create QueueItem including correct stream URL."""
+        if args and isinstance(args[0], (Track, Radio)):
+            new_item = QueueItem.from_track(args[0])
+        else:
+            new_item = QueueItem(*args, **kwargs)
+        new_item.stream_url = "%s/queue/%s/%s" % (
+            self.mass.web.stream_url,
+            self.queue_id,
+            new_item.queue_item_id,
+        )
+        return new_item
 
     # pylint: enable=unused-argument
 

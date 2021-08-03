@@ -54,8 +54,20 @@ async def stream_queue(request: Request):
     await resp.prepare(request)
 
     player_conf = player_queue.player.config
-    pcm_format = "f64"
-    sample_rate = min(player_conf.get(CONF_MAX_SAMPLE_RATE, 96000), 96000)
+    # determine sample rate and pcm format for the queue stream, depending on player capabilities
+    player_max_sample_rate = player_conf.get(CONF_MAX_SAMPLE_RATE, 48000)
+    sample_rate = min(player_max_sample_rate, 96000)
+    if player_max_sample_rate > 96000:
+        # assume that highest possible quality is needed
+        # if player supports sample rates > 96000
+        # we use float64 PCM format internally which is heavy on CPU
+        pcm_format = "f64"
+    elif sample_rate > 48000:
+        # prefer internal PCM_S32LE format
+        pcm_format = "s32"
+    else:
+        # fallback to 24 bits
+        pcm_format = "s24"
 
     args = [
         "sox",
@@ -80,7 +92,7 @@ async def stream_queue(request: Request):
         # feed stdin with pcm samples
         async def fill_buffer():
             """Feed audio data into sox stdin for processing."""
-            async for audio_chunk in get_queue_stream(
+            async for audio_chunk in get_pcm_queue_stream(
                 mass, player_queue, sample_rate, pcm_format
             ):
                 await sox_proc.write(audio_chunk)
@@ -235,7 +247,7 @@ async def get_media_stream(
                 )
 
 
-async def get_queue_stream(
+async def get_pcm_queue_stream(
     mass: MusicAssistant,
     player_queue: PlayerQueue,
     sample_rate=96000,
@@ -247,16 +259,14 @@ async def get_queue_stream(
     queue_index = None
     # get crossfade details
     fade_length = player_queue.crossfade_duration
-    if pcm_format in ["s64", "f64"]:
+    if "64" in pcm_format:
         bit_depth = 64
-    elif pcm_format in ["s32", "f32"]:
+    elif "32" in pcm_format:
         bit_depth = 32
-    elif pcm_format == "s16":
-        bit_depth = 16
-    elif pcm_format == "s24":
+    elif "24" in pcm_format:
         bit_depth = 24
     else:
-        raise NotImplementedError("Unsupported PCM format: %s" % pcm_format)
+        bit_depth = 16
     pcm_args = [pcm_format, "-c", "2", "-r", str(sample_rate)]
     sample_size = int(sample_rate * (bit_depth / 8) * channels)  # 1 second
     buffer_size = sample_size * fade_length if fade_length else sample_size * 10
