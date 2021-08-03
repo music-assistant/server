@@ -45,6 +45,7 @@ class PlayerManager:
         self._providers = {}
         self._player_queues = {}
         self._controls = {}
+        self._alerts_in_progress = set()
 
     async def setup(self) -> None:
         """Async initialize of module."""
@@ -418,6 +419,13 @@ class PlayerManager:
         """
         player = self.get_player(player_id)
         player_queue = self.get_active_player_queue(player_id)
+        if player_queue.queue_id in self._alerts_in_progress:
+            LOGGER.debug(
+                "Ignoring Play Alert for queue %s - Another alert is already in progress.",
+                player_queue.queue_id,
+            )
+            return
+        self._alerts_in_progress.add(player_queue.queue_id)
         prev_state = player_queue.state
         prev_power = player.calculated_state.powered
         prev_volume = player.calculated_state.volume_level
@@ -504,6 +512,7 @@ class PlayerManager:
                 await player_queue.resume()
             if not prev_power:
                 await self.cmd_power_off(player_id)
+            self._alerts_in_progress.remove(player_queue.queue_id)
             player_queue.signal_update()
 
         create_task(restore_queue)
