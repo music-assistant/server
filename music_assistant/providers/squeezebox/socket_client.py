@@ -218,7 +218,7 @@ class SqueezeSocketClient:
         enable_crossfade = crossfade_duration > 0
         command = b"s"
         # we use direct stream for now so let the player do the messy work with buffers
-        autostart = b"0"
+        autostart = b"3"
         trans_type = b"1" if enable_crossfade else b"0"
         uri = "/stream" + uri.split("/stream")[1]
         # extract host and port from uri
@@ -301,7 +301,7 @@ class SqueezeSocketClient:
         spdif=b"0",
         trans_duration=0,
         trans_type=b"0",
-        flags=0x00,
+        flags=0x40,
         output_threshold=0,
         replay_gain=0,
         server_port=8095,
@@ -457,8 +457,8 @@ class SqueezeSocketClient:
         """Process incoming stat STMl message: Buffer threshold reached."""
         # pylint: disable=unused-argument
         LOGGER.debug("STMl received - Buffer threshold reached.")
-        # start playing by send unpause command when buffer full
-        create_task(self.send_strm(b"u"))
+        # autoplay 0 or 2: start playing by send unpause command when buffer full
+        # create_task(self.send_strm(b"u"))
 
     def _process_stat_stmn(self, data):
         """Process incoming stat STMn message: player couldn't decode stream."""
@@ -470,6 +470,8 @@ class SqueezeSocketClient:
     def _process_resp(self, data):
         """Process incoming RESP message: Response received at player."""
         LOGGER.debug("RESP received - Response received at player.")
+        # send continue (used when autoplay 1 or 3)
+        create_task(self._send_frame, b"cont", b"0")
 
     def _process_setd(self, data):
         """Process incoming SETD message: Get/set player firmware settings."""
