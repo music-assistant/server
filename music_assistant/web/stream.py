@@ -61,18 +61,18 @@ async def stream_queue(request: Request):
         # assume that highest possible quality is needed
         # if player supports sample rates > 96000
         # we use float64 PCM format internally which is heavy on CPU
-        pcm_format = "f64"
+        pcm_format = ContentType.PCM_F64LE
     elif sample_rate > 48000:
         # prefer internal PCM_S32LE format
-        pcm_format = "s32"
+        pcm_format = ContentType.PCM_S32LE
     else:
         # fallback to 24 bits
-        pcm_format = "s24"
+        pcm_format = ContentType.PCM_S24LE
 
     args = [
         "sox",
         "-t",
-        pcm_format,
+        pcm_format.sox_format(),
         "-c",
         "2",
         "-r",
@@ -250,8 +250,8 @@ async def get_media_stream(
 async def get_pcm_queue_stream(
     mass: MusicAssistant,
     player_queue: PlayerQueue,
-    sample_rate=96000,
-    pcm_format: str = "f64",
+    sample_rate,
+    pcm_format: ContentType,
     channels: int = 2,
 ) -> AsyncGenerator[bytes, None]:
     """Stream the PlayerQueue's tracks as constant feed in PCM raw audio."""
@@ -259,15 +259,15 @@ async def get_pcm_queue_stream(
     queue_index = None
     # get crossfade details
     fade_length = player_queue.crossfade_duration
-    if "64" in pcm_format:
+    if pcm_format == ContentType.PCM_F64LE:
         bit_depth = 64
-    elif "32" in pcm_format:
+    elif pcm_format in [ContentType.PCM_F32LE, ContentType.PCM_S32LE]:
         bit_depth = 32
-    elif "24" in pcm_format:
+    elif pcm_format == ContentType.PCM_S24LE:
         bit_depth = 24
     else:
         bit_depth = 16
-    pcm_args = [pcm_format, "-c", "2", "-r", str(sample_rate)]
+    pcm_args = [pcm_format.sox_format(), "-c", "2", "-r", str(sample_rate)]
     sample_size = int(sample_rate * (bit_depth / 8) * channels)  # 1 second
     buffer_size = sample_size * fade_length if fade_length else sample_size * 10
     # stream queue tracks one by one
@@ -302,7 +302,7 @@ async def get_pcm_queue_stream(
         async for is_last_chunk, chunk in get_media_stream(
             mass,
             streamdetails,
-            ContentType.PCM_F64LE,
+            pcm_format,
             resample=sample_rate,
             chunk_size=buffer_size,
         ):

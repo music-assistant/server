@@ -313,7 +313,8 @@ def get_sox_args(
     filter_args = []
     if streamdetails.gain_correct:
         filter_args += ["vol", str(streamdetails.gain_correct), "dB"]
-    if resample and resample > 48000:
+    if resample and streamdetails.content_type == ContentType.FLAC:
+        # use extra high quality resampler only if it makes sense
         filter_args += ["rate", "-v", str(resample)]
     elif resample:
         filter_args += ["rate", str(resample)]
