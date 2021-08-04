@@ -31,8 +31,8 @@ LOGGER = logging.getLogger("player_manager")
 RESOURCES_DIR = (
     pathlib.Path(__file__).parent.resolve().parent.resolve().joinpath("resources")
 )
-ALERT_ANNOUNCE_FILE = str(RESOURCES_DIR.joinpath("alert_announce.flac"))
-ALERT_FINISH_FILE = str(RESOURCES_DIR.joinpath("alert_finish.flac"))
+ALERT_ANNOUNCE_FILE = str(RESOURCES_DIR.joinpath("announce.flac"))
+ALERT_FINISH_FILE = str(RESOURCES_DIR.joinpath("silence.flac"))
 
 
 class PlayerManager:

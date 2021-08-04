@@ -4,6 +4,7 @@ import copy
 import json
 import logging
 import os
+import pathlib
 import shutil
 from typing import Any, List
 
@@ -33,12 +34,16 @@ from music_assistant.constants import (
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.encryption import _decrypt_string, _encrypt_string
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import create_task, merge_dict, try_load_json_file
+from music_assistant.helpers.util import create_task, try_load_json_file
 from music_assistant.helpers.web import api_route
 from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
 from music_assistant.models.player import PlayerControlType
 from music_assistant.models.provider import ProviderType
 from passlib.hash import pbkdf2_sha256
+
+RESOURCES_DIR = (
+    pathlib.Path(__file__).parent.resolve().parent.resolve().joinpath("resources")
+)
 
 LOGGER = logging.getLogger("config_manager")
 
@@ -139,7 +144,7 @@ class ConfigManager:
         """Initialize class."""
         self._data_path = data_path
         self._stored_config = {}
-        self._translations = {}
+        self._strings = {}
         self.loading = False
         self.mass = mass
         if not os.path.isdir(data_path):
@@ -148,7 +153,7 @@ class ConfigManager:
 
     async def setup(self):
         """Async initialize of module."""
-        self._translations = await self._fetch_translations()
+        self._strings = await self._fetch_strings()
 
     @api_route("config/{conf_base}")
     def base_items(self, conf_base: str) -> dict:
@@ -247,10 +252,15 @@ class ConfigManager:
         """Return the config that is actually stored on disk."""
         return self._stored_config
 
-    @property
-    def translations(self):
-        """Return all translations."""
-        return self._translations
+    @api_route("strings")
+    def all_strings(self):
+        """Return all strings for all languages."""
+        return self._strings
+
+    @api_route("strings/{language}")
+    def language_strings(self, language: str):
+        """Return all strings for given language."""
+        return self._strings[language]
 
     def get_provider_config(self, provider_id: str, provider_type: ProviderType = None):
         """Return config for given provider."""
@@ -298,28 +308,16 @@ class ConfigManager:
         self.loading = False
 
     @staticmethod
-    async def _fetch_translations() -> dict:
-        """Build a list of all translations."""
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        # get base translations
-        translations_file = os.path.join(base_dir, "translations.json")
-        res = try_load_json_file(translations_file)
-        if res is not None:
-            translations = res
-        else:
-            translations = {}
-        # append provider translations but do not overwrite keys
-        modules_path = os.path.join(base_dir, "providers")
-        # load modules
-        for dir_str in os.listdir(modules_path):
-            dir_path = os.path.join(modules_path, dir_str)
-            translations_file = os.path.join(dir_path, "translations.json")
-            if not os.path.isfile(translations_file):
+    async def _fetch_strings() -> dict:
+        """Build a list of all strings/translations."""
+        strings = {}
+        for _file in os.listdir(RESOURCES_DIR.joinpath("strings")):
+            if not _file.endswith(".json"):
                 continue
-            res = try_load_json_file(translations_file)
-            if res is not None:
-                translations = merge_dict(translations, res)
-        return translations
+            language = _file.replace(".json", "")
+            lang_file = RESOURCES_DIR.joinpath("strings", _file)
+            strings[language] = try_load_json_file(lang_file)
+        return strings
 
     def __load(self):
         """Load stored config from file."""
