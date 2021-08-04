@@ -1,7 +1,7 @@
 """ChromeCast playerprovider."""
 
 import logging
-from typing import List
+from typing import List, Optional
 
 import pychromecast
 from music_assistant.helpers.util import create_task
@@ -10,7 +10,7 @@ from music_assistant.models.provider import PlayerProvider
 from pychromecast.controllers.multizone import MultizoneManager
 
 from .const import PROV_ID, PROV_NAME, PROVIDER_CONFIG_ENTRIES
-from .models import ChromecastInfo
+from .helpers import DEFAULT_PORT, ChromecastInfo
 from .player import ChromecastPlayer
 
 LOGGER = logging.getLogger(PROV_ID)
@@ -29,8 +29,7 @@ class ChromecastProvider(PlayerProvider):
     def __init__(self, *args, **kwargs):
         """Initialize."""
         self.mz_mgr = MultizoneManager()
-        self._listener = None
-        self._browser = None
+        self._browser: Optional[pychromecast.discovery.CastBrowser] = None
         super().__init__(*args, **kwargs)
 
     @property
@@ -50,18 +49,16 @@ class ChromecastProvider(PlayerProvider):
 
     async def on_start(self) -> bool:
         """Handle initialization of the provider based on config."""
-        self._listener = pychromecast.CastListener(
-            self.__chromecast_add_update_callback,
-            self.__chromecast_remove_callback,
-            self.__chromecast_add_update_callback,
+        self._browser = pychromecast.discovery.CastBrowser(
+            pychromecast.discovery.SimpleCastListener(
+                add_callback=self._discover_chromecast,
+                remove_callback=self._remove_chromecast,
+                update_callback=self._discover_chromecast,
+            ),
+            self.mass.zeroconf,
         )
-
-        def start_discovery():
-            self._browser = pychromecast.discovery.start_discovery(
-                self._listener, self.mass.zeroconf
-            )
-
-        create_task(start_discovery)
+        # start discovery in executor
+        create_task(self._browser.start_discovery)
         return True
 
     async def on_stop(self):
@@ -69,44 +66,42 @@ class ChromecastProvider(PlayerProvider):
         if not self._browser:
             return
         # stop discovery
-        create_task(pychromecast.stop_discovery, self._browser)
+        create_task(self._browser.stop_discovery)
 
-    def __chromecast_add_update_callback(self, cast_uuid, cast_service_name):
-        """Handle zeroconf discovery of a new or updated chromecast."""
-        # pylint: disable=unused-argument
-        service = self._listener.services[cast_uuid]
-        cast_info = ChromecastInfo(
-            services=service[0],
-            uuid=service[1],
-            model_name=service[2],
-            friendly_name=service[3],
-            host=service[4],
-            port=service[5],
+    def _discover_chromecast(self, uuid, _):
+        """Discover a Chromecast."""
+        device_info = self._browser.devices[uuid]
+
+        info = ChromecastInfo(
+            services=device_info.services,
+            uuid=device_info.uuid,
+            model_name=device_info.model_name,
+            friendly_name=device_info.friendly_name,
+            is_audio_group=device_info.port != DEFAULT_PORT,
         )
-        cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
-        if cast_info.uuid is None:
-            return  # Discovered chromecast without uuid?
-        player_id = cast_info.uuid
-        LOGGER.debug(
-            "Chromecast discovered: %s (%s)", cast_info.friendly_name, player_id
-        )
+
+        if info.uuid is None:
+            LOGGER.error("Discovered chromecast without uuid %s", info)
+            return
+
+        info = info.fill_out_missing_chromecast_info(self.mass.zeroconf)
+        if info.is_dynamic_group:
+            LOGGER.warning("Discovered dynamic cast group which will be ignored.")
+            return
+
+        LOGGER.debug("Discovered new or updated chromecast %s", info)
+        player_id = str(info.uuid)
         player = self.mass.players.get_player(player_id)
         if not player:
-            # cast players may reappear with new uuid, try to handle that
-            player = self.mass.players.get_player_by_name(
-                cast_info.friendly_name, PROV_ID
-            )
-        if not player:
-            player = ChromecastPlayer(self.mass, cast_info)
+            player = ChromecastPlayer(self.mass, info)
         # if player was already added, the player will take care of reconnects itself.
-        player.set_cast_info(cast_info)
+        player.set_cast_info(info)
         create_task(self.mass.players.add_player(player))
 
-    @staticmethod
-    def __chromecast_remove_callback(cast_uuid, cast_service_name, cast_service):
-        """Handle a Chromecast removed event."""
+    def _remove_chromecast(self, uuid, service, cast_info):
+        """Handle zeroconf discovery of a removed chromecast."""
         # pylint: disable=unused-argument
-        player_id = str(cast_service[1])
-        friendly_name = cast_service[3]
+        player_id = str(service[1])
+        friendly_name = service[3]
         LOGGER.debug("Chromecast removed: %s - %s", friendly_name, player_id)
         # we ignore this event completely as the Chromecast socket client handles this itself

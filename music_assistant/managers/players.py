@@ -306,9 +306,10 @@ class PlayerManager:
         player = self.get_player(player_id)
         if not player:
             raise FileNotFoundError("Player not found %s" % player_id)
-        if not player.calculated_state.powered:
-            await self.cmd_power_on(player_id)
         player_queue = self.get_active_player_queue(player_id)
+        if player_queue.queue_id != player_id and not player.calculated_state.powered:
+            # only force player on if its not the actual queue player
+            await self.cmd_power_on(player_id)
         # a single item or list of items may be provided
         if not isinstance(items, list):
             items = [items]
@@ -381,10 +382,12 @@ class PlayerManager:
         player = self.get_player(player_id)
         if not player:
             raise FileNotFoundError("Player not found %s" % player_id)
-        if not player.calculated_state.powered:
-            await self.cmd_power_on(player_id)
-        # load items into the queue
+
         player_queue = self.get_active_player_queue(player_id)
+        if player_queue.queue_id != player_id and not player.calculated_state.powered:
+            # only force player on if its not the actual queue player
+            await self.cmd_power_on(player_id)
+        # load item into the queue
         queue_item = player_queue.create_queue_item(
             item_id=uri, provider="url", name=uri, uri=uri
         )
@@ -437,6 +440,8 @@ class PlayerManager:
                     player.calculated_state.name,
                 )
                 return
+        if player_queue.queue_id != player_id and not player.calculated_state.powered:
+            # only force player on if its not the actual queue player
             await self.cmd_power_on(player_id)
         # snapshot the (active) queue
         prev_queue_items = player_queue.items
