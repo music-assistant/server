@@ -617,11 +617,12 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
+        player = self.get_player(player_id, True)
         # send stop if player is active queue
-        if player.active_queue == player_id and player.state != PlayerState.OFF:
+        if player.active_queue == player_id and player.state not in [
+            PlayerState.OFF,
+            PlayerState.IDLE,
+        ]:
             await self.cmd_stop(player_id)
         player_config = self.mass.config.player_settings[player.player_id]
         # turn off player
@@ -661,9 +662,7 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
+        player = self.get_player(player_id, True)
         if player.calculated_state.powered:
             return await self.cmd_power_off(player_id)
         return await self.cmd_power_on(player_id)
@@ -676,9 +675,7 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
             :param volume_level: volume level to set (0..100).
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
+        player = self.get_player(player_id, True)
         player_config = self.mass.config.player_settings[player.player_id]
         volume_level = try_parse_int(volume_level)
         if volume_level < 0:
@@ -726,9 +723,7 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
+        player = self.get_player(player_id, True)
         if player.volume_level <= 10 or player.volume_level >= 90:
             step_size = 2
         else:
@@ -745,9 +740,7 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
+        player = self.get_player(player_id, True)
         if player.volume_level <= 10 or player.volume_level >= 90:
             step_size = 2
         else:
@@ -765,9 +758,7 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
             :param is_muted: bool with the new mute state.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
+        player = self.get_player(player_id, True)
         # TODO: handle mute on volumecontrol?
         return await player.cmd_volume_mute(is_muted)
 
