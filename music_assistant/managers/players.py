@@ -308,7 +308,7 @@ class PlayerManager:
                 QueueOption.ADD -> Append new items at end of the queue
         """
         player = self.get_player(player_id, True)
-        player_queue = self.get_active_player_queue(player_id)
+        player_queue = self.get_active_player_queue(player_id, True)
         if player_queue.queue_id != player_id and not player.calculated_state.powered:
             # only force player on if its not the actual queue player
             await self.cmd_power_on(player_id)
@@ -381,7 +381,7 @@ class PlayerManager:
                 return await self.play_media(player_id, item, queue_opt)
             raise FileNotFoundError("Invalid uri: %s" % uri)
         player = self.get_player(player_id, True)
-        player_queue = self.get_active_player_queue(player_id)
+        player_queue = self.get_active_player_queue(player_id, True)
         if player_queue.queue_id != player_id and not player.calculated_state.powered:
             # only force player on if its not the actual queue player
             await self.cmd_power_on(player_id)

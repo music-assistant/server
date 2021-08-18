@@ -366,9 +366,7 @@ class LibraryManager:
         # process album deletions
         for db_id in prev_db_ids:
             if db_id not in cur_db_ids:
-                await self.mass.database.remove_from_library(
-                    db_id, MediaType.ALBUM, provider_id
-                )
+                await self.mass.database.remove_from_library(db_id, MediaType.ALBUM)
         # store ids in cache for next sync
         await self.mass.cache.set(cache_key, cur_db_ids)
 

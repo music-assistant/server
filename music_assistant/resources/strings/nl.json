@@ -36,5 +36,10 @@
   "group_player_master_desc": "Selecteer de speler die dient als groepsbeheerder.",
 
   "desc_spotify_username": "Gebruikersnaam van jouw Spotify account",
-  "desc_spotify_password": "Wachtwoord van jouw Spotify account"
+  "desc_spotify_password": "Wachtwoord van jouw Spotify account",
+
+  "file_prov_music_path": "Muzieklocatie",
+  "file_prov_music_path_desc": "Locatie op schijf waar jouw muziekbestanden staan.",
+  "file_prov_playlists_path": "Playlists locatie",
+  "file_prov_playlists_path_desc": "Locatie op schijf waar jouw playlists (.m3u) staan."
 }
