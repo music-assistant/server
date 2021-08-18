@@ -108,9 +108,12 @@ class PlayerManager:
 
     @callback
     @api_route("players/{player_id}")
-    def get_player(self, player_id: str) -> Player:
-        """Return Player by player_id or None if player does not exist."""
-        return self._players.get(player_id)
+    def get_player(self, player_id: str, raise_not_found: bool = False) -> Player:
+        """Return Player by player_id."""
+        player = self._players.get(player_id)
+        if not player and raise_not_found:
+            raise FileNotFoundError("Player not found %s" % player_id)
+        return player
 
     @callback
     def get_player_by_name(
@@ -142,9 +145,11 @@ class PlayerManager:
 
     @callback
     @api_route("players/{player_id}/queue")
-    def get_active_player_queue(self, player_id: str) -> PlayerQueue:
+    def get_active_player_queue(
+        self, player_id: str, raise_not_found: bool = True
+    ) -> PlayerQueue:
         """Return the active queue for given player id."""
-        player = self.get_player(player_id)
+        player = self.get_player(player_id, raise_not_found)
         if player:
             return self.get_player_queue(player.calculated_state.active_queue)
         return None
@@ -234,7 +239,7 @@ class PlayerManager:
 
     async def trigger_player_update(self, player_id: str):
         """Trigger update of an existing player.."""
-        player = self.get_player(player_id)
+        player = self.get_player(player_id, False)
         if player:
             await player.on_poll()
 
@@ -302,10 +307,7 @@ class PlayerManager:
                 QueueOption.NEXT -> Play item(s) after current playing item
                 QueueOption.ADD -> Append new items at end of the queue
         """
-        # turn on player
-        player = self.get_player(player_id)
-        if not player:
-            raise FileNotFoundError("Player not found %s" % player_id)
+        player = self.get_player(player_id, True)
         player_queue = self.get_active_player_queue(player_id)
         if player_queue.queue_id != player_id and not player.calculated_state.powered:
             # only force player on if its not the actual queue player
@@ -378,11 +380,7 @@ class PlayerManager:
             if item:
                 return await self.play_media(player_id, item, queue_opt)
             raise FileNotFoundError("Invalid uri: %s" % uri)
-        # turn on player
-        player = self.get_player(player_id)
-        if not player:
-            raise FileNotFoundError("Player not found %s" % player_id)
-
+        player = self.get_player(player_id, True)
         player_queue = self.get_active_player_queue(player_id)
         if player_queue.queue_id != player_id and not player.calculated_state.powered:
             # only force player on if its not the actual queue player
@@ -420,7 +418,7 @@ class PlayerManager:
             :param force: Play alert even if player is currently powered off.
             :param announce: Announce the alert by prepending an alert sound.
         """
-        player = self.get_player(player_id)
+        player = self.get_player(player_id, True)
         player_queue = self.get_active_player_queue(player_id)
         if player_queue.queue_id in self._alerts_in_progress:
             LOGGER.debug(
@@ -529,12 +527,8 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
-        queue_id = player.active_queue
-        queue_player = self.get_player(queue_id)
-        return await queue_player.cmd_stop()
+        player_queue = self.get_active_player_queue(player_id)
+        await player_queue.stop()
 
     @api_route("players/{player_id}/cmd/play", method="PUT")
     async def cmd_play(self, player_id: str) -> None:
@@ -543,58 +537,49 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
-        queue_id = player.active_queue
-        queue_player = self.get_player(queue_id)
+        player = self.get_player(player_id, True)
+        player_queue = self.get_active_player_queue(player_id)
+        if player_queue.queue_id != player_id and not player.calculated_state.powered:
+            # only force player on if its not the actual queue player
+            await self.cmd_power_on(player_id)
         # unpause if paused else resume queue
-        if queue_player.state == PlayerState.PAUSED:
-            return await queue_player.cmd_play()
-        # power on at play request
-        await self.cmd_power_on(player_id)
-        return await self._player_queues[queue_id].resume()
+        if player_queue.state == PlayerState.PAUSED:
+            await player_queue.play()
+        else:
+            await player_queue.resume()
 
     @api_route("players/{player_id}/cmd/pause", method="PUT")
-    async def cmd_pause(self, player_id: str):
+    async def cmd_pause(self, player_id: str) -> None:
         """
         Send PAUSE command to given player.
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
-        queue_id = player.active_queue
-        queue_player = self.get_player(queue_id)
-        return await queue_player.cmd_pause()
+        player_queue = self.get_active_player_queue(player_id, True)
+        await player_queue.pause()
 
     @api_route("players/{player_id}/cmd/play_pause", method="PUT")
-    async def cmd_play_pause(self, player_id: str):
+    async def cmd_play_pause(self, player_id: str) -> None:
         """
         Toggle play/pause on given player.
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
-        if player.state == PlayerState.PLAYING:
-            return await self.cmd_pause(player_id)
-        return await self.cmd_play(player_id)
+        player_queue = self.get_active_player_queue(player_id, True)
+        if player_queue.state == PlayerState.PLAYING:
+            await player_queue.pause()
+        else:
+            await player_queue.play()
 
     @api_route("players/{player_id}/cmd/next", method="PUT")
-    async def cmd_next(self, player_id: str):
+    async def cmd_next(self, player_id: str) -> None:
         """
         Send NEXT TRACK command to given player.
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
-        queue_id = player.active_queue
-        return await self.get_player_queue(queue_id).next()
+        player_queue = self.get_active_player_queue(player_id, True)
+        await player_queue.next()
 
     @api_route("players/{player_id}/cmd/previous", method="PUT")
     async def cmd_previous(self, player_id: str):
@@ -603,11 +588,8 @@ class PlayerManager:
 
             :param player_id: player_id of the player to handle the command.
         """
-        player = self.get_player(player_id)
-        if not player:
-            return
-        queue_id = player.active_queue
-        return await self.get_player_queue(queue_id).previous()
+        player_queue = self.get_active_player_queue(player_id, True)
+        await player_queue.previous()
 
     @api_route("players/{player_id}/cmd/power_on", method="PUT")
     async def cmd_power_on(self, player_id: str) -> None:

@@ -285,6 +285,18 @@ class PlayerQueue:
                 return item
         return None
 
+    async def stop(self) -> None:
+        """Stop command on queue player."""
+        return await self.player.cmd_stop()
+
+    async def play(self) -> None:
+        """Play (unpause) command on queue player."""
+        return await self.player.cmd_play()
+
+    async def pause(self) -> None:
+        """Pause command on queue player."""
+        return await self.player.cmd_pause()
+
     async def next(self) -> None:
         """Play the next track in the queue."""
         if self.cur_index is None:
