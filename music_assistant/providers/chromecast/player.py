@@ -348,8 +348,11 @@ class ChromecastPlayer(Player):
             queue_item = QueueItem(
                 item_id=uri, provider="mass", name="Music Assistant", stream_url=uri
             )
-            return await self.cmd_queue_load([queue_item, queue_item])
-        await self.chromecast_command(self._chromecast.play_media, uri, "audio/flac")
+            await self.cmd_queue_load([queue_item, queue_item])
+        else:
+            await self.chromecast_command(
+                self._chromecast.play_media, uri, "audio/flac"
+            )
 
     async def cmd_queue_load(self, queue_items: List[QueueItem]) -> None:
         """Load (overwrite) queue with new items."""
@@ -367,6 +370,7 @@ class ChromecastPlayer(Player):
         await self.launch_app()
         await self.chromecast_command(self.__send_player_queue, queuedata)
         if len(queue_items) > 25:
+            await asyncio.sleep(5)
             await self.cmd_queue_append(queue_items[26:])
 
     async def cmd_queue_append(self, queue_items: List[QueueItem]) -> None:
@@ -378,8 +382,8 @@ class ChromecastPlayer(Player):
                 "insertBefore": None,
                 "items": chunk,
             }
-            await self.launch_app()
             await self.chromecast_command(self.__send_player_queue, queuedata)
+            await asyncio.sleep(2)
 
     def __create_queue_items(self, tracks) -> None:
         """Create list of CC queue items from tracks."""
@@ -421,32 +425,27 @@ class ChromecastPlayer(Player):
     async def launch_app(self):
         """Launch the default media receiver app and wait until its launched."""
         media_controller = self._chromecast.media_controller
-        if (
-            media_controller.is_active
-            and self.cast_status.app_id == pychromecast.APP_MEDIA_RECEIVER
-            and media_controller.status.media_session_id is not None
-        ):
-            # already active
-            return
-
         event = asyncio.Event()
 
-        def launched():
+        def launched_callback():
             self.mass.loop.call_soon_threadsafe(event.set)
 
         # pylint: disable=protected-access
         receiver_ctrl = media_controller._socket_client.receiver_controller
-        receiver_ctrl.launch_app(
+        await self.mass.loop.run_in_executor(
+            None,
+            receiver_ctrl.launch_app,
             media_controller.app_id,
-            callback_function=launched,
+            False,
+            launched_callback,
         )
         await event.wait()
 
-    async def chromecast_command(self, func, *args, **kwargs):
+    async def chromecast_command(self, func, *args):
         """Execute command on Chromecast."""
         if not self.available:
             LOGGER.warning(
                 "Player %s is not available, command can't be executed", self.name
             )
             return
-        await create_task(func, *args, **kwargs)
+        await self.mass.loop.run_in_executor(None, func, *args)

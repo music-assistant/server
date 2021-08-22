@@ -309,8 +309,8 @@ class PlayerManager:
         """
         player = self.get_player(player_id, True)
         player_queue = self.get_active_player_queue(player_id, True)
-        if player_queue.queue_id != player_id and not player.calculated_state.powered:
-            # only force player on if its not the actual queue player
+        # power on player if needed
+        if not player.calculated_state.powered:
             await self.cmd_power_on(player_id)
         # a single item or list of items may be provided
         if not isinstance(items, list):
@@ -382,8 +382,8 @@ class PlayerManager:
             raise FileNotFoundError("Invalid uri: %s" % uri)
         player = self.get_player(player_id, True)
         player_queue = self.get_active_player_queue(player_id, True)
-        if player_queue.queue_id != player_id and not player.calculated_state.powered:
-            # only force player on if its not the actual queue player
+        # power on player if needed
+        if not player.calculated_state.powered:
             await self.cmd_power_on(player_id)
         # load item into the queue
         queue_item = player_queue.create_queue_item(
@@ -438,8 +438,8 @@ class PlayerManager:
                     player.calculated_state.name,
                 )
                 return
-        if player_queue.queue_id != player_id and not player.calculated_state.powered:
-            # only force player on if its not the actual queue player
+        # power on player if needed
+        if not player.calculated_state.powered:
             await self.cmd_power_on(player_id)
         # snapshot the (active) queue
         prev_queue_items = player_queue.items
@@ -539,8 +539,8 @@ class PlayerManager:
         """
         player = self.get_player(player_id, True)
         player_queue = self.get_active_player_queue(player_id)
-        if player_queue.queue_id != player_id and not player.calculated_state.powered:
-            # only force player on if its not the actual queue player
+        # power on player if needed
+        if not player.calculated_state.powered:
             await self.cmd_power_on(player_id)
         # unpause if paused else resume queue
         if player_queue.state == PlayerState.PAUSED:
@@ -567,9 +567,9 @@ class PlayerManager:
         """
         player_queue = self.get_active_player_queue(player_id, True)
         if player_queue.state == PlayerState.PLAYING:
-            await player_queue.pause()
+            await self.cmd_pause(player_queue.queue_id)
         else:
-            await player_queue.play()
+            await self.cmd_play(player_queue.queue_id)
 
     @api_route("players/{player_id}/cmd/next", method="PUT")
     async def cmd_next(self, player_id: str) -> None:
@@ -579,7 +579,10 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
         """
         player_queue = self.get_active_player_queue(player_id, True)
-        await player_queue.next()
+        if player_queue.state == PlayerState.PLAYING:
+            await player_queue.next()
+        else:
+            await self.cmd_play(player_queue.queue_id)
 
     @api_route("players/{player_id}/cmd/previous", method="PUT")
     async def cmd_previous(self, player_id: str):
@@ -589,7 +592,10 @@ class PlayerManager:
             :param player_id: player_id of the player to handle the command.
         """
         player_queue = self.get_active_player_queue(player_id, True)
-        await player_queue.previous()
+        if player_queue.state == PlayerState.PLAYING:
+            await player_queue.previous()
+        else:
+            await self.cmd_play(player_queue.queue_id)
 
     @api_route("players/{player_id}/cmd/power_on", method="PUT")
     async def cmd_power_on(self, player_id: str) -> None:
