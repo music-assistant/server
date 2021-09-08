@@ -688,13 +688,18 @@ class ChromecastDynamicGroupPlayer(Player):
 
     async def on_poll(self):
         """Call when player is polled by player manager."""
-        required_player = self.select_active_player()
-        if self._active_player != required_player and required_player:
-            # active player changed, we need to transfer the queue
-            if self._active_player and self._active_player.state != PlayerState.IDLE:
-                player_queue = self.mass.players.get_player_queue(self.player_id)
-                await player_queue.stop()
+        self._active_player = self.get_active_player()
+        if self._active_player is not None:
+            required_player = self.select_active_player()
+            if required_player and self._active_player != required_player:
+                # active player changed, we need to transfer the queue
+                if (
+                    self._active_player
+                    and self._active_player.state != PlayerState.IDLE
+                ):
+                    player_queue = self.mass.players.get_player_queue(self.player_id)
+                    await player_queue.stop()
+                    self._active_player = required_player
+                    await player_queue.resume()
                 self._active_player = required_player
-                await player_queue.resume()
-            self._active_player = required_player
         await super().on_poll()
