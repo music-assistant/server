@@ -2,6 +2,7 @@
 import base64
 import logging
 import os
+import re
 from typing import List, Optional
 
 import taglib
@@ -368,12 +369,14 @@ class FileProvider(MusicProvider):
             track.artists.add(artist)
         if "GENRE" in song.tags:
             track.metadata["genres"] = song.tags["GENRE"]
-        if "ISRC" in song.tags:
+        if "ISRC" in song.tags and song.tags["ISRC"]:
             track.isrc = song.tags["ISRC"][0]
-        if "DISCNUMBER" in song.tags:
-            track.disc_number = int(song.tags["DISCNUMBER"][0])
-        if "TRACKNUMBER" in song.tags:
-            track.track_number = int(song.tags["TRACKNUMBER"][0])
+        if "DISCNUMBER" in song.tags and song.tags["DISCNUMBER"]:
+            regexp_numbers = re.findall(r'\d+', song.tags["DISCNUMBER"][0])
+            track.disc_number = int(regexp_numbers[0] if regexp_numbers else "0")
+        if "TRACKNUMBER" in song.tags and song.tags["TRACKNUMBER"]:
+            regexp_numbers = re.findall(r'\d+', song.tags["TRACKNUMBER"][0])
+            track.track_number = int(regexp_numbers[0] if regexp_numbers else "0")
         quality_details = ""
         if filename.endswith(".flac"):
             # TODO: get bit depth
