@@ -324,7 +324,9 @@ class PlayerQueue:
                 # at this point we don't know if the queue is synced with the player
                 # so just to be safe we send the queue_items to the player
                 self._items = self._items[prev_index:]
-                return await self.player.cmd_queue_load(self._items)
+                return await self.player.cmd_queue_load(
+                    self._items, self.repeat_enabled
+                )
         else:
             LOGGER.warning(
                 "resume queue requested for %s but queue is empty", self.queue_id
@@ -388,7 +390,7 @@ class PlayerQueue:
         if self.use_queue_stream:
             await self.play_index(0)
         else:
-            await self.player.cmd_queue_load(queue_items)
+            await self.player.cmd_queue_load(queue_items, self.repeat_enabled)
         self.mass.eventbus.signal(EVENT_QUEUE_ITEMS_UPDATED, self)
         create_task(self._save_state())
 
@@ -435,7 +437,9 @@ class PlayerQueue:
                     "cmd_queue_insert not supported by player, fallback to cmd_queue_load "
                 )
                 self._items = self._items[self.cur_index + offset :]
-                return await self.player.cmd_queue_load(self._items)
+                return await self.player.cmd_queue_load(
+                    self._items, self.repeat_enabled
+                )
         self.mass.eventbus.signal(EVENT_QUEUE_ITEMS_UPDATED, self)
         create_task(self._save_state())
 
@@ -460,7 +464,9 @@ class PlayerQueue:
                     "cmd_queue_append not supported by player, fallback to cmd_queue_load "
                 )
                 self._items = self._items[self.cur_index :]
-                return await self.player.cmd_queue_load(self._items)
+                return await self.player.cmd_queue_load(
+                    self._items, self.repeat_enabled
+                )
         self.mass.eventbus.signal(EVENT_QUEUE_ITEMS_UPDATED, self)
         create_task(self._save_state())
 
@@ -477,7 +483,7 @@ class PlayerQueue:
                     "cmd_queue_update not supported by player, fallback to cmd_queue_load "
                 )
                 self._items = self._items[self.cur_index :]
-                await self.player.cmd_queue_load(self._items)
+                await self.player.cmd_queue_load(self._items, self.repeat_enabled)
         self.mass.eventbus.signal(EVENT_QUEUE_ITEMS_UPDATED, self)
         create_task(self._save_state())
 

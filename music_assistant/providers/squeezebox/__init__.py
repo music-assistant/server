@@ -262,7 +262,7 @@ class SqueezePlayer(Player):
             if new_track:
                 return await self.cmd_play_uri(new_track.stream_url)
 
-    async def cmd_queue_load(self, queue_items: List[QueueItem]):
+    async def cmd_queue_load(self, queue_items: List[QueueItem], repeat: bool = False):
         """
         Load/overwrite given items in the player's queue implementation.
 

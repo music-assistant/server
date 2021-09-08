@@ -194,7 +194,9 @@ class SonosProvider(PlayerProvider):
         else:
             LOGGER.warning("Received command for unavailable player: %s", player_id)
 
-    async def cmd_queue_load(self, player_id: str, queue_items: List[QueueItem]):
+    async def cmd_queue_load(
+        self, player_id: str, queue_items: List[QueueItem], repeat: bool = False
+    ):
         """
         Load/overwrite given items in the player's queue implementation.
 

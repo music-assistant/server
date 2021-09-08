@@ -301,7 +301,9 @@ class Player:
         if PlayerFeature.QUEUE in self.features:
             raise NotImplementedError
 
-    async def cmd_queue_load(self, queue_items: QueueItems) -> None:
+    async def cmd_queue_load(
+        self, queue_items: QueueItems, repeat: bool = False
+    ) -> None:
         """
         Load/overwrite given items in the player's queue implementation.
 
