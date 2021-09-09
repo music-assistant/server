@@ -1,6 +1,6 @@
 """All constants for Music Assistant."""
 
-__version__ = "0.2.10"
+__version__ = "0.2.11"
 REQUIRED_PYTHON_VER = "3.8"
 
 # configuration keys/attributes
