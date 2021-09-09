@@ -11,7 +11,7 @@ from pychromecast.controllers.multizone import MultizoneManager
 
 from .const import PROV_ID, PROV_NAME, PROVIDER_CONFIG_ENTRIES
 from .helpers import DEFAULT_PORT, ChromecastInfo
-from .player import ChromecastDynamicGroupPlayer, ChromecastPlayer
+from .player import ChromecastPlayer
 
 LOGGER = logging.getLogger(PROV_ID)
 
@@ -90,17 +90,10 @@ class ChromecastProvider(PlayerProvider):
             return
 
         LOGGER.debug("Discovered new or updated chromecast %s", info)
-        if info.is_audio_group and "_" in info.friendly_name:
-            player_name = info.friendly_name.split("_")[0]
-            player_id = f"castgroup-{player_name.lower()}"
-            player = self.mass.players.get_player(player_id)
-            if not player:
-                player = ChromecastDynamicGroupPlayer(self.mass, player_id, player_name)
-        else:
-            player_id = str(info.uuid)
-            player = self.mass.players.get_player(player_id)
-            if not player:
-                player = ChromecastPlayer(self.mass, info)
+        player_id = str(info.uuid)
+        player = self.mass.players.get_player(player_id)
+        if not player:
+            player = ChromecastPlayer(self.mass, info)
 
         # if player was already added, the player will take care of reconnects itself.
         player.set_cast_info(info)
