@@ -153,7 +153,7 @@ class WebServer:
     @property
     def address(self) -> str:
         """Return the base HTTP address for this Music Assistant instance."""
-        return f"http://{self.hostname}:{self.port}"
+        return f"http://{self.ip_address}:{self.port}"
 
     @property
     def server_id(self) -> str:
