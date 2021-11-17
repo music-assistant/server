@@ -13,7 +13,7 @@ soco==0.24.1
 pillow==8.3.2
 aiohttp_cors==0.7.0
 unidecode==1.1.2
-PyJWT==2.1.0
+PyJWT==2.3.0
 zeroconf==0.36.2
 passlib==1.7.4
 cryptography==35.0.0
