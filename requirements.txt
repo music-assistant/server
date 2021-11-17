@@ -1,6 +1,6 @@
 argparse==1.4.0
 async-timeout==4.0.1
-pychromecast==9.2.0
+pychromecast==10.1.0
 aiohttp[speedups]==3.7.4
 asyncio-throttle==1.0.2
 aiofiles==0.7.0
