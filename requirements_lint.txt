@@ -1,5 +1,5 @@
 black==21.10b0
-flake8==3.9.2
+flake8==4.0.1
 mypy==0.910
 pydocstyle==6.1.1
 pylint==2.10.2
