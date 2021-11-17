@@ -1,7 +1,6 @@
 """Representation of a Cast device on the network."""
 import asyncio
 import logging
-import uuid
 from typing import List, Optional
 
 import pychromecast
@@ -39,7 +38,6 @@ class ChromecastPlayer(Player):
         self._cast_info = cast_info
         self._player_id = cast_info.uuid
 
-        self.services = cast_info.services
         self._chromecast: Optional[pychromecast.Chromecast] = None
         self.cast_status = None
         self.media_status = None
@@ -77,13 +75,12 @@ class ChromecastPlayer(Player):
             )
 
         # Chromecast does not support power so we (ab)use mute instead
-        if self._chromecast.media_controller.is_active:
-            return (
-                self.cast_status.app_id
-                in ["705D30C6", self._chromecast.media_controller.app_id]
-                and not self.cast_status.volume_muted
-            )
-        return not self.cast_status.volume_muted
+        if self.cast_status.app_id is None:
+            return not self.cast_status.volume_muted
+        return (
+            self.cast_status.app_id in ["705D30C6", pychromecast.APP_MEDIA_RECEIVER]
+            and not self.cast_status.volume_muted
+        )
 
     @property
     def should_poll(self) -> bool:
@@ -151,9 +148,7 @@ class ChromecastPlayer(Player):
             and self._chromecast
             and not self._is_speaker_group
         ):
-            return [
-                str(uuid.UUID(item)) for item in self._chromecast.mz_controller.members
-            ]
+            return self._chromecast.mz_controller.members
         return []
 
     @property
@@ -181,12 +176,14 @@ class ChromecastPlayer(Player):
             None,
             pychromecast.get_chromecast_from_cast_info,
             pychromecast.discovery.CastInfo(
-                self.services,
+                self._cast_info.services,
                 self._cast_info.uuid,
                 self._cast_info.model_name,
                 self._cast_info.friendly_name,
                 None,
                 None,
+                self._cast_info.cast_type,
+                self._cast_info.manufacturer,
             ),
             self.mass.zeroconf,
         )

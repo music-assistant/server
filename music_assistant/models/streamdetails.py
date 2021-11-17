@@ -1,8 +1,8 @@
 """Models and helpers for the streamdetails of a MediaItem."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from mashumaro.serializer.base.dict import DataClassDictMixin
 from music_assistant.models.media_types import MediaType
@@ -56,7 +56,7 @@ class StreamDetails(DataClassDictMixin):
     path: str
     content_type: ContentType
     player_id: str = ""
-    details: Any = None
+    details: Dict[str, Any] = field(default_factory=dict)
     seconds_played: int = 0
     gain_correct: float = 0
     loudness: Optional[float] = None
@@ -64,24 +64,11 @@ class StreamDetails(DataClassDictMixin):
     bit_depth: Optional[int] = None
     media_type: MediaType = MediaType.TRACK
 
-    def to_dict(
-        self,
-        use_bytes: bool = False,
-        use_enum: bool = False,
-        use_datetime: bool = False,
-        **kwargs,
-    ):
-        """Handle conversion to dict."""
-        return {
-            "provider": self.provider,
-            "item_id": self.item_id,
-            "content_type": self.content_type.value,
-            "media_type": self.media_type.value,
-            "sample_rate": self.sample_rate,
-            "bit_depth": self.bit_depth,
-            "gain_correct": self.gain_correct,
-            "seconds_played": self.seconds_played,
-        }
+    def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
+        """Exclude internal fields from dict."""
+        d.pop("path")
+        d.pop("details")
+        return d
 
     def __str__(self):
         """Return pretty printable string of object."""

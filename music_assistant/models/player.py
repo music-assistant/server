@@ -514,12 +514,12 @@ class Player:
             active_queue=active_queue,
         )
 
-    def to_dict(self) -> dict:
-        """Return playerstate for compatability with json serializer."""
-        return self._calculated_state.to_dict()
-
     def __init__(self, *args, **kwargs) -> None:
         """Initialize a Player instance."""
         self.mass: Optional[MusicAssistant] = None
         self.added_to_mass = False
         self._calculated_state = CalculatedPlayerState()
+
+    def to_dict(self):
+        """Return playerstate for compatability with json serializer."""
+        return self._calculated_state.to_dict()

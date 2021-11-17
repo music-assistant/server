@@ -10,7 +10,7 @@ from music_assistant.models.provider import PlayerProvider
 from pychromecast.controllers.multizone import MultizoneManager
 
 from .const import PROV_ID, PROV_NAME, PROVIDER_CONFIG_ENTRIES
-from .helpers import DEFAULT_PORT, ChromecastInfo
+from .helpers import ChromecastInfo
 from .player import ChromecastPlayer
 
 LOGGER = logging.getLogger(PROV_ID)
@@ -70,14 +70,15 @@ class ChromecastProvider(PlayerProvider):
 
     def _discover_chromecast(self, uuid, _):
         """Discover a Chromecast."""
-        device_info = self._browser.devices[uuid]
+        cast_info: pychromecast.models.CastInfo = self._browser.devices[uuid]
 
         info = ChromecastInfo(
-            services=device_info.services,
-            uuid=device_info.uuid,
-            model_name=device_info.model_name,
-            friendly_name=device_info.friendly_name,
-            is_audio_group=device_info.port != DEFAULT_PORT,
+            services=cast_info.services,
+            uuid=cast_info.uuid,
+            model_name=cast_info.model_name,
+            friendly_name=cast_info.friendly_name,
+            cast_type=cast_info.cast_type,
+            manufacturer=cast_info.manufacturer,
         )
 
         if info.uuid is None:
@@ -99,7 +100,8 @@ class ChromecastProvider(PlayerProvider):
         player.set_cast_info(info)
         create_task(self.mass.players.add_player(player))
 
-    def _remove_chromecast(self, uuid, service, cast_info):
+    @staticmethod
+    def _remove_chromecast(uuid, service, cast_info):
         """Handle zeroconf discovery of a removed chromecast."""
         # pylint: disable=unused-argument
         player_id = str(service[1])

@@ -61,10 +61,9 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
     """Analyze track audio, for now we only calculate EBU R128 loudness."""
 
     if streamdetails.loudness is not None:
-        # only when needed we do the analyze stuff
+        # only when needed we do the analyze job
         return
 
-    # only when needed we do the analyze stuff
     LOGGER.debug(
         "Start analyzing track %s/%s",
         streamdetails.provider,

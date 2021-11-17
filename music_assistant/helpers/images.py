@@ -63,7 +63,7 @@ async def get_image_url(
         and hasattr(item.artist, "metadata")
         and item.artist.metadata.get("image")
     ):
-        return item.album.metadata["image"]
+        return item.artist.metadata["image"]
     if media_type == MediaType.TRACK and item.album:
         # try album instead for tracks
         return await get_image_url(

@@ -36,7 +36,11 @@ from music_assistant.helpers.encryption import _decrypt_string, _encrypt_string
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task, try_load_json_file
 from music_assistant.helpers.web import api_route
-from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
+from music_assistant.models.config_entry import (
+    ConfigEntry,
+    ConfigEntryType,
+    ConfigValueOption,
+)
 from music_assistant.models.player import PlayerControlType
 from music_assistant.models.provider import ProviderType
 from passlib.hash import pbkdf2_sha256
@@ -46,6 +50,11 @@ RESOURCES_DIR = (
 )
 
 LOGGER = logging.getLogger("config_manager")
+
+SAMPLERATE_OPTIONS = [
+    ConfigValueOption(text=str(val), value=val)
+    for val in (41000, 48000, 96000, 176000, 192000, 384000)
+]
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = [
     ConfigEntry(
@@ -64,7 +73,7 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = [
     ConfigEntry(
         entry_key=CONF_MAX_SAMPLE_RATE,
         entry_type=ConfigEntryType.INT,
-        values=[41000, 48000, 96000, 176000, 192000, 384000],
+        options=SAMPLERATE_OPTIONS,
         default_value=96000,
         label=CONF_MAX_SAMPLE_RATE,
         description="desc_sample_rate",
@@ -324,7 +333,7 @@ class ConfigManager:
         self.loading = True
         conf_file = os.path.join(self.data_path, "config.json")
         data = try_load_json_file(conf_file)
-        if not data:
+        if data is None:
             # might be a corrupt config file, retry with backup file
             conf_file_backup = os.path.join(self.data_path, "config.json.backup")
             data = try_load_json_file(conf_file_backup)
@@ -494,7 +503,9 @@ class PlayerSettings(ConfigBaseItem):
             )
             if power_controls:
                 controls = [
-                    {"text": f"{item.provider}: {item.name}", "value": item.control_id}
+                    ConfigValueOption(
+                        text=f"{item.provider}: {item.name}", value=item.control_id
+                    )
                     for item in power_controls
                 ]
                 entries.append(
@@ -503,7 +514,7 @@ class PlayerSettings(ConfigBaseItem):
                         entry_type=ConfigEntryType.STRING,
                         label=CONF_POWER_CONTROL,
                         description="desc_power_control",
-                        values=controls,
+                        options=controls,
                     )
                 )
             # append volume control config entries
@@ -512,7 +523,9 @@ class PlayerSettings(ConfigBaseItem):
             )
             if volume_controls:
                 controls = [
-                    {"text": f"{item.provider}: {item.name}", "value": item.control_id}
+                    ConfigValueOption(
+                        text=f"{item.provider}: {item.name}", value=item.control_id
+                    )
                     for item in volume_controls
                 ]
                 entries.append(
@@ -521,7 +534,7 @@ class PlayerSettings(ConfigBaseItem):
                         entry_type=ConfigEntryType.STRING,
                         label=CONF_VOLUME_CONTROL,
                         description="desc_volume_control",
-                        values=controls,
+                        options=controls,
                     )
                 )
             # append special group player entries

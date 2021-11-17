@@ -6,7 +6,11 @@ from typing import List
 
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
-from music_assistant.models.config_entry import ConfigEntry, ConfigEntryType
+from music_assistant.models.config_entry import (
+    ConfigEntry,
+    ConfigEntryType,
+    ConfigValueOption,
+)
 from music_assistant.models.player import DeviceInfo, Player, PlayerState
 from music_assistant.models.provider import PlayerProvider
 
@@ -189,7 +193,7 @@ class GroupPlayer(Player):
     def __get_config_entries(self):
         """Return config entries for this group player."""
         all_players = [
-            {"text": item.name, "value": item.player_id}
+            ConfigValueOption(text=item.name, value=item.player_id)
             for item in self.mass.players
             if item.player_id is not self._player_id
         ]
@@ -199,10 +203,9 @@ class GroupPlayer(Player):
         # selected_players_ids = []
         selected_players = []
         for player_id in selected_players_ids:
-            player = self.mass.players.get_player(player_id)
-            if player:
+            if player := self.mass.players.get_player(player_id):
                 selected_players.append(
-                    {"text": player.name, "value": player.player_id}
+                    ConfigValueOption(text=player.name, value=player.player_id)
                 )
         default_master = ""
         if selected_players:
@@ -212,7 +215,7 @@ class GroupPlayer(Player):
                 entry_key=CONF_PLAYERS,
                 entry_type=ConfigEntryType.STRING,
                 default_value=[],
-                values=all_players,
+                options=all_players,
                 label=CONF_PLAYERS,
                 description="group_player_players_desc",
                 multi_value=True,
@@ -221,7 +224,7 @@ class GroupPlayer(Player):
                 entry_key=CONF_MASTER,
                 entry_type=ConfigEntryType.STRING,
                 default_value=default_master,
-                values=selected_players,
+                options=selected_players,
                 label=CONF_MASTER,
                 description="group_player_master_desc",
                 multi_value=False,

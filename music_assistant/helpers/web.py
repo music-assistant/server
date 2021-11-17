@@ -44,12 +44,14 @@ def serialize_values(obj):
             isinstance(val, (list, set, filter, tuple))
             or val.__class__ == "dict_valueiterator"
         ):
-            return [get_val(x) for x in val]
+            return [get_val(x) for x in val] if val else []
         if isinstance(val, dict):
             return {key: get_val(value) for key, value in val.items()}
         try:
             return val.to_dict()
         except AttributeError:
+            return val
+        except Exception:
             return val
 
     return get_val(obj)
