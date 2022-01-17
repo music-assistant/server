@@ -17,7 +17,7 @@ PyJWT==2.3.0
 zeroconf==0.36.13
 passlib==1.7.4
 cryptography==36.0.1
-ujson==4.2.0
+ujson==5.1.0
 mashumaro==2.9
 typing-inspect==0.6.0; python_version < '3.8'
 uvloop==0.16.0; sys_platform != 'win32'
