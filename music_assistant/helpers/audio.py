@@ -317,6 +317,4 @@ def get_sox_args(
         filter_args += ["rate", "-v", str(resample)]
     elif resample:
         filter_args += ["rate", str(resample)]
-    # TODO: still not sure about the order of the filter arguments in the chain
-    # assumption is they need to be at the end of the chain
     return input_args + output_args + filter_args
