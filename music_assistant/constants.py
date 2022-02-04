@@ -1,7 +1,7 @@
 """All constants for Music Assistant."""
 
 __version__ = "0.2.13"
-REQUIRED_PYTHON_VER = "3.8"
+REQUIRED_PYTHON_VER = "3.9"
 
 # configuration keys/attributes
 CONF_USERNAME = "username"
