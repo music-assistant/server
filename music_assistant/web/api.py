@@ -11,7 +11,6 @@ import ujson
 from aiohttp import WSMsgType, web
 from aiohttp.http_websocket import WSMessage
 from music_assistant.helpers.images import get_image_url, get_thumb_file
-from music_assistant.helpers.logger import HistoryLogHandler
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.web import (
     api_route,
@@ -22,14 +21,6 @@ from music_assistant.helpers.web import (
 from music_assistant.models.media_types import MediaType
 
 LOGGER = logging.getLogger("api")
-
-
-@api_route("log")
-async def get_log(tail: int = 200) -> str:
-    """Return current application log."""
-    for handler in logging.getLogger().handlers:
-        if isinstance(handler, HistoryLogHandler):
-            return handler.get_history()[-tail:]
 
 
 @api_route("images/{media_type}/{provider}/{item_id}")

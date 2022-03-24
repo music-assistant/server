@@ -1,9 +1,10 @@
 """Start Music Assistant."""
 import argparse
+from logging.handlers import TimedRotatingFileHandler
 import os
 
 from aiorun import run
-from music_assistant.helpers.logger import setup_logger
+import logging
 from music_assistant.mass import MusicAssistant
 
 
@@ -69,3 +70,37 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def setup_logger(data_path):
+    """Initialize logger."""
+    logs_dir = os.path.join(data_path, "logs")
+    if not os.path.isdir(logs_dir):
+        os.mkdir(logs_dir)
+    logger = logging.getLogger()
+    log_formatter = logging.Formatter(
+        "%(asctime)-15s %(levelname)-5s %(name)s  -- %(message)s"
+    )
+    consolehandler = logging.StreamHandler()
+    consolehandler.setFormatter(log_formatter)
+    consolehandler.setLevel(logging.DEBUG)
+    logger.addHandler(consolehandler)
+    log_filename = os.path.join(logs_dir, "musicassistant.log")
+    file_handler = TimedRotatingFileHandler(
+        log_filename, when="midnight", interval=1, backupCount=10
+    )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(log_formatter)
+    logger.addHandler(file_handler)
+
+    # global level is debug
+    logger.setLevel(logging.DEBUG)
+
+    # silence some loggers
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("databases").setLevel(logging.WARNING)
+    logging.getLogger("multipart.multipart").setLevel(logging.WARNING)
+    logging.getLogger("passlib.handlers.bcrypt").setLevel(logging.WARNING)
+
+    return logger
