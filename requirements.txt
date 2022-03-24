@@ -6,7 +6,7 @@ asyncio-throttle==1.0.2
 aiofiles==0.8.0
 aiosqlite==0.17.0
 pytaglib==1.5.0
-python-slugify==5.0.2
+python-slugify==6.1.1
 memory-tempfile==2.2.3
 aiorun==2021.10.1
 soco==0.27.1
