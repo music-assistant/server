@@ -1,4 +1,4 @@
-Music Assistant Server
+Music Assistant
 ==================================
 
 .. image:: https://img.shields.io/pypi/v/music_assistant.svg
@@ -9,6 +9,6 @@ Music Assistant Server
 
 
 
-Music Assistant Server is the "core" of Music Assistant and must be installed on a always-on device like a NAS or Raspberry Pi.
+Companion app for Home Assistant for music library management and streaming audio to common connected speakers.
 
-For all details, see https://music-assistant.github.io
+Work in Progress: More info soon!
