@@ -7,25 +7,15 @@ so it is HTTP only. Secure remote connections will be offered by a remote connec
 """
 import logging
 import os
-import uuid
-from json.decoder import JSONDecodeError
 from typing import Callable, List, Tuple
 
 import aiofiles
 import aiohttp_cors
-import jwt
 import music_assistant.web.api as api
 from aiohttp import web
-from aiohttp.web_exceptions import HTTPNotFound, HTTPUnauthorized
-from music_assistant.constants import (
-    CONF_KEY_SECURITY_LOGIN,
-    CONF_PASSWORD,
-    CONF_USERNAME,
-)
+from aiohttp.web_exceptions import HTTPNotFound
+
 from music_assistant.constants import __version__ as MASS_VERSION
-from music_assistant.helpers.datetime import future_timestamp
-from music_assistant.helpers.encryption import decrypt_string
-from music_assistant.helpers.errors import AuthenticationError
 from music_assistant.helpers.images import get_thumb_file
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_hostname, get_ip
@@ -42,7 +32,6 @@ class WebServer:
 
     def __init__(self, mass: MusicAssistant, port: int) -> None:
         """Initialize class."""
-        self.jwt_key = None
         self.app = None
         self.mass = mass
         self._port = port
@@ -55,7 +44,6 @@ class WebServer:
 
     async def setup(self) -> None:
         """Perform async setup."""
-        self.jwt_key = await decrypt_string(self.mass.config.stored_config["jwt_key"])
         self.app = web.Application()
         self.app["mass"] = self.mass
         self.app["ws_clients"] = []
@@ -75,8 +63,6 @@ class WebServer:
             },
         )
         cors.add(self.app.router.add_get("/info", self.info))
-        cors.add(self.app.router.add_post("/login", self.login))
-        cors.add(self.app.router.add_post("/setup", self.first_setup))
         cors.add(self.app.router.add_get("/thumb", self.image_thumb))
         self.app.router.add_route("*", "/api/{tail:.+}", api.handle_api_request)
         # Host the frontend app
@@ -184,63 +170,6 @@ class WebServer:
 
     async def info(self, request: web.Request) -> web.Response:
         """Return server discovery info."""
-        return web.json_response(self.discovery_info)
-
-    async def login(self, request: web.Request) -> web.Response:
-        """
-        Validate given credentials and return JWT token.
-
-        If app_id is provided, a long lived token will be issued which can be withdrawn by the user.
-        """
-        try:
-            data = await request.post()
-            if not data:
-                data = await request.json()
-        except JSONDecodeError:
-            data = await request.json()
-        username = data["username"]
-        password = data["password"]
-        app_id = data.get("app_id", "")
-        verified = self.mass.config.security.validate_credentials(username, password)
-        if verified:
-            client_id = str(uuid.uuid4())
-            token_info = {
-                "username": username,
-                "server_id": self.server_id,
-                "client_id": client_id,
-                "app_id": app_id,
-            }
-            if app_id:
-                token_info["enabled"] = True
-                token_info["exp"] = future_timestamp(days=365 * 10)
-            else:
-                token_info["exp"] = future_timestamp(hours=8)
-            token = jwt.encode(token_info, self.jwt_key, algorithm="HS256")
-            if app_id:
-                self.mass.config.security.add_app_token(token_info)
-            token_info["token"] = token
-            return web.json_response(token_info)
-        raise HTTPUnauthorized(reason="Invalid credentials")
-
-    async def first_setup(self, request: web.Request) -> web.Response:
-        """Handle first-time server setup through onboarding wizard."""
-        try:
-            data = await request.post()
-            if not data:
-                data = await request.json()
-        except JSONDecodeError:
-            data = await request.json()
-        username = data["username"]
-        password = data["password"]
-        if self.mass.config.stored_config["initialized"]:
-            raise AuthenticationError("Already initialized")
-        # save credentials in config
-        self.mass.config.security[CONF_KEY_SECURITY_LOGIN][CONF_USERNAME] = username
-        self.mass.config.security[CONF_KEY_SECURITY_LOGIN][CONF_PASSWORD] = password
-        self.mass.config.stored_config["initialized"] = True
-        self.mass.config.save()
-        # fix discovery info
-        await self.mass.setup_discovery()
         return web.json_response(self.discovery_info)
 
     async def image_thumb(self, request: web.Request) -> web.Response:

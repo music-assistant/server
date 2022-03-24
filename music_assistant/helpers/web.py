@@ -13,29 +13,6 @@ from aiohttp import web
 from music_assistant.helpers.typing import MusicAssistant
 
 
-def require_local_subnet(func):
-    """Return decorator to specify web method as available locally only."""
-
-    @wraps(func)
-    async def wrapped(*args, **kwargs):
-        request = args[-1]
-
-        if isinstance(request, web.View):
-            request = request.request
-
-        if not isinstance(request, web.BaseRequest):  # pragma: no cover
-            raise RuntimeError(
-                "Incorrect usage of decorator." "Expect web.BaseRequest as an argument"
-            )
-
-        if not ipaddress.ip_address(request.remote).is_private:
-            raise web.HTTPUnauthorized(reason="Not remote available")
-
-        return await func(*args, **kwargs)
-
-    return wrapped
-
-
 def serialize_values(obj):
     """Recursively create serializable values for (custom) data types."""
 

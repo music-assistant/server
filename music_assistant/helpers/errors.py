@@ -1,5 +1,5 @@
 """Custom errors and exceptions."""
 
 
-class AuthenticationError(Exception):
-    """Custom Exception for all authentication errors."""
+class MusicAssistantError(Exception):
+    """Custom Exception for all errors."""

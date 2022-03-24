@@ -31,9 +31,6 @@ CONF_KEY_MUSIC_PROVIDERS = "music_providers"
 CONF_KEY_PLAYER_PROVIDERS = "player_providers"
 CONF_KEY_METADATA_PROVIDERS = "metadata_providers"
 CONF_KEY_PLUGINS = "plugins"
-CONF_KEY_SECURITY = "security"
-CONF_KEY_SECURITY_LOGIN = "login"
-CONF_KEY_SECURITY_APP_TOKENS = "app_tokens"
 CONF_KEY_BASE_INFO = "info"
 
 # events

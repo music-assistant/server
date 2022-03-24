@@ -1,10 +1,8 @@
 """JSON RPC API endpoint (mostly) compatible with LMS."""
 
 from aiohttp.web import Request, Response
-from music_assistant.helpers.web import require_local_subnet
 
 
-@require_local_subnet
 async def json_rpc_endpoint(request: Request):
     """
     Implement basic jsonrpc interface compatible with LMS.

@@ -18,20 +18,14 @@ from music_assistant.constants import (
     CONF_KEY_PLAYER_PROVIDERS,
     CONF_KEY_PLAYER_SETTINGS,
     CONF_KEY_PLUGINS,
-    CONF_KEY_SECURITY,
-    CONF_KEY_SECURITY_APP_TOKENS,
-    CONF_KEY_SECURITY_LOGIN,
     CONF_MAX_SAMPLE_RATE,
     CONF_NAME,
-    CONF_PASSWORD,
     CONF_POWER_CONTROL,
     CONF_TARGET_VOLUME,
-    CONF_USERNAME,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_NORMALISATION,
     EVENT_CONFIG_CHANGED,
 )
-from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.encryption import _decrypt_string, _encrypt_string
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task, try_load_json_file
@@ -116,27 +110,6 @@ DEFAULT_PROVIDER_CONFIG_ENTRIES = [
 
 DEFAULT_BASE_CONFIG_ENTRIES = {}
 
-DEFAULT_SECURITY_CONFIG_ENTRIES = {
-    CONF_KEY_SECURITY_LOGIN: [
-        ConfigEntry(
-            entry_key=CONF_USERNAME,
-            entry_type=ConfigEntryType.STRING,
-            default_value="admin",
-            label=CONF_USERNAME,
-            description="desc_base_username",
-        ),
-        ConfigEntry(
-            entry_key=CONF_PASSWORD,
-            entry_type=ConfigEntryType.PASSWORD,
-            default_value="",
-            label=CONF_PASSWORD,
-            description="desc_base_password",
-            store_hashed=True,
-        ),
-    ],
-    CONF_KEY_SECURITY_APP_TOKENS: [],
-}
-
 
 PROVIDER_TYPE_MAPPINGS = {
     CONF_KEY_MUSIC_PROVIDERS: ProviderType.MUSIC_PROVIDER,
@@ -187,7 +160,6 @@ class ConfigManager:
             key: getattr(self, key).all_items()
             for key in [
                 CONF_KEY_BASE,
-                CONF_KEY_SECURITY,
                 CONF_KEY_MUSIC_PROVIDERS,
                 CONF_KEY_PLAYER_PROVIDERS,
                 CONF_KEY_METADATA_PROVIDERS,
@@ -225,11 +197,6 @@ class ConfigManager:
     def base(self):
         """Return base config."""
         return BaseSettings(self)
-
-    @property
-    def security(self):
-        """Return security config."""
-        return SecuritySettings(self)
 
     @property
     def player_settings(self):
@@ -382,101 +349,6 @@ class BaseSettings(ConfigBaseItem):
     def get_config_entries(child_key) -> List[ConfigEntry]:
         """Return all base config entries."""
         return list(DEFAULT_BASE_CONFIG_ENTRIES[child_key])
-
-
-class SecuritySettings(ConfigBaseItem):
-    """Configuration class that holds the security settings."""
-
-    def __init__(self, conf_mgr: ConfigManager):
-        """Initialize class."""
-        super().__init__(conf_mgr, CONF_KEY_SECURITY)
-        # make sure the keys exist in config dict
-        if CONF_KEY_SECURITY not in conf_mgr.stored_config:
-            conf_mgr.stored_config[CONF_KEY_SECURITY] = {}
-        if (
-            CONF_KEY_SECURITY_APP_TOKENS
-            not in conf_mgr.stored_config[CONF_KEY_SECURITY]
-        ):
-            conf_mgr.stored_config[CONF_KEY_SECURITY][CONF_KEY_SECURITY_APP_TOKENS] = {}
-
-    def all_keys(self):
-        """Return all possible keys of this Config object."""
-        return DEFAULT_SECURITY_CONFIG_ENTRIES.keys()
-
-    def add_app_token(self, token_info: dict):
-        """Add token to config."""
-        client_id = token_info["client_id"]
-        self.conf_mgr.stored_config[CONF_KEY_SECURITY][CONF_KEY_SECURITY_APP_TOKENS][
-            client_id
-        ] = token_info
-        self.conf_mgr.save()
-
-    def set_last_login(self, client_id: str):
-        """Set last login to client."""
-        if (
-            client_id
-            not in self.conf_mgr.stored_config[CONF_KEY_SECURITY][
-                CONF_KEY_SECURITY_APP_TOKENS
-            ]
-        ):
-            return
-        self.conf_mgr.stored_config[CONF_KEY_SECURITY][CONF_KEY_SECURITY_APP_TOKENS][
-            client_id
-        ]["last_login"] = utc_timestamp()
-        self.conf_mgr.save()
-
-    def revoke_app_token(self, client_id):
-        """Revoke a token registered for an app."""
-        return_info = self.conf_mgr.stored_config[CONF_KEY_SECURITY][
-            CONF_KEY_SECURITY_APP_TOKENS
-        ].pop(client_id)
-        self.conf_mgr.save()
-        self.conf_mgr.mass.eventbus.signal(
-            EVENT_CONFIG_CHANGED, (CONF_KEY_SECURITY, CONF_KEY_SECURITY_APP_TOKENS)
-        )
-        return return_info
-
-    def is_token_revoked(self, token_info: dict):
-        """Return bool if token is revoked."""
-        if not token_info.get("app_id"):
-            # short lived token does not have app_id and is not stored so can't be revoked
-            return False
-        return self[CONF_KEY_SECURITY_APP_TOKENS].get(token_info["client_id"]) is None
-
-    def validate_credentials(self, username: str, password: str) -> bool:
-        """Check if credentials matches."""
-        if username != self[CONF_KEY_SECURITY_LOGIN][CONF_USERNAME]:
-            return False
-        try:
-            return pbkdf2_sha256.verify(
-                password, self[CONF_KEY_SECURITY_LOGIN][CONF_PASSWORD]
-            )
-        except ValueError:
-            return False
-
-    def get_config_entries(self, child_key) -> List[ConfigEntry]:
-        """Return all base config entries."""
-        if child_key == CONF_KEY_SECURITY_LOGIN:
-            return list(DEFAULT_SECURITY_CONFIG_ENTRIES[CONF_KEY_SECURITY_LOGIN])
-        if child_key == CONF_KEY_SECURITY_APP_TOKENS:
-            return [
-                ConfigEntry(
-                    entry_key=client_id,
-                    entry_type=ConfigEntryType.DICT,
-                    default_value={},
-                    label=token_info["app_id"],
-                    description="App connected to MusicAssistant API",
-                    store_hashed=False,
-                    value={
-                        "expires": token_info.get("exp"),
-                        "last_login": token_info.get("last_login"),
-                    },
-                )
-                for client_id, token_info in self.conf_mgr.stored_config[
-                    CONF_KEY_SECURITY
-                ][CONF_KEY_SECURITY_APP_TOKENS].items()
-            ]
-        return []
 
 
 class PlayerSettings(ConfigBaseItem):

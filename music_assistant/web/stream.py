@@ -28,7 +28,6 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
-from music_assistant.helpers.web import require_local_subnet
 from music_assistant.models.player_queue import PlayerQueue
 from music_assistant.models.streamdetails import ContentType, StreamDetails
 
@@ -38,7 +37,6 @@ LOGGER = logging.getLogger("stream")
 
 
 @routes.get("/stream/queue/{player_id}")
-@require_local_subnet
 async def stream_queue(request: Request):
     """Stream all items in player's queue as continuous stream in FLAC audio format."""
     mass: MusicAssistant = request.app["mass"]
@@ -120,7 +118,6 @@ async def stream_queue(request: Request):
 
 
 @routes.get("/stream/queue/{player_id}/{queue_item_id}")
-@require_local_subnet
 async def stream_single_queue_item(request: Request):
     """Stream a single queue item."""
     mass: MusicAssistant = request.app["mass"]
@@ -170,7 +167,6 @@ async def stream_single_queue_item(request: Request):
 
 
 @routes.get("/stream/group/{group_player_id}")
-@require_local_subnet
 async def stream_group(request: Request):
     """Handle streaming to all players of a group. Highly experimental."""
     group_player_id = request.match_info["group_player_id"]

@@ -8,7 +8,6 @@ from pkg_resources import packaging
 
 import aiosqlite
 from music_assistant.constants import __version__ as app_version
-from music_assistant.helpers.encryption import encrypt_string
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_hostname
 
@@ -28,8 +27,6 @@ async def check_migrations(mass: MusicAssistant):
     # create unique server id from machine id
     if "server_id" not in mass.config.stored_config:
         mass.config.stored_config["server_id"] = str(uuid.getnode())
-    if "jwt_key" not in mass.config.stored_config:
-        mass.config.stored_config["jwt_key"] = await encrypt_string(str(uuid.uuid4()))
     if "initialized" not in mass.config.stored_config:
         mass.config.stored_config["initialized"] = False
     if "friendly_name" not in mass.config.stored_config:

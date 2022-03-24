@@ -13,11 +13,9 @@ soco==0.27.1
 pillow==9.0.1
 aiohttp_cors==0.7.0
 unidecode==1.3.4
-PyJWT==2.3.0
 zeroconf==0.38.4
 passlib==1.7.4
 cryptography==36.0.2
 ujson==5.1.0
 mashumaro==3.0
-typing-inspect==0.6.0; python_version < '3.8'
 uvloop==0.16.0; sys_platform != 'win32'

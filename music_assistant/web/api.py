@@ -7,11 +7,9 @@ from base64 import b64encode
 from typing import Any, Dict, Optional, Union
 
 import aiofiles
-import jwt
 import ujson
 from aiohttp import WSMsgType, web
 from aiohttp.http_websocket import WSMessage
-from music_assistant.helpers.errors import AuthenticationError
 from music_assistant.helpers.images import get_image_url, get_thumb_file
 from music_assistant.helpers.logger import HistoryLogHandler
 from music_assistant.helpers.typing import MusicAssistant
@@ -81,22 +79,6 @@ async def handle_api_request(request: web.Request):
     mass: MusicAssistant = request.app["mass"]
     LOGGER.debug("Handling %s", request.path)
 
-    # check auth token
-    auth_token = request.headers.get("Authorization", "").split("Bearer ")[-1]
-    if not auth_token:
-        raise web.HTTPUnauthorized(
-            reason="Missing authorization token",
-        )
-    try:
-        token_info = jwt.decode(auth_token, mass.web.jwt_key, algorithms=["HS256"])
-    except jwt.InvalidTokenError as exc:
-        LOGGER.exception(exc, exc_info=exc)
-        msg = "Invalid authorization token, " + str(exc)
-        raise web.HTTPUnauthorized(reason=msg)
-    if mass.config.security.is_token_revoked(token_info):
-        raise web.HTTPUnauthorized(reason="Token is revoked")
-    mass.config.security.set_last_login(token_info["client_id"])
-
     # handle request
     handler, path_params = mass.web.get_api_handler(request.path, request.method)
     data = await request.json() if request.can_read_body else {}
@@ -119,7 +101,6 @@ class WebSocketApi(web.View):
     def __init__(self, request: web.Request):
         """Initialize."""
         super().__init__(request)
-        self.authenticated = False
         self.ws_client: Optional[web.WebSocketResponse] = None
 
     @property
@@ -165,35 +146,13 @@ class WebSocketApi(web.View):
                 return
             # process message
             json_msg = msg.json(loads=ujson.loads)
-            # handle auth command
-            if json_msg["type"] == "auth":
-                token_info = jwt.decode(
-                    json_msg["data"], self.mass.web.jwt_key, algorithms=["HS256"]
-                )
-                if self.mass.config.security.is_token_revoked(token_info):
-                    raise AuthenticationError("Token is revoked")
-                self.authenticated = True
-                self.mass.config.security.set_last_login(token_info["client_id"])
-                # TODO: store token/app_id on ws_client obj and periodically check if token is expired or revoked
-                await self._send_json(
-                    msg_type="result",
-                    msg_id=json_msg.get("id"),
-                    data=token_info,
-                )
-            elif not self.authenticated:
-                raise AuthenticationError("Not authenticated")
-            # handle regular command
-            elif json_msg["type"] == "command":
-                await self._handle_command(
-                    json_msg["data"],
-                    msg_id=json_msg.get("id"),
-                )
-        except AuthenticationError as exc:  # pylint:disable=broad-except
-            # disconnect client on auth errors
-            await self._send_json(
-                msg_type="error", msg_id=json_msg.get("id"), data=str(exc)
+            if json_msg["type"] != "command":
+                return
+
+            await self._handle_command(
+                json_msg["data"],
+                msg_id=json_msg.get("id"),
             )
-            await self.ws_client.close(message=str(exc).encode())
         except Exception as exc:  # pylint:disable=broad-except
             # log the error only
             await self._send_json(
@@ -239,8 +198,6 @@ class WebSocketApi(web.View):
 
     async def _handle_mass_event(self, event: str, event_data: Any):
         """Broadcast events to connected client."""
-        if not self.authenticated:
-            return
         try:
             await self._send_json(
                 msg_type="event",
