@@ -3,7 +3,7 @@ import re
 from typing import List
 
 import unidecode
-from music_assistant.models.media_types import Album, Artist, Track
+from music_assistant.music.models import Album, Artist, Track
 
 
 def get_compare_string(input_str):

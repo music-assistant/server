@@ -18,7 +18,7 @@ from music_assistant.helpers.web import (
     async_json_serializer,
     parse_arguments,
 )
-from music_assistant.models.media_types import MediaType
+from music_assistant.music.models import MediaType
 
 LOGGER = logging.getLogger("api")
 
@@ -108,7 +108,7 @@ class WebSocketApi(web.View):
         await self._send_json(msg_type="info", data=self.mass.web.discovery_info)
 
         # add listener for mass events
-        remove_listener = self.mass.eventbus.add_listener(self._handle_mass_event)
+        remove_listener = self.mass.subscribe(self._handle_mass_event)
 
         # handle incoming messages
         try:

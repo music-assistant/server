@@ -1,6 +1,9 @@
 """All constants for Music Assistant."""
 
 __version__ = "0.2.13"
+from enum import Enum
+
+
 REQUIRED_PYTHON_VER = "3.9"
 
 # configuration keys/attributes
@@ -33,25 +36,28 @@ CONF_KEY_METADATA_PROVIDERS = "metadata_providers"
 CONF_KEY_PLUGINS = "plugins"
 CONF_KEY_BASE_INFO = "info"
 
-# events
-EVENT_PLAYER_ADDED = "player added"
-EVENT_PLAYER_REMOVED = "player removed"
-EVENT_PLAYER_CHANGED = "player changed"
-EVENT_STREAM_STARTED = "streaming started"
-EVENT_STREAM_ENDED = "streaming ended"
-EVENT_CONFIG_CHANGED = "config changed"
-EVENT_MUSIC_SYNC_STATUS = "music sync status"
-EVENT_QUEUE_UPDATED = "queue updated"
-EVENT_QUEUE_ITEMS_UPDATED = "queue items updated"
-EVENT_SHUTDOWN = "application shutdown"
-EVENT_PROVIDER_REGISTERED = "provider registered"
-EVENT_PROVIDER_UNREGISTERED = "provider unregistered"
-EVENT_ARTIST_ADDED = "artist added"
-EVENT_ALBUM_ADDED = "album added"
-EVENT_TRACK_ADDED = "track added"
-EVENT_PLAYLIST_ADDED = "playlist added"
-EVENT_RADIO_ADDED = "radio added"
-EVENT_TASK_UPDATED = "task updated"
+
+class EventType(Enum):
+    """Enum with possible Events."""
+
+    PLAYER_ADDED = "player added"
+    PLAYER_REMOVED = "player removed"
+    PLAYER_CHANGED = "player changed"
+    STREAM_STARTED = "streaming started"
+    STREAM_ENDED = "streaming ended"
+    CONFIG_CHANGED = "config changed"
+    MUSIC_SYNC_STATUS = "music sync status"
+    QUEUE_UPDATED = "queue updated"
+    QUEUE_ITEMS_UPDATED = "queue items updated"
+    SHUTDOWN = "application shutdown"
+    ARTIST_ADDED = "artist added"
+    ALBUM_ADDED = "album added"
+    TRACK_ADDED = "track added"
+    PLAYLIST_ADDED = "playlist added"
+    RADIO_ADDED = "radio added"
+    TASK_UPDATED = "task updated"
+    PROVIDER_AVAILABLE = "provider_available"
+
 
 # player attributes
 ATTR_PLAYER_ID = "player_id"

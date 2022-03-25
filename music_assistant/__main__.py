@@ -1,11 +1,24 @@
-"""Start Music Assistant."""
+"""Script to run a full Music Assistant server."""
 import argparse
-from logging.handlers import TimedRotatingFileHandler
+import asyncio
+import logging
 import os
+from logging.handlers import TimedRotatingFileHandler
 
 from aiorun import run
-import logging
-from music_assistant.mass import MusicAssistant
+
+from music_assistant import MusicAssistant
+
+
+def global_exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+    """Global exception handler."""
+    logging.getLogger().debug(
+        "Caught exception: %s", context.get("exception", context["message"])
+    )
+    if "Broken pipe" in str(context.get("exception")):
+        # fix for the spamming subprocess
+        return
+    loop.default_exception_handler(context)
 
 
 def get_arguments():
@@ -26,10 +39,17 @@ def get_arguments():
     )
     parser.add_argument(
         "-p",
-        "--port",
-        metavar="port",
+        "--stream-port",
+        metavar="stream_port",
         default=8095,
-        help="TCP port on which the server should be run.",
+        help="TCP port on which the audio streaming should be run.",
+    )
+    parser.add_argument(
+        "-p",
+        "--web-port",
+        metavar="api_port",
+        default=8096,
+        help="TCP port on which the (HTTP) webserver for the API will be run.",
     )
     parser.add_argument(
         "--debug",
@@ -41,27 +61,31 @@ def get_arguments():
 
 
 def main():
-    """Start MusicAssistant."""
+    """Start MusicAssistant stand-alone as script."""
     # parse arguments
     args = get_arguments()
     data_dir = args.config
     if not os.path.isdir(data_dir):
         os.makedirs(data_dir)
-    # setup logger
-    logger = setup_logger(data_dir)
-    # config debug settings if needed
-    if args.debug or bool(os.environ.get("DEBUG")):
-        debug = True
-    else:
-        debug = False
-    mass = MusicAssistant(data_dir, debug, int(args.port))
+    # setup logger and debug settings
+    debug = args.debug or bool(os.environ.get("DEBUG"))
+    logger = setup_logger(data_dir, debug)
+    db_file = os.path.join(data_dir, "music_assistant.db")
+    mass = MusicAssistant(f"sqlite:///{db_file}", int(args.stream_port))
+
+    async def async_main():
+        """Async main routine."""
+        loop = asyncio.get_event_loop()
+        loop.set_exception_handler(global_exception_handler)
+        loop.set_debug(debug)
+        await mass.setup()
 
     def on_shutdown(loop):
         logger.info("shutdown requested!")
         loop.run_until_complete(mass.stop())
 
     run(
-        mass.start(),
+        async_main(),
         use_uvloop=True,
         shutdown_callback=on_shutdown,
         executor_workers=64,
@@ -72,7 +96,7 @@ if __name__ == "__main__":
     main()
 
 
-def setup_logger(data_path):
+def setup_logger(data_path: str, debug: bool):
     """Initialize logger."""
     logs_dir = os.path.join(data_path, "logs")
     if not os.path.isdir(logs_dir):
@@ -93,8 +117,10 @@ def setup_logger(data_path):
     file_handler.setFormatter(log_formatter)
     logger.addHandler(file_handler)
 
-    # global level is debug
-    logger.setLevel(logging.DEBUG)
+    if debug:
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
 
     # silence some loggers
     logging.getLogger("asyncio").setLevel(logging.WARNING)

@@ -1,0 +1,54 @@
+"""All logic for metadata retrieval."""
+
+import logging
+from typing import Dict, List
+from music_assistant.helpers.cache import cached
+
+from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.util import merge_dict
+from music_assistant.metadata.providers.fanarttv import FanartTvProvider
+from music_assistant.metadata.models import MetadataProvider
+
+LOGGER = logging.getLogger("metadata")
+
+
+class MetaDataController:
+    """Several helpers to search and store metadata for mediaitems using metadata providers."""
+
+    # TODO: create periodic task to search for missing metadata
+    def __init__(self, mass: MusicAssistant) -> None:
+        """Initialize class."""
+        self.mass = mass
+        self.cache = mass.cache
+        self._providers: List[MetadataProvider] = [FanartTvProvider(mass)]
+
+    @property
+    def providers(self) -> List[MetadataProvider]:
+        """Return all providers of type MetadataProvider."""
+        return self._providers
+
+    async def get_artist_metadata(self, mb_artist_id: str, cur_metadata: Dict) -> Dict:
+        """Get/update rich metadata for an artist by providing the musicbrainz artist id."""
+        metadata = cur_metadata
+        for provider in self.providers:
+            if "fanart" in metadata:
+                # no need to query (other) metadata providers if we already have a result
+                break
+            LOGGER.info(
+                "Fetching metadata for MusicBrainz Artist %s on provider %s",
+                mb_artist_id,
+                provider.name,
+            )
+            cache_key = f"{provider.id}.artist_metadata.{mb_artist_id}"
+            res = await cached(
+                self.cache, cache_key, provider.get_artist_images, mb_artist_id
+            )
+            if res:
+                metadata = merge_dict(metadata, res)
+                LOGGER.debug(
+                    "Found metadata for MusicBrainz Artist %s on provider %s: %s",
+                    mb_artist_id,
+                    provider.name,
+                    ", ".join(res.keys()),
+                )
+        return metadata

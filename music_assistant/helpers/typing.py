@@ -1,18 +1,21 @@
 """Typing helper."""
 
-from typing import TYPE_CHECKING, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Optional, Set, Tuple
+
+from music_assistant.constants import EventType
 
 # pylint: disable=invalid-name
 if TYPE_CHECKING:
-    from music_assistant.mass import MusicAssistant
-    from music_assistant.models.player_queue import (
-        QueueItem,
+    from music_assistant import MusicAssistant
+    from music_assistant.config.models import ConfigSubItem
+    from music_assistant.music.models import MediaType
+    from music_assistant.player_queue.models import (
         PlayerQueue,
+        QueueItem,
+        StreamDetails,
+        StreamType,
     )
-    from music_assistant.models.streamdetails import StreamDetails, StreamType
-    from music_assistant.models.player import Player
-    from music_assistant.managers.config import ConfigSubItem
-    from music_assistant.models.media_types import MediaType
+    from music_assistant.players.models import Player
 
 else:
     MusicAssistant = "MusicAssistant"
@@ -30,3 +33,7 @@ Players = Set[Player]
 
 OptionalInt = Optional[int]
 OptionalStr = Optional[str]
+
+EventDetails = Any | None
+EventCallBackType = Callable[[EventType, EventDetails], None]
+EventSubscriptionType = Tuple[EventCallBackType, "Optional[Tuple[EventType]]"]

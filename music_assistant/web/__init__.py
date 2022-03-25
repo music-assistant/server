@@ -21,7 +21,7 @@ from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_hostname, get_ip
 from music_assistant.helpers.web import APIRoute, create_api_route
 
-from .json_rpc import json_rpc_endpoint
+from ..players.providers.squeezebox.json_rpc import json_rpc_endpoint
 from .stream import routes as stream_routes
 
 LOGGER = logging.getLogger("webserver")

@@ -9,8 +9,8 @@ from typing import List, Optional, Tuple
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistant, QueueItem
 from music_assistant.helpers.util import create_tempfile
-from music_assistant.models.media_types import MediaType
-from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
+from music_assistant.music.models import MediaType
+from music_assistant.player_queue.models import ContentType, StreamDetails, StreamType
 
 LOGGER = logging.getLogger("audio")
 

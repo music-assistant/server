@@ -28,7 +28,7 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
-from music_assistant.models.player_queue import PlayerQueue
+from music_assistant.controllers.player_queue import PlayerQueue
 from music_assistant.models.streamdetails import ContentType, StreamDetails
 
 routes = RouteTableDef()
@@ -196,7 +196,7 @@ async def get_media_stream(
 ) -> AsyncGenerator[Tuple[bool, bytes], None]:
     """Get the audio stream for the given streamdetails."""
 
-    mass.eventbus.signal(EVENT_STREAM_STARTED, streamdetails)
+    mass.signal_event(EVENT_STREAM_STARTED, streamdetails)
     args = get_sox_args(streamdetails, output_format, resample)
     async with AsyncProcess(args) as sox_proc:
 
@@ -234,7 +234,7 @@ async def get_media_stream(
                 streamdetails.item_id, streamdetails.provider
             )
         finally:
-            mass.eventbus.signal(EVENT_STREAM_ENDED, streamdetails)
+            mass.signal_event(EVENT_STREAM_ENDED, streamdetails)
             # send analyze job to background worker
             if streamdetails.loudness is None:
                 uri = f"{streamdetails.provider}://{streamdetails.media_type.value}/{streamdetails.item_id}"

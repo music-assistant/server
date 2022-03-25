@@ -4,7 +4,7 @@ pychromecast==10.3.0
 aiohttp[speedups]==3.8.1
 asyncio-throttle==1.0.2
 aiofiles==0.8.0
-aiosqlite==0.17.0
+databases[aiosqlite]==0.5.5
 pytaglib==1.5.0
 python-slugify==6.1.1
 memory-tempfile==2.2.3
