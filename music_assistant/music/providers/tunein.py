@@ -11,7 +11,7 @@ from music_assistant.music.models import (
     MusicProvider,
     Radio,
     SearchResult,
-    TrackQuality,
+    MediaQuality,
 )
 from music_assistant.player_queue.models import ContentType, StreamDetails, StreamType
 
@@ -104,12 +104,12 @@ class TuneInProvider(MusicProvider):
         stream_info = await self._get_stream_urls(radio.item_id)
         for stream in stream_info["body"]:
             if stream["media_type"] == "aac":
-                quality = TrackQuality.LOSSY_AAC
+                quality = MediaQuality.LOSSY_AAC
             elif stream["media_type"] == "ogg":
-                quality = TrackQuality.LOSSY_OGG
+                quality = MediaQuality.LOSSY_OGG
             else:
-                quality = TrackQuality.LOSSY_MP3
-            radio.provider_ids.add(
+                quality = MediaQuality.LOSSY_MP3
+            radio.provider_ids.append(
                 MediaItemProviderId(
                     provider=self.id,
                     item_id="%s--%s" % (details["preset_id"], stream["media_type"]),

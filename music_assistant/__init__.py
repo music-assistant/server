@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import  Callable, Tuple
+from typing import Callable, Tuple
 
 import aiohttp
 from databases import DatabaseURL
@@ -65,6 +65,7 @@ class MusicAssistant:
         await self.config.setup()
         await self.cache.setup()
         await self.music.setup()
+        await self.metadata.setup()
         await self.players.setup()
 
     async def stop(self) -> None:

@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Union
 import memory_tempfile
 import ujson
 
-from .typing import MediaType
+
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -280,7 +280,7 @@ def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
     return final_dict
 
 
-def merge_list(base_list: list, new_list: list) -> Set:
+def merge_list(base_list: list, new_list: list) -> List:
     """Merge 2 lists."""
     final_list = set(base_list)
     for item in new_list:
@@ -290,7 +290,7 @@ def merge_list(base_list: list, new_list: list) -> Set:
                     prov_item = item
         if item not in final_list:
             final_list.add(item)
-    return final_list
+    return list(final_list)
 
 
 def try_load_json_file(jsonfile):
@@ -322,7 +322,7 @@ async def yield_chunks(_obj, chunk_size):
 
 
 def get_changed_keys(
-    dict1: Dict[str, Any], dict2: Dict[str, Any], ignore_keys: Optional[Set[str]] = None
+    dict1: Dict[str, Any], dict2: Dict[str, Any], ignore_keys: Optional[List[str]] = None
 ) -> Set[str]:
     """Compare 2 dicts and return set of changed keys."""
     if not dict2:
@@ -336,11 +336,6 @@ def get_changed_keys(
         elif dict1[key] != value:
             changed_keys.add(key)
     return changed_keys
-
-
-def create_uri(media_type: MediaType, provider: str, item_id: str):
-    """Create uri for mediaitem."""
-    return f"{provider}://{media_type.value}/{item_id}"
 
 
 class LimitedList(list):

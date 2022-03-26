@@ -8,35 +8,14 @@ from music_assistant.music.models import MediaType
 from PIL import Image
 
 
-async def get_thumb_file(mass: MusicAssistant, url, size: int = 150):
-    """Get path to (resized) thumbnail image for given image url."""
-    assert url
-    cache_folder = os.path.join(mass.config.data_path, ".thumbs")
-    cache_id = await mass.database.get_thumbnail_id(url, size)
-    cache_file = os.path.join(cache_folder, f"{cache_id}.png")
-    if os.path.isfile(cache_file):
-        # return file from cache
-        return cache_file
-    # no file in cache so we should get it
-    os.makedirs(cache_folder, exist_ok=True)
-    # download base image
+async def create_thumbnail(mass: MusicAssistant, url, size: int = 150) -> bytes:
     async with mass.http_session.get(url, verify_ssl=False) as response:
         assert response.status == 200
         img_data = BytesIO(await response.read())
-
-    # save resized image
-    if size:
-        basewidth = size
         img = Image.open(img_data)
-        wpercent = basewidth / float(img.size[0])
-        hsize = int((float(img.size[1]) * float(wpercent)))
-        img = img.resize((basewidth, hsize), Image.ANTIALIAS)
-        img.save(cache_file, format="png")
-    else:
-        with open(cache_file, "wb") as _file:
-            _file.write(img_data.getvalue())
-    # return file from cache
-    return cache_file
+        img.thumbnail((size, size), Image.ANTIALIAS)
+        img.save(format="png")
+        return img_data.getvalue()
 
 
 async def get_image_url(

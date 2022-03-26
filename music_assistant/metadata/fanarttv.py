@@ -8,18 +8,19 @@ from asyncio_throttle import Throttler
 
 from music_assistant.config.models import ConfigEntry
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.metadata.models import MetadataProvider
+
 
 # TODO: add support for personal api keys ?
 # TODO: Add support for album artwork ?
 
 
-class FanartTvProvider(MetadataProvider):
+class FanartTv:
     """Fanart.tv metadata provider."""
 
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
-        super().__init__(mass, "fanarttv", "Fanart.tv")
+        self.mass = mass
+        self.logger = mass.metadata.logger
         self.throttler = Throttler(rate_limit=1, period=2)
 
     @property

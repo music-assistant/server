@@ -1,54 +1,69 @@
 """All logic for metadata retrieval."""
 
-import logging
-from typing import Dict, List
 from music_assistant.helpers.cache import cached
-
+from music_assistant.helpers.images import create_thumbnail
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import merge_dict
-from music_assistant.metadata.providers.fanarttv import FanartTvProvider
-from music_assistant.metadata.models import MetadataProvider
+from music_assistant.metadata.fanarttv import FanartTv
+from music_assistant.metadata.musicbrainz import MusicBrainz
 
-LOGGER = logging.getLogger("metadata")
+# TODO: add more metadata providers such as theaudiodb
+# TODO: add metadata support for albums and other media types
+
+TABLE_THUMBS = "thumbnails"
 
 
 class MetaDataController:
-    """Several helpers to search and store metadata for mediaitems using metadata providers."""
+    """Several helpers to search and store metadata for mediaitems."""
 
     # TODO: create periodic task to search for missing metadata
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
-        self._providers: List[MetadataProvider] = [FanartTvProvider(mass)]
+        self.logger = mass.logger.getChild("metadata")
+        self.fanarttv = FanartTv(mass)
+        self.musicbrainz = MusicBrainz(mass)
 
-    @property
-    def providers(self) -> List[MetadataProvider]:
-        """Return all providers of type MetadataProvider."""
-        return self._providers
+    async def setup(self):
+        """Async initialize of module."""
+        await self.mass.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_THUMBS}(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                size INTEGER,
+                img BLOB,
+                UNIQUE(url, size));"""
+        )
 
-    async def get_artist_metadata(self, mb_artist_id: str, cur_metadata: Dict) -> Dict:
+    async def get_artist_metadata(self, mb_artist_id: str, cur_metadata: dict) -> dict:
         """Get/update rich metadata for an artist by providing the musicbrainz artist id."""
         metadata = cur_metadata
-        for provider in self.providers:
-            if "fanart" in metadata:
-                # no need to query (other) metadata providers if we already have a result
-                break
-            LOGGER.info(
-                "Fetching metadata for MusicBrainz Artist %s on provider %s",
+        if "fanart" in metadata:
+            # no need to query (other) metadata providers if we already have a result
+            return metadata
+        self.logger.info(
+            "Fetching metadata for MusicBrainz Artist %s on Fanrt.tv", mb_artist_id
+        )
+        cache_key = f"fanarttv.artist_metadata.{mb_artist_id}"
+        res = await cached(
+            self.cache, cache_key, self.fanarttv.get_artist_images, mb_artist_id
+        )
+        if res:
+            metadata = merge_dict(metadata, res)
+            self.logger.debug(
+                "Found metadata for MusicBrainz Artist %s on Fanart.tv: %s",
                 mb_artist_id,
-                provider.name,
+                ", ".join(res.keys()),
             )
-            cache_key = f"{provider.id}.artist_metadata.{mb_artist_id}"
-            res = await cached(
-                self.cache, cache_key, provider.get_artist_images, mb_artist_id
-            )
-            if res:
-                metadata = merge_dict(metadata, res)
-                LOGGER.debug(
-                    "Found metadata for MusicBrainz Artist %s on provider %s: %s",
-                    mb_artist_id,
-                    provider.name,
-                    ", ".join(res.keys()),
-                )
         return metadata
+
+    async def get_thumbnail(self, url, size) -> bytes:
+        """Get/create thumbnail image for url."""
+        match = {"url": url, "size": size}
+        if result := await self.mass.database.get_row(TABLE_THUMBS, match):
+            return result["img"]
+        # create thumbnail if it doesn't exist
+        thumbnail = await create_thumbnail(self.mass, url, size)
+        await self.mass.database.insert_or_replace(TABLE_THUMBS, {**match, "img": thumbnail})
+        return thumbnail

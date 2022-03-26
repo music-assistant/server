@@ -12,18 +12,18 @@ from music_assistant.helpers.app_vars import get_app_var  # noqa # pylint: disab
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.music.models import (
-    Album,
-    AlbumType,
-    Artist,
     MediaItemProviderId,
     MediaType,
     MusicProvider,
     Playlist,
     Radio,
     SearchResult,
-    Track,
-    TrackQuality,
+    MediaQuality,
 )
+from music_assistant.music.albums import AlbumType, Album
+from music_assistant.music.artists import Artist
+from music_assistant.music.tracks import Track
+
 from music_assistant.player_queue.models import ContentType, StreamDetails, StreamType
 
 CONF_USERNAME = "qobuz_username"
@@ -422,7 +422,7 @@ class QobuzProvider(MusicProvider):
         artist = Artist(
             item_id=str(artist_obj["id"]), provider=self.id, name=artist_obj["name"]
         )
-        artist.provider_ids.add(
+        artist.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=str(artist_obj["id"]))
         )
         artist.metadata["image"] = self.__get_image(artist_obj)
@@ -439,18 +439,18 @@ class QobuzProvider(MusicProvider):
             return await self.get_album(album_obj["id"])
         album = Album(item_id=str(album_obj["id"]), provider=self.id)
         if album_obj["maximum_sampling_rate"] > 192:
-            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_4
+            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
         elif album_obj["maximum_sampling_rate"] > 96:
-            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_3
+            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_3
         elif album_obj["maximum_sampling_rate"] > 48:
-            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_2
+            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_2
         elif album_obj["maximum_bit_depth"] > 16:
-            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_1
+            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_1
         elif album_obj.get("format_id", 0) == 5:
-            quality = TrackQuality.LOSSY_AAC
+            quality = MediaQuality.LOSSY_AAC
         else:
-            quality = TrackQuality.FLAC_LOSSLESS
-        album.provider_ids.add(
+            quality = MediaQuality.FLAC_LOSSLESS
+        album.provider_ids.append(
             MediaItemProviderId(
                 provider=self.id,
                 item_id=str(album_obj["id"]),
@@ -516,7 +516,7 @@ class QobuzProvider(MusicProvider):
         if track_obj.get("performer") and "Various " not in track_obj["performer"]:
             artist = await self._parse_artist(track_obj["performer"])
             if artist:
-                track.artists.add(artist)
+                track.artists.append(artist)
         if not track.artists:
             # try to grab artist from album
             if (
@@ -526,7 +526,7 @@ class QobuzProvider(MusicProvider):
             ):
                 artist = await self._parse_artist(track_obj["album"]["artist"])
                 if artist:
-                    track.artists.add(artist)
+                    track.artists.append(artist)
         if not track.artists:
             # last resort: parse from performers string
             for performer_str in track_obj["performers"].split(" - "):
@@ -536,7 +536,7 @@ class QobuzProvider(MusicProvider):
                     artist = Artist()
                     artist.name = name
                     artist.item_id = name
-                track.artists.add(artist)
+                track.artists.append(artist)
         # TODO: fix grabbing composer from details
         track.name, track.version = parse_title_and_version(
             track_obj["title"], track_obj.get("version")
@@ -564,18 +564,18 @@ class QobuzProvider(MusicProvider):
         track.metadata["image"] = self.__get_image(track_obj)
         # get track quality
         if track_obj["maximum_sampling_rate"] > 192:
-            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_4
+            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
         elif track_obj["maximum_sampling_rate"] > 96:
-            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_3
+            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_3
         elif track_obj["maximum_sampling_rate"] > 48:
-            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_2
+            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_2
         elif track_obj["maximum_bit_depth"] > 16:
-            quality = TrackQuality.FLAC_LOSSLESS_HI_RES_1
+            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_1
         elif track_obj.get("format_id", 0) == 5:
-            quality = TrackQuality.LOSSY_AAC
+            quality = MediaQuality.LOSSY_AAC
         else:
-            quality = TrackQuality.FLAC_LOSSLESS
-        track.provider_ids.add(
+            quality = MediaQuality.FLAC_LOSSLESS
+        track.provider_ids.append(
             MediaItemProviderId(
                 provider=self.id,
                 item_id=str(track_obj["id"]),
@@ -594,7 +594,7 @@ class QobuzProvider(MusicProvider):
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["name"],
         )
-        playlist.provider_ids.add(
+        playlist.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=str(playlist_obj["id"]))
         )
         playlist.is_editable = (

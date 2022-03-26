@@ -5,23 +5,23 @@ import re
 from typing import List, Optional
 
 import taglib
+
+from music_assistant.config.models import ConfigEntry, ConfigEntryType
+from music_assistant.helpers.errors import InvalidDataError
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import parse_title_and_version
-from music_assistant.config.models import ConfigEntry, ConfigEntryType
 from music_assistant.music.models import (
     Album,
     Artist,
     MediaItemProviderId,
+    MediaQuality,
     MediaType,
+    MusicProvider,
     Playlist,
     SearchResult,
     Track,
-    TrackQuality,
-    MusicProvider,
 )
-
 from music_assistant.player_queue.models import ContentType, StreamDetails, StreamType
-
 
 CONF_MUSIC_DIR = "music_dir"
 CONF_PLAYLISTS_DIR = "playlists_dir"
@@ -158,7 +158,7 @@ class FileProvider(MusicProvider):
             return None
         name = itempath.split(os.sep)[-1]
         artist = Artist(item_id=prov_artist_id, provider=self.id, name=name)
-        artist.provider_ids.add(
+        artist.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=artist.item_id)
         )
         return artist
@@ -179,8 +179,8 @@ class FileProvider(MusicProvider):
         album.name, album.version = parse_title_and_version(name)
         album.artist = await self.get_artist(artistpath)
         if not album.artist:
-            raise Exception("No album artist ! %s" % artistpath)
-        album.provider_ids.add(
+            raise InvalidDataError("No album artist ! %s" % artistpath)
+        album.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=prov_album_id)
         )
         return album
@@ -211,7 +211,7 @@ class FileProvider(MusicProvider):
         playlist = Playlist(prov_playlist_id, provider=self.id)
         playlist.name = itempath.split(os.sep)[-1].replace(".m3u", "")
         playlist.is_editable = True
-        playlist.provider_ids.add(
+        playlist.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=prov_playlist_id)
         )
         playlist.owner = "disk"
@@ -320,7 +320,7 @@ class FileProvider(MusicProvider):
         albumpath = filename.rsplit(os.sep, 1)[0]
         track.album = await self.get_album(albumpath)
         if "ARTIST" in song.tags:
-            artists = set()
+            artists = []
             for artist_str in song.tags["ARTIST"]:
                 local_artist_path = os.path.join(self._music_dir, artist_str)
                 if os.path.isfile(local_artist_path):
@@ -330,7 +330,7 @@ class FileProvider(MusicProvider):
                     artist = Artist(
                         item_id=fake_artistpath, provider=self.id, name=artist_str
                     )
-                    artist.provider_ids.add(
+                    artist.provider_ids.append(
                         MediaItemProviderId(
                             provider=self.id,
                             item_id=base64.b64encode(
@@ -338,12 +338,12 @@ class FileProvider(MusicProvider):
                             ).decode("utf-8"),
                         )
                     )
-                artists.add(artist)
+                artists.append(artist)
             track.artists = artists
         else:
             artistpath = filename.rsplit(os.sep, 2)[0]
             artist = await self.get_artist(artistpath)
-            track.artists.add(artist)
+            track.artists.append(artist)
         if "GENRE" in song.tags:
             track.metadata["genres"] = song.tags["GENRE"]
         if "ISRC" in song.tags and song.tags["ISRC"]:
@@ -357,24 +357,24 @@ class FileProvider(MusicProvider):
         quality_details = ""
         if filename.endswith(".flac"):
             # TODO: get bit depth
-            quality = TrackQuality.FLAC_LOSSLESS
+            quality = MediaQuality.FLAC_LOSSLESS
             if song.sampleRate > 192000:
-                quality = TrackQuality.FLAC_LOSSLESS_HI_RES_4
+                quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
             elif song.sampleRate > 96000:
-                quality = TrackQuality.FLAC_LOSSLESS_HI_RES_3
+                quality = MediaQuality.FLAC_LOSSLESS_HI_RES_3
             elif song.sampleRate > 48000:
-                quality = TrackQuality.FLAC_LOSSLESS_HI_RES_2
+                quality = MediaQuality.FLAC_LOSSLESS_HI_RES_2
             quality_details = "%s Khz" % (song.sampleRate / 1000)
         elif filename.endswith(".ogg"):
-            quality = TrackQuality.LOSSY_OGG
+            quality = MediaQuality.LOSSY_OGG
             quality_details = "%s kbps" % (song.bitrate)
         elif filename.endswith(".m4a"):
-            quality = TrackQuality.LOSSY_AAC
+            quality = MediaQuality.LOSSY_AAC
             quality_details = "%s kbps" % (song.bitrate)
         else:
-            quality = TrackQuality.LOSSY_MP3
+            quality = MediaQuality.LOSSY_MP3
             quality_details = "%s kbps" % (song.bitrate)
-        track.provider_ids.add(
+        track.provider_ids.append(
             MediaItemProviderId(
                 provider=self.id,
                 item_id=prov_item_id,
@@ -389,10 +389,8 @@ class FileProvider(MusicProvider):
         # pylint: disable=broad-except
         if "://" in uri:
             # track is uri from external provider?
-            self.id = uri.split("://")[0]
-            prov_item_id = uri.split("/")[-1].split(".")[0].split(":")[-1]
             try:
-                return await self.mass.music.get_track(prov_item_id, self.id)
+                return await self.mass.music.get_item_by_uri(uri)
             except Exception as exc:
                 self.logger.warning(
                     "Could not parse uri %s to track: %s", uri, str(exc)

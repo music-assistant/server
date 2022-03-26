@@ -24,7 +24,7 @@ from music_assistant.music.models import (
     Radio,
     SearchResult,
     Track,
-    TrackQuality,
+    MediaQuality,
 )
 from music_assistant.player_queue.models import ContentType, StreamDetails, StreamType
 
@@ -299,7 +299,7 @@ class SpotifyProvider(MusicProvider):
         artist = Artist(
             item_id=artist_obj["id"], provider=self.id, name=artist_obj["name"]
         )
-        artist.provider_ids.add(
+        artist.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=artist_obj["id"])
         )
         if "genres" in artist_obj:
@@ -344,11 +344,11 @@ class SpotifyProvider(MusicProvider):
             album.metadata["spotify_url"] = album_obj["external_urls"]["spotify"]
         if album_obj.get("explicit"):
             album.metadata["explicit"] = str(album_obj["explicit"]).lower()
-        album.provider_ids.add(
+        album.provider_ids.append(
             MediaItemProviderId(
                 provider=self.id,
                 item_id=album_obj["id"],
-                quality=TrackQuality.LOSSY_OGG,
+                quality=MediaQuality.LOSSY_OGG,
             )
         )
         return album
@@ -363,11 +363,11 @@ class SpotifyProvider(MusicProvider):
             track_number=track_obj["track_number"],
         )
         if artist:
-            track.artists.add(artist)
+            track.artists.append(artist)
         for track_artist in track_obj.get("artists", []):
             artist = await self._parse_artist(track_artist)
             if artist and artist.item_id not in {x.item_id for x in track.artists}:
-                track.artists.add(artist)
+                track.artists.append(artist)
         track.name, track.version = parse_title_and_version(track_obj["name"])
         track.metadata["explicit"] = str(track_obj["explicit"]).lower()
         if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
@@ -382,11 +382,11 @@ class SpotifyProvider(MusicProvider):
             track.metadata["explicit"] = True
         if track_obj.get("external_urls"):
             track.metadata["spotify_url"] = track_obj["external_urls"]["spotify"]
-        track.provider_ids.add(
+        track.provider_ids.append(
             MediaItemProviderId(
                 provider=self.id,
                 item_id=track_obj["id"],
-                quality=TrackQuality.LOSSY_OGG,
+                quality=MediaQuality.LOSSY_OGG,
                 available=not track_obj["is_local"] and track_obj["is_playable"],
             )
         )
@@ -395,7 +395,7 @@ class SpotifyProvider(MusicProvider):
     async def _parse_playlist(self, playlist_obj):
         """Parse spotify playlist object to generic layout."""
         playlist = Playlist(item_id=playlist_obj["id"], provider=self.id)
-        playlist.provider_ids.add(
+        playlist.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=playlist_obj["id"])
         )
         playlist.name = playlist_obj["name"]
