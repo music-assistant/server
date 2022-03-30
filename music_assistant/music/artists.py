@@ -11,6 +11,7 @@ from music_assistant.helpers.compare import (
     compare_track,
 )
 from music_assistant.helpers.util import merge_dict, merge_list
+from music_assistant.helpers.web import json_serializer
 from music_assistant.music.models import (
     Album,
     AlbumType,
@@ -18,17 +19,17 @@ from music_assistant.music.models import (
     ItemMapping,
     MediaControllerBase,
     MediaType,
-    MusicProvider,
     Track,
 )
+from music_assistant.music_providers import MusicProvider
 
 
-class ArtistsController(MediaControllerBase):
+class ArtistsController(MediaControllerBase[Artist]):
     """Controller managing MediaItems of type Artist."""
 
     db_table = "artists"
     media_type = MediaType.ARTIST
-    model = Artist
+    item_cls = Artist
 
     async def setup(self):
         """Async initialize of module."""
@@ -54,7 +55,7 @@ class ArtistsController(MediaControllerBase):
             set(
                 await asyncio.gather(
                     *[
-                        self.mass.music.tracks.get_track(track.item_id, track.provider)
+                        self.mass.music.tracks.get(track.item_id, track.provider)
                         for prov_tracks in await asyncio.gather(
                             *[
                                 self.get_provider_artist_toptracks(
@@ -123,7 +124,7 @@ class ArtistsController(MediaControllerBase):
                 continue
             if MediaType.ARTIST not in provider.supported_mediatypes:
                 continue
-            if not await self._match_prov_artist(db_artist, provider):
+            if not await self._match(db_artist, provider):
                 self.logger.debug(
                     "Could not find match for Artist %s on provider %s",
                     db_artist.name,
@@ -169,13 +170,7 @@ class ArtistsController(MediaControllerBase):
         # insert artist
         new_item = await self.mass.database.insert_or_replace(
             self.db_table,
-            {
-                "name": artist.name,
-                "sort_name": artist.sort_name,
-                "musicbrainz_id": artist.musicbrainz_id,
-                "metadata": artist.metadata,
-                "provider_ids": artist.provider_ids,
-            },
+            artist.to_db_row()
         )
         item_id = new_item["item_id"]
         # store provider mappings
@@ -197,8 +192,8 @@ class ArtistsController(MediaControllerBase):
             match,
             {
                 "musicbrainz_id": artist.musicbrainz_id or cur_item.musicbrainz_id,
-                "metadata": metadata,
-                "provider_ids": provider_ids,
+                "metadata": json_serializer(metadata),
+                "provider_ids": json_serializer(provider_ids),
             },
         )
         await self.mass.music.add_provider_mappings(
@@ -207,7 +202,7 @@ class ArtistsController(MediaControllerBase):
         self.logger.debug("updated %s in database: %s", artist.name, item_id)
         return await self.get_db_item(item_id)
 
-    async def get_artist_musicbrainz_id(self, artist: Artist):
+    async def get_artist_musicbrainz_id(self, artist: Artist) -> str:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         # try with album first
         for lookup_album in await self.get_provider_artist_albums(
@@ -241,18 +236,16 @@ class ArtistsController(MediaControllerBase):
         self.logger.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
         return artist.name
 
-    async def _match_prov_artist(self, db_artist: Artist, provider: MusicProvider):
+    async def _match(self, db_artist: Artist, provider: MusicProvider):
         """Try to find matching artists on given provider for the provided (database) artist."""
         self.logger.debug(
             "Trying to match artist %s on provider %s", db_artist.name, provider.name
         )
         # try to get a match with some reference tracks of this artist
-        for ref_track in await self.toptracks(
-            db_artist.item_id, db_artist.provider
-        ):
+        for ref_track in await self.toptracks(db_artist.item_id, db_artist.provider):
             # make sure we have a full track
             if isinstance(ref_track.album, ItemMapping):
-                ref_track = await self.mass.music.tracks.get_track(
+                ref_track = await self.mass.music.tracks.get(
                     ref_track.item_id, ref_track.provider
                 )
             searchstr = f"{db_artist.name} {ref_track.name}"
@@ -267,14 +260,12 @@ class ArtistsController(MediaControllerBase):
                             prov_artist = await self.get_provider_item(
                                 search_item_artist.item_id, search_item_artist.provider
                             )
-                            await self.mass.database.update_artist(
+                            await self.update_db_artist(
                                 db_artist.item_id, prov_artist
                             )
-                            return True
+                            return
         # try to get a match with some reference albums of this artist
-        artist_albums = await self.albums(
-            db_artist.item_id, db_artist.provider
-        )
+        artist_albums = await self.albums(db_artist.item_id, db_artist.provider)
         for ref_album in artist_albums:
             if ref_album.album_type == AlbumType.COMPILATION:
                 continue
@@ -291,8 +282,8 @@ class ArtistsController(MediaControllerBase):
                         search_result_item.artist.item_id,
                         search_result_item.artist.provider,
                     )
-                    await self.mass.database.update_artist(
+                    await self.update_db_artist(
                         db_artist.item_id, prov_artist
                     )
-                    return True
-        return False
+                    return
+        return

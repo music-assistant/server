@@ -15,7 +15,6 @@ import memory_tempfile
 import ujson
 
 
-
 # pylint: disable=invalid-name
 T = TypeVar("T")
 _UNDEF: dict = {}
@@ -322,7 +321,9 @@ async def yield_chunks(_obj, chunk_size):
 
 
 def get_changed_keys(
-    dict1: Dict[str, Any], dict2: Dict[str, Any], ignore_keys: Optional[List[str]] = None
+    dict1: Dict[str, Any],
+    dict2: Dict[str, Any],
+    ignore_keys: Optional[List[str]] = None,
 ) -> Set[str]:
     """Compare 2 dicts and return set of changed keys."""
     if not dict2:

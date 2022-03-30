@@ -59,6 +59,8 @@ def compare_albums(left_albums: List["Album"], right_albums: List["Album"]):
 
 def compare_album(left_album: "Album", right_album: "Album"):
     """Compare two album items and return True if they match."""
+    if left_album is None or right_album is None:
+        return False
     # do not match on year and albumtype as this info is often inaccurate on providers
     if (
         left_album.provider == right_album.provider
@@ -98,11 +100,9 @@ def compare_track(left_track: "Track", right_track: "Track"):
     if not compare_artists(left_track.artists, right_track.artists):
         return False
     # album match OR near exact duration match
-    left_albums = left_track.albums or [left_track.album]
-    right_albums = right_track.albums or [right_track.album]
     if (
-        compare_albums(left_albums, right_albums)
-        and abs(left_track.duration - right_track.duration) < 3
+        compare_album(left_track.album, right_track.album)
+        and abs(left_track.duration - right_track.duration) < 5
     ) or abs(left_track.duration - right_track.duration) < 1:
         # 100% match, all criteria passed
         return True

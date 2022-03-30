@@ -5,17 +5,14 @@ from enum import Enum
 from typing import Dict, List, Optional
 
 from music_assistant.helpers.typing import MusicAssistant, Players
-from music_assistant.config.models import ConfigEntry
 from music_assistant.music.models import (
     Album,
     Artist,
     MediaType,
     Playlist,
     Radio,
-    SearchResult,
     Track,
-)
-from music_assistant.models.streamdetails import StreamDetails
+
 
 
 class ProviderType(Enum):
@@ -69,24 +66,4 @@ class Provider:
     async def on_stop(self) -> None:
         """Handle correct close/cleanup of the provider on exit. Called on shutdown/reload."""
 
-
-
-
-class PlayerProvider(Provider):
-    """
-    Base class for a Playerprovider.
-
-    Should be overridden/subclassed by provider specific implementation.
-    """
-
-    @property
-    def type(self) -> ProviderType:
-        """Return ProviderType."""
-        return ProviderType.PLAYER_PROVIDER
-
-    @property
-    def players(self) -> Players:
-        """Return all players belonging to this provider."""
-        # pylint: disable=no-member
-        return [player for player in self.mass.players if player.provider_id == self.id]
 

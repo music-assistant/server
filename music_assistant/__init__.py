@@ -10,16 +10,15 @@ from databases import DatabaseURL
 from zeroconf import InterfaceChoice, Zeroconf
 from music_assistant.helpers.typing import EventCallBackType, EventDetails
 
-import music_assistant.helpers.util as util
-from music_assistant.config import ConfigManager
+from music_assistant.helpers import util
 from music_assistant.constants import EventType
-from music_assistant.database import DatabaseController
+from music_assistant.helpers.database import Database
 from music_assistant.helpers.cache import Cache
 from music_assistant.helpers.util import callback, create_task
 from music_assistant.metadata import MetaDataController
 from music_assistant.music import MusicController
 from music_assistant.players import PlayerController
-from music_assistant.tasks import TaskManager
+from music_assistant.helpers.tasks import TaskManager
 
 
 class MusicAssistant:
@@ -36,14 +35,13 @@ class MusicAssistant:
         self.loop: asyncio.AbstractEventLoop = None
         self.http_session: aiohttp.ClientSession = None
         self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
-        self.logger = logging.getLogger(__file__)
+        self.logger = logging.getLogger(__name__)
 
         self._listeners = []
 
         # init core controllers
-        self.config = ConfigManager(self)
         self.tasks = TaskManager(self)
-        self.database = DatabaseController(self, db_url)
+        self.database = Database(self, db_url)
         self.cache = Cache(self)
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
@@ -62,7 +60,6 @@ class MusicAssistant:
         # run migrations if needed
         await self.database.setup()
         await self.tasks.setup()
-        await self.config.setup()
         await self.cache.setup()
         await self.music.setup()
         await self.metadata.setup()
@@ -77,7 +74,7 @@ class MusicAssistant:
 
     @callback
     def signal_event(
-        self, event_msg: EventType, event_details: EventDetails = None
+        self, event_type: EventType, event_details: EventDetails = None
     ) -> None:
         """
         Signal (systemwide) event.
@@ -85,11 +82,9 @@ class MusicAssistant:
             :param event_msg: the eventmessage to signal
             :param event_details: optional details to send with the event.
         """
-        if self.loop.get_debug():
-            self.logger.debug("%s: %s", event_msg, str(event_details))
         for cb_func, event_filter in self._listeners:
-            if not event_filter or event_msg in event_filter:
-                create_task(cb_func, event_msg, event_details)
+            if not event_filter or event_type in event_filter:
+                create_task(cb_func, event_type, event_details)
 
     @callback
     def subscribe(
@@ -104,6 +99,10 @@ class MusicAssistant:
             :param cb_func: callback function or coroutine
             :param event_filter: Optionally only listen for these events
         """
+        if isinstance(event_filter, EventType):
+            event_filter = (event_filter,)
+        elif event_filter is None:
+            event_filter = tuple()
         listener = (cb_func, event_filter)
         self._listeners.append(listener)
 

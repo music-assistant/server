@@ -15,3 +15,15 @@ class MediaNotFoundError(MusicAssistantError):
 
 class InvalidDataError(MusicAssistantError):
     """Error raised when an object has invalid data."""
+
+
+class AlreadyRegisteredError(MusicAssistantError):
+    """Error raised when a duplicate music provider or player is registered."""
+
+
+class SetupFailedError(MusicAssistantError):
+    """Error raised when setup of a provider or player failed."""
+
+
+class LoginFailed(MusicAssistantError):
+    """Error raised when a login failed."""

@@ -9,12 +9,10 @@ from uuid import uuid4
 
 from music_assistant.constants import EventType
 from music_assistant.helpers.datetime import now
-from music_assistant.helpers.muli_state_queue import MultiStateQueue
+from music_assistant.helpers.multi_state_queue import MultiStateQueue
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
 from music_assistant.helpers.web import api_route
-
-LOGGER = logging.getLogger("task_manager")
 
 MAX_SIMULTANEOUS_TASKS = 2
 
@@ -79,6 +77,7 @@ class TaskManager:
     def __init__(self, mass: MusicAssistant):
         """Initialize TaskManager instance."""
         self.mass = mass
+        self.logger = mass.logger.getChild("tasks")
         self._queue = None
 
     async def setup(self):
@@ -107,8 +106,6 @@ class TaskManager:
         kwargs: [optional] parameters for method to call.
         """
 
-        if self.mass.exit:
-            return
         if self._queue is None:
             raise RuntimeError("Not yet initialized")
 
@@ -123,7 +120,7 @@ class TaskManager:
         if prevent_duplicate:
             for task in self._queue.progress_items + self._queue.pending_items:
                 if task.dupe_hash == task_info.dupe_hash:
-                    LOGGER.debug(
+                    self.logger.debug(
                         "Ignoring task %s as it is already running....", task_info.name
                     )
                     return task
@@ -137,7 +134,7 @@ class TaskManager:
 
     def _add_task(self, task_info: TaskInfo) -> None:
         """Handle adding a task to the task queue."""
-        LOGGER.debug("Adding task [%s] to Task Queue...", task_info.name)
+        self.logger.debug("Adding task [%s] to Task Queue...", task_info.name)
         self._queue.put_nowait(task_info)
         self.mass.signal_event(EventType.TASK_UPDATED, task_info)
 
@@ -155,14 +152,14 @@ class TaskManager:
             exc = future.exception()
             task_info.status = TaskStatus.ERROR
             task_info.error_details = repr(exc)
-            LOGGER.debug(
+            self.logger.debug(
                 "Error while running task [%s]",
                 task_info.name,
                 exc_info=exc,
             )
         else:
             task_info.status = TaskStatus.FINISHED
-            LOGGER.debug(
+            self.logger.debug(
                 "Task finished: [%s] in %s seconds",
                 task_info.name,
                 task_info.execution_time,
@@ -174,7 +171,7 @@ class TaskManager:
 
     async def __process_tasks(self):
         """Process handling of tasks in the queue."""
-        while not self.mass.exit:
+        while True:
             while len(self._queue.progress_items) >= MAX_SIMULTANEOUS_TASKS:
                 await asyncio.sleep(1)
             next_task = await self._queue.get()

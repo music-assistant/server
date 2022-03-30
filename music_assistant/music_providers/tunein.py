@@ -3,58 +3,37 @@ from typing import List, Optional
 
 from asyncio_throttle import Throttler
 
-from music_assistant.config.models import ConfigEntry, ConfigEntryType
-from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.music.models import (
+    ContentType,
     MediaItemProviderId,
-    MediaType,
-    MusicProvider,
-    Radio,
-    SearchResult,
+    MediaItemType,
     MediaQuality,
+    MediaType,
+    Radio,
+    StreamDetails,
+    StreamType,
 )
-from music_assistant.player_queue.models import ContentType, StreamDetails, StreamType
-
-CONF_USERNAME = "tunein_username"
-CONF_PASSWORD = "stunein_username_password"
-CONF_ENTRIES = [
-    ConfigEntry(
-        entry_key=CONF_USERNAME,
-        entry_type=ConfigEntryType.STRING,
-        label="Tune-In Username",
-    ),
-    ConfigEntry(
-        entry_key=CONF_PASSWORD,
-        entry_type=ConfigEntryType.PASSWORD,
-        label="Tune-In Password",
-    ),
-]
+from music_assistant.music_providers.model import MusicProvider
 
 
 class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
-    def __init__(self, mass: MusicAssistant, *args, **kwargs) -> None:
+    def __init__(self, username: str | None) -> None:
         """Initialize the provider."""
-        super().__init__(mass, "tunein", "Tune-In Radio")
-        self._username = None
-        self._password = None
+        self._attr_id = "tunein"
+        self._attr_name = "Tune-in Radio"
         self._attr_supported_mediatypes = [MediaType.RADIO]
+        self._username = username
         self._throttler = Throttler(rate_limit=1, period=1)
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
-        await super().setup()
-        await self.mass.config.register_config_entries(CONF_ENTRIES)
-        config = self.config
-        if config[CONF_USERNAME] and config[CONF_PASSWORD]:
-            self._username = config[CONF_USERNAME]
-            self._password = config[CONF_PASSWORD]
-        self._attr_available = self._username is not None
+        # we have nothing to setup
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> SearchResult:
+    ) -> List[MediaItemType]:
         """
         Perform search on musicprovider.
 
@@ -62,7 +41,7 @@ class TuneInProvider(MusicProvider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
-        result = SearchResult()
+        result = []
         # TODO: search for radio stations
         return result
 
@@ -112,7 +91,7 @@ class TuneInProvider(MusicProvider):
             radio.provider_ids.append(
                 MediaItemProviderId(
                     provider=self.id,
-                    item_id="%s--%s" % (details["preset_id"], stream["media_type"]),
+                    item_id=f'{details["preset_id"]}--{stream["media_type"]}',
                     quality=quality,
                     details=stream["url"],
                 )
@@ -157,7 +136,7 @@ class TuneInProvider(MusicProvider):
         """Get data from api."""
         if not params:
             params = {}
-        url = "https://opml.radiotime.com/%s" % endpoint
+        url = f"https://opml.radiotime.com/{endpoint}"
         params["render"] = "json"
         params["formats"] = "ogg,aac,wma,mp3"
         params["username"] = self._username

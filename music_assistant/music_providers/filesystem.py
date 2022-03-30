@@ -6,38 +6,22 @@ from typing import List, Optional
 
 import taglib
 
-from music_assistant.config.models import ConfigEntry, ConfigEntryType
 from music_assistant.helpers.errors import InvalidDataError
-from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.music.models import (
     Album,
     Artist,
+    ContentType,
     MediaItemProviderId,
+    MediaItemType,
     MediaQuality,
     MediaType,
-    MusicProvider,
     Playlist,
-    SearchResult,
+    StreamDetails,
+    StreamType,
     Track,
 )
-from music_assistant.player_queue.models import ContentType, StreamDetails, StreamType
-
-CONF_MUSIC_DIR = "music_dir"
-CONF_PLAYLISTS_DIR = "playlists_dir"
-
-CONFIG_ENTRIES = [
-    ConfigEntry(
-        entry_key=CONF_MUSIC_DIR,
-        entry_type=ConfigEntryType.STRING,
-        label="Directory on disk containing music files",
-    ),
-    ConfigEntry(
-        entry_key=CONF_PLAYLISTS_DIR,
-        entry_type=ConfigEntryType.STRING,
-        label="Directory on disk containing playlist files",
-    ),
-]
+from music_assistant.music_providers.model import MusicProvider
 
 
 class FileProvider(MusicProvider):
@@ -54,39 +38,38 @@ class FileProvider(MusicProvider):
     # pylint chokes on taglib so ignore these
     # pylint: disable=unsubscriptable-object,unsupported-membership-test
 
-    def __init__(self, mass: MusicAssistant, *args, **kwargs) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, "qobuz", "Qobuz")
+    def __init__(self, music_dir: str, playlist_dir: str | None = None) -> None:
+        """
+        Initialize the Filesystem provider.
+
+        music_dir: Directory on disk containing music files
+        playlist_dir: Directory on disk containing playlist files (optional)
+
+        """
+        self._attr_id = "filesystem"
+        self._attr_name = "Filesystem"
+        self._playlists_dir = playlist_dir
+        self._music_dir = music_dir
         self._attr_supported_mediatypes = [
-            MediaType.ALBUM,
             MediaType.ARTIST,
-            MediaType.PLAYLIST,
+            MediaType.ALBUM,
             MediaType.TRACK,
         ]
-        self._music_dir = None
-        self._playlists_dir = None
+        if playlist_dir is not None:
+            self._attr_supported_mediatypes.append(MediaType.PLAYLIST)
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
-        await super().setup()
-        await self.mass.config.register_config_entries(CONFIG_ENTRIES)
-
-        config = self.config
-        if config[CONF_MUSIC_DIR]:
-            if not os.path.isdir(config[CONF_MUSIC_DIR]):
-                raise FileNotFoundError(
-                    f"Directory {config[CONF_MUSIC_DIR]} does not exist"
-                )
-            self._music_dir = config["music_dir"]
-        if os.path.isdir(config[CONF_PLAYLISTS_DIR]):
-            self._playlists_dir = config[CONF_PLAYLISTS_DIR]
-        else:
-            self._playlists_dir = None
-        self._attr_available = self._music_dir is not None
+        if not os.path.isdir(self._music_dir):
+            raise FileNotFoundError(f"Music Directory {self._music_dir} does not exist")
+        if not os.path.isdir(self._playlists_dir):
+            raise FileNotFoundError(
+                f"Playlist Directory {self._playlists_dir} does not exist"
+            )
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> SearchResult:
+    ) -> List[MediaItemType]:
         """
         Perform search on musicprovider.
 
@@ -94,9 +77,8 @@ class FileProvider(MusicProvider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
-        result = SearchResult()
         # TODO !
-        return result
+        return []
 
     async def get_library_artists(self) -> List[Artist]:
         """Retrieve all library artists."""

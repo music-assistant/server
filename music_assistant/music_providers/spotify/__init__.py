@@ -9,71 +9,60 @@ from typing import List, Optional
 
 from asyncio_throttle import Throttler
 
-from music_assistant.config.models import ConfigEntry, ConfigEntryType
-from music_assistant.helpers.app_vars import get_app_var  # noqa # pylint: disable=all
-from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name-in-module
+    get_app_var,
+)
+from music_assistant.helpers.errors import LoginFailed
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.music.models import (
     Album,
     AlbumType,
     Artist,
+    ContentType,
     MediaItemProviderId,
-    MediaType,
-    MusicProvider,
-    Playlist,
-    Radio,
-    SearchResult,
-    Track,
+    MediaItemType,
     MediaQuality,
+    MediaType,
+    Playlist,
+    StreamDetails,
+    StreamType,
+    Track,
 )
-from music_assistant.player_queue.models import ContentType, StreamDetails, StreamType
-
-CONF_USERNAME = "spotify_username"
-CONF_PASSWORD = "spotify_password"
-CONF_ENTRIES = [
-    ConfigEntry(
-        entry_key=CONF_USERNAME,
-        entry_type=ConfigEntryType.STRING,
-        label="Spotify Username",
-    ),
-    ConfigEntry(
-        entry_key=CONF_PASSWORD,
-        entry_type=ConfigEntryType.PASSWORD,
-        label="Spotify Password",
-    ),
-]
+from music_assistant.music_providers.model import MusicProvider
 
 
 class SpotifyProvider(MusicProvider):
-    """Implementation for the Spotify MusicProvider."""
+    """Implementation of a Spotify MusicProvider."""
 
-    def __init__(self, mass: MusicAssistant, *args, **kwargs) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, "spotify", "Spotify")
+    def __init__(self, username: str, password: str) -> None:
+        """Initialize the Spotify provider."""
+        self._attr_id = "spotify"
+        self._attr_name = "Spotify"
+        self._attr_supported_mediatypes = [
+            MediaType.ARTIST,
+            MediaType.ALBUM,
+            MediaType.TRACK,
+            MediaType.PLAYLIST
+            # TODO: Return spotify radio
+        ]
+        self._username = username
+        self._password = password
         self._auth_token = None
         self._sp_user = None
-        self._username = None
-        self._password = None
+        self._throttler = Throttler(rate_limit=4, period=1)
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
-        await super().setup()
-        await self.mass.config.register_config_entries(CONF_ENTRIES)
-        config = self.config
-        self._cur_user = None
-        self._sp_user = None
-        token = None
-        if config[CONF_USERNAME] and config[CONF_PASSWORD]:
-            self._username = config[CONF_USERNAME]
-            self._password = config[CONF_PASSWORD]
-            self._auth_token = {}
-            self._throttler = Throttler(rate_limit=4, period=1)
-            token = await self.get_token()
-        self._attr_available = token is not None
+        if not self._username or not self._password:
+            raise LoginFailed("Invalid login credentials")
+        # try to get a token, raise if that fails
+        token = await self.get_token()
+        if not token:
+            raise LoginFailed(f"Login failed for user {self._username}")
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> SearchResult:
+    ) -> List[MediaItemType]:
         """
         Perform search on musicprovider.
 
@@ -81,7 +70,7 @@ class SpotifyProvider(MusicProvider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
-        result = SearchResult()
+        result = []
         searchtypes = []
         if MediaType.ARTIST in media_types:
             searchtypes.append("artist")
@@ -93,28 +82,27 @@ class SpotifyProvider(MusicProvider):
             searchtypes.append("playlist")
         searchtype = ",".join(searchtypes)
         params = {"q": search_query, "type": searchtype, "limit": limit}
-        searchresult = await self._get_data("search", params=params)
-        if searchresult:
+        if searchresult := await self._get_data("search", params=params):
             if "artists" in searchresult:
-                result.artists = [
+                result += [
                     await self._parse_artist(item)
                     for item in searchresult["artists"]["items"]
                     if (item and item["id"])
                 ]
             if "albums" in searchresult:
-                result.albums = [
+                result += [
                     await self._parse_album(item)
                     for item in searchresult["albums"]["items"]
                     if (item and item["id"])
                 ]
             if "tracks" in searchresult:
-                result.tracks = [
+                result += [
                     await self._parse_track(item)
                     for item in searchresult["tracks"]["items"]
                     if (item and item["id"])
                 ]
             if "playlists" in searchresult:
-                result.playlists = [
+                result += [
                     await self._parse_playlist(item)
                     for item in searchresult["playlists"]["items"]
                     if (item and item["id"])
@@ -153,10 +141,6 @@ class SpotifyProvider(MusicProvider):
             for item in await self._get_all_items("me/playlists")
             if (item and item["id"])
         ]
-
-    async def get_radios(self) -> List[Radio]:
-        """Retrieve library/subscribed radio stations from the provider."""
-        return []  # TODO: Return spotify radio
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""

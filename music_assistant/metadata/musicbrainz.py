@@ -7,7 +7,7 @@ from typing import Optional
 import aiohttp
 from asyncio_throttle import Throttler
 
-from music_assistant.helpers.cache import use_cache
+from music_assistant.helpers.cache import cached
 from music_assistant.helpers.compare import compare_strings, get_compare_string
 from music_assistant.helpers.typing import MusicAssistant
 
@@ -21,7 +21,7 @@ class MusicBrainz:
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
-        self.logger = mass.metadata.logger.getChild("musicbrainz")
+        self.logger = mass.logger.getChild("musicbrainz")
         self.throttler = Throttler(rate_limit=1, period=1)
 
     async def get_mb_artist_id(
@@ -93,15 +93,16 @@ class MusicBrainz:
         ]:
             if album_upc:
                 endpoint = "release"
-                params = {"query": "barcode:%s" % album_upc}
+                params = {"query": f"barcode:{album_upc}"}
+                cache_key = f"{endpoint}.barcode.{album_upc}"
             else:
                 searchalbum = re.sub(LUCENE_SPECIAL, r"\\\1", albumname)
                 endpoint = "release"
                 params = {
-                    "query": 'artist:"%s" AND release:"%s"'
-                    % (searchartist, searchalbum)
+                    "query": f'artist:"{searchartist}" AND release:"{searchalbum}"'
                 }
-            result = await self.get_data(endpoint, params)
+                cache_key = f"{endpoint}.{searchartist}.{searchalbum}"
+            result = await cached(self.mass.cache, cache_key, self.get_data, endpoint, params)
             if result and "releases" in result:
                 for strictness in [True, False]:
                     for item in result["releases"]:
@@ -124,15 +125,16 @@ class MusicBrainz:
         """Retrieve artist id by providing the artist name and trackname or track isrc."""
         endpoint = "recording"
         searchartist = re.sub(LUCENE_SPECIAL, r"\\\1", artistname)
-        # searchartist = searchartist.replace('/','').replace('\\','').replace('-', '')
         if track_isrc:
-            endpoint = "isrc/%s" % track_isrc
+            endpoint = f"isrc/{track_isrc}"
             params = {"inc": "artist-credits"}
+            cache_key = endpoint
         else:
             searchtrack = re.sub(LUCENE_SPECIAL, r"\\\1", trackname)
             endpoint = "recording"
-            params = {"query": '"%s" AND artist:"%s"' % (searchtrack, searchartist)}
-        result = await self.get_data(endpoint, params)
+            params = {"query": '"{searchtrack}" AND artist:"{searchartist}"'}
+            cache_key = f"{endpoint}.{searchtrack}.{searchartist}"
+        result = await cached(self.mass.cache, cache_key, self.get_data(endpoint, params))
         if result and "recordings" in result:
             for strictness in [True, False]:
                 for item in result["recordings"]:
@@ -151,7 +153,6 @@ class MusicBrainz:
                                     return artist["id"]
         return ""
 
-    @use_cache(2)
     async def get_data(self, endpoint: str, params: Optional[dict] = None):
         """Get data from api."""
         if params is None:

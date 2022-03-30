@@ -3,15 +3,16 @@ from __future__ import annotations
 
 from music_assistant.constants import EventType
 from music_assistant.helpers.util import merge_dict, merge_list
+from music_assistant.helpers.web import json_serializer
 from music_assistant.music.models import MediaControllerBase, MediaType, Radio
 
 
-class RadioController(MediaControllerBase):
+class RadioController(MediaControllerBase[Radio]):
     """Controller managing MediaItems of type Radio."""
 
     db_table = "radios"
     media_type = MediaType.RADIO
-    model = Radio
+    item_cls = Radio
 
     async def setup(self):
         """Async initialize of module."""
@@ -47,12 +48,13 @@ class RadioController(MediaControllerBase):
         # insert new radio
         new_item = await self.mass.database.insert_or_replace(
             self.db_table,
-            {
-                "name": radio.name,
-                "sort_name": radio.sort_name,
-                "metadata": radio.metadata,
-                "provider_ids": radio.provider_ids,
-            },
+            # {
+            #     "name": radio.name,
+            #     "sort_name": radio.sort_name,
+            #     "metadata": radio.metadata,
+            #     "provider_ids": radio.provider_ids,
+            # },
+            radio.to_db_row()
         )
         item_id = new_item["item_id"]
         # store provider mappings
@@ -76,8 +78,8 @@ class RadioController(MediaControllerBase):
             {
                 "name": radio.name,
                 "sort_name": radio.sort_name,
-                "metadata": metadata,
-                "provider_ids": provider_ids,
+                "metadata": json_serializer(metadata),
+                "provider_ids": json_serializer(provider_ids),
             },
         )
         await self.mass.music.add_provider_mappings(

@@ -1,4 +1,5 @@
 """Qobuz musicprovider support for MusicAssistant."""
+
 import datetime
 import hashlib
 import time
@@ -6,76 +7,61 @@ from typing import List, Optional
 
 from asyncio_throttle import Throttler
 
-from music_assistant.config.models import ConfigEntry, ConfigEntryType
-from music_assistant.constants import EVENT_STREAM_ENDED, EVENT_STREAM_STARTED
-from music_assistant.helpers.app_vars import get_app_var  # noqa # pylint: disable=all
-from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.constants import EventType
+from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-module
+    get_app_var,
+)
+from music_assistant.helpers.errors import LoginFailed
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.music.models import (
+    Album,
+    AlbumType,
+    Artist,
+    ContentType,
     MediaItemProviderId,
-    MediaType,
-    MusicProvider,
-    Playlist,
-    Radio,
-    SearchResult,
+    MediaItemType,
     MediaQuality,
+    MediaType,
+    Playlist,
+    StreamDetails,
+    StreamType,
+    Track,
 )
-from music_assistant.music.albums import AlbumType, Album
-from music_assistant.music.artists import Artist
-from music_assistant.music.tracks import Track
-
-from music_assistant.player_queue.models import ContentType, StreamDetails, StreamType
-
-CONF_USERNAME = "qobuz_username"
-CONF_PASSWORD = "qobuz_password"
-CONF_ENTRIES = [
-    ConfigEntry(
-        entry_key=CONF_USERNAME,
-        entry_type=ConfigEntryType.STRING,
-        label="Qobuz Username",
-    ),
-    ConfigEntry(
-        entry_key=CONF_PASSWORD,
-        entry_type=ConfigEntryType.PASSWORD,
-        label="Qobuz Password",
-    ),
-]
+from music_assistant.music_providers.model import MusicProvider
 
 
 class QobuzProvider(MusicProvider):
     """Provider for the Qobux music service."""
 
-    def __init__(self, mass: MusicAssistant, *args, **kwargs) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, "qobuz", "Qobuz")
+    def __init__(self, username: str, password: str) -> None:
+        """Initialize the Spotify provider."""
+        self._attr_id = "qobuz"
+        self._attr_name = "Qobuz"
         self._attr_supported_mediatypes = [
-            MediaType.ALBUM,
             MediaType.ARTIST,
-            MediaType.PLAYLIST,
+            MediaType.ALBUM,
             MediaType.TRACK,
+            MediaType.PLAYLIST,
         ]
+        self._username = username
+        self._password = password
         self.__user_auth_info = None
-        self.__username = None
-        self.__password = None
         self._throttler = Throttler(rate_limit=4, period=1)
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
-        await super().setup()
-        await self.mass.config.register_config_entries(CONF_ENTRIES)
+        # try to get a token, raise if that fails
+        token = await self._auth_token()
+        if not token:
+            raise LoginFailed(f"Login failed for user {self._username}")
+        # subscribe to stream events so we can report playback to Qobuz
         self.mass.subscribe(
-            self.on_stream_event, (EVENT_STREAM_STARTED, EVENT_STREAM_ENDED)
+            self.on_stream_event, (EventType.STREAM_STARTED, EventType.STREAM_ENDED)
         )
-        config = self.config
-        if config[CONF_USERNAME] and config[CONF_PASSWORD]:
-            self.__username = config[CONF_USERNAME]
-            self.__password = config[CONF_PASSWORD]
-            await self._auth_token()
-        self._attr_available = self.__user_auth_info is not None
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> SearchResult:
+    ) -> List[MediaItemType]:
         """
         Perform search on musicprovider.
 
@@ -83,7 +69,7 @@ class QobuzProvider(MusicProvider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
-        result = SearchResult()
+        result = []
         params = {"query": search_query, "limit": limit}
         if len(media_types) == 1:
             # qobuz does not support multiple searchtypes, falls back to all if no type given
@@ -95,28 +81,27 @@ class QobuzProvider(MusicProvider):
                 params["type"] = "tracks"
             if media_types[0] == MediaType.PLAYLIST:
                 params["type"] = "playlists"
-        searchresult = await self._get_data("catalog/search", params)
-        if searchresult:
+        if searchresult := await self._get_data("catalog/search", params):
             if "artists" in searchresult:
-                result.artists = [
+                result += [
                     await self._parse_artist(item)
                     for item in searchresult["artists"]["items"]
                     if (item and item["id"])
                 ]
             if "albums" in searchresult:
-                result.albums = [
+                result += [
                     await self._parse_album(item)
                     for item in searchresult["albums"]["items"]
                     if (item and item["id"])
                 ]
             if "tracks" in searchresult:
-                result.tracks = [
+                result += [
                     await self._parse_track(item)
                     for item in searchresult["tracks"]["items"]
                     if (item and item["id"])
                 ]
             if "playlists" in searchresult:
-                result.playlists = [
+                result += [
                     await self._parse_playlist(item)
                     for item in searchresult["playlists"]["items"]
                     if (item and item["id"])
@@ -161,10 +146,6 @@ class QobuzProvider(MusicProvider):
             for item in await self._get_all_items(endpoint, key="playlists")
             if (item and item["id"])
         ]
-
-    async def get_radios(self) -> List[Radio]:
-        """Retrieve library/subscribed radio stations from the provider."""
-        return []  # TODO
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
@@ -382,7 +363,7 @@ class QobuzProvider(MusicProvider):
         # TODO: need to figure out if the streamed track is purchased by user
         # https://www.qobuz.com/api.json/0.2/purchase/getUserPurchasesIds?limit=5000&user_id=xxxxxxx
         # {"albums":{"total":0,"items":[]},"tracks":{"total":0,"items":[]},"user":{"id":xxxx,"login":"xxxxx"}}
-        if msg == EVENT_STREAM_STARTED and msg_details.provider == self.id:
+        if msg == EventType.STREAM_STARTED and msg_details.provider == self.id:
             # report streaming started to qobuz
             device_id = self.__user_auth_info["user"]["device"]["id"]
             credential_id = self.__user_auth_info["user"]["credential"]["id"]
@@ -405,10 +386,8 @@ class QobuzProvider(MusicProvider):
                 }
             ]
             await self._post_data("track/reportStreamingStart", data=events)
-        elif msg == EVENT_STREAM_ENDED and msg_details.provider == self.id:
+        elif msg == EventType.STREAM_ENDED and msg_details.provider == self.id:
             # report streaming ended to qobuz
-            # if msg_details.details < 6:
-            #     return ????????????? TODO
             user_id = self.__user_auth_info["user"]["id"]
             params = {
                 "user_id": user_id,
@@ -612,8 +591,8 @@ class QobuzProvider(MusicProvider):
         if self.__user_auth_info:
             return self.__user_auth_info["user_auth_token"]
         params = {
-            "username": self.__username,
-            "password": self.__password,
+            "username": self._username,
+            "password": self._password,
             "device_manufacturer_id": "music_assistant",
         }
         details = await self._get_data("user/login", params)

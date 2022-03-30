@@ -56,7 +56,7 @@ class EventType(Enum):
     PLAYLIST_ADDED = "playlist added"
     RADIO_ADDED = "radio added"
     TASK_UPDATED = "task updated"
-    PROVIDER_AVAILABLE = "provider_available"
+    PROVIDER_REGISTERED = "PROVIDER_REGISTERED"
 
 
 # player attributes

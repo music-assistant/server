@@ -6,7 +6,6 @@ from typing import Dict, List
 import aiohttp
 from asyncio_throttle import Throttler
 
-from music_assistant.config.models import ConfigEntry
 from music_assistant.helpers.typing import MusicAssistant
 
 
@@ -20,13 +19,9 @@ class FanartTv:
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.mass = mass
-        self.logger = mass.metadata.logger
+        self.logger = mass.logger.getChild("fanarttv")
+        
         self.throttler = Throttler(rate_limit=1, period=2)
-
-    @property
-    def config_entries(self) -> List[ConfigEntry]:
-        """Return Config Entries for this provider."""
-        return []
 
     async def get_artist_images(self, mb_artist_id: str) -> Dict:
         """Retrieve images by musicbrainz artist id."""

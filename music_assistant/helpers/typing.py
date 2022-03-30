@@ -7,11 +7,10 @@ from music_assistant.constants import EventType
 # pylint: disable=invalid-name
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+    from music_assistant.music.models import MediaType
     from music_assistant.player_queue.models import (
         PlayerQueue,
         QueueItem,
-        StreamDetails,
-        StreamType,
     )
     from music_assistant.players.models import Player
 
@@ -21,7 +20,7 @@ else:
     PlayerQueue = "PlayerQueue"
     StreamDetails = "StreamDetails"
     Player = "Player"
-    StreamType = "StreamType"
+
 
 QueueItems = List[QueueItem]
 Players = List[Player]

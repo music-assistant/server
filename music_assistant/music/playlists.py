@@ -8,16 +8,17 @@ from music_assistant.constants import EventType
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.helpers.util import merge_dict, merge_list
+from music_assistant.helpers.web import json_serializer
 from music_assistant.music.models import MediaControllerBase, MediaType, Playlist, Track
-from music_assistant.tasks import TaskInfo
+from music_assistant.helpers.tasks import TaskInfo
 
 
-class PlaylistController(MediaControllerBase):
+class PlaylistController(MediaControllerBase[Playlist]):
     """Controller managing MediaItems of type Playlist."""
 
     db_table = "playlists"
     media_type = MediaType.PLAYLIST
-    model = Playlist
+    item_cls = Playlist
 
     async def setup(self):
         """Async initialize of module."""
@@ -36,6 +37,14 @@ class PlaylistController(MediaControllerBase):
                     UNIQUE(name, owner)
                 );"""
         )
+        await self.mass.database.execute(
+            """CREATE TABLE IF NOT EXISTS playlist_tracks(
+                    playlist_id INTEGER,
+                    track_id INTEGER,
+                    position INTEGER,
+                    UNIQUE(playlist_id, position)
+                );"""
+        )
 
     async def get_playlist_by_name(self, name: str) -> Playlist | None:
         """Get in-library playlist by name."""
@@ -44,6 +53,9 @@ class PlaylistController(MediaControllerBase):
     async def tracks(self, item_id: str, provider_id: str) -> List[Track]:
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(item_id, provider_id)
+        if playlist.in_library and playlist.provider == "database":
+            # for in-library playlists we have the tracks in db
+            return await self.get_db_playlist_tracks(playlist.item_id)
         for prov in playlist.provider_ids:
             # playlist tracks are not stored in db, we always fetch them (cached) from the provider.
             provider = self.mass.music.get_provider(prov.provider)
@@ -204,15 +216,7 @@ class PlaylistController(MediaControllerBase):
         # insert new playlist
         new_item = await self.mass.database.insert_or_replace(
             self.db_table,
-            {
-                "name": playlist.name,
-                "sort_name": playlist.sort_name,
-                "owner": playlist.owner,
-                "is_editable": playlist.is_editable,
-                "checksum": playlist.checksum,
-                "metadata": playlist.metadata,
-                "provider_ids": playlist.provider_ids,
-            },
+            playlist.to_db_row(),
         )
         item_id = new_item["item_id"]
         # store provider mappings
@@ -239,8 +243,8 @@ class PlaylistController(MediaControllerBase):
                 "owner": playlist.owner,
                 "is_editable": playlist.is_editable,
                 "checksum": playlist.checksum,
-                "metadata": metadata,
-                "provider_ids": provider_ids,
+                "metadata": json_serializer(metadata),
+                "provider_ids": json_serializer(provider_ids),
             },
         )
         await self.mass.music.add_provider_mappings(
@@ -248,3 +252,22 @@ class PlaylistController(MediaControllerBase):
         )
         self.logger.debug("updated %s in database: %s", playlist.name, item_id)
         return await self.get_db_item(item_id)
+
+    async def get_db_playlist_tracks(self, item_id) -> List[Track]:
+        """Get playlist tracks for an in-library playlist."""
+        query = (
+            "SELECT TRACKS.*, PLAYLISTTRACKS.position "
+            "FROM [tracks] TRACKS "
+            "JOIN playlist_tracks PLAYLISTTRACKS ON TRACKS.item_id = PLAYLISTTRACKS.track_id "
+            f"WHERE PLAYLISTTRACKS.playlist_id = {item_id}"
+        )
+        return await self.mass.music.tracks.get_db_items(query)
+
+    async def add_db_playlist_track(
+        self, playlist_id: int, track_id: int, position: int
+    ) -> None:
+        """Add playlist track for an in-library playlist."""
+        return await self.mass.database.insert_or_replace(
+            "playlist_tracks",
+            {"playlist_id": playlist_id, "track_id": track_id, "position": position},
+        )
