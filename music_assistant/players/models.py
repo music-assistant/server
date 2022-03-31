@@ -1,12 +1,14 @@
 """Models and helpers for a player."""
 from __future__ import annotations
 from abc import ABC
-from asyncio import TimerHandle
+from asyncio import Task, TimerHandle
+import asyncio
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 import random
+import time
 
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
@@ -164,6 +166,7 @@ class Player(ABC):
             return
         setattr(self, "_prev_state", cur_state)
         self.mass.signal_event(EventType.PLAYER_CHANGED, self)
+        self.queue.on_player_update()
         if self.is_group:
             # update group player childs when parent updates
             for child_player_id in self.group_childs:
@@ -329,16 +332,17 @@ class PlayerQueue:
         self._volume_normalisation_enabled: bool = True
         self._volume_normalisation_target: int = -23
 
-        self._elapsed_time: int = 0
         self._current_index: int | None = None
         self._current_item_time: int = 0
-        self._last_item: int | None = None
+        self._last_item: QueueItem | None = None
         self._start_index: int = 0
         self._next_index: int = 0
-        self._state: PlayerState = PlayerState.IDLE
         self._last_state = PlayerState.IDLE
         self._items: List[QueueItem] = []
         self._save_task: TimerHandle = None
+        self._update_task: Task = None
+        self._signal_next: bool = False
+        self._last_player_update: int = 0
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
@@ -367,7 +371,7 @@ class PlayerQueue:
         """Return elapsed time of current playing media in seconds."""
         if not self.active:
             return self.player.elapsed_time
-        return self._elapsed_time
+        return self._current_item_time
 
     @property
     def repeat_enabled(self) -> bool:
@@ -586,7 +590,7 @@ class PlayerQueue:
 
     async def play(self) -> None:
         """Play (unpause) command on queue player."""
-        if self._state == PlayerState.PAUSED:
+        if self.player.state == PlayerState.PAUSED:
             await self.player.play()
         else:
             await self.resume()
@@ -729,44 +733,54 @@ class PlayerQueue:
         await self.stop()
         await self.update([])
 
-    # @callback
-    # def update_state(self) -> None:
-    #     """Update queue details, called when player updates."""
-    #     new_index = self._current_index
-    #     track_time = self._cur_item_time
-    #     new_item_loaded = False
-    #     # handle queue stream
-    #     if self._state == PlayerState.PLAYING and self.elapsed_time > 1:
-    #         new_index, track_time = self.__get_queue_stream_index()
+    def on_player_update(self) -> None:
+        """Call when player updates."""
+        if self._last_state != self.player.state:
+            self._last_state = self.player.state
+            # handle case where stream stopped on purpose and we need to restart it
+            if self.player.state == PlayerState.IDLE and self._signal_next:
+                self._signal_next = False
+                create_task(self.play)
+            # start updater task if needed
+            if self.player.state == PlayerState.PLAYING:
+                if not self._update_task:
+                    self._update_task = create_task(self.__update_task())
+            else:
+                if self._update_task:
+                    self._update_task.cancel()
+                self._update_task = None
+            # fire event with updated state
+            self.mass.signal_event(EventType.QUEUE_UPDATED, self)
+        self.update_state()
 
-    #     # process new index
-    #     if self._current_index != new_index:
-    #         # queue track updated
-    #         self._current_index = new_index
-    #     # check if a new track is loaded, wait for the streamdetails
-    #     if (
-    #         self.cur_item
-    #         and self._last_item != self.cur_item
-    #         and self.cur_item.streamdetails
-    #     ):
-    #         # new active item in queue
-    #         new_item_loaded = True
-    #         # invalidate previous streamdetails
-    #         if self._last_item:
-    #             self._last_item.streamdetails = None
-    #         self._last_item = self.cur_item
-    #     # update vars and signal update on eventbus if needed
-    #     prev_item_time = int(self._cur_item_time)
-    #     self._cur_item_time = int(track_time)
-    #     if self._last_state != self.state:
-    #         # fire event with updated state
-    #         self.signal_update()
-    #         self._last_state = self.state
-    #     elif abs(prev_item_time - self._cur_item_time) > 3:
-    #         # only send media_position if it changed more then 3 seconds (e.g. skipping)
-    #         self.signal_update()
-    #     elif new_item_loaded:
-    #         self.signal_update()
+    def update_state(self) -> None:
+        """Update queue details, called when player updates."""
+        new_index = self._current_index
+        track_time = self._current_item_time
+        new_item_loaded = False
+        if self.player.state == PlayerState.PLAYING and self.elapsed_time > 1:
+            new_index, track_time = self.__get_queue_stream_index()
+        # process new index
+        if self._current_index != new_index:
+            # queue track updated
+            self._current_index = new_index
+        # check if a new track is loaded, wait for the streamdetails
+        if (
+            self.current_item
+            and self._last_item != self.current_item
+            and self.current_item.streamdetails
+        ):
+            # new active item in queue
+            new_item_loaded = True
+            # invalidate previous streamdetails
+            if self._last_item:
+                self._last_item.streamdetails = None
+            self._last_item = self.current_item
+        # update vars and signal update on eventbus if needed
+        prev_item_time = int(self._current_item_time)
+        self._current_item_time = int(track_time)
+        if new_item_loaded or abs(prev_item_time - self._current_item_time) >= 1:
+            self.mass.signal_event(EventType.QUEUE_UPDATED, self)
 
     async def queue_stream_start(self) -> None:
         """Call when queue_streamer starts playing the queue stream."""
@@ -787,28 +801,45 @@ class PlayerQueue:
         self._next_index = next_index + 1
         return next_index
 
-    # @callback
-    # def __get_queue_stream_index(self) -> Tuple[int, int]:
-    #     """Get index of queue stream."""
-    #     # player is playing a constant stream of the queue so we need to do this the hard way
-    #     queue_index = 0
-    #     elapsed_time_queue = self.player.elapsed_time
-    #     total_time = 0
-    #     track_time = 0
-    #     if self.items and len(self.items) > self._start_index:
-    #         queue_index = (
-    #             self._start_index
-    #         )  # holds the last starting position
-    #         queue_track = None
-    #         while len(self.items) > queue_index:
-    #             queue_track = self.items[queue_index]
-    #             if elapsed_time_queue > (queue_track.duration + total_time):
-    #                 total_time += queue_track.duration
-    #                 queue_index += 1
-    #             else:
-    #                 track_time = elapsed_time_queue - total_time
-    #                 break
-    #     return queue_index, track_time
+    async def queue_stream_signal_next(self):
+        """Indicate that queue stream needs to start nex index once playback finished."""
+        self._signal_next = True
+
+    async def __update_task(self) -> None:
+        """Update player queue every interval."""
+        while True:
+            self.update_state()
+            await asyncio.sleep(1)
+
+    def __get_total_elapsed_time(self) -> int:
+        """Calculate the total elapsed time of the queue(player)."""
+        if self.player.state == PlayerState.PLAYING:
+            time_diff = time.time() - self._last_player_update
+            return int(self.player.elapsed_time + time_diff)
+        if self.player.state == PlayerState.PAUSED:
+            return self.player.elapsed_time
+        return 0
+
+    def __get_queue_stream_index(self) -> Tuple[int, int]:
+        """Calculate current queue index and current track elapsed time."""
+        # player is playing a constant stream so we need to do this the hard way
+        queue_index = 0
+        elapsed_time_queue = self.__get_total_elapsed_time()
+        total_time = 0
+        track_time = 0
+        if self._items and len(self._items) > self._start_index:
+            # start_index: holds the last starting position
+            queue_index = self._start_index
+            queue_track = None
+            while len(self._items) > queue_index:
+                queue_track = self._items[queue_index]
+                if elapsed_time_queue > (queue_track.duration + total_time):
+                    total_time += queue_track.duration
+                    queue_index += 1
+                else:
+                    track_time = elapsed_time_queue - total_time
+                    break
+        return queue_index, track_time
 
     @staticmethod
     def __shuffle_items(queue_items: List[QueueItem]) -> List[QueueItem]:
@@ -819,7 +850,9 @@ class PlayerQueue:
 
     async def _restore_saved_state(self) -> None:
         """Try to load the saved state from database."""
-        if db_row := await self.mass.database.get_row("queue_settings", {"queue_id": self.queue_id}):
+        if db_row := await self.mass.database.get_row(
+            "queue_settings", {"queue_id": self.queue_id}
+        ):
             self._shuffle_enabled = db_row["shuffle_enabled"]
             self._repeat_enabled = db_row["repeat_enabled"]
             self._crossfade_duration = db_row["crossfade_duration"]
@@ -839,7 +872,7 @@ class PlayerQueue:
                 "crossfade_duration": self._crossfade_duration,
                 "volume_normalisation_enabled": self._volume_normalisation_enabled,
                 "volume_normalisation_target": self._volume_normalisation_target,
-            }
+            },
         )
 
         # store current items in cache

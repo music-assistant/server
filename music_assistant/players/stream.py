@@ -35,11 +35,12 @@ class StreamController:
 
     def get_stream_url(self, queue_id: str) -> str:
         """Return the full stream url for the PlayerQueue Stream."""
-        return f"http://{self._ip}:{self._port}/{queue_id}"
+        return f"http://{self._ip}:{self._port}/{queue_id}.wav"
 
     async def setup(self) -> None:
         """Async initialize of module."""
         self._app = web.Application()
+        self._app.router.add_get("/{queue_id}.wav", self.serve_stream_client)
         self._app.router.add_get("/{queue_id}", self.serve_stream_client)
         runner = web.AppRunner(self._app, access_log=None)
         await runner.setup()
