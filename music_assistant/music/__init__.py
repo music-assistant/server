@@ -12,7 +12,6 @@ from music_assistant.helpers.cache import cached
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.errors import (
     AlreadyRegisteredError,
-    MediaNotFoundError,
     MusicAssistantError,
     SetupFailedError,
 )
@@ -63,6 +62,11 @@ class MusicController:
         await self.tracks.setup()
         await self.radio.setup()
         await self.playlists.setup()
+
+    @property
+    def provider_count(self) -> int:
+        """Return count of all registered music providers."""
+        return len(self._providers)
 
     @property
     def providers(self) -> Tuple[MusicProvider]:
@@ -276,7 +280,7 @@ class MusicController:
         self, provider_item_id: str, provider_id: str
     ) -> float | None:
         """Get integrated loudness for a track in db."""
-        if result := self.mass.database.get_row(
+        if result := await self.mass.database.get_row(
             DB_TRACK_LOUDNESS,
             {
                 "item_id": provider_item_id,
@@ -380,19 +384,11 @@ class MusicController:
         cur_ids = set()
         for prov_item in await music_provider.get_library_items(media_type):
             prov_item: MediaItemType = prov_item
-            try:
-                db_item = await controller.get(
-                    prov_item.item_id, provider_id, details=prov_item, lazy=False
-                )
-            except MediaNotFoundError as err:
-                # TODO: look for substiture ?
-                self.logger.warning("Unable to locate item", exc_info=err)
-                continue
-            if prov_item.available != db_item.available:
-                # try to work out availability changes by refreshing the item
-                db_item = await controller.get(
-                    prov_item.item_id, provider_id, lazy=False, refresh=True
-                )
+            db_item: MediaItemType = await controller.get_db_item_by_prov_id(
+                prov_item.provider, prov_item.item_id
+            )
+            if not db_item:
+                db_item = await controller.add_db_item(prov_item)
             cur_ids.add(db_item.item_id)
             if not db_item.in_library:
                 await controller.set_db_library(db_item.item_id, True)
@@ -417,8 +413,7 @@ class MusicController:
                 if not await self.tracks.get_db_item_by_prov_id(
                     album_track.provider, album_track.item_id
                 ):
-                    await self.tracks.add_db_track(album_track)
-                    # assigning to album_tracks table is handled in track add logic
+                    await self.tracks.add_db_item(album_track)
 
     async def _sync_playlist_tracks(self, db_playlist: Playlist) -> None:
         """Store playlist tracks of in-library playlist in database."""
@@ -431,7 +426,7 @@ class MusicController:
                     playlist_track.provider, playlist_track.item_id
                 )
                 if not db_track:
-                    db_track = await self.tracks.add_db_track(playlist_track)
+                    db_track = await self.tracks.add_db_item(playlist_track)
                 await self.playlists.add_db_playlist_track(
                     db_playlist.item_id,
                     db_track.item_id,

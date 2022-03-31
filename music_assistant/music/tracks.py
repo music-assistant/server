@@ -49,7 +49,7 @@ class TracksController(MediaControllerBase[Track]):
         """Add track to local db and return the new database item."""
         # make sure we have artists
         assert item.artists
-        db_item = await self.add_db_track(item)
+        db_item = await self.add_db_item(item)
         # also fetch same track on all providers (will also get other quality versions)
         await self._match(db_item)
         db_item = await self.get_db_item(db_item.item_id)
@@ -126,7 +126,7 @@ class TracksController(MediaControllerBase[Track]):
                     provider.name,
                 )
 
-    async def add_db_track(self, track: Track) -> Track:
+    async def add_db_item(self, track: Track) -> Track:
         """Add a new track record to the database."""
         assert track.artists, "Track is missing artist(s)"
         cur_item = None
@@ -165,7 +165,7 @@ class TracksController(MediaControllerBase[Track]):
         if track.album is not None:
             album = await self.get_db_item_by_prov_id(
                 track.album.provider, track.album.item_id
-            ) or await self.mass.music.albums.add_db_album(track.album)
+            ) or await self.mass.music.albums.add_db_item(track.album)
             if (
                 album
                 and track.disc_number is not None
@@ -208,7 +208,7 @@ class TracksController(MediaControllerBase[Track]):
         ):
             album = await self.get_db_item_by_prov_id(
                 track.album.provider, track.album.item_id
-            ) or await self.mass.music.albums.add_db_album(track.album)
+            ) or await self.mass.music.albums.add_db_item(track.album)
             if album:
                 await self.mass.music.albums.add_db_album_track(
                     album.item_id, item_id, track.disc_number, track.track_number

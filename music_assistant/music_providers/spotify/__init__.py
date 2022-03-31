@@ -261,10 +261,9 @@ class SpotifyProvider(MusicProvider):
         await self.get_token()
         spotty = self.get_spotty_binary()
         spotty_exec = (
-            '%s -n temp -c "%s" -b 320 --pass-through --single-track spotify://track:%s'
+            '%s -n temp -c "/tmp" -b 320 --pass-through --single-track spotify://track:%s'
             % (
                 spotty,
-                self.mass.config.data_path,
                 track.item_id,
             )
         )

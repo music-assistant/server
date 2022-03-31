@@ -34,11 +34,11 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def add(self, item: Radio) -> Radio:
         """Add radio to local db and return the new database item."""
-        db_item = await self.add_db_radio(item)
+        db_item = await self.add_db_item(item)
         self.mass.signal_event(EventType.RADIO_ADDED, db_item)
         return db_item
 
-    async def add_db_radio(self, radio: Radio) -> Radio:
+    async def add_db_item(self, radio: Radio) -> Radio:
         """Add a new radio record to the database."""
         match = {"name": radio.name}
         if cur_item := await self.mass.database.get_row(self.db_table, match):
@@ -48,12 +48,6 @@ class RadioController(MediaControllerBase[Radio]):
         # insert new radio
         new_item = await self.mass.database.insert_or_replace(
             self.db_table,
-            # {
-            #     "name": radio.name,
-            #     "sort_name": radio.sort_name,
-            #     "metadata": radio.metadata,
-            #     "provider_ids": radio.provider_ids,
-            # },
             radio.to_db_row()
         )
         item_id = new_item["item_id"]

@@ -125,6 +125,8 @@ class Player(ABC):
         """Send volume level (0..100) command to player."""
         raise NotImplementedError
 
+    # SOME CONVENIENCE METHODS
+
     async def volume_up(self, step_size: int = 5):
         """Send volume UP command to player."""
         new_level = min(self.volume_level + step_size, 100)
@@ -147,6 +149,11 @@ class Player(ABC):
         await self.power(not self.powered)
 
     # DO NOT OVERRIDE BELOW
+
+    @property
+    def queue(self) -> "PlayerQueue":
+        """Return PlayerQueue for this player."""
+        return self.mass.players.get_player_queue(self.player_id)
 
     def update_state(self) -> None:
         """Update current player state in the player manager."""
@@ -286,6 +293,7 @@ class QueueItem(DataClassDictMixin):
     item_id: str = ""
     sort_index: int = 0
     streamdetails: StreamDetails | None = None
+    is_media_item: bool = False
 
     def __post_init__(self):
         """Set default values."""
@@ -297,7 +305,12 @@ class QueueItem(DataClassDictMixin):
     @classmethod
     def from_media_item(cls, media_item: "Track" | "Radio"):
         """Construct QueueItem from track/radio item."""
-        return cls(uri=media_item.uri, duration=media_item.duration)
+        return cls(
+            uri=media_item.uri,
+            name=media_item.name,
+            duration=media_item.duration,
+            is_media_item=True,
+        )
 
 
 class PlayerQueue:
@@ -314,7 +327,7 @@ class PlayerQueue:
         self._repeat_enabled: bool = False
         self._crossfade_duration: int = 0
         self._volume_normalisation_enabled: bool = True
-        self._volume_normalisation_target: int = 23
+        self._volume_normalisation_target: int = -23
 
         self._elapsed_time: int = 0
         self._current_index: int | None = None
@@ -326,7 +339,10 @@ class PlayerQueue:
         self._last_state = PlayerState.IDLE
         self._items: List[QueueItem] = []
         self._save_task: TimerHandle = None
-        create_task(self._restore_saved_state)
+
+    async def setup(self) -> None:
+        """Handle async setup of instance."""
+        await self._restore_saved_state()
 
     @property
     def player(self) -> Player:
@@ -341,8 +357,10 @@ class PlayerQueue:
     @property
     def active(self) -> bool:
         """Return bool if the queue is currenty active on the player."""
-        # TODO: figure out a way to handle group childs player the parent queue
-        return self.player.current_url == self.get_stream_url()
+        # TODO: figure out a way to handle group childs playing the parent queue
+        return self.player.current_url == self.mass.players.streams.get_stream_url(
+            self.queue_id
+        )
 
     @property
     def elapsed_time(self) -> int:
@@ -423,6 +441,16 @@ class PlayerQueue:
             return self._items[self.next_index]
         return None
 
+    @property
+    def volume_normalisation_enabled(self) -> bool:
+        """Return bool if volume normalisation is enabled for this queue."""
+        return self._volume_normalisation_enabled
+
+    @property
+    def volume_normalisation_target(self) -> int:
+        """Return volume target (in LUFS) for volume normalisation for this queue."""
+        return self._volume_normalisation_target
+
     def get_item(self, index: int) -> QueueItem | None:
         """Get queue item by index."""
         if index is not None and len(self._items) > index:
@@ -444,7 +472,6 @@ class PlayerQueue:
 
     async def play_media(
         self,
-        queue_id: str,
         uris: str | List[str],
         queue_opt: QueueOption = QueueOption.PLAY,
     ):
@@ -505,15 +532,15 @@ class PlayerQueue:
 
         # load items into the queue
         if queue_opt == QueueOption.REPLACE:
-            return await self.load(queue_id, queue_items)
+            return await self.load(queue_items)
         if queue_opt in [QueueOption.PLAY, QueueOption.NEXT] and len(queue_items) > 100:
-            return await self.load(queue_id, queue_items)
+            return await self.load(queue_items)
         if queue_opt == QueueOption.NEXT:
-            return await self.insert(queue_id, queue_items, 1)
+            return await self.insert(queue_items, 1)
         if queue_opt == QueueOption.PLAY:
-            return await self.insert(queue_id, queue_items, 0)
+            return await self.insert(queue_items, 0)
         if queue_opt == QueueOption.ADD:
-            return await self.append(queue_id, queue_items)
+            return await self.append(queue_items)
 
     async def set_shuffle_enabled(self, enable_shuffle: bool) -> None:
         """Set shuffle."""
@@ -542,7 +569,15 @@ class PlayerQueue:
         if self._repeat_enabled != enable_repeat:
             self._repeat_enabled = enable_repeat
             self.mass.signal_event(EventType.QUEUE_UPDATED, self)
-            self._save_state()
+            await self._save_state()
+
+    async def set_crossfade_duration(self, duration: int) -> None:
+        """Set the crossfade duration for this queue, 0 to disable."""
+        duration = max(duration, 10)
+        if self._crossfade_duration != duration:
+            self._crossfade_duration = duration
+            self.mass.signal_event(EventType.QUEUE_UPDATED, self)
+            await self._save_state()
 
     async def stop(self) -> None:
         """Stop command on queue player."""
@@ -581,7 +616,7 @@ class PlayerQueue:
             await self.play_index(prev_index)
         else:
             self.logger.warning(
-                "resume queue requested for %s but queue is empty", self.name
+                "resume queue requested for %s but queue is empty", self.queue_id
             )
 
     async def play_index(self, index: int | str) -> None:
@@ -589,14 +624,14 @@ class PlayerQueue:
         if not isinstance(index, int):
             index = self.index_by_id(index)
         if index is None:
-            raise FileNotFoundError("Unknown index/id: %s" % index)
+            raise FileNotFoundError(f"Unknown index/id: {index}")
         if not len(self.items) > index:
             return
         self._current_index = index
         self._next_index = index
 
         # send stream url to player connected to this queue
-        queue_stream_url = self.get_stream_url()
+        queue_stream_url = self.mass.players.streams.get_stream_url(self.queue_id)
         await self.player.play_url(queue_stream_url)
 
     async def move_item(self, queue_item_id: str, pos_shift: int = 1) -> None:
@@ -775,11 +810,6 @@ class PlayerQueue:
     #                 break
     #     return queue_index, track_time
 
-    def get_stream_url(self) -> str:
-        """Return the full stream url for the PlayerQueue Stream."""
-        url = f"{self.mass.web.stream_url}/queue/{self.queue_id}"
-        return url
-
     @staticmethod
     def __shuffle_items(queue_items: List[QueueItem]) -> List[QueueItem]:
         """Shuffle a list of tracks."""
@@ -789,11 +819,11 @@ class PlayerQueue:
 
     async def _restore_saved_state(self) -> None:
         """Try to load the saved state from database."""
-        if db_row := self.mass.database.get_row({"queue_id": self.queue_id}):
+        if db_row := await self.mass.database.get_row("queue_settings", {"queue_id": self.queue_id}):
             self._shuffle_enabled = db_row["shuffle_enabled"]
             self._repeat_enabled = db_row["repeat_enabled"]
             self._crossfade_duration = db_row["crossfade_duration"]
-        if queue_cache := self.mass.cache.get(f"queue_items.{self.queue_id}"):
+        if queue_cache := await self.mass.cache.get(f"queue_items.{self.queue_id}"):
             self._items = queue_cache["items"]
             self._current_index = queue_cache["current_index"]
 
@@ -801,6 +831,7 @@ class PlayerQueue:
         """Save state in database."""
         # save queue settings in db
         await self.mass.database.insert_or_replace(
+            "queue_settings",
             {
                 "queue_id": self.queue_id,
                 "shuffle_enabled": self._shuffle_enabled,

@@ -263,8 +263,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         lazy: bool = True,
         details: ItemCls = None,
     ) -> ItemCls:
-        """Return item details for the given provider item id."""
+        """Return (full) details for a single media item."""
         db_item = await self.get_db_item_by_prov_id(provider, provider_item_id)
+        if db_item and len(db_item.provider_ids) != self.mass.music.provider_count:
+            # force refresh of item if provider count changed
+            refresh = True
         if db_item and refresh:
             provider, provider_item_id = await self.get_provider_id(db_item)
         elif db_item:
@@ -343,7 +346,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def get_db_items(self, custom_query: str | None = None) -> List[ItemCls]:
         """Fetch all records from database."""
         if custom_query is not None:
-            func = self.mass.database.get_rows_from_query(self.db_table, custom_query)
+            func = self.mass.database.get_rows_from_query(custom_query)
         else:
             func = self.mass.database.get_rows(self.db_table)
         return [self.item_cls.from_db_row(db_row) for db_row in await func]
@@ -386,7 +389,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not provider:
             raise ProviderUnavailableError(f"Provider {provider_id} is not available!")
         cache_key = f"{provider_id}.get_{self.media_type.value}.{item_id}"
-        item = await cached(self.mass.cache, cache_key, provider.get_item, self.media_type, item_id)
+        item = await cached(
+            self.mass.cache, cache_key, provider.get_item, self.media_type, item_id
+        )
         if not item:
             raise MediaNotFoundError(
                 f"{self.media_type.value} {item_id} not found on provider {provider_id}"
@@ -431,6 +436,21 @@ class ContentType(Enum):
             raise NotImplementedError
         return self.value.replace("le", "")
 
+    @classmethod
+    def from_bit_depth(
+        cls, bit_depth: int, floating_point: bool = False
+    ) -> "ContentType":
+        """Return (PCM) Contenttype from PCM bit depth."""
+        if floating_point and bit_depth > 32:
+            return cls.PCM_F64LE
+        if floating_point:
+            return cls.PCM_F32LE
+        if bit_depth == 16:
+            return cls.PCM_S16LE
+        if bit_depth == 24:
+            return cls.PCM_S24LE
+        return cls.PCM_S32LE
+
 
 @dataclass
 class StreamDetails(DataClassDictMixin):
@@ -449,6 +469,7 @@ class StreamDetails(DataClassDictMixin):
     sample_rate: int | None = None
     bit_depth: int | None = None
     media_type: MediaType = MediaType.TRACK
+    queue_id: str = None
 
     def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
         """Exclude internal fields from dict."""

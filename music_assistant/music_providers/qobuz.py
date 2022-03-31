@@ -512,9 +512,7 @@ class QobuzProvider(MusicProvider):
                 role = performer_str.split(", ")[1]
                 name = performer_str.split(", ")[0]
                 if "artist" in role.lower():
-                    artist = Artist()
-                    artist.name = name
-                    artist.item_id = name
+                    artist = Artist(name, self.id, name)
                 track.artists.append(artist)
         # TODO: fix grabbing composer from details
         track.name, track.version = parse_title_and_version(

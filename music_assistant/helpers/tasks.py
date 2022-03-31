@@ -1,7 +1,6 @@
 """Logic to process tasks on the event loop."""
 
 import asyncio
-import logging
 from asyncio.futures import Future
 from enum import IntEnum
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union

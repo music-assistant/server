@@ -71,7 +71,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def add(self, item: Playlist) -> Playlist:
         """Add playlist to local db and return the new database item."""
-        db_item = await self.add_db_playlist(item)
+        db_item = await self.add_db_item(item)
         self.mass.signal_event(EventType.PLAYLIST_ADDED, db_item)
         return db_item
 
@@ -206,7 +206,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 prov_playlist.item_id, track_ids_to_remove
             )
 
-    async def add_db_playlist(self, playlist: Playlist) -> Playlist:
+    async def add_db_item(self, playlist: Playlist) -> Playlist:
         """Add a new playlist record to the database."""
         match = {"name": playlist.name, "owner": playlist.owner}
         if cur_item := await self.mass.database.get_row(self.db_table, match):

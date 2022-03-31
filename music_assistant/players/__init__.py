@@ -8,6 +8,7 @@ from music_assistant.helpers.errors import AlreadyRegisteredError
 from music_assistant.helpers.typing import MusicAssistant
 
 from .models import Player, PlayerGroup, PlayerQueue
+from .stream import StreamController
 
 PlayerType = Player | PlayerGroup
 
@@ -17,12 +18,13 @@ DB_TABLE = "queue_settings"
 class PlayerController:
     """Controller holding all logic to play music from MusicProviders to supported players."""
 
-    def __init__(self, mass: MusicAssistant) -> None:
+    def __init__(self, mass: MusicAssistant, stream_port: int) -> None:
         """Initialize class."""
         self.mass = mass
         self.logger = mass.logger.getChild("players")
         self._players: Dict[str, PlayerType] = {}
         self._player_queues: Dict[str, PlayerQueue] = {}
+        self.streams = StreamController(mass, stream_port)
 
     async def setup(self) -> None:
         """Async initialize of module."""
@@ -35,6 +37,7 @@ class PlayerController:
                 volume_normalisation_enabled BOOLEAN,
                 volume_normalisation_target INTEGER)"""
         )
+        await self.streams.setup()
 
     @property
     def players(self) -> Tuple[PlayerType]:
@@ -84,7 +87,8 @@ class PlayerController:
         self._players[player_id] = player
 
         # create playerqueue for this player
-        self._player_queues[player.player_id] = PlayerQueue(self.mass, player_id)
+        self._player_queues[player.player_id] = player_queue = PlayerQueue(self.mass, player_id)
+        await player_queue.setup()
         self.logger.info(
             "Player added: %s/%s",
             player_id,

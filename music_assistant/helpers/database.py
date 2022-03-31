@@ -1,12 +1,9 @@
 """Database logic."""
 from __future__ import annotations
-import asyncio
 
 from typing import Any, Dict, List, Mapping
 
 from databases import Database as Db, DatabaseURL
-from databases.core import ClauseElement
-
 from music_assistant import EventDetails
 from music_assistant.constants import EventType
 from music_assistant.helpers.typing import MusicAssistant
@@ -20,7 +17,7 @@ class Database(Db):
         super().__init__(url, timeout=360)
         self.mass = mass
         self.logger = mass.logger.getChild("db")
-        self._lock = asyncio.Lock()
+        # self._lock = asyncio.Lock()
         mass.subscribe(self.__on_shutdown_event, EventType.SHUTDOWN)
 
     async def setup(self):
@@ -83,10 +80,10 @@ class Database(Db):
         sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
         await self.execute(sql_query)
 
-    async def execute(self, query: ClauseElement | str, values: dict = None) -> Any:
-        """Execute query on database."""
-        async with self._lock:
-            await super().execute(query, values)
+    # async def execute(self, query: ClauseElement | str, values: dict = None) -> Any:
+    #     """Execute query on database."""
+    #     async with self._lock:
+    #         await super().execute(query, values)
 
     async def __on_shutdown_event(
         self, event: EventType, details: EventDetails

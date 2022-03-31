@@ -87,7 +87,7 @@ class AlbumsController(MediaControllerBase[Album]):
         """Add album to local db and return the database item."""
         # make sure we have an artist
         assert item.artist
-        db_item = await self.add_db_album(item)
+        db_item = await self.add_db_item(item)
         # also fetch same album on all providers
         await self._match(db_item)
         db_item = await self.get_db_item(db_item.item_id)
@@ -109,7 +109,7 @@ class AlbumsController(MediaControllerBase[Album]):
             item_id,
         )
 
-    async def add_db_album(self, album: Album) -> Album:
+    async def add_db_item(self, album: Album) -> Album:
         """Add a new album record to the database."""
         cur_item = None
         # always try to grab existing item by external_id
@@ -129,9 +129,15 @@ class AlbumsController(MediaControllerBase[Album]):
             return await self.update_db_album(cur_item.item_id, album)
 
         # insert new album
+        album_artist = ItemMapping.from_item(
+            await self.mass.music.artists.get_db_item_by_prov_id(
+                album.artist.provider, album.artist.item_id
+            )
+            or album.artist
+        )
         new_item = await self.mass.database.insert_or_replace(
             self.db_table,
-            album.to_db_row(),
+            {**album.to_db_row(), "artist": json_serializer(album_artist)},
         )
         item_id = new_item["item_id"]
         # store provider mappings
@@ -150,9 +156,6 @@ class AlbumsController(MediaControllerBase[Album]):
         album_artist = ItemMapping.from_item(
             await self.mass.music.artists.get_db_item_by_prov_id(
                 cur_item.artist.provider, cur_item.artist.item_id
-            )
-            or await self.mass.music.artists.get(
-                album.artist.item_id, album.artist.provider, lazy=False
             )
             or cur_item.artist
         )

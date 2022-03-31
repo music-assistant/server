@@ -45,7 +45,7 @@ class MusicAssistant:
         self.cache = Cache(self)
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
-        self.players = PlayerController(self)
+        self.players = PlayerController(self, stream_port)
 
     async def setup(self) -> None:
         """Async setup of music assistant."""

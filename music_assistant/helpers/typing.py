@@ -8,7 +8,7 @@ from music_assistant.constants import EventType
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.music.models import MediaType
-    from music_assistant.player_queue.models import (
+    from music_assistant.players.models import (
         PlayerQueue,
         QueueItem,
     )
@@ -20,6 +20,7 @@ else:
     PlayerQueue = "PlayerQueue"
     StreamDetails = "StreamDetails"
     Player = "Player"
+    MediaType = "MediaType"
 
 
 QueueItems = List[QueueItem]

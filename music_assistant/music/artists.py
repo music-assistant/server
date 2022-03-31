@@ -102,7 +102,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         item.metadata = await self.mass.metadata.get_artist_metadata(
             item.musicbrainz_id, item.metadata
         )
-        db_item = await self.add_db_artist(item)
+        db_item = await self.add_db_item(item)
         # also fetch same artist on all providers
         await self.match_artist(db_item)
         db_item = await self.get_db_item(db_item.item_id)
@@ -161,7 +161,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             item_id,
         )
 
-    async def add_db_artist(self, artist: Artist) -> Artist:
+    async def add_db_item(self, artist: Artist) -> Artist:
         """Add a new artist record to the database."""
         match = {"musicbrainz_id": artist.musicbrainz_id}
         if cur_item := await self.mass.database.get_row(self.db_table, match):
