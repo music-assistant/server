@@ -1,40 +1,6 @@
 """All constants for Music Assistant."""
 
-__version__ = "0.2.13"
 from enum import Enum
-
-
-REQUIRED_PYTHON_VER = "3.9"
-
-# configuration keys/attributes
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
-CONF_ENABLED = "enabled"
-CONF_HOSTNAME = "hostname"
-CONF_PORT = "port"
-CONF_TOKEN = "token"
-CONF_URL = "url"
-CONF_NAME = "name"
-CONF_CROSSFADE_DURATION = "crossfade_duration"
-CONF_GROUP_DELAY = "group_delay"
-CONF_VOLUME_CONTROL = "volume_control"
-CONF_POWER_CONTROL = "power_control"
-CONF_MAX_SAMPLE_RATE = "max_sample_rate"
-CONF_VOLUME_NORMALISATION = "volume_normalisation"
-CONF_TARGET_VOLUME = "target_volume"
-CONF_SSL_CERTIFICATE = "ssl_certificate"
-CONF_SSL_KEY = "ssl_key"
-CONF_EXTERNAL_URL = "external_url"
-
-
-# configuration base keys/attributes
-CONF_KEY_BASE = "base"
-CONF_KEY_PLAYER_SETTINGS = "player_settings"
-CONF_KEY_MUSIC_PROVIDERS = "music_providers"
-CONF_KEY_PLAYER_PROVIDERS = "player_providers"
-CONF_KEY_METADATA_PROVIDERS = "metadata_providers"
-CONF_KEY_PLUGINS = "plugins"
-CONF_KEY_BASE_INFO = "info"
 
 
 class EventType(Enum):
@@ -47,6 +13,7 @@ class EventType(Enum):
     STREAM_ENDED = "streaming ended"
     CONFIG_CHANGED = "config changed"
     MUSIC_SYNC_STATUS = "music sync status"
+    QUEUE_ADDED = "queue_added"
     QUEUE_UPDATED = "queue updated"
     QUEUE_ITEMS_UPDATED = "queue items updated"
     SHUTDOWN = "application shutdown"

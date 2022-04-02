@@ -10,7 +10,7 @@ from music_assistant.helpers.compare import (
     compare_strings,
     compare_track,
 )
-from music_assistant.helpers.util import merge_dict, merge_list
+from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
 from music_assistant.helpers.web import json_serializer
 from music_assistant.music.models import (
     ItemMapping,
@@ -34,7 +34,7 @@ class TracksController(MediaControllerBase[Track]):
             f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
-                    sort_name TEXT,
+                    sort_name TEXT NOT NULL,
                     version TEXT,
                     duration INTEGER,
                     in_library BOOLEAN DEFAULT 0,
@@ -129,6 +129,8 @@ class TracksController(MediaControllerBase[Track]):
     async def add_db_item(self, track: Track) -> Track:
         """Add a new track record to the database."""
         assert track.artists, "Track is missing artist(s)"
+        if not track.sort_name:
+            track.sort_name = create_sort_name(track.name)
         cur_item = None
         # always try to grab existing item by external_id
         if track.isrc:
@@ -160,7 +162,7 @@ class TracksController(MediaControllerBase[Track]):
         await self.mass.music.add_provider_mappings(
             item_id, MediaType.TRACK, track.provider_ids
         )
-        self.logger.debug("added %s to database", track.name)
+
         # add track to album_tracks
         if track.album is not None:
             album = await self.get_db_item_by_prov_id(
@@ -174,7 +176,6 @@ class TracksController(MediaControllerBase[Track]):
                 await self.mass.music.albums.add_db_album_track(
                     album.item_id, item_id, track.disc_number, track.track_number
                 )
-
         # return created object
         return await self.get_db_item(item_id)
 

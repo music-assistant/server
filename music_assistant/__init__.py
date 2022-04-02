@@ -3,22 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable, Tuple
+from time import time
+from typing import Callable, Coroutine, Tuple
 
 import aiohttp
 from databases import DatabaseURL
-from zeroconf import InterfaceChoice, Zeroconf
 from music_assistant.helpers.typing import EventCallBackType, EventDetails
 
 from music_assistant.helpers import util
 from music_assistant.constants import EventType
 from music_assistant.helpers.database import Database
 from music_assistant.helpers.cache import Cache
-from music_assistant.helpers.util import callback, create_task
+from music_assistant.helpers.util import create_task
 from music_assistant.metadata import MetaDataController
 from music_assistant.music import MusicController
 from music_assistant.players import PlayerController
-from music_assistant.helpers.tasks import TaskManager
 
 
 class MusicAssistant:
@@ -34,18 +33,18 @@ class MusicAssistant:
 
         self.loop: asyncio.AbstractEventLoop = None
         self.http_session: aiohttp.ClientSession = None
-        self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
         self.logger = logging.getLogger(__name__)
 
         self._listeners = []
+        self._jobs = asyncio.Queue()
 
         # init core controllers
-        self.tasks = TaskManager(self)
         self.database = Database(self, db_url)
         self.cache = Cache(self)
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
         self.players = PlayerController(self, stream_port)
+        self._jobs_task: asyncio.Task = None
 
     async def setup(self) -> None:
         """Async setup of music assistant."""
@@ -57,22 +56,23 @@ class MusicAssistant:
             loop=self.loop,
             connector=aiohttp.TCPConnector(enable_cleanup_closed=True, ssl=False),
         )
-        # run migrations if needed
+        # setup core controllers
         await self.database.setup()
-        await self.tasks.setup()
         await self.cache.setup()
         await self.music.setup()
         await self.metadata.setup()
         await self.players.setup()
+        self._jobs_task = create_task(self.__process_jobs())
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
         self.logger.info("Application shutdown")
         self.signal_event(EventType.SHUTDOWN)
+        if self._jobs_task is not None:
+            self._jobs_task.cancel()
         await self.http_session.connector.close()
         self.http_session.detach()
 
-    @callback
     def signal_event(
         self, event_type: EventType, event_details: EventDetails = None
     ) -> None:
@@ -86,7 +86,6 @@ class MusicAssistant:
             if not event_filter or event_type in event_filter:
                 create_task(cb_func, event_type, event_details)
 
-    @callback
     def subscribe(
         self,
         cb_func: EventCallBackType,
@@ -110,3 +109,27 @@ class MusicAssistant:
             self._listeners.remove(listener)
 
         return remove_listener
+
+    def add_job(self, job: Coroutine, name: str | None = None) -> None:
+        """Add job to be (slowly) processed in the background (one by one)."""
+        if not name:
+            name = job.__qualname__ or job.__name__
+        self._jobs.put_nowait((name, job))
+
+    async def __process_jobs(self):
+        """Process jobs in the background."""
+        while True:
+            name, job = await self._jobs.get()
+            time_start = time()
+            self.logger.debug("Start processing job [%s].", name)
+            try:
+                # await job
+                task = asyncio.create_task(job, name=name)
+                await task
+            except Exception as err:  # pylint: disable=broad-except
+                self.logger.error(
+                    "Job [%s] failed with error %s.", name, str(err), exc_info=err
+                )
+            else:
+                duration = round(time() - time_start, 2)
+                self.logger.info("Finished job [%s] in %s seconds.", name, duration)

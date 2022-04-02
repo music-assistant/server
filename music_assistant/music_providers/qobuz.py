@@ -416,7 +416,12 @@ class QobuzProvider(MusicProvider):
         if not artist_obj and "artist" not in album_obj:
             # artist missing in album info, return full abum instead
             return await self.get_album(album_obj["id"])
-        album = Album(item_id=str(album_obj["id"]), provider=self.id)
+        name, version = parse_title_and_version(
+            album_obj["title"], album_obj.get("version")
+        )
+        album = Album(
+            item_id=str(album_obj["id"]), provider=self.id, name=name, version=version
+        )
         if album_obj["maximum_sampling_rate"] > 192:
             quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
         elif album_obj["maximum_sampling_rate"] > 96:
@@ -438,9 +443,7 @@ class QobuzProvider(MusicProvider):
                 available=album_obj["streamable"] and album_obj["displayable"],
             )
         )
-        album.name, album.version = parse_title_and_version(
-            album_obj["title"], album_obj.get("version")
-        )
+
         if artist_obj:
             album.artist = artist_obj
         else:
@@ -485,9 +488,14 @@ class QobuzProvider(MusicProvider):
 
     async def _parse_track(self, track_obj):
         """Parse qobuz track object to generic layout."""
+        name, version = parse_title_and_version(
+            track_obj["title"], track_obj.get("version")
+        )
         track = Track(
             item_id=str(track_obj["id"]),
             provider=self.id,
+            name=name,
+            version=version,
             disc_number=track_obj["media_number"],
             track_number=track_obj["track_number"],
             duration=track_obj["duration"],
@@ -515,9 +523,7 @@ class QobuzProvider(MusicProvider):
                     artist = Artist(name, self.id, name)
                 track.artists.append(artist)
         # TODO: fix grabbing composer from details
-        track.name, track.version = parse_title_and_version(
-            track_obj["title"], track_obj.get("version")
-        )
+
         if "album" in track_obj:
             album = await self._parse_album(track_obj["album"])
             if album:

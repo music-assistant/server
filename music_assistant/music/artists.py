@@ -1,6 +1,7 @@
 """Manage MediaItems of type Artist."""
 
 import asyncio
+import itertools
 from typing import List
 
 from music_assistant.constants import EventType
@@ -10,7 +11,7 @@ from music_assistant.helpers.compare import (
     compare_strings,
     compare_track,
 )
-from music_assistant.helpers.util import merge_dict, merge_list
+from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
 from music_assistant.helpers.web import json_serializer
 from music_assistant.music.models import (
     Album,
@@ -38,7 +39,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
-                    sort_name TEXT,
+                    sort_name TEXT NOT NULL,
                     musicbrainz_id TEXT NOT NULL UNIQUE,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
@@ -50,23 +51,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return top tracks for an artist."""
         artist = await self.get(item_id, provider_id)
         # get results from all providers
-        # use intermediate set to filter duplicates
-        return list(
-            set(
-                await asyncio.gather(
-                    *[
-                        self.mass.music.tracks.get(track.item_id, track.provider)
-                        for prov_tracks in await asyncio.gather(
-                            *[
-                                self.get_provider_artist_toptracks(
-                                    item.item_id, item.provider
-                                )
-                                for item in artist.provider_ids
-                            ]
-                        )
-                        for track in prov_tracks
-                    ]
-                )
+        # TODO: add db results
+        return itertools.chain.from_iterable(
+            await asyncio.gather(
+                *[
+                    self.get_provider_artist_toptracks(item.item_id, item.provider)
+                    for item in artist.provider_ids
+                ]
             )
         )
 
@@ -74,23 +65,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return (all/most popular) albums for an artist."""
         artist = await self.get(item_id, provider_id)
         # get results from all providers
-        # use intermediate set to filter duplicates
-        return list(
-            set(
-                await asyncio.gather(
-                    *[
-                        self.mass.music.albums.get(album.item_id, album.provider)
-                        for prov_albums in await asyncio.gather(
-                            *[
-                                self.get_provider_artist_albums(
-                                    item.item_id, item.provider
-                                )
-                                for item in artist.provider_ids
-                            ]
-                        )
-                        for album in prov_albums
-                    ]
-                )
+        # TODO: add db results
+        return itertools.chain.from_iterable(
+            await asyncio.gather(
+                *[
+                    self.get_provider_artist_albums(item.item_id, item.provider)
+                    for item in artist.provider_ids
+                ]
             )
         )
 
@@ -163,14 +144,17 @@ class ArtistsController(MediaControllerBase[Artist]):
 
     async def add_db_item(self, artist: Artist) -> Artist:
         """Add a new artist record to the database."""
+        assert artist.musicbrainz_id
+        assert artist.name
         match = {"musicbrainz_id": artist.musicbrainz_id}
         if cur_item := await self.mass.database.get_row(self.db_table, match):
             # update existing
             return await self.update_db_artist(cur_item["item_id"], artist)
         # insert artist
+        if not artist.sort_name:
+            artist.sort_name = create_sort_name(artist.name)
         new_item = await self.mass.database.insert_or_replace(
-            self.db_table,
-            artist.to_db_row()
+            self.db_table, artist.to_db_row()
         )
         item_id = new_item["item_id"]
         # store provider mappings
@@ -191,7 +175,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.db_table,
             match,
             {
-                "musicbrainz_id": artist.musicbrainz_id or cur_item.musicbrainz_id,
                 "metadata": json_serializer(metadata),
                 "provider_ids": json_serializer(provider_ids),
             },
@@ -260,9 +243,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                             prov_artist = await self.get_provider_item(
                                 search_item_artist.item_id, search_item_artist.provider
                             )
-                            await self.update_db_artist(
-                                db_artist.item_id, prov_artist
-                            )
+                            await self.update_db_artist(db_artist.item_id, prov_artist)
                             return
         # try to get a match with some reference albums of this artist
         artist_albums = await self.albums(db_artist.item_id, db_artist.provider)
@@ -282,8 +263,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                         search_result_item.artist.item_id,
                         search_result_item.artist.provider,
                     )
-                    await self.update_db_artist(
-                        db_artist.item_id, prov_artist
-                    )
+                    await self.update_db_artist(db_artist.item_id, prov_artist)
                     return
         return

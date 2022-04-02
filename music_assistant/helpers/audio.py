@@ -126,7 +126,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
 
 async def get_stream_details(
     mass: MusicAssistant, queue_item: QueueItem, queue_id: str = ""
-) -> StreamDetails:
+) -> StreamDetails | None:
     """
     Get streamdetails for the given QueueItem.
 
@@ -146,7 +146,7 @@ async def get_stream_details(
         )
     else:
         # always request the full db track as there might be other qualities available
-        full_item = await mass.music.get_item_by_uri(queue_item.uri)
+        full_item = await mass.music.get_item_by_uri(queue_item.uri, force_refresh=True, lazy=False)
         if not full_item:
             return None
         # sort by quality and check track availability
@@ -192,9 +192,9 @@ async def get_gain_correct(
 ) -> Tuple[float, float]:
     """Get gain correction for given queue / track combination."""
     queue = mass.players.get_player_queue(queue_id, True)
-    if not queue or not queue.volume_normalisation_enabled:
+    if not queue or not queue.volume_normalization_enabled:
         return 0
-    target_gain = queue.volume_normalisation_target
+    target_gain = queue.volume_normalization_target
     track_loudness = await mass.music.get_track_loudness(item_id, provider_id)
     if track_loudness is None:
         # fallback to provider average
@@ -316,7 +316,7 @@ def get_sox_args(
     filter_args = []
     if streamdetails.gain_correct:
         filter_args += ["vol", str(streamdetails.gain_correct), "dB"]
-    if resample and streamdetails.content_type == ContentType.FLAC:
+    if resample and streamdetails.media_type != MediaType.RADIO:
         # use extra high quality resampler only if it makes sense
         filter_args += ["rate", "-v", str(resample)]
     elif resample:
@@ -375,6 +375,6 @@ async def get_media_stream(
             # send analyze job to background worker
             if streamdetails.loudness is None:
                 uri = f"{streamdetails.provider}://{streamdetails.media_type.value}/{streamdetails.item_id}"
-                mass.tasks.add(
-                    f"Analyze audio for {uri}", analyze_audio(mass, streamdetails)
+                mass.add_job(
+                    analyze_audio(mass, streamdetails), f"Analyze audio for {uri}"
                 )

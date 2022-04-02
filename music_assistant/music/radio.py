@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from music_assistant.constants import EventType
-from music_assistant.helpers.util import merge_dict, merge_list
+from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
 from music_assistant.helpers.web import json_serializer
 from music_assistant.music.models import MediaControllerBase, MediaType, Radio
 
@@ -21,7 +21,7 @@ class RadioController(MediaControllerBase[Radio]):
             f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
-                    sort_name TEXT,
+                    sort_name TEXT NOT NULL,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_ids json
@@ -40,7 +40,9 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def add_db_item(self, radio: Radio) -> Radio:
         """Add a new radio record to the database."""
-        match = {"name": radio.name}
+        if not radio.sort_name:
+            radio.sort_name = create_sort_name(radio.name)
+        match = {"sort_name": radio.sort_name}
         if cur_item := await self.mass.database.get_row(self.db_table, match):
             # update existing
             return await self.update_db_radio(cur_item["item_id"], radio)
@@ -64,6 +66,8 @@ class RadioController(MediaControllerBase[Radio]):
         cur_item = await self.get_db_item(item_id)
         metadata = merge_dict(cur_item.metadata, radio.metadata)
         provider_ids = merge_list(cur_item.provider_ids, radio.provider_ids)
+        if not radio.sort_name:
+            radio.sort_name = create_sort_name(radio.name)
 
         match = {"item_id": item_id}
         await self.mass.database.update(

@@ -1,16 +1,18 @@
 """Models and helpers for media items."""
 from __future__ import annotations
+
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-
 from typing import Any, Dict, Generic, List, Mapping, Tuple, TypeVar
+
 import ujson
 from mashumaro import DataClassDictMixin
 
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.util import create_sort_name
 
 
 class MediaType(Enum):
@@ -59,7 +61,8 @@ class MediaItem(DataClassDictMixin):
 
     item_id: str
     provider: str
-    name: str = ""
+    name: str
+    sort_name: str | None = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: bool = False
@@ -70,6 +73,8 @@ class MediaItem(DataClassDictMixin):
         """Call after init."""
         if not self.uri:
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
+        if not self.sort_name:
+            self.sort_name = create_sort_name(self.name)
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):
@@ -103,15 +108,6 @@ class MediaItem(DataClassDictMixin):
                 "position",
             ]
         }
-
-    @property
-    def sort_name(self):
-        """Return sort name."""
-        sort_name = self.name
-        for item in ["The ", "De ", "de ", "Les "]:
-            if self.name.startswith(item):
-                sort_name = "".join(self.name.split(item)[1:])
-        return sort_name.lower()
 
     @property
     def available(self):
@@ -167,10 +163,10 @@ class Album(MediaItem):
 
     media_type: MediaType = MediaType.ALBUM
     version: str = ""
-    year: int = 0
+    year: int | None = None
     artist: ItemMapping | Artist | None = None
     album_type: AlbumType = AlbumType.UNKNOWN
-    upc: str = ""
+    upc: str | None = None
 
     def __hash__(self):
         """Return custom hash."""
@@ -216,9 +212,9 @@ class Radio(MediaItem):
     duration: int = 86400
 
 
-def create_uri(media_type: MediaType, provider: str, item_id: str):
+def create_uri(media_type: MediaType, provider_id: str, item_id: str):
     """Create uri for mediaitem."""
-    return f"{provider}://{media_type.value}/{item_id}"
+    return f"{provider_id}://{media_type.value}/{item_id}"
 
 
 MediaItemType = Artist | Album | Track | Radio | Playlist
@@ -258,25 +254,22 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def get(
         self,
         provider_item_id: str,
-        provider: str,
-        refresh: bool = False,
+        provider_id: str,
+        force_refresh: bool = False,
         lazy: bool = True,
         details: ItemCls = None,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
-        db_item = await self.get_db_item_by_prov_id(provider, provider_item_id)
-        if db_item and len(db_item.provider_ids) != self.mass.music.provider_count:
-            # force refresh of item if provider count changed
-            refresh = True
-        if db_item and refresh:
-            provider, provider_item_id = await self.get_provider_id(db_item)
+        db_item = await self.get_db_item_by_prov_id(provider_id, provider_item_id)
+        if db_item and force_refresh:
+            provider_id, provider_item_id = await self.get_provider_id(db_item)
         elif db_item:
             return db_item
         if not details:
-            details = await self.get_provider_item(provider_item_id, provider)
+            details = await self.get_provider_item(provider_item_id, provider_id)
         if not lazy:
             return await self.add(details)
-        self.mass.tasks.add(f"Add {details.uri} to database", self.add, details)
+        self.mass.add_job(self.add(details), f"Add {details.uri} to database")
         return db_item if db_item else details
 
     async def search(
@@ -306,10 +299,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             limit,
         )
 
-    async def add_to_library(self, provider_item_id: str, provider: str) -> None:
+    async def add_to_library(self, provider_item_id: str, provider_id: str) -> None:
         """Add an item to the library."""
         # make sure we have a valid full item
-        db_item = await self.get(provider_item_id, provider, lazy=False)
+        db_item = await self.get(provider_item_id, provider_id, lazy=False)
         # add to provider libraries
         for prov_id in db_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.provider):
@@ -318,10 +311,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not db_item.in_library:
             await self.set_db_library(db_item.item_id, True)
 
-    async def remove_from_library(self, provider_item_id: str, provider: str) -> None:
+    async def remove_from_library(self, provider_item_id: str, provider_id: str) -> None:
         """Remove item from the library."""
         # make sure we have a valid full item
-        db_item = await self.get(provider_item_id, provider, lazy=False)
+        db_item = await self.get(provider_item_id, provider_id, lazy=False)
         # add to provider's libraries
         for prov_id in db_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.provider):
@@ -330,7 +323,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if db_item.in_library:
             await self.set_db_library(db_item.item_id, False)
 
-    async def get_provider_id(self, item: ItemCls) -> Tuple[str, str]:
+    async def get_provider_id(
+        self, item: ItemCls
+    ) -> Tuple[str, str]:
         """Return provider and item id."""
         if item.provider == "database":
             # make sure we have a full object
@@ -360,14 +355,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def get_db_item_by_prov_id(
         self,
-        provider: str,
+        provider_id: str,
         provider_item_id: str,
     ) -> ItemCls | None:
         """Get the database album for the given prov_id."""
-        if provider == "database":
+        if provider_id == "database":
             return await self.get_db_item(provider_item_id)
         if item_id := await self.mass.music.get_provider_mapping(
-            self.media_type, provider, provider_item_id
+            self.media_type, provider_id, provider_item_id
         ):
             return await self.get_db_item(item_id)
         return None

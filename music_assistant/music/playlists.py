@@ -7,10 +7,9 @@ from typing import List
 from music_assistant.constants import EventType
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.errors import InvalidDataError, MediaNotFoundError
-from music_assistant.helpers.util import merge_dict, merge_list
+from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
 from music_assistant.helpers.web import json_serializer
 from music_assistant.music.models import MediaControllerBase, MediaType, Playlist, Track
-from music_assistant.helpers.tasks import TaskInfo
 
 
 class PlaylistController(MediaControllerBase[Playlist]):
@@ -27,7 +26,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
-                    sort_name TEXT,
+                    sort_name TEXT NOT NULL,
                     owner TEXT NOT NULL,
                     is_editable BOOLEAN NOT NULL,
                     checksum TEXT NOT NULL,
@@ -39,9 +38,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
         await self.mass.database.execute(
             """CREATE TABLE IF NOT EXISTS playlist_tracks(
-                    playlist_id INTEGER,
-                    track_id INTEGER,
-                    position INTEGER,
+                    playlist_id INTEGER NOT NULL,
+                    track_id INTEGER NOT NULL,
+                    position INTEGER NOT NULL,
                     UNIQUE(playlist_id, position)
                 );"""
         )
@@ -56,18 +55,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if playlist.in_library and playlist.provider == "database":
             # for in-library playlists we have the tracks in db
             return await self.get_db_playlist_tracks(playlist.item_id)
+        # else: simply return the tracks from the first provider
         for prov in playlist.provider_ids:
-            # playlist tracks are not stored in db, we always fetch them (cached) from the provider.
-            provider = self.mass.music.get_provider(prov.provider)
-            cache_checksum = playlist.checksum
-            cache_key = f"{prov.provider}.playlist_tracks.{item_id}"
-            return await cached(
-                self.mass.cache,
-                cache_key,
-                provider.get_playlist_tracks,
-                item_id,
-                checksum=cache_checksum,
-            )
+            if tracks := await self.get_provider_playlist_tracks(
+                prov.item_id, prov.provider
+            ):
+                return tracks
+        return []
 
     async def add(self, item: Playlist) -> Playlist:
         """Add playlist to local db and return the new database item."""
@@ -77,9 +71,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def add_playlist_tracks(
         self, item_id: str, provider_id: str, tracks: List[Track]
-    ) -> List[TaskInfo]:
+    ) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
-        result = []
         playlist = await self.get(item_id, provider_id)
         if not playlist:
             raise MediaNotFoundError(f"Playlist {item_id} not found")
@@ -87,12 +80,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for track in tracks:
             job_desc = f"Add track {track.uri} to playlist {playlist.uri}"
-            result.append(
-                self.mass.tasks.add(
-                    job_desc, self.add_playlist_track, item_id, provider_id, track
-                )
+            self.mass.add_job(
+                self.add_playlist_track(item_id, provider_id, track), job_desc
             )
-        return result
 
     async def add_playlist_track(
         self, item_id: str, provider_id: str, track: Track
@@ -106,7 +96,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         # make sure we have recent full track details
         track = await self.mass.music.tracks.get(
-            track.item_id, track.provider, refresh=True, lazy=False
+            track.item_id, track.provider, force_refresh=True, lazy=False
         )
         # a playlist can only have one provider (for now)
         playlist_prov = next(iter(playlist.provider_ids))
@@ -162,9 +152,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def remove_playlist_tracks(
         self, item_id: str, provider_id: str, tracks: List[Track]
-    ) -> List[TaskInfo]:
+    ) -> None:
         """Remove multiple tracks from playlist. Creates background tasks to process the action."""
-        result = []
         playlist = await self.get(item_id, provider_id)
         if not playlist:
             raise MediaNotFoundError(f"Playlist {item_id} not found")
@@ -172,12 +161,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for track in tracks:
             job_desc = f"Remove track {track.uri} from playlist {playlist.uri}"
-            result.append(
-                self.mass.tasks.add(
-                    job_desc, self.remove_playlist_track, item_id, provider_id, track
-                )
+            self.mass.add_job(
+                self.remove_playlist_track(item_id, provider_id, track), job_desc
             )
-        return result
 
     async def remove_playlist_track(
         self, item_id: str, provider_id: str, track: Track
@@ -206,6 +192,35 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 prov_playlist.item_id, track_ids_to_remove
             )
 
+    async def get_provider_playlist_tracks(
+        self, item_id: str, provider_id: str
+    ) -> List[Track]:
+        """Return playlist tracks for the given provider playlist id."""
+        provider = self.mass.music.get_provider(provider_id)
+        if not provider:
+            return []
+        playlist = await provider.get_playlist(item_id)
+        cache_key = f"{provider_id}.playlisttracks.{item_id}"
+
+        # we need to make sure that position is set on the track
+        def playlist_track_with_position(track: Track, index: int):
+            if track.position is None:
+                track.position = index
+            return track
+
+        tracks = await cached(
+            self.mass.cache,
+            cache_key,
+            provider.get_playlist_tracks,
+            item_id,
+            checksum=playlist.checksum,
+        )
+
+        return [
+            playlist_track_with_position(track, index)
+            for index, track in enumerate(tracks)
+        ]
+
     async def add_db_item(self, playlist: Playlist) -> Playlist:
         """Add a new playlist record to the database."""
         match = {"name": playlist.name, "owner": playlist.owner}
@@ -232,6 +247,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cur_item = await self.get_db_item(item_id)
         metadata = merge_dict(cur_item.metadata, playlist.metadata)
         provider_ids = merge_list(cur_item.provider_ids, playlist.provider_ids)
+        if not playlist.sort_name:
+            playlist.sort_name = create_sort_name(playlist.name)
 
         match = {"item_id": item_id}
         await self.mass.database.update(

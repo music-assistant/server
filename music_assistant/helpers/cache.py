@@ -7,7 +7,7 @@ import time
 from typing import Awaitable
 
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import create_task
+from music_assistant.helpers.util import create_task, run_periodic
 
 DB_TABLE = "cache"
 
@@ -28,7 +28,7 @@ class Cache:
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE}(
                 key TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
         )
-        self.mass.tasks.add("Cleanup cache", self.auto_cleanup, periodic=3600)
+        self.__schedule_cleanup_task()
 
     async def get(self, cache_key, checksum="", default=None):
         """
@@ -94,7 +94,7 @@ class Cache:
 
     async def auto_cleanup(self):
         """Sceduled auto cleanup task."""
-        # for now we simply rest the memory cache
+        # for now we simply reset the memory cache
         self._mem_cache = {}
         cur_timestamp = int(time.time())
         for db_row in await self.mass.database.get_rows(DB_TABLE):
@@ -103,6 +103,12 @@ class Cache:
                 await self.delete(db_row["key"])
         # compact db
         await self.mass.database.execute("VACUUM")
+
+    def __schedule_cleanup_task(self):
+        """Schedule the cleanup task."""
+        self.mass.add_job(self.auto_cleanup(), "Cleanup cache")
+        # reschedule self
+        self.mass.loop.call_later(3600, self.__schedule_cleanup_task)
 
     @staticmethod
     def _get_checksum(stringinput):

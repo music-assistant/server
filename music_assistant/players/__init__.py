@@ -34,8 +34,8 @@ class PlayerController:
                 crossfade_duration INTEGER,
                 shuffle_enabled BOOLEAN,
                 repeat_enabled BOOLEAN,
-                volume_normalisation_enabled BOOLEAN,
-                volume_normalisation_target INTEGER)"""
+                volume_normalization_enabled BOOLEAN,
+                volume_normalization_target INTEGER)"""
         )
         await self.streams.setup()
 
@@ -90,7 +90,7 @@ class PlayerController:
         self._player_queues[player.player_id] = player_queue = PlayerQueue(self.mass, player_id)
         await player_queue.setup()
         self.logger.info(
-            "Player added: %s/%s",
+            "Player registered: %s/%s",
             player_id,
             player.name,
         )

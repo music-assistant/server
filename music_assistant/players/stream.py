@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import asyncio
 from asyncio import Task
-from typing import Awaitable, Callable, Dict, List, Tuple
-from urllib.error import HTTPError
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 from aiohttp import web
+from music_assistant.constants import EventType
 from music_assistant.helpers.audio import (
     create_wave_header,
     crossfade_pcm_parts,
@@ -29,7 +29,6 @@ class StreamController:
         self.logger = mass.logger.getChild("stream")
         self._port = port
         self._ip: str = get_ip()
-        self._app: web.Application = None
         self._subscribers: Dict[str, Dict[str, List[Callable]]] = {}
         self._stream_tasks: Dict[str, Task] = {}
 
@@ -39,14 +38,26 @@ class StreamController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self._app = web.Application()
-        self._app.router.add_get("/{queue_id}.wav", self.serve_stream_client)
-        self._app.router.add_get("/{queue_id}", self.serve_stream_client)
-        runner = web.AppRunner(self._app, access_log=None)
+        app = web.Application()
+        app.router.add_get("/{queue_id}.wav", self.serve_stream_client)
+        app.router.add_get("/{queue_id}", self.serve_stream_client)
+        runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
-        http_site = web.TCPSite(runner, host=None, port=self._port)
+        http_site = web.TCPSite(runner, host=None, port=self._port, reuse_address=True)
         await http_site.start()
+
+        async def on_shutdown_event(*args, **kwargs):
+            """Handle shutdown event."""
+            await runner.shutdown()
+            await http_site.stop()
+            await app.shutdown()
+            await runner.cleanup()
+            await app.cleanup()
+            self.logger.info("Streamserver exited.")
+
+        self.mass.subscribe(on_shutdown_event, EventType.SHUTDOWN)
+
         self.logger.info("Started stream server on port %s", self._port)
 
     async def serve_stream_client(self, request: web.Request):
@@ -151,15 +162,18 @@ class StreamController:
             streamdetails = await get_stream_details(
                 self.mass, queue_track, queue.queue_id
             )
+            if not streamdetails:
+                self.logger.warning("Skip track due to missing streamdetails")
+                continue
             # get the PCM samplerate/bitrate
-            if bit_depth is not None and streamdetails.bit_depth > bit_depth:
+            if bit_depth is not None and streamdetails.bit_depth != bit_depth:
+                await queue.queue_stream_signal_next()
                 break  # bit depth mismatch
-            if bit_depth is None or streamdetails.bit_depth <= bit_depth:
-                bit_depth = streamdetails.bit_depth
-            if sample_rate is not None and streamdetails.sample_rate > sample_rate:
+            bit_depth = streamdetails.bit_depth
+            if sample_rate is not None and streamdetails.sample_rate != sample_rate:
+                await queue.queue_stream_signal_next()
                 break  # sample rate mismatch
-            if sample_rate is None or streamdetails.sample_rate <= sample_rate:
-                sample_rate = streamdetails.sample_rate
+            sample_rate = streamdetails.sample_rate
 
             pcm_fmt = ContentType.from_bit_depth(bit_depth)
             sample_size = int(sample_rate * (bit_depth / 8) * channels)  # 1 second

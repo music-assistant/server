@@ -4,10 +4,10 @@ from pathlib import Path
 
 from setuptools import find_packages, setup
 
-import music_assistant.constants as mass_const
-
 PROJECT_NAME = "Music Assistant"
 PROJECT_PACKAGE_NAME = "music_assistant"
+PROJECT_VERSION = "1.0.0"
+PROJECT_REQ_PYTHON_VERSION = "3.9"
 PROJECT_LICENSE = "Apache License 2.0"
 PROJECT_AUTHOR = "Marcel van der Veldt"
 PROJECT_URL = "https://music-assistant.github.io/"
@@ -20,7 +20,7 @@ PYPI_URL = f"https://pypi.python.org/pypi/{PROJECT_PACKAGE_NAME}"
 GITHUB_PATH = f"{PROJECT_GITHUB_USERNAME}/{PROJECT_GITHUB_REPOSITORY}"
 GITHUB_URL = f"https://github.com/{GITHUB_PATH}"
 
-DOWNLOAD_URL = f"{GITHUB_URL}/archive/{mass_const.__version__}.zip"
+DOWNLOAD_URL = f"{GITHUB_URL}/archive/{PROJECT_VERSION}.zip"
 PROJECT_URLS = {
     "Bug Reports": f"{GITHUB_URL}/issues",
     "Website": "https://music-assistant.github.io/",
@@ -41,7 +41,7 @@ if os.name != "nt":
 
 setup(
     name=PROJECT_PACKAGE_NAME,
-    version=mass_const.__version__,
+    version=PROJECT_VERSION,
     url=PROJECT_URL,
     download_url=DOWNLOAD_URL,
     project_urls=PROJECT_URLS,
@@ -53,7 +53,7 @@ setup(
     include_package_data=True,
     zip_safe=False,
     install_requires=REQUIRES,
-    python_requires=f">={mass_const.REQUIRED_PYTHON_VER}",
+    python_requires=f">={PROJECT_REQ_PYTHON_VERSION}",
     test_suite="tests",
     entry_points={
         "console_scripts": [

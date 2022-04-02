@@ -299,8 +299,8 @@ class SpotifyProvider(MusicProvider):
 
     async def _parse_album(self, album_obj):
         """Parse spotify album object to generic layout."""
-        album = Album(item_id=album_obj["id"], provider=self.id)
-        album.name, album.version = parse_title_and_version(album_obj["name"])
+        name, version = parse_title_and_version(album_obj["name"])
+        album = Album(item_id=album_obj["id"], provider=self.id, name=name, version=version)
         for artist in album_obj["artists"]:
             album.artist = await self._parse_artist(artist)
             if album.artist:
@@ -338,9 +338,12 @@ class SpotifyProvider(MusicProvider):
 
     async def _parse_track(self, track_obj, artist=None):
         """Parse spotify track object to generic layout."""
+        name, version = parse_title_and_version(track_obj["name"])
         track = Track(
             item_id=track_obj["id"],
             provider=self.id,
+            name=name,
+            version=version,
             duration=track_obj["duration_ms"] / 1000,
             disc_number=track_obj["disc_number"],
             track_number=track_obj["track_number"],
@@ -351,7 +354,7 @@ class SpotifyProvider(MusicProvider):
             artist = await self._parse_artist(track_artist)
             if artist and artist.item_id not in {x.item_id for x in track.artists}:
                 track.artists.append(artist)
-        track.name, track.version = parse_title_and_version(track_obj["name"])
+        
         track.metadata["explicit"] = str(track_obj["explicit"]).lower()
         if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
             track.isrc = track_obj["external_ids"]["isrc"]
@@ -365,6 +368,8 @@ class SpotifyProvider(MusicProvider):
             track.metadata["explicit"] = True
         if track_obj.get("external_urls"):
             track.metadata["spotify_url"] = track_obj["external_urls"]["spotify"]
+        if track_obj.get("popularity"):
+            track.metadata["popularity"] = track_obj["popularity"]
         track.provider_ids.append(
             MediaItemProviderId(
                 provider=self.id,
@@ -377,12 +382,10 @@ class SpotifyProvider(MusicProvider):
 
     async def _parse_playlist(self, playlist_obj):
         """Parse spotify playlist object to generic layout."""
-        playlist = Playlist(item_id=playlist_obj["id"], provider=self.id)
+        playlist = Playlist(item_id=playlist_obj["id"], provider=self.id, name=playlist_obj["name"], owner=playlist_obj["owner"]["display_name"])
         playlist.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=playlist_obj["id"])
         )
-        playlist.name = playlist_obj["name"]
-        playlist.owner = playlist_obj["owner"]["display_name"]
         playlist.is_editable = (
             playlist_obj["owner"]["id"] == self._sp_user["id"]
             or playlist_obj["collaborative"]

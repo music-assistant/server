@@ -7,7 +7,7 @@ from typing import List
 from music_assistant.constants import EventType
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.compare import compare_album, compare_strings
-from music_assistant.helpers.util import merge_dict, merge_list
+from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
 from music_assistant.helpers.web import json_serializer
 from music_assistant.music.models import (
     Album,
@@ -34,7 +34,7 @@ class AlbumsController(MediaControllerBase[Album]):
             f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
-                    sort_name TEXT,
+                    sort_name TEXT NOT NULL,
                     album_type TEXT,
                     year INTEGER,
                     version TEXT,
@@ -47,10 +47,10 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         await self.mass.database.execute(
             """CREATE TABLE IF NOT EXISTS album_tracks(
-                    album_id INTEGER,
-                    track_id INTEGER,
-                    disc_number INTEGER,
-                    track_number INTEGER,
+                    album_id INTEGER NOT NULL,
+                    track_id INTEGER NOT NULL,
+                    disc_number INTEGER NOT NULL,
+                    track_number INTEGER NOT NULL,
                     UNIQUE(album_id, disc_number, track_number)
                 );"""
         )
@@ -60,7 +60,7 @@ class AlbumsController(MediaControllerBase[Album]):
         album = await self.get(item_id, provider_id)
         # for in-library albums we have the tracks in db
         if album.in_library and album.provider == "database":
-            return self.get_db_album_tracks(album.item_id)
+            return await self.get_db_album_tracks(album.item_id)
         # else: simply return the tracks from the first provider
         for prov in album.provider_ids:
             if tracks := await self.get_provider_album_tracks(
@@ -101,7 +101,7 @@ class AlbumsController(MediaControllerBase[Album]):
         provider = self.mass.music.get_provider(provider_id)
         if not provider:
             return []
-        cache_key = f"{provider_id}.tracks.{item_id}"
+        cache_key = f"{provider_id}.albumtracks.{item_id}"
         return await cached(
             self.mass.cache,
             cache_key,
@@ -112,6 +112,8 @@ class AlbumsController(MediaControllerBase[Album]):
     async def add_db_item(self, album: Album) -> Album:
         """Add a new album record to the database."""
         cur_item = None
+        if not album.sort_name:
+            album.sort_name = create_sort_name(album.name)
         # always try to grab existing item by external_id
         if album.upc:
             match = {"upc": album.upc}

@@ -35,9 +35,7 @@ class Database(Db):
             sql_query += f"ORDER BY {order_by}"
         return await self.fetch_all(sql_query, match)
 
-    async def get_rows_from_query(
-        self, query: str
-    ) -> List[Mapping]:
+    async def get_rows_from_query(self, query: str) -> List[Mapping]:
         """Get all rows for given custom query."""
         return await self.fetch_all(query)
 
@@ -61,7 +59,12 @@ class Database(Db):
         sql_query += f' VALUES ({",".join((f":{x}" for x in keys))})'
         await self.execute(sql_query, values)
         # return inserted/replaced item
-        return await self.get_row(table, values)
+        lookup_vals = {
+            key: value
+            for key, value in values.items()
+            if value is not None and value != ""
+        }
+        return await self.get_row(table, lookup_vals)
 
     async def update(
         self, table: str, match: Dict[str, Any], values: Dict[str, Any]
@@ -90,3 +93,4 @@ class Database(Db):
     ) -> None:
         """Handle shutdown event."""
         await self.disconnect()
+        self.logger.info("database closed")

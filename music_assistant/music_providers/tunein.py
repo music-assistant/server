@@ -69,16 +69,15 @@ class TuneInProvider(MusicProvider):
 
     async def _parse_radio(self, details: dict) -> Radio:
         """Parse Radio object from json obj returned from api."""
-        radio = Radio(item_id=details["preset_id"], provider=self.id)
         if "name" in details:
-            radio.name = details["name"]
+            name = details["name"]
         else:
             # parse name from text attr
             name = details["text"]
             if " | " in name:
                 name = name.split(" | ")[1]
             name = name.split(" (")[0]
-            radio.name = name
+        radio = Radio(item_id=details["preset_id"], provider=self.id, name=name)
         # parse stream urls and format
         stream_info = await self._get_stream_urls(radio.item_id)
         for stream in stream_info["body"]:

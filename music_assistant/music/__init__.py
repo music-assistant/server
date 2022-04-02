@@ -16,6 +16,7 @@ from music_assistant.helpers.errors import (
     SetupFailedError,
 )
 from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.util import create_task
 from music_assistant.music.albums import AlbumsController
 from music_assistant.music.artists import ArtistsController
 
@@ -24,6 +25,7 @@ from music_assistant.music.models import (
     MediaItem,
     MediaItemProviderId,
     MediaItemType,
+    MediaQuality,
     MediaType,
     Playlist,
 )
@@ -31,7 +33,6 @@ from music_assistant.music_providers import MusicProvider
 from music_assistant.music.playlists import PlaylistController
 from music_assistant.music.radio import RadioController
 from music_assistant.music.tracks import TracksController
-from music_assistant.helpers.tasks import TaskInfo
 
 
 DB_PROV_MAPPINGS = "provider_mappings"
@@ -62,6 +63,7 @@ class MusicController:
         await self.tracks.setup()
         await self.radio.setup()
         await self.playlists.setup()
+        self.__schedule_sync_tasks()
 
     @property
     def provider_count(self) -> int:
@@ -153,7 +155,9 @@ class MusicController:
             limit,
         )
 
-    async def get_item_by_uri(self, uri: str) -> MediaItemType:
+    async def get_item_by_uri(
+        self, uri: str, force_refresh: bool = False, lazy: bool = True
+    ) -> MediaItemType:
         """Fetch MediaItem by uri."""
         if "://" in uri:
             provider = uri.split("://")[0]
@@ -163,31 +167,33 @@ class MusicController:
             # spotify new-style uri
             provider, media_type, item_id = uri.split(":")
             media_type = MediaType(media_type)
-        return await self.get_item(item_id, provider, media_type)
+        return await self.get_item(
+            item_id, provider, media_type, force_refresh=force_refresh, lazy=lazy
+        )
 
     async def get_item(
         self,
         item_id: str,
         provider_id: str,
         media_type: MediaType,
-        refresh: bool = False,
+        force_refresh: bool = False,
         lazy: bool = True,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         ctrl = self._get_controller(media_type)
-        return await ctrl.get(item_id, provider_id, refresh=refresh, lazy=lazy)
+        return await ctrl.get(
+            item_id, provider_id, force_refresh=force_refresh, lazy=lazy
+        )
 
-    async def refresh_items(self, items: List[MediaItem]) -> List[TaskInfo]:
+    async def refresh_items(self, items: List[MediaItem]) -> None:
         """
         Refresh MediaItems to force retrieval of full info and matches.
 
         Creates background tasks to process the action.
         """
-        result = []
         for media_item in items:
             job_desc = f"Refresh metadata of {media_item.uri}"
-            result.append(self.mass.tasks.add(job_desc, self.refresh_item, media_item))
-        return result
+            self.mass.add_job(self.refresh_item(media_item), job_desc)
 
     async def refresh_item(
         self,
@@ -199,7 +205,7 @@ class MusicController:
                 media_item.item_id,
                 media_item.provider,
                 media_item.media_type,
-                refresh=True,
+                force_refresh=True,
                 lazy=False,
             )
         except MusicAssistantError:
@@ -250,7 +256,7 @@ class MusicController:
                 "media_type": media_type.value,
                 "prov_item_id": prov_id.item_id,
                 "provider": prov_id.provider,
-                "quality": prov_id.quality,
+                "quality": prov_id.quality.value,
                 "details": prov_id.details,
             },
         )
@@ -312,59 +318,48 @@ class MusicController:
             {"item_id": item_id, "provider": provider_id, "timestamp": timestamp},
         )
 
-    async def library_add_items(self, items: List[MediaItem]) -> List[TaskInfo]:
+    async def library_add_items(self, items: List[MediaItem]) -> None:
         """
         Add media item(s) to the library.
 
         Creates background tasks to process the action.
         """
-        result = []
         for media_item in items:
             job_desc = f"Add {media_item.uri} to library"
-            result.append(
-                self.mass.tasks.add(
-                    job_desc,
-                    self.add_to_library,
-                    media_item.media_type,
-                    media_item.item_id,
-                    media_item.provider,
-                )
+            self.mass.add_job(
+                self.add_to_library(
+                    media_item.media_type, media_item.item_id, media_item.provider
+                ),
+                job_desc,
             )
-        return result
 
-    async def library_remove_items(self, items: List[MediaItem]) -> List[TaskInfo]:
+    async def library_remove_items(self, items: List[MediaItem]) -> None:
         """
         Remove media item(s) from the library.
 
         Creates background tasks to process the action.
         """
-        result = []
         for media_item in items:
             job_desc = f"Remove {media_item.uri} from library"
-            result.append(
-                self.mass.tasks.add(
-                    job_desc,
-                    self.remove_from_library,
-                    media_item.media_type,
-                    media_item.item_id,
-                    media_item.provider,
-                )
+            self.mass.add_job(
+                self.remove_from_library(
+                    media_item.media_type, media_item.item_id, media_item.provider
+                ),
+                job_desc,
             )
-        return result
 
     async def schedule_provider_sync(self, provider_id: str):
         """Schedule library sync for a provider."""
         provider = self.get_provider(provider_id)
         if not provider:
             return
-        periodic = 3 * 3600  # every 3 hours
         for media_type in provider.supported_mediatypes:
-            self.mass.tasks.add(
+            self.mass.add_job(
+                self._library_items_sync(
+                    media_type,
+                    provider_id,
+                ),
                 f"Library sync of {media_type.value}s for provider {provider.name}",
-                self._library_items_sync,
-                media_type,
-                provider_id,
-                periodic=periodic,
             )
 
     async def _library_items_sync(
@@ -387,17 +382,29 @@ class MusicController:
             db_item: MediaItemType = await controller.get_db_item_by_prov_id(
                 prov_item.provider, prov_item.item_id
             )
-            if not db_item:
+            if not db_item and media_type == MediaType.ARTIST:
+                # for artists we need a fully matched item (with musicbrainz id)
+                db_item = await controller.get(
+                    prov_item.item_id, prov_item.provider, details=prov_item
+                )
+            elif not db_item:
+                # for other mediatypes its enough to simply dump the item in the db
                 db_item = await controller.add_db_item(prov_item)
             cur_ids.add(db_item.item_id)
             if not db_item.in_library:
                 await controller.set_db_library(db_item.item_id, True)
             # sync album tracks
             if media_type == MediaType.ALBUM:
-                await self._sync_album_tracks(db_item)
+                self.mass.add_job(
+                    self._sync_album_tracks(db_item),
+                    f"Sync album tracks for album {db_item.name}",
+                )
             # sync playlist tracks
             if media_type == MediaType.PLAYLIST:
-                await self._sync_playlist_tracks(db_item)
+                self.mass.add_job(
+                    self._sync_playlist_tracks(db_item),
+                    f"Sync playlist tracks for playlist {db_item.name}",
+                )
 
         # process deletions
         for item_id in prev_ids:
@@ -410,10 +417,18 @@ class MusicController:
             for album_track in await self.albums.get_provider_album_tracks(
                 prov_id.item_id, prov_id.provider
             ):
-                if not await self.tracks.get_db_item_by_prov_id(
+                db_track = await self.tracks.get_db_item_by_prov_id(
                     album_track.provider, album_track.item_id
-                ):
-                    await self.tracks.add_db_item(album_track)
+                )
+                if not db_track:
+                    db_track = await self.tracks.add_db_item(album_track)
+                # add track to album_tracks
+                await self.mass.music.albums.add_db_album_track(
+                    db_album.item_id,
+                    db_track.item_id,
+                    album_track.disc_number,
+                    album_track.track_number,
+                )
 
     async def _sync_playlist_tracks(self, db_playlist: Playlist) -> None:
         """Store playlist tracks of in-library playlist in database."""
@@ -421,12 +436,15 @@ class MusicController:
             provider = self.get_provider(prov_id.provider)
             if not provider:
                 continue
-            for playlist_track in await provider.get_playlist_tracks(prov_id.item_id):
+            for playlist_track in await self.playlists.get_provider_playlist_tracks(
+                prov_id.item_id, prov_id.provider
+            ):
                 db_track = await self.tracks.get_db_item_by_prov_id(
                     playlist_track.provider, playlist_track.item_id
                 )
                 if not db_track:
                     db_track = await self.tracks.add_db_item(playlist_track)
+                assert playlist_track.position is not None
                 await self.playlists.add_db_playlist_track(
                     db_playlist.item_id,
                     db_track.item_id,
@@ -475,3 +493,10 @@ class MusicController:
                 timestamp REAL,
                 UNIQUE(item_id, provider));"""
         )
+
+    def __schedule_sync_tasks(self):
+        """Schedule the sync tasks."""
+        for prov in self.providers:
+            create_task(self.schedule_provider_sync(prov.id))
+        # reschedule self
+        self.mass.loop.call_later(3 * 3600, self.__schedule_sync_tasks)
