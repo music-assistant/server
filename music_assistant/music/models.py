@@ -211,6 +211,12 @@ class Radio(MediaItem):
     media_type: MediaType = MediaType.RADIO
     duration: int = 86400
 
+    def to_db_row(self) -> dict:
+        """Create dict from item suitable for db."""
+        val = super().to_db_row()
+        val.pop("duration", None)
+        return val
+
 
 def create_uri(media_type: MediaType, provider_id: str, item_id: str):
     """Create uri for mediaitem."""

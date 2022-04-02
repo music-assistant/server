@@ -59,6 +59,7 @@ class TuneInProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
+        prov_radio_id = prov_radio_id.split("--")[0]
         radio = None
         params = {"c": "composite", "detail": "listing", "id": prov_radio_id}
         result = await self._get_data("Describe.ashx", params)
@@ -104,6 +105,7 @@ class TuneInProvider(MusicProvider):
 
     async def _get_stream_urls(self, radio_id):
         """Return the stream urls for the given radio id."""
+        radio_id = radio_id.split("--")[0]
         params = {"id": radio_id}
         res = await self._get_data("Tune.ashx", params)
         return res
