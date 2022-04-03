@@ -6,13 +6,13 @@ from music_assistant.constants import EventType
 
 # pylint: disable=invalid-name
 if TYPE_CHECKING:
-    from music_assistant import MusicAssistant
-    from music_assistant.music.models import MediaType
-    from music_assistant.players.models import (
+    from music_assistant.mass import MusicAssistant, EventDetails, EventCallBackType, EventSubscriptionType
+    from music_assistant.models.media_items import MediaType
+    from music_assistant.models.player import (
         PlayerQueue,
         QueueItem,
     )
-    from music_assistant.players.models import Player
+    from music_assistant.models.player import Player
 
 else:
     MusicAssistant = "MusicAssistant"
@@ -21,6 +21,9 @@ else:
     StreamDetails = "StreamDetails"
     Player = "Player"
     MediaType = "MediaType"
+    EventDetails = Any | None
+    EventCallBackType = "EventCallBackType"
+    EventSubscriptionType = "EventSubscriptionType"
 
 
 QueueItems = List[QueueItem]
@@ -29,6 +32,3 @@ Players = List[Player]
 OptionalInt = Optional[int]
 OptionalStr = Optional[str]
 
-EventDetails = Any | None
-EventCallBackType = Callable[[EventType, EventDetails], None]
-EventSubscriptionType = Tuple[EventCallBackType, "Optional[Tuple[EventType]]"]

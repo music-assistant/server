@@ -27,3 +27,7 @@ class SetupFailedError(MusicAssistantError):
 
 class LoginFailed(MusicAssistantError):
     """Error raised when a login failed."""
+
+
+class AudioError(MusicAssistantError):
+    """Error raised when an issue arrised when processing audio."""

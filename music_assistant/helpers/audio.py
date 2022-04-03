@@ -4,13 +4,14 @@ import asyncio
 import logging
 import struct
 from io import BytesIO
-from typing import AsyncGenerator, Optional, Tuple
+from typing import AsyncGenerator, List, Optional, Tuple
 from music_assistant.constants import EventType
+from music_assistant.models.errors import AudioError
 
-from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.typing import MusicAssistant, QueueItem
 from music_assistant.helpers.util import create_tempfile
-from music_assistant.music.models import (
+from music_assistant.models.media_items import (
     MediaType,
     ContentType,
     StreamDetails,
@@ -146,7 +147,9 @@ async def get_stream_details(
         )
     else:
         # always request the full db track as there might be other qualities available
-        full_item = await mass.music.get_item_by_uri(queue_item.uri, force_refresh=True, lazy=False)
+        full_item = await mass.music.get_item_by_uri(
+            queue_item.uri, force_refresh=True, lazy=False
+        )
         if not full_item:
             return None
         # sort by quality and check track availability
@@ -257,11 +260,11 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
     return file.getvalue()
 
 
-def get_sox_args(
+async def get_sox_args(
     streamdetails: StreamDetails,
     output_format: Optional[ContentType] = None,
     resample: Optional[int] = None,
-):
+) -> List[str]:
     """Collect all args to send to the sox (or ffmpeg) process."""
     stream_path = streamdetails.path
     stream_type = StreamType(streamdetails.type)
@@ -269,8 +272,15 @@ def get_sox_args(
     if output_format is None:
         output_format = streamdetails.content_type
 
+    sox_present, ffmpeg_present = await check_audio_support()
+
     # use ffmpeg if content not supported by SoX (e.g. AAC radio streams)
-    if not streamdetails.content_type.sox_supported():
+    if not sox_present or not streamdetails.content_type.sox_supported():
+        if not ffmpeg_present:
+            raise AudioError(
+                "FFmpeg binary is missing from system."
+                "Please install ffmpeg on your OS to enable playback.",
+            )
         # collect input args
         input_args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", stream_path]
         # collect output args
@@ -287,7 +297,7 @@ def get_sox_args(
         # collect filter args
         filter_args = []
         if streamdetails.gain_correct:
-            filter_args += ["-filter:a", "volume=%sdB" % streamdetails.gain_correct]
+            filter_args += ["-filter:a", f"volume={streamdetails.gain_correct}dB"]
         if resample:
             filter_args += ["-ar", str(resample)]
         return input_args + filter_args + output_args
@@ -334,7 +344,7 @@ async def get_media_stream(
     """Get the audio stream for the given streamdetails."""
 
     mass.signal_event(EventType.STREAM_STARTED, streamdetails)
-    args = get_sox_args(streamdetails, output_format, resample)
+    args = await get_sox_args(streamdetails, output_format, resample)
     async with AsyncProcess(args) as sox_proc:
 
         LOGGER.debug(
@@ -378,3 +388,38 @@ async def get_media_stream(
                 mass.add_job(
                     analyze_audio(mass, streamdetails), f"Analyze audio for {uri}"
                 )
+
+
+async def check_audio_support(try_install: bool = False) -> Tuple[bool, bool, bool]:
+    """Check if sox and/or ffmpeg are present."""
+    cache_key = "audio_support_cache"
+    if cache := globals().get(cache_key):
+        return cache
+    # check for SoX presence
+    returncode, output = await check_output("sox --version")
+    sox_present = returncode == 0 and "SoX" in output.decode()
+    if not sox_present and try_install:
+        # try a few common ways to install SoX
+        # this all assumes we have enough rights and running on a linux based platform (or docker)
+        await check_output("apt-get update && apt-get install sox libsox-fmt-all")
+        await check_output("apk add sox")
+        # test again
+        returncode, output = await check_output("sox --version")
+        sox_present = returncode == 0 and "SoX" in output.decode()
+
+    # check for FFmpeg presence
+    returncode, output = await check_output("ffmpeg -version")
+    ffmpeg_present = returncode == 0 and "FFmpeg" in output.decode()
+    if not ffmpeg_present and try_install:
+        # try a few common ways to install SoX
+        # this all assumes we have enough rights and running on a linux based platform (or docker)
+        await check_output("apt-get update && apt-get install ffmpeg")
+        await check_output("apk add ffmpeg")
+        # test again
+        returncode, output = await check_output("ffmpeg -version")
+        ffmpeg_present = returncode == 0 and "FFmpeg" in output.decode()
+
+    # use globals as in-memory cache
+    result = (sox_present, ffmpeg_present)
+    globals()[cache_key] = result
+    return result

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from music_assistant.constants import EventType
 from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
-from music_assistant.helpers.web import json_serializer
-from music_assistant.music.models import MediaControllerBase, MediaType, Radio
+from music_assistant.helpers.json import json_serializer
+from music_assistant.models.media_items import MediaControllerBase, MediaType, Radio
 
 
 class RadioController(MediaControllerBase[Radio]):

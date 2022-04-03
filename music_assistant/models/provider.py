@@ -1,4 +1,4 @@
-"""Package with Music Providers (and connected logic and models)."""
+"""Model for a Music Providers."""
 
 from __future__ import annotations
 
@@ -7,16 +7,16 @@ from logging import Logger
 from typing import List
 
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.music.models import (
+from music_assistant.models.media_items import (
     Album,
     Artist,
     MediaItemType,
+    MediaType,
     Playlist,
     Radio,
     Track,
-    MediaType,
 )
-from music_assistant.players.models import StreamDetails
+from music_assistant.models.player_queue import StreamDetails
 
 
 class MusicProvider:

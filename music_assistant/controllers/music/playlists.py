@@ -6,10 +6,10 @@ from typing import List
 
 from music_assistant.constants import EventType
 from music_assistant.helpers.cache import cached
-from music_assistant.helpers.errors import InvalidDataError, MediaNotFoundError
+from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
-from music_assistant.helpers.web import json_serializer
-from music_assistant.music.models import MediaControllerBase, MediaType, Playlist, Track
+from music_assistant.helpers.json import json_serializer
+from music_assistant.models.media_items import MediaControllerBase, MediaType, Playlist, Track
 
 
 class PlaylistController(MediaControllerBase[Playlist]):

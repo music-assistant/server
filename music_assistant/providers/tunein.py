@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from asyncio_throttle import Throttler
 
-from music_assistant.music.models import (
+from music_assistant.models.media_items import (
     ContentType,
     MediaItemProviderId,
     MediaItemType,
@@ -13,7 +13,7 @@ from music_assistant.music.models import (
     StreamDetails,
     StreamType,
 )
-from music_assistant.music_providers.model import MusicProvider
+from music_assistant.models.provider import MusicProvider
 
 
 class TuneInProvider(MusicProvider):

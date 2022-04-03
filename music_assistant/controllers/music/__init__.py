@@ -1,39 +1,34 @@
 """MusicController: Orchestrates all data from music providers and sync to internal database."""
 from __future__ import annotations
-import asyncio
 
+import asyncio
 import statistics
 from typing import Dict, List, Tuple
 
-
 from music_assistant.constants import EventType
+from music_assistant.controllers.music.albums import AlbumsController
+from music_assistant.controllers.music.artists import ArtistsController
+from music_assistant.controllers.music.playlists import PlaylistController
+from music_assistant.controllers.music.radio import RadioController
+from music_assistant.controllers.music.tracks import TracksController
 from music_assistant.helpers.cache import cached
-
 from music_assistant.helpers.datetime import utc_timestamp
-from music_assistant.helpers.errors import (
+from music_assistant.models.errors import (
     AlreadyRegisteredError,
     MusicAssistantError,
     SetupFailedError,
 )
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
-from music_assistant.music.albums import AlbumsController
-from music_assistant.music.artists import ArtistsController
-
-from music_assistant.music.models import (
+from music_assistant.models.media_items import (
     Album,
     MediaItem,
     MediaItemProviderId,
     MediaItemType,
-    MediaQuality,
     MediaType,
     Playlist,
 )
-from music_assistant.music_providers import MusicProvider
-from music_assistant.music.playlists import PlaylistController
-from music_assistant.music.radio import RadioController
-from music_assistant.music.tracks import TracksController
-
+from music_assistant.models.provider import MusicProvider
 
 DB_PROV_MAPPINGS = "provider_mappings"
 DB_TRACK_LOUDNESS = "track_loudness"

@@ -4,11 +4,11 @@ from __future__ import annotations
 from typing import Dict, Tuple
 
 from music_assistant.constants import EventType
-from music_assistant.helpers.errors import AlreadyRegisteredError
+from music_assistant.controllers.stream import StreamController
+from music_assistant.models.errors import AlreadyRegisteredError
 from music_assistant.helpers.typing import MusicAssistant
-
-from .models import Player, PlayerGroup, PlayerQueue
-from .stream import StreamController
+from music_assistant.models.player import Player, PlayerGroup
+from music_assistant.models.player_queue import PlayerQueue
 
 PlayerType = Player | PlayerGroup
 
@@ -87,7 +87,9 @@ class PlayerController:
         self._players[player_id] = player
 
         # create playerqueue for this player
-        self._player_queues[player.player_id] = player_queue = PlayerQueue(self.mass, player_id)
+        self._player_queues[player.player_id] = player_queue = PlayerQueue(
+            self.mass, player_id
+        )
         await player_queue.setup()
         self.logger.info(
             "Player registered: %s/%s",

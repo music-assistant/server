@@ -4,8 +4,9 @@ from music_assistant.helpers.cache import cached
 from music_assistant.helpers.images import create_thumbnail
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import merge_dict
-from music_assistant.metadata.fanarttv import FanartTv
-from music_assistant.metadata.musicbrainz import MusicBrainz
+
+from .fanarttv import FanartTv
+from .musicbrainz import MusicBrainz
 
 # TODO: add more metadata providers such as theaudiodb
 # TODO: add metadata support for albums and other media types
@@ -65,5 +66,7 @@ class MetaDataController:
             return result["img"]
         # create thumbnail if it doesn't exist
         thumbnail = await create_thumbnail(self.mass, url, size)
-        await self.mass.database.insert_or_replace(TABLE_THUMBS, {**match, "img": thumbnail})
+        await self.mass.database.insert_or_replace(
+            TABLE_THUMBS, {**match, "img": thumbnail}
+        )
         return thumbnail

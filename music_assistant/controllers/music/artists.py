@@ -12,8 +12,8 @@ from music_assistant.helpers.compare import (
     compare_track,
 )
 from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
-from music_assistant.helpers.web import json_serializer
-from music_assistant.music.models import (
+from music_assistant.helpers.json import json_serializer
+from music_assistant.models.media_items import (
     Album,
     AlbumType,
     Artist,
@@ -22,7 +22,7 @@ from music_assistant.music.models import (
     MediaType,
     Track,
 )
-from music_assistant.music_providers import MusicProvider
+from music_assistant.models.provider import MusicProvider
 
 
 class ArtistsController(MediaControllerBase[Artist]):

@@ -12,9 +12,9 @@ from asyncio_throttle import Throttler
 from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name-in-module
     get_app_var,
 )
-from music_assistant.helpers.errors import LoginFailed
+from music_assistant.models.errors import LoginFailed
 from music_assistant.helpers.util import parse_title_and_version
-from music_assistant.music.models import (
+from music_assistant.models.media_items import (
     Album,
     AlbumType,
     Artist,
@@ -28,7 +28,7 @@ from music_assistant.music.models import (
     StreamType,
     Track,
 )
-from music_assistant.music_providers.model import MusicProvider
+from music_assistant.models.provider import MusicProvider
 
 
 class SpotifyProvider(MusicProvider):

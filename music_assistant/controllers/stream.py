@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import asyncio
 from asyncio import Task
-from typing import Any, Awaitable, Callable, Dict, List, Tuple
+from typing import Awaitable, Callable, Dict, List, Tuple
 
 from aiohttp import web
 from music_assistant.constants import EventType
 from music_assistant.helpers.audio import (
+    check_audio_support,
     create_wave_header,
     crossfade_pcm_parts,
     get_media_stream,
@@ -17,7 +18,7 @@ from music_assistant.helpers.audio import (
 
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_ip
-from music_assistant.music.models import ContentType
+from music_assistant.models.media_items import ContentType, MediaType
 
 
 class StreamController:
@@ -57,6 +58,19 @@ class StreamController:
             self.logger.info("Streamserver exited.")
 
         self.mass.subscribe(on_shutdown_event, EventType.SHUTDOWN)
+
+        sox_present, ffmpeg_present = await check_audio_support(True)
+        if not ffmpeg_present:
+            self.logger.error(
+                "The FFmpeg binary was not found on your system, "
+                "you might have issues with playback. "
+                "Please install FFmpeg with your OS package manager.",
+            )
+        elif not sox_present:
+            self.logger.warning(
+                "The SoX binary was not found on your system so FFmpeg is used as fallback. "
+                "For best audio quality, please install SoX with your OS package manager.",
+            )
 
         self.logger.info("Started stream server on port %s", self._port)
 
@@ -179,7 +193,7 @@ class StreamController:
             sample_size = int(sample_rate * (bit_depth / 8) * channels)  # 1 second
             buffer_size = sample_size * (
                 queue.crossfade_duration or 1
-            )  # 2...10 seconds
+            )  # 1...10 seconds
 
             self.logger.debug(
                 "Start Streaming queue track: %s (%s) for player %s",

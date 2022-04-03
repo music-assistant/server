@@ -1,7 +1,7 @@
 """FanartTv Metadata provider."""
 
 from json.decoder import JSONDecodeError
-from typing import Dict, List
+from typing import Dict
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -20,13 +20,12 @@ class FanartTv:
         """Initialize class."""
         self.mass = mass
         self.logger = mass.logger.getChild("fanarttv")
-        
         self.throttler = Throttler(rate_limit=1, period=2)
 
     async def get_artist_images(self, mb_artist_id: str) -> Dict:
         """Retrieve images by musicbrainz artist id."""
         metadata = {}
-        data = await self._get_data("music/%s" % mb_artist_id)
+        data = await self._get_data(f"music/{mb_artist_id}")
         if data:
             if data.get("hdmusiclogo"):
                 metadata["logo"] = data["hdmusiclogo"][0]["url"]
@@ -35,7 +34,7 @@ class FanartTv:
             if data.get("artistbackground"):
                 count = 0
                 for item in data["artistbackground"]:
-                    key = "fanart" if count == 0 else "fanart.%s" % count
+                    key = "fanart" if count == 0 else f"fanart.{count}"
                     metadata[key] = item["url"]
             if data.get("artistthumb"):
                 url = data["artistthumb"][0]["url"]
@@ -49,7 +48,7 @@ class FanartTv:
         """Get data from api."""
         if params is None:
             params = {}
-        url = "http://webservice.fanart.tv/v3/%s" % endpoint
+        url = f"http://webservice.fanart.tv/v3/{endpoint}"
         params["api_key"] = "639191cb0774661597f28a47e7e2bad5"
         async with self.throttler:
             async with self.mass.http_session.get(

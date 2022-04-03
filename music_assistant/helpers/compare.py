@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, List
 import unidecode
 
 if TYPE_CHECKING:
-    from music_assistant.music.models import Album, Artist, Track
+    from music_assistant.models.media_items import Album, Artist, Track
 
 
 def get_compare_string(input_str):

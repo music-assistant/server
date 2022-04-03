@@ -6,11 +6,11 @@ from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from typing import Any, Dict, Generic, List, Mapping, Tuple, TypeVar
 
-import ujson
 from mashumaro import DataClassDictMixin
 
 from music_assistant.helpers.cache import cached
-from music_assistant.helpers.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant.helpers.json import json
+from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_sort_name
 
@@ -82,7 +82,7 @@ class MediaItem(DataClassDictMixin):
         db_row = dict(db_row)
         for key in ["artists", "artist", "metadata", "provider_ids"]:
             if key in db_row:
-                db_row[key] = ujson.loads(db_row[key])
+                db_row[key] = json.loads(db_row[key])
         db_row["provider"] = "database"
         if "in_library" in db_row:
             db_row["in_library"] = bool(db_row["in_library"])
@@ -94,7 +94,7 @@ class MediaItem(DataClassDictMixin):
     def to_db_row(self) -> dict:
         """Create dict from item suitable for db."""
         return {
-            key: ujson.dumps(val) if isinstance(val, (list, dict)) else val
+            key: json.dumps(val) if isinstance(val, (list, dict)) else val
             for key, val in self.to_dict().items()
             if key
             not in [
@@ -317,7 +317,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not db_item.in_library:
             await self.set_db_library(db_item.item_id, True)
 
-    async def remove_from_library(self, provider_item_id: str, provider_id: str) -> None:
+    async def remove_from_library(
+        self, provider_item_id: str, provider_id: str
+    ) -> None:
         """Remove item from the library."""
         # make sure we have a valid full item
         db_item = await self.get(provider_item_id, provider_id, lazy=False)
@@ -329,9 +331,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if db_item.in_library:
             await self.set_db_library(db_item.item_id, False)
 
-    async def get_provider_id(
-        self, item: ItemCls
-    ) -> Tuple[str, str]:
+    async def get_provider_id(self, item: ItemCls) -> Tuple[str, str]:
         """Return provider and item id."""
         if item.provider == "database":
             # make sure we have a full object

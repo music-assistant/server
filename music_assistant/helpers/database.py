@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping
 
-from databases import Database as Db, DatabaseURL
-from music_assistant import EventDetails
+from databases import Database as Db
+from databases import DatabaseURL
+
 from music_assistant.constants import EventType
-from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.typing import EventDetails, MusicAssistant
 
 
 class Database(Db):

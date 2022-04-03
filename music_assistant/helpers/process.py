@@ -7,7 +7,7 @@ even when properly handling reading/writes from different tasks.
 
 import asyncio
 import logging
-from typing import AsyncGenerator, List, Optional, Union
+from typing import AsyncGenerator, List, Optional, Tuple, Union
 
 from async_timeout import timeout
 
@@ -96,9 +96,20 @@ class AsyncProcess:
             await self._proc.stdin.drain()
         except BrokenPipeError:
             pass
-        except AttributeError:
-            raise asyncio.CancelledError()
+        except AttributeError as err:
+            raise asyncio.CancelledError() from err
 
     async def communicate(self, input_data: Optional[bytes] = None) -> bytes:
         """Write bytes to process and read back results."""
         return await self._proc.communicate(input_data)
+
+
+async def check_output(shell_cmd: str) -> Tuple[int, bytes]:
+    """Run shell subprocess and return output."""
+    proc = await asyncio.create_subprocess_shell(
+        shell_cmd,
+        stderr=asyncio.subprocess.STDOUT,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await proc.communicate()
+    return (proc.returncode, stdout)
