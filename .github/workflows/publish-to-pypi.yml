@@ -10,18 +10,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Set up Python 3.9
-        uses: actions/setup-python@v3.10
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v3
         with:
-          python-version: 3.9
-      - name: Include frontend-app in the release package
-        run: |
-          cd /tmp
-          curl https://github.com/music-assistant/app/archive/master.zip -LOk
-          unzip master.zip
-          cd /tmp/app-master
-          mv docs /home/runner/work/server/server/music_assistant/web/static
-          cd /home/runner/work/server/server/
+          python-version: 3.10
+      # - name: Include frontend-app in the release package
+      #   run: |
+      #     cd /tmp
+      #     curl https://github.com/music-assistant/app/archive/master.zip -LOk
+      #     unzip master.zip
+      #     cd /tmp/app-master
+      #     mv docs /home/runner/work/server/server/music_assistant/web/static
+      #     cd /home/runner/work/server/server/
       - name: Install wheel
         run: >-
           pip install wheel
