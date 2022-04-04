@@ -9,7 +9,8 @@ from music_assistant.helpers.cache import cached
 from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
 from music_assistant.helpers.json import json_serializer
-from music_assistant.models.media_items import MediaControllerBase, MediaType, Playlist, Track
+from music_assistant.models.media_controller import MediaControllerBase
+from music_assistant.models.media_items import MediaType, Playlist, Track
 
 
 class PlaylistController(MediaControllerBase[Playlist]):

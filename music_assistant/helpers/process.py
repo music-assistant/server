@@ -61,7 +61,7 @@ class AsyncProcess:
                 self._proc.terminate()
                 await self._proc.stdout.read()
                 self._proc.kill()
-            except (ProcessLookupError, BrokenPipeError):
+            except (ProcessLookupError, BrokenPipeError, RuntimeError):
                 pass
         del self._proc
 
@@ -87,6 +87,8 @@ class AsyncProcess:
         except asyncio.IncompleteReadError as err:
             return err.partial
         except AttributeError as exc:
+            raise asyncio.CancelledError() from exc
+        except asyncio.TimeoutError as exc:
             raise asyncio.CancelledError() from exc
 
     async def write(self, data: bytes) -> None:

@@ -345,6 +345,7 @@ class MusicController:
 
     async def schedule_provider_sync(self, provider_id: str):
         """Schedule library sync for a provider."""
+        return
         provider = self.get_provider(provider_id)
         if not provider:
             return

@@ -13,9 +13,10 @@ from uuid import uuid4
 from mashumaro import DataClassDictMixin
 
 from music_assistant.constants import EventType
+from music_assistant.helpers.audio import get_stream_details
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
-from music_assistant.models.media_items import MediaType, StreamDetails
+from music_assistant.models.media_items import ContentType, MediaType, StreamDetails
 
 from .player import Player, PlayerState
 
@@ -110,7 +111,9 @@ class PlayerQueue:
     def active(self) -> bool:
         """Return bool if the queue is currenty active on the player."""
         # TODO: figure out a way to handle group childs playing the parent queue
-        return self.player.current_url in [None, self._stream_url]
+        if self._stream_url in self.player.current_url:
+            return True
+        return self.player.current_url is None
 
     @property
     def elapsed_time(self) -> int:
@@ -400,10 +403,11 @@ class PlayerQueue:
         if not len(self.items) > index:
             return
         self._current_index = index
-        self._next_index = index
 
         # send stream url to player connected to this queue
-        self._stream_url = self.mass.players.streams.get_stream_url(self.queue_id)
+        self._stream_url = self.mass.players.streams.get_stream_url(
+            self.queue_id
+        )
         await self.player.play_url(self._stream_url)
 
     async def move_item(self, queue_item_id: str, pos_shift: int = 1) -> None:
@@ -555,11 +559,16 @@ class PlayerQueue:
             return True
         return False
 
+    async def queue_stream_prepare(self) -> StreamDetails | None:
+        """Call when queue_streamer is about to start playing."""
+        if next_item := self.next_item:
+            return await get_stream_details(self.mass, next_item, self.queue_id)
+        return None
+
     async def queue_stream_start(self) -> None:
         """Call when queue_streamer starts playing the queue stream."""
         self._current_item_time = 0
-        self._current_index = self._next_index
-        self._next_index += 1
+        self._current_index = self.next_index
         self._start_index = self._current_index
         return self._current_index
 
