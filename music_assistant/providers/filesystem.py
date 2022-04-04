@@ -25,7 +25,7 @@ from music_assistant.models.media_items import (
 from music_assistant.models.provider import MusicProvider
 
 
-class FileProvider(MusicProvider):
+class FileSystemProvider(MusicProvider):
     """
     Very basic implementation of a musicprovider for local files.
 
@@ -63,7 +63,7 @@ class FileProvider(MusicProvider):
         """Handle async initialization of the provider."""
         if not os.path.isdir(self._music_dir):
             raise FileNotFoundError(f"Music Directory {self._music_dir} does not exist")
-        if not os.path.isdir(self._playlists_dir):
+        if self._playlists_dir is not None and not os.path.isdir(self._playlists_dir):
             raise FileNotFoundError(
                 f"Playlist Directory {self._playlists_dir} does not exist"
             )

@@ -7,7 +7,8 @@ from sys import path
 
 from aiorun import run
 
-from music_assistant.models.player import DeviceInfo, Player, PlayerState
+# pylint: disable=wrong-import-position
+from music_assistant.models.player import Player, PlayerState
 
 path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -15,6 +16,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.providers.spotify import SpotifyProvider
 from music_assistant.providers.qobuz import QobuzProvider
 from music_assistant.providers.tunein import TuneInProvider
+from music_assistant.providers.filesystem import FileSystemProvider
 
 parser = argparse.ArgumentParser(description="MusicAssistant")
 parser.add_argument(
@@ -41,6 +43,16 @@ parser.add_argument(
     "--tunein-username",
     required=False,
     help="Tunein username",
+)
+parser.add_argument(
+    "--musicdir",
+    required=False,
+    help="Directory on disk for local music library",
+)
+parser.add_argument(
+    "--playlistdir",
+    required=False,
+    help="Directory on disk for local (m3u) playlists",
 )
 parser.add_argument(
     "--debug",
@@ -79,7 +91,8 @@ if args.qobuz_username and args.qobuz_password:
     providers.append(QobuzProvider(args.qobuz_username, args.qobuz_password))
 if args.tunein_username:
     providers.append(TuneInProvider(args.tunein_username))
-
+if args.musicdir:
+    providers.append(FileSystemProvider(args.musicdir, args.playlistdir))
 
 class TestPlayer(Player):
     def __init__(self):
