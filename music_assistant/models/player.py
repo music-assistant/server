@@ -49,13 +49,13 @@ class Player(ABC):
     is_group: bool = False
     _attr_name: str = None
     _attr_powered: bool = False
-    _elapsed_time: int = 0
+    _attr_elapsed_time: int = 0
     _attr_current_url: str = None
     _attr_state: PlayerState = PlayerState.IDLE
     _attr_available: bool = True
     _attr_volume_level: int = 100
     _attr_device_info: DeviceInfo = DeviceInfo()
-    _attr_max_sample_rate:int = 96000
+    _attr_max_sample_rate: int = 96000
     # mass object will be set by playermanager at register
     mass: MusicAssistant = None  # type: ignore[assignment]
 
@@ -72,7 +72,7 @@ class Player(ABC):
     @property
     def elapsed_time(self) -> int:
         """Return elapsed time of current playing media in seconds."""
-        return self._elapsed_time
+        return self._attr_elapsed_time
 
     @property
     def current_url(self) -> str:
