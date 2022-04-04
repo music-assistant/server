@@ -30,20 +30,21 @@ class TracksController(MediaControllerBase[Track]):
     async def setup(self) -> None:
         """Async initialize of module."""
         # prepare database
-        await self.mass.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
-                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    sort_name TEXT NOT NULL,
-                    version TEXT,
-                    duration INTEGER,
-                    in_library BOOLEAN DEFAULT 0,
-                    isrc TEXT,
-                    artists json,
-                    metadata json,
-                    provider_ids json
-                );"""
-        )
+        async with self.mass.database.get_db() as _db:
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
+                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        sort_name TEXT NOT NULL,
+                        version TEXT,
+                        duration INTEGER,
+                        in_library BOOLEAN DEFAULT 0,
+                        isrc TEXT,
+                        artists json,
+                        metadata json,
+                        provider_ids json
+                    );"""
+            )
 
     async def add(self, item: Track) -> Track:
         """Add track to local db and return the new database item."""

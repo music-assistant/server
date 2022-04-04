@@ -23,28 +23,29 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def setup(self):
         """Async initialize of module."""
         # prepare database
-        await self.mass.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
-                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    sort_name TEXT NOT NULL,
-                    owner TEXT NOT NULL,
-                    is_editable BOOLEAN NOT NULL,
-                    checksum TEXT NOT NULL,
-                    in_library BOOLEAN DEFAULT 0,
-                    metadata json,
-                    provider_ids json,
-                    UNIQUE(name, owner)
-                );"""
-        )
-        await self.mass.database.execute(
-            """CREATE TABLE IF NOT EXISTS playlist_tracks(
-                    playlist_id INTEGER NOT NULL,
-                    track_id INTEGER NOT NULL,
-                    position INTEGER NOT NULL,
-                    UNIQUE(playlist_id, position)
-                );"""
-        )
+        async with self.mass.database.get_db() as _db:
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
+                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        sort_name TEXT NOT NULL,
+                        owner TEXT NOT NULL,
+                        is_editable BOOLEAN NOT NULL,
+                        checksum TEXT NOT NULL,
+                        in_library BOOLEAN DEFAULT 0,
+                        metadata json,
+                        provider_ids json,
+                        UNIQUE(name, owner)
+                    );"""
+            )
+            await _db.execute(
+                """CREATE TABLE IF NOT EXISTS playlist_tracks(
+                        playlist_id INTEGER NOT NULL,
+                        track_id INTEGER NOT NULL,
+                        position INTEGER NOT NULL,
+                        UNIQUE(playlist_id, position)
+                    );"""
+            )
 
     async def get_playlist_by_name(self, name: str) -> Playlist | None:
         """Get in-library playlist by name."""

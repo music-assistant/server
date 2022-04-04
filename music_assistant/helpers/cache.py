@@ -24,10 +24,11 @@ class Cache:
     async def setup(self) -> None:
         """Async initialize of cache module."""
         # prepare database
-        await self.mass.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE}(
-                key TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
-        )
+        async with self.mass.database.get_db() as _db:
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {DB_TABLE}(
+                    key TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
+            )
         self.__schedule_cleanup_task()
 
     async def get(self, cache_key, checksum="", default=None):
@@ -102,7 +103,8 @@ class Cache:
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
         # compact db
-        await self.mass.database.execute("VACUUM")
+        async with self.mass.database.get_db() as _db:
+            await _db.execute("VACUUM")
 
     def __schedule_cleanup_task(self):
         """Schedule the cleanup task."""

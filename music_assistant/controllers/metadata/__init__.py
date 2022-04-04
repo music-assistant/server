@@ -28,14 +28,15 @@ class MetaDataController:
 
     async def setup(self):
         """Async initialize of module."""
-        await self.mass.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {TABLE_THUMBS}(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url TEXT NOT NULL,
-                size INTEGER,
-                img BLOB,
-                UNIQUE(url, size));"""
-        )
+        async with self.mass.database.get_db() as _db:
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {TABLE_THUMBS}(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT NOT NULL,
+                    size INTEGER,
+                    img BLOB,
+                    UNIQUE(url, size));"""
+            )
 
     async def get_artist_metadata(self, mb_artist_id: str, cur_metadata: dict) -> dict:
         """Get/update rich metadata for an artist by providing the musicbrainz artist id."""

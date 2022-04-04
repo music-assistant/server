@@ -35,17 +35,18 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def setup(self):
         """Async initialize of module."""
         # prepare database
-        await self.mass.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
-                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    sort_name TEXT NOT NULL,
-                    musicbrainz_id TEXT NOT NULL UNIQUE,
-                    in_library BOOLEAN DEFAULT 0,
-                    metadata json,
-                    provider_ids json
-                    );"""
-        )
+        async with self.mass.database.get_db() as _db:
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
+                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        sort_name TEXT NOT NULL,
+                        musicbrainz_id TEXT NOT NULL UNIQUE,
+                        in_library BOOLEAN DEFAULT 0,
+                        metadata json,
+                        provider_ids json
+                        );"""
+            )
 
     async def toptracks(self, item_id: str, provider_id: str) -> List[Track]:
         """Return top tracks for an artist."""

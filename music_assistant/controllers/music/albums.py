@@ -30,30 +30,31 @@ class AlbumsController(MediaControllerBase[Album]):
     async def setup(self):
         """Async initialize of module."""
         # prepare database
-        await self.mass.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
-                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    sort_name TEXT NOT NULL,
-                    album_type TEXT,
-                    year INTEGER,
-                    version TEXT,
-                    in_library BOOLEAN DEFAULT 0,
-                    upc TEXT,
-                    artist json,
-                    metadata json,
-                    provider_ids json
-                );"""
-        )
-        await self.mass.database.execute(
-            """CREATE TABLE IF NOT EXISTS album_tracks(
-                    album_id INTEGER NOT NULL,
-                    track_id INTEGER NOT NULL,
-                    disc_number INTEGER NOT NULL,
-                    track_number INTEGER NOT NULL,
-                    UNIQUE(album_id, disc_number, track_number)
-                );"""
-        )
+        async with self.mass.database.get_db() as _db:
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
+                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        sort_name TEXT NOT NULL,
+                        album_type TEXT,
+                        year INTEGER,
+                        version TEXT,
+                        in_library BOOLEAN DEFAULT 0,
+                        upc TEXT,
+                        artist json,
+                        metadata json,
+                        provider_ids json
+                    );"""
+            )
+            await _db.execute(
+                """CREATE TABLE IF NOT EXISTS album_tracks(
+                        album_id INTEGER NOT NULL,
+                        track_id INTEGER NOT NULL,
+                        disc_number INTEGER NOT NULL,
+                        track_number INTEGER NOT NULL,
+                        UNIQUE(album_id, disc_number, track_number)
+                    );"""
+            )
 
     async def tracks(self, item_id: str, provider_id: str) -> List[Track]:
         """Return album tracks for the given provider album id."""

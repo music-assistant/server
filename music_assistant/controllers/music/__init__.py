@@ -345,7 +345,6 @@ class MusicController:
 
     async def schedule_provider_sync(self, provider_id: str):
         """Schedule library sync for a provider."""
-        return
         provider = self.get_provider(provider_id)
         if not provider:
             return
@@ -464,31 +463,32 @@ class MusicController:
 
     async def __setup_database_tables(self) -> None:
         """Init generic database tables."""
-        await self.mass.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_PROV_MAPPINGS}(
+        async with self.mass.database.get_db() as _db:
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {DB_PROV_MAPPINGS}(
+                        item_id INTEGER NOT NULL,
+                        media_type TEXT NOT NULL,
+                        prov_item_id TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        quality INTEGER NOT NULL,
+                        details TEXT NULL,
+                        UNIQUE(item_id, media_type, prov_item_id, provider)
+                        );"""
+            )
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {DB_TRACK_LOUDNESS}(
+                        item_id INTEGER NOT NULL,
+                        provider TEXT NOT NULL,
+                        loudness REAL,
+                        UNIQUE(item_id, provider));"""
+            )
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {DB_PLAYLOG}(
                     item_id INTEGER NOT NULL,
-                    media_type TEXT NOT NULL,
-                    prov_item_id TEXT NOT NULL,
                     provider TEXT NOT NULL,
-                    quality INTEGER NOT NULL,
-                    details TEXT NULL,
-                    UNIQUE(item_id, media_type, prov_item_id, provider)
-                    );"""
-        )
-        await self.mass.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TRACK_LOUDNESS}(
-                    item_id INTEGER NOT NULL,
-                    provider TEXT NOT NULL,
-                    loudness REAL,
+                    timestamp REAL,
                     UNIQUE(item_id, provider));"""
-        )
-        await self.mass.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_PLAYLOG}(
-                item_id INTEGER NOT NULL,
-                provider TEXT NOT NULL,
-                timestamp REAL,
-                UNIQUE(item_id, provider));"""
-        )
+            )
 
     def __schedule_sync_tasks(self):
         """Schedule the sync tasks."""
