@@ -1,1 +1,1 @@
-"""Providers package."""
+"""Package with Music Providers."""

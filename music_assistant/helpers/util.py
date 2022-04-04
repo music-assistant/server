@@ -1,20 +1,15 @@
 """Helper and utility functions."""
 import asyncio
 import functools
-import logging
 import os
 import platform
 import socket
 import tempfile
 import threading
-import urllib.request
 from asyncio.events import AbstractEventLoop
 from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Union
 
 import memory_tempfile
-import ujson
-
-from .typing import MediaType
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -24,17 +19,6 @@ CALLBACK_TYPE = Callable[[], None]
 # pylint: enable=invalid-name
 
 DEFAULT_LOOP = None
-
-
-def callback(func: CALLABLE_T) -> CALLABLE_T:
-    """Annotation to mark method as safe to call from within the event loop."""
-    setattr(func, "_mass_callback", True)
-    return func
-
-
-def is_callback(func: Callable[..., Any]) -> bool:
-    """Check if function is safe to be called in the event loop."""
-    return getattr(func, "_mass_callback", False) is True
 
 
 def create_task(
@@ -60,9 +44,6 @@ def create_task(
     while isinstance(check_target, functools.partial):
         check_target = check_target.func
 
-    async def cb_wrapper(_target: Callable, *_args, **_kwargs):
-        return _target(*_args, **_kwargs)
-
     async def executor_wrapper(_target: Callable, *_args, **_kwargs):
         return await loop.run_in_executor(None, _target, *_args, **_kwargs)
 
@@ -72,10 +53,6 @@ def create_task(
             return asyncio.run_coroutine_threadsafe(target, loop)
         if asyncio.iscoroutinefunction(check_target):
             return asyncio.run_coroutine_threadsafe(target(*args), loop)
-        if is_callback(check_target):
-            return asyncio.run_coroutine_threadsafe(
-                cb_wrapper(target, *args, **kwargs), loop
-            )
         return asyncio.run_coroutine_threadsafe(
             executor_wrapper(target, *args, **kwargs), loop
         )
@@ -84,8 +61,6 @@ def create_task(
         return loop.create_task(target)
     if asyncio.iscoroutinefunction(check_target):
         return loop.create_task(target(*args))
-    if is_callback(check_target):
-        return loop.create_task(cb_wrapper(target, *args, **kwargs))
     return loop.create_task(executor_wrapper(target, *args, **kwargs))
 
 
@@ -101,15 +76,6 @@ def run_periodic(period):
         return wrapper
 
     return scheduler
-
-
-def get_external_ip():
-    """Try to get the external (WAN) IP address."""
-    # pylint: disable=broad-except
-    try:
-        return urllib.request.urlopen("https://ident.me").read().decode("utf8")
-    except Exception:
-        return None
 
 
 def filename_from_string(string):
@@ -148,6 +114,15 @@ def try_parse_bool(possible_bool):
     if isinstance(possible_bool, bool):
         return possible_bool
     return possible_bool in ["true", "True", "1", "on", "ON", 1]
+
+
+def create_sort_name(name):
+    """Return sort name."""
+    sort_name = name
+    for item in ["The ", "De ", "de ", "Les "]:
+        if name.startswith(item):
+            sort_name = "".join(name.split(item)[1:])
+    return sort_name.lower()
 
 
 def parse_title_and_version(track_title, track_version=None):
@@ -236,24 +211,6 @@ def get_ip():
     return _ip
 
 
-def get_ip_pton():
-    """Return socket pton for local ip."""
-    # pylint:disable=no-member
-    try:
-        return socket.inet_pton(socket.AF_INET, get_ip())
-    except OSError:
-        return socket.inet_pton(socket.AF_INET6, get_ip())
-
-
-# pylint: enable=broad-except
-
-
-def get_hostname():
-    """Get hostname for this machine."""
-    # pylint:disable=no-member
-    return socket.gethostname()
-
-
 def get_folder_size(folderpath):
     """Return folder size in gb."""
     total_size = 0
@@ -280,7 +237,7 @@ def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
     return final_dict
 
 
-def merge_list(base_list: list, new_list: list) -> Set:
+def merge_list(base_list: list, new_list: list) -> List:
     """Merge 2 lists."""
     final_list = set(base_list)
     for item in new_list:
@@ -290,19 +247,7 @@ def merge_list(base_list: list, new_list: list) -> Set:
                     prov_item = item
         if item not in final_list:
             final_list.add(item)
-    return final_list
-
-
-def try_load_json_file(jsonfile):
-    """Try to load json from file."""
-    try:
-        with open(jsonfile, "r") as _file:
-            return ujson.loads(_file.read())
-    except (FileNotFoundError, ValueError) as exc:
-        logging.getLogger().debug(
-            "Could not load json from file %s", jsonfile, exc_info=exc
-        )
-        return None
+    return list(final_list)
 
 
 def create_tempfile():
@@ -314,15 +259,10 @@ def create_tempfile():
     return tempfile.NamedTemporaryFile(buffering=0)
 
 
-async def yield_chunks(_obj, chunk_size):
-    """Yield successive n-sized chunks from list/str/bytes."""
-    chunk_size = int(chunk_size)
-    for i in range(0, len(_obj), chunk_size):
-        yield _obj[i : i + chunk_size]
-
-
 def get_changed_keys(
-    dict1: Dict[str, Any], dict2: Dict[str, Any], ignore_keys: Optional[Set[str]] = None
+    dict1: Dict[str, Any],
+    dict2: Dict[str, Any],
+    ignore_keys: Optional[List[str]] = None,
 ) -> Set[str]:
     """Compare 2 dicts and return set of changed keys."""
     if not dict2:
@@ -336,56 +276,3 @@ def get_changed_keys(
         elif dict1[key] != value:
             changed_keys.add(key)
     return changed_keys
-
-
-def create_uri(media_type: MediaType, provider: str, item_id: str):
-    """Create uri for mediaitem."""
-    return f"{provider}://{media_type.value}/{item_id}"
-
-
-class LimitedList(list):
-    """Implementation of a size limited list."""
-
-    @property
-    def max_len(self):
-        """Return list's max length."""
-        return self._max_len
-
-    def __init__(self, lst: Optional[List] = None, max_len=500):
-        """Initialize instance."""
-        self._max_len = max_len
-        if lst is not None:
-            super().__init__(lst)
-        else:
-            super().__init__()
-
-    def _truncate(self):
-        """Call by various methods to reinforce the maximum length."""
-        dif = len(self) - self._max_len
-        if dif > 0:
-            self[:dif] = []
-
-    def append(self, x):
-        """Append item x to the list."""
-        super().append(x)
-        self._truncate()
-
-    def insert(self, *args):
-        """Insert items at position x to the list."""
-        super().insert(*args)
-        self._truncate()
-
-    def extend(self, x):
-        """Extend the list."""
-        super().extend(x)
-        self._truncate()
-
-    def __setitem__(self, *args):
-        """Internally set."""
-        super().__setitem__(*args)
-        self._truncate()
-
-    # def __setslice__(self, *args):
-    #     """Internally set slice."""
-    #     super().__setslice__(*args)
-    #     self._truncate()

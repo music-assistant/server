@@ -4,37 +4,81 @@ import asyncio
 import logging
 import struct
 from io import BytesIO
-from typing import List, Optional, Tuple
+from typing import AsyncGenerator, List, Optional, Tuple
 
-from music_assistant.helpers.process import AsyncProcess
+import aiofiles
+
+from music_assistant.constants import EventType
+from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.typing import MusicAssistant, QueueItem
 from music_assistant.helpers.util import create_tempfile
-from music_assistant.models.media_types import MediaType
-from music_assistant.models.streamdetails import ContentType, StreamDetails, StreamType
+from music_assistant.models.errors import AudioError
+from music_assistant.models.media_items import (
+    ContentType,
+    MediaType,
+    StreamDetails,
+    StreamType,
+)
 
 LOGGER = logging.getLogger("audio")
 
+# pylint:disable=consider-using-f-string
+
 
 async def crossfade_pcm_parts(
-    fade_in_part: bytes, fade_out_part: bytes, pcm_args: List[str], fade_length: int
+    fade_in_part: bytes,
+    fade_out_part: bytes,
+    fade_length: int,
+    fmt: ContentType,
+    sample_rate: int,
 ) -> bytes:
     """Crossfade two chunks of pcm/raw audio using sox."""
+    _, ffmpeg_present = await check_audio_support()
+
+    # prefer ffmpeg implementation (due to simplicity)
+    if ffmpeg_present:
+        fadeoutfile = create_tempfile()
+        async with aiofiles.open(fadeoutfile.name, "wb") as outfile:
+            await outfile.write(fade_out_part)
+        # input args
+        args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+        args += [
+            "-f",
+            fmt.value,
+            "-ac",
+            "2",
+            "-ar",
+            str(sample_rate),
+            "-i",
+            fadeoutfile.name,
+        ]
+        args += ["-f", fmt.value, "-ac", "2", "-ar", str(sample_rate), "-i", "-"]
+        # filter args
+        args += ["-filter_complex", f"[0][1]acrossfade=d={fade_length}"]
+        # output args
+        args += ["-f", fmt.value, "-"]
+        async with AsyncProcess(args, True) as proc:
+            crossfade_data, _ = await proc.communicate(fade_in_part)
+            return crossfade_data
+
+    # sox based implementation
+    sox_args = [fmt.sox_format(), "-c", "2", "-r", str(sample_rate)]
     # create fade-in part
     fadeinfile = create_tempfile()
-    args = ["sox", "--ignore-length", "-t"] + pcm_args
-    args += ["-", "-t"] + pcm_args + [fadeinfile.name, "fade", "t", str(fade_length)]
+    args = ["sox", "--ignore-length", "-t"] + sox_args
+    args += ["-", "-t"] + sox_args + [fadeinfile.name, "fade", "t", str(fade_length)]
     async with AsyncProcess(args, enable_write=True) as sox_proc:
         await sox_proc.communicate(fade_in_part)
     # create fade-out part
     fadeoutfile = create_tempfile()
-    args = ["sox", "--ignore-length", "-t"] + pcm_args + ["-", "-t"] + pcm_args
+    args = ["sox", "--ignore-length", "-t"] + sox_args + ["-", "-t"] + sox_args
     args += [fadeoutfile.name, "reverse", "fade", "t", str(fade_length), "reverse"]
     async with AsyncProcess(args, enable_write=True) as sox_proc:
         await sox_proc.communicate(fade_out_part)
     # create crossfade using sox and some temp files
     # TODO: figure out how to make this less complex and without the tempfiles
-    args = ["sox", "-m", "-v", "1.0", "-t"] + pcm_args + [fadeoutfile.name, "-v", "1.0"]
-    args += ["-t"] + pcm_args + [fadeinfile.name, "-t"] + pcm_args + ["-"]
+    args = ["sox", "-m", "-v", "1.0", "-t"] + sox_args + [fadeoutfile.name, "-v", "1.0"]
+    args += ["-t"] + sox_args + [fadeinfile.name, "-t"] + sox_args + ["-"]
     async with AsyncProcess(args, enable_write=False) as sox_proc:
         crossfade_part, _ = await sox_proc.communicate()
     fadeinfile.close()
@@ -44,9 +88,30 @@ async def crossfade_pcm_parts(
     return crossfade_part
 
 
-async def strip_silence(audio_data: bytes, pcm_args: List[str], reverse=False) -> bytes:
+async def strip_silence(
+    audio_data: bytes, fmt: ContentType, sample_rate: int, reverse=False
+) -> bytes:
     """Strip silence from (a chunk of) pcm audio."""
-    args = ["sox", "--ignore-length", "-t"] + pcm_args + ["-", "-t"] + pcm_args + ["-"]
+    _, ffmpeg_present = await check_audio_support()
+    # prefer ffmpeg implementation
+    if ffmpeg_present:
+        # input args
+        args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+        args += ["-f", fmt.value, "-ac", "2", "-ar", str(sample_rate), "-i", "-"]
+        # filter args
+        if reverse:
+            args += ["-af", "areverse,silenceremove=1:0:-50dB:detection=peak,areverse"]
+        else:
+            args += ["-af", "silenceremove=1:0:-50dB:detection=peak"]
+        # output args
+        args += ["-f", fmt.value, "-"]
+        async with AsyncProcess(args, True) as proc:
+            stripped_data, _ = await proc.communicate(audio_data)
+            return stripped_data
+
+    # sox implementation
+    sox_args = [fmt.sox_format(), "-c", "2", "-r", str(sample_rate)]
+    args = ["sox", "--ignore-length", "-t"] + sox_args + ["-", "-t"] + sox_args + ["-"]
     if reverse:
         args.append("reverse")
     args += ["silence", "1", "0.1", "1%"]
@@ -97,7 +162,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
     )
     value, _ = await proc.communicate(audio_data or None)
     loudness = float(value.decode().strip())
-    await mass.database.set_track_loudness(
+    await mass.music.set_track_loudness(
         streamdetails.item_id, streamdetails.provider, loudness
     )
     LOGGER.debug(
@@ -109,46 +174,40 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
 
 
 async def get_stream_details(
-    mass: MusicAssistant, queue_item: QueueItem, player_id: str = ""
-) -> StreamDetails:
+    mass: MusicAssistant, queue_item: QueueItem, queue_id: str = "", lazy: bool = True
+) -> StreamDetails | None:
     """
-    Get streamdetails for the given media_item.
+    Get streamdetails for the given QueueItem.
 
-    This is called just-in-time when a player/queue wants a MediaItem to be played.
+    This is called just-in-time when a PlayerQueue wants a MediaItem to be played.
     Do not try to request streamdetails in advance as this is expiring data.
         param media_item: The MediaItem (track/radio) for which to request the streamdetails for.
-        param player_id: Optionally provide the player_id which will play this stream.
+        param queue_id: Optionally provide the queue_id which will play this stream.
     """
-    if queue_item.provider == "url":
+    if not queue_item.is_media_item:
         # special case: a plain url was added to the queue
         streamdetails = StreamDetails(
             type=StreamType.URL,
             provider="url",
             item_id=queue_item.item_id,
-            path=queue_item.uri if queue_item.uri else queue_item.item_id,
+            path=queue_item.uri,
             content_type=ContentType(queue_item.uri.split(".")[-1]),
         )
     else:
         # always request the full db track as there might be other qualities available
-        # except for radio
-        if queue_item.media_type == MediaType.RADIO:
-            full_track = await mass.music.get_radio(
-                queue_item.item_id, queue_item.provider
-            )
-        else:
-            full_track = await mass.music.get_track(
-                queue_item.item_id, queue_item.provider
-            )
-        if not full_track:
+        full_item = await mass.music.get_item_by_uri(
+            queue_item.uri, force_refresh=not lazy, lazy=lazy
+        )
+        if not full_item:
             return None
         # sort by quality and check track availability
         for prov_media in sorted(
-            full_track.provider_ids, key=lambda x: x.quality, reverse=True
+            full_item.provider_ids, key=lambda x: x.quality, reverse=True
         ):
             if not prov_media.available:
                 continue
             # get streamdetails from provider
-            music_prov = mass.get_provider(prov_media.provider)
+            music_prov = mass.music.get_provider(prov_media.provider)
             if not music_prov or not music_prov.available:
                 continue  # provider temporary unavailable ?
 
@@ -165,15 +224,11 @@ async def get_stream_details(
 
     if streamdetails:
         # set player_id on the streamdetails so we know what players stream
-        streamdetails.player_id = player_id
+        streamdetails.queue_id = queue_id
         # get gain correct / replaygain
-        if queue_item.name == "alert":
-            loudness = 5
-            gain_correct = 0
-        else:
-            loudness, gain_correct = await get_gain_correct(
-                mass, player_id, streamdetails.item_id, streamdetails.provider
-            )
+        loudness, gain_correct = await get_gain_correct(
+            mass, queue_id, streamdetails.item_id, streamdetails.provider
+        )
         streamdetails.gain_correct = gain_correct
         streamdetails.loudness = loudness
         # set streamdetails as attribute on the media_item
@@ -184,17 +239,17 @@ async def get_stream_details(
 
 
 async def get_gain_correct(
-    mass: MusicAssistant, player_id: str, item_id: str, provider_id: str
+    mass: MusicAssistant, queue_id: str, item_id: str, provider_id: str
 ) -> Tuple[float, float]:
-    """Get gain correction for given player / track combination."""
-    player_conf = mass.config.get_player_config(player_id)
-    if not player_conf["volume_normalisation"]:
+    """Get gain correction for given queue / track combination."""
+    queue = mass.players.get_player_queue(queue_id, True)
+    if not queue or not queue.volume_normalization_enabled:
         return 0
-    target_gain = int(player_conf["target_volume"])
-    track_loudness = await mass.database.get_track_loudness(item_id, provider_id)
+    target_gain = queue.volume_normalization_target
+    track_loudness = await mass.music.get_track_loudness(item_id, provider_id)
     if track_loudness is None:
         # fallback to provider average
-        fallback_track_loudness = await mass.database.get_provider_loudness(provider_id)
+        fallback_track_loudness = await mass.music.get_provider_loudness(provider_id)
         if fallback_track_loudness is None:
             # fallback to some (hopefully sane) average value for now
             fallback_track_loudness = -8.5
@@ -205,7 +260,7 @@ async def get_gain_correct(
     return (track_loudness, gain_correct)
 
 
-def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=3600):
+def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=1800):
     """Generate a wave header from given params."""
     # pylint: disable=no-member
     file = BytesIO()
@@ -253,11 +308,11 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
     return file.getvalue()
 
 
-def get_sox_args(
+async def get_sox_args(
     streamdetails: StreamDetails,
     output_format: Optional[ContentType] = None,
     resample: Optional[int] = None,
-):
+) -> List[str]:
     """Collect all args to send to the sox (or ffmpeg) process."""
     stream_path = streamdetails.path
     stream_type = StreamType(streamdetails.type)
@@ -265,10 +320,39 @@ def get_sox_args(
     if output_format is None:
         output_format = streamdetails.content_type
 
+    sox_present, ffmpeg_present = await check_audio_support()
+
     # use ffmpeg if content not supported by SoX (e.g. AAC radio streams)
-    if not streamdetails.content_type.sox_supported():
+    if not sox_present or not streamdetails.content_type.sox_supported():
+        if not ffmpeg_present:
+            raise AudioError(
+                "FFmpeg binary is missing from system."
+                "Please install ffmpeg on your OS to enable playback.",
+            )
         # collect input args
-        input_args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", stream_path]
+        if stream_type == StreamType.EXECUTABLE:
+            # stream from executable
+            input_args = [
+                stream_path,
+                "|",
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                content_type.value,
+                "-i",
+                "-",
+            ]
+        else:
+            input_args = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                stream_path,
+            ]
         # collect output args
         if output_format.is_pcm():
             output_args = [
@@ -283,7 +367,7 @@ def get_sox_args(
         # collect filter args
         filter_args = []
         if streamdetails.gain_correct:
-            filter_args += ["-filter:a", "volume=%sdB" % streamdetails.gain_correct]
+            filter_args += ["-filter:a", f"volume={streamdetails.gain_correct}dB"]
         if resample:
             filter_args += ["-ar", str(resample)]
         return input_args + filter_args + output_args
@@ -312,9 +396,159 @@ def get_sox_args(
     filter_args = []
     if streamdetails.gain_correct:
         filter_args += ["vol", str(streamdetails.gain_correct), "dB"]
-    if resample and streamdetails.content_type == ContentType.FLAC:
+    if resample and streamdetails.media_type != MediaType.RADIO:
         # use extra high quality resampler only if it makes sense
         filter_args += ["rate", "-v", str(resample)]
     elif resample:
         filter_args += ["rate", str(resample)]
     return input_args + output_args + filter_args
+
+
+async def get_media_stream(
+    mass: MusicAssistant,
+    streamdetails: StreamDetails,
+    output_format: Optional[ContentType] = None,
+    resample: Optional[int] = None,
+    chunk_size: Optional[int] = None,
+) -> AsyncGenerator[Tuple[bool, bytes], None]:
+    """Get the audio stream for the given streamdetails."""
+
+    mass.signal_event(EventType.STREAM_STARTED, streamdetails)
+    args = await get_sox_args(streamdetails, output_format, resample)
+    async with AsyncProcess(args) as sox_proc:
+
+        LOGGER.debug(
+            "start media stream for: %s/%s (%s)",
+            streamdetails.provider,
+            streamdetails.item_id,
+            streamdetails.type,
+        )
+
+        # yield chunks from stdout
+        # we keep 1 chunk behind to detect end of stream properly
+        try:
+            prev_chunk = b""
+            async for chunk in sox_proc.iterate_chunks(chunk_size):
+                if prev_chunk:
+                    yield (False, prev_chunk)
+                prev_chunk = chunk
+            # send last chunk
+            yield (True, prev_chunk)
+        except (asyncio.CancelledError, GeneratorExit) as err:
+            LOGGER.debug(
+                "media stream aborted for: %s/%s",
+                streamdetails.provider,
+                streamdetails.item_id,
+            )
+            raise err
+        else:
+            LOGGER.debug(
+                "finished media stream for: %s/%s",
+                streamdetails.provider,
+                streamdetails.item_id,
+            )
+            await mass.music.mark_item_played(
+                streamdetails.item_id, streamdetails.provider
+            )
+        finally:
+            mass.signal_event(EventType.STREAM_ENDED, streamdetails)
+            # send analyze job to background worker
+            if streamdetails.loudness is None:
+                uri = f"{streamdetails.provider}://{streamdetails.media_type.value}/{streamdetails.item_id}"
+                mass.add_job(
+                    analyze_audio(mass, streamdetails), f"Analyze audio for {uri}"
+                )
+
+
+async def check_audio_support(try_install: bool = False) -> Tuple[bool, bool, bool]:
+    """Check if sox and/or ffmpeg are present."""
+    cache_key = "audio_support_cache"
+    if cache := globals().get(cache_key):
+        return cache
+    # check for SoX presence
+    returncode, output = await check_output("sox --version")
+    sox_present = returncode == 0 and "SoX" in output.decode()
+    if not sox_present and try_install:
+        # try a few common ways to install SoX
+        # this all assumes we have enough rights and running on a linux based platform (or docker)
+        await check_output("apt-get update && apt-get install sox libsox-fmt-all")
+        await check_output("apk add sox")
+        # test again
+        returncode, output = await check_output("sox --version")
+        sox_present = returncode == 0 and "SoX" in output.decode()
+
+    # check for FFmpeg presence
+    returncode, output = await check_output("ffmpeg -version")
+    ffmpeg_present = returncode == 0 and "FFmpeg" in output.decode()
+    if not ffmpeg_present and try_install:
+        # try a few common ways to install SoX
+        # this all assumes we have enough rights and running on a linux based platform (or docker)
+        await check_output("apt-get update && apt-get install ffmpeg")
+        await check_output("apk add ffmpeg")
+        # test again
+        returncode, output = await check_output("ffmpeg -version")
+        ffmpeg_present = returncode == 0 and "FFmpeg" in output.decode()
+
+    # use globals as in-memory cache
+    result = (sox_present, ffmpeg_present)
+    globals()[cache_key] = result
+    return result
+
+
+async def get_sox_args_for_pcm_stream(
+    sample_rate: int,
+    bit_depth: int,
+    channels: int,
+    floating_point: bool = False,
+    output_format: ContentType = ContentType.FLAC,
+) -> List[str]:
+    """Collect args for aox (or ffmpeg) when converting from raw pcm to another contenttype."""
+
+    sox_present, ffmpeg_present = await check_audio_support()
+    input_format = ContentType.from_bit_depth(bit_depth, floating_point)
+    sox_present = True
+
+    # use ffmpeg if sox is not present
+    if not sox_present:
+        if not ffmpeg_present:
+            raise AudioError(
+                "FFmpeg binary is missing from system."
+                "Please install ffmpeg on your OS to enable playback.",
+            )
+        # collect input args
+        input_args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+        input_args += [
+            "-f",
+            input_format.value,
+            "-ac",
+            str(channels),
+            "-ar",
+            str(sample_rate),
+            "-i",
+            "-",
+        ]
+        # collect output args
+        output_args = ["-f", output_format.value, "-"]
+        return input_args + output_args
+
+    # Prefer SoX for all other (=highest quality)
+
+    # collect input args
+    input_args = [
+        "sox",
+        "-t",
+        input_format.sox_format(),
+        "-r",
+        str(sample_rate),
+        "-b",
+        str(bit_depth),
+        "-c",
+        str(channels),
+        "-",
+    ]
+    #  collect output args
+    if output_format == ContentType.FLAC:
+        output_args = ["-t", "flac", "-C", "0", "-"]
+    else:
+        output_args = ["-t", output_format.sox_format(), "-"]
+    return input_args + output_args

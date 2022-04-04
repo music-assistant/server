@@ -7,9 +7,9 @@ even when properly handling reading/writes from different tasks.
 
 import asyncio
 import logging
-from typing import AsyncGenerator, List, Optional, Union
+from typing import AsyncGenerator, List, Optional, Tuple, Union
 
-from async_timeout import timeout
+from async_timeout import timeout as _timeout
 
 LOGGER = logging.getLogger("AsyncProcess")
 
@@ -61,26 +61,28 @@ class AsyncProcess:
                 self._proc.terminate()
                 await self._proc.stdout.read()
                 self._proc.kill()
-            except (ProcessLookupError, BrokenPipeError):
+            except (ProcessLookupError, BrokenPipeError, RuntimeError):
                 pass
         del self._proc
 
     async def iterate_chunks(
-        self, chunk_size: int = DEFAULT_CHUNKSIZE
+        self, chunk_size: int = DEFAULT_CHUNKSIZE, timeout: int = DEFAULT_TIMEOUT
     ) -> AsyncGenerator[bytes, None]:
         """Yield chunks from the process stdout. Generator."""
         while True:
-            chunk = await self.read(chunk_size)
+            chunk = await self.read(chunk_size, timeout)
             if not chunk:
                 break
             yield chunk
             if chunk_size is not None and len(chunk) < chunk_size:
                 break
 
-    async def read(self, chunk_size: int = DEFAULT_CHUNKSIZE) -> bytes:
+    async def read(
+        self, chunk_size: int = DEFAULT_CHUNKSIZE, timeout: int = DEFAULT_TIMEOUT
+    ) -> bytes:
         """Read x bytes from the process stdout."""
         try:
-            async with timeout(DEFAULT_TIMEOUT):
+            async with _timeout(timeout):
                 if chunk_size is None:
                     return await self._proc.stdout.read(DEFAULT_CHUNKSIZE)
                 return await self._proc.stdout.readexactly(chunk_size)
@@ -88,6 +90,8 @@ class AsyncProcess:
             return err.partial
         except AttributeError as exc:
             raise asyncio.CancelledError() from exc
+        except asyncio.TimeoutError:
+            return b""
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
@@ -96,9 +100,25 @@ class AsyncProcess:
             await self._proc.stdin.drain()
         except BrokenPipeError:
             pass
-        except AttributeError:
-            raise asyncio.CancelledError()
+        except (AttributeError, AssertionError) as err:
+            raise asyncio.CancelledError() from err
+
+    def write_eof(self) -> None:
+        """Write end of file to to process stdin."""
+        if self._proc.stdin.can_write_eof():
+            self._proc.stdin.write_eof()
 
     async def communicate(self, input_data: Optional[bytes] = None) -> bytes:
         """Write bytes to process and read back results."""
         return await self._proc.communicate(input_data)
+
+
+async def check_output(shell_cmd: str) -> Tuple[int, bytes]:
+    """Run shell subprocess and return output."""
+    proc = await asyncio.create_subprocess_shell(
+        shell_cmd,
+        stderr=asyncio.subprocess.STDOUT,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await proc.communicate()
+    return (proc.returncode, stdout)

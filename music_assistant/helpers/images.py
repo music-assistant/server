@@ -1,77 +1,51 @@
 """Utilities for image manipulation and retrieval."""
 
-import os
 from io import BytesIO
 
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.models.media_types import MediaType
+from music_assistant.models.media_items import ItemMapping, MediaType, MediaItemType
 from PIL import Image
 
 
-async def get_thumb_file(mass: MusicAssistant, url, size: int = 150):
-    """Get path to (resized) thumbnail image for given image url."""
-    assert url
-    cache_folder = os.path.join(mass.config.data_path, ".thumbs")
-    cache_id = await mass.database.get_thumbnail_id(url, size)
-    cache_file = os.path.join(cache_folder, f"{cache_id}.png")
-    if os.path.isfile(cache_file):
-        # return file from cache
-        return cache_file
-    # no file in cache so we should get it
-    os.makedirs(cache_folder, exist_ok=True)
-    # download base image
+async def create_thumbnail(mass: MusicAssistant, url, size: int = 150) -> bytes:
+    """Create thumbnail from image url."""
     async with mass.http_session.get(url, verify_ssl=False) as response:
         assert response.status == 200
         img_data = BytesIO(await response.read())
-
-    # save resized image
-    if size:
-        basewidth = size
         img = Image.open(img_data)
-        wpercent = basewidth / float(img.size[0])
-        hsize = int((float(img.size[1]) * float(wpercent)))
-        img = img.resize((basewidth, hsize), Image.ANTIALIAS)
-        img.save(cache_file, format="png")
-    else:
-        with open(cache_file, "wb") as _file:
-            _file.write(img_data.getvalue())
-    # return file from cache
-    return cache_file
+        img.thumbnail((size, size), Image.ANTIALIAS)
+        img.save(format="png")
+        return img_data.getvalue()
 
 
-async def get_image_url(
-    mass: MusicAssistant, item_id: str, provider_id: str, media_type: MediaType
-):
-    """Get url to image for given media item."""
-    item = await mass.music.get_item(item_id, provider_id, media_type)
-    if not item:
+async def get_image_url(mass: MusicAssistant, media_item: MediaItemType):
+    """Get url to image for given media media_item."""
+    if not media_item:
         return None
-    if item and item.metadata.get("image"):
-        return item.metadata["image"]
+    if isinstance(media_item, ItemMapping):
+        media_item = await mass.music.get_item_by_uri(media_item.uri)
+    if media_item and media_item.metadata.get("image"):
+        return media_item.metadata["image"]
     if (
-        hasattr(item, "album")
-        and hasattr(item.album, "metadata")
-        and item.album.metadata.get("image")
+        hasattr(media_item, "album")
+        and hasattr(media_item.album, "metadata")
+        and media_item.album.metadata.get("image")
     ):
-        return item.album.metadata["image"]
-    if hasattr(item, "albums"):
-        for album in item.albums:
+        return media_item.album.metadata["image"]
+    if hasattr(media_item, "albums"):
+        for album in media_item.albums:
             if hasattr(album, "metadata") and album.metadata.get("image"):
                 return album.metadata["image"]
     if (
-        hasattr(item, "artist")
-        and hasattr(item.artist, "metadata")
-        and item.artist.metadata.get("image")
+        hasattr(media_item, "artist")
+        and hasattr(media_item.artist, "metadata")
+        and media_item.artist.metadata.get("image")
     ):
-        return item.artist.metadata["image"]
-    if media_type == MediaType.TRACK and item.album:
+        return media_item.artist.metadata["image"]
+    if media_item.media_type == MediaType.TRACK and media_item.album:
         # try album instead for tracks
-        return await get_image_url(
-            mass, item.album.item_id, item.album.provider, MediaType.ALBUM
-        )
-    if media_type == MediaType.ALBUM and item.artist:
+        return await get_image_url(mass, media_item.album)
+    if media_item.media_type == MediaType.ALBUM and media_item.artist:
         # try artist instead for albums
-        return await get_image_url(
-            mass, item.artist.item_id, item.artist.provider, MediaType.ARTIST
-        )
+        return await get_image_url(mass, media_item.artist)
     return None

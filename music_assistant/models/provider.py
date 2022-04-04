@@ -1,151 +1,65 @@
-"""Models for providers/plugins."""
+"""Model for a Music Providers."""
+
+from __future__ import annotations
 
 from abc import abstractmethod
-from enum import Enum
-from typing import Dict, List, Optional
+from logging import Logger
+from typing import List
 
-from music_assistant.helpers.typing import MusicAssistant, Players
-from music_assistant.models.config_entry import ConfigEntry
-from music_assistant.models.media_types import (
+from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.models.media_items import (
     Album,
     Artist,
+    MediaItemType,
     MediaType,
     Playlist,
     Radio,
-    SearchResult,
     Track,
 )
-from music_assistant.models.streamdetails import StreamDetails
+from music_assistant.models.player_queue import StreamDetails
 
 
-class ProviderType(Enum):
-    """Enum with plugin types."""
+class MusicProvider:
+    """Model for a Music Provider."""
 
-    MUSIC_PROVIDER = "music_provider"
-    PLAYER_PROVIDER = "player_provider"
-    METADATA_PROVIDER = "metadata_provider"
-    PLUGIN = "plugin"
+    _attr_id: str = None
+    _attr_name: str = None
+    _attr_available: bool = True
+    _attr_supported_mediatypes: List[MediaType] = []
+    mass: MusicAssistant = None  # set by setup
+    logger: Logger = None  # set by setup
 
+    @abstractmethod
+    async def setup(self) -> None:
+        """
+        Handle async initialization of the provider.
 
-class Provider:
-    """Base model for a provider/plugin."""
-
-    mass: MusicAssistant = None  # will be set automagically while loading the provider
-    available: bool = False  # will be set automagically while loading the provider
+        Called when provider is registered.
+        """
 
     @property
-    @abstractmethod
-    def type(self) -> ProviderType:
-        """Return ProviderType."""
-
-    @property
-    @abstractmethod
     def id(self) -> str:
         """Return provider ID for this provider."""
+        return self._attr_id
 
     @property
-    @abstractmethod
     def name(self) -> str:
         """Return provider Name for this provider."""
+        return self._attr_name
 
     @property
-    @abstractmethod
-    def config_entries(self) -> List[ConfigEntry]:
-        """Return Config Entries for this provider."""
-
-    @abstractmethod
-    async def on_start(self) -> bool:
-        """
-        Handle initialization of the provider based on config.
-
-        Return bool if start was succesfull. Called on startup.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    async def on_stop(self) -> None:
-        """Handle correct close/cleanup of the provider on exit. Called on shutdown/reload."""
-
-
-class Plugin(Provider):
-    """
-    Base class for a Plugin.
-
-    Should be overridden/subclassed by provider specific implementation.
-    """
-
-    @property
-    def type(self) -> ProviderType:
-        """Return ProviderType."""
-        return ProviderType.PLUGIN
-
-
-class PlayerProvider(Provider):
-    """
-    Base class for a Playerprovider.
-
-    Should be overridden/subclassed by provider specific implementation.
-    """
-
-    @property
-    def type(self) -> ProviderType:
-        """Return ProviderType."""
-        return ProviderType.PLAYER_PROVIDER
-
-    @property
-    def players(self) -> Players:
-        """Return all players belonging to this provider."""
-        # pylint: disable=no-member
-        return [player for player in self.mass.players if player.provider_id == self.id]
-
-
-class MetadataProvider(Provider):
-    """
-    Base class for a MetadataProvider.
-
-    Should be overridden/subclassed by provider specific implementation.
-    """
-
-    @property
-    def type(self) -> ProviderType:
-        """Return ProviderType."""
-        return ProviderType.METADATA_PROVIDER
-
-    async def get_artist_images(self, mb_artist_id: str) -> Dict:
-        """Retrieve artist metadata as dict by musicbrainz artist id."""
-        raise NotImplementedError
-
-    async def get_album_images(self, mb_album_id: str) -> Dict:
-        """Retrieve album metadata as dict by musicbrainz album id."""
-        raise NotImplementedError
-
-
-class MusicProvider(Provider):
-    """
-    Base class for a Musicprovider.
-
-    Should be overriden in the provider specific implementation.
-    """
-
-    @property
-    def type(self) -> ProviderType:
-        """Return ProviderType."""
-        return ProviderType.MUSIC_PROVIDER
+    def available(self) -> bool:
+        """Return boolean if this provider is available/initialized."""
+        return self._attr_available
 
     @property
     def supported_mediatypes(self) -> List[MediaType]:
         """Return MediaTypes the provider supports."""
-        return [
-            MediaType.ALBUM,
-            MediaType.ARTIST,
-            MediaType.PLAYLIST,
-            MediaType.RADIO,
-            MediaType.TRACK,
-        ]
+        return self._attr_supported_mediatypes
 
     async def search(
-        self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> SearchResult:
+        self, search_query: str, media_types=List[MediaType] | None, limit: int = 5
+    ) -> List[MediaItemType]:
         """
         Perform search on musicprovider.
 
@@ -175,7 +89,7 @@ class MusicProvider(Provider):
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_radios(self) -> List[Radio]:
+    async def get_library_radios(self) -> List[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         if MediaType.RADIO in self.supported_mediatypes:
             raise NotImplementedError
@@ -250,3 +164,30 @@ class MusicProvider(Provider):
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         raise NotImplementedError
+
+    # some helper methods below
+    async def get_library_items(self, media_type: MediaType) -> List[MediaItemType]:
+        """Return library items for given media_type."""
+        if media_type == MediaType.ARTIST:
+            return await self.get_library_artists()
+        if media_type == MediaType.ALBUM:
+            return await self.get_library_albums()
+        if media_type == MediaType.TRACK:
+            return await self.get_library_tracks()
+        if media_type == MediaType.PLAYLIST:
+            return await self.get_library_playlists()
+        if media_type == MediaType.RADIO:
+            return await self.get_library_radios()
+
+    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
+        """Get single MediaItem from provider."""
+        if media_type == MediaType.ARTIST:
+            return await self.get_artist(prov_item_id)
+        if media_type == MediaType.ALBUM:
+            return await self.get_album(prov_item_id)
+        if media_type == MediaType.TRACK:
+            return await self.get_track(prov_item_id)
+        if media_type == MediaType.PLAYLIST:
+            return await self.get_playlist(prov_item_id)
+        if media_type == MediaType.RADIO:
+            return await self.get_radio(prov_item_id)

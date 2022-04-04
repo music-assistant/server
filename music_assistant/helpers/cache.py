@@ -2,41 +2,34 @@
 
 import asyncio
 import functools
-import logging
-import os
 import pickle
 import time
 from typing import Awaitable
 
-import aiosqlite
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
 
-LOGGER = logging.getLogger("cache")
+DB_TABLE = "cache"
 
 
 class Cache:
-    """Basic stateless caching system."""
-
-    _db = None
+    """Basic cache using both memory and database."""
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize our caching class."""
         self.mass = mass
-        self._dbfile = os.path.join(mass.config.data_path, ".cache.db")
+        self.logger = mass.logger.getChild("cache")
         self._mem_cache = {}
 
     async def setup(self) -> None:
         """Async initialize of cache module."""
-        async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
-            await db_conn.execute(
-                """CREATE TABLE IF NOT EXISTS simplecache(
-                id TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
+        # prepare database
+        async with self.mass.database.get_db() as _db:
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {DB_TABLE}(
+                    key TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
             )
-            await db_conn.commit()
-            await db_conn.execute("VACUUM;")
-            await db_conn.commit()
-        self.mass.tasks.add("Cleanup cache", self.auto_cleanup, periodic=3600)
+        self.__schedule_cleanup_task()
 
     async def get(self, cache_key, checksum="", default=None):
         """
@@ -58,27 +51,28 @@ class Cache:
         ):
             return cache_data[0]
         # fall back to db cache
-        sql_query = "SELECT data, checksum, expires FROM simplecache WHERE id = ?"
-        async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
-            async with db_conn.execute(sql_query, (cache_key,)) as cursor:
-                cache_data = await cursor.fetchone()
-                if (
-                    cache_data
-                    and (not checksum or cache_data[1] == checksum)
-                    and cache_data[2] >= cur_time
-                ):
+        if db_row := await self.mass.database.get_row(DB_TABLE, {"key": cache_key}):
+            if (
+                not checksum
+                or db_row["checksum"] == checksum
+                and db_row["expires"] >= cur_time
+            ):
+                try:
                     data = await asyncio.get_running_loop().run_in_executor(
-                        None, pickle.loads, cache_data[0]
+                        None, pickle.loads, db_row["data"]
                     )
+                except Exception:  # pylint: disable=broad-except
+                    self.logger.warning("Error parsing cache data for %s", cache_key)
+                else:
                     # also store in memory cache for faster access
                     if cache_key not in self._mem_cache:
                         self._mem_cache[cache_key] = (
                             data,
-                            cache_data[1],
-                            cache_data[2],
+                            db_row["checksum"],
+                            db_row["expires"],
                         )
                     return data
-        LOGGER.debug("no cache data for %s", cache_key)
+        self.logger.debug("no cache data for %s", cache_key)
         return default
 
     async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
@@ -89,38 +83,34 @@ class Cache:
         data = await asyncio.get_running_loop().run_in_executor(
             None, pickle.dumps, data
         )
-        sql_query = """INSERT OR REPLACE INTO simplecache
-            (id, expires, data, checksum) VALUES (?, ?, ?, ?)"""
-        async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
-            await db_conn.execute(sql_query, (cache_key, expires, data, checksum))
-            await db_conn.commit()
+        await self.mass.database.insert_or_replace(
+            DB_TABLE,
+            {"key": cache_key, "expires": expires, "checksum": checksum, "data": data},
+        )
 
     async def delete(self, cache_key):
         """Delete data from cache."""
         self._mem_cache.pop(cache_key, None)
-        sql_query = "DELETE FROM simplecache WHERE id = ?"
-        async with aiosqlite.connect(self._dbfile, timeout=180) as db_conn:
-            await db_conn.execute(sql_query, (cache_key,))
-            await db_conn.commit()
+        await self.mass.database.delete(DB_TABLE, {"key": cache_key})
 
     async def auto_cleanup(self):
         """Sceduled auto cleanup task."""
-        # for now we simply rest the memory cache
+        # for now we simply reset the memory cache
         self._mem_cache = {}
         cur_timestamp = int(time.time())
-        sql_query = "SELECT id, expires FROM simplecache"
-        async with aiosqlite.connect(self._dbfile, timeout=600) as db_conn:
-            db_conn.row_factory = aiosqlite.Row
-            async with db_conn.execute(sql_query) as cursor:
-                cache_objects = await cursor.fetchall()
-            for cache_data in cache_objects:
-                cache_id = cache_data["id"]
-                # clean up db cache object only if expired
-                if cache_data["expires"] < cur_timestamp:
-                    sql_query = "DELETE FROM simplecache WHERE id = ?"
-                    await db_conn.execute(sql_query, (cache_id,))
-            # compact db
-            await db_conn.commit()
+        for db_row in await self.mass.database.get_rows(DB_TABLE):
+            # clean up db cache object only if expired
+            if db_row["expires"] < cur_timestamp:
+                await self.delete(db_row["key"])
+        # compact db
+        async with self.mass.database.get_db() as _db:
+            await _db.execute("VACUUM")
+
+    def __schedule_cleanup_task(self):
+        """Schedule the cleanup task."""
+        self.mass.add_job(self.auto_cleanup(), "Cleanup cache")
+        # reschedule self
+        self.mass.loop.call_later(3600, self.__schedule_cleanup_task)
 
     @staticmethod
     def _get_checksum(stringinput):
@@ -137,65 +127,15 @@ async def cached(
     coro_func: Awaitable,
     *args,
     expires: int = (86400 * 30),
-    checksum=None
+    checksum=None,
 ):
     """Return helper method to store results of a coroutine in the cache."""
     cache_result = await cache.get(cache_key, checksum)
     if cache_result is not None:
         return cache_result
-    result = await coro_func(*args)
+    if asyncio.iscoroutine(coro_func):
+        result = await coro_func
+    else:
+        result = await coro_func(*args)
     create_task(cache.set(cache_key, result, checksum, expires))
     return result
-
-
-def use_cache(cache_days=14, cache_checksum=None):
-    """Return decorator that can be used to cache a method's result."""
-
-    def wrapper(func):
-        @functools.wraps(func)
-        async def wrapped(*args, **kwargs):
-            method_class = args[0]
-            method_class_name = method_class.__class__.__name__
-            cache_str = "%s.%s" % (method_class_name, func.__name__)
-            cache_str += __cache_id_from_args(*args, **kwargs)
-            cache_str = cache_str.lower()
-            cachedata = await method_class.cache.get(cache_str)
-            if cachedata is not None:
-                return cachedata
-            result = await func(*args, **kwargs)
-            create_task(
-                method_class.cache.set(
-                    cache_str,
-                    result,
-                    checksum=cache_checksum,
-                    expiration=(86400 * cache_days),
-                )
-            )
-            return result
-
-        return wrapped
-
-    return wrapper
-
-
-def __cache_id_from_args(*args, **kwargs):
-    """Parse arguments to build cache id."""
-    cache_str = ""
-    # append args to cache identifier
-    for item in args[1:]:
-        if isinstance(item, dict):
-            for subkey in sorted(list(item.keys())):
-                subvalue = item[subkey]
-                cache_str += ".%s%s" % (subkey, subvalue)
-        else:
-            cache_str += ".%s" % item
-    # append kwargs to cache identifier
-    for key in sorted(list(kwargs.keys())):
-        value = kwargs[key]
-        if isinstance(value, dict):
-            for subkey in sorted(list(value.keys())):
-                subvalue = value[subkey]
-                cache_str += ".%s%s" % (subkey, subvalue)
-        else:
-            cache_str += ".%s%s" % (key, value)
-    return cache_str
