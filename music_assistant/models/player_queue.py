@@ -111,9 +111,9 @@ class PlayerQueue:
     def active(self) -> bool:
         """Return bool if the queue is currenty active on the player."""
         # TODO: figure out a way to handle group childs playing the parent queue
-        if self._stream_url in self.player.current_url:
-            return True
-        return self.player.current_url is None
+        if self.player.current_url is None:
+            return False
+        return self._stream_url in self.player.current_url
 
     @property
     def elapsed_time(self) -> int:
@@ -136,6 +136,13 @@ class PlayerQueue:
     def crossfade_duration(self) -> int:
         """Return crossfade duration (0 if disabled)."""
         return self._crossfade_duration
+
+    @property
+    def max_sample_rate(self) -> int:
+        """Return the maximum supported sample rate this playerqueue supports."""
+        if self.player.max_sample_rate is None:
+            return 96000
+        return self.player.max_sample_rate
 
     @property
     def items(self) -> List[QueueItem]:
@@ -511,9 +518,9 @@ class PlayerQueue:
         if self._last_state != self.player.state:
             self._last_state = self.player.state
             # handle case where stream stopped on purpose and we need to restart it
-            if self.player.state == PlayerState.IDLE and self._signal_next:
+            if self.player.state != PlayerState.PLAYING and self._signal_next:
                 self._signal_next = False
-                create_task(self.play)
+                create_task(self.play())
             # start updater task if needed
             if self.player.state == PlayerState.PLAYING:
                 if not self._update_task:

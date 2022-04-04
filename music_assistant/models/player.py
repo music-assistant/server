@@ -55,6 +55,7 @@ class Player(ABC):
     _attr_available: bool = True
     _attr_volume_level: int = 100
     _attr_device_info: DeviceInfo = DeviceInfo()
+    _attr_max_sample_rate:int = 96000
     # mass object will be set by playermanager at register
     mass: MusicAssistant = None  # type: ignore[assignment]
 
@@ -96,6 +97,11 @@ class Player(ABC):
     def device_info(self) -> DeviceInfo:
         """Return basic device/provider info for this player."""
         return self._attr_device_info
+
+    @property
+    def max_sample_rate(self) -> int:
+        """Return the maximum supported sample rate this player supports."""
+        return self._attr_max_sample_rate
 
     async def play_url(self, url: str) -> None:
         """Play the specified url on the player."""

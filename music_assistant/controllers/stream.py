@@ -5,9 +5,8 @@ import asyncio
 from asyncio import Task
 from dataclasses import dataclass
 from typing import AsyncGenerator, Awaitable, Callable, Dict, List
-
+from time import time
 from aiohttp import web
-from isort import stream
 
 from music_assistant.constants import EventType
 from music_assistant.helpers.audio import (
@@ -57,12 +56,15 @@ class StreamController:
         app = web.Application()
 
         app.router.add_get("/{queue_id}.flac", self.serve_stream_client)
-        app.router.add_get("/{queue_id}", self.serve_stream_client)
         app.router.add_get("/{queue_id}.wav", self.serve_stream_client_raw)
+        app.router.add_get("/{queue_id}", self.serve_stream_client)
+
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
-        http_site = web.TCPSite(runner, host=None, port=self._port, reuse_address=True)
+        http_site = web.TCPSite(
+            runner, host=None, port=self._port, reuse_address=True, reuse_port=True
+        )
         await http_site.start()
 
         async def on_shutdown_event(*args, **kwargs):
@@ -72,10 +74,9 @@ class StreamController:
                     await callback(b"")
             for task in self._stream_tasks.values():
                 task.cancel()
-            await runner.shutdown()
             await http_site.stop()
+            await runner.shutdown()
             await app.shutdown()
-            await runner.cleanup()
             await app.cleanup()
             self.logger.info("Streamserver exited.")
 
@@ -121,7 +122,7 @@ class StreamController:
                 try:
                     await resp.write(audio_chunk)
                 except BrokenPipeError:
-                    pass  # race condition: already disconnected
+                    pass  # race condition
 
             await self.subscribe(queue_id, clientid, audio_callback)
             await last_chunk_received.wait()
@@ -139,7 +140,7 @@ class StreamController:
 
         # prepare request
         streamdetails = await queue.queue_stream_prepare()
-        sample_rate = streamdetails.sample_rate
+        sample_rate = min(streamdetails.sample_rate, queue.max_sample_rate)
         bit_depth = streamdetails.bit_depth
         channels = streamdetails.channels
         fmt = f"x-wav;codec=pcm;rate={sample_rate};bitrate={bit_depth};channels={channels}"
@@ -161,9 +162,9 @@ class StreamController:
         # start delivering audio chunks
         async for chunk in self._get_queue_stream(
             queue,
-            streamdetails.sample_rate,
-            streamdetails.bit_depth,
-            streamdetails.channels,
+            sample_rate,
+            bit_depth,
+            channels,
         ):
             await resp.write(chunk)
 
@@ -206,7 +207,9 @@ class StreamController:
                 task.cancel()
             self._stream_details.pop(queue_id, None)
 
-    async def _generate_queue_stream(self, queue_id: str) -> None:
+    async def _generate_queue_stream(
+        self, queue_id: str, output_fmt: ContentType = ContentType.FLAC
+    ) -> None:
         """Stream the PlayerQueue's tracks, compressed with FLAC."""
         queue = self.mass.players.get_player_queue(queue_id)
         streamdetails = await queue.queue_stream_prepare()
@@ -216,32 +219,47 @@ class StreamController:
             streamdetails.sample_rate,
             streamdetails.bit_depth,
             streamdetails.channels,
-            output_format=ContentType.FLAC,
+            output_format=output_fmt,
         )
         # get the raw pcm bytes from the queue stream and on the fly encode as flac
         # send the flac endoded stream to the subscribers.
         async with AsyncProcess(sox_args, True) as sox_proc:
 
             async def reader():
-                async for audio_chunk in sox_proc.iterate_chunks(None):
-                    await asyncio.gather(
-                        *[
-                            x(audio_chunk)
+                # task that reads flac endoded chunks from the subprocess
+                # and forward them to subscribers
+                async for audio_chunk in sox_proc.iterate_chunks():
+                    if not self._subscribers[queue_id]:
+                        # might happen in a race condition so guard just in case
+                        continue
+                    await asyncio.wait(
+                        [
+                            asyncio.create_task(x(audio_chunk))
                             for x in list(self._subscribers[queue_id].values())
                         ]
                     )
-                print("last chunk received in reader")
 
-            create_task(reader())
-
+            task = asyncio.create_task(reader())
+            # feed raw pcm chunks into sox/ffmpeg to encode to flac
             async for chunk in self._get_queue_stream(
                 queue,
-                streamdetails.sample_rate,
+                min(streamdetails.sample_rate, queue.max_sample_rate),
                 streamdetails.bit_depth,
                 streamdetails.channels,
             ):
                 await sox_proc.write(chunk)
-            print("last chunk received from stream")
+            self.logger.debug("last chunk received from stream")
+            sox_proc.write_eof()
+            # wait for the output task to complete
+            await task
+            self.logger.debug("reader task finished")
+            # send empty chunk to inform EOF
+            await asyncio.wait(
+                [
+                    asyncio.create_task(x(b""))
+                    for x in list(self._subscribers[queue_id].values())
+                ]
+            )
 
     async def _get_queue_stream(
         self, queue: PlayerQueue, sample_rate: int, bit_depth: int, channels: int = 2
@@ -250,6 +268,7 @@ class StreamController:
         last_fadeout_data = b""
         queue_index = None
         track_count = 0
+        start_timestamp = time()
 
         # stream queue tracks one by one
         while True:
@@ -273,16 +292,18 @@ class StreamController:
                 continue
             self._stream_details[queue.queue_id] = streamdetails
             # get the PCM samplerate/bitrate
-            if bit_depth is not None and streamdetails.bit_depth != bit_depth:
+            if streamdetails.bit_depth > bit_depth:
                 await queue.queue_stream_signal_next()
                 self.logger.warning("Abort queue stream due to bit depth mismatch")
-                break  # bit depth mismatch
-            bit_depth = streamdetails.bit_depth
-            if sample_rate is not None and streamdetails.sample_rate != sample_rate:
                 await queue.queue_stream_signal_next()
+                break
+            if (
+                streamdetails.sample_rate > sample_rate
+                and streamdetails.sample_rate <= queue.max_sample_rate
+            ):
                 self.logger.warning("Abort queue stream due to sample rate mismatch")
-                break  # sample rate mismatch
-            sample_rate = streamdetails.sample_rate
+                await queue.queue_stream_signal_next()
+                break
 
             pcm_fmt = ContentType.from_bit_depth(bit_depth)
             sample_size = int(sample_rate * (bit_depth / 8) * channels)  # 1 second
@@ -291,11 +312,12 @@ class StreamController:
             )  # 1...10 seconds
 
             self.logger.debug(
-                "Start Streaming queue track: %s (%s) for player %s - pcm_fmt: %s",
+                "Start Streaming queue track: %s (%s) for player %s - PCM format: %s - rate: %s",
                 queue_track.item_id,
                 queue_track.name,
                 queue.player.name,
-                pcm_fmt,
+                pcm_fmt.value,
+                sample_rate,
             )
             fade_in_part = b""
             cur_chunk = 0
@@ -406,6 +428,15 @@ class StreamController:
                     else:
                         prev_chunk = chunk
                     del chunk
+                # guard for clients buffering too much
+                seconds_streamed = bytes_written / sample_size
+                seconds_per_chunk = buffer_size / sample_size
+                seconds_needed = int(time() - start_timestamp + 2)
+                if (seconds_streamed) > seconds_needed:
+                    self.logger.debug(
+                        "cooldown %s seconds", seconds_streamed - seconds_needed
+                    )
+                    await asyncio.sleep(seconds_streamed - seconds_needed)
             # end of the track reached
             # update actual duration to the queue for more accurate now playing info
             accurate_duration = bytes_written / sample_size
@@ -418,4 +449,5 @@ class StreamController:
             )
         # end of queue reached, pass last fadeout bits to final output
         yield last_fadeout_data
+        self.logger.debug("end of queue reached, last fade out data yielded")
         # END OF QUEUE STREAM
