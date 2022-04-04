@@ -100,7 +100,7 @@ class AsyncProcess:
             await self._proc.stdin.drain()
         except BrokenPipeError:
             pass
-        except AttributeError as err:
+        except (AttributeError, AssertionError) as err:
             raise asyncio.CancelledError() from err
 
     def write_eof(self) -> None:

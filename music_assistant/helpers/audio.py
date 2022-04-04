@@ -514,19 +514,8 @@ async def get_sox_args_for_pcm_stream(
                 "Please install ffmpeg on your OS to enable playback.",
             )
         # collect input args
-        input_args = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            "-",
-            "-f",
-            input_format.value,
-            "-c:a",
-            "-ar",
-            str(sample_rate),
-        ]
+        input_args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+        input_args += ["-f", input_format.value, "-ac", str(channels), "-ar", str(sample_rate), "-i", "-"]
         # collect output args
         output_args = ["-f", output_format.value, "-"]
         return input_args + output_args
