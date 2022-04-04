@@ -16,7 +16,7 @@ from music_assistant.constants import EventType
 from music_assistant.helpers.audio import get_stream_details
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
-from music_assistant.models.media_items import ContentType, MediaType, StreamDetails
+from music_assistant.models.media_items import MediaType, StreamDetails
 
 from .player import Player, PlayerState
 
@@ -412,9 +412,7 @@ class PlayerQueue:
         self._current_index = index
 
         # send stream url to player connected to this queue
-        self._stream_url = self.mass.players.streams.get_stream_url(
-            self.queue_id
-        )
+        self._stream_url = self.mass.players.streams.get_stream_url(self.queue_id)
         await self.player.play_url(self._stream_url)
 
     async def move_item(self, queue_item_id: str, pos_shift: int = 1) -> None:

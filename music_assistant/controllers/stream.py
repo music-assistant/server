@@ -23,7 +23,7 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_ip
-from music_assistant.models.media_items import ContentType, StreamDetails
+from music_assistant.models.media_items import ContentType
 from music_assistant.models.player_queue import PlayerQueue
 
 

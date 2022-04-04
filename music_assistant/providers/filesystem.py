@@ -3,6 +3,7 @@ import base64
 import os
 import re
 from typing import List, Optional
+import aiofiles
 
 import taglib
 
@@ -157,11 +158,13 @@ class FileProvider(MusicProvider):
             return None
         name = itempath.split(os.sep)[-1]
         artistpath = itempath.rsplit(os.sep, 1)[0]
-        album = Album(item_id=prov_album_id, provider=self.id)
-        album.name, album.version = parse_title_and_version(name)
+        name, version = parse_title_and_version(name)
+        album = Album(
+            item_id=prov_album_id, provider=self.id, name=name, version=version
+        )
         album.artist = await self.get_artist(artistpath)
         if not album.artist:
-            raise InvalidDataError("No album artist ! %s" % artistpath)
+            raise InvalidDataError(f"No album artist ! {artistpath}")
         album.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=prov_album_id)
         )
@@ -190,8 +193,8 @@ class FileProvider(MusicProvider):
         if not os.path.isfile(itempath):
             self.logger.error("playlist path does not exist: %s", itempath)
             return None
-        playlist = Playlist(prov_playlist_id, provider=self.id)
-        playlist.name = itempath.split(os.sep)[-1].replace(".m3u", "")
+        name = itempath.split(os.sep)[-1].replace(".m3u", "")
+        playlist = Playlist(prov_playlist_id, provider=self.id, name=name)
         playlist.is_editable = True
         playlist.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=prov_playlist_id)
@@ -231,8 +234,8 @@ class FileProvider(MusicProvider):
             self.logger.error("playlist path does not exist: %s", itempath)
             return result
         index = 0
-        with open(itempath) as _file:
-            for line in _file.readlines():
+        async with aiofiles.open(itempath, "r") as _file:
+            for line in await _file.readlines():
                 line = line.strip()
                 if line and not line.startswith("#"):
                     track = await self._parse_track_from_uri(line)
@@ -292,13 +295,15 @@ class FileProvider(MusicProvider):
         except Exception:
             return None  # not a media file ?
         prov_item_id = base64.b64encode(filename.encode("utf-8")).decode("utf-8")
-        track = Track(item_id=prov_item_id, provider=self.id)
-        track.duration = song.length
         try:
             name = song.tags["TITLE"][0]
         except KeyError:
             name = filename.split("/")[-1].split(".")[0]
-        track.name, track.version = parse_title_and_version(name)
+        name, version = parse_title_and_version(name)
+        track = Track(
+            item_id=prov_item_id, provider=self.id, name=name, version=version
+        )
+        track.duration = song.length
         albumpath = filename.rsplit(os.sep, 1)[0]
         track.album = await self.get_album(albumpath)
         if "ARTIST" in song.tags:
@@ -346,16 +351,16 @@ class FileProvider(MusicProvider):
                 quality = MediaQuality.FLAC_LOSSLESS_HI_RES_3
             elif song.sampleRate > 48000:
                 quality = MediaQuality.FLAC_LOSSLESS_HI_RES_2
-            quality_details = "%s Khz" % (song.sampleRate / 1000)
+            quality_details = f"{song.sampleRate / 1000} Khz"
         elif filename.endswith(".ogg"):
             quality = MediaQuality.LOSSY_OGG
-            quality_details = "%s kbps" % (song.bitrate)
+            quality_details = f"{song.bitrate} kbps"
         elif filename.endswith(".m4a"):
             quality = MediaQuality.LOSSY_AAC
-            quality_details = "%s kbps" % (song.bitrate)
+            quality_details = f"{song.bitrate} kbps"
         else:
             quality = MediaQuality.LOSSY_MP3
-            quality_details = "%s kbps" % (song.bitrate)
+            quality_details = f"{song.bitrate} kbps"
         track.provider_ids.append(
             MediaItemProviderId(
                 provider=self.id,

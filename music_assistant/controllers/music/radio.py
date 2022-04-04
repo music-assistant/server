@@ -51,8 +51,7 @@ class RadioController(MediaControllerBase[Radio]):
 
         # insert new radio
         new_item = await self.mass.database.insert_or_replace(
-            self.db_table,
-            radio.to_db_row()
+            self.db_table, radio.to_db_row()
         )
         item_id = new_item["item_id"]
         # store provider mappings

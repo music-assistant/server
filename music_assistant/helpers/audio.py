@@ -22,6 +22,8 @@ from music_assistant.models.media_items import (
 
 LOGGER = logging.getLogger("audio")
 
+# pylint:disable=consider-using-f-string
+
 
 async def crossfade_pcm_parts(
     fade_in_part: bytes,
@@ -515,7 +517,16 @@ async def get_sox_args_for_pcm_stream(
             )
         # collect input args
         input_args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-        input_args += ["-f", input_format.value, "-ac", str(channels), "-ar", str(sample_rate), "-i", "-"]
+        input_args += [
+            "-f",
+            input_format.value,
+            "-ac",
+            str(channels),
+            "-ar",
+            str(sample_rate),
+            "-i",
+            "-",
+        ]
         # collect output args
         output_args = ["-f", output_format.value, "-"]
         return input_args + output_args

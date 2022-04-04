@@ -102,7 +102,9 @@ class MusicBrainz:
                     "query": f'artist:"{searchartist}" AND release:"{searchalbum}"'
                 }
                 cache_key = f"{endpoint}.{searchartist}.{searchalbum}"
-            result = await cached(self.mass.cache, cache_key, self.get_data, endpoint, params)
+            result = await cached(
+                self.mass.cache, cache_key, self.get_data, endpoint, params
+            )
             if result and "releases" in result:
                 for strictness in [True, False]:
                     for item in result["releases"]:
@@ -134,7 +136,9 @@ class MusicBrainz:
             endpoint = "recording"
             params = {"query": '"{searchtrack}" AND artist:"{searchartist}"'}
             cache_key = f"{endpoint}.{searchtrack}.{searchartist}"
-        result = await cached(self.mass.cache, cache_key, self.get_data(endpoint, params))
+        result = await cached(
+            self.mass.cache, cache_key, self.get_data(endpoint, params)
+        )
         if result and "recordings" in result:
             for strictness in [True, False]:
                 for item in result["recordings"]:

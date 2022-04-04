@@ -7,7 +7,7 @@ import time
 from typing import Awaitable
 
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import create_task, run_periodic
+from music_assistant.helpers.util import create_task
 
 DB_TABLE = "cache"
 

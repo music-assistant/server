@@ -144,17 +144,17 @@ class SpotifyProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
-        artist_obj = await self._get_data("artists/%s" % prov_artist_id)
+        artist_obj = await self._get_data(f"artists/{prov_artist_id}")
         return await self._parse_artist(artist_obj) if artist_obj else None
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        album_obj = await self._get_data("albums/%s" % prov_album_id)
+        album_obj = await self._get_data(f"albums/{prov_album_id}")
         return await self._parse_album(album_obj) if album_obj else None
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        track_obj = await self._get_data("tracks/%s" % prov_track_id)
+        track_obj = await self._get_data("tracks/{prov_track_id}")
         return await self._parse_track(track_obj) if track_obj else None
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
@@ -237,7 +237,7 @@ class SpotifyProvider(MusicProvider):
         """Add track(s) to playlist."""
         track_uris = []
         for track_id in prov_track_ids:
-            track_uris.append("spotify:track:%s" % track_id)
+            track_uris.append(f"spotify:track:{track_id}")
         data = {"uris": track_uris}
         return await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
@@ -245,7 +245,7 @@ class SpotifyProvider(MusicProvider):
         """Remove track(s) from playlist."""
         track_uris = []
         for track_id in prov_track_ids:
-            track_uris.append({"uri": "spotify:track:%s" % track_id})
+            track_uris.append({"uri": f"spotify:track:{track_id}"})
         data = {"tracks": track_uris}
         return await self._delete_data(
             f"playlists/{prov_playlist_id}/tracks", data=data
@@ -260,13 +260,7 @@ class SpotifyProvider(MusicProvider):
         # make sure that the token is still valid by just requesting it
         await self.get_token()
         spotty = self.get_spotty_binary()
-        spotty_exec = (
-            '%s -n temp -c "/tmp" -b 320 --pass-through --single-track spotify://track:%s'
-            % (
-                spotty,
-                track.item_id,
-            )
-        )
+        spotty_exec = f'{spotty} -n temp -c "/tmp" -b 320 --pass-through --single-track spotify://track:{track.item_id}'
         return StreamDetails(
             type=StreamType.EXECUTABLE,
             item_id=track.item_id,
@@ -300,7 +294,9 @@ class SpotifyProvider(MusicProvider):
     async def _parse_album(self, album_obj):
         """Parse spotify album object to generic layout."""
         name, version = parse_title_and_version(album_obj["name"])
-        album = Album(item_id=album_obj["id"], provider=self.id, name=name, version=version)
+        album = Album(
+            item_id=album_obj["id"], provider=self.id, name=name, version=version
+        )
         for artist in album_obj["artists"]:
             album.artist = await self._parse_artist(artist)
             if album.artist:
@@ -354,7 +350,7 @@ class SpotifyProvider(MusicProvider):
             artist = await self._parse_artist(track_artist)
             if artist and artist.item_id not in {x.item_id for x in track.artists}:
                 track.artists.append(artist)
-        
+
         track.metadata["explicit"] = str(track_obj["explicit"]).lower()
         if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
             track.isrc = track_obj["external_ids"]["isrc"]
@@ -382,7 +378,12 @@ class SpotifyProvider(MusicProvider):
 
     async def _parse_playlist(self, playlist_obj):
         """Parse spotify playlist object to generic layout."""
-        playlist = Playlist(item_id=playlist_obj["id"], provider=self.id, name=playlist_obj["name"], owner=playlist_obj["owner"]["display_name"])
+        playlist = Playlist(
+            item_id=playlist_obj["id"],
+            provider=self.id,
+            name=playlist_obj["name"],
+            owner=playlist_obj["owner"]["display_name"],
+        )
         playlist.provider_ids.append(
             MediaItemProviderId(provider=self.id, item_id=playlist_obj["id"])
         )
@@ -495,13 +496,13 @@ class SpotifyProvider(MusicProvider):
         """Get data from api."""
         if not params:
             params = {}
-        url = "https://api.spotify.com/v1/%s" % endpoint
+        url = f"https://api.spotify.com/v1/{endpoint}"
         params["market"] = "from_token"
         params["country"] = "from_token"
         token = await self.get_token()
         if not token:
             return None
-        headers = {"Authorization": "Bearer %s" % token["accessToken"]}
+        headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self._throttler:
             async with self.mass.http_session.get(
                 url, headers=headers, params=params, verify_ssl=False
@@ -516,11 +517,11 @@ class SpotifyProvider(MusicProvider):
         """Delete data from api."""
         if not params:
             params = {}
-        url = "https://api.spotify.com/v1/%s" % endpoint
+        url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.get_token()
         if not token:
             return None
-        headers = {"Authorization": "Bearer %s" % token["accessToken"]}
+        headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.delete(
             url, headers=headers, params=params, json=data, verify_ssl=False
         ) as response:
@@ -530,11 +531,11 @@ class SpotifyProvider(MusicProvider):
         """Put data on api."""
         if not params:
             params = {}
-        url = "https://api.spotify.com/v1/%s" % endpoint
+        url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.get_token()
         if not token:
             return None
-        headers = {"Authorization": "Bearer %s" % token["accessToken"]}
+        headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.put(
             url, headers=headers, params=params, json=data, verify_ssl=False
         ) as response:
@@ -544,11 +545,11 @@ class SpotifyProvider(MusicProvider):
         """Post data on api."""
         if not params:
             params = {}
-        url = "https://api.spotify.com/v1/%s" % endpoint
+        url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.get_token()
         if not token:
             return None
-        headers = {"Authorization": "Bearer %s" % token["accessToken"]}
+        headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.post(
             url, headers=headers, params=params, json=data, verify_ssl=False
         ) as response:

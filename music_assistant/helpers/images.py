@@ -1,6 +1,5 @@
 """Utilities for image manipulation and retrieval."""
 
-import os
 from io import BytesIO
 
 from music_assistant.helpers.typing import MusicAssistant
@@ -9,6 +8,7 @@ from PIL import Image
 
 
 async def create_thumbnail(mass: MusicAssistant, url, size: int = 150) -> bytes:
+    """Create thumbnail from image url."""
     async with mass.http_session.get(url, verify_ssl=False) as response:
         assert response.status == 200
         img_data = BytesIO(await response.read())

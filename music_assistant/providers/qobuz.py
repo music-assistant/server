@@ -632,7 +632,7 @@ class QobuzProvider(MusicProvider):
         """Get data from api."""
         if not params:
             params = {}
-        url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
+        url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
         headers = {"X-App-Id": get_app_var(0)}
         if endpoint != "user/login":
             auth_token = await self._auth_token()
@@ -645,7 +645,7 @@ class QobuzProvider(MusicProvider):
             keys = list(params.keys())
             keys.sort()
             for key in keys:
-                signing_data += "%s%s" % (key, params[key])
+                signing_data += f"{key}{params[key]}"
             request_ts = str(time.time())
             request_sig = signing_data + request_ts + get_app_var(1)
             request_sig = str(hashlib.md5(request_sig.encode()).hexdigest())
@@ -671,7 +671,7 @@ class QobuzProvider(MusicProvider):
             params = {}
         if not data:
             data = {}
-        url = "http://www.qobuz.com/api.json/0.2/%s" % endpoint
+        url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
         params["app_id"] = get_app_var(0)
         params["user_auth_token"] = await self._auth_token()
         async with self.mass.http_session.post(

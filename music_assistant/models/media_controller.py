@@ -8,7 +8,7 @@ from music_assistant.helpers.cache import cached
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailableError
 
-from .media_items import Album, Artist, MediaItemType, MediaType, Playlist, Radio, Track
+from .media_items import MediaItemType, MediaType
 
 ItemCls = TypeVar("ItemCls", bound="MediaControllerBase")
 
