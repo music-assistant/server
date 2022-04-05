@@ -1,9 +1,8 @@
-change-template: "- #$NUMBER - $TITLE (@$AUTHOR)"
 categories:
-  - title: "⚠ Breaking Changes"
+  - title: "⬆️ Dependencies"
+    collapse-after: 1
     labels:
-      - "breaking change"
+      - "dependencies"
 template: |
-  ## What’s Changed
-
+  ## What's Changed
   $CHANGES
