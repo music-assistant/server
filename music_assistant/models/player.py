@@ -250,14 +250,6 @@ class PlayerGroup(Player):
             group_volume = group_volume / active_players
         return int(group_volume)
 
-    async def power(self, powered: bool) -> None:
-        """Send POWER command to player."""
-        # may be overridden if implementation provides this natively
-        if not powered:
-            # turn off all childs
-            for child_player in self._get_players(True):
-                await child_player.power(False)
-
     async def volume_set(self, volume_level: int) -> None:
         """Send volume level (0..100) command to player."""
         # handle group volume by only applying the valume to powered childs
