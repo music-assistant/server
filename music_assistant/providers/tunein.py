@@ -20,7 +20,7 @@ from music_assistant.models.provider import MusicProvider
 class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
-    def __init__(self, username: str | None) -> None:
+    def __init__(self, username: Optional[str]) -> None:
         """Initialize the provider."""
         self._attr_id = "tunein"
         self._attr_name = "Tune-in Radio"

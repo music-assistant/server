@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 from mashumaro import DataClassDictMixin
 from music_assistant.helpers.json import json
@@ -57,7 +57,7 @@ class MediaItem(DataClassDictMixin):
     item_id: str
     provider: str
     name: str
-    sort_name: str | None = None
+    sort_name: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: bool = False
@@ -162,10 +162,10 @@ class Album(MediaItem):
 
     media_type: MediaType = MediaType.ALBUM
     version: str = ""
-    year: int | None = None
-    artist: ItemMapping | Artist | None = None
+    year: Optional[int] = None
+    artist: Union[ItemMapping, Artist, None] = None
     album_type: AlbumType = AlbumType.UNKNOWN
-    upc: str | None = None
+    upc: Optional[str] = None
 
     def __hash__(self):
         """Return custom hash."""
@@ -180,13 +180,13 @@ class Track(MediaItem):
     duration: int = 0
     version: str = ""
     isrc: str = ""
-    artists: List[ItemMapping | Artist] = field(default_factory=list)
+    artists: List[Union[ItemMapping, Artist]] = field(default_factory=list)
     # album track only
-    album: ItemMapping | Album | None = None
-    disc_number: int | None = None
-    track_number: int | None = None
+    album: Union[ItemMapping, Album, None] = None
+    disc_number: Optional[int] = None
+    track_number: Optional[int] = None
     # playlist track only
-    position: int | None = None
+    position: Optional[int] = None
 
     def __hash__(self):
         """Return custom hash."""
@@ -222,7 +222,7 @@ def create_uri(media_type: MediaType, provider_id: str, item_id: str):
     return f"{provider_id}://{media_type.value}/{item_id}"
 
 
-MediaItemType = Artist | Album | Track | Radio | Playlist
+MediaItemType = Union[Artist, Album, Track, Radio, Playlist]
 
 
 class StreamType(Enum):
@@ -291,9 +291,9 @@ class StreamDetails(DataClassDictMixin):
     details: Dict[str, Any] = field(default_factory=dict)
     seconds_played: int = 0
     gain_correct: float = 0
-    loudness: float | None = None
-    sample_rate: int | None = None
-    bit_depth: int | None = None
+    loudness: Optional[float] = None
+    sample_rate: Optional[int] = None
+    bit_depth: Optional[int] = None
     channels: int = 2
     media_type: MediaType = MediaType.TRACK
     queue_id: str = None

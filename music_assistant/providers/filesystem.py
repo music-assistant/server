@@ -47,7 +47,7 @@ class FileSystemProvider(MusicProvider):
     Should be compatible with LMS
     """
 
-    def __init__(self, music_dir: str, playlist_dir: str | None = None) -> None:
+    def __init__(self, music_dir: str, playlist_dir: Optional[str] = None) -> None:
         """
         Initialize the Filesystem provider.
 

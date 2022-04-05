@@ -1,10 +1,9 @@
 """Model for a Music Providers."""
-
 from __future__ import annotations
 
 from abc import abstractmethod
 from logging import Logger
-from typing import List
+from typing import List, Optional
 
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.media_items import (
@@ -58,7 +57,7 @@ class MusicProvider:
         return self._attr_supported_mediatypes
 
     async def search(
-        self, search_query: str, media_types=List[MediaType] | None, limit: int = 5
+        self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
     ) -> List[MediaItemType]:
         """
         Perform search on musicprovider.

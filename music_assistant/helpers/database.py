@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
 from databases import Database as Db
 from databases import DatabaseURL
@@ -21,7 +21,7 @@ class Database:
         self.logger = mass.logger.getChild("db")
 
     @asynccontextmanager
-    async def get_db(self, db: Db | None = None) -> Db:
+    async def get_db(self, db: Optional[Db] = None) -> Db:
         """Context manager helper to get the active db connection."""
         if db is not None:
             yield db
@@ -30,7 +30,11 @@ class Database:
                 yield _db
 
     async def get_rows(
-        self, table: str, match: dict = None, order_by: str = None, db: Db | None = None
+        self,
+        table: str,
+        match: dict = None,
+        order_by: str = None,
+        db: Optional[Db] = None,
     ) -> List[Mapping]:
         """Get all rows for given table."""
         async with self.get_db(db) as _db:
@@ -42,14 +46,14 @@ class Database:
             return await _db.fetch_all(sql_query, match)
 
     async def get_rows_from_query(
-        self, query: str, db: Db | None = None
+        self, query: str, db: Optional[Db] = None
     ) -> List[Mapping]:
         """Get all rows for given custom query."""
         async with self.get_db(db) as _db:
             return await _db.fetch_all(query)
 
     async def search(
-        self, table: str, search: str, column: str = "name", db: Db | None = None
+        self, table: str, search: str, column: str = "name", db: Optional[Db] = None
     ) -> List[Mapping]:
         """Search table by column."""
         async with self.get_db(db) as _db:
@@ -57,7 +61,7 @@ class Database:
             return await _db.fetch_all(sql_query)
 
     async def get_row(
-        self, table: str, match: Dict[str, Any] = None, db: Db | None = None
+        self, table: str, match: Dict[str, Any] = None, db: Optional[Db] = None
     ) -> Mapping | None:
         """Get single row for given table where column matches keys/values."""
         async with self.get_db(db) as _db:
@@ -66,7 +70,7 @@ class Database:
             return await _db.fetch_one(sql_query, match)
 
     async def insert_or_replace(
-        self, table: str, values: Dict[str, Any], db: Db | None = None
+        self, table: str, values: Dict[str, Any], db: Optional[Db] = None
     ) -> Mapping:
         """Insert or replace data in given table."""
         async with self.get_db(db) as _db:
@@ -87,7 +91,7 @@ class Database:
         table: str,
         match: Dict[str, Any],
         values: Dict[str, Any],
-        db: Db | None = None,
+        db: Optional[Db] = None,
     ) -> Mapping:
         """Update record."""
         async with self.get_db(db) as _db:
@@ -101,7 +105,7 @@ class Database:
             return await self.get_row(table, match, db=_db)
 
     async def delete(
-        self, table: str, match: Dict[str, Any], db: Db | None = None
+        self, table: str, match: Dict[str, Any], db: Optional[Db] = None
     ) -> None:
         """Delete data in given table."""
         async with self.get_db(db) as _db:

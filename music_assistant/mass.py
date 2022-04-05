@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from time import time
-from typing import Any, Callable, Coroutine, Optional, Tuple
+from typing import Any, Callable, Coroutine, Optional, Tuple, Union
 
 import aiohttp
 from databases import DatabaseURL
@@ -17,8 +17,7 @@ from music_assistant.helpers.cache import Cache
 from music_assistant.helpers.database import Database
 from music_assistant.helpers.util import create_task
 
-EventDetails = Any | None
-EventCallBackType = Callable[[EventType, EventDetails], None]
+EventCallBackType = Callable[[EventType, Any], None]
 EventSubscriptionType = Tuple[EventCallBackType, Optional[Tuple[EventType]]]
 
 
@@ -29,7 +28,7 @@ class MusicAssistant:
         self,
         db_url: DatabaseURL,
         stream_port: int = 8095,
-        session: aiohttp.ClientSession | None = None,
+        session: Optional[aiohttp.ClientSession] = None,
     ) -> None:
         """
         Create an instance of MusicAssistant.
@@ -83,9 +82,7 @@ class MusicAssistant:
             await self.http_session.connector.close()
         self.http_session.detach()
 
-    def signal_event(
-        self, event_type: EventType, event_details: EventDetails = None
-    ) -> None:
+    def signal_event(self, event_type: EventType, event_details: Any = None) -> None:
         """
         Signal (systemwide) event.
 
@@ -99,7 +96,7 @@ class MusicAssistant:
     def subscribe(
         self,
         cb_func: EventCallBackType,
-        event_filter: EventType | Tuple[EventType] | None = None,
+        event_filter: Union[EventType, Tuple[EventType], None] = None,
     ) -> Callable:
         """
         Add callback to event listeners.
@@ -120,7 +117,7 @@ class MusicAssistant:
 
         return remove_listener
 
-    def add_job(self, job: Coroutine, name: str | None = None) -> None:
+    def add_job(self, job: Coroutine, name: Optional[str] = None) -> None:
         """Add job to be (slowly) processed in the background (one by one)."""
         if not name:
             name = job.__qualname__ or job.__name__

@@ -1,22 +1,17 @@
 """Typing helper."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 # pylint: disable=invalid-name
 if TYPE_CHECKING:
     from music_assistant.mass import (
-        MusicAssistant,
-        EventDetails,
         EventCallBackType,
         EventSubscriptionType,
+        MusicAssistant,
     )
     from music_assistant.models.media_items import MediaType
-    from music_assistant.models.player import (
-        PlayerQueue,
-        QueueItem,
-    )
-    from music_assistant.models.player import Player
+    from music_assistant.models.player import Player, PlayerQueue, QueueItem
 
 else:
     MusicAssistant = "MusicAssistant"
@@ -25,7 +20,6 @@ else:
     StreamDetails = "StreamDetails"
     Player = "Player"
     MediaType = "MediaType"
-    EventDetails = Any | None
     EventCallBackType = "EventCallBackType"
     EventSubscriptionType = "EventSubscriptionType"
 

@@ -7,7 +7,7 @@ import time
 from asyncio import Task, TimerHandle
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
@@ -38,10 +38,10 @@ class QueueItem(DataClassDictMixin):
 
     uri: str
     name: str = ""
-    duration: int | None = None
+    duration: Optional[int] = None
     item_id: str = ""
     sort_index: int = 0
-    streamdetails: StreamDetails | None = None
+    streamdetails: Optional[StreamDetails] = None
     is_media_item: bool = False
 
     def __post_init__(self):
@@ -78,9 +78,9 @@ class PlayerQueue:
         self._volume_normalization_enabled: bool = True
         self._volume_normalization_target: int = -23
 
-        self._current_index: int | None = None
+        self._current_index: Optional[int] = None
         self._current_item_time: int = 0
-        self._last_item: QueueItem | None = None
+        self._last_item: Optional[QueueItem] = None
         self._start_index: int = 0
         self._next_index: int = 0
         self._last_state = PlayerState.IDLE
@@ -89,7 +89,7 @@ class PlayerQueue:
         self._update_task: Task = None
         self._signal_next: bool = False
         self._last_player_update: int = 0
-        self._stream_url: str | None = None
+        self._stream_url: Optional[str] = None
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
@@ -149,7 +149,7 @@ class PlayerQueue:
         return self._items
 
     @property
-    def current_index(self) -> int | None:
+    def current_index(self) -> Optional[int]:
         """
         Return the current index of the queue.
 
@@ -173,7 +173,7 @@ class PlayerQueue:
         return self._items[self._current_index]
 
     @property
-    def next_index(self) -> int | None:
+    def next_index(self) -> Optional[int]:
         """
         Return the next index for this PlayerQueue.
 
@@ -226,7 +226,7 @@ class PlayerQueue:
             return None
         return next((x for x in self.items if x.item_id == queue_item_id), None)
 
-    def index_by_id(self, queue_item_id: str) -> int | None:
+    def index_by_id(self, queue_item_id: str) -> Optional[int]:
         """Get index by queue_item_id."""
         for index, item in enumerate(self.items):
             if item.item_id == queue_item_id:
@@ -400,7 +400,7 @@ class PlayerQueue:
                 "resume queue requested for %s but queue is empty", self.queue_id
             )
 
-    async def play_index(self, index: int | str) -> None:
+    async def play_index(self, index: Union[int, str]) -> None:
         """Play item at index (or item_id) X in queue."""
         if not isinstance(index, int):
             index = self.index_by_id(index)

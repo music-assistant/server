@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
-from typing import Generic, List, Tuple, TypeVar
+from typing import Generic, List, Optional, Tuple, TypeVar
 
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.typing import MusicAssistant
@@ -129,7 +129,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 return (prov.provider, prov.item_id)
         return None, None
 
-    async def get_db_items(self, custom_query: str | None = None) -> List[ItemCls]:
+    async def get_db_items(self, custom_query: Optional[str] = None) -> List[ItemCls]:
         """Fetch all records from database."""
         if custom_query is not None:
             func = self.mass.database.get_rows_from_query(custom_query)

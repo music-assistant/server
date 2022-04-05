@@ -1,7 +1,7 @@
 """Logic to play music from MusicProviders to supported players."""
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 
 from music_assistant.constants import EventType
 from music_assistant.controllers.stream import StreamController
@@ -10,7 +10,7 @@ from music_assistant.models.errors import AlreadyRegisteredError
 from music_assistant.models.player import Player, PlayerGroup
 from music_assistant.models.player_queue import PlayerQueue
 
-PlayerType = Player | PlayerGroup
+PlayerType = Union[Player, PlayerGroup]
 
 DB_TABLE = "queue_settings"
 
