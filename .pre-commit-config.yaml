@@ -17,6 +17,7 @@ repos:
     rev: v4.3.21
     hooks:
       - id: isort
+        exclude: examples/
   - repo: https://github.com/asottile/setup-cfg-fmt
     rev: v1.20.1
     hooks:
