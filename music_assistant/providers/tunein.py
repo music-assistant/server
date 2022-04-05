@@ -2,7 +2,6 @@
 from typing import List, Optional
 
 from asyncio_throttle import Throttler
-
 from music_assistant.models.media_items import (
     ContentType,
     MediaItemProviderId,

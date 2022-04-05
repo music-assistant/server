@@ -1,12 +1,13 @@
 """Filesystem musicprovider support for MusicAssistant."""
 from __future__ import annotations
+
 import base64
 import os
 from typing import List, Optional, Tuple
+
 import aiofiles
-from tinytag import TinyTag
+from music_assistant.helpers.compare import compare_strings, get_compare_string
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
-from music_assistant.helpers.compare import get_compare_string, compare_strings
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -22,6 +23,7 @@ from music_assistant.models.media_items import (
     Track,
 )
 from music_assistant.models.provider import MusicProvider
+from tinytag import TinyTag
 
 
 def split_items(org_str: str) -> Tuple[str]:

@@ -6,13 +6,12 @@ import time
 from typing import List, Optional
 
 from asyncio_throttle import Throttler
-
 from music_assistant.constants import EventType
 from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-module
     get_app_var,
 )
-from music_assistant.models.errors import LoginFailed
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
+from music_assistant.models.errors import LoginFailed
 from music_assistant.models.media_items import (
     Album,
     AlbumType,

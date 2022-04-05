@@ -8,12 +8,11 @@ from json.decoder import JSONDecodeError
 from typing import List, Optional
 
 from asyncio_throttle import Throttler
-
 from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name-in-module
     get_app_var,
 )
-from music_assistant.models.errors import LoginFailed
 from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.models.errors import LoginFailed
 from music_assistant.models.media_items import (
     Album,
     AlbumType,

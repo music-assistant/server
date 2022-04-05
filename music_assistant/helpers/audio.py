@@ -7,7 +7,6 @@ from io import BytesIO
 from typing import AsyncGenerator, List, Optional, Tuple
 
 import aiofiles
-
 from music_assistant.constants import EventType
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.typing import MusicAssistant, QueueItem

@@ -3,7 +3,7 @@
 from io import BytesIO
 
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.models.media_items import ItemMapping, MediaType, MediaItemType
+from music_assistant.models.media_items import ItemMapping, MediaItemType, MediaType
 from PIL import Image
 
 

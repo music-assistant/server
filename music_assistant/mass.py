@@ -8,7 +8,6 @@ from typing import Any, Callable, Coroutine, Optional, Tuple
 
 import aiohttp
 from databases import DatabaseURL
-
 from music_assistant.constants import EventType
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController

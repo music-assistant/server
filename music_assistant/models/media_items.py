@@ -6,10 +6,7 @@ from enum import Enum, IntEnum
 from typing import Any, Dict, List, Mapping
 
 from mashumaro import DataClassDictMixin
-
-
 from music_assistant.helpers.json import json
-
 from music_assistant.helpers.util import create_sort_name
 
 

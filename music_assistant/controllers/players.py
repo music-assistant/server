@@ -5,8 +5,8 @@ from typing import Dict, Tuple
 
 from music_assistant.constants import EventType
 from music_assistant.controllers.stream import StreamController
-from music_assistant.models.errors import AlreadyRegisteredError
 from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.models.errors import AlreadyRegisteredError
 from music_assistant.models.player import Player, PlayerGroup
 from music_assistant.models.player_queue import PlayerQueue
 

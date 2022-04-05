@@ -7,7 +7,6 @@ from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from mashumaro import DataClassDictMixin
-
 from music_assistant.constants import EventType
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task

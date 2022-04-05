@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, List, Tuple
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
-
 from music_assistant.constants import EventType
 from music_assistant.helpers.audio import get_stream_details
 from music_assistant.helpers.typing import MusicAssistant

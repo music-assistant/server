@@ -1,7 +1,6 @@
 """Typing helper."""
 
-from typing import TYPE_CHECKING, Any, Optional, List
-
+from typing import TYPE_CHECKING, Any, List, Optional
 
 # pylint: disable=invalid-name
 if TYPE_CHECKING:

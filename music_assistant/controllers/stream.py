@@ -4,12 +4,11 @@ from __future__ import annotations
 import asyncio
 from asyncio import Task
 from dataclasses import dataclass
-
-from typing import AsyncGenerator, Awaitable, Callable, Dict, List
 from time import time
+from typing import AsyncGenerator, Awaitable, Callable, Dict, List
 from uuid import uuid4
-from aiohttp import web
 
+from aiohttp import web
 from music_assistant.constants import EventType
 from music_assistant.helpers.audio import (
     check_audio_support,

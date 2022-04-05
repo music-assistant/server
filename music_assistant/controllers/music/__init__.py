@@ -13,13 +13,13 @@ from music_assistant.controllers.music.radio import RadioController
 from music_assistant.controllers.music.tracks import TracksController
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.datetime import utc_timestamp
+from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.util import create_task
 from music_assistant.models.errors import (
     AlreadyRegisteredError,
     MusicAssistantError,
     SetupFailedError,
 )
-from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import create_task
 from music_assistant.models.media_items import (
     Album,
     MediaItem,
