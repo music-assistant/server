@@ -12,7 +12,7 @@ from music_assistant.constants import EventType
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.typing import MusicAssistant, QueueItem
 from music_assistant.helpers.util import create_tempfile
-from music_assistant.models.errors import AudioError
+from music_assistant.models.errors import AudioError, MediaNotFoundError
 from music_assistant.models.media_items import (
     ContentType,
     MediaType,
@@ -195,9 +195,14 @@ async def get_stream_details(
         )
     else:
         # always request the full db track as there might be other qualities available
-        full_item = await mass.music.get_item_by_uri(
-            queue_item.uri, force_refresh=not lazy, lazy=lazy
-        )
+        try:
+            full_item = await mass.music.get_item_by_uri(
+                queue_item.uri, force_refresh=not lazy, lazy=lazy
+            )
+        except MediaNotFoundError as err:
+            LOGGER.warning(str(err))
+            return None
+
         if not full_item:
             return None
         # sort by quality and check track availability

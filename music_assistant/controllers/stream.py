@@ -128,16 +128,13 @@ class StreamController:
 
                 async def reader():
                     # task that reads flac endoded chunks from the subprocess
-                    self.logger.debug("start reader task")
                     chunksize = 32000 if output_fmt == ContentType.MP3 else 256000
                     async for audio_chunk in sox_proc.iterate_chunks(chunksize):
                         await resp.write(audio_chunk)
-                    self.logger.debug("reader task finished")
 
                 # feed raw pcm chunks into sox/ffmpeg to encode to flac
                 async def audio_callback(audio_chunk):
                     if audio_chunk == b"":
-                        self.logger.debug("last chunk received from stream")
                         sox_proc.write_eof()
                         return
                     await sox_proc.write(audio_chunk)
@@ -447,7 +444,6 @@ class StreamController:
                 seconds_per_chunk = buffer_size / sample_size
                 seconds_needed = int(time() - start_timestamp + seconds_per_chunk)
                 if (seconds_streamed) > seconds_needed:
-                    self.logger.debug("cooldown %s seconds", seconds_per_chunk / 2)
                     await asyncio.sleep(seconds_per_chunk / 2)
             # end of the track reached
             # update actual duration to the queue for more accurate now playing info

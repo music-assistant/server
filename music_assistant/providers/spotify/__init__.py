@@ -155,7 +155,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        track_obj = await self._get_data("tracks/{prov_track_id}")
+        track_obj = await self._get_data(f"tracks/{prov_track_id}")
         return await self._parse_track(track_obj) if track_obj else None
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
