@@ -43,5 +43,5 @@ repos:
         entry: pylint
         language: system
         types: [python]
-        args: ["-rn", "-sn", "--rcfile=pylintrc", "--fail-on=I"]
+        args: ["-rn", "-sn", "--rcfile=pylintrc", "--fail-on=I", "--disable=import-error"]
         exclude: ^examples/|^.venv/|^.vscode/

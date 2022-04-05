@@ -53,9 +53,6 @@ disable=
 enable=
   use-symbolic-message-instead
 
-[IMPORTS]
-ignored-modules=aiofiles,aiohttp,asyncio_throttle,databases,mashumaro,tinytag
-
 [REPORTS]
 score=no
 
