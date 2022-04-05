@@ -36,8 +36,6 @@ for (path, directories, filenames) in os.walk("music_assistant/"):
 
 with open("requirements.txt") as f:
     REQUIRES = f.read().splitlines()
-if os.name != "nt":
-    REQUIRES.append("uvloop")
 
 setup(
     name=PROJECT_PACKAGE_NAME,
