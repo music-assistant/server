@@ -1,14 +1,13 @@
 """Database logic."""
 from __future__ import annotations
-import asyncio
 from contextlib import asynccontextmanager
+from socket import timeout
 from typing import Any, Dict, List, Mapping
 
 from databases import Database as Db
 from databases import DatabaseURL
 
-from music_assistant.constants import EventType
-from music_assistant.helpers.typing import EventDetails, MusicAssistant
+from music_assistant.helpers.typing import MusicAssistant
 
 # pylint: disable=invalid-name
 
@@ -21,12 +20,6 @@ class Database:
         self.url = url
         self.mass = mass
         self.logger = mass.logger.getChild("db")
-        self._lock = asyncio.Lock()
-        mass.subscribe(self.__on_shutdown_event, EventType.SHUTDOWN)
-
-    async def setup(self):
-        """Async initialize of module."""
-        # await self.connect()
 
     @asynccontextmanager
     async def get_db(self, db: Db | None = None) -> Db:
@@ -34,7 +27,7 @@ class Database:
         if db is not None:
             yield db
         else:
-            async with Db(self.url) as _db:
+            async with Db(self.url, timeout=360) as _db:
                 yield _db
 
     async def get_rows(
@@ -117,9 +110,3 @@ class Database:
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
             await _db.execute(sql_query)
 
-    async def __on_shutdown_event(
-        self, event: EventType, details: EventDetails
-    ) -> None:
-        """Handle shutdown event."""
-        # await self.disconnect()
-        self.logger.info("database closed")

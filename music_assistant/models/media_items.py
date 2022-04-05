@@ -73,6 +73,10 @@ class MediaItem(DataClassDictMixin):
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
             self.sort_name = create_sort_name(self.name)
+        if not self.provider_ids:
+            self.provider_ids.append(
+                MediaItemProviderId(provider=self.provider, item_id=self.item_id)
+            )
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):

@@ -85,12 +85,12 @@ mass = MusicAssistant(f"sqlite:///{db_file}")
 
 
 providers = []
-if args.spotify_username and args.spotify_password:
-    providers.append(SpotifyProvider(args.spotify_username, args.spotify_password))
-if args.qobuz_username and args.qobuz_password:
-    providers.append(QobuzProvider(args.qobuz_username, args.qobuz_password))
-if args.tunein_username:
-    providers.append(TuneInProvider(args.tunein_username))
+# if args.spotify_username and args.spotify_password:
+#     providers.append(SpotifyProvider(args.spotify_username, args.spotify_password))
+# if args.qobuz_username and args.qobuz_password:
+#     providers.append(QobuzProvider(args.qobuz_username, args.qobuz_password))
+# if args.tunein_username:
+#     providers.append(TuneInProvider(args.tunein_username))
 if args.musicdir:
     providers.append(FileSystemProvider(args.musicdir, args.playlistdir))
 
