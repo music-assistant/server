@@ -45,7 +45,8 @@ class Player(ABC):
     """Model for a music player."""
 
     player_id: str
-    is_group: bool = False
+    _attr_is_group: bool = False
+    _attr_group_childs: List[str] = []
     _attr_name: str = None
     _attr_powered: bool = False
     _attr_elapsed_time: int = 0
@@ -55,6 +56,7 @@ class Player(ABC):
     _attr_volume_level: int = 100
     _attr_device_info: DeviceInfo = DeviceInfo()
     _attr_max_sample_rate: int = 96000
+    _attr_active_queue_id: str = ""
     # mass object will be set by playermanager at register
     mass: MusicAssistant = None  # type: ignore[assignment]
 
@@ -62,6 +64,16 @@ class Player(ABC):
     def name(self) -> bool:
         """Return player name."""
         return self._attr_name or self.player_id
+
+    @property
+    def is_group(self) -> bool:
+        """Return bool if this player is a grouped player (playergroup)."""
+        return self._attr_is_group
+
+    @property
+    def group_childs(self) -> List[str]:
+        """Return list of child player id's of PlayerGroup (if player is group)."""
+        return self._attr_group_childs
 
     @property
     def powered(self) -> bool:
@@ -101,6 +113,16 @@ class Player(ABC):
     def max_sample_rate(self) -> int:
         """Return the maximum supported sample rate this player supports."""
         return self._attr_max_sample_rate
+
+    @property
+    def active_queue(self) -> PlayerQueue:
+        """
+        Return the currently active queue for this player.
+
+        If the player is a group child this will return its parent when that is playing,
+        otherwise it will return the player's own queue.
+        """
+        return self.mass.players.get_player_queue(self._attr_active_queue_id)
 
     async def play_url(self, url: str) -> None:
         """Play the specified url on the player."""
@@ -151,13 +173,16 @@ class Player(ABC):
 
     # DO NOT OVERRIDE BELOW
 
-    @property
-    def queue(self) -> "PlayerQueue":
-        """Return PlayerQueue for this player."""
-        return self.mass.players.get_player_queue(self.player_id, True)
-
     def update_state(self) -> None:
         """Update current player state in the player manager."""
+        # determine active queue for player
+        queue_id = self.player_id
+        for player_id in self.get_group_parents():
+            if player := self.mass.players.get_player(player_id):
+                if player.state in [PlayerState.PLAYING, PlayerState.PAUSED]:
+                    queue_id = player_id
+                    break
+        self._attr_active_queue_id = queue_id
         # basic throttle: do not send state changed events if player did not change
         prev_state = getattr(self, "_prev_state", None)
         cur_state = self.to_dict()
@@ -165,7 +190,7 @@ class Player(ABC):
             return
         setattr(self, "_prev_state", cur_state)
         self.mass.signal_event(EventType.PLAYER_CHANGED, self)
-        self.queue.on_player_update()
+        self.mass.players.get_player_queue(self.player_id).on_player_update()
         if self.is_group:
             # update group player childs when parent updates
             for child_player_id in self.group_childs:
@@ -194,27 +219,20 @@ class Player(ABC):
             "elapsed_time": self.elapsed_time,
             "state": self.state.value,
             "available": self.available,
+            "is_group": self.is_group,
+            "group_childs": self.group_childs,
             "volume_level": int(self.volume_level),
             "device_info": self.device_info.to_dict(),
+            "active_queue": self.active_queue.queue_id,
         }
 
 
 class PlayerGroup(Player):
-    """Model for a player group."""
+    """Convenience Model for a player group with some additional helper methods."""
 
     is_group: bool = True
     _attr_group_childs: List[str] = []
     _attr_support_join_control: bool = True
-
-    @property
-    def support_join_control(self) -> bool:
-        """Return bool if joining/unjoining of players to this group is supported."""
-        return self._attr_support_join_control
-
-    @property
-    def group_childs(self) -> List[str]:
-        """Return list of child player id's of this PlayerGroup."""
-        return self._attr_group_childs
 
     @property
     def volume_level(self) -> int:
@@ -222,6 +240,7 @@ class PlayerGroup(Player):
         if not self.available:
             return 0
         # calculate group volume from powered players for convenience
+        # may be overridden if implementation provides this natively
         group_volume = 0
         active_players = 0
         for child_player in self._get_players(True):
@@ -231,20 +250,10 @@ class PlayerGroup(Player):
             group_volume = group_volume / active_players
         return int(group_volume)
 
-    async def power(self, powered: bool) -> None:
-        """Send POWER command to player."""
-        try:
-            super().power(powered)
-        except NotImplementedError:
-            self._attr_powered = powered
-        if not powered:
-            # turn off all childs
-            for child_player in self._get_players(True):
-                await child_player.power(False)
-
     async def volume_set(self, volume_level: int) -> None:
         """Send volume level (0..100) command to player."""
-        # handle group volume
+        # handle group volume by only applying the valume to powered childs
+        # may be overridden if implementation provides this natively
         cur_volume = self.volume_level
         new_volume = volume_level
         volume_dif = new_volume - cur_volume
@@ -258,14 +267,6 @@ class PlayerGroup(Player):
                 cur_child_volume * volume_dif_percent
             )
             await child_player.volume_set(new_child_volume)
-
-    async def join(self, player_id: str) -> None:
-        """Command to add/join a player to this group."""
-        raise NotImplementedError
-
-    async def unjoin(self, player_id: str) -> None:
-        """Command to remove/unjoin a player to this group."""
-        raise NotImplementedError
 
     def _get_players(self, only_powered: bool = False) -> List[Player]:
         """Get players attached to this group."""

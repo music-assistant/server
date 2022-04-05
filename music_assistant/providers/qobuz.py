@@ -4,8 +4,10 @@ from __future__ import annotations
 import datetime
 import hashlib
 import time
+from json import JSONDecodeError
 from typing import List, Optional
 
+import aiohttp
 from asyncio_throttle import Throttler
 from music_assistant.constants import EventType
 from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-module
@@ -657,11 +659,18 @@ class QobuzProvider(MusicProvider):
             async with self.mass.http_session.get(
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
-                result = await response.json()
-                if "error" in result or (
-                    "status" in result and "error" in result["status"]
-                ):
-                    self.logger.error("%s - %s", endpoint, result)
+                try:
+                    result = await response.json()
+                    if "error" in result or (
+                        "status" in result and "error" in result["status"]
+                    ):
+                        self.logger.error("%s - %s", endpoint, result)
+                        return None
+                except (
+                    aiohttp.ContentTypeError,
+                    JSONDecodeError,
+                ) as err:
+                    self.logger.error("%s - %s", endpoint, str(err))
                     return None
                 return result
 

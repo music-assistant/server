@@ -175,7 +175,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
 
 async def get_stream_details(
     mass: MusicAssistant, queue_item: QueueItem, queue_id: str = "", lazy: bool = True
-) -> StreamDetails | None:
+) -> StreamDetails:
     """
     Get streamdetails for the given QueueItem.
 
@@ -195,16 +195,9 @@ async def get_stream_details(
         )
     else:
         # always request the full db track as there might be other qualities available
-        try:
-            full_item = await mass.music.get_item_by_uri(
-                queue_item.uri, force_refresh=not lazy, lazy=lazy
-            )
-        except MediaNotFoundError as err:
-            LOGGER.warning(str(err))
-            return None
-
-        if not full_item:
-            return None
+        full_item = await mass.music.get_item_by_uri(
+            queue_item.uri, force_refresh=not lazy, lazy=lazy
+        )
         # sort by quality and check track availability
         for prov_media in sorted(
             full_item.provider_ids, key=lambda x: x.quality, reverse=True
@@ -227,27 +220,28 @@ async def get_stream_details(
                 else:
                     break
 
-    if streamdetails:
-        # set player_id on the streamdetails so we know what players stream
-        streamdetails.queue_id = queue_id
-        # get gain correct / replaygain
-        loudness, gain_correct = await get_gain_correct(
-            mass, queue_id, streamdetails.item_id, streamdetails.provider
-        )
-        streamdetails.gain_correct = gain_correct
-        streamdetails.loudness = loudness
-        # set streamdetails as attribute on the media_item
-        # this way the app knows what content is playing
-        queue_item.streamdetails = streamdetails
-        return streamdetails
-    return None
+    if not streamdetails:
+        raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
+
+    # set player_id on the streamdetails so we know what players stream
+    streamdetails.queue_id = queue_id
+    # get gain correct / replaygain
+    loudness, gain_correct = await get_gain_correct(
+        mass, queue_id, streamdetails.item_id, streamdetails.provider
+    )
+    streamdetails.gain_correct = gain_correct
+    streamdetails.loudness = loudness
+    # set streamdetails as attribute on the media_item
+    # this way the app knows what content is playing
+    queue_item.streamdetails = streamdetails
+    return streamdetails
 
 
 async def get_gain_correct(
     mass: MusicAssistant, queue_id: str, item_id: str, provider_id: str
 ) -> Tuple[float, float]:
     """Get gain correction for given queue / track combination."""
-    queue = mass.players.get_player_queue(queue_id, True)
+    queue = mass.players.get_player_queue(queue_id)
     if not queue or not queue.volume_normalization_enabled:
         return 0
     target_gain = queue.volume_normalization_target
