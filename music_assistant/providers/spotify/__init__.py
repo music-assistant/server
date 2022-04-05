@@ -9,6 +9,7 @@ import time
 from json.decoder import JSONDecodeError
 from typing import List, Optional
 
+import aiohttp
 from asyncio_throttle import Throttler
 from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name-in-module
     get_app_var,
@@ -508,10 +509,19 @@ class SpotifyProvider(MusicProvider):
             async with self.mass.http_session.get(
                 url, headers=headers, params=params, verify_ssl=False
             ) as response:
-                result = await response.json()
-                if not result or "error" in result:
-                    self.logger.error("%s - %s", endpoint, result)
-                    result = None
+                try:
+                    result = await response.json()
+                    if "error" in result or (
+                        "status" in result and "error" in result["status"]
+                    ):
+                        self.logger.error("%s - %s", endpoint, result)
+                        return None
+                except (
+                    aiohttp.ContentTypeError,
+                    JSONDecodeError,
+                ) as err:
+                    self.logger.error("%s - %s", endpoint, str(err))
+                    return None
                 return result
 
     async def _delete_data(self, endpoint, params=None, data=None):
