@@ -94,6 +94,7 @@ providers = []
 if args.musicdir:
     providers.append(FileSystemProvider(args.musicdir, args.playlistdir))
 
+
 class TestPlayer(Player):
     def __init__(self):
         self.player_id = "test"
