@@ -56,6 +56,7 @@ class Player(ABC):
     _attr_volume_level: int = 100
     _attr_device_info: DeviceInfo = DeviceInfo()
     _attr_max_sample_rate: int = 96000
+    _attr_active_queue_id: str = ""
     # mass object will be set by playermanager at register
     mass: MusicAssistant = None  # type: ignore[assignment]
 
@@ -113,6 +114,16 @@ class Player(ABC):
         """Return the maximum supported sample rate this player supports."""
         return self._attr_max_sample_rate
 
+    @property
+    def active_queue(self) -> PlayerQueue:
+        """
+        Return the currently active queue for this player.
+
+        If the player is a group child this will return its parent when that is playing,
+        otherwise it will return the player's own queue.
+        """
+        return self.mass.players.get_player_queue(self._attr_active_queue_id)
+
     async def play_url(self, url: str) -> None:
         """Play the specified url on the player."""
         raise NotImplementedError
@@ -162,13 +173,16 @@ class Player(ABC):
 
     # DO NOT OVERRIDE BELOW
 
-    @property
-    def queue(self) -> "PlayerQueue":
-        """Return PlayerQueue for this player."""
-        return self.mass.players.get_player_queue(self.player_id, True)
-
     def update_state(self) -> None:
         """Update current player state in the player manager."""
+        # determine active queue for player
+        queue_id = self.player_id
+        for player_id in self.get_group_parents():
+            if player := self.mass.players.get_player(player_id):
+                if player.state in [PlayerState.PLAYING, PlayerState.PAUSED]:
+                    queue_id = player_id
+                    break
+        self._attr_active_queue_id = queue_id
         # basic throttle: do not send state changed events if player did not change
         prev_state = getattr(self, "_prev_state", None)
         cur_state = self.to_dict()
@@ -176,7 +190,7 @@ class Player(ABC):
             return
         setattr(self, "_prev_state", cur_state)
         self.mass.signal_event(EventType.PLAYER_CHANGED, self)
-        self.queue.on_player_update()
+        self.mass.players.get_player_queue(self.player_id).on_player_update()
         if self.is_group:
             # update group player childs when parent updates
             for child_player_id in self.group_childs:
@@ -209,6 +223,7 @@ class Player(ABC):
             "group_childs": self.group_childs,
             "volume_level": int(self.volume_level),
             "device_info": self.device_info.to_dict(),
+            "active_queue": self.active_queue.queue_id,
         }
 
 

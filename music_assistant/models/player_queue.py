@@ -15,6 +15,7 @@ from music_assistant.constants import EventType
 from music_assistant.helpers.audio import get_stream_details
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import create_task
+from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
 from music_assistant.models.media_items import MediaType, StreamDetails
 
 from .player import Player, PlayerState
@@ -70,7 +71,6 @@ class PlayerQueue:
         self.mass = mass
         self.logger = mass.players.logger
         self.queue_id = player_id
-        self.player_id = player_id
 
         self._shuffle_enabled: bool = False
         self._repeat_enabled: bool = False
@@ -81,8 +81,8 @@ class PlayerQueue:
         self._current_index: Optional[int] = None
         self._current_item_time: int = 0
         self._last_item: Optional[QueueItem] = None
-        self._start_index: int = 0
-        self._next_index: int = 0
+        self._start_index: int = 0  # from which index did the queue start playing
+        self._next_start_index: int = 0  # which index should the stream start
         self._last_state = PlayerState.IDLE
         self._items: List[QueueItem] = []
         self._save_task: TimerHandle = None
@@ -99,17 +99,11 @@ class PlayerQueue:
     @property
     def player(self) -> Player:
         """Return the player attached to this queue."""
-        return self.mass.players.get_player(self.player_id, include_unavailable=True)
-
-    @property
-    def available(self) -> bool:
-        """Return bool if this queue is available."""
-        return self.player.available
+        return self.mass.players.get_player(self.queue_id, include_unavailable=True)
 
     @property
     def active(self) -> bool:
         """Return bool if the queue is currenty active on the player."""
-        # TODO: figure out a way to handle group childs playing the parent queue
         if self.player.current_url is None:
             return False
         return self._stream_url in self.player.current_url
@@ -149,17 +143,6 @@ class PlayerQueue:
         return self._items
 
     @property
-    def current_index(self) -> Optional[int]:
-        """
-        Return the current index of the queue.
-
-        Returns None if queue is empty.
-        """
-        if self._current_index >= len(self._items):
-            return None
-        return self._current_index
-
-    @property
     def current_item(self) -> QueueItem | None:
         """
         Return the current item in the queue.
@@ -173,35 +156,14 @@ class PlayerQueue:
         return self._items[self._current_index]
 
     @property
-    def next_index(self) -> Optional[int]:
-        """
-        Return the next index for this PlayerQueue.
-
-        Return None if queue is empty or no more items.
-        """
-        if not self._items:
-            # queue is empty
-            return None
-        if self._current_index is None:
-            # playback just started
-            return 0
-        # player already playing (or paused) so return the next item
-        if len(self._items) > (self._current_index + 1):
-            return self._current_index + 1
-        if self.repeat_enabled:
-            # repeat enabled, start queue at beginning
-            return 0
-        return None
-
-    @property
     def next_item(self) -> QueueItem | None:
         """
         Return the next item in the queue.
 
         Returns None if queue is empty or no more items.
         """
-        if self.next_index is not None:
-            return self._items[self.next_index]
+        if next_index := self.get_next_index(self._current_index):
+            return self._items[next_index]
         return None
 
     @property
@@ -377,17 +339,16 @@ class PlayerQueue:
 
     async def next(self) -> None:
         """Play the next track in the queue."""
-        if self._current_index is None:
-            return
-        if self.next_index is None:
-            return
-        await self.play_index(self.next_index)
+        next_index = self.get_next_index(self._current_index)
+        if next_index is None:
+            return None
+        await self.play_index(next_index)
 
     async def previous(self) -> None:
         """Play the previous track in the queue."""
         if self._current_index is None:
             return
-        await self.play_index(self._current_index - 1)
+        await self.play_index(max(self._current_index - 1, 0))
 
     async def resume(self) -> None:
         """Resume previous queue."""
@@ -409,6 +370,7 @@ class PlayerQueue:
         if not len(self.items) > index:
             return
         self._current_index = index
+        self._next_start_index = index
 
         # send stream url to player connected to this queue
         self._stream_url = self.mass.players.streams.get_stream_url(self.queue_id)
@@ -563,32 +525,52 @@ class PlayerQueue:
             return True
         return False
 
-    async def queue_stream_prepare(self) -> StreamDetails | None:
+    async def queue_stream_prepare(self) -> StreamDetails:
         """Call when queue_streamer is about to start playing."""
-        if next_item := self.next_item:
+        start_from_index = self._next_start_index
+        try:
+            next_item = self._items[start_from_index]
+        except IndexError as err:
+            raise QueueEmpty() from err
+        try:
             return await get_stream_details(self.mass, next_item, self.queue_id)
+        except MediaNotFoundError as err:
+            # something bad happened, try to recover by requesting the next track in the queue
+            await self.play_index(self._current_index + 2)
+            raise err
+
+    async def queue_stream_start(self) -> int:
+        """Call when queue_streamer starts playing the queue stream."""
+        start_from_index = self._next_start_index
+        self._current_item_time = 0
+        self._current_index = start_from_index
+        self._start_index = start_from_index
+        self._next_start_index = self.get_next_index(start_from_index)
+        return start_from_index
+
+    async def queue_stream_next(self, cur_index: int) -> int | None:
+        """Call when queue_streamer loads next track in buffer."""
+        next_idx = self._next_start_index
+        self._next_start_index = self.get_next_index(self._next_start_index)
+        return next_idx
+
+    def get_next_index(self, index: int) -> int | None:
+        """Return the next index or None if no more items."""
+        if not self._items:
+            # queue is empty
+            return None
+        if index is None:
+            # guard just in case
+            return 0
+        if len(self._items) > (index + 1):
+            return index + 1
+        if self.repeat_enabled:
+            # repeat enabled, start queue at beginning
+            return 0
         return None
 
-    async def queue_stream_start(self) -> None:
-        """Call when queue_streamer starts playing the queue stream."""
-        self._current_item_time = 0
-        self._current_index = self.next_index
-        self._start_index = self._current_index
-        return self._current_index
-
-    async def queue_stream_next(self, cur_index: int) -> None:
-        """Call when queue_streamer loads next track in buffer."""
-        next_index = 0
-        if len(self.items) > (next_index):
-            next_index = cur_index + 1
-        elif self._repeat_enabled:
-            # repeat enabled, start queue at beginning
-            next_index = 0
-        self._next_index = next_index + 1
-        return next_index
-
     async def queue_stream_signal_next(self):
-        """Indicate that queue stream needs to start nex index once playback finished."""
+        """Indicate that queue stream needs to start next index once playback finished."""
         self._signal_next = True
 
     async def __update_task(self) -> None:

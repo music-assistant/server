@@ -31,3 +31,7 @@ class LoginFailed(MusicAssistantError):
 
 class AudioError(MusicAssistantError):
     """Error raised when an issue arrised when processing audio."""
+
+
+class QueueEmpty(MusicAssistantError):
+    """Error raised when trying to start queue stream while queue is empty."""

@@ -22,6 +22,7 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_ip
+from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.media_items import ContentType
 from music_assistant.models.player_queue import PlayerQueue
 
@@ -295,9 +296,14 @@ class StreamController:
                 self.logger.debug("no (more) tracks in queue %s", queue.queue_id)
                 break
             # get streamdetails
-            streamdetails = await get_stream_details(
-                self.mass, queue_track, queue.queue_id, lazy=track_count == 1
-            )
+            try:
+                streamdetails = await get_stream_details(
+                    self.mass, queue_track, queue.queue_id, lazy=track_count == 1
+                )
+            except MediaNotFoundError as err:
+                self.logger.error(str(err), exc_info=err)
+                streamdetails = None
+
             if not streamdetails:
                 self.logger.warning("Skip track due to missing streamdetails")
                 continue

@@ -63,14 +63,9 @@ class PlayerController:
                 return player
         return None
 
-    def get_player_queue(
-        self, queue_id: str, include_unavailable: bool = False
-    ) -> PlayerQueue | None:
+    def get_player_queue(self, queue_id: str) -> PlayerQueue | None:
         """Return PlayerQueue by id or None if not found/unavailable."""
-        if player_queue := self._player_queues.get(queue_id):
-            if player_queue.available or include_unavailable:
-                return player_queue
-        return None
+        return self._player_queues.get(queue_id)
 
     def get_player_by_name(self, name: str) -> PlayerType | None:
         """Return Player by name or None if no match is found."""
@@ -85,6 +80,7 @@ class PlayerController:
 
         # make sure that the mass instance is set on the player
         player.mass = self.mass
+        player._attr_active_queue_id = player_id  # pylint: disable=protected-access
         self._players[player_id] = player
 
         # create playerqueue for this player
