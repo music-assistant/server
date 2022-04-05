@@ -1,4 +1,6 @@
 """Several helper/utils to compare objects."""
+from __future__ import annotations
+
 import re
 from typing import TYPE_CHECKING, List
 

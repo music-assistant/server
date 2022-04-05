@@ -25,3 +25,13 @@ repos:
       - id: mypy
         additional_dependencies: [types-all]
         exclude: ^examples/
+  - repo: local
+    hooks:
+      - id: pylint
+        name: pylint
+        entry: pylint
+        language: system
+        types: [python]
+        args: ["-rn", "-sn", "--rcfile=pylintrc", "--fail-on=I"]
+        exclude: ^examples/|^.venv/|^.vscode/
+

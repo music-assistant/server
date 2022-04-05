@@ -1,7 +1,7 @@
 # This workflow will install Python dependencies, run tests and lint
 # For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
 
-name: Test with Pre-commit and Tox
+name: Test with Pre-commit
 
 on:
   push:
@@ -24,11 +24,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
-          sudo apt-get install -y --no-install-recommends libsndfile1 libtag1v5 libtag1-dev
           python -m pip install --upgrade pip
-          pip install tox tox-gh-actions pre-commit
+          pip install pre-commit
           pre-commit install-hooks
-      - name: Lint with pre-commit
+      - name: Lint/test with pre-commit
         run: pre-commit run --all-files
-      - name: Test with tox
-        run: tox

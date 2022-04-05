@@ -1,4 +1,5 @@
 """Various helpers for audio manipulation."""
+from __future__ import annotations
 
 import asyncio
 import logging

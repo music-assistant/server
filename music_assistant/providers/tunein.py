@@ -1,4 +1,6 @@
 """Tune-In musicprovider support for MusicAssistant."""
+from __future__ import annotations
+
 from typing import List, Optional
 
 from asyncio_throttle import Throttler

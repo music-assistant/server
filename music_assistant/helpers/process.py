@@ -4,6 +4,7 @@ Implementation of a (truly) non blocking subprocess.
 The subprocess implementation in asyncio can (still) sometimes cause deadlocks,
 even when properly handling reading/writes from different tasks.
 """
+from __future__ import annotations
 
 import asyncio
 import logging

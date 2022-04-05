@@ -28,14 +28,12 @@ PROJECT_URLS = {
 }
 PROJECT_DIR = Path(__file__).parent.resolve()
 README_FILE = PROJECT_DIR / "README.rst"
+REQUIREMENTS_FILE = PROJECT_DIR / "requirements.txt"
 PACKAGES = find_packages(exclude=["tests", "tests.*"])
 PACKAGE_FILES = []
 for (path, directories, filenames) in os.walk("music_assistant/"):
     for filename in filenames:
         PACKAGE_FILES.append(os.path.join("..", path, filename))
-
-with open("requirements.txt") as f:
-    REQUIRES = f.read().splitlines()
 
 setup(
     name=PROJECT_PACKAGE_NAME,
@@ -50,7 +48,7 @@ setup(
     packages=PACKAGES,
     include_package_data=True,
     zip_safe=False,
-    install_requires=REQUIRES,
+    install_requires=REQUIREMENTS_FILE.read_text(encoding="utf-8"),
     python_requires=f">={PROJECT_REQ_PYTHON_VERSION}",
     test_suite="tests",
     entry_points={

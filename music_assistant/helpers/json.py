@@ -1,4 +1,5 @@
 """Various helpers for web requests."""
+from __future__ import annotations
 
 import asyncio
 
