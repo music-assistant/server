@@ -1,7 +1,6 @@
 """Database logic."""
 from __future__ import annotations
 from contextlib import asynccontextmanager
-from socket import timeout
 from typing import Any, Dict, List, Mapping
 
 from databases import Database as Db
@@ -109,4 +108,3 @@ class Database:
             sql_query = f"DELETE FROM {table}"
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
             await _db.execute(sql_query)
-

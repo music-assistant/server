@@ -1,5 +1,5 @@
 """Filesystem musicprovider support for MusicAssistant."""
-import asyncio
+from __future__ import annotations
 import base64
 import os
 from typing import List, Optional, Tuple
@@ -170,8 +170,7 @@ class FileSystemProvider(MusicProvider):
             (
                 track.album
                 for track in await self.get_library_tracks()
-                if track.album is not None
-                and track.album.item_id == prov_album_id
+                if track.album is not None and track.album.item_id == prov_album_id
             ),
             None,
         )
