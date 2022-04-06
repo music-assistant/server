@@ -14,7 +14,6 @@ from mashumaro import DataClassDictMixin
 from music_assistant.constants import EventType
 from music_assistant.helpers.audio import get_stream_details
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import create_task
 from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
 from music_assistant.models.media_items import MediaType, StreamDetails
 
@@ -479,11 +478,11 @@ class PlayerQueue:
             # handle case where stream stopped on purpose and we need to restart it
             if self.player.state != PlayerState.PLAYING and self._signal_next:
                 self._signal_next = False
-                create_task(self.play())
+                self.mass.create_task(self.play())
             # start updater task if needed
             if self.player.state == PlayerState.PLAYING:
                 if not self._update_task:
-                    self._update_task = create_task(self.__update_task())
+                    self._update_task = self.mass.create_task(self.__update_task())
             else:
                 if self._update_task:
                     self._update_task.cancel()
@@ -655,4 +654,6 @@ class PlayerQueue:
 
         if self._save_task and not self._save_task.cancelled():
             return
-        self._save_task = self.mass.loop.call_later(60, create_task, cache_items)
+        self._save_task = self.mass.loop.call_later(
+            60, self.mass.create_task, cache_items
+        )

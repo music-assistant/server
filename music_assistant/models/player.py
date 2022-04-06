@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Dict, List
 from mashumaro import DataClassDictMixin
 from music_assistant.constants import EventType
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import create_task
 
 if TYPE_CHECKING:
     from .player_queue import PlayerQueue
@@ -210,12 +209,12 @@ class Player(ABC):
             # update group player childs when parent updates
             for child_player_id in self.group_childs:
                 if player := self.mass.players.get_player(child_player_id):
-                    create_task(player.update_state)
+                    self.mass.create_task(player.update_state)
         else:
             # update group player when child updates
             for group_player_id in self.get_group_parents():
                 if player := self.mass.players.get_player(group_player_id):
-                    create_task(player.update_state)
+                    self.mass.create_task(player.update_state)
 
     def get_group_parents(self) -> List[str]:
         """Get any/all group player id's this player belongs to."""

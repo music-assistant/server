@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
+import threading
 from time import time
-from typing import Any, Callable, Coroutine, Optional, Tuple, Union
+from types import TracebackType
+from typing import Any, Callable, Coroutine, List, Optional, Tuple, Type, Union
 
 import aiohttp
 from databases import DatabaseURL
@@ -12,10 +15,8 @@ from music_assistant.constants import EventType
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
-from music_assistant.helpers import util
 from music_assistant.helpers.cache import Cache
 from music_assistant.helpers.database import Database
-from music_assistant.helpers.util import create_task
 
 EventCallBackType = Callable[[EventType, Any], None]
 EventSubscriptionType = Tuple[EventCallBackType, Optional[Tuple[EventType]]]
@@ -52,13 +53,12 @@ class MusicAssistant:
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
         self.players = PlayerController(self, stream_port)
-        self._jobs_task: asyncio.Task = None
+        self._tracked_tasks: List[asyncio.Task] = []
 
     async def setup(self) -> None:
         """Async setup of music assistant."""
         # initialize loop
         self.loop = asyncio.get_event_loop()
-        util.DEFAULT_LOOP = self.loop
         # create shared aiohttp ClientSession
         if not self.http_session:
             self.http_session = aiohttp.ClientSession(
@@ -70,17 +70,20 @@ class MusicAssistant:
         await self.music.setup()
         await self.metadata.setup()
         await self.players.setup()
-        self._jobs_task = create_task(self.__process_jobs())
+        self.create_task(self.__process_jobs())
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
-        self.logger.info("Application shutdown")
+        self.logger.info("Stop called, cleaning up...")
+        # cancel any running tasks
+        for task in self._tracked_tasks:
+            task.cancel()
         self.signal_event(EventType.SHUTDOWN)
-        if self._jobs_task is not None:
-            self._jobs_task.cancel()
+        # wait for any remaining tasks launched by the shutdown event
+        await asyncio.wait_for(asyncio.wait(self._tracked_tasks), 2)
         if self.http_session and not self.http_session_provided:
             await self.http_session.connector.close()
-        self.http_session.detach()
+            self.http_session.detach()
 
     def signal_event(self, event_type: EventType, event_details: Any = None) -> None:
         """
@@ -90,8 +93,8 @@ class MusicAssistant:
             :param event_details: optional details to send with the event.
         """
         for cb_func, event_filter in self._listeners:
-            if not event_filter or event_type in event_filter:
-                create_task(cb_func, event_type, event_details)
+            if event_filter is None or event_type in event_filter:
+                self.create_task(cb_func, event_type, event_details)
 
     def subscribe(
         self,
@@ -107,8 +110,6 @@ class MusicAssistant:
         """
         if isinstance(event_filter, EventType):
             event_filter = (event_filter,)
-        elif event_filter is None:
-            event_filter = tuple()
         listener = (cb_func, event_filter)
         self._listeners.append(listener)
 
@@ -123,6 +124,53 @@ class MusicAssistant:
             name = job.__qualname__ or job.__name__
         self._jobs.put_nowait((name, job))
 
+    def create_task(
+        self,
+        target: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Union[asyncio.Task, asyncio.Future]:
+        """
+        Create Task on (main) event loop from Callable or awaitable.
+
+        Tasks create dby this helper will be properly cancelled on stop.
+        """
+
+        # Check for partials to properly determine if coroutine function
+        check_target = target
+        while isinstance(check_target, functools.partial):
+            check_target = check_target.func
+
+        async def executor_wrapper(_target: Callable, *_args, **_kwargs):
+            return await self.loop.run_in_executor(None, _target, *_args, **_kwargs)
+
+        # called from other thread
+        if threading.current_thread() is not threading.main_thread():
+            if asyncio.iscoroutine(check_target):
+                task = asyncio.run_coroutine_threadsafe(target, self.loop)
+            elif asyncio.iscoroutinefunction(check_target):
+                task = asyncio.run_coroutine_threadsafe(target(*args), self.loop)
+            else:
+                task = asyncio.run_coroutine_threadsafe(
+                    executor_wrapper(target, *args, **kwargs), self.loop
+                )
+        else:
+            if asyncio.iscoroutine(check_target):
+                task = self.loop.create_task(target)
+            elif asyncio.iscoroutinefunction(check_target):
+                task = self.loop.create_task(target(*args))
+            else:
+                task = self.loop.create_task(executor_wrapper(target, *args, **kwargs))
+
+        def task_done_callback(*args, **kwargs):
+            self.logger.debug("task finished %s", task.get_name())
+            self._tracked_tasks.remove(task)
+
+        self._tracked_tasks.append(task)
+        task.add_done_callback(task_done_callback)
+        self.logger.debug("spawned task %s", task.get_name())
+        return task
+
     async def __process_jobs(self):
         """Process jobs in the background."""
         while True:
@@ -131,7 +179,7 @@ class MusicAssistant:
             self.logger.debug("Start processing job [%s].", name)
             try:
                 # await job
-                task = asyncio.create_task(job, name=name)
+                task = self.create_task(job, name=name)
                 await task
             except Exception as err:  # pylint: disable=broad-except
                 self.logger.error(
@@ -140,3 +188,20 @@ class MusicAssistant:
             else:
                 duration = round(time() - time_start, 2)
                 self.logger.info("Finished job [%s] in %s seconds.", name, duration)
+
+    async def __aenter__(self) -> "MusicAssistant":
+        """Return Context manager."""
+        await self.setup()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: Type[BaseException],
+        exc_val: BaseException,
+        exc_tb: TracebackType,
+    ) -> Optional[bool]:
+        """Exit context manager."""
+        await self.stop()
+        if exc_val:
+            raise exc_val
+        return exc_type

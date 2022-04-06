@@ -8,7 +8,6 @@ import time
 from typing import Awaitable
 
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import create_task
 
 DB_TABLE = "cache"
 
@@ -123,7 +122,7 @@ class Cache:
 
 
 async def cached(
-    cache,
+    cache: Cache,
     cache_key: str,
     coro_func: Awaitable,
     *args,
@@ -138,5 +137,5 @@ async def cached(
         result = await coro_func
     else:
         result = await coro_func(*args)
-    create_task(cache.set(cache_key, result, checksum, expires))
+    cache.mass.create_task(cache.set(cache_key, result, checksum, expires))
     return result

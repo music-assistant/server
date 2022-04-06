@@ -4,8 +4,6 @@ import asyncio
 import logging
 import os
 
-from aiorun import run
-
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player, PlayerState
 from music_assistant.providers.filesystem import FileSystemProvider
@@ -76,8 +74,6 @@ if not os.path.isdir(data_dir):
     os.makedirs(data_dir)
 db_file = os.path.join(data_dir, "music_assistant.db")
 
-mass = MusicAssistant(f"sqlite:///{db_file}")
-
 
 providers = []
 if args.spotify_username and args.spotify_password:
@@ -145,14 +141,13 @@ class TestPlayer(Player):
         self.update_state()
 
 
-def main():
+async def main():
     """Handle main execution."""
 
-    async def async_main():
-        """Async main routine."""
-        asyncio.get_event_loop().set_debug(args.debug)
+    asyncio.get_event_loop().set_debug(args.debug)
 
-        await mass.setup()
+    async with MusicAssistant(f"sqlite:///{db_file}") as mass:
+
         # register music provider(s)
         for prov in providers:
             await mass.music.register_provider(prov)
@@ -176,16 +171,11 @@ def main():
         if len(playlists) > 0:
             await test_player.active_queue.play_media(playlists[0].uri)
 
-    def on_shutdown(loop):
-        loop.run_until_complete(mass.stop())
-
-    run(
-        async_main(),
-        use_uvloop=True,
-        shutdown_callback=on_shutdown,
-        executor_workers=64,
-    )
+        await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
