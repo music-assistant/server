@@ -259,11 +259,10 @@ async def get_gain_correct(
     return (track_loudness, gain_correct)
 
 
-def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=1800):
+def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=None):
     """Generate a wave header from given params."""
     # pylint: disable=no-member
     file = BytesIO()
-    numsamples = samplerate * duration
 
     # Generate format chunk
     format_chunk_spec = b"<4sLHHLLHH"
@@ -279,8 +278,15 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
         bitspersample,  # 16 bits for two byte samples, etc.
     )
     # Generate data chunk
+    # duration = 3600*6.7
     data_chunk_spec = b"<4sL"
-    datasize = int(numsamples * channels * (bitspersample / 8))
+    if duration is None:
+        # use max value possible
+        datasize = 4254768000  # = 6,7 hours at 44100/16
+    else:
+        # calculate from duration
+        numsamples = samplerate * duration
+        datasize = int(numsamples * channels * (bitspersample / 8))
     data_chunk = struct.pack(
         data_chunk_spec,
         b"data",  # Chunk id

@@ -601,6 +601,9 @@ class PlayerQueue:
             queue_track = None
             while len(self._items) > queue_index:
                 queue_track = self._items[queue_index]
+                if queue_track.duration is None:
+                    # in case of a radio stream
+                    queue_track.duration = 86400
                 if elapsed_time_queue > (queue_track.duration + total_time):
                     total_time += queue_track.duration
                     queue_index += 1

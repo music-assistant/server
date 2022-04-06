@@ -242,6 +242,7 @@ class ContentType(Enum):
     MP3 = "mp3"
     AAC = "aac"
     MPEG = "mpeg"
+    WAV = "wav"
     PCM_S16LE = "s16le"  # PCM signed 16-bit little-endian
     PCM_S24LE = "s24le"  # PCM signed 24-bit little-endian
     PCM_S32LE = "s32le"  # PCM signed 32-bit little-endian
