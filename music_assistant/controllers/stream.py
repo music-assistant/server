@@ -40,10 +40,11 @@ class StreamController:
 
     def get_stream_url(self, queue_id: str) -> str:
         """Return the full stream url for the PlayerQueue Stream."""
+        checksum = str(int(time()))
         queue = self.mass.players.get_player_queue(queue_id)
         if queue.player.use_multi_stream:
-            return f"http://{self._ip}:{self._port}/multi/{queue_id}.wav"
-        return f"http://{self._ip}:{self._port}/{queue_id}.flac"
+            return f"http://{self._ip}:{self._port}/multi/{queue_id}.wav?checksum={checksum}"
+        return f"http://{self._ip}:{self._port}/{queue_id}.flac?checksum={checksum}"
 
     async def setup(self) -> None:
         """Async initialize of module."""
@@ -52,8 +53,10 @@ class StreamController:
         app.router.add_get(
             "/multi/{queue_id}.wav", self.serve_multi_client_queue_stream
         )
-        app.router.add_get("/{queue_id}.{format}", self.serve_queue_stream)
-        app.router.add_get("/{queue_id}", self.serve_queue_stream)
+        app.router.add_get(
+            "/{queue_id}.{format}", self.serve_queue_stream, allow_head=True
+        )
+        app.router.add_get("/{queue_id}", self.serve_queue_stream, allow_head=True)
 
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
@@ -100,6 +103,8 @@ class StreamController:
             status=200, reason="OK", headers={"Content-Type": f"audio/{fmt}"}
         )
         await resp.prepare(request)
+        if request.method == "HEAD":
+            return
 
         start_streamdetails = await queue.queue_stream_prepare()
         output_fmt = ContentType(fmt)
@@ -154,6 +159,8 @@ class StreamController:
             },
         )
         await resp.prepare(request)
+        if request.method == "HEAD":
+            return resp
 
         # write wave header
         # multi subscriber queue is (currently) limited to 44100/16 format
@@ -201,6 +208,7 @@ class StreamController:
         # TODO: add timeout guard just in case we don't reach the number of expected client
         if stream_task is None and len(self._subscribers[queue_id]) >= expected_clients:
             # start the stream task
+            await asyncio.sleep(1)  # relax
             await self.start_multi_queue_stream(queue_id)
 
         self.logger.debug(
@@ -260,6 +268,7 @@ class StreamController:
 
         if stream_task := self._stream_tasks.pop(queue_id, None):
             stream_task.cancel()
+            await stream_task
 
     async def _get_queue_stream(
         self,

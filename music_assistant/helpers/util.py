@@ -229,7 +229,9 @@ def get_changed_keys(
     for key, value in dict2.items():
         if ignore_keys and key in ignore_keys:
             continue
-        if isinstance(value, dict):
+        if key not in dict1:
+            changed_keys.add(key)
+        elif isinstance(value, dict):
             changed_keys.update(get_changed_keys(dict1[key], value))
         elif dict1[key] != value:
             changed_keys.add(key)

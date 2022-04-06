@@ -103,9 +103,7 @@ class PlayerQueue:
     @property
     def active(self) -> bool:
         """Return bool if the queue is currenty active on the player."""
-        if self.player.current_url is None or self._stream_url is None:
-            return False
-        return self._stream_url in self.player.current_url
+        return self._stream_url == self.player.current_url
 
     @property
     def elapsed_time(self) -> int:
@@ -372,6 +370,9 @@ class PlayerQueue:
         self._next_start_index = index
 
         # send stream url to player connected to this queue
+        if self.player.use_multi_stream and self.player.state == PlayerState.PLAYING:
+            await self.player.stop()
+            await asyncio.sleep(1)
         self._stream_url = self.mass.players.streams.get_stream_url(self.queue_id)
         await self.player.play_url(self._stream_url)
 
@@ -578,20 +579,11 @@ class PlayerQueue:
             self.update_state()
             await asyncio.sleep(1)
 
-    def __get_total_elapsed_time(self) -> int:
-        """Calculate the total elapsed time of the queue(player)."""
-        if self.player.state == PlayerState.PLAYING:
-            time_diff = time.time() - self._last_player_update
-            return int(self.player.elapsed_time + time_diff)
-        if self.player.state == PlayerState.PAUSED:
-            return self.player.elapsed_time
-        return 0
-
     def __get_queue_stream_index(self) -> Tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""
         # player is playing a constant stream so we need to do this the hard way
         queue_index = 0
-        elapsed_time_queue = self.__get_total_elapsed_time()
+        elapsed_time_queue = self.player.corrected_elapsed_time
         total_time = 0
         track_time = 0
         if self._items and len(self._items) > self._start_index:
