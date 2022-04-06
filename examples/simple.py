@@ -3,11 +3,8 @@ import argparse
 import asyncio
 import logging
 import os
-from sys import path
 
 from aiorun import run
-
-path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.spotify import SpotifyProvider
