@@ -57,6 +57,7 @@ class Player(ABC):
     _attr_device_info: DeviceInfo = DeviceInfo()
     _attr_max_sample_rate: int = 96000
     _attr_active_queue_id: str = ""
+    _attr_use_multi_stream: bool = False
     # mass object will be set by playermanager at register
     mass: MusicAssistant = None  # type: ignore[assignment]
 
@@ -123,6 +124,20 @@ class Player(ABC):
         otherwise it will return the player's own queue.
         """
         return self.mass.players.get_player_queue(self._attr_active_queue_id)
+
+    @property
+    def use_multi_stream(self) -> bool:
+        """
+        Return bool if this player needs multistream approach.
+
+        This is used for groupplayers that do not distribute the audio streams over players.
+        Instead this can be used as convenience service where each client receives the same audio
+        at more or less the same time. The player's implementation will be responsible for
+        synchronization of audio on child players (if possible), Music Assistant will only
+        coordinate the start and makes sure that every child received the same audio chunk
+        within the same timespan. Multi stream is currently limited to 44100/16 only.
+        """
+        return self._attr_use_multi_stream
 
     async def play_url(self, url: str) -> None:
         """Play the specified url on the player."""

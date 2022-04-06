@@ -26,6 +26,7 @@ class AsyncProcess:
         self._proc = None
         self._args = args
         self._enable_write = enable_write
+        self.closed = False
 
     async def __aenter__(self) -> "AsyncProcess":
         """Enter context manager."""
@@ -54,6 +55,7 @@ class AsyncProcess:
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
         """Exit context manager."""
+        self.closed = True
         if self._proc.returncode is None:
             # prevent subprocess deadlocking, send terminate and read remaining bytes
             if self._enable_write:
