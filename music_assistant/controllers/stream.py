@@ -58,17 +58,13 @@ class StreamController:
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
-        http_site = web.TCPSite(
-            runner, host=None, port=self._port, reuse_address=True, reuse_port=True
-        )
+        http_site = web.TCPSite(runner, host=None, port=self._port)
         await http_site.start()
 
         async def on_shutdown_event(*args, **kwargs):
             """Handle shutdown event."""
-            for task in self._stream_tasks.values():
-                task.cancel()
             await http_site.stop()
-            await runner.shutdown()
+            await runner.cleanup()
             await app.shutdown()
             await app.cleanup()
             self.logger.info("Streamserver exited.")

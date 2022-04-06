@@ -44,6 +44,8 @@ class Player(ABC):
     """Model for a music player."""
 
     player_id: str
+    # mass object will be set by playermanager at register
+    mass: MusicAssistant = None  # type: ignore[assignment]
     _attr_is_group: bool = False
     _attr_group_childs: List[str] = []
     _attr_name: str = ""
@@ -57,8 +59,7 @@ class Player(ABC):
     _attr_max_sample_rate: int = 96000
     _attr_active_queue_id: str = ""
     _attr_use_multi_stream: bool = False
-    # mass object will be set by playermanager at register
-    mass: MusicAssistant = None  # type: ignore[assignment]
+    _attr_group_parent: List[str] = []  # will be set by player manager
 
     @property
     def name(self) -> bool:
@@ -189,13 +190,18 @@ class Player(ABC):
 
     def update_state(self) -> None:
         """Update current player state in the player manager."""
+        if self.mass is None or self.mass.closed:
+            # guard
+            return
+        self._attr_group_childs = self.get_group_parents()
         # determine active queue for player
         queue_id = self.player_id
-        for player_id in self.get_group_parents():
-            if player := self.mass.players.get_player(player_id):
-                if player.state in [PlayerState.PLAYING, PlayerState.PAUSED]:
-                    queue_id = player_id
-                    break
+        for state in [PlayerState.PLAYING, PlayerState.PAUSED]:
+            for player_id in self._attr_group_childs:
+                if player := self.mass.players.get_player(player_id):
+                    if player.state == state:
+                        queue_id = player_id
+                        break
         self._attr_active_queue_id = queue_id
         # basic throttle: do not send state changed events if player did not change
         prev_state = getattr(self, "_prev_state", None)
@@ -212,7 +218,7 @@ class Player(ABC):
                     self.mass.create_task(player.update_state)
         else:
             # update group player when child updates
-            for group_player_id in self.get_group_parents():
+            for group_player_id in self._attr_group_childs:
                 if player := self.mass.players.get_player(group_player_id):
                     self.mass.create_task(player.update_state)
 
@@ -235,6 +241,7 @@ class Player(ABC):
             "available": self.available,
             "is_group": self.is_group,
             "group_childs": self.group_childs,
+            "group_parents": self._attr_group_childs,
             "volume_level": int(self.volume_level),
             "device_info": self.device_info.to_dict(),
             "active_queue": self.active_queue.queue_id,

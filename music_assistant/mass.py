@@ -54,6 +54,7 @@ class MusicAssistant:
         self.music = MusicController(self)
         self.players = PlayerController(self, stream_port)
         self._tracked_tasks: List[asyncio.Task] = []
+        self.closed = False
 
     async def setup(self) -> None:
         """Async setup of music assistant."""
@@ -63,7 +64,7 @@ class MusicAssistant:
         if not self.http_session:
             self.http_session = aiohttp.ClientSession(
                 loop=self.loop,
-                connector=aiohttp.TCPConnector(enable_cleanup_closed=True, ssl=False),
+                connector=aiohttp.TCPConnector(ssl=False),
             )
         # setup core controllers
         await self.cache.setup()
@@ -75,15 +76,13 @@ class MusicAssistant:
     async def stop(self) -> None:
         """Stop running the music assistant server."""
         self.logger.info("Stop called, cleaning up...")
-        # cancel any running tasks
+        # cancel all running tasks
         for task in self._tracked_tasks:
             task.cancel()
         self.signal_event(EventType.SHUTDOWN)
-        # wait for any remaining tasks launched by the shutdown event
-        await asyncio.wait_for(asyncio.wait(self._tracked_tasks), 2)
+        self.closed = True
         if self.http_session and not self.http_session_provided:
-            await self.http_session.connector.close()
-            self.http_session.detach()
+            await self.http_session.close()
 
     def signal_event(self, event_type: EventType, event_details: Any = None) -> None:
         """
@@ -92,6 +91,8 @@ class MusicAssistant:
             :param event_msg: the eventmessage to signal
             :param event_details: optional details to send with the event.
         """
+        if self.closed:
+            return
         for cb_func, event_filter in self._listeners:
             if event_filter is None or event_type in event_filter:
                 self.create_task(cb_func, event_type, event_details)
@@ -133,8 +134,10 @@ class MusicAssistant:
         """
         Create Task on (main) event loop from Callable or awaitable.
 
-        Tasks create dby this helper will be properly cancelled on stop.
+        Tasks created by this helper will be properly cancelled on stop.
         """
+        if self.closed:
+            return
 
         # Check for partials to properly determine if coroutine function
         check_target = target
@@ -163,12 +166,10 @@ class MusicAssistant:
                 task = self.loop.create_task(executor_wrapper(target, *args, **kwargs))
 
         def task_done_callback(*args, **kwargs):
-            self.logger.debug("task finished %s", task.get_name())
             self._tracked_tasks.remove(task)
 
         self._tracked_tasks.append(task)
         task.add_done_callback(task_done_callback)
-        self.logger.debug("spawned task %s", task.get_name())
         return task
 
     async def __process_jobs(self):

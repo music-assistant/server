@@ -73,6 +73,8 @@ class PlayerController:
 
     async def register_player(self, player: PlayerType) -> None:
         """Register a new player on the controller."""
+        if self.mass.closed:
+            return
         player_id = player.player_id
 
         if player_id in self._players:
