@@ -4,7 +4,6 @@ import asyncio
 import logging
 import os
 
-from aiorun import run
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.spotify import SpotifyProvider
@@ -52,30 +51,29 @@ mass = MusicAssistant(f"sqlite:///{db_file}")
 spotify = SpotifyProvider(args.username, args.password)
 
 
-def main():
+async def main():
     """Handle main execution."""
 
-    async def async_main():
-        """Async main routine."""
-        asyncio.get_event_loop().set_debug(args.debug)
-        await mass.setup()
-        # register music provider(s)
-        await mass.music.register_provider(spotify)
-        # get some data
-        await mass.music.artists.library()
-        await mass.music.tracks.library()
-        await mass.music.radio.library()
+    asyncio.get_event_loop().set_debug(args.debug)
 
-    def on_shutdown(loop):
-        loop.run_until_complete(mass.stop())
+    # without contextmanager we need to call the async setup
+    await mass.setup()
+    # register music provider(s)
+    await mass.music.register_provider(spotify)
+    # get some data
+    await mass.music.artists.library()
+    await mass.music.tracks.library()
+    await mass.music.radio.library()
 
-    run(
-        async_main(),
-        use_uvloop=True,
-        shutdown_callback=on_shutdown,
-        executor_workers=64,
-    )
+    # run for an hour until someone hits CTRL+C
+    await asyncio.sleep(3600)
+
+    # without contextmanager we need to call the stop
+    await mass.stop()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

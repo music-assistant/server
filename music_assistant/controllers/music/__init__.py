@@ -14,7 +14,7 @@ from music_assistant.controllers.music.tracks import TracksController
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import create_task, run_periodic
+from music_assistant.helpers.util import run_periodic
 from music_assistant.models.errors import (
     AlreadyRegisteredError,
     MusicAssistantError,
@@ -59,7 +59,7 @@ class MusicController:
         await self.tracks.setup()
         await self.radio.setup()
         await self.playlists.setup()
-        create_task(self.__periodic_sync)
+        self.mass.create_task(self.__periodic_sync)
 
     @property
     def provider_count(self) -> int:
@@ -95,7 +95,7 @@ class MusicController:
         else:
             self._providers[provider.id] = provider
             self.mass.signal_event(EventType.PROVIDER_REGISTERED, provider)
-            create_task(self.run_provider_sync(provider.id))
+            self.mass.create_task(self.run_provider_sync(provider.id))
 
     async def search(
         self, search_query, media_types: List[MediaType], limit: int = 10

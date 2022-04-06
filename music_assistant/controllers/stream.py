@@ -20,7 +20,7 @@ from music_assistant.helpers.audio import (
 )
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.helpers.util import create_task, get_ip
+from music_assistant.helpers.util import get_ip
 from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.media_items import ContentType
 from music_assistant.models.player_queue import PlayerQueue
@@ -131,7 +131,7 @@ class StreamController:
                 # write eof when last packet is received
                 sox_proc.write_eof()
 
-            create_task(writer)
+            self.mass.create_task(writer)
 
             # read bytes from final output
             chunksize = 32000 if output_fmt == ContentType.MP3 else 90000

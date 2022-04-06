@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import os
 import platform
 import socket
 import tempfile
-import threading
-from asyncio.events import AbstractEventLoop
-from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Set, TypeVar
 
 import memory_tempfile
 
@@ -19,51 +16,6 @@ _UNDEF: dict = {}
 CALLABLE_T = TypeVar("CALLABLE_T", bound=Callable)
 CALLBACK_TYPE = Callable[[], None]
 # pylint: enable=invalid-name
-
-DEFAULT_LOOP = None
-
-
-def create_task(
-    target: Callable[..., Any],
-    *args: Any,
-    loop: AbstractEventLoop = None,
-    **kwargs: Any,
-) -> Union[asyncio.Task, asyncio.Future]:
-    """Create Task on (main) event loop from Callable or awaitable.
-
-    target: target to call.
-    loop: Running (main) event loop, defaults to loop in current thread
-    args/kwargs: parameters for method to call.
-    """
-    try:
-        loop = loop or asyncio.get_running_loop()
-    except RuntimeError:
-        # try to fetch the default loop from global variable
-        loop = DEFAULT_LOOP
-
-    # Check for partials to properly determine if coroutine function
-    check_target = target
-    while isinstance(check_target, functools.partial):
-        check_target = check_target.func
-
-    async def executor_wrapper(_target: Callable, *_args, **_kwargs):
-        return await loop.run_in_executor(None, _target, *_args, **_kwargs)
-
-    # called from other thread
-    if threading.current_thread() is not threading.main_thread():
-        if asyncio.iscoroutine(check_target):
-            return asyncio.run_coroutine_threadsafe(target, loop)
-        if asyncio.iscoroutinefunction(check_target):
-            return asyncio.run_coroutine_threadsafe(target(*args), loop)
-        return asyncio.run_coroutine_threadsafe(
-            executor_wrapper(target, *args, **kwargs), loop
-        )
-
-    if asyncio.iscoroutine(check_target):
-        return loop.create_task(target)
-    if asyncio.iscoroutinefunction(check_target):
-        return loop.create_task(target(*args))
-    return loop.create_task(executor_wrapper(target, *args, **kwargs))
 
 
 def run_periodic(delay: float, later: bool = False):
