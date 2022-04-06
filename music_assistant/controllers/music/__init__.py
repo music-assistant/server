@@ -403,6 +403,8 @@ class MusicController:
                 # sync playlist tracks
                 if media_type == MediaType.PLAYLIST:
                     await self._sync_playlist_tracks(db_item)
+                # chill a bit otherwise sync is really heavy for the system
+                await asyncio.sleep(0.1)
 
             # process deletions
             for item_id in prev_ids:
@@ -430,6 +432,8 @@ class MusicController:
                     album_track.disc_number,
                     album_track.track_number,
                 )
+                # chill a bit otherwise sync is really heavy for the system
+                await asyncio.sleep(0.1)
 
     async def _sync_playlist_tracks(self, db_playlist: Playlist) -> None:
         """Store playlist tracks of in-library playlist in database."""
@@ -451,6 +455,8 @@ class MusicController:
                     db_track.item_id,
                     playlist_track.position,
                 )
+                # chill a bit otherwise sync is really heavy for the system
+                await asyncio.sleep(0.1)
 
     def _get_controller(
         self, media_type: MediaType

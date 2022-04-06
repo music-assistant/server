@@ -4,11 +4,13 @@ from __future__ import annotations
 from abc import ABC
 from dataclasses import dataclass
 from enum import Enum, IntEnum
+from time import time
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from mashumaro import DataClassDictMixin
 from music_assistant.constants import EventType
 from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.util import get_changed_keys
 
 if TYPE_CHECKING:
     from .player_queue import PlayerQueue
@@ -44,8 +46,6 @@ class Player(ABC):
     """Model for a music player."""
 
     player_id: str
-    # mass object will be set by playermanager at register
-    mass: MusicAssistant = None  # type: ignore[assignment]
     _attr_is_group: bool = False
     _attr_group_childs: List[str] = []
     _attr_name: str = ""
@@ -59,7 +59,11 @@ class Player(ABC):
     _attr_max_sample_rate: int = 96000
     _attr_active_queue_id: str = ""
     _attr_use_multi_stream: bool = False
-    _attr_group_parent: List[str] = []  # will be set by player manager
+    # below objects will be set by playermanager at register/update
+    mass: MusicAssistant = None  # type: ignore[assignment]
+    _group_parents: List[str] = []  # will be set by player manager
+    _last_elapsed_time_received: float = 0
+    _prev_state: dict = {}
 
     @property
     def name(self) -> bool:
@@ -87,8 +91,14 @@ class Player(ABC):
         return self._attr_elapsed_time
 
     @property
+    def corrected_elapsed_time(self) -> int:
+        """Return corrected elapsed time of current playing media in seconds."""
+        return self._attr_elapsed_time + (time() - self._last_elapsed_time_received)
+
+    @property
     def current_url(self) -> str:
         """Return URL that is currently loaded in the player."""
+        return self._attr_current_url
 
     @property
     def state(self) -> PlayerState:
@@ -186,49 +196,85 @@ class Player(ABC):
         """Toggle power on player."""
         await self.power(not self.powered)
 
+    def on_update_state(self) -> None:
+        """Call when player state is about to be updated in the player manager."""
+        # this is called from `update_state` to apply some additional custom logic
+
+    def on_child_update(self, player_id: str, changed_keys: set) -> None:
+        """Call when one of the child players of a playergroup updates."""
+        self.update_state(skip_forward=True)
+
+    def on_parent_update(self, player_id: str, changed_keys: set) -> None:
+        """Call when one the parent player of a grouped player updates."""
+        self.update_state(skip_forward=True)
+
     # DO NOT OVERRIDE BELOW
 
-    def update_state(self) -> None:
+    def update_state(self, skip_forward: bool = False) -> None:
         """Update current player state in the player manager."""
         if self.mass is None or self.mass.closed:
             # guard
             return
-        self._attr_group_childs = self.get_group_parents()
+        self.on_update_state()
+        self._group_parents = self._get_group_parents()
         # determine active queue for player
-        queue_id = self.player_id
-        for state in [PlayerState.PLAYING, PlayerState.PAUSED]:
-            for player_id in self._attr_group_childs:
-                if player := self.mass.players.get_player(player_id):
-                    if player.state == state:
-                        queue_id = player_id
-                        break
-        self._attr_active_queue_id = queue_id
+        self._attr_active_queue_id = self._get_active_queue_id()
         # basic throttle: do not send state changed events if player did not change
-        prev_state = getattr(self, "_prev_state", None)
         cur_state = self.to_dict()
-        if prev_state == cur_state:
-            return
-        setattr(self, "_prev_state", cur_state)
-        self.mass.signal_event(EventType.PLAYER_CHANGED, self)
+        changed_keys = get_changed_keys(self._prev_state, cur_state)
+
+        if "elapsed_time" in changed_keys:
+            self._last_elapsed_time_received = time()
+        elif "state" in changed_keys and self.state == PlayerState.PLAYING:
+            self._attr_elapsed_time = 0
+            self._last_elapsed_time_received = time()
+
+        # always update the playerqueue
         self.mass.players.get_player_queue(self.player_id).on_player_update()
+
+        if len(changed_keys) == 0 or changed_keys == {"elapsed_time"}:
+            return
+
+        self._prev_state = cur_state
+        self.mass.signal_event(EventType.PLAYER_CHANGED, self)
+
+        if skip_forward:
+            return
         if self.is_group:
             # update group player childs when parent updates
             for child_player_id in self.group_childs:
                 if player := self.mass.players.get_player(child_player_id):
-                    self.mass.create_task(player.update_state)
-        else:
-            # update group player when child updates
-            for group_player_id in self._attr_group_childs:
-                if player := self.mass.players.get_player(group_player_id):
-                    self.mass.create_task(player.update_state)
+                    self.mass.create_task(
+                        player.on_parent_update, self.player_id, changed_keys
+                    )
+            return
+        # update group player when child updates
+        for group_player_id in self._group_parents:
+            if player := self.mass.players.get_player(group_player_id):
+                self.mass.create_task(
+                    player.on_child_update, self.player_id, changed_keys
+                )
 
-    def get_group_parents(self) -> List[str]:
+    def _get_group_parents(self) -> List[str]:
         """Get any/all group player id's this player belongs to."""
         return [
             x.player_id
             for x in self.mass.players
             if x.is_group and self.player_id in x.group_childs
         ]
+
+    def _get_active_queue_id(self) -> PlayerQueue:
+        """Return the currently active (playing) queue for this (grouped) player."""
+        for player_id in self._group_parents:
+            player = self.mass.players.get_player(player_id)
+            if not player or not player.powered:
+                continue
+            queue = self.mass.players.get_player_queue(player_id)
+            if not queue or not queue.active:
+                continue
+            # match found!
+            return queue.queue_id
+        return self.player_id
 
     def to_dict(self) -> Dict[str, Any]:
         """Export object to dict."""
@@ -241,7 +287,7 @@ class Player(ABC):
             "available": self.available,
             "is_group": self.is_group,
             "group_childs": self.group_childs,
-            "group_parents": self._attr_group_childs,
+            "group_parents": self._group_parents,
             "volume_level": int(self.volume_level),
             "device_info": self.device_info.to_dict(),
             "active_queue": self.active_queue.queue_id,
@@ -296,3 +342,15 @@ class PlayerGroup(Player):
             for x in self.mass.players
             if x.player_id in self.group_childs and x.powered or not only_powered
         ]
+
+    def on_child_update(self, player_id: str, changed_keys: set) -> None:
+        """Call when one of the child players of a playergroup updates."""
+        # convenience helper:
+        # power off group player if last child player turns off
+        powered_childs = set()
+        for child_id in self._attr_group_childs:
+            if player := self.mass.players.get_player(child_id):
+                if player.powered:
+                    powered_childs.add(child_id)
+        if self.powered and len(powered_childs) == 0:
+            self.mass.create_task(self.power(False))

@@ -89,10 +89,10 @@ if args.musicdir:
 class TestPlayer(Player):
     """Demonstatration player implementation."""
 
-    def __init__(self):
+    def __init__(self, player_id: str):
         """Init."""
-        self.player_id = "test"
-        self._attr_name = "Test player"
+        self.player_id = player_id
+        self._attr_name = player_id
         self._attr_powered = True
         self._attr_elapsed_time = 0
         self._attr_current_url = ""
@@ -163,13 +163,15 @@ async def main():
         playlists = await mass.music.playlists.library()
         print(f"Got {len(playlists)} playlists in library")
         # register a player
-        test_player = TestPlayer()
-        await mass.players.register_player(test_player)
+        test_player1 = TestPlayer("test1")
+        test_player2 = TestPlayer("test2")
+        await mass.players.register_player(test_player1)
+        await mass.players.register_player(test_player2)
         # try to play some playlist
-        await test_player.active_queue.set_crossfade_duration(10)
-        await test_player.active_queue.set_shuffle_enabled(True)
+        await test_player1.active_queue.set_crossfade_duration(10)
+        await test_player1.active_queue.set_shuffle_enabled(True)
         if len(playlists) > 0:
-            await test_player.active_queue.play_media(playlists[0].uri)
+            await test_player1.active_queue.play_media(playlists[0].uri)
 
         await asyncio.sleep(3600)
 
