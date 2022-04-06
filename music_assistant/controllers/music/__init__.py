@@ -88,7 +88,9 @@ class MusicController:
             provider.logger = self.logger.getChild(provider.id)
             await provider.setup()
         except Exception as err:  # pylint: disable=broad-except
-            raise SetupFailedError(f"Setup failed of provider {provider.id}") from err
+            raise SetupFailedError(
+                f"Setup failed of provider {provider.id}: {str(err)}"
+            ) from err
         else:
             self._providers[provider.id] = provider
             self.mass.signal_event(EventType.PROVIDER_REGISTERED, provider)
