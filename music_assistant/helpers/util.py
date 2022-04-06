@@ -66,14 +66,18 @@ def create_task(
     return loop.create_task(executor_wrapper(target, *args, **kwargs))
 
 
-def run_periodic(period):
+def run_periodic(delay: float, later: bool = False):
     """Run a coroutine at interval."""
 
     def scheduler(fcn):
         async def wrapper(*args, **kwargs):
             while True:
-                asyncio.create_task(fcn(*args, **kwargs))
-                await asyncio.sleep(period)
+                if later:
+                    await asyncio.sleep(delay)
+                    await fcn(*args, **kwargs)
+                else:
+                    await fcn(*args, **kwargs)
+                    await asyncio.sleep(delay)
 
         return wrapper
 
