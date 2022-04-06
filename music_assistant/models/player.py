@@ -47,10 +47,10 @@ class Player(ABC):
     player_id: str
     _attr_is_group: bool = False
     _attr_group_childs: List[str] = []
-    _attr_name: str = None
+    _attr_name: str = ""
     _attr_powered: bool = False
     _attr_elapsed_time: int = 0
-    _attr_current_url: str = None
+    _attr_current_url: str = ""
     _attr_state: PlayerState = PlayerState.IDLE
     _attr_available: bool = True
     _attr_volume_level: int = 100
