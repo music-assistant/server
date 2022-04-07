@@ -615,8 +615,8 @@ class PlayerQueue:
         if db_row := await self.mass.database.get_row(
             "queue_settings", {"queue_id": self.queue_id}
         ):
-            self._shuffle_enabled = db_row["shuffle_enabled"]
-            self._repeat_enabled = db_row["repeat_enabled"]
+            self._shuffle_enabled = bool(db_row["shuffle_enabled"])
+            self._repeat_enabled = bool(db_row["repeat_enabled"])
             self._crossfade_duration = db_row["crossfade_duration"]
         if queue_cache := await self.mass.cache.get(f"queue_items.{self.queue_id}"):
             self._items = queue_cache["items"]
