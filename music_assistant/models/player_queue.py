@@ -90,7 +90,7 @@ class PlayerQueue:
         self._update_task: Task = None
         self._signal_next: bool = False
         self._last_player_update: int = 0
-        self._stream_url: Optional[str] = None
+        self._stream_url: str = self.mass.players.streams.get_stream_url(self.queue_id)
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
@@ -362,6 +362,10 @@ class PlayerQueue:
 
     async def play_index(self, index: Union[int, str]) -> None:
         """Play item at index (or item_id) X in queue."""
+        if self.player.use_multi_stream:
+            await self.mass.players.streams.stop_multi_client_queue_stream(
+                self.queue_id
+            )
         if not isinstance(index, int):
             index = self.index_by_id(index)
         if index is None:
@@ -370,13 +374,30 @@ class PlayerQueue:
             return
         self._current_index = index
         self._next_start_index = index
-
         # send stream url to player connected to this queue
-        if self.player.use_multi_stream and self.player.state == PlayerState.PLAYING:
-            await self.player.stop()
-            await asyncio.sleep(1)
         self._stream_url = self.mass.players.streams.get_stream_url(self.queue_id)
-        await self.player.play_url(self._stream_url)
+
+        if self.player.use_multi_stream:
+            # multi stream enabled, all child players should receive the same audio stream
+            # redirect command to all (powered) players
+            tasks = []
+            expected_clients = set()
+            for child_id in self.player.group_childs:
+                if child_player := self.mass.players.get_player(child_id):
+                    if child_player.powered:
+                        player_url = self.mass.players.streams.get_stream_url(
+                            self.queue_id, child_id
+                        )
+                        expected_clients.add(child_id)
+                        tasks.append(child_player.play_url(player_url))
+                        tasks.append(child_player.pause())
+            await self.mass.players.streams.start_multi_client_queue_stream(
+                self.queue_id, expected_clients
+            )
+            await asyncio.gather(*tasks)
+        else:
+            # regular (single player) request
+            await self.player.play_url(self._stream_url)
 
     async def move_item(self, queue_item_id: str, pos_shift: int = 1) -> None:
         """
@@ -532,7 +553,7 @@ class PlayerQueue:
         start_from_index = self._next_start_index
         try:
             next_item = self._items[start_from_index]
-        except IndexError as err:
+        except (IndexError, TypeError) as err:
             raise QueueEmpty() from err
         try:
             return await get_stream_details(self.mass, next_item, self.queue_id)

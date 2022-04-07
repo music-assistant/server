@@ -274,11 +274,14 @@ class Player(ABC):
             player = self.mass.players.get_player(player_id)
             if not player or not player.powered:
                 continue
+            # if player.state not in [PlayerState.PLAYING, PlayerState.PAUSED]:
+            #     continue
             queue = self.mass.players.get_player_queue(player_id)
             if not queue or not queue.active:
                 continue
-            # match found!
-            return queue.queue_id
+            if queue.queue_id in player.current_url:
+                # match found!
+                return queue.queue_id
         return self.player_id
 
     def to_dict(self) -> Dict[str, Any]:
