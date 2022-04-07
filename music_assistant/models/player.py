@@ -61,7 +61,7 @@ class Player(ABC):
     _attr_use_multi_stream: bool = False
     # below objects will be set by playermanager at register/update
     mass: MusicAssistant = None  # type: ignore[assignment]
-    _group_parents: List[str] = []  # will be set by player manager
+    _attr_group_parents: List[str] = []  # will be set by player manager
     _last_elapsed_time_received: float = 0
     _prev_state: dict = {}
 
@@ -79,6 +79,11 @@ class Player(ABC):
     def group_childs(self) -> List[str]:
         """Return list of child player id's of PlayerGroup (if player is group)."""
         return self._attr_group_childs
+
+    @property
+    def group_parents(self) -> List[str]:
+        """Return all/any group player id's this player belongs to."""
+        return self._attr_group_parents
 
     @property
     def powered(self) -> bool:
@@ -205,7 +210,7 @@ class Player(ABC):
         self.update_state(skip_forward=True)
 
     def on_parent_update(self, player_id: str, changed_keys: set) -> None:
-        """Call when one the parent player of a grouped player updates."""
+        """Call when (one of) the parent player(s) of a grouped player updates."""
         self.update_state(skip_forward=True)
 
     # DO NOT OVERRIDE BELOW
@@ -216,7 +221,7 @@ class Player(ABC):
             # guard
             return
         self.on_update_state()
-        self._group_parents = self._get_group_parents()
+        self._attr_group_parents = self._get_attr_group_parents()
         # determine active queue for player
         self._attr_active_queue_id = self._get_active_queue_id()
         # basic throttle: do not send state changed events if player did not change
@@ -249,13 +254,13 @@ class Player(ABC):
                     )
             return
         # update group player when child updates
-        for group_player_id in self._group_parents:
+        for group_player_id in self._attr_group_parents:
             if player := self.mass.players.get_player(group_player_id):
                 self.mass.create_task(
                     player.on_child_update, self.player_id, changed_keys
                 )
 
-    def _get_group_parents(self) -> List[str]:
+    def _get_attr_group_parents(self) -> List[str]:
         """Get any/all group player id's this player belongs to."""
         return [
             x.player_id
@@ -265,7 +270,7 @@ class Player(ABC):
 
     def _get_active_queue_id(self) -> PlayerQueue:
         """Return the currently active (playing) queue for this (grouped) player."""
-        for player_id in self._group_parents:
+        for player_id in self._attr_group_parents:
             player = self.mass.players.get_player(player_id)
             if not player or not player.powered:
                 continue
@@ -287,7 +292,7 @@ class Player(ABC):
             "available": self.available,
             "is_group": self.is_group,
             "group_childs": self.group_childs,
-            "group_parents": self._group_parents,
+            "group_parents": self._attr_group_parents,
             "volume_level": int(self.volume_level),
             "device_info": self.device_info.to_dict(),
             "active_queue": self.active_queue.queue_id,
@@ -345,6 +350,7 @@ class PlayerGroup(Player):
 
     def on_child_update(self, player_id: str, changed_keys: set) -> None:
         """Call when one of the child players of a playergroup updates."""
+        super().on_child_update(player_id, changed_keys)
         if "powered" in changed_keys:
             # convenience helper:
             # power off group player if last child player turns off
