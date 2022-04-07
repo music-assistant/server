@@ -42,6 +42,7 @@ class QueueItem(DataClassDictMixin):
     item_id: str = ""
     sort_index: int = 0
     streamdetails: Optional[StreamDetails] = None
+    media_type: MediaType = MediaType.UNKNOWN
     is_media_item: bool = False
 
     def __post_init__(self):
@@ -58,6 +59,7 @@ class QueueItem(DataClassDictMixin):
             uri=media_item.uri,
             name=media_item.name,
             duration=media_item.duration,
+            media_type=media_item.media_type,
             is_media_item=True,
         )
 

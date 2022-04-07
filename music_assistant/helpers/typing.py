@@ -11,7 +11,8 @@ if TYPE_CHECKING:
         MusicAssistant,
     )
     from music_assistant.models.media_items import MediaType
-    from music_assistant.models.player import Player, PlayerQueue, QueueItem
+    from music_assistant.models.player import Player
+    from music_assistant.models.player_queue import PlayerQueue, QueueItem
 
 else:
     MusicAssistant = "MusicAssistant"

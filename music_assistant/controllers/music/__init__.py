@@ -157,6 +157,8 @@ class MusicController:
         self, uri: str, force_refresh: bool = False, lazy: bool = True
     ) -> MediaItemType:
         """Fetch MediaItem by uri."""
+        if uri.startswith("http://") or uri.startswith("https://"):
+            raise MusicAssistantError(f"Not a valid Music Assistant uri: {uri}")
         if "://" in uri:
             provider = uri.split("://")[0]
             item_id = uri.split("/")[-1]
@@ -165,6 +167,8 @@ class MusicController:
             # spotify new-style uri
             provider, media_type, item_id = uri.split(":")
             media_type = MediaType(media_type)
+        if media_type == MediaType.UNKNOWN:
+            raise MusicAssistantError(f"Not a valid Music Assistant uri: {uri}")
         return await self.get_item(
             item_id, provider, media_type, force_refresh=force_refresh, lazy=lazy
         )
