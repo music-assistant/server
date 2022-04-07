@@ -345,7 +345,7 @@ class PlayerGroup(Player):
 
     def on_child_update(self, player_id: str, changed_keys: set) -> None:
         """Call when one of the child players of a playergroup updates."""
-        if "power" in changed_keys:
+        if "powered" in changed_keys:
             # convenience helper:
             # power off group player if last child player turns off
             powered_childs = set()
