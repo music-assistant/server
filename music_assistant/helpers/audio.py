@@ -191,7 +191,7 @@ async def get_stream_details(
             provider="url",
             item_id=queue_item.item_id,
             path=queue_item.uri,
-            content_type=ContentType(queue_item.uri.split(".")[-1]),
+            content_type=ContentType.try_parse(queue_item.uri),
         )
     else:
         # always request the full db track as there might be other qualities available

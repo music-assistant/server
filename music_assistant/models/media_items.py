@@ -259,6 +259,21 @@ class ContentType(Enum):
     PCM_F32LE = "f32le"  # PCM 32-bit floating-point little-endian
     PCM_F64LE = "f64le"  # PCM 64-bit floating-point little-endian
 
+    @classmethod
+    def try_parse(
+        cls: "ContentType", string: str, fallback: str = "mp3"
+    ) -> "ContentType":
+        """Try to parse ContentType from (url)string."""
+        tempstr = string.lower()
+        if "." in tempstr:
+            tempstr = tempstr.split(".")[-1]
+        tempstr = tempstr.split("?")[0]
+        tempstr = tempstr.split("&")[0]
+        try:
+            return cls(tempstr)
+        except ValueError:
+            return cls(fallback)
+
     def is_pcm(self):
         """Return if contentype is PCM."""
         return self.name.startswith("PCM")
