@@ -20,6 +20,11 @@ class MediaType(Enum):
     RADIO = "radio"
     UNKNOWN = "unknown"
 
+    @classmethod
+    def _missing_(cls: "MediaType", value: str):
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
+
 
 class MediaQuality(IntEnum):
     """Enum for Media Quality."""
@@ -33,6 +38,11 @@ class MediaQuality(IntEnum):
     FLAC_LOSSLESS_HI_RES_3 = 9  # 176/192khz 24 bits HI-RES
     FLAC_LOSSLESS_HI_RES_4 = 10  # above 192khz 24 bits HI-RES
     UNKNOWN = 99
+
+    @classmethod
+    def _missing_(cls: "MediaQuality", value: str):
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
 
 
 @dataclass
@@ -293,8 +303,8 @@ class StreamDetails(DataClassDictMixin):
     seconds_played: int = 0
     gain_correct: float = 0
     loudness: Optional[float] = None
-    sample_rate: Optional[int] = None
-    bit_depth: Optional[int] = None
+    sample_rate: int = 44100
+    bit_depth: int = 16
     channels: int = 2
     media_type: MediaType = MediaType.TRACK
     queue_id: str = None
