@@ -345,12 +345,13 @@ class PlayerGroup(Player):
 
     def on_child_update(self, player_id: str, changed_keys: set) -> None:
         """Call when one of the child players of a playergroup updates."""
-        # convenience helper:
-        # power off group player if last child player turns off
-        powered_childs = set()
-        for child_id in self._attr_group_childs:
-            if player := self.mass.players.get_player(child_id):
-                if player.powered:
-                    powered_childs.add(child_id)
-        if self.powered and len(powered_childs) == 0:
-            self.mass.create_task(self.power(False))
+        if "power" in changed_keys:
+            # convenience helper:
+            # power off group player if last child player turns off
+            powered_childs = set()
+            for child_id in self._attr_group_childs:
+                if player := self.mass.players.get_player(child_id):
+                    if player.powered:
+                        powered_childs.add(child_id)
+            if self.powered and len(powered_childs) == 0:
+                self.mass.create_task(self.power(False))
