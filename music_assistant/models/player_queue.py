@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import random
-import time
 from asyncio import Task, TimerHandle
 from dataclasses import dataclass
 from enum import Enum
@@ -17,7 +16,7 @@ from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
 from music_assistant.models.media_items import ContentType, MediaType, StreamDetails
 
-from .player import Player, PlayerState
+from .player import Player, PlayerGroup, PlayerState
 
 if TYPE_CHECKING:
     from music_assistant.models.media_items import Radio, Track
@@ -89,7 +88,6 @@ class PlayerQueue:
         self._save_task: TimerHandle = None
         self._update_task: Task = None
         self._signal_next: bool = False
-        self._last_player_update: int = 0
         self._stream_url: str = self.mass.players.streams.get_stream_url(self.queue_id)
 
     async def setup(self) -> None:
@@ -98,20 +96,22 @@ class PlayerQueue:
         self.mass.signal_event(EventType.QUEUE_ADDED, self)
 
     @property
-    def player(self) -> Player:
+    def player(self) -> Player | PlayerGroup:
         """Return the player attached to this queue."""
         return self.mass.players.get_player(self.queue_id, include_unavailable=True)
 
     @property
     def active(self) -> bool:
         """Return bool if the queue is currenty active on the player."""
+        if self.player.use_multi_stream:
+            return self.queue_id in self.player.current_url
         return self._stream_url == self.player.current_url
 
     @property
-    def elapsed_time(self) -> int:
+    def elapsed_time(self) -> float:
         """Return elapsed time of current playing media in seconds."""
         if not self.active:
-            return self.player.elapsed_time
+            return self.player.corrected_elapsed_time
         return self._current_item_time
 
     @property
@@ -380,7 +380,7 @@ class PlayerQueue:
         if self.player.use_multi_stream:
             # multi stream enabled, all child players should receive the same audio stream
             # redirect command to all (powered) players
-            tasks = []
+            coros = []
             expected_clients = set()
             for child_id in self.player.group_childs:
                 if child_player := self.mass.players.get_player(child_id):
@@ -389,12 +389,11 @@ class PlayerQueue:
                             self.queue_id, child_id
                         )
                         expected_clients.add(child_id)
-                        tasks.append(child_player.play_url(player_url))
-                        tasks.append(child_player.pause())
+                        coros.append(child_player.play_url(player_url))
             await self.mass.players.streams.start_multi_client_queue_stream(
                 self.queue_id, expected_clients, ContentType.FLAC
             )
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*coros)
         else:
             # regular (single player) request
             await self.player.play_url(self._stream_url)
@@ -496,20 +495,18 @@ class PlayerQueue:
 
     def on_player_update(self) -> None:
         """Call when player updates."""
-        self._last_player_update = time.time()
         if self._last_state != self.player.state:
             self._last_state = self.player.state
             # handle case where stream stopped on purpose and we need to restart it
             if self.player.state != PlayerState.PLAYING and self._signal_next:
                 self._signal_next = False
-                self.mass.create_task(self.play())
+                self.mass.create_task(self.resume())
             # start updater task if needed
             if self.player.state == PlayerState.PLAYING:
                 if not self._update_task:
                     self._update_task = self.mass.create_task(self.__update_task())
-            else:
-                if self._update_task:
-                    self._update_task.cancel()
+            elif self._update_task:
+                self._update_task.cancel()
                 self._update_task = None
 
         if not self.update_state():
@@ -518,11 +515,16 @@ class PlayerQueue:
 
     def update_state(self) -> bool:
         """Update queue details, called when player updates."""
+        if self.player.active_queue.queue_id != self.queue_id:
+            return
         new_index = self._current_index
         track_time = self._current_item_time
         new_item_loaded = False
-        # if self.player.state == PlayerState.PLAYING and self.elapsed_time > 1:
-        if self.player.state == PlayerState.PLAYING:
+        # if self.player.state == PlayerState.PLAYING:
+        if (
+            self.player.state == PlayerState.PLAYING
+            and self.player.corrected_elapsed_time > 0
+        ):
             new_index, track_time = self.__get_queue_stream_index()
         # process new index
         if self._current_index != new_index:
@@ -597,10 +599,10 @@ class PlayerQueue:
         self._signal_next = True
 
     async def __update_task(self) -> None:
-        """Update player queue every interval."""
+        """Update player queue every second while playing."""
         while True:
-            self.update_state()
             await asyncio.sleep(1)
+            self.update_state()
 
     def __get_queue_stream_index(self) -> Tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""

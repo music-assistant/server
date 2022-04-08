@@ -1,6 +1,7 @@
 """Models and helpers for a player."""
 from __future__ import annotations
 
+import asyncio
 from abc import ABC
 from dataclasses import dataclass
 from enum import Enum, IntEnum
@@ -50,7 +51,7 @@ class Player(ABC):
     _attr_group_childs: List[str] = []
     _attr_name: str = ""
     _attr_powered: bool = False
-    _attr_elapsed_time: int = 0
+    _attr_elapsed_time: float = 0
     _attr_current_url: str = ""
     _attr_state: PlayerState = PlayerState.IDLE
     _attr_available: bool = True
@@ -91,12 +92,12 @@ class Player(ABC):
         return self._attr_powered
 
     @property
-    def elapsed_time(self) -> int:
+    def elapsed_time(self) -> float:
         """Return elapsed time of current playing media in seconds."""
         return self._attr_elapsed_time
 
     @property
-    def corrected_elapsed_time(self) -> int:
+    def corrected_elapsed_time(self) -> float:
         """Return corrected elapsed time of current playing media in seconds."""
         return self._attr_elapsed_time + (time() - self._last_elapsed_time_received)
 
@@ -150,7 +151,7 @@ class Player(ABC):
         at more or less the same time. The player's implementation will be responsible for
         synchronization of audio on child players (if possible), Music Assistant will only
         coordinate the start and makes sure that every child received the same audio chunk
-        within the same timespan. Multi stream is currently limited to 44100/16 only.
+        within the same timespan.
         """
         return self._attr_use_multi_stream
 
@@ -230,14 +231,11 @@ class Player(ABC):
 
         if "elapsed_time" in changed_keys:
             self._last_elapsed_time_received = time()
-        elif "state" in changed_keys and self.state == PlayerState.PLAYING:
-            self._attr_elapsed_time = 0
-            self._last_elapsed_time_received = time()
 
         # always update the playerqueue
         self.mass.players.get_player_queue(self.player_id).on_player_update()
 
-        if len(changed_keys) == 0 or changed_keys == {"elapsed_time"}:
+        if len(changed_keys) == 0 and changed_keys != {"corrected_elapsed_time"}:
             return
 
         self._prev_state = cur_state
@@ -290,7 +288,8 @@ class Player(ABC):
             "player_id": self.player_id,
             "name": self.name,
             "powered": self.powered,
-            "elapsed_time": self.elapsed_time,
+            "elapsed_time": int(self.elapsed_time),
+            "corrected_elapsed_time": int(self.corrected_elapsed_time),
             "state": self.state.value,
             "available": self.available,
             "is_group": self.is_group,
@@ -307,7 +306,7 @@ class PlayerGroup(Player):
 
     is_group: bool = True
     _attr_group_childs: List[str] = []
-    _attr_support_join_control: bool = True
+    _correct_progress = set()
 
     @property
     def volume_level(self) -> int:
@@ -318,12 +317,86 @@ class PlayerGroup(Player):
         # may be overridden if implementation provides this natively
         group_volume = 0
         active_players = 0
-        for child_player in self._get_players(True):
+        for child_player in self._get_child_players(True):
             group_volume += child_player.volume_level
             active_players += 1
         if active_players:
             group_volume = group_volume / active_players
         return int(group_volume)
+
+    @property
+    def corrected_elapsed_time(self) -> float:
+        """Return the corrected/precise elsapsed time of the grouped player."""
+        if not self.use_multi_stream:
+            return super().corrected_elapsed_time
+        # calculate from group childs
+        for child_player in self._get_child_players(True):
+            if not child_player.current_url:
+                continue
+            if self.player_id not in child_player.current_url:
+                continue
+            # if child_player.state not in [PlayerState.PLAYING, PlayerState.PAUSED]:
+            #     continue
+            return child_player.corrected_elapsed_time
+        return 0
+
+    @property
+    def state(self) -> PlayerState:
+        """Return the state of the grouped player."""
+        if not self.use_multi_stream:
+            return super().state
+        # calculate from group childs
+        for child_player in self._get_child_players(True):
+            if not child_player.current_url:
+                continue
+            if self.player_id not in child_player.current_url:
+                continue
+            if child_player.state not in [PlayerState.PLAYING, PlayerState.PAUSED]:
+                continue
+            return child_player.state
+        return super().state
+
+    @property
+    def current_url(self) -> str:
+        """Return the current_url of the grouped player."""
+        if not self.use_multi_stream:
+            return super().current_url
+        # calculate from group childs
+        for child_player in self._get_child_players(True):
+            if not child_player.current_url:
+                continue
+            if self.player_id not in child_player.current_url:
+                continue
+            return child_player.current_url
+        return super().current_url
+
+    async def stop(self) -> None:
+        """Send STOP command to player."""
+        if not self.use_multi_stream:
+            return await super().stop()
+        # redirect command to all child players
+        await asyncio.gather(*[x.stop() for x in self._get_child_players(True)])
+
+    async def play(self) -> None:
+        """Send PLAY/UNPAUSE command to player."""
+        if not self.use_multi_stream:
+            return await super().play()
+        # redirect command to all child players
+        await asyncio.gather(*[x.play() for x in self._get_child_players(True)])
+
+    async def pause(self) -> None:
+        """Send PAUSE command to player."""
+        if not self.use_multi_stream:
+            return await super().pause()
+        # redirect command to all child players
+        await asyncio.gather(*[x.pause() for x in self._get_child_players(True)])
+
+    async def power(self, powered: bool) -> None:
+        """Send POWER command to player."""
+        if not self.use_multi_stream:
+            return await super().power(powered)
+        # redirect command to all child players
+        await asyncio.gather(*[x.power(powered) for x in self._get_child_players(True)])
 
     async def volume_set(self, volume_level: int) -> None:
         """Send volume level (0..100) command to player."""
@@ -336,24 +409,32 @@ class PlayerGroup(Player):
             volume_dif_percent = 1 + (new_volume / 100)
         else:
             volume_dif_percent = volume_dif / cur_volume
-        for child_player in self._get_players(True):
+        for child_player in self._get_child_players(True):
             cur_child_volume = child_player.volume_level
             new_child_volume = cur_child_volume + (
                 cur_child_volume * volume_dif_percent
             )
             await child_player.volume_set(new_child_volume)
 
-    def _get_players(self, only_powered: bool = False) -> List[Player]:
+    def _get_child_players(
+        self, only_powered: bool = False, only_playing: bool = False
+    ) -> List[Player]:
         """Get players attached to this group."""
-        return [
-            x
-            for x in self.mass.players
-            if x.player_id in self.group_childs and x.powered or not only_powered
-        ]
+        if not self.mass:
+            return []
+        child_players = []
+        for child_id in self.group_childs:
+            if child_player := self.mass.players.get_player(child_id):
+                if not (not only_powered or child_player.powered):
+                    continue
+                if not (not only_playing or child_player.state == PlayerState.PLAYING):
+                    continue
+                child_players.append(child_player)
+        return child_players
 
     def on_child_update(self, player_id: str, changed_keys: set) -> None:
         """Call when one of the child players of a playergroup updates."""
-        super().on_child_update(player_id, changed_keys)
+        self.update_state(True)
         if "powered" in changed_keys:
             # convenience helper:
             # power off group player if last child player turns off

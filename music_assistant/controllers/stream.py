@@ -19,7 +19,7 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_ip
-from music_assistant.models.errors import MediaNotFoundError
+from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.media_items import ContentType
 from music_assistant.models.player_queue import PlayerQueue
 
@@ -161,18 +161,24 @@ class StreamController:
         await self.subscribe_client(queue_id, player_id)
         try:
             while True:
-                audio_chunk = await self._client_queues[queue_id][player_id].get()
-                await resp.write(audio_chunk)
-                self._client_queues[queue_id][player_id].task_done()
-                if audio_chunk == b"":
-                    # last chunk
+                client_queue = self._client_queues.get(queue_id).get(player_id)
+                if not client_queue:
                     break
+                audio_chunk = await client_queue.get()
+                if audio_chunk == b"":
+                    # eof
+                    break
+                await resp.write(audio_chunk)
+                client_queue.task_done()
         finally:
             await self.unsubscribe_client(queue_id, player_id)
         return resp
 
     async def subscribe_client(self, queue_id: str, player_id: str) -> None:
         """Subscribe client to queue stream."""
+        if queue_id not in self._stream_tasks:
+            raise MusicAssistantError(f"No Queue stream available for {queue_id}")
+
         if queue_id not in self._subscribers:
             self._subscribers[queue_id] = set()
         self._subscribers[queue_id].add(player_id)
@@ -188,7 +194,7 @@ class StreamController:
         if player_id in self._subscribers[queue_id]:
             self._subscribers[queue_id].remove(player_id)
 
-        self._client_queues.get(queue_id, {}).pop(player_id, None)
+        self.__cleanup_client_queue(queue_id, player_id)
         self.logger.debug(
             "Unsubscribed player %s from multi queue stream %s", player_id, queue_id
         )
@@ -216,25 +222,6 @@ class StreamController:
         self._stream_tasks[queue_id] = asyncio.create_task(
             self.__multi_client_queue_stream_runner(queue_id, output_fmt)
         )
-
-        async def unpause_synced_start():
-            # unpause if we got all clients (or timeout) for (more or less) synced start
-            expected_clients = len(self._client_queues[queue_id])
-            time_started = self._time_started[queue_id]
-            while True:
-                await asyncio.sleep(0.1)
-                if (len(self._subscribers) >= expected_clients) or (
-                    time() - time_started
-                ) > 5:
-                    await asyncio.gather(
-                        *[
-                            self.mass.players.get_player(client_id).play()
-                            for client_id in self._subscribers.get(queue_id, {})
-                        ]
-                    )
-                    break
-
-        self.mass.create_task(unpause_synced_start)
 
     async def stop_multi_client_queue_stream(self, queue_id: str) -> None:
         """Signal a running queue stream task and its listeners to stop."""
@@ -265,14 +252,6 @@ class StreamController:
         """Distribute audio chunks over connected clients in a multi client queue stream."""
         queue = self.mass.players.get_player_queue(queue_id)
 
-        def cleanup_client_queue(player_id: str):
-            if client_queue := self._client_queues[queue_id].get(player_id, None):
-                self.logger.debug("cleaning up child queue %s", player_id)
-                for _ in range(client_queue.qsize()):
-                    client_queue.get_nowait()
-                    client_queue.task_done()
-                client_queue.put_nowait(b"")
-
         start_streamdetails = await queue.queue_stream_prepare()
         sox_args = await get_sox_args_for_pcm_stream(
             start_streamdetails.sample_rate,
@@ -288,7 +267,7 @@ class StreamController:
             async with AsyncProcess(sox_args, True) as sox_proc:
 
                 async def writer():
-                    # task that sends the raw pcm audio to the sox/ffmpeg process
+                    """Task that sends the raw pcm audio to the sox/ffmpeg process."""
                     async for audio_chunk in self._get_queue_stream(
                         queue,
                         sample_rate=start_streamdetails.sample_rate,
@@ -302,19 +281,19 @@ class StreamController:
                     sox_proc.write_eof()
 
                 async def reader():
-                    # read bytes from final output
+                    """Read bytes from final output and put chunk on child queues."""
                     chunks_sent = 0
-                    chunksize = 32000 if output_fmt == ContentType.MP3 else 90000
-                    async for chunk in sox_proc.iterate_chunks(chunksize):
+                    async for chunk in sox_proc.iterate_chunks(256000):
                         chunks_sent += 1
                         coros = []
                         for player_id in list(self._client_queues[queue_id].keys()):
                             if (
-                                chunks_sent >= 20
+                                self._client_queues[queue_id][player_id].full()
+                                and chunks_sent >= 10
                                 and player_id not in self._subscribers[queue_id]
                             ):
-                                # assume client did not connect or got disconnected somehow
-                                cleanup_client_queue(player_id)
+                                # assume client did not connect at all or got disconnected somehow
+                                self.__cleanup_client_queue(queue_id, player_id)
                                 self._client_queues[queue_id].pop(player_id, None)
                             else:
                                 coros.append(
@@ -322,19 +301,33 @@ class StreamController:
                                 )
                         await asyncio.gather(*coros)
 
+                # launch the reader and writer
                 await asyncio.gather(*[writer(), reader()])
-            # send empty chunk to inform EOF
-            await asyncio.gather(
-                *[cq.put(b"") for cq in self._client_queues[queue_id].values()]
-            )
+                # wait for all queues to consume their data
+                await asyncio.gather(
+                    *[cq.join() for cq in self._client_queues[queue_id].values()]
+                )
+                # send empty chunk to inform EOF
+                await asyncio.gather(
+                    *[cq.put(b"") for cq in self._client_queues[queue_id].values()]
+                )
 
         finally:
+            self.logger.debug("Multi client queue stream %s finished", queue.queue_id)
             # cleanup
             self._stream_tasks.pop(queue_id, None)
             for player_id in list(self._client_queues[queue_id].keys()):
-                cleanup_client_queue(player_id)
+                self.__cleanup_client_queue(queue_id, player_id)
 
             self.logger.debug("Multi client queue stream %s ended", queue.queue_id)
+
+    def __cleanup_client_queue(self, queue_id: str, player_id: str):
+        """Cleanup a client queue after it completes/disconnects."""
+        if client_queue := self._client_queues.get(queue_id, {}).pop(player_id, None):
+            for _ in range(client_queue.qsize()):
+                client_queue.get_nowait()
+                client_queue.task_done()
+            client_queue.put_nowait(b"")
 
     async def _get_queue_stream(
         self,
@@ -348,7 +341,6 @@ class StreamController:
         last_fadeout_data = b""
         queue_index = None
         track_count = 0
-        start_timestamp = time()
 
         pcm_fmt = ContentType.from_bit_depth(bit_depth)
         self.logger.info(
@@ -360,6 +352,7 @@ class StreamController:
 
         # stream queue tracks one by one
         while True:
+            start_timestamp = time()
             # get the (next) track in queue
             track_count += 1
             if track_count == 1:
@@ -519,11 +512,12 @@ class StreamController:
                     else:
                         prev_chunk = chunk
                     del chunk
-                # guard for clients buffering too much
+                # allow clients to only buffer max ~15 seconds ahead
                 seconds_streamed = bytes_written / sample_size
-                seconds_needed = int(time() - start_timestamp)
-                if (seconds_streamed - seconds_needed) >= 10:
-                    await asyncio.sleep(8)
+                seconds_needed = int(time() - start_timestamp) + 15
+                diff = seconds_streamed - seconds_needed
+                if diff:
+                    await asyncio.sleep(diff)
             # end of the track reached
             # update actual duration to the queue for more accurate now playing info
             accurate_duration = bytes_written / sample_size
