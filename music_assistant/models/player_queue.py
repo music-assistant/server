@@ -544,6 +544,8 @@ class PlayerQueue:
         # update vars and signal update on eventbus if needed
         prev_item_time = int(self._current_item_time)
         self._current_item_time = int(track_time)
+        if new_item_loaded:
+            self.mass.create_task(self._save_state())
         if new_item_loaded or abs(prev_item_time - self._current_item_time) >= 1:
             self.mass.signal_event(EventType.QUEUE_UPDATED, self)
             return True
