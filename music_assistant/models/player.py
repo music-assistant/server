@@ -5,7 +5,6 @@ import asyncio
 from abc import ABC
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from time import time
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from mashumaro import DataClassDictMixin
@@ -63,7 +62,6 @@ class Player(ABC):
     # below objects will be set by playermanager at register/update
     mass: MusicAssistant = None  # type: ignore[assignment]
     _attr_group_parents: List[str] = []  # will be set by player manager
-    _last_elapsed_time_received: float = 0
     _prev_state: dict = {}
 
     @property
@@ -94,12 +92,10 @@ class Player(ABC):
     @property
     def elapsed_time(self) -> float:
         """Return elapsed time of current playing media in seconds."""
+        # NOTE: Make sure to provide an accurate elapsed time otherwise the
+        # queue reporting of playing tracks will be wrong.
+        # this attribute will be checked every second when the queue is playing
         return self._attr_elapsed_time
-
-    @property
-    def corrected_elapsed_time(self) -> float:
-        """Return corrected elapsed time of current playing media in seconds."""
-        return self.elapsed_time + (time() - self._last_elapsed_time_received)
 
     @property
     def current_url(self) -> str:
@@ -226,11 +222,8 @@ class Player(ABC):
         # determine active queue for player
         self._attr_active_queue_id = self._get_active_queue_id()
         # basic throttle: do not send state changed events if player did not change
-        cur_state = self._get_compare_dict()
+        cur_state = self.to_dict()
         changed_keys = get_changed_keys(self._prev_state, cur_state)
-
-        if "elapsed_time" in changed_keys:
-            self._last_elapsed_time_received = time()
 
         # always update the playerqueue
         self.mass.players.get_player_queue(self.player_id).on_player_update()
@@ -266,14 +259,12 @@ class Player(ABC):
             if x.is_group and self.player_id in x.group_childs
         ]
 
-    def _get_active_queue_id(self) -> PlayerQueue:
-        """Return the currently active (playing) queue for this (grouped) player."""
+    def _get_active_queue_id(self) -> str:
+        """Return the currently active queue for this (grouped) player."""
         for player_id in self._attr_group_parents:
             player = self.mass.players.get_player(player_id)
             if not player or not player.powered:
                 continue
-            # if player.state not in [PlayerState.PLAYING, PlayerState.PAUSED]:
-            #     continue
             queue = self.mass.players.get_player_queue(player_id)
             if not queue or not queue.active:
                 continue
@@ -282,19 +273,13 @@ class Player(ABC):
                 return queue.queue_id
         return self.player_id
 
-    def _get_compare_dict(self) -> Dict[str, Any]:
-        """Create dict for quick compare actions."""
-        base = self.to_dict()
-        base["elapsed_time"] = self.elapsed_time
-        return base
-
     def to_dict(self) -> Dict[str, Any]:
         """Export object to dict."""
         return {
             "player_id": self.player_id,
             "name": self.name,
             "powered": self.powered,
-            "elapsed_time": self.corrected_elapsed_time,
+            "elapsed_time": self.elapsed_time,
             "state": self.state.value,
             "available": self.available,
             "is_group": self.is_group,
@@ -329,19 +314,19 @@ class PlayerGroup(Player):
         return int(group_volume)
 
     @property
-    def corrected_elapsed_time(self) -> float:
+    def elapsed_time(self) -> float:
         """Return the corrected/precise elsapsed time of the grouped player."""
         if not self.use_multi_stream:
-            return super().corrected_elapsed_time
+            return super().elapsed_time
         # calculate from group childs
         for child_player in self._get_child_players(True):
             if not child_player.current_url:
                 continue
             if self.player_id not in child_player.current_url:
                 continue
-            # if child_player.state not in [PlayerState.PLAYING, PlayerState.PAUSED]:
-            #     continue
-            return child_player.corrected_elapsed_time
+            if child_player.state not in [PlayerState.PLAYING, PlayerState.PAUSED]:
+                continue
+            return child_player.elapsed_time
         return 0
 
     @property
