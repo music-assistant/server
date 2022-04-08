@@ -90,7 +90,7 @@ class PlayerQueue:
         self._update_task: Task = None
         self._signal_next: bool = False
         self._last_player_update: int = 0
-        self._stream_url: str = self.mass.players.streams.get_stream_url(self.queue_id)
+        self._stream_url: str = self.mass.streams.get_stream_url(self.queue_id)
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
@@ -363,9 +363,7 @@ class PlayerQueue:
     async def play_index(self, index: Union[int, str]) -> None:
         """Play item at index (or item_id) X in queue."""
         if self.player.use_multi_stream:
-            await self.mass.players.streams.stop_multi_client_queue_stream(
-                self.queue_id
-            )
+            await self.mass.streams.stop_multi_client_queue_stream(self.queue_id)
         if not isinstance(index, int):
             index = self.index_by_id(index)
         if index is None:
@@ -375,7 +373,7 @@ class PlayerQueue:
         self._current_index = index
         self._next_start_index = index
         # send stream url to player connected to this queue
-        self._stream_url = self.mass.players.streams.get_stream_url(self.queue_id)
+        self._stream_url = self.mass.streams.get_stream_url(self.queue_id)
 
         if self.player.use_multi_stream:
             # multi stream enabled, all child players should receive the same audio stream
@@ -385,13 +383,13 @@ class PlayerQueue:
             for child_id in self.player.group_childs:
                 if child_player := self.mass.players.get_player(child_id):
                     if child_player.powered:
-                        player_url = self.mass.players.streams.get_stream_url(
+                        player_url = self.mass.streams.get_stream_url(
                             self.queue_id, child_id
                         )
                         expected_clients.add(child_id)
                         tasks.append(child_player.play_url(player_url))
                         tasks.append(child_player.pause())
-            await self.mass.players.streams.start_multi_client_queue_stream(
+            await self.mass.streams.start_multi_client_queue_stream(
                 self.queue_id, expected_clients, ContentType.FLAC
             )
             await asyncio.gather(*tasks)
