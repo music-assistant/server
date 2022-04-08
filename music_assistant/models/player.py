@@ -99,7 +99,7 @@ class Player(ABC):
     @property
     def corrected_elapsed_time(self) -> float:
         """Return corrected elapsed time of current playing media in seconds."""
-        return self._attr_elapsed_time + (time() - self._last_elapsed_time_received)
+        return self.elapsed_time + (time() - self._last_elapsed_time_received)
 
     @property
     def current_url(self) -> str:
@@ -226,7 +226,7 @@ class Player(ABC):
         # determine active queue for player
         self._attr_active_queue_id = self._get_active_queue_id()
         # basic throttle: do not send state changed events if player did not change
-        cur_state = self.to_dict()
+        cur_state = self._get_compare_dict()
         changed_keys = get_changed_keys(self._prev_state, cur_state)
 
         if "elapsed_time" in changed_keys:
@@ -235,7 +235,7 @@ class Player(ABC):
         # always update the playerqueue
         self.mass.players.get_player_queue(self.player_id).on_player_update()
 
-        if len(changed_keys) == 0 and changed_keys != {"corrected_elapsed_time"}:
+        if len(changed_keys) == 0:
             return
 
         self._prev_state = cur_state
@@ -282,14 +282,19 @@ class Player(ABC):
                 return queue.queue_id
         return self.player_id
 
+    def _get_compare_dict(self) -> Dict[str, Any]:
+        """Create dict for quick compare actions."""
+        base = self.to_dict()
+        base["elapsed_time"] = self.elapsed_time
+        return base
+
     def to_dict(self) -> Dict[str, Any]:
         """Export object to dict."""
         return {
             "player_id": self.player_id,
             "name": self.name,
             "powered": self.powered,
-            "elapsed_time": int(self.elapsed_time),
-            "corrected_elapsed_time": int(self.corrected_elapsed_time),
+            "elapsed_time": self.corrected_elapsed_time,
             "state": self.state.value,
             "available": self.available,
             "is_group": self.is_group,
