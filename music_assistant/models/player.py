@@ -304,9 +304,8 @@ class Player(ABC):
 class PlayerGroup(Player):
     """Convenience Model for a player group with some additional helper methods."""
 
-    is_group: bool = True
+    _attr_is_group: bool = True
     _attr_group_childs: List[str] = []
-    _correct_progress = set()
 
     @property
     def volume_level(self) -> int:
