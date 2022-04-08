@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Dict, Tuple, Union
 
 from music_assistant.constants import EventType
-from music_assistant.controllers.stream import StreamController
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.errors import AlreadyRegisteredError
 from music_assistant.models.player import Player, PlayerGroup
@@ -18,13 +17,12 @@ DB_TABLE = "queue_settings"
 class PlayerController:
     """Controller holding all logic to play music from MusicProviders to supported players."""
 
-    def __init__(self, mass: MusicAssistant, stream_port: int) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         self.mass = mass
         self.logger = mass.logger.getChild("players")
         self._players: Dict[str, PlayerType] = {}
         self._player_queues: Dict[str, PlayerQueue] = {}
-        self.streams = StreamController(mass, stream_port)
 
     async def setup(self) -> None:
         """Async initialize of module."""
@@ -38,7 +36,6 @@ class PlayerController:
                     volume_normalization_enabled BOOLEAN,
                     volume_normalization_target INTEGER)"""
             )
-        await self.streams.setup()
 
     @property
     def players(self) -> Tuple[PlayerType]:

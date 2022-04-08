@@ -15,6 +15,7 @@ from music_assistant.constants import EventType
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.stream import StreamController
 from music_assistant.helpers.cache import Cache
 from music_assistant.helpers.database import Database
 
@@ -52,7 +53,8 @@ class MusicAssistant:
         self.cache = Cache(self)
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
-        self.players = PlayerController(self, stream_port)
+        self.players = PlayerController(self)
+        self.streams = StreamController(self, stream_port)
         self._tracked_tasks: List[asyncio.Task] = []
         self.closed = False
 
@@ -71,6 +73,7 @@ class MusicAssistant:
         await self.music.setup()
         await self.metadata.setup()
         await self.players.setup()
+        await self.streams.setup()
         self.create_task(self.__process_jobs())
 
     async def stop(self) -> None:
