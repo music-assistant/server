@@ -15,7 +15,7 @@ from music_assistant.constants import EventType
 from music_assistant.helpers.audio import get_stream_details
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
-from music_assistant.models.media_items import MediaType, StreamDetails
+from music_assistant.models.media_items import ContentType, MediaType, StreamDetails
 
 from .player import Player, PlayerState
 
@@ -392,7 +392,7 @@ class PlayerQueue:
                         tasks.append(child_player.play_url(player_url))
                         tasks.append(child_player.pause())
             await self.mass.players.streams.start_multi_client_queue_stream(
-                self.queue_id, expected_clients
+                self.queue_id, expected_clients, ContentType.FLAC
             )
             await asyncio.gather(*tasks)
         else:
