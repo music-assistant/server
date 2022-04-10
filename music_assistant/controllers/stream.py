@@ -7,6 +7,7 @@ from time import time
 from typing import AsyncGenerator, Dict, Optional, Set
 
 from aiohttp import web
+
 from music_assistant.constants import EventType
 from music_assistant.helpers.audio import (
     check_audio_support,
@@ -153,7 +154,7 @@ class StreamController:
         resp = web.StreamResponse(
             status=200,
             reason="OK",
-            headers={"Content-Type": fmt},
+            headers={"Content-Type": f"audio/{fmt}"},
         )
         await resp.prepare(request)
 
