@@ -6,6 +6,8 @@ import os
 from typing import List, Optional, Tuple
 
 import aiofiles
+from tinytag import TinyTag
+
 from music_assistant.helpers.compare import compare_strings, get_compare_string
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.models.media_items import (
@@ -23,7 +25,6 @@ from music_assistant.models.media_items import (
     Track,
 )
 from music_assistant.models.provider import MusicProvider
-from tinytag import TinyTag
 
 
 def split_items(org_str: str) -> Tuple[str]:

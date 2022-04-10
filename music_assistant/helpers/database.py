@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from databases import Database as Db
 from databases import DatabaseURL
+
 from music_assistant.helpers.typing import MusicAssistant
 
 # pylint: disable=invalid-name

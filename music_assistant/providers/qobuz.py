@@ -9,6 +9,7 @@ from typing import List, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
+
 from music_assistant.constants import EventType
 from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-module
     get_app_var,

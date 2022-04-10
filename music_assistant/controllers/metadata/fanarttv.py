@@ -5,6 +5,7 @@ from typing import Dict
 
 import aiohttp
 from asyncio_throttle import Throttler
+
 from music_assistant.helpers.typing import MusicAssistant
 
 # TODO: add support for personal api keys ?

@@ -11,6 +11,7 @@ from typing import List, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
+
 from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name-in-module
     get_app_var,
 )

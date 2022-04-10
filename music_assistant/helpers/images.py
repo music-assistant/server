@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from io import BytesIO
 
+from PIL import Image
+
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.media_items import ItemMapping, MediaItemType, MediaType
-from PIL import Image
 
 
 async def create_thumbnail(mass: MusicAssistant, url, size: int = 150) -> bytes:
