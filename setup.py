@@ -14,7 +14,7 @@ PROJECT_URL = "https://music-assistant.github.io/"
 PROJECT_EMAIL = "marcelveldt@users.noreply.github.com"
 
 PROJECT_GITHUB_USERNAME = "music-assistant"
-PROJECT_GITHUB_REPOSITORY = "server"
+PROJECT_GITHUB_REPOSITORY = "music-assistant"
 
 PYPI_URL = f"https://pypi.python.org/pypi/{PROJECT_PACKAGE_NAME}"
 GITHUB_PATH = f"{PROJECT_GITHUB_USERNAME}/{PROJECT_GITHUB_REPOSITORY}"
@@ -51,11 +51,5 @@ setup(
     install_requires=REQUIREMENTS_FILE.read_text(encoding="utf-8"),
     python_requires=f">={PROJECT_REQ_PYTHON_VERSION}",
     test_suite="tests",
-    entry_points={
-        "console_scripts": [
-            "mass = music_assistant.__main__:main",
-            "musicassistant = music_assistant.__main__:main",
-        ]
-    },
     package_data={"music_assistant": PACKAGE_FILES},
 )
