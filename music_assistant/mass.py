@@ -12,7 +12,7 @@ from typing import Any, Callable, Coroutine, List, Optional, Tuple, Type, Union
 import aiohttp
 from databases import DatabaseURL
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
@@ -20,8 +20,10 @@ from music_assistant.controllers.stream import StreamController
 from music_assistant.helpers.cache import Cache
 from music_assistant.helpers.database import Database
 
-EventCallBackType = Callable[[EventType, Any], None]
-EventSubscriptionType = Tuple[EventCallBackType, Optional[Tuple[EventType]]]
+EventCallBackType = Callable[[MassEvent], None]
+EventSubscriptionType = Tuple[
+    EventCallBackType, Optional[Tuple[EventType]], Optional[Tuple[str]]
+]
 
 
 class MusicAssistant:
@@ -80,31 +82,31 @@ class MusicAssistant:
     async def stop(self) -> None:
         """Stop running the music assistant server."""
         self.logger.info("Stop called, cleaning up...")
+        await self.players.cleanup()
         # cancel all running tasks
         for task in self._tracked_tasks:
             task.cancel()
-        self.signal_event(EventType.SHUTDOWN)
+        self.signal_event(MassEvent(EventType.SHUTDOWN))
         self.closed = True
         if self.http_session and not self.http_session_provided:
             await self.http_session.close()
 
-    def signal_event(self, event_type: EventType, event_details: Any = None) -> None:
-        """
-        Signal (systemwide) event.
-
-            :param event_msg: the eventmessage to signal
-            :param event_details: optional details to send with the event.
-        """
+    def signal_event(self, event: MassEvent) -> None:
+        """Signal event to subscribers."""
         if self.closed:
             return
-        for cb_func, event_filter in self._listeners:
-            if event_filter is None or event_type in event_filter:
-                self.create_task(cb_func, event_type, event_details)
+        for cb_func, event_filter, id_filter in self._listeners:
+            if not (event_filter is None or event.type in event_filter):
+                continue
+            if not (id_filter is None or event.object_id in id_filter):
+                continue
+            self.create_task(cb_func, event)
 
     def subscribe(
         self,
         cb_func: EventCallBackType,
         event_filter: Union[EventType, Tuple[EventType], None] = None,
+        id_filter: Union[str, Tuple[str], None] = None,
     ) -> Callable:
         """
         Add callback to event listeners.
@@ -112,10 +114,13 @@ class MusicAssistant:
         Returns function to remove the listener.
             :param cb_func: callback function or coroutine
             :param event_filter: Optionally only listen for these events
+            :param id_filter: Optionally only listen for these id's (player_id, queue_id, uri)
         """
         if isinstance(event_filter, EventType):
             event_filter = (event_filter,)
-        listener = (cb_func, event_filter)
+        if isinstance(id_filter, str):
+            id_filter = (id_filter,)
+        listener = (cb_func, event_filter, id_filter)
         self._listeners.append(listener)
 
         def remove_listener():

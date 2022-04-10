@@ -10,7 +10,7 @@ from typing import List, Optional
 import aiohttp
 from asyncio_throttle import Throttler
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-module
     get_app_var,
 )
@@ -59,7 +59,9 @@ class QobuzProvider(MusicProvider):
             raise LoginFailed(f"Login failed for user {self._username}")
         # subscribe to stream events so we can report playback to Qobuz
         self.mass.subscribe(
-            self.on_stream_event, (EventType.STREAM_STARTED, EventType.STREAM_ENDED)
+            self.on_stream_event,
+            (EventType.STREAM_STARTED, EventType.STREAM_ENDED),
+            id_filter=self.id,
         )
 
     async def search(
@@ -355,7 +357,7 @@ class QobuzProvider(MusicProvider):
             details=streamdata,  # we need these details for reporting playback
         )
 
-    async def on_stream_event(self, msg, msg_details):
+    async def on_stream_event(self, event: MassEvent):
         """
         Received event from mass.
 
@@ -366,12 +368,12 @@ class QobuzProvider(MusicProvider):
         # TODO: need to figure out if the streamed track is purchased by user
         # https://www.qobuz.com/api.json/0.2/purchase/getUserPurchasesIds?limit=5000&user_id=xxxxxxx
         # {"albums":{"total":0,"items":[]},"tracks":{"total":0,"items":[]},"user":{"id":xxxx,"login":"xxxxx"}}
-        if msg == EventType.STREAM_STARTED and msg_details.provider == self.id:
+        if event.type == EventType.STREAM_STARTED:
             # report streaming started to qobuz
             device_id = self.__user_auth_info["user"]["device"]["id"]
             credential_id = self.__user_auth_info["user"]["credential"]["id"]
             user_id = self.__user_auth_info["user"]["id"]
-            format_id = msg_details.details["format_id"]
+            format_id = event.data.details["format_id"]
             timestamp = int(time.time())
             events = [
                 {
@@ -379,7 +381,7 @@ class QobuzProvider(MusicProvider):
                     "sample": False,
                     "intent": "stream",
                     "device_id": device_id,
-                    "track_id": str(msg_details.item_id),
+                    "track_id": str(event.data.item_id),
                     "purchase": False,
                     "date": timestamp,
                     "credential_id": credential_id,
@@ -389,13 +391,13 @@ class QobuzProvider(MusicProvider):
                 }
             ]
             await self._post_data("track/reportStreamingStart", data=events)
-        elif msg == EventType.STREAM_ENDED and msg_details.provider == self.id:
+        elif event.type == EventType.STREAM_ENDED:
             # report streaming ended to qobuz
             user_id = self.__user_auth_info["user"]["id"]
             params = {
                 "user_id": user_id,
-                "track_id": str(msg_details.item_id),
-                "duration": try_parse_int(msg_details.seconds_played),
+                "track_id": str(event.data.item_id),
+                "duration": try_parse_int(event.data.seconds_played),
             }
             await self._get_data("/track/reportStreamingEnd", params)
 

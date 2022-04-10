@@ -8,7 +8,7 @@ from typing import AsyncGenerator, Dict, Optional, Set
 
 from aiohttp import web
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
@@ -64,7 +64,7 @@ class StreamController:
         http_site = web.TCPSite(runner, host=None, port=self._port)
         await http_site.start()
 
-        async def on_shutdown_event(*args, **kwargs):
+        async def on_shutdown_event(*event: MassEvent):
             """Handle shutdown event."""
             await http_site.stop()
             await runner.cleanup()

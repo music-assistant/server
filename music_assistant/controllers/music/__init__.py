@@ -5,7 +5,7 @@ import asyncio
 import statistics
 from typing import Dict, List, Tuple
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.controllers.music.albums import AlbumsController
 from music_assistant.controllers.music.artists import ArtistsController
 from music_assistant.controllers.music.playlists import PlaylistController
@@ -94,7 +94,11 @@ class MusicController:
             ) from err
         else:
             self._providers[provider.id] = provider
-            self.mass.signal_event(EventType.PROVIDER_REGISTERED, provider)
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.PROVIDER_REGISTERED, object_id=provider.id, data=provider
+                )
+            )
             self.mass.create_task(self.run_provider_sync(provider.id))
 
     async def search(

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_changed_keys
 
@@ -199,10 +199,6 @@ class Player(ABC):
         """Toggle power on player."""
         await self.power(not self.powered)
 
-    def on_update_state(self) -> None:
-        """Call when player state is about to be updated in the player manager."""
-        # this is called from `update_state` to apply some additional custom logic
-
     def on_child_update(self, player_id: str, changed_keys: set) -> None:
         """Call when one of the child players of a playergroup updates."""
         self.update_state(skip_forward=True)
@@ -211,6 +207,9 @@ class Player(ABC):
         """Call when (one of) the parent player(s) of a grouped player updates."""
         self.update_state(skip_forward=True)
 
+    def on_remove(self) -> None:
+        """Call when player is about to be removed (cleaned up) from player manager."""
+
     # DO NOT OVERRIDE BELOW
 
     def update_state(self, skip_forward: bool = False) -> None:
@@ -218,7 +217,6 @@ class Player(ABC):
         if self.mass is None or self.mass.closed:
             # guard
             return
-        self.on_update_state()
         self._attr_group_parents = self._get_attr_group_parents()
         # determine active queue for player
         self._attr_active_queue_id = self._get_active_queue_id()
@@ -233,7 +231,10 @@ class Player(ABC):
             return
 
         self._prev_state = cur_state
-        self.mass.signal_event(EventType.PLAYER_CHANGED, self)
+        if changed_keys != {"elapsed_time"}:
+            self.mass.signal_event(
+                MassEvent(EventType.PLAYER_UPDATED, object_id=self.player_id, data=self)
+            )
 
         if skip_forward:
             return

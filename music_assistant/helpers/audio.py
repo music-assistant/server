@@ -9,7 +9,7 @@ from typing import AsyncGenerator, List, Optional, Tuple
 
 import aiofiles
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.typing import MusicAssistant, QueueItem
 from music_assistant.helpers.util import create_tempfile
@@ -419,7 +419,13 @@ async def get_media_stream(
 ) -> AsyncGenerator[Tuple[bool, bytes], None]:
     """Get the audio stream for the given streamdetails."""
 
-    mass.signal_event(EventType.STREAM_STARTED, streamdetails)
+    mass.signal_event(
+        MassEvent(
+            EventType.STREAM_STARTED,
+            object_id=streamdetails.provider,
+            data=streamdetails,
+        )
+    )
     args = await get_sox_args(streamdetails, output_format, resample)
     async with AsyncProcess(args) as sox_proc:
 
@@ -457,7 +463,13 @@ async def get_media_stream(
                 streamdetails.item_id, streamdetails.provider
             )
         finally:
-            mass.signal_event(EventType.STREAM_ENDED, streamdetails)
+            mass.signal_event(
+                MassEvent(
+                    EventType.STREAM_ENDED,
+                    object_id=streamdetails.provider,
+                    data=streamdetails,
+                )
+            )
             # send analyze job to background worker
             if streamdetails.loudness is None:
                 uri = f"{streamdetails.provider}://{streamdetails.media_type.value}/{streamdetails.item_id}"

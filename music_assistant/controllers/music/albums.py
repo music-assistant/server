@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import List
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.compare import compare_album, compare_strings
 from music_assistant.helpers.json import json_serializer
@@ -92,7 +92,9 @@ class AlbumsController(MediaControllerBase[Album]):
         # also fetch same album on all providers
         await self._match(db_item)
         db_item = await self.get_db_item(db_item.item_id)
-        self.mass.signal_event(EventType.ALBUM_ADDED, db_item)
+        self.mass.signal_event(
+            MassEvent(EventType.ALBUM_ADDED, object_id=db_item.uri, data=db_item)
+        )
         return db_item
 
     async def get_provider_album_tracks(

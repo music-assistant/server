@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from typing import List
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
@@ -68,7 +68,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def add(self, item: Playlist) -> Playlist:
         """Add playlist to local db and return the new database item."""
         db_item = await self.add_db_item(item)
-        self.mass.signal_event(EventType.PLAYLIST_ADDED, db_item)
+        self.mass.signal_event(
+            MassEvent(EventType.PLAYLIST_ADDED, object_id=db_item.uri, data=db_item)
+        )
         return db_item
 
     async def add_playlist_tracks(

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import List
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.compare import (
     compare_artists,
     compare_strings,
@@ -50,7 +50,9 @@ class TracksController(MediaControllerBase[Track]):
         # also fetch same track on all providers (will also get other quality versions)
         await self._match(db_item)
         db_item = await self.get_db_item(db_item.item_id)
-        self.mass.signal_event(EventType.TRACK_ADDED, db_item)
+        self.mass.signal_event(
+            MassEvent(EventType.TRACK_ADDED, object_id=db_item.uri, data=db_item)
+        )
         return db_item
 
     async def versions(self, item_id: str, provider_id: str) -> List[Track]:

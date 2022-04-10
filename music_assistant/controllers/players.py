@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, Tuple, Union
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.errors import AlreadyRegisteredError
 from music_assistant.models.player import Player, PlayerGroup
@@ -36,6 +36,14 @@ class PlayerController:
                     volume_normalization_enabled BOOLEAN,
                     volume_normalization_target INTEGER)"""
             )
+
+    async def cleanup(self) -> None:
+        """Cleanup on exit."""
+        for player_id in set(self._players.keys()):
+            player = self._players.pop(player_id)
+            player.on_remove()
+        for queue_id in set(self._player_queues.keys()):
+            self._player_queues.pop(queue_id)
 
     @property
     def players(self) -> Tuple[PlayerType]:
@@ -92,4 +100,6 @@ class PlayerController:
             player_id,
             player.name,
         )
-        self.mass.signal_event(EventType.PLAYER_ADDED, player)
+        self.mass.signal_event(
+            MassEvent(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+        )

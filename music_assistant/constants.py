@@ -1,6 +1,8 @@
 """All constants for Music Assistant."""
 
+from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Optional
 
 
 class EventType(Enum):
@@ -8,7 +10,7 @@ class EventType(Enum):
 
     PLAYER_ADDED = "player added"
     PLAYER_REMOVED = "player removed"
-    PLAYER_CHANGED = "player changed"
+    PLAYER_UPDATED = "player updated"
     STREAM_STARTED = "streaming started"
     STREAM_ENDED = "streaming ended"
     CONFIG_CHANGED = "config changed"
@@ -24,6 +26,15 @@ class EventType(Enum):
     RADIO_ADDED = "radio added"
     TASK_UPDATED = "task updated"
     PROVIDER_REGISTERED = "PROVIDER_REGISTERED"
+
+
+@dataclass
+class MassEvent:
+    """Representation of an Event emitted in/by Music Assistant."""
+
+    type: EventType
+    object_id: Optional[str] = None  # player_id, queue_id or uri
+    data: Optional[Any] = None  # optional data (such as the object)
 
 
 # player attributes

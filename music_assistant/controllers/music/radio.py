@@ -1,7 +1,7 @@
 """Manage MediaItems of type Radio."""
 from __future__ import annotations
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
 from music_assistant.models.media_controller import MediaControllerBase
@@ -37,7 +37,9 @@ class RadioController(MediaControllerBase[Radio]):
     async def add(self, item: Radio) -> Radio:
         """Add radio to local db and return the new database item."""
         db_item = await self.add_db_item(item)
-        self.mass.signal_event(EventType.RADIO_ADDED, db_item)
+        self.mass.signal_event(
+            MassEvent(EventType.RADIO_ADDED, object_id=db_item.uri, data=db_item)
+        )
         return db_item
 
     async def add_db_item(self, radio: Radio) -> Radio:

@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.audio import get_stream_details
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
@@ -95,7 +95,9 @@ class PlayerQueue:
     async def setup(self) -> None:
         """Handle async setup of instance."""
         await self._restore_saved_state()
-        self.mass.signal_event(EventType.QUEUE_ADDED, self)
+        self.mass.signal_event(
+            MassEvent(EventType.QUEUE_ADDED, object_id=self.queue_id, data=self)
+        )
 
     @property
     def player(self) -> Player | PlayerGroup:
@@ -277,7 +279,11 @@ class PlayerQueue:
                 played_items = self.items[: self._current_index]
                 next_items = self.__shuffle_items(self.items[self._current_index + 1 :])
                 items = played_items + [self.current_item] + next_items
-                self.mass.signal_event(EventType.QUEUE_UPDATED, self)
+                self.mass.signal_event(
+                    MassEvent(
+                        EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self
+                    )
+                )
                 await self.update(items)
         elif self._shuffle_enabled and not enable_shuffle:
             # unshuffle
@@ -287,14 +293,20 @@ class PlayerQueue:
                 next_items = self.items[self._current_index + 1 :]
                 next_items.sort(key=lambda x: x.sort_index, reverse=False)
                 items = played_items + [self.current_item] + next_items
-                self.mass.signal_event(EventType.QUEUE_UPDATED, self)
+                self.mass.signal_event(
+                    MassEvent(
+                        EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self
+                    )
+                )
                 await self.update(items)
 
     async def set_repeat_enabled(self, enable_repeat: bool) -> None:
         """Set the repeat mode for this queue."""
         if self._repeat_enabled != enable_repeat:
             self._repeat_enabled = enable_repeat
-            self.mass.signal_event(EventType.QUEUE_UPDATED, self)
+            self.mass.signal_event(
+                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
+            )
             await self._save_state(False)
 
     async def set_crossfade_duration(self, duration: int) -> None:
@@ -302,14 +314,18 @@ class PlayerQueue:
         duration = max(duration, 10)
         if self._crossfade_duration != duration:
             self._crossfade_duration = duration
-            self.mass.signal_event(EventType.QUEUE_UPDATED, self)
+            self.mass.signal_event(
+                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
+            )
             await self._save_state(False)
 
     async def set_volume_normalization_enabled(self, enable: bool) -> None:
         """Set volume normalization."""
         if self._repeat_enabled != enable:
             self._repeat_enabled = enable
-            self.mass.signal_event(EventType.QUEUE_UPDATED, self)
+            self.mass.signal_event(
+                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
+            )
             await self._save_state(False)
 
     async def set_volume_normalization_target(self, target: int) -> None:
@@ -318,7 +334,9 @@ class PlayerQueue:
         target = max(target, -40)
         if self._volume_normalization_target != target:
             self._volume_normalization_target = target
-            self.mass.signal_event(EventType.QUEUE_UPDATED, self)
+            self.mass.signal_event(
+                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
+            )
             await self._save_state(False)
 
     async def stop(self) -> None:
@@ -427,7 +445,9 @@ class PlayerQueue:
         if self._shuffle_enabled and len(queue_items) > 5:
             queue_items = self.__shuffle_items(queue_items)
         self._items = queue_items
-        self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, self)
+        self.mass.signal_event(
+            MassEvent(EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self)
+        )
         await self.play_index(0)
         await self._save_state()
 
@@ -464,7 +484,9 @@ class PlayerQueue:
         if offset == 0:
             await self.play_index(insert_at_index)
 
-        self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, self)
+        self.mass.signal_event(
+            MassEvent(EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self)
+        )
         await self._save_state()
 
     async def append(self, queue_items: List[QueueItem]) -> None:
@@ -479,13 +501,17 @@ class PlayerQueue:
             await self.update(items)
             return
         self._items = self._items + queue_items
-        self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, self)
+        self.mass.signal_event(
+            MassEvent(EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self)
+        )
         await self._save_state()
 
     async def update(self, queue_items: List[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
         self._items = queue_items
-        self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, self)
+        self.mass.signal_event(
+            MassEvent(EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self)
+        )
         await self._save_state()
 
     async def clear(self) -> None:
@@ -518,7 +544,9 @@ class PlayerQueue:
 
         if not self.update_state():
             # fire event anyway when player updated.
-            self.mass.signal_event(EventType.QUEUE_UPDATED, self)
+            self.mass.signal_event(
+                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
+            )
 
     def update_state(self) -> bool:
         """Update queue details, called when player updates."""
@@ -556,7 +584,9 @@ class PlayerQueue:
             new_item_loaded
             or abs(prev_item_time - self._current_item_elapsed_time) >= 1
         ):
-            self.mass.signal_event(EventType.QUEUE_UPDATED, self)
+            self.mass.signal_event(
+                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
+            )
             return True
         return False
 

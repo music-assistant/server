@@ -4,7 +4,7 @@ import asyncio
 import itertools
 from typing import List
 
-from music_assistant.constants import EventType
+from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.compare import (
     compare_album,
@@ -88,7 +88,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         # also fetch same artist on all providers
         await self.match_artist(db_item)
         db_item = await self.get_db_item(db_item.item_id)
-        self.mass.signal_event(EventType.ARTIST_ADDED, db_item)
+        self.mass.signal_event(
+            MassEvent(EventType.ARTIST_ADDED, object_id=db_item.uri, data=db_item)
+        )
         return db_item
 
     async def match_artist(self, db_artist: Artist):
