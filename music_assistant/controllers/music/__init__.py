@@ -399,6 +399,9 @@ class MusicController:
                     db_item = await controller.get(
                         prov_item.item_id, prov_item.provider, details=prov_item
                     )
+                elif not db_item or not db_item.available:
+                    # use auto matching magic to find a substitute for missing item
+                    db_item = await controller.add(prov_item)
                 elif not db_item:
                     # for other mediatypes its enough to simply dump the item in the db
                     db_item = await controller.add_db_item(prov_item)
@@ -431,8 +434,12 @@ class MusicController:
                 db_track = await self.tracks.get_db_item_by_prov_id(
                     album_track.provider, album_track.item_id
                 )
-                if not db_track:
+                if not db_track or not db_track.available:
+                    # use auto matching magic to find a substitute for missing track
+                    db_track = await self.tracks.add(album_track)
+                elif not db_track:
                     db_track = await self.tracks.add_db_item(album_track)
+
                 # add track to album_tracks
                 await self.mass.music.albums.add_db_album_track(
                     db_album.item_id,
@@ -455,7 +462,10 @@ class MusicController:
                 db_track = await self.tracks.get_db_item_by_prov_id(
                     playlist_track.provider, playlist_track.item_id
                 )
-                if not db_track:
+                if not db_track or not db_track.available:
+                    # use auto matching magic to find a substitute for missing track
+                    db_track = await self.tracks.add(playlist_track)
+                elif not db_track:
                     db_track = await self.tracks.add_db_item(playlist_track)
                 assert playlist_track.position is not None
                 await self.playlists.add_db_playlist_track(

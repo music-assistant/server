@@ -371,11 +371,9 @@ class StreamController:
                     self.mass, queue_track, queue.queue_id, lazy=track_count == 1
                 )
             except MediaNotFoundError as err:
-                self.logger.error(str(err), exc_info=err)
-                streamdetails = None
-
-            if not streamdetails:
-                self.logger.warning("Skip track due to missing streamdetails")
+                self.logger.warning(
+                    "Skip track due to missing streamdetails", exc_info=err
+                )
                 continue
 
             # check the PCM samplerate/bitrate
