@@ -1,9 +1,7 @@
 Music Assistant
 ==================================
 
-.. image:: https://img.shields.io/pypi/v/music_assistant.svg
-        :target: https://pypi.python.org/pypi/music_assistant
-
+[![pypi_badge](https://img.shields.io/pypi/v/music_assistant.svg)](https://pypi.python.org/pypi/music_assistant)
 
 **Music Assistant**
 
