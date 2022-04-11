@@ -27,7 +27,7 @@ PROJECT_URLS = {
     "Discord": "https://discord.gg/9xHYFY",
 }
 PROJECT_DIR = Path(__file__).parent.resolve()
-README_FILE = PROJECT_DIR / "README.rst"
+README_FILE = PROJECT_DIR / "README.md"
 REQUIREMENTS_FILE = PROJECT_DIR / "requirements.txt"
 PACKAGES = find_packages(exclude=["tests", "tests.*"])
 PACKAGE_FILES = []
