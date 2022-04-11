@@ -101,13 +101,18 @@ class AsyncProcess:
         try:
             self._proc.stdin.write(data)
             await self._proc.stdin.drain()
-        except (AttributeError, AssertionError, BrokenPipeError) as err:
-            raise asyncio.CancelledError() from err
+        except (AttributeError, AssertionError, BrokenPipeError):
+            # already exited, race condition
+            pass
 
     def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if self._proc.stdin.can_write_eof():
-            self._proc.stdin.write_eof()
+        try:
+            if self._proc.stdin.can_write_eof():
+                self._proc.stdin.write_eof()
+        except (AttributeError, AssertionError, BrokenPipeError):
+            # already exited, race condition
+            pass
 
     async def communicate(self, input_data: Optional[bytes] = None) -> bytes:
         """Write bytes to process and read back results."""
