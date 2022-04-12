@@ -281,7 +281,7 @@ class Player(ABC):
             "player_id": self.player_id,
             "name": self.name,
             "powered": self.powered,
-            "elapsed_time": self.elapsed_time,
+            "elapsed_time": int(self.elapsed_time),
             "state": self.state.value,
             "available": self.available,
             "is_group": self.is_group,

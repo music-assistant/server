@@ -6,7 +6,7 @@ import random
 from asyncio import Task, TimerHandle
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
@@ -637,6 +637,27 @@ class PlayerQueue:
     async def queue_stream_signal_next(self):
         """Indicate that queue stream needs to start next index once playback finished."""
         self._signal_next = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Export object to dict."""
+        cur_item = self.current_item.to_dict() if self.current_item else None
+        next_item = self.next_item.to_dict() if self.next_item else None
+        return {
+            "queue_id": self.queue_id,
+            "player": self.player.player_id,
+            "name": self.player.name,
+            "active": self.active,
+            "elapsed_time": int(self.elapsed_time),
+            "state": self.player.state.value,
+            "available": self.player.available,
+            "current_item": cur_item,
+            "next_item": next_item,
+            "shuffle_enabled": self.shuffle_enabled,
+            "repeat_enabled": self.repeat_enabled,
+            "volume_normalization_enabled": self.volume_normalization_enabled,
+            "volume_normalization_target": self.volume_normalization_target,
+            "crossfade_duration": self.crossfade_duration,
+        }
 
     def __get_queue_stream_index(self) -> Tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""
