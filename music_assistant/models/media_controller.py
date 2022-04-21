@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
+from time import time
 from typing import Generic, List, Optional, Tuple, TypeVar
 
 from music_assistant.helpers.cache import cached
@@ -11,6 +12,9 @@ from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailabl
 from .media_items import MediaItemType, MediaType
 
 ItemCls = TypeVar("ItemCls", bound="MediaControllerBase")
+
+REFRESH_INTERVAL = 60 * 60 * 24 * 30
+REFRESH_KEY = "last_refresh"
 
 
 class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
@@ -52,12 +56,18 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         db_item = await self.get_db_item_by_prov_id(provider_id, provider_item_id)
+        if (
+            db_item
+            and (time() - db_item.metadata.get(REFRESH_KEY, 0)) > REFRESH_INTERVAL
+        ):
+            force_refresh = True
         if db_item and force_refresh:
             provider_id, provider_item_id = await self.get_provider_id(db_item)
         elif db_item:
             return db_item
         if not details:
             details = await self.get_provider_item(provider_item_id, provider_id)
+        details.metadata[REFRESH_KEY] = int(time())
         if not lazy:
             return await self.add(details)
         self.mass.add_job(self.add(details), f"Add {details.uri} to database")

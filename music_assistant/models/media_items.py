@@ -10,6 +10,8 @@ from mashumaro import DataClassDictMixin
 from music_assistant.helpers.json import json
 from music_assistant.helpers.util import create_sort_name
 
+MetadataTypes = Union[int, bool, str, List[str]]
+
 
 class MediaType(Enum):
     """Enum for MediaType."""
@@ -60,7 +62,7 @@ class MediaItem(DataClassDictMixin):
     provider: str
     name: str
     sort_name: Optional[str] = None
-    metadata: Dict[str, str] = field(default_factory=dict)
+    metadata: Dict[str, MetadataTypes] = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN
