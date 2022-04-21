@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from mashumaro import DataClassDictMixin
@@ -33,14 +33,6 @@ class DeviceInfo(DataClassDictMixin):
     model: str = "unknown"
     address: str = "unknown"
     manufacturer: str = "unknown"
-
-
-class PlayerFeature(IntEnum):
-    """Enum for player features."""
-
-    QUEUE = 0
-    GAPLESS = 1
-    CROSSFADE = 2
 
 
 class Player(ABC):
@@ -190,10 +182,10 @@ class Player(ABC):
 
     async def play_pause(self) -> None:
         """Toggle play/pause on player."""
-        if self.state == PlayerState.PAUSED:
-            await self.play()
-        else:
+        if self.state == PlayerState.PLAYING:
             await self.pause()
+        else:
+            await self.play()
 
     async def power_toggle(self) -> None:
         """Toggle power on player."""
@@ -286,7 +278,7 @@ class Player(ABC):
             "available": self.available,
             "is_group": self.is_group,
             "group_childs": self.group_childs,
-            "group_parents": self._attr_group_parents,
+            "group_parents": self.group_parents,
             "volume_level": int(self.volume_level),
             "device_info": self.device_info.to_dict(),
             "active_queue": self.active_queue.queue_id,
