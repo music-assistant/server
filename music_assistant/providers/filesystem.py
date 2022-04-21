@@ -203,9 +203,8 @@ class FileSystemProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        if os.sep not in prov_track_id:
-            itempath = base64.b64decode(prov_track_id).decode("utf-8")
-        else:
+        itempath = self._music_dir + base64.b64decode(prov_track_id).decode("utf-8")
+        if os.sep in prov_track_id:
             itempath = prov_track_id
         if not os.path.isfile(itempath):
             self.logger.error("track path does not exist: %s", itempath)
@@ -315,7 +314,8 @@ class FileSystemProvider(MusicProvider):
 
         # TODO: Fall back to parsing base details from filename if no tags found/supported
         tag = await self.mass.loop.run_in_executor(None, parse_tag)
-        prov_item_id = base64.b64encode(filename.encode("utf-8")).decode("utf-8")
+        filename_short = filename.split(self._music_dir)[1]
+        prov_item_id = base64.b64encode(filename_short.encode("utf-8")).decode("utf-8")
         name, version = parse_title_and_version(tag.title)
         track = Track(
             item_id=prov_item_id, provider=self.id, name=name, version=version
