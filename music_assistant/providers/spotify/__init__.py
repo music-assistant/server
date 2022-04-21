@@ -355,6 +355,8 @@ class SpotifyProvider(MusicProvider):
                 track.artists.append(artist)
 
         track.metadata["explicit"] = str(track_obj["explicit"]).lower()
+        if "preview_url" in track_obj:
+            track.metadata["preview"] = track_obj["preview_url"]
         if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
             track.isrc = track_obj["external_ids"]["isrc"]
         if "album" in track_obj:

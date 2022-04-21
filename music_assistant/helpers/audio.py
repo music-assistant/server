@@ -570,3 +570,66 @@ async def get_sox_args_for_pcm_stream(
     else:
         output_args = ["-t", output_format.sox_format(), "-"]
     return input_args + output_args
+
+
+async def get_preview_stream(
+    mass: MusicAssistant,
+    provider: str,
+    track_id: str,
+) -> AsyncGenerator[Tuple[bool, bytes], None]:
+    """Get the audio stream for the given streamdetails."""
+    music_prov = mass.music.get_provider(provider)
+
+    streamdetails = await music_prov.get_stream_details(track_id)
+
+    mass.signal_event(
+        MassEvent(
+            EventType.STREAM_STARTED,
+            object_id=streamdetails.provider,
+            data=streamdetails,
+        )
+    )
+    if streamdetails.type == StreamType.EXECUTABLE:
+        # stream from executable
+        input_args = [
+            streamdetails.path,
+            "|",
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            streamdetails.content_type.value,
+            "-i",
+            "-",
+        ]
+    else:
+        input_args = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            streamdetails.path,
+        ]
+    output_args = ["-ss", "30", "-to", "60", "-f", "mp3", "-q:a", "9", "-"]
+    async with AsyncProcess(input_args + output_args) as proc:
+
+        # yield chunks from stdout
+        # we keep 1 chunk behind to detect end of stream properly
+        try:
+            prev_chunk = b""
+            async for chunk in proc.iterate_chunks():
+                if prev_chunk:
+                    yield (False, prev_chunk)
+                prev_chunk = chunk
+            # send last chunk
+            yield (True, prev_chunk)
+        finally:
+            mass.signal_event(
+                MassEvent(
+                    EventType.STREAM_ENDED,
+                    object_id=streamdetails.provider,
+                    data=streamdetails,
+                )
+            )
