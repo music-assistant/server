@@ -303,7 +303,9 @@ class QobuzProvider(MusicProvider):
                 )
         return result
 
-    async def add_playlist_tracks(self, prov_playlist_id, prov_track_ids):
+    async def add_playlist_tracks(
+        self, prov_playlist_id: str, prov_track_ids: List[str]
+    ) -> None:
         """Add track(s) to playlist."""
         params = {
             "playlist_id": prov_playlist_id,
@@ -312,7 +314,9 @@ class QobuzProvider(MusicProvider):
         }
         return await self._get_data("playlist/addTracks", params)
 
-    async def remove_playlist_tracks(self, prov_playlist_id, prov_track_ids):
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, prov_track_ids: List[str]
+    ) -> None:
         """Remove track(s) from playlist."""
         playlist_track_ids = set()
         params = {"playlist_id": prov_playlist_id, "extra": "tracks"}

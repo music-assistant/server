@@ -148,15 +148,15 @@ class MusicProvider:
 
     async def add_playlist_tracks(
         self, prov_playlist_id: str, prov_track_ids: List[str]
-    ) -> bool:
-        """Add track(s) to playlist. Return true on succes."""
+    ) -> None:
+        """Add track(s) to playlist."""
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, prov_track_ids: List[str]
-    ) -> bool:
-        """Remove track(s) from playlist. Return true on succes."""
+    ) -> None:
+        """Remove track(s) from playlist."""
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
 

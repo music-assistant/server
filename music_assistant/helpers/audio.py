@@ -610,7 +610,7 @@ async def get_preview_stream(
             "-i",
             streamdetails.path,
         ]
-    output_args = ["-ss", "30", "-to", "60", "-f", "mp3", "-q:a", "9", "-"]
+    output_args = ["-ss", "30", "-to", "60", "-f", "mp3", "-q:a", "6", "-"]
     async with AsyncProcess(input_args + output_args) as proc:
 
         # yield chunks from stdout

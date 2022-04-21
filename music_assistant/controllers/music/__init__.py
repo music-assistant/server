@@ -48,7 +48,6 @@ class MusicController:
         self.radio = RadioController(mass)
         self.playlists = PlaylistController(mass)
         self._providers: Dict[str, MusicProvider] = {}
-        self._sync_tasks = set()
 
     async def setup(self):
         """Async initialize of module."""
@@ -367,68 +366,67 @@ class MusicController:
                     provider_id,
                 ),
                 f"Library sync of {media_type.value}s for provider {provider.name}",
+                allow_duplicate=False,
             )
 
     async def _library_items_sync(
         self, media_type: MediaType, provider_id: str
     ) -> None:
         """Sync library items for given provider."""
-        sync_id = f"{media_type.value}.{provider_id}"
-        if sync_id in self._sync_tasks:
-            self.logger.debug("Abort sync task %s because its already running", sync_id)
-            return  # already running
-        self._sync_tasks.add(sync_id)
-        try:
-            music_provider = self.get_provider(provider_id)
-            if not music_provider or not music_provider.available:
-                return
-            controller = self._get_controller(media_type)
-            # create a set of all previous and current db id's
-            prev_ids = set()
-            for db_item in await controller.library():
-                for prov_id in db_item.provider_ids:
-                    if prov_id.provider == provider_id:
-                        prev_ids.add(db_item.item_id)
-            cur_ids = set()
-            for prov_item in await music_provider.get_library_items(media_type):
-                prov_item: MediaItemType = prov_item
-                db_item: MediaItemType = await controller.get_db_item_by_prov_id(
-                    prov_item.provider, prov_item.item_id
+        music_provider = self.get_provider(provider_id)
+        if not music_provider or not music_provider.available:
+            return
+        controller = self._get_controller(media_type)
+        # create a set of all previous and current db id's
+        prev_ids = set()
+        for db_item in await controller.library():
+            for prov_id in db_item.provider_ids:
+                if prov_id.provider == provider_id:
+                    prev_ids.add(db_item.item_id)
+        cur_ids = set()
+        for prov_item in await music_provider.get_library_items(media_type):
+            prov_item: MediaItemType = prov_item
+            db_item: MediaItemType = await controller.get_db_item_by_prov_id(
+                prov_item.provider, prov_item.item_id
+            )
+            if not db_item and media_type == MediaType.ARTIST:
+                # for artists we need a fully matched item (with musicbrainz id)
+                db_item = await controller.get(
+                    prov_item.item_id,
+                    prov_item.provider,
+                    details=prov_item,
+                    lazy=False,
                 )
-                if not db_item and media_type == MediaType.ARTIST:
-                    # for artists we need a fully matched item (with musicbrainz id)
-                    db_item = await controller.get(
-                        prov_item.item_id,
-                        prov_item.provider,
-                        details=prov_item,
-                        lazy=False,
-                    )
-                elif db_item and db_item.available != prov_item.available:
-                    # availability changed
-                    db_item = await controller.add_db_item(prov_item)
-                elif db_item and not db_item.available:
-                    # use auto matching magic to find a substitute for missing item
-                    db_item = await controller.add(prov_item)
-                elif not db_item:
-                    # for other mediatypes its enough to simply dump the item in the db
-                    db_item = await controller.add_db_item(prov_item)
-                cur_ids.add(db_item.item_id)
-                if not db_item.in_library:
-                    await controller.set_db_library(db_item.item_id, True)
-                # sync album tracks
-                if media_type == MediaType.ALBUM:
-                    await self._sync_album_tracks(db_item)
-                # sync playlist tracks
-                if media_type == MediaType.PLAYLIST:
-                    await self._sync_playlist_tracks(db_item)
+            elif db_item and db_item.available != prov_item.available:
+                # availability changed
+                db_item = await controller.add_db_item(prov_item)
+            elif db_item and not db_item.available:
+                # use auto matching magic to find a substitute for missing item
+                db_item = await controller.get(
+                    prov_item.item_id,
+                    prov_item.provider,
+                    lazy=False,
+                    details=prov_item,
+                )
+            elif not db_item:
+                # for other mediatypes its enough to simply dump the item in the db
+                db_item = await controller.add_db_item(prov_item)
+            cur_ids.add(db_item.item_id)
+            if not db_item.in_library:
+                await controller.set_db_library(db_item.item_id, True)
+            # sync album tracks
+            if media_type == MediaType.ALBUM:
+                await self._sync_album_tracks(db_item)
+            # sync playlist tracks
+            if media_type == MediaType.PLAYLIST:
+                await self._sync_playlist_tracks(db_item)
+            # cool down a bit as we don't want to sync process to consume all IO
+            await asyncio.sleep(0.05)
 
-            # process deletions
-            for item_id in prev_ids:
-                if item_id not in cur_ids:
-                    await controller.set_db_library(item_id, False)
-
-        finally:
-            self._sync_tasks.remove(sync_id)
+        # process deletions
+        for item_id in prev_ids:
+            if item_id not in cur_ids:
+                await controller.set_db_library(item_id, False)
 
     async def _sync_album_tracks(self, db_album: Album) -> None:
         """Store album tracks of in-library album in database."""
@@ -441,7 +439,12 @@ class MusicController:
                 )
                 if db_track and not db_track.available:
                     # use auto matching magic to find a substitute for missing track
-                    db_track = await self.tracks.add(album_track)
+                    db_track = await self.tracks.get(
+                        album_track.item_id,
+                        album_track.provider,
+                        lazy=False,
+                        details=album_track,
+                    )
                 elif not db_track:
                     db_track = await self.tracks.add_db_item(album_track)
 
@@ -452,6 +455,8 @@ class MusicController:
                     album_track.disc_number,
                     album_track.track_number,
                 )
+                # cool down a bit as we don't want to sync process to consume all IO
+                await asyncio.sleep(0.05)
 
     async def _sync_playlist_tracks(self, db_playlist: Playlist) -> None:
         """Store playlist tracks of in-library playlist in database."""
@@ -459,6 +464,8 @@ class MusicController:
             provider = self.get_provider(prov_id.provider)
             if not provider:
                 continue
+            # clear db first
+            await self.playlists.remove_db_playlist_track(db_playlist.item_id)
             for playlist_track in await self.playlists.get_provider_playlist_tracks(
                 prov_id.item_id, prov_id.provider
             ):
@@ -466,8 +473,13 @@ class MusicController:
                     playlist_track.provider, playlist_track.item_id
                 )
                 if db_track and not db_track.available:
-                    # use auto matching magic to find a substitute for missing track
-                    db_track = await self.tracks.add(playlist_track)
+                    # try auto matching magic to find a substitute for missing track
+                    db_track = await self.tracks.get(
+                        playlist_track.item_id,
+                        playlist_track.provider,
+                        lazy=False,
+                        details=playlist_track,
+                    )
                 elif not db_track:
                     db_track = await self.tracks.add_db_item(playlist_track)
                 assert playlist_track.position is not None
@@ -476,6 +488,8 @@ class MusicController:
                     db_track.item_id,
                     playlist_track.position,
                 )
+                # cool down a bit as we don't want to sync process to consume all IO
+                await asyncio.sleep(0.05)
 
     def _get_controller(
         self, media_type: MediaType
