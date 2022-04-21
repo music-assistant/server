@@ -296,7 +296,7 @@ class SpotifyProvider(MusicProvider):
                     break
         return artist
 
-    async def _parse_album(self, album_obj):
+    async def _parse_album(self, album_obj: dict):
         """Parse spotify album object to generic layout."""
         name, version = parse_title_and_version(album_obj["name"])
         album = Album(

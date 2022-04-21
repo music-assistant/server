@@ -151,6 +151,7 @@ class Database:
                 await _db.execute("DROP TABLE IF EXISTS playlist_tracks")
                 await _db.execute("DROP TABLE IF EXISTS album_tracks")
                 await _db.execute("DROP TABLE IF EXISTS provider_mappings")
+                await _db.execute("DROP TABLE IF EXISTS cache")
 
             # store current schema version
             await self.insert_or_replace(

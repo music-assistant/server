@@ -401,7 +401,7 @@ class QobuzProvider(MusicProvider):
             }
             await self._get_data("/track/reportStreamingEnd", params)
 
-    async def _parse_artist(self, artist_obj):
+    async def _parse_artist(self, artist_obj: dict):
         """Parse qobuz artist object to generic layout."""
         artist = Artist(
             item_id=str(artist_obj["id"]), provider=self.id, name=artist_obj["name"]
@@ -410,7 +410,9 @@ class QobuzProvider(MusicProvider):
             MediaItemProviderId(
                 provider=self.id,
                 item_id=str(artist_obj["id"]),
-                url=artist_obj.get("url"),
+                url=artist_obj.get(
+                    "url", f'https://open.qobuz.com/artist/{artist_obj["id"]}'
+                ),
             )
         )
         artist.metadata["image"] = self.__get_image(artist_obj)
@@ -446,7 +448,9 @@ class QobuzProvider(MusicProvider):
                 provider=self.id,
                 item_id=str(album_obj["id"]),
                 quality=quality,
-                url=album_obj.get("url"),
+                url=album_obj.get(
+                    "url", f'https://open.qobuz.com/album/{album_obj["id"]}'
+                ),
                 details=f'{album_obj["maximum_sampling_rate"]}kHz {album_obj["maximum_bit_depth"]}bit',
                 available=album_obj["streamable"] and album_obj["displayable"],
             )
@@ -490,7 +494,7 @@ class QobuzProvider(MusicProvider):
             album.metadata["description"] = album_obj["description"]
         return album
 
-    async def _parse_track(self, track_obj):
+    async def _parse_track(self, track_obj: dict):
         """Parse qobuz track object to generic layout."""
         name, version = parse_title_and_version(
             track_obj["title"], track_obj.get("version")
@@ -565,7 +569,9 @@ class QobuzProvider(MusicProvider):
                 provider=self.id,
                 item_id=str(track_obj["id"]),
                 quality=quality,
-                url=track_obj["url"],
+                url=track_obj.get(
+                    "url", f'https://open.qobuz.com/track/{track_obj["id"]}'
+                ),
                 details=f'{track_obj["maximum_sampling_rate"]}kHz {track_obj["maximum_bit_depth"]}bit',
                 available=track_obj["streamable"] and track_obj["displayable"],
             )
@@ -584,7 +590,9 @@ class QobuzProvider(MusicProvider):
             MediaItemProviderId(
                 provider=self.id,
                 item_id=str(playlist_obj["id"]),
-                url=playlist_obj.get("url"),
+                url=playlist_obj.get(
+                    "url", f'https://open.qobuz.com/playlist/{playlist_obj["id"]}'
+                ),
             )
         )
         playlist.is_editable = (

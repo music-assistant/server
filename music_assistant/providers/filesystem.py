@@ -88,7 +88,7 @@ class FileSystemProvider(MusicProvider):
             :param limit: Number of items to return in the search (per type).
         """
         result = []
-        for track in await self.get_library_tracks():
+        for track in await self.get_library_tracks(True):
             for search_part in search_query.split(" - "):
                 if media_types is None or MediaType.TRACK in media_types:
                     if compare_strings(track.name, search_part):
@@ -103,31 +103,47 @@ class FileSystemProvider(MusicProvider):
                             result.append(track.album.artist)
         return result
 
-    async def get_library_artists(self) -> List[Artist]:
+    async def get_library_artists(self, allow_cache=False) -> List[Artist]:
         """Retrieve all library artists."""
+        # pylint: disable = arguments-differ
+        cache_key = f"{self.id}.library_artists"
+        if allow_cache:
+            if cache_result := await self.mass.cache.get(cache_key):
+                return cache_result
         result = []
         prev_ids = set()
-        for track in await self.get_library_tracks():
+        for track in await self.get_library_tracks(allow_cache):
             if track.album is not None and track.album.artist is not None:
                 if track.album.artist.item_id not in prev_ids:
                     result.append(track.album.artist)
                     prev_ids.add(track.album.artist.item_id)
+        await self.mass.cache.set(cache_key, result)
         return result
 
-    async def get_library_albums(self) -> List[Album]:
+    async def get_library_albums(self, allow_cache=False) -> List[Album]:
         """Get album folders recursively."""
+        # pylint: disable = arguments-differ
+        cache_key = f"{self.id}.library_albums"
+        if allow_cache:
+            if cache_result := await self.mass.cache.get(cache_key):
+                return cache_result
         result = []
         prev_ids = set()
-        for track in await self.get_library_tracks():
+        for track in await self.get_library_tracks(allow_cache):
             if track.album is not None:
                 if track.album.item_id not in prev_ids:
                     result.append(track.album)
                     prev_ids.add(track.album.item_id)
+        await self.mass.cache.set(cache_key, result)
         return result
 
-    async def get_library_tracks(self) -> List[Track]:
+    async def get_library_tracks(self, allow_cache=False) -> List[Track]:
         """Get all tracks recursively."""
-        # TODO: apply caching for very large libraries ?
+        # pylint: disable = arguments-differ
+        cache_key = f"{self.id}.library_tracks"
+        if allow_cache:
+            if cache_result := await self.mass.cache.get(cache_key):
+                return cache_result
         result = []
         for _root, _dirs, _files in os.walk(self._music_dir):
             for file in _files:
@@ -135,12 +151,18 @@ class FileSystemProvider(MusicProvider):
                 if TinyTag.is_supported(filename):
                     if track := await self._parse_track(filename):
                         result.append(track)
+        await self.mass.cache.set(cache_key, result)
         return result
 
-    async def get_library_playlists(self) -> List[Playlist]:
+    async def get_library_playlists(self, allow_cache=False) -> List[Playlist]:
         """Retrieve playlists from disk."""
+        # pylint: disable = arguments-differ
         if not self._playlists_dir:
             return []
+        cache_key = f"{self.id}.library_playlists"
+        if allow_cache:
+            if cache_result := await self.mass.cache.get(cache_key):
+                return cache_result
         result = []
         for filename in os.listdir(self._playlists_dir):
             filepath = os.path.join(self._playlists_dir, filename)
@@ -152,6 +174,7 @@ class FileSystemProvider(MusicProvider):
                 playlist = await self.get_playlist(filepath)
                 if playlist:
                     result.append(playlist)
+        await self.mass.cache.set(cache_key, result)
         return result
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -159,7 +182,7 @@ class FileSystemProvider(MusicProvider):
         return next(
             (
                 track.album.artist
-                for track in await self.get_library_tracks()
+                for track in await self.get_library_tracks(True)
                 if track.album is not None
                 and track.album.artist is not None
                 and track.album.artist.item_id == prov_artist_id
@@ -172,7 +195,7 @@ class FileSystemProvider(MusicProvider):
         return next(
             (
                 track.album
-                for track in await self.get_library_tracks()
+                for track in await self.get_library_tracks(True)
                 if track.album is not None and track.album.item_id == prov_album_id
             ),
             None,
@@ -215,7 +238,7 @@ class FileSystemProvider(MusicProvider):
         """Get album tracks for given album id."""
         return [
             track
-            for track in await self.get_library_tracks()
+            for track in await self.get_library_tracks(True)
             if track.album is not None and track.album.item_id == prov_album_id
         ]
 
@@ -244,7 +267,7 @@ class FileSystemProvider(MusicProvider):
         """Get a list of albums for the given artist."""
         return [
             track.album
-            for track in await self.get_library_tracks()
+            for track in await self.get_library_tracks(True)
             if track.album is not None
             and track.album.artist is not None
             and track.album.artist.item_id == prov_artist_id
@@ -254,7 +277,7 @@ class FileSystemProvider(MusicProvider):
         """Get a list of all tracks as we have no clue about preference."""
         return [
             track
-            for track in await self.get_library_tracks()
+            for track in await self.get_library_tracks(True)
             if track.artists is not None
             and prov_artist_id in [x.item_id for x in track.provider_ids]
         ]

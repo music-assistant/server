@@ -264,6 +264,7 @@ class MusicController:
                 "provider": prov_id.provider,
                 "quality": prov_id.quality.value if prov_id.quality else None,
                 "details": prov_id.details,
+                "url": prov_id.url,
             },
         )
 
