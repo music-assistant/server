@@ -73,6 +73,7 @@ class MusicAssistant:
                 connector=aiohttp.TCPConnector(ssl=False),
             )
         # setup core controllers
+        await self.database.setup()
         await self.cache.setup()
         await self.music.setup()
         await self.metadata.setup()

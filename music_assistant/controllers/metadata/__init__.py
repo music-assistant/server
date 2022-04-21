@@ -41,23 +41,12 @@ class MetaDataController:
     async def get_artist_metadata(self, mb_artist_id: str, cur_metadata: dict) -> dict:
         """Get/update rich metadata for an artist by providing the musicbrainz artist id."""
         metadata = cur_metadata
-        if "fanart" in metadata:
+        if "fanart" not in metadata:
             # no need to query (other) metadata providers if we already have a result
-            return metadata
-        self.logger.info(
-            "Fetching metadata for MusicBrainz Artist %s on Fanrt.tv", mb_artist_id
-        )
-        cache_key = f"fanarttv.artist_metadata.{mb_artist_id}"
-        res = await cached(
-            self.cache, cache_key, self.fanarttv.get_artist_images, mb_artist_id
-        )
-        if res:
-            metadata = merge_dict(metadata, res)
-            self.logger.debug(
-                "Found metadata for MusicBrainz Artist %s on Fanart.tv: %s",
-                mb_artist_id,
-                ", ".join(res.keys()),
+            metadata = merge_dict(
+                metadata, await self._get_fanarttv_metadata(mb_artist_id)
             )
+
         return metadata
 
     async def get_thumbnail(self, url, size) -> bytes:
@@ -71,3 +60,22 @@ class MetaDataController:
             TABLE_THUMBS, {**match, "img": thumbnail}
         )
         return thumbnail
+
+    async def _get_fanarttv_metadata(self, mb_artist_id: str) -> dict:
+        """Get metadata from fanarttv for artist."""
+        metadata = {}
+        self.logger.info(
+            "Fetching metadata for MusicBrainz Artist %s on Fanrt.tv", mb_artist_id
+        )
+        cache_key = f"fanarttv.artist_metadata.{mb_artist_id}"
+        res = await cached(
+            self.cache, cache_key, self.fanarttv.get_artist_images, mb_artist_id
+        )
+        if res:
+            metadata = res
+            self.logger.debug(
+                "Found metadata for MusicBrainz Artist %s on Fanart.tv: %s",
+                mb_artist_id,
+                ", ".join(res.keys()),
+            )
+        return metadata

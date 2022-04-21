@@ -262,8 +262,9 @@ class MusicController:
                 "media_type": media_type.value,
                 "prov_item_id": prov_id.item_id,
                 "provider": prov_id.provider,
-                "quality": prov_id.quality.value,
+                "quality": prov_id.quality.value if prov_id.quality else None,
                 "details": prov_id.details,
+                "url": prov_id.url,
             },
         )
 
@@ -500,8 +501,9 @@ class MusicController:
                         media_type TEXT NOT NULL,
                         prov_item_id TEXT NOT NULL,
                         provider TEXT NOT NULL,
-                        quality INTEGER NOT NULL,
+                        quality INTEGER NULL,
                         details TEXT NULL,
+                        url TEXT NULL,
                         UNIQUE(item_id, media_type, prov_item_id, provider)
                         );"""
             )

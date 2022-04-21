@@ -10,6 +10,8 @@ from mashumaro import DataClassDictMixin
 from music_assistant.helpers.json import json
 from music_assistant.helpers.util import create_sort_name
 
+MetadataTypes = Union[int, bool, str, List[str]]
+
 
 class MediaType(Enum):
     """Enum for MediaType."""
@@ -21,29 +23,19 @@ class MediaType(Enum):
     RADIO = "radio"
     UNKNOWN = "unknown"
 
-    @classmethod
-    def _missing_(cls: "MediaType", value: str):
-        """Set default enum member if an unknown value is provided."""
-        return cls.UNKNOWN
-
 
 class MediaQuality(IntEnum):
     """Enum for Media Quality."""
 
-    LOSSY_MP3 = 0
-    LOSSY_OGG = 1
-    LOSSY_AAC = 2
-    FLAC_LOSSLESS = 6  # 44.1/48khz 16 bits
-    FLAC_LOSSLESS_HI_RES_1 = 7  # 44.1/48khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_2 = 8  # 88.2/96khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_3 = 9  # 176/192khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_4 = 10  # above 192khz 24 bits HI-RES
-    UNKNOWN = 99
-
-    @classmethod
-    def _missing_(cls: "MediaQuality", value: str):
-        """Set default enum member if an unknown value is provided."""
-        return cls.UNKNOWN
+    UNKNOWN = 0
+    LOSSY_MP3 = 1
+    LOSSY_OGG = 2
+    LOSSY_AAC = 3
+    FLAC_LOSSLESS = 10  # 44.1/48khz 16 bits
+    FLAC_LOSSLESS_HI_RES_1 = 20  # 44.1/48khz 24 bits HI-RES
+    FLAC_LOSSLESS_HI_RES_2 = 21  # 88.2/96khz 24 bits HI-RES
+    FLAC_LOSSLESS_HI_RES_3 = 22  # 176/192khz 24 bits HI-RES
+    FLAC_LOSSLESS_HI_RES_4 = 23  # above 192khz 24 bits HI-RES
 
 
 @dataclass
@@ -52,9 +44,10 @@ class MediaItemProviderId(DataClassDictMixin):
 
     provider: str
     item_id: str
-    quality: MediaQuality = MediaQuality.UNKNOWN
-    details: str = None
     available: bool = True
+    quality: Optional[MediaQuality] = None
+    details: Optional[str] = None
+    url: Optional[str] = None
 
     def __hash__(self):
         """Return custom hash."""
@@ -69,7 +62,7 @@ class MediaItem(DataClassDictMixin):
     provider: str
     name: str
     sort_name: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, MetadataTypes] = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN
@@ -81,10 +74,6 @@ class MediaItem(DataClassDictMixin):
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
             self.sort_name = create_sort_name(self.name)
-        if not self.provider_ids:
-            self.provider_ids.append(
-                MediaItemProviderId(provider=self.provider, item_id=self.item_id)
-            )
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):

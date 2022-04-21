@@ -280,7 +280,11 @@ class SpotifyProvider(MusicProvider):
             item_id=artist_obj["id"], provider=self.id, name=artist_obj["name"]
         )
         artist.provider_ids.append(
-            MediaItemProviderId(provider=self.id, item_id=artist_obj["id"])
+            MediaItemProviderId(
+                provider=self.id,
+                item_id=artist_obj["id"],
+                url=artist_obj["external_urls"]["spotify"],
+            )
         )
         if "genres" in artist_obj:
             artist.metadata["genres"] = artist_obj["genres"]
@@ -290,11 +294,9 @@ class SpotifyProvider(MusicProvider):
                 if "2a96cbd8b46e442fc41c2b86b821562f" not in img_url:
                     artist.metadata["image"] = img_url
                     break
-        if artist_obj.get("external_urls"):
-            artist.metadata["spotify_url"] = artist_obj["external_urls"]["spotify"]
         return artist
 
-    async def _parse_album(self, album_obj):
+    async def _parse_album(self, album_obj: dict):
         """Parse spotify album object to generic layout."""
         name, version = parse_title_and_version(album_obj["name"])
         album = Album(
@@ -322,8 +324,6 @@ class SpotifyProvider(MusicProvider):
             album.year = int(album_obj["release_date"].split("-")[0])
         if album_obj.get("copyrights"):
             album.metadata["copyright"] = album_obj["copyrights"][0]["text"]
-        if album_obj.get("external_urls"):
-            album.metadata["spotify_url"] = album_obj["external_urls"]["spotify"]
         if album_obj.get("explicit"):
             album.metadata["explicit"] = str(album_obj["explicit"]).lower()
         album.provider_ids.append(
@@ -331,6 +331,7 @@ class SpotifyProvider(MusicProvider):
                 provider=self.id,
                 item_id=album_obj["id"],
                 quality=MediaQuality.LOSSY_OGG,
+                url=album_obj["external_urls"]["spotify"],
             )
         )
         return album
@@ -367,8 +368,6 @@ class SpotifyProvider(MusicProvider):
             track.metadata["copyright"] = track_obj["copyright"]
         if track_obj.get("explicit"):
             track.metadata["explicit"] = True
-        if track_obj.get("external_urls"):
-            track.metadata["spotify_url"] = track_obj["external_urls"]["spotify"]
         if track_obj.get("popularity"):
             track.metadata["popularity"] = track_obj["popularity"]
         track.provider_ids.append(
@@ -376,6 +375,7 @@ class SpotifyProvider(MusicProvider):
                 provider=self.id,
                 item_id=track_obj["id"],
                 quality=MediaQuality.LOSSY_OGG,
+                url=track_obj["external_urls"]["spotify"],
                 available=not track_obj["is_local"] and track_obj["is_playable"],
             )
         )
@@ -390,7 +390,11 @@ class SpotifyProvider(MusicProvider):
             owner=playlist_obj["owner"]["display_name"],
         )
         playlist.provider_ids.append(
-            MediaItemProviderId(provider=self.id, item_id=playlist_obj["id"])
+            MediaItemProviderId(
+                provider=self.id,
+                item_id=playlist_obj["id"],
+                url=playlist_obj["external_urls"]["spotify"],
+            )
         )
         playlist.is_editable = (
             playlist_obj["owner"]["id"] == self._sp_user["id"]
@@ -398,8 +402,6 @@ class SpotifyProvider(MusicProvider):
         )
         if playlist_obj.get("images"):
             playlist.metadata["image"] = playlist_obj["images"][0]["url"]
-        if playlist_obj.get("external_urls"):
-            playlist.metadata["spotify_url"] = playlist_obj["external_urls"]["spotify"]
         playlist.checksum = playlist_obj["snapshot_id"]
         return playlist
 

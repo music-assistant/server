@@ -175,7 +175,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
 
 
 async def get_stream_details(
-    mass: MusicAssistant, queue_item: QueueItem, queue_id: str = "", lazy: bool = True
+    mass: MusicAssistant, queue_item: QueueItem, queue_id: str = ""
 ) -> StreamDetails:
     """
     Get streamdetails for the given QueueItem.
@@ -196,9 +196,7 @@ async def get_stream_details(
         )
     else:
         # always request the full db track as there might be other qualities available
-        full_item = await mass.music.get_item_by_uri(
-            queue_item.uri, force_refresh=not lazy, lazy=lazy
-        )
+        full_item = await mass.music.get_item_by_uri(queue_item.uri)
         # sort by quality and check track availability
         for prov_media in sorted(
             full_item.provider_ids, key=lambda x: x.quality, reverse=True

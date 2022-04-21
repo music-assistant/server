@@ -61,8 +61,10 @@ class Cache:
                     data = await asyncio.get_running_loop().run_in_executor(
                         None, pickle.loads, db_row["data"]
                     )
-                except Exception:  # pylint: disable=broad-except
-                    self.logger.warning("Error parsing cache data for %s", cache_key)
+                except Exception as exc:  # pylint: disable=broad-except
+                    self.logger.exception(
+                        "Error parsing cache data for %s", cache_key, exc_info=exc
+                    )
                 else:
                     # also store in memory cache for faster access
                     if cache_key not in self._mem_cache:
@@ -72,7 +74,6 @@ class Cache:
                             db_row["expires"],
                         )
                     return data
-        self.logger.debug("no cache data for %s", cache_key)
         return default
 
     async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):

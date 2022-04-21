@@ -389,7 +389,7 @@ class StreamController:
             # get streamdetails
             try:
                 streamdetails = await get_stream_details(
-                    self.mass, queue_track, queue.queue_id, lazy=track_count == 1
+                    self.mass, queue_track, queue.queue_id
                 )
             except MediaNotFoundError as err:
                 self.logger.warning(
