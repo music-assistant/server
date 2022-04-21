@@ -83,9 +83,8 @@ def create_sort_name(name):
     return sort_name.lower()
 
 
-def parse_title_and_version(track_title, track_version=None):
+def parse_title_and_version(title: str, track_version: str = None):
     """Try to parse clean track title and version from the title."""
-    title = track_title.lower()
     version = ""
     for splitter in [" (", " [", " - ", " (", " [", "-"]:
         if splitter in title:
@@ -95,16 +94,6 @@ def parse_title_and_version(track_title, track_version=None):
                 for end_splitter in [")", "]"]:
                     if end_splitter in title_part:
                         title_part = title_part.split(end_splitter)[0]
-                for ignore_str in [
-                    "feat.",
-                    "featuring",
-                    "ft.",
-                    "with ",
-                    " & ",
-                    "explicit",
-                ]:
-                    if ignore_str in title_part:
-                        title = title.split(splitter + title_part)[0]
                 for version_str in [
                     "version",
                     "live",
@@ -122,10 +111,10 @@ def parse_title_and_version(track_title, track_version=None):
                     "akoestisch",
                     "deluxe",
                 ]:
-                    if version_str in title_part:
+                    if version_str in title_part.lower():
                         version = title_part
                         title = title.split(splitter + version)[0]
-    title = title.strip().title()
+    title = clean_title(title)
     if not version and track_version:
         version = track_version
     version = get_version_substitute(version).title()
@@ -134,7 +123,23 @@ def parse_title_and_version(track_title, track_version=None):
     return title, version
 
 
-def get_version_substitute(version_str):
+def clean_title(title: str) -> str:
+    """Strip unwanted additional text from title."""
+    for splitter in [" (", " [", " - ", " (", " [", "-"]:
+        if splitter in title:
+            title_parts = title.split(splitter)
+            for title_part in title_parts:
+                # look for the end splitter
+                for end_splitter in [")", "]"]:
+                    if end_splitter in title_part:
+                        title_part = title_part.split(end_splitter)[0]
+                for ignore_str in ["feat.", "featuring", "ft.", "with ", "explicit"]:
+                    if ignore_str in title_part.lower():
+                        return title.split(splitter + title_part)[0].strip()
+    return title.strip()
+
+
+def get_version_substitute(version_str: str):
     """Transform provider version str to universal version type."""
     version_str = version_str.lower()
     # substitute edit and edition with version
