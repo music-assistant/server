@@ -400,7 +400,7 @@ class StreamController:
             # check the PCM samplerate/bitrate
             if not resample and streamdetails.bit_depth > bit_depth:
                 await queue.queue_stream_signal_next()
-                self.logger.debug("Abort queue stream due to bit depth mismatch")
+                self.logger.info("Abort queue stream due to bit depth mismatch")
                 await queue.queue_stream_signal_next()
                 break
             if (
@@ -408,7 +408,7 @@ class StreamController:
                 and streamdetails.sample_rate > sample_rate
                 and streamdetails.sample_rate <= queue.max_sample_rate
             ):
-                self.logger.debug("Abort queue stream due to sample rate mismatch")
+                self.logger.info("Abort queue stream due to sample rate mismatch")
                 await queue.queue_stream_signal_next()
                 break
 
