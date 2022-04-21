@@ -155,8 +155,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.update_db_playlist(playlist.item_id, playlist)
         # return result of the action on the provider
         provider = self.mass.music.get_provider(playlist_prov.provider)
-        return await provider.add_playlist_tracks(
-            playlist_prov.item_id, [track_id_to_add]
+        await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
+        self.mass.signal_event(
+            MassEvent(
+                type=EventType.PLAYLIST_UPDATED, object_id=playlist_id, data=playlist
+            )
         )
 
     async def remove_playlist_tracks(
@@ -204,8 +207,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
             playlist.checksum = str(time.time())
             await self.update_db_playlist(playlist.item_id, playlist)
             provider = self.mass.music.get_provider(prov_playlist.provider)
-            return await provider.remove_playlist_tracks(
+            await provider.remove_playlist_tracks(
                 prov_playlist.item_id, track_ids_to_remove
+            )
+            self.mass.signal_event(
+                MassEvent(
+                    type=EventType.PLAYLIST_UPDATED,
+                    object_id=playlist_id,
+                    data=playlist,
+                )
             )
 
     async def get_provider_playlist_tracks(
@@ -284,7 +294,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             item_id, MediaType.PLAYLIST, playlist.provider_ids
         )
         self.logger.debug("updated %s in database: %s", playlist.name, item_id)
-        return await self.get_db_item(item_id)
+        db_item = await self.get_db_item(item_id)
+        self.mass.signal_event(
+            MassEvent(type=EventType.PLAYLIST_UPDATED, object_id=item_id, data=playlist)
+        )
+        return db_item
 
     async def get_db_playlist_tracks(self, item_id) -> List[Track]:
         """Get playlist tracks for an in-library playlist."""
