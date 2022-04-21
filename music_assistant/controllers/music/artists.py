@@ -222,7 +222,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self.logger.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
         return artist.name
 
-    async def _match(self, db_artist: Artist, provider: MusicProvider):
+    async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""
         self.logger.debug(
             "Trying to match artist %s on provider %s", db_artist.name, provider.name
@@ -247,7 +247,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                                 search_item_artist.item_id, search_item_artist.provider
                             )
                             await self.update_db_artist(db_artist.item_id, prov_artist)
-                            return
+                            return True
         # try to get a match with some reference albums of this artist
         artist_albums = await self.albums(db_artist.item_id, db_artist.provider)
         for ref_album in artist_albums:
@@ -267,5 +267,5 @@ class ArtistsController(MediaControllerBase[Artist]):
                         search_result_item.artist.provider,
                     )
                     await self.update_db_artist(db_artist.item_id, prov_artist)
-                    return
-        return
+                    return True
+        return False

@@ -18,6 +18,7 @@ class EventType(Enum):
     QUEUE_ADDED = "queue_added"
     QUEUE_UPDATED = "queue updated"
     QUEUE_ITEMS_UPDATED = "queue items updated"
+    QUEUE_TIME_UPDATED = "queue time updated"
     SHUTDOWN = "application shutdown"
     ARTIST_ADDED = "artist added"
     ALBUM_ADDED = "album added"
@@ -25,7 +26,8 @@ class EventType(Enum):
     PLAYLIST_ADDED = "playlist added"
     RADIO_ADDED = "radio added"
     TASK_UPDATED = "task updated"
-    PROVIDER_REGISTERED = "PROVIDER_REGISTERED"
+    PROVIDER_REGISTERED = "provider registered"
+    BACKGROUND_JOBS_UPDATED = "background_jobs_updated"
 
 
 @dataclass

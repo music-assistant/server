@@ -7,7 +7,7 @@ import logging
 import threading
 from time import time
 from types import TracebackType
-from typing import Any, Callable, Coroutine, List, Optional, Tuple, Type, Union
+from typing import Any, Callable, Coroutine, List, Optional, Set, Tuple, Type, Union
 
 import aiohttp
 from databases import DatabaseURL
@@ -50,6 +50,7 @@ class MusicAssistant:
 
         self._listeners = []
         self._jobs = asyncio.Queue()
+        self._job_names = set()
 
         # init core controllers
         self.database = Database(self, db_url)
@@ -132,7 +133,9 @@ class MusicAssistant:
         """Add job to be (slowly) processed in the background (one by one)."""
         if not name:
             name = job.__qualname__ or job.__name__
+        self._job_names.add(name)
         self._jobs.put_nowait((name, job))
+        self.signal_event(MassEvent(EventType.BACKGROUND_JOBS_UPDATED, data=self.jobs))
 
     def create_task(
         self,
@@ -181,6 +184,11 @@ class MusicAssistant:
         task.add_done_callback(task_done_callback)
         return task
 
+    @property
+    def jobs(self) -> Set[str]:
+        """Return the (names of) running background jobs."""
+        return self._job_names
+
     async def __process_jobs(self):
         """Process jobs in the background."""
         while True:
@@ -198,6 +206,11 @@ class MusicAssistant:
             else:
                 duration = round(time() - time_start, 2)
                 self.logger.info("Finished job [%s] in %s seconds.", name, duration)
+            if name in self._job_names:
+                self._job_names.remove(name)
+            self.signal_event(
+                MassEvent(EventType.BACKGROUND_JOBS_UPDATED, data=self.jobs)
+            )
 
     async def __aenter__(self) -> "MusicAssistant":
         """Return Context manager."""

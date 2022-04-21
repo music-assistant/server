@@ -105,6 +105,11 @@ class PlayerQueue:
         return self.mass.players.get_player(self.queue_id, include_unavailable=True)
 
     @property
+    def available(self) -> bool:
+        """Return if player(queue) is available."""
+        return self.player.available
+
+    @property
     def active(self) -> bool:
         """Return bool if the queue is currenty active on the player."""
         if self.player.use_multi_stream:
@@ -356,6 +361,13 @@ class PlayerQueue:
         # redirect to underlying player
         await self.player.pause()
 
+    async def play_pause(self) -> None:
+        """Toggle play/pause on queue/player."""
+        if self.player.state == PlayerState.PLAYING:
+            await self.pause()
+        else:
+            await self.play()
+
     async def next(self) -> None:
         """Play the next track in the queue."""
         next_index = self.get_next_index(self._current_index)
@@ -542,13 +554,9 @@ class PlayerQueue:
                 self._update_task.cancel()
                 self._update_task = None
 
-        if not self.update_state():
-            # fire event anyway when player updated.
-            self.mass.signal_event(
-                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
-            )
+        self.update_state()
 
-    def update_state(self) -> bool:
+    def update_state(self) -> None:
         """Update queue details, called when player updates."""
         if self.player.active_queue.queue_id != self.queue_id:
             return
@@ -580,15 +588,15 @@ class PlayerQueue:
 
         if new_item_loaded:
             self.mass.create_task(self._save_state())
-        if (
-            new_item_loaded
-            or abs(prev_item_time - self._current_item_elapsed_time) >= 1
-        ):
             self.mass.signal_event(
                 MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
             )
-            return True
-        return False
+        if abs(prev_item_time - self._current_item_elapsed_time) >= 1:
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.QUEUE_TIME_UPDATED, object_id=self.queue_id, data=self
+                )
+            )
 
     async def queue_stream_prepare(self) -> StreamDetails:
         """Call when queue_streamer is about to start playing."""
