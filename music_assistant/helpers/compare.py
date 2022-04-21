@@ -40,6 +40,15 @@ def compare_version(left_version: str, right_version: str):
     return left_versions == right_versions
 
 
+def compare_explicit(left_metadata: dict, right_metadata: dict):
+    """Compare if explicit is same in metadata."""
+    left = left_metadata.get("explicit")
+    right = right_metadata.get("explicit")
+    if left is None and right is None:
+        return True
+    return left == right
+
+
 def compare_artists(left_artists: List["Artist"], right_artists: List["Artist"]):
     """Compare two lists of artist and return True if both lists match."""
     matches = 0
@@ -100,6 +109,9 @@ def compare_track(left_track: "Track", right_track: "Track"):
         return False
     # track artist(s) must match
     if not compare_artists(left_track.artists, right_track.artists):
+        return False
+    # track if both tracks are (not) explicit
+    if not compare_explicit(left_track.metadata, right_track.metadata):
         return False
     # album match OR near exact duration match
     if (
