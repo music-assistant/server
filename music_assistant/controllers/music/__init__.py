@@ -500,8 +500,9 @@ class MusicController:
                         media_type TEXT NOT NULL,
                         prov_item_id TEXT NOT NULL,
                         provider TEXT NOT NULL,
-                        quality INTEGER NOT NULL,
+                        quality INTEGER NULL,
                         details TEXT NULL,
+                        url TEXT NULL,
                         UNIQUE(item_id, media_type, prov_item_id, provider)
                         );"""
             )

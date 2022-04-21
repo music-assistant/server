@@ -42,9 +42,10 @@ class MediaItemProviderId(DataClassDictMixin):
 
     provider: str
     item_id: str
-    quality: MediaQuality = MediaQuality.UNKNOWN
-    details: str = None
     available: bool = True
+    quality: Optional[MediaQuality] = None
+    details: Optional[str] = None
+    link: Optional[str] = None
 
     def __hash__(self):
         """Return custom hash."""
