@@ -105,7 +105,7 @@ def compare_track(left_track: "Track", right_track: "Track"):
     if (
         compare_album(left_track.album, right_track.album)
         and left_track.duration == right_track.duration
-    ) or abs(left_track.duration - right_track.duration) < 1:
+    ) or abs(left_track.duration - right_track.duration) <= 2:
         # 100% match, all criteria passed
         return True
     return False
