@@ -21,29 +21,19 @@ class MediaType(Enum):
     RADIO = "radio"
     UNKNOWN = "unknown"
 
-    @classmethod
-    def _missing_(cls: "MediaType", value: str):
-        """Set default enum member if an unknown value is provided."""
-        return cls.UNKNOWN
-
 
 class MediaQuality(IntEnum):
     """Enum for Media Quality."""
 
-    LOSSY_MP3 = 0
-    LOSSY_OGG = 1
-    LOSSY_AAC = 2
-    FLAC_LOSSLESS = 6  # 44.1/48khz 16 bits
-    FLAC_LOSSLESS_HI_RES_1 = 7  # 44.1/48khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_2 = 8  # 88.2/96khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_3 = 9  # 176/192khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_4 = 10  # above 192khz 24 bits HI-RES
-    UNKNOWN = 99
-
-    @classmethod
-    def _missing_(cls: "MediaQuality", value: str):
-        """Set default enum member if an unknown value is provided."""
-        return cls.UNKNOWN
+    UNKNOWN = 0
+    LOSSY_MP3 = 1
+    LOSSY_OGG = 2
+    LOSSY_AAC = 3
+    FLAC_LOSSLESS = 10  # 44.1/48khz 16 bits
+    FLAC_LOSSLESS_HI_RES_1 = 20  # 44.1/48khz 24 bits HI-RES
+    FLAC_LOSSLESS_HI_RES_2 = 21  # 88.2/96khz 24 bits HI-RES
+    FLAC_LOSSLESS_HI_RES_3 = 22  # 176/192khz 24 bits HI-RES
+    FLAC_LOSSLESS_HI_RES_4 = 23  # above 192khz 24 bits HI-RES
 
 
 @dataclass
@@ -81,10 +71,6 @@ class MediaItem(DataClassDictMixin):
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
             self.sort_name = create_sort_name(self.name)
-        if not self.provider_ids:
-            self.provider_ids.append(
-                MediaItemProviderId(provider=self.provider, item_id=self.item_id)
-            )
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):
