@@ -13,6 +13,7 @@ from music_assistant.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
     get_media_stream,
+    get_preview_stream,
     get_sox_args_for_pcm_stream,
     get_stream_details,
     strip_silence,
@@ -47,10 +48,18 @@ class StreamController:
             return f"http://{self._ip}:{self._port}/{queue_id}/{child_player}.{fmt}"
         return f"http://{self._ip}:{self._port}/{queue_id}.{fmt}"
 
+    async def get_preview_url(self, provider: str, track_id: str) -> str:
+        """Return url to short preview sample."""
+        track = await self.mass.music.tracks.get_provider_item(track_id, provider)
+        if preview := track.metadata.get("preview"):
+            return preview
+        return f"http://{self._ip}:{self._port}/preview/{provider}/{track_id}.mp3"
+
     async def setup(self) -> None:
         """Async initialize of module."""
         app = web.Application()
 
+        app.router.add_get("/preview/{provider}/{item_id}.mp3", self.serve_preview)
         app.router.add_get(
             "/{queue_id}/{player_id}.{format}",
             self.serve_multi_client_queue_stream,
@@ -88,6 +97,18 @@ class StreamController:
             )
 
         self.logger.info("Started stream server on port %s", self._port)
+
+    async def serve_preview(self, request: web.Request):
+        """Serve short preview sample."""
+        provider = request.match_info["provider"]
+        item_id = request.match_info["item_id"]
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": "audio/mp3"}
+        )
+        await resp.prepare(request)
+        async for _, chunk in get_preview_stream(self.mass, provider, item_id):
+            await resp.write(chunk)
+        return resp
 
     async def serve_queue_stream(self, request: web.Request):
         """Serve queue audio stream to a single player (encoded to fileformat of choice)."""
