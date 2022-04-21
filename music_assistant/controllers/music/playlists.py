@@ -1,7 +1,7 @@
 """Manage MediaItems of type Playlist."""
 from __future__ import annotations
 
-import time
+from time import time
 from typing import List
 
 from music_assistant.constants import EventType, MassEvent
@@ -150,17 +150,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "Track is not available on provider {playlist_prov.provider}"
             )
         # actually add the tracks to the playlist on the provider
+
+        provider = self.mass.music.get_provider(playlist_prov.provider)
+        await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
         # invalidate cache
         playlist.checksum = str(time.time())
         await self.update_db_playlist(playlist.item_id, playlist)
-        # return result of the action on the provider
-        provider = self.mass.music.get_provider(playlist_prov.provider)
-        await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
-        self.mass.signal_event(
-            MassEvent(
-                type=EventType.PLAYLIST_UPDATED, object_id=playlist_id, data=playlist
-            )
-        )
 
     async def remove_playlist_tracks(
         self, playlist_id: str, playlist_provider: str, uris: List[str]
@@ -203,20 +198,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 track_ids_to_remove.add(track_provider.item_id)
         # actually remove the tracks from the playlist on the provider
         if track_ids_to_remove:
-            # invalidate cache
-            playlist.checksum = str(time.time())
-            await self.update_db_playlist(playlist.item_id, playlist)
             provider = self.mass.music.get_provider(prov_playlist.provider)
             await provider.remove_playlist_tracks(
                 prov_playlist.item_id, track_ids_to_remove
             )
-            self.mass.signal_event(
-                MassEvent(
-                    type=EventType.PLAYLIST_UPDATED,
-                    object_id=playlist_id,
-                    data=playlist,
-                )
-            )
+            # invalidate cache
+            playlist.checksum = str(time.time())
+            await self.update_db_playlist(playlist.item_id, playlist)
 
     async def get_provider_playlist_tracks(
         self, item_id: str, provider_id: str
