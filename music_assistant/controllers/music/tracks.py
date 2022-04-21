@@ -179,7 +179,7 @@ class TracksController(MediaControllerBase[Track]):
         return await self.get_db_item(item_id)
 
     async def update_db_track(self, item_id: int, track: Track) -> Track:
-        """Update Track record in the database."""
+        """Update Track record in the database, merging data."""
         cur_item = await self.get_db_item(item_id)
         metadata = merge_dict(cur_item.metadata, track.metadata)
         provider_ids = merge_list(cur_item.provider_ids, track.provider_ids)
@@ -215,6 +215,27 @@ class TracksController(MediaControllerBase[Track]):
                 )
         self.logger.debug("updated %s in database: %s", track.name, item_id)
         return await self.get_db_item(item_id)
+
+    async def edit_db_track(self, item_id: int, track: Track) -> Track:
+        """Update Track record in the database, overwriting data."""
+        cur_item = await self.get_db_item(item_id)
+        # delete any existing provider mappings
+        await self.mass.database.delete(
+            "provider_mappings",
+            {"item_id": item_id, "media_type": MediaType.TRACK.value},
+        )
+        # overwrite the entire row with new data
+        track_artists = await self._get_track_artists(track, cur_item.artists)
+        await self.mass.database.update(
+            self.db_table,
+            {"item_id": item_id},
+            {
+                **track.to_db_row(),
+                "artists": json_serializer(track_artists),
+            },
+        )
+        # use regular update logic for the albumtracks logic etc.
+        return await self.update_db_track(item_id, track)
 
     async def _get_track_artists(
         self, track: Track, cur_artists: List[ItemMapping] | None = None
