@@ -45,7 +45,7 @@ class MediaItemProviderId(DataClassDictMixin):
     available: bool = True
     quality: Optional[MediaQuality] = None
     details: Optional[str] = None
-    link: Optional[str] = None
+    url: Optional[str] = None
 
     def __hash__(self):
         """Return custom hash."""
@@ -60,7 +60,7 @@ class MediaItem(DataClassDictMixin):
     provider: str
     name: str
     sort_name: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, str] = field(default_factory=dict)
     provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN

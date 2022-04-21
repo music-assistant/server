@@ -262,7 +262,7 @@ class MusicController:
                 "media_type": media_type.value,
                 "prov_item_id": prov_id.item_id,
                 "provider": prov_id.provider,
-                "quality": prov_id.quality.value,
+                "quality": prov_id.quality.value if prov_id.quality else None,
                 "details": prov_id.details,
             },
         )

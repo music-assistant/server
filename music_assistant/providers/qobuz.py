@@ -407,13 +407,15 @@ class QobuzProvider(MusicProvider):
             item_id=str(artist_obj["id"]), provider=self.id, name=artist_obj["name"]
         )
         artist.provider_ids.append(
-            MediaItemProviderId(provider=self.id, item_id=str(artist_obj["id"]))
+            MediaItemProviderId(
+                provider=self.id,
+                item_id=str(artist_obj["id"]),
+                url=artist_obj.get("url"),
+            )
         )
         artist.metadata["image"] = self.__get_image(artist_obj)
         if artist_obj.get("biography"):
             artist.metadata["biography"] = artist_obj["biography"].get("content", "")
-        if artist_obj.get("url"):
-            artist.metadata["qobuz_url"] = artist_obj["url"]
         return artist
 
     async def _parse_album(self, album_obj: dict, artist_obj: dict = None):
@@ -444,6 +446,7 @@ class QobuzProvider(MusicProvider):
                 provider=self.id,
                 item_id=str(album_obj["id"]),
                 quality=quality,
+                url=album_obj.get("url"),
                 details=f'{album_obj["maximum_sampling_rate"]}kHz {album_obj["maximum_bit_depth"]}bit',
                 available=album_obj["streamable"] and album_obj["displayable"],
             )
@@ -483,10 +486,6 @@ class QobuzProvider(MusicProvider):
             album.year = datetime.datetime.fromtimestamp(album_obj["released_at"]).year
         if album_obj.get("copyright"):
             album.metadata["copyright"] = album_obj["copyright"]
-        if album_obj.get("hires"):
-            album.metadata["hires"] = "true"
-        if album_obj.get("url"):
-            album.metadata["qobuz_url"] = album_obj["url"]
         if album_obj.get("description"):
             album.metadata["description"] = album_obj["description"]
         return album
@@ -535,8 +534,6 @@ class QobuzProvider(MusicProvider):
                 track.album = album
         if track_obj.get("hires"):
             track.metadata["hires"] = "true"
-        if track_obj.get("url"):
-            track.metadata["qobuz_url"] = track_obj["url"]
         if track_obj.get("isrc"):
             track.isrc = track_obj["isrc"]
         if track_obj.get("performers"):
@@ -568,6 +565,7 @@ class QobuzProvider(MusicProvider):
                 provider=self.id,
                 item_id=str(track_obj["id"]),
                 quality=quality,
+                url=track_obj["url"],
                 details=f'{track_obj["maximum_sampling_rate"]}kHz {track_obj["maximum_bit_depth"]}bit',
                 available=track_obj["streamable"] and track_obj["displayable"],
             )
@@ -583,15 +581,17 @@ class QobuzProvider(MusicProvider):
             owner=playlist_obj["owner"]["name"],
         )
         playlist.provider_ids.append(
-            MediaItemProviderId(provider=self.id, item_id=str(playlist_obj["id"]))
+            MediaItemProviderId(
+                provider=self.id,
+                item_id=str(playlist_obj["id"]),
+                url=playlist_obj.get("url"),
+            )
         )
         playlist.is_editable = (
             playlist_obj["owner"]["id"] == self.__user_auth_info["user"]["id"]
             or playlist_obj["is_collaborative"]
         )
         playlist.metadata["image"] = self.__get_image(playlist_obj)
-        if playlist_obj.get("url"):
-            playlist.metadata["qobuz_url"] = playlist_obj["url"]
         playlist.checksum = playlist_obj["updated_at"]
         return playlist
 

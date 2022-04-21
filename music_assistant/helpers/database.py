@@ -146,6 +146,8 @@ class Database:
                 await _db.execute("DROP TABLE IF EXISTS artists")
                 await _db.execute("DROP TABLE IF EXISTS albums")
                 await _db.execute("DROP TABLE IF EXISTS tracks")
+                await _db.execute("DROP TABLE IF EXISTS playlists")
+                await _db.execute("DROP TABLE IF EXISTS radios")
                 await _db.execute("DROP TABLE IF EXISTS playlist_tracks")
                 await _db.execute("DROP TABLE IF EXISTS album_tracks")
                 await _db.execute("DROP TABLE IF EXISTS provider_mappings")
