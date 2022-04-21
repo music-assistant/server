@@ -236,7 +236,9 @@ class SpotifyProvider(MusicProvider):
             result = await self._delete_data(f"playlists/{prov_item_id}/followers")
         return result
 
-    async def add_playlist_tracks(self, prov_playlist_id, prov_track_ids):
+    async def add_playlist_tracks(
+        self, prov_playlist_id: str, prov_track_ids: List[str]
+    ):
         """Add track(s) to playlist."""
         track_uris = []
         for track_id in prov_track_ids:
@@ -244,7 +246,9 @@ class SpotifyProvider(MusicProvider):
         data = {"uris": track_uris}
         return await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
-    async def remove_playlist_tracks(self, prov_playlist_id, prov_track_ids):
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, prov_track_ids: List[str]
+    ) -> None:
         """Remove track(s) from playlist."""
         track_uris = []
         for track_id in prov_track_ids:

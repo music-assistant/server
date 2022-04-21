@@ -125,7 +125,7 @@ class Database:
         async with self.get_db(db) as _db:
             sql_query = f"DELETE FROM {table}"
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
-            await _db.execute(sql_query)
+            await _db.execute(sql_query, match)
 
     async def _migrate(self):
         """Perform database migration actions if needed."""
