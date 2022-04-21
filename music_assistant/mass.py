@@ -136,6 +136,7 @@ class MusicAssistant:
         """Add job to be (slowly) processed in the background (one by one)."""
         if not allow_duplicate and name in self._job_names:
             self.logger.debug("Ignored duplicate job: %s", name)
+            job.close()
             return
         if not name:
             name = job.__qualname__ or job.__name__
