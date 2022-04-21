@@ -11,6 +11,8 @@ from music_assistant.helpers.typing import MusicAssistant
 
 # pylint: disable=invalid-name
 
+SCHEMA_VERSION = 1
+
 
 class Database:
     """Class that holds the (logic to the) database."""
@@ -20,6 +22,17 @@ class Database:
         self.url = url
         self.mass = mass
         self.logger = mass.logger.getChild("db")
+
+    async def setup(self) -> None:
+        """Perform async initialization."""
+        async with self.get_db() as _db:
+            await _db.execute(
+                """CREATE TABLE IF NOT EXISTS settings(
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    );"""
+            )
+        await self._migrate()
 
     @asynccontextmanager
     async def get_db(self, db: Optional[Db] = None) -> Db:
@@ -113,3 +126,31 @@ class Database:
             sql_query = f"DELETE FROM {table}"
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
             await _db.execute(sql_query)
+
+    async def _migrate(self):
+        """Perform database migration actions if needed."""
+        prev_version = await self.get_row("settings", {"key": "version"})
+        if prev_version:
+            prev_version = int(prev_version["value"])
+        else:
+            prev_version = 0
+        if SCHEMA_VERSION != prev_version:
+            self.logger.info(
+                "Performing database migration from %s to %s",
+                prev_version,
+                SCHEMA_VERSION,
+            )
+
+            # schema version 1: too many breaking changes, simply drop the media tables for now
+            async with self.get_db() as _db:
+                await _db.execute("DROP TABLE IF EXISTS artists")
+                await _db.execute("DROP TABLE IF EXISTS albums")
+                await _db.execute("DROP TABLE IF EXISTS tracks")
+                await _db.execute("DROP TABLE IF EXISTS playlist_tracks")
+                await _db.execute("DROP TABLE IF EXISTS album_tracks")
+                await _db.execute("DROP TABLE IF EXISTS provider_mappings")
+
+            # store current schema version
+            await self.insert_or_replace(
+                "settings", {"key": "version", "value": str(SCHEMA_VERSION)}
+            )
