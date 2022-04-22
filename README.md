@@ -19,5 +19,5 @@ Features:
 - Provides all the plumbing to actually playback music to players.
 
 
-This library has been created mainly for the Home Assistant Integration](https://github.com/music-assistant/hass-music-assistant) but can be used stand-alone as well in other projects.
+This library has been created mainly for the [Home Assistant Integration](https://github.com/music-assistant/hass-music-assistant) but can be used stand-alone as well in other projects.
 See the examples folder for some simple code samples or have a look at the [Home Assistant Integration](https://github.com/music-assistant/hass-music-assistant) for discovering the full potential.
