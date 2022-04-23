@@ -264,7 +264,7 @@ class AlbumsController(MediaControllerBase[Album]):
                         prov_artist = await self.mass.music.artists.get_provider_item(
                             prov_album.artist.item_id, prov_album.artist.provider
                         )
-                        await self.mass.music.artists.update_db_artist(
+                        await self.mass.music.artists.update_db_item(
                             db_album.artist.item_id, prov_artist
                         )
 
