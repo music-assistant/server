@@ -475,7 +475,9 @@ class SpotifyProvider(MusicProvider):
         try:
             result = json.loads(stdout)
         except JSONDecodeError:
-            self.logger.warning("Error while retrieving Spotify token!")
+            self.logger.warning(
+                "Error while retrieving Spotify token, details: %s", stdout
+            )
             return None
         # transform token info to spotipy compatible format
         if result and "accessToken" in result:
