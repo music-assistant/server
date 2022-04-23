@@ -178,7 +178,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 or cur_item.artist
             )
 
-        if cur_item.album_type == AlbumType.UNKNOWN:
+        if album.album_type != AlbumType.UNKNOWN:
             album_type = album.album_type
         else:
             album_type = cur_item.album_type
@@ -187,9 +187,13 @@ class AlbumsController(MediaControllerBase[Album]):
             self.db_table,
             {"item_id": item_id},
             {
-                **album.to_db_row(),
-                "artist": json_serializer(album_artist),
+                "name": album.name if overwrite else cur_item.name,
+                "sort_name": album.sort_name if overwrite else cur_item.sort_name,
+                "version": album.version if overwrite else cur_item.version,
+                "year": album.year or cur_item.year,
+                "upc": album.upc or cur_item.upc,
                 "album_type": album_type.value,
+                "artist": json_serializer(album_artist),
                 "metadata": json_serializer(metadata),
                 "provider_ids": json_serializer(provider_ids),
             },
@@ -260,7 +264,7 @@ class AlbumsController(MediaControllerBase[Album]):
                         prov_artist = await self.mass.music.artists.get_provider_item(
                             prov_album.artist.item_id, prov_album.artist.provider
                         )
-                        await self.mass.music.artists.update_db_artist(
+                        await self.mass.music.artists.update_db_item(
                             db_album.artist.item_id, prov_artist
                         )
 
