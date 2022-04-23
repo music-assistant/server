@@ -185,7 +185,7 @@ class MusicController:
         lazy: bool = True,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
-        ctrl = self._get_controller(media_type)
+        ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id, provider_id, force_refresh=force_refresh, lazy=lazy
         )
@@ -237,48 +237,43 @@ class MusicController:
             return result["item_id"]
         return None
 
-    async def add_provider_mappings(
+    async def set_provider_mappings(
         self,
         item_id: int,
         media_type: MediaType,
         prov_ids: List[MediaItemProviderId],
     ):
-        """Add provider ids for media item to database."""
-        for prov in prov_ids:
-            await self.add_provider_mapping(item_id, media_type, prov)
-
-    async def add_provider_mapping(
-        self,
-        item_id: int,
-        media_type: MediaType,
-        prov_id: MediaItemProviderId,
-    ):
-        """Add provider id for media item to database."""
-        await self.mass.database.insert_or_replace(
-            DB_PROV_MAPPINGS,
-            {
-                "item_id": item_id,
-                "media_type": media_type.value,
-                "prov_item_id": prov_id.item_id,
-                "provider": prov_id.provider,
-                "quality": prov_id.quality.value if prov_id.quality else None,
-                "details": prov_id.details,
-                "url": prov_id.url,
-            },
+        """Store provider ids for media item to database."""
+        # make sure that existing items are deleted first
+        await self.mass.database.delete(
+            DB_PROV_MAPPINGS, {"item_id": int(item_id), "media_type": media_type.value}
         )
+        for prov_id in prov_ids:
+            await self.mass.database.insert_or_replace(
+                DB_PROV_MAPPINGS,
+                {
+                    "item_id": item_id,
+                    "media_type": media_type.value,
+                    "prov_item_id": prov_id.item_id,
+                    "provider": prov_id.provider,
+                    "quality": prov_id.quality.value if prov_id.quality else None,
+                    "details": prov_id.details,
+                    "url": prov_id.url,
+                },
+            )
 
     async def add_to_library(
         self, media_type: MediaType, provider_item_id: str, provider_id: str
     ) -> None:
         """Add an item to the library."""
-        ctrl = self._get_controller(media_type)
+        ctrl = self.get_controller(media_type)
         await ctrl.add_to_library(provider_item_id, provider_id)
 
     async def remove_from_library(
         self, media_type: MediaType, provider_item_id: str, provider_id: str
     ) -> None:
         """Remove item from the library."""
-        ctrl = self._get_controller(media_type)
+        ctrl = self.get_controller(media_type)
         await ctrl.remove_from_library(provider_item_id, provider_id)
 
     async def set_track_loudness(self, item_id: str, provider_id: str, loudness: int):
@@ -376,7 +371,7 @@ class MusicController:
         music_provider = self.get_provider(provider_id)
         if not music_provider or not music_provider.available:
             return
-        controller = self._get_controller(media_type)
+        controller = self.get_controller(media_type)
         # create a set of all previous and current db id's
         prev_ids = set()
         for db_item in await controller.library():
@@ -420,13 +415,21 @@ class MusicController:
             # sync playlist tracks
             if media_type == MediaType.PLAYLIST:
                 await self._sync_playlist_tracks(db_item)
-            # cool down a bit as we don't want to sync process to consume all IO
-            await asyncio.sleep(0.05)
 
         # process deletions
         for item_id in prev_ids:
             if item_id not in cur_ids:
                 await controller.set_db_library(item_id, False)
+                # in case of filestem, removal from library means the whole item is
+                # moved/deleted so we remove the prov mapping from db.
+                if provider_id == "filesystem":
+                    if db_item := controller.get_db_item(item_id):
+                        db_item.provider_ids = {
+                            x
+                            for x in db_item.provider_ids
+                            if not (x.provider == provider_id)
+                        }
+                        await controller.update_db_item(item_id, db_item, True)
 
     async def _sync_album_tracks(self, db_album: Album) -> None:
         """Store album tracks of in-library album in database."""
@@ -455,8 +458,6 @@ class MusicController:
                     album_track.disc_number,
                     album_track.track_number,
                 )
-                # cool down a bit as we don't want to sync process to consume all IO
-                await asyncio.sleep(0.05)
 
     async def _sync_playlist_tracks(self, db_playlist: Playlist) -> None:
         """Store playlist tracks of in-library playlist in database."""
@@ -488,10 +489,8 @@ class MusicController:
                     db_track.item_id,
                     playlist_track.position,
                 )
-                # cool down a bit as we don't want to sync process to consume all IO
-                await asyncio.sleep(0.05)
 
-    def _get_controller(
+    def get_controller(
         self, media_type: MediaType
     ) -> ArtistsController | AlbumsController | TracksController | RadioController | PlaylistController:
         """Return controller for MediaType."""

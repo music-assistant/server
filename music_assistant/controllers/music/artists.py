@@ -12,7 +12,7 @@ from music_assistant.helpers.compare import (
     compare_track,
 )
 from music_assistant.helpers.json import json_serializer
-from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
+from music_assistant.helpers.util import create_sort_name, merge_dict
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -149,10 +149,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Add a new artist record to the database."""
         assert artist.musicbrainz_id
         assert artist.name
+        assert artist.provider_ids
         match = {"musicbrainz_id": artist.musicbrainz_id}
         if cur_item := await self.mass.database.get_row(self.db_table, match):
             # update existing
-            return await self.update_db_artist(cur_item["item_id"], artist)
+            return await self.update_db_item(cur_item["item_id"], artist)
         # insert artist
         if not artist.sort_name:
             artist.sort_name = create_sort_name(artist.name)
@@ -161,28 +162,35 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         item_id = new_item["item_id"]
         # store provider mappings
-        await self.mass.music.add_provider_mappings(
+        await self.mass.music.set_provider_mappings(
             item_id, MediaType.ARTIST, artist.provider_ids
         )
         self.logger.debug("added %s to database", artist.name)
         # return created object
         return await self.get_db_item(item_id)
 
-    async def update_db_artist(self, item_id: int, artist: Artist) -> Artist:
+    async def update_db_item(
+        self, item_id: int, artist: Artist, overwrite: bool = False
+    ) -> Artist:
         """Update Artist record in the database."""
         cur_item = await self.get_db_item(item_id)
-        metadata = merge_dict(cur_item.metadata, artist.metadata)
-        provider_ids = merge_list(cur_item.provider_ids, artist.provider_ids)
-        match = {"item_id": item_id}
+        if overwrite:
+            metadata = artist.metadata
+            provider_ids = artist.provider_ids
+        else:
+            metadata = merge_dict(cur_item.metadata, artist.metadata)
+            provider_ids = {*cur_item.provider_ids, *artist.provider_ids}
+
         await self.mass.database.update(
             self.db_table,
-            match,
+            {"item_id": item_id},
             {
+                **artist.to_db_row(),
                 "metadata": json_serializer(metadata),
                 "provider_ids": json_serializer(provider_ids),
             },
         )
-        await self.mass.music.add_provider_mappings(
+        await self.mass.music.set_provider_mappings(
             item_id, MediaType.ARTIST, artist.provider_ids
         )
         self.logger.debug("updated %s in database: %s", artist.name, item_id)
@@ -246,7 +254,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                             prov_artist = await self.get_provider_item(
                                 search_item_artist.item_id, search_item_artist.provider
                             )
-                            await self.update_db_artist(db_artist.item_id, prov_artist)
+                            await self.update_db_item(db_artist.item_id, prov_artist)
                             return True
         # try to get a match with some reference albums of this artist
         artist_albums = await self.albums(db_artist.item_id, db_artist.provider)
@@ -266,6 +274,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                         search_result_item.artist.item_id,
                         search_result_item.artist.provider,
                     )
-                    await self.update_db_artist(db_artist.item_id, prov_artist)
+                    await self.update_db_item(db_artist.item_id, prov_artist)
                     return True
         return False

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Any, Dict, List, Mapping, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Set, Union
 
 from mashumaro import DataClassDictMixin
 
@@ -11,6 +11,8 @@ from music_assistant.helpers.json import json
 from music_assistant.helpers.util import create_sort_name
 
 MetadataTypes = Union[int, bool, str, List[str]]
+
+JSON_KEYS = ("artists", "artist", "metadata", "provider_ids")
 
 
 class MediaType(Enum):
@@ -61,9 +63,10 @@ class MediaItem(DataClassDictMixin):
     item_id: str
     provider: str
     name: str
+    # optional fields below
+    provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
     sort_name: Optional[str] = None
     metadata: Dict[str, MetadataTypes] = field(default_factory=dict)
-    provider_ids: List[MediaItemProviderId] = field(default_factory=list)
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN
     uri: str = ""
@@ -74,15 +77,17 @@ class MediaItem(DataClassDictMixin):
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
             self.sort_name = create_sort_name(self.name)
+        if not self.provider_ids:
+            self.add_provider_id(MediaItemProviderId(self.provider, self.item_id))
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):
         """Create MediaItem object from database row."""
         db_row = dict(db_row)
-        for key in ["artists", "artist", "metadata", "provider_ids"]:
+        db_row["provider"] = "database"
+        for key in JSON_KEYS:
             if key in db_row:
                 db_row[key] = json.loads(db_row[key])
-        db_row["provider"] = "database"
         if "in_library" in db_row:
             db_row["in_library"] = bool(db_row["in_library"])
         if db_row.get("albums"):
@@ -93,8 +98,8 @@ class MediaItem(DataClassDictMixin):
     def to_db_row(self) -> dict:
         """Create dict from item suitable for db."""
         return {
-            key: json.dumps(val) if isinstance(val, (list, dict)) else val
-            for key, val in self.to_dict().items()
+            key: json.dumps(value) if key in JSON_KEYS else value
+            for key, value in self.to_dict().items()
             if key
             not in [
                 "item_id",
@@ -112,6 +117,15 @@ class MediaItem(DataClassDictMixin):
     def available(self):
         """Return (calculated) availability."""
         return any(x.available for x in self.provider_ids)
+
+    def add_provider_id(self, prov_id: MediaItemProviderId) -> None:
+        """Add provider ID, overwrite existing entry."""
+        self.provider_ids = {
+            x
+            for x in self.provider_ids
+            if not (x.item_id == prov_id.item_id and x.provider == prov_id.provider)
+        }
+        self.provider_ids.add(prov_id)
 
 
 @dataclass
