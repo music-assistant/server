@@ -6,7 +6,7 @@ from typing import List, Optional
 from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.json import json_serializer
-from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
+from music_assistant.helpers.util import create_sort_name, merge_dict
 from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import MediaType, Playlist, Track
@@ -213,7 +213,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         match = {"name": playlist.name, "owner": playlist.owner}
         if cur_item := await self.mass.database.get_row(self.db_table, match):
             # update existing
-            return await self.update_db_playlist(cur_item["item_id"], playlist)
+            return await self.update_db_item(cur_item["item_id"], playlist)
 
         # insert new playlist
         new_item = await self.mass.database.insert_or_replace(
@@ -222,25 +222,30 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
         item_id = new_item["item_id"]
         # store provider mappings
-        await self.mass.music.add_provider_mappings(
+        await self.mass.music.set_provider_mappings(
             item_id, MediaType.PLAYLIST, playlist.provider_ids
         )
         self.logger.debug("added %s to database", playlist.name)
         # return created object
         return await self.get_db_item(item_id)
 
-    async def update_db_playlist(self, item_id: int, playlist: Playlist) -> Playlist:
+    async def update_db_item(
+        self, item_id: int, playlist: Playlist, overwrite: bool = False
+    ) -> Playlist:
         """Update Playlist record in the database."""
         cur_item = await self.get_db_item(item_id)
-        metadata = merge_dict(cur_item.metadata, playlist.metadata)
-        provider_ids = merge_list(cur_item.provider_ids, playlist.provider_ids)
+        if overwrite:
+            metadata = playlist.metadata
+            provider_ids = playlist.provider_ids
+        else:
+            metadata = merge_dict(cur_item.metadata, playlist.metadata)
+            provider_ids = {*cur_item.provider_ids, *playlist.provider_ids}
         if not playlist.sort_name:
             playlist.sort_name = create_sort_name(playlist.name)
 
-        match = {"item_id": item_id}
         await self.mass.database.update(
             self.db_table,
-            match,
+            {"item_id": item_id},
             {
                 "name": playlist.name,
                 "sort_name": playlist.sort_name,
@@ -251,7 +256,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "provider_ids": json_serializer(provider_ids),
             },
         )
-        await self.mass.music.add_provider_mappings(
+        await self.mass.music.set_provider_mappings(
             item_id, MediaType.PLAYLIST, playlist.provider_ids
         )
         self.logger.debug("updated %s in database: %s", playlist.name, item_id)

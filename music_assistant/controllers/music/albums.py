@@ -8,7 +8,7 @@ from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.cache import cached
 from music_assistant.helpers.compare import compare_album, compare_strings
 from music_assistant.helpers.json import json_serializer
-from music_assistant.helpers.util import create_sort_name, merge_dict, merge_list
+from music_assistant.helpers.util import create_sort_name, merge_dict
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -117,6 +117,7 @@ class AlbumsController(MediaControllerBase[Album]):
         cur_item = None
         if not album.sort_name:
             album.sort_name = create_sort_name(album.name)
+        assert album.provider_ids
         # always try to grab existing item by external_id
         if album.upc:
             match = {"upc": album.upc}
@@ -131,7 +132,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     break
         if cur_item:
             # update existing
-            return await self.update_db_album(cur_item.item_id, album)
+            return await self.update_db_item(cur_item.item_id, album)
 
         # insert new album
         album_artist = ItemMapping.from_item(
@@ -146,42 +147,54 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         item_id = new_item["item_id"]
         # store provider mappings
-        await self.mass.music.add_provider_mappings(
+        await self.mass.music.set_provider_mappings(
             item_id, MediaType.ALBUM, album.provider_ids
         )
         self.logger.debug("added %s to database", album.name)
         # return created object
         return await self.get_db_item(item_id)
 
-    async def update_db_album(self, item_id: int, album: Album) -> Album:
+    async def update_db_item(
+        self, item_id: int, album: Album, overwrite: bool = False
+    ) -> Album:
         """Update Album record in the database."""
         cur_item = await self.get_db_item(item_id)
-        metadata = merge_dict(cur_item.metadata, album.metadata)
-        provider_ids = merge_list(cur_item.provider_ids, album.provider_ids)
-        album_artist = ItemMapping.from_item(
-            await self.mass.music.artists.get_db_item_by_prov_id(
-                cur_item.artist.provider, cur_item.artist.item_id
+        if overwrite:
+            metadata = album.metadata
+            provider_ids = album.provider_ids
+            album_artist = ItemMapping.from_item(
+                await self.mass.music.artists.get_db_item_by_prov_id(
+                    album.artist.provider, album.artist.item_id
+                )
+                or album.artist
             )
-            or cur_item.artist
-        )
+        else:
+            metadata = merge_dict(cur_item.metadata, album.metadata)
+            provider_ids = {*cur_item.provider_ids, *album.provider_ids}
+            album_artist = ItemMapping.from_item(
+                await self.mass.music.artists.get_db_item_by_prov_id(
+                    cur_item.artist.provider, cur_item.artist.item_id
+                )
+                or cur_item.artist
+            )
 
         if cur_item.album_type == AlbumType.UNKNOWN:
             album_type = album.album_type
         else:
             album_type = cur_item.album_type
 
-        match = {"item_id": item_id}
         await self.mass.database.update(
             self.db_table,
-            match,
+            {"item_id": item_id},
             {
+                **album.to_db_row(),
                 "artist": json_serializer(album_artist),
                 "album_type": album_type.value,
                 "metadata": json_serializer(metadata),
                 "provider_ids": json_serializer(provider_ids),
             },
         )
-        await self.mass.music.add_provider_mappings(
+        await self.mass.music.set_provider_mappings(
             item_id, MediaType.ALBUM, album.provider_ids
         )
         self.logger.debug("updated %s in database: %s", album.name, item_id)
@@ -240,7 +253,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 )
                 if compare_album(prov_album, db_album):
                     # 100% match, we can simply update the db with additional provider ids
-                    await self.update_db_album(db_album.item_id, prov_album)
+                    await self.update_db_item(db_album.item_id, prov_album)
                     match_found = True
                     # while we're here, also match the artist
                     if db_album.artist.provider == "database":

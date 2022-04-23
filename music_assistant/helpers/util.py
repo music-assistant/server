@@ -6,7 +6,7 @@ import os
 import platform
 import socket
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Set, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 import memory_tempfile
 
@@ -193,24 +193,23 @@ def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
     for key, value in new_dict.items():
         if final_dict.get(key) and isinstance(value, dict):
             final_dict[key] = merge_dict(final_dict[key], value)
+        if final_dict.get(key) and isinstance(value, tuple):
+            final_dict[key] = merge_tuples(final_dict[key], value)
         if final_dict.get(key) and isinstance(value, list):
-            final_dict[key] = merge_list(final_dict[key], value)
+            final_dict[key] = merge_lists(final_dict[key], value)
         elif not final_dict.get(key) or allow_overwite:
             final_dict[key] = value
     return final_dict
 
 
-def merge_list(base_list: list, new_list: list) -> List:
+def merge_tuples(base: tuple, new: tuple) -> Tuple:
+    """Merge 2 tuples."""
+    return tuple(x for x in base if x not in new) + tuple(new)
+
+
+def merge_lists(base: list, new: list) -> list:
     """Merge 2 lists."""
-    final_list = set(base_list)
-    for item in new_list:
-        if hasattr(item, "item_id"):
-            for prov_item in final_list:
-                if prov_item.item_id == item.item_id:
-                    prov_item = item
-        if item not in final_list:
-            final_list.add(item)
-    return list(final_list)
+    return list(x for x in base if x not in new) + list(new)
 
 
 def create_tempfile():

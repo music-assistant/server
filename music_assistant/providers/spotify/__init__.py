@@ -283,7 +283,7 @@ class SpotifyProvider(MusicProvider):
         artist = Artist(
             item_id=artist_obj["id"], provider=self.id, name=artist_obj["name"]
         )
-        artist.provider_ids.append(
+        artist.add_provider_id(
             MediaItemProviderId(
                 provider=self.id,
                 item_id=artist_obj["id"],
@@ -330,7 +330,7 @@ class SpotifyProvider(MusicProvider):
             album.metadata["copyright"] = album_obj["copyrights"][0]["text"]
         if album_obj.get("explicit"):
             album.metadata["explicit"] = str(album_obj["explicit"]).lower()
-        album.provider_ids.append(
+        album.add_provider_id(
             MediaItemProviderId(
                 provider=self.id,
                 item_id=album_obj["id"],
@@ -374,7 +374,7 @@ class SpotifyProvider(MusicProvider):
             track.metadata["explicit"] = True
         if track_obj.get("popularity"):
             track.metadata["popularity"] = track_obj["popularity"]
-        track.provider_ids.append(
+        track.add_provider_id(
             MediaItemProviderId(
                 provider=self.id,
                 item_id=track_obj["id"],
@@ -393,7 +393,7 @@ class SpotifyProvider(MusicProvider):
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["display_name"],
         )
-        playlist.provider_ids.append(
+        playlist.add_provider_id(
             MediaItemProviderId(
                 provider=self.id,
                 item_id=playlist_obj["id"],
