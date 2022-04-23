@@ -55,7 +55,7 @@ class TuneInProvider(MusicProvider):
             return [
                 await self._parse_radio(item)
                 for item in result["body"]
-                if item["type"] == "audio"
+                if item.get("type", "") == "audio"
             ]
         return []
 
