@@ -185,7 +185,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.db_table,
             {"item_id": item_id},
             {
-                **artist.to_db_row(),
+                "name": artist.name if overwrite else cur_item.name,
+                "sort_name": artist.sort_name if overwrite else cur_item.sort_name,
+                "musicbrainz_id": artist.musicbrainz_id or cur_item.musicbrainz_id,
                 "metadata": json_serializer(metadata),
                 "provider_ids": json_serializer(provider_ids),
             },

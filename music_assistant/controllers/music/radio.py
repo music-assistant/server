@@ -84,7 +84,6 @@ class RadioController(MediaControllerBase[Radio]):
             self.db_table,
             match,
             {
-                **radio.to_db_row(),
                 "name": radio.name,
                 "sort_name": radio.sort_name,
                 "metadata": json_serializer(metadata),

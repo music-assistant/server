@@ -187,9 +187,11 @@ class TracksController(MediaControllerBase[Track]):
         if overwrite:
             metadata = track.metadata
             provider_ids = track.provider_ids
+            track_artists = track.artists
         else:
             metadata = merge_dict(cur_item.metadata, track.metadata)
             provider_ids = {*cur_item.provider_ids, *track.provider_ids}
+            track_artists = await self._get_track_artists(track, cur_item.artists)
 
         # we store a mapping to artists on the track for easier access/listings
         track_artists = await self._get_track_artists(track, cur_item.artists)
@@ -197,12 +199,14 @@ class TracksController(MediaControllerBase[Track]):
             self.db_table,
             {"item_id": item_id},
             {
-                **track.to_db_row(),
+                "name": track.name if overwrite else cur_item.name,
+                "sort_name": track.sort_name if overwrite else cur_item.sort_name,
+                "version": track.version if overwrite else cur_item.version,
+                "duration": track.duration if overwrite else cur_item.duration,
                 "artists": json_serializer(track_artists),
                 "metadata": json_serializer(metadata),
                 "provider_ids": json_serializer(provider_ids),
                 "isrc": track.isrc or cur_item.isrc,
-                "duration": track.duration or cur_item.duration,
             },
         )
         await self.mass.music.set_provider_mappings(
