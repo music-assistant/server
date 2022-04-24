@@ -266,7 +266,7 @@ class SpotifyProvider(MusicProvider):
             return None
         # make sure that the token is still valid by just requesting it
         await self.get_token()
-        spotty = self.get_spotty_binary()
+        spotty = await self.get_spotty_binary()
         spotty_exec = f'{spotty} -n temp -c "/tmp" -b 320 --pass-through --single-track spotify://track:{track.item_id}'
         return StreamDetails(
             type=StreamType.EXECUTABLE,
@@ -452,7 +452,7 @@ class SpotifyProvider(MusicProvider):
         ]
         scope = ",".join(scopes)
         args = [
-            self.get_spotty_binary(),
+            await self.get_spotty_binary(),
             "-t",
             "--client-id",
             get_app_var(2),
@@ -577,8 +577,7 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             return await response.text()
 
-    @staticmethod
-    def get_spotty_binary():
+    async def get_spotty_binary(self):
         """Find the correct spotty binary belonging to the platform."""
         if platform.system() == "Windows":
             return os.path.join(
@@ -587,6 +586,7 @@ class SpotifyProvider(MusicProvider):
         if platform.system() == "Darwin":
             # macos binary is x86_64 intel
             return os.path.join(os.path.dirname(__file__), "spotty", "osx", "spotty")
+
         if platform.system() == "Linux":
             architecture = platform.machine()
             if architecture in ["AMD64", "x86_64"]:
@@ -600,10 +600,22 @@ class SpotifyProvider(MusicProvider):
                     os.path.dirname(__file__), "spotty", "linux", "spotty-i386"
                 )
             if "aarch64" in architecture or "armv8" in architecture:
-                # arm64 linux binary
-                return os.path.join(
+                # try arm64 linux binary, fallback to 32 bits
+                spotty_path = os.path.join(
                     os.path.dirname(__file__), "spotty", "linux", "spotty-aarch64"
                 )
+                try:
+                    spotty = await asyncio.create_subprocess_exec(
+                        *[spotty_path, "-V"], stdout=asyncio.subprocess.PIPE
+                    )
+                    stdout, _ = await spotty.communicate()
+                    if spotty.returncode == 0 and b"librespot" in stdout:
+                        return spotty_path
+                except OSError as err:
+                    self.logger.exception(
+                        "failed to start arm64 spotty binary, fallback to 32 bits",
+                        exc_info=err,
+                    )
             # assume armv7
             return os.path.join(
                 os.path.dirname(__file__), "spotty", "linux", "spotty-armhf"
