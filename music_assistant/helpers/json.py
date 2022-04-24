@@ -2,11 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-
-try:
-    import ujson as json
-except ImportError:
-    import json
+import json
 
 
 def serialize_values(obj):
