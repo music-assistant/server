@@ -320,14 +320,14 @@ async def get_sox_args(
     """Collect all args to send to the sox (or ffmpeg) process."""
     stream_path = streamdetails.path
     stream_type = StreamType(streamdetails.type)
-    content_type = streamdetails.content_type
+    input_format = streamdetails.content_type
     if output_format is None:
-        output_format = streamdetails.content_type
+        output_format = input_format
 
     sox_present, ffmpeg_present = await check_audio_support()
 
     # use ffmpeg if content not supported by SoX (e.g. AAC radio streams)
-    if not sox_present or not streamdetails.content_type.sox_supported():
+    if not sox_present or not input_format.sox_supported():
         if not ffmpeg_present:
             raise AudioError(
                 "FFmpeg binary is missing from system."
@@ -344,7 +344,7 @@ async def get_sox_args(
                 "-loglevel",
                 "error",
                 "-f",
-                content_type.value,
+                input_format.value,
                 "-i",
                 "-",
             ]
@@ -372,7 +372,7 @@ async def get_sox_args(
         filter_args = []
         if streamdetails.gain_correct:
             filter_args += ["-filter:a", f"volume={streamdetails.gain_correct}dB"]
-        if resample:
+        if resample or input_format.is_pcm():
             filter_args += ["-ar", str(resample)]
         return input_args + filter_args + output_args
 
@@ -384,11 +384,18 @@ async def get_sox_args(
             "|",
             "sox",
             "-t",
-            content_type.sox_format(),
-            "-",
+            input_format.sox_format(),
         ]
+        if input_format.is_pcm():
+            input_args += [
+                "-r",
+                str(streamdetails.sample_rate),
+                "-c",
+                str(streamdetails.channels),
+            ]
+        input_args.append("-")
     else:
-        input_args = ["sox", "-t", content_type.sox_format(), stream_path]
+        input_args = ["sox", "-t", input_format.sox_format(), stream_path]
     # collect output args
     if output_format.is_pcm():
         output_args = ["-t", output_format.sox_format(), "-c", "2", "-"]
