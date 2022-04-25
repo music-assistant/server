@@ -267,13 +267,13 @@ class SpotifyProvider(MusicProvider):
         # make sure that the token is still valid by just requesting it
         await self.get_token()
         spotty = await self.get_spotty_binary()
-        spotty_exec = f'{spotty} -n temp -c "/tmp" -b 320 --single-track spotify://track:{track.item_id}'
+        spotty_exec = f'{spotty} -n temp -c "/tmp" -b 320 --single-track --pass-through spotify://track:{track.item_id}'
         return StreamDetails(
             type=StreamType.EXECUTABLE,
             item_id=track.item_id,
             provider=self.id,
             path=spotty_exec,
-            content_type=ContentType.PCM_S16LE,
+            content_type=ContentType.OGG,
             sample_rate=44100,
             bit_depth=16,
         )
@@ -595,13 +595,9 @@ class SpotifyProvider(MusicProvider):
                 return os.path.join(
                     os.path.dirname(__file__), "spotty", "linux", "spotty-x86_64"
                 )
-            if "i386" in architecture:
-                # i386 linux binary
-                return os.path.join(
-                    os.path.dirname(__file__), "spotty", "linux", "spotty-i386"
-                )
+
             # arm architecture... try all options one by one...
-            for arch in ["aarch64", "armhf", "muslhf", "armv6"]:
+            for arch in ["aarch64", "armv7", "armhf", "arm"]:
                 spotty_path = os.path.join(
                     os.path.dirname(__file__), "spotty", "linux", f"spotty-{arch}"
                 )
