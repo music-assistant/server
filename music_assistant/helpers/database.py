@@ -127,6 +127,17 @@ class Database:
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
             await _db.execute(sql_query, match)
 
+    async def exists(self, table: str, db: Optional[Db] = None) -> bool:
+        """Return bool if table exists."""
+        async with self.get_db(db) as _db:
+            try:
+                await _db.execute(f"SELECT COUNT(*) FROM '{table}'")
+                return True
+            except Exception as exc:  # pylint: disable=broad-except
+                if table in str(exc):
+                    return False
+                raise exc
+
     async def _migrate(self):
         """Perform database migration actions if needed."""
         prev_version = await self.get_row("settings", {"key": "version"})
@@ -158,7 +169,10 @@ class Database:
                 # schema version 2: repair invalid data for radio items
                 async with self.get_db() as _db:
                     await _db.execute("DROP TABLE IF EXISTS radios")
-                    await self.delete("provider_mappings", {"media_type": "radio"}, _db)
+                    if await self.exists("provider_mappings", _db):
+                        await self.delete(
+                            "provider_mappings", {"media_type": "radio"}, _db
+                        )
 
         # store current schema version
         await self.insert_or_replace(
