@@ -7,6 +7,7 @@ import os
 import platform
 import time
 from json.decoder import JSONDecodeError
+from tempfile import gettempdir
 from typing import List, Optional
 
 import aiohttp
@@ -33,6 +34,8 @@ from music_assistant.models.media_items import (
 )
 from music_assistant.models.provider import MusicProvider
 
+CACHE_DIR = gettempdir()
+
 
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
@@ -52,6 +55,7 @@ class SpotifyProvider(MusicProvider):
         self._password = password
         self._auth_token = None
         self._sp_user = None
+        self._librespot_bin = None
         self._throttler = Throttler(rate_limit=4, period=1)
 
     async def setup(self) -> None:
@@ -266,13 +270,13 @@ class SpotifyProvider(MusicProvider):
             return None
         # make sure that the token is still valid by just requesting it
         await self.get_token()
-        spotty = await self.get_spotty_binary()
-        spotty_exec = f'{spotty} -n temp -c "/tmp" -b 320 --single-track --pass-through spotify://track:{track.item_id}'
+        librespot = await self.get_librespot_binary()
+        librespot_exec = f'{librespot} -c "{CACHE_DIR}" --pass-through -b 320 --single-track spotify://track:{track.item_id}'
         return StreamDetails(
             type=StreamType.EXECUTABLE,
             item_id=track.item_id,
             provider=self.id,
-            path=spotty_exec,
+            path=librespot_exec,
             content_type=ContentType.OGG,
             sample_rate=44100,
             bit_depth=16,
@@ -417,7 +421,7 @@ class SpotifyProvider(MusicProvider):
         tokeninfo = {}
         if not self._username or not self._password:
             return tokeninfo
-        # retrieve token with spotty
+        # retrieve token with librespot
         tokeninfo = await self._get_token()
         if tokeninfo:
             self._auth_token = tokeninfo
@@ -431,8 +435,22 @@ class SpotifyProvider(MusicProvider):
         return tokeninfo
 
     async def _get_token(self):
-        """Get spotify auth token with spotty bin."""
-        # get token with spotty
+        """Get spotify auth token with librespot bin."""
+        # authorize with username and password (NOTE: this can also be Spotify Connect)
+        args = [
+            await self.get_librespot_binary(),
+            "-O",
+            "-c",
+            CACHE_DIR,
+            "-a",
+            "-u",
+            self._username,
+            "-p",
+            self._password,
+        ]
+        librespot = await asyncio.create_subprocess_exec(*args)
+        await librespot.wait()
+        # get token with (authorized) librespot
         scopes = [
             "user-read-playback-state",
             "user-read-currently-playing",
@@ -452,26 +470,20 @@ class SpotifyProvider(MusicProvider):
         ]
         scope = ",".join(scopes)
         args = [
-            await self.get_spotty_binary(),
+            await self.get_librespot_binary(),
+            "-O",
             "-t",
             "--client-id",
             get_app_var(2),
             "--scope",
             scope,
-            "-n",
-            "temp-spotty",
-            "-u",
-            self._username,
-            "-p",
-            self._password,
             "-c",
-            "/tmp",
-            "--disable-discovery",
+            CACHE_DIR,
         ]
-        spotty = await asyncio.create_subprocess_exec(
+        librespot = await asyncio.create_subprocess_exec(
             *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
         )
-        stdout, _ = await spotty.communicate()
+        stdout, _ = await librespot.communicate()
         try:
             result = json.loads(stdout)
         except JSONDecodeError:
@@ -577,37 +589,60 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             return await response.text()
 
-    @staticmethod
-    async def get_spotty_binary():
-        """Find the correct spotty binary belonging to the platform."""
+    async def get_librespot_binary(self):
+        """Find the correct librespot binary belonging to the platform."""
+        if self._librespot_bin is not None:
+            return self._librespot_bin
+
+        async def check_librespot(librespot_path: str) -> str | None:
+            try:
+                librespot = await asyncio.create_subprocess_exec(
+                    *[librespot_path, "-V"], stdout=asyncio.subprocess.PIPE
+                )
+                stdout, _ = await librespot.communicate()
+                if librespot.returncode == 0 and b"librespot" in stdout:
+                    self._librespot_bin = librespot_path
+                    return librespot_path
+            except OSError:
+                return None
+
+        base_path = os.path.join(os.path.dirname(__file__), "librespot")
         if platform.system() == "Windows":
-            return os.path.join(
-                os.path.dirname(__file__), "spotty", "windows", "spotty.exe"
-            )
+            if librespot := await check_librespot(
+                os.path.join(base_path, "windows", "librespot.exe")
+            ):
+                return librespot
         if platform.system() == "Darwin":
             # macos binary is x86_64 intel
-            return os.path.join(os.path.dirname(__file__), "spotty", "osx", "spotty")
+            if librespot := await check_librespot(
+                os.path.join(base_path, "osx", "librespot")
+            ):
+                return librespot
 
         if platform.system() == "Linux":
             architecture = platform.machine()
             if architecture in ["AMD64", "x86_64"]:
                 # generic linux x86_64 binary
-                return os.path.join(
-                    os.path.dirname(__file__), "spotty", "linux", "spotty-x86_64"
-                )
+                if librespot := await check_librespot(
+                    os.path.join(
+                        base_path,
+                        "linux",
+                        "librespot-x86_64",
+                    )
+                ):
+                    return librespot
 
             # arm architecture... try all options one by one...
             for arch in ["aarch64", "armv7", "armhf", "arm"]:
-                spotty_path = os.path.join(
-                    os.path.dirname(__file__), "spotty", "linux", f"spotty-{arch}"
-                )
-                try:
-                    spotty = await asyncio.create_subprocess_exec(
-                        *[spotty_path, "-V"], stdout=asyncio.subprocess.PIPE
+                if librespot := await check_librespot(
+                    os.path.join(
+                        base_path,
+                        "linux",
+                        f"librespot-{arch}",
                     )
-                    stdout, _ = await spotty.communicate()
-                    if spotty.returncode == 0 and b"librespot" in stdout:
-                        return spotty_path
-                except OSError:
-                    pass
-        return None
+                ):
+                    return librespot
+
+        raise RuntimeError(
+            f"Unable to locate Libespot for platform {platform.system()}"
+        )

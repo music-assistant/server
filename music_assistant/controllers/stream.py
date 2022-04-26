@@ -154,8 +154,7 @@ class StreamController:
             self.mass.create_task(writer)
 
             # read bytes from final output
-            chunksize = 32000 if output_fmt == ContentType.MP3 else 90000
-            async for audio_chunk in sox_proc.iterate_chunks(chunksize):
+            async for audio_chunk in sox_proc.iterate_chunks():
                 await resp.write(audio_chunk)
 
         return resp
@@ -305,7 +304,7 @@ class StreamController:
                 async def reader():
                     """Read bytes from final output and put chunk on child queues."""
                     chunks_sent = 0
-                    async for chunk in sox_proc.iterate_chunks(256000):
+                    async for chunk in sox_proc.iterate_chunks():
                         chunks_sent += 1
                         coros = []
                         for player_id in list(self._client_queues[queue_id].keys()):
