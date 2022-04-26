@@ -35,7 +35,7 @@ repos:
     rev: 6.1.1
     hooks:
       - id: pydocstyle
-        exclude: ^examples/|^.venv/|^.vscode/
+        exclude: ^examples/|^.venv/|^.vscode/|app_vars.py
   - repo: local
     hooks:
       - id: pylint

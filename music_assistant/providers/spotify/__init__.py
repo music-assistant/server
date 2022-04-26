@@ -14,7 +14,7 @@ import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name-in-module
-    get_app_var,
+    app_var,
 )
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.errors import LoginFailed
@@ -478,7 +478,7 @@ class SpotifyProvider(MusicProvider):
             "-O",
             "-t",
             "--client-id",
-            get_app_var(2),
+            app_var(2),
             "--scope",
             scope,
             "-c",
