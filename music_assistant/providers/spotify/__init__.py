@@ -416,7 +416,11 @@ class SpotifyProvider(MusicProvider):
     async def get_token(self):
         """Get auth token on spotify."""
         # return existing token if we have one in memory
-        if self._auth_token and (self._auth_token["expiresAt"] > int(time.time()) + 20):
+        if (
+            self._auth_token
+            and os.path.isdir(CACHE_DIR)
+            and (self._auth_token["expiresAt"] > int(time.time()) + 20)
+        ):
             return self._auth_token
         tokeninfo = {}
         if not self._username or not self._password:
