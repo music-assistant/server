@@ -65,8 +65,7 @@ class TuneInProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
-        prov_radio_id = prov_radio_id.split("--")[0]
-        media_type = prov_radio_id.split("--")[1]
+        prov_radio_id, media_type = prov_radio_id.split("--", 1)
         params = {"c": "composite", "detail": "listing", "id": prov_radio_id}
         result = await self._get_data("Describe.ashx", params)
         if result and result.get("body") and result["body"][0].get("children"):
@@ -113,9 +112,8 @@ class TuneInProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a radio station."""
-        prov_radio_id = item_id.split("--")[0]
-        media_type = prov_radio_id.split("--")[1]
-        stream_info = await self._get_data("Tune.ashx", {"id": prov_radio_id})
+        item_id, media_type = item_id.split("--", 1)
+        stream_info = await self._get_data("Tune.ashx", {"id": item_id})
         for stream in stream_info["body"]:
             if stream["media_type"] == media_type:
                 return StreamDetails(

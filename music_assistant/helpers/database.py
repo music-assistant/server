@@ -11,7 +11,7 @@ from music_assistant.helpers.typing import MusicAssistant
 
 # pylint: disable=invalid-name
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class Database:
@@ -127,6 +127,17 @@ class Database:
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
             await _db.execute(sql_query, match)
 
+    async def exists(self, table: str, db: Optional[Db] = None) -> bool:
+        """Return bool if table exists."""
+        async with self.get_db(db) as _db:
+            try:
+                await _db.execute(f"SELECT COUNT(*) FROM '{table}'")
+                return True
+            except Exception as exc:  # pylint: disable=broad-except
+                if table in str(exc):
+                    return False
+                raise exc
+
     async def _migrate(self):
         """Perform database migration actions if needed."""
         prev_version = await self.get_row("settings", {"key": "version"})
@@ -141,19 +152,29 @@ class Database:
                 SCHEMA_VERSION,
             )
 
-            # schema version 1: too many breaking changes, simply drop the media tables for now
-            async with self.get_db() as _db:
-                await _db.execute("DROP TABLE IF EXISTS artists")
-                await _db.execute("DROP TABLE IF EXISTS albums")
-                await _db.execute("DROP TABLE IF EXISTS tracks")
-                await _db.execute("DROP TABLE IF EXISTS playlists")
-                await _db.execute("DROP TABLE IF EXISTS radios")
-                await _db.execute("DROP TABLE IF EXISTS playlist_tracks")
-                await _db.execute("DROP TABLE IF EXISTS album_tracks")
-                await _db.execute("DROP TABLE IF EXISTS provider_mappings")
-                await _db.execute("DROP TABLE IF EXISTS cache")
+            if prev_version < 1:
+                # schema version 1: too many breaking changes, simply drop the media tables for now
+                async with self.get_db() as _db:
+                    await _db.execute("DROP TABLE IF EXISTS artists")
+                    await _db.execute("DROP TABLE IF EXISTS albums")
+                    await _db.execute("DROP TABLE IF EXISTS tracks")
+                    await _db.execute("DROP TABLE IF EXISTS playlists")
+                    await _db.execute("DROP TABLE IF EXISTS radios")
+                    await _db.execute("DROP TABLE IF EXISTS playlist_tracks")
+                    await _db.execute("DROP TABLE IF EXISTS album_tracks")
+                    await _db.execute("DROP TABLE IF EXISTS provider_mappings")
+                    await _db.execute("DROP TABLE IF EXISTS cache")
 
-            # store current schema version
-            await self.insert_or_replace(
-                "settings", {"key": "version", "value": str(SCHEMA_VERSION)}
-            )
+            if prev_version < 2:
+                # schema version 2: repair invalid data for radio items
+                async with self.get_db() as _db:
+                    await _db.execute("DROP TABLE IF EXISTS radios")
+                    if await self.exists("provider_mappings", _db):
+                        await self.delete(
+                            "provider_mappings", {"media_type": "radio"}, _db
+                        )
+
+        # store current schema version
+        await self.insert_or_replace(
+            "settings", {"key": "version", "value": str(SCHEMA_VERSION)}
+        )
