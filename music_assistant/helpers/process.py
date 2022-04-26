@@ -14,7 +14,7 @@ from async_timeout import timeout as _timeout
 
 LOGGER = logging.getLogger("AsyncProcess")
 
-DEFAULT_CHUNKSIZE = 512000
+DEFAULT_CHUNKSIZE = 64000
 DEFAULT_TIMEOUT = 120
 
 
