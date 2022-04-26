@@ -1,33 +1,4 @@
-"""Some magic to store some appvars."""
 # pylint: skip-file
+# fmt: off
 # flake8: noqa
-(
-    lambda __g: [
-        [
-            [
-                [
-                    None
-                    for __g["get_app_var"], get_app_var.__name__ in [
-                        (
-                            lambda index: (
-                                lambda __l: [
-                                    APP_VARS[__l["index"]] for __l["index"] in [(index)]
-                                ][0]
-                            )({}),
-                            "get_app_var",
-                        )
-                    ]
-                ][0]
-                for __g["APP_VARS"] in [
-                    (base64.b64decode(VARS_ENC).decode("utf-8").split(","))
-                ]
-            ][0]
-            for __g["VARS_ENC"] in [
-                (
-                    b"OTQyODUyNTY3LDc2MTczMGQzZjk1ZTRhZjA5YWM2M2I5YTM3Y2NjOTZhLDJlYjk2ZjliMzc0OTRiZTE4MjQ5OTlkNTgwMjhhMzA1LFNTcnRNMnhlM2wwMDNnOEh4RmVUUUtub3BaNklCaUwzRTlPc1QxODFYMDA9"
-                )
-            ]
-        ][0]
-        for __g["base64"] in [(__import__("base64", __g, __g))]
-    ][0]
-)(globals())
+(lambda __g: [(lambda __mod: [[[None for __g['app_var'], app_var.__name__ in [(lambda index: (lambda __l: [[AV(aap(__l['var'].encode()).decode()) for __l['var'] in [(vars.split('acb2')[__l['index']][::(-1)])]][0] for __l['index'] in [(index)]][0])({}), 'app_var')]][0] for __g['vars'] in [('3YTNyUDOyQTOacb2=EmN5M2YjdzMhljYzYzYhlDMmFGNlVTOmNDZwMzNxYzNacb2=UDMzEGOyADO1QWO5kDNygTMlJGN5QzNzIWOmZTOiVmMacb2yMTNzITN')]][0] for __g['aap'] in [(__mod.b64decode)]][0])(__import__('base64', __g, __g, ('b64decode',), 0)) for __g['AV'] in [((lambda b, d: d.get('__metaclass__', getattr(b[0], '__class__', type(b[0])))('AV', b, d))((str,), (lambda __l: [__l for __l['__repr__'], __l['__repr__'].__name__ in [(lambda self: (lambda __l: [__name__ for __l['self'] in [(self)]][0])({}), '__repr__')]][0])({'__module__': __name__})))]][0])(globals())

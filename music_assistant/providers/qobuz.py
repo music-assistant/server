@@ -12,7 +12,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-module
-    get_app_var,
+    app_var,
 )
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.models.errors import LoginFailed
@@ -650,7 +650,7 @@ class QobuzProvider(MusicProvider):
         if not params:
             params = {}
         url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
-        headers = {"X-App-Id": get_app_var(0)}
+        headers = {"X-App-Id": app_var(0)}
         if endpoint != "user/login":
             auth_token = await self._auth_token()
             if not auth_token:
@@ -664,11 +664,11 @@ class QobuzProvider(MusicProvider):
             for key in keys:
                 signing_data += f"{key}{params[key]}"
             request_ts = str(time.time())
-            request_sig = signing_data + request_ts + get_app_var(1)
+            request_sig = signing_data + request_ts + app_var(1)
             request_sig = str(hashlib.md5(request_sig.encode()).hexdigest())
             params["request_ts"] = request_ts
             params["request_sig"] = request_sig
-            params["app_id"] = get_app_var(0)
+            params["app_id"] = app_var(0)
             params["user_auth_token"] = await self._auth_token()
         async with self._throttler:
             async with self.mass.http_session.get(
@@ -696,7 +696,7 @@ class QobuzProvider(MusicProvider):
         if not data:
             data = {}
         url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
-        params["app_id"] = get_app_var(0)
+        params["app_id"] = app_var(0)
         params["user_auth_token"] = await self._auth_token()
         async with self.mass.http_session.post(
             url, params=params, json=data, verify_ssl=False
