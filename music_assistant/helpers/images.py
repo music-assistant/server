@@ -6,7 +6,12 @@ from io import BytesIO
 from PIL import Image
 
 from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.models.media_items import ItemMapping, MediaItemType, MediaType
+from music_assistant.models.media_items import (
+    ImageType,
+    ItemMapping,
+    MediaItemType,
+    MediaType,
+)
 
 
 async def create_thumbnail(mass: MusicAssistant, url, size: int = 150) -> bytes:
@@ -20,34 +25,32 @@ async def create_thumbnail(mass: MusicAssistant, url, size: int = 150) -> bytes:
         return img_data.getvalue()
 
 
-async def get_image_url(mass: MusicAssistant, media_item: MediaItemType):
+async def get_image_url(
+    mass: MusicAssistant,
+    media_item: MediaItemType,
+    img_type: ImageType = ImageType.THUMB,
+):
     """Get url to image for given media media_item."""
     if not media_item:
         return None
     if isinstance(media_item, ItemMapping):
         media_item = await mass.music.get_item_by_uri(media_item.uri)
-    if media_item and media_item.metadata.get("image"):
-        return media_item.metadata.image
-    if (
-        hasattr(media_item, "album")
-        and hasattr(media_item.album, "metadata")
-        and media_item.album.metadata.get("image")
-    ):
-        return media_item.album.metadata.image
-    if hasattr(media_item, "albums"):
-        for album in media_item.albums:
-            if hasattr(album, "metadata") and album.metadata.get("image"):
-                return album.metadata.image
-    if (
-        hasattr(media_item, "artist")
-        and hasattr(media_item.artist, "metadata")
-        and media_item.artist.metadata.get("image")
-    ):
-        return media_item.artist.metadata.image
+    if media_item and media_item.metadata.images:
+        for img in media_item.metadata.images:
+            if img.type == img_type:
+                return img.url
+
+    # retry with track's album
     if media_item.media_type == MediaType.TRACK and media_item.album:
-        # try album instead for tracks
-        return await get_image_url(mass, media_item.album)
+        return await get_image_url(mass, media_item.album, img_type)
+
+    # try artist instead for albums
     if media_item.media_type == MediaType.ALBUM and media_item.artist:
-        # try artist instead for albums
-        return await get_image_url(mass, media_item.artist)
+        return await get_image_url(mass, media_item.artist, img_type)
+
+    # last resort: track artist(s)
+    if media_item.media_type == MediaType.TRACK and media_item.artists:
+        for artist in media_item.artists:
+            return await get_image_url(mass, artist, img_type)
+
     return None

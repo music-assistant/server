@@ -51,7 +51,7 @@ class StreamController:
     async def get_preview_url(self, provider: str, track_id: str) -> str:
         """Return url to short preview sample."""
         track = await self.mass.music.tracks.get_provider_item(track_id, provider)
-        if preview := track.metadata.get("preview"):
+        if preview := track.metadata.preview:
             return preview
         return f"http://{self._ip}:{self._port}/preview/{provider}/{track_id}.mp3"
 
