@@ -27,23 +27,23 @@ async def get_image_url(mass: MusicAssistant, media_item: MediaItemType):
     if isinstance(media_item, ItemMapping):
         media_item = await mass.music.get_item_by_uri(media_item.uri)
     if media_item and media_item.metadata.get("image"):
-        return media_item.metadata["image"]
+        return media_item.metadata.image
     if (
         hasattr(media_item, "album")
         and hasattr(media_item.album, "metadata")
         and media_item.album.metadata.get("image")
     ):
-        return media_item.album.metadata["image"]
+        return media_item.album.metadata.image
     if hasattr(media_item, "albums"):
         for album in media_item.albums:
             if hasattr(album, "metadata") and album.metadata.get("image"):
-                return album.metadata["image"]
+                return album.metadata.image
     if (
         hasattr(media_item, "artist")
         and hasattr(media_item.artist, "metadata")
         and media_item.artist.metadata.get("image")
     ):
-        return media_item.artist.metadata["image"]
+        return media_item.artist.metadata.image
     if media_item.media_type == MediaType.TRACK and media_item.album:
         # try album instead for tracks
         return await get_image_url(mass, media_item.album)

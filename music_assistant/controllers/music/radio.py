@@ -1,9 +1,12 @@
 """Manage MediaItems of type Radio."""
 from __future__ import annotations
 
+from time import time
+
 from music_assistant.constants import EventType, MassEvent
+from music_assistant.helpers.database import TABLE_RADIOS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.helpers.util import create_sort_name, merge_dict
+from music_assistant.helpers.util import create_sort_name
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import MediaType, Radio
 
@@ -11,24 +14,9 @@ from music_assistant.models.media_items import MediaType, Radio
 class RadioController(MediaControllerBase[Radio]):
     """Controller managing MediaItems of type Radio."""
 
-    db_table = "radios"
+    db_table = TABLE_RADIOS
     media_type = MediaType.RADIO
     item_cls = Radio
-
-    async def setup(self):
-        """Async initialize of module."""
-        # prepare database
-        async with self.mass.database.get_db() as _db:
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {self.db_table}(
-                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL UNIQUE,
-                        sort_name TEXT NOT NULL,
-                        in_library BOOLEAN DEFAULT 0,
-                        metadata json,
-                        provider_ids json
-                    );"""
-            )
 
     async def get_radio_by_name(self, name: str) -> Radio | None:
         """Get in-library radio by name."""
@@ -36,6 +24,8 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def add(self, item: Radio) -> Radio:
         """Add radio to local db and return the new database item."""
+        item.metadata.last_refresh = int(time())
+        await self.mass.metadata.get_radio_metadata(item)
         db_item = await self.add_db_item(item)
         self.mass.signal_event(
             MassEvent(EventType.RADIO_ADDED, object_id=db_item.uri, data=db_item)
@@ -47,51 +37,56 @@ class RadioController(MediaControllerBase[Radio]):
         if not radio.sort_name:
             radio.sort_name = create_sort_name(radio.name)
         assert radio.provider_ids
-        match = {"sort_name": radio.sort_name}
-        if cur_item := await self.mass.database.get_row(self.db_table, match):
-            # update existing
-            return await self.update_db_item(cur_item["item_id"], radio)
+        async with self.mass.database.get_db() as _db:
+            match = {"sort_name": radio.sort_name}
+            if cur_item := await self.mass.database.get_row(
+                self.db_table, match, db=_db
+            ):
+                # update existing
+                return await self.update_db_item(cur_item["item_id"], radio)
 
-        # insert new radio
-        new_item = await self.mass.database.insert_or_replace(
-            self.db_table, radio.to_db_row()
-        )
-        item_id = new_item["item_id"]
-        # store provider mappings
-        await self.mass.music.set_provider_mappings(
-            item_id, MediaType.RADIO, radio.provider_ids
-        )
-        self.logger.debug("added %s to database", radio.name)
-        # return created object
-        return await self.get_db_item(item_id)
+            # insert new radio
+            new_item = await self.mass.database.insert_or_replace(
+                self.db_table, radio.to_db_row(), db=_db
+            )
+            item_id = new_item["item_id"]
+            # store provider mappings
+            await self.mass.music.set_provider_mappings(
+                item_id, MediaType.RADIO, radio.provider_ids, db=_db
+            )
+            self.logger.debug("added %s to database", radio.name)
+            # return created object
+            return await self.get_db_item(item_id, db=_db)
 
     async def update_db_item(
         self, item_id: int, radio: Radio, overwrite: bool = False
     ) -> Radio:
         """Update Radio record in the database."""
-        cur_item = await self.get_db_item(item_id)
-        if overwrite:
-            metadata = radio.metadata
-            provider_ids = radio.provider_ids
-        else:
-            metadata = merge_dict(cur_item.metadata, radio.metadata)
-            provider_ids = {*cur_item.provider_ids, *radio.provider_ids}
-        if not radio.sort_name:
-            radio.sort_name = create_sort_name(radio.name)
+        async with self.mass.database.get_db() as _db:
+            cur_item = await self.get_db_item(item_id, db=_db)
+            if overwrite:
+                metadata = radio.metadata
+                provider_ids = radio.provider_ids
+            else:
+                metadata = cur_item.metadata.update(radio.metadata)
+                provider_ids = {*cur_item.provider_ids, *radio.provider_ids}
+            if not radio.sort_name:
+                radio.sort_name = create_sort_name(radio.name)
 
-        match = {"item_id": item_id}
-        await self.mass.database.update(
-            self.db_table,
-            match,
-            {
-                "name": radio.name,
-                "sort_name": radio.sort_name,
-                "metadata": json_serializer(metadata),
-                "provider_ids": json_serializer(provider_ids),
-            },
-        )
-        await self.mass.music.set_provider_mappings(
-            item_id, MediaType.RADIO, radio.provider_ids
-        )
-        self.logger.debug("updated %s in database: %s", radio.name, item_id)
-        return await self.get_db_item(item_id)
+            match = {"item_id": item_id}
+            await self.mass.database.update(
+                self.db_table,
+                match,
+                {
+                    "name": radio.name,
+                    "sort_name": radio.sort_name,
+                    "metadata": json_serializer(metadata),
+                    "provider_ids": json_serializer(provider_ids),
+                },
+                db=_db,
+            )
+            await self.mass.music.set_provider_mappings(
+                item_id, MediaType.RADIO, provider_ids, db=_db
+            )
+            self.logger.debug("updated %s in database: %s", radio.name, item_id)
+            return await self.get_db_item(item_id, db=_db)

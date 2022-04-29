@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING, List
 import unidecode
 
 if TYPE_CHECKING:
-    from music_assistant.models.media_items import Album, Artist, Track
+    from music_assistant.models.media_items import (
+        Album,
+        Artist,
+        MediaItemMetadata,
+        Track,
+    )
 
 
 def get_compare_string(input_str):
@@ -40,11 +45,9 @@ def compare_version(left_version: str, right_version: str):
     return left_versions == right_versions
 
 
-def compare_explicit(left_metadata: dict, right_metadata: dict):
+def compare_explicit(left: MediaItemMetadata, right: MediaItemMetadata):
     """Compare if explicit is same in metadata."""
-    left = left_metadata.get("explicit")
-    right = right_metadata.get("explicit")
-    if left is None and right is None:
+    if left.explicit is None and right.explicit is None:
         return True
     return left == right
 
@@ -82,6 +85,10 @@ def compare_album(left_album: "Album", right_album: "Album"):
         if (left_album.upc in right_album.upc) or (right_album.upc in left_album.upc):
             # UPC is always 100% accurate match
             return True
+    if left_album.musicbrainz_id and right_album.musicbrainz_id:
+        if left_album.musicbrainz_id == right_album.musicbrainz_id:
+            # musicbrainz_id is always 100% accurate match
+            return True
     if not compare_strings(left_album.name, right_album.name):
         return False
     if not compare_version(left_album.version, right_album.version):
@@ -102,6 +109,10 @@ def compare_track(left_track: "Track", right_track: "Track"):
     if left_track.isrc and left_track.isrc == right_track.isrc:
         # ISRC is always 100% accurate match
         return True
+    if left_track.musicbrainz_id and right_track.musicbrainz_id:
+        if left_track.musicbrainz_id == right_track.musicbrainz_id:
+            # musicbrainz_id is always 100% accurate match
+            return True
     # track name and version must match
     if not compare_strings(left_track.name, right_track.name):
         return False

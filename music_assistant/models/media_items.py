@@ -1,7 +1,7 @@
 """Models and helpers for media items."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum, IntEnum
 from typing import Any, Dict, List, Mapping, Optional, Set, Union
 
@@ -40,7 +40,7 @@ class MediaQuality(IntEnum):
     FLAC_LOSSLESS_HI_RES_4 = 23  # above 192khz 24 bits HI-RES
 
 
-@dataclass
+@dataclass(frozen=True)
 class MediaItemProviderId(DataClassDictMixin):
     """Model for a MediaItem's provider id."""
 
@@ -56,6 +56,102 @@ class MediaItemProviderId(DataClassDictMixin):
         return hash((self.provider, self.item_id, self.quality))
 
 
+class LinkType(Enum):
+    """Enum wth link types."""
+
+    WEBSITE = "website"
+    FACEBOOK = "facebook"
+    TWITTER = "twitter"
+    LASTFM = "lastfm"
+    YOUTUBE = "youtube"
+    INSTAGRAM = "instagram"
+    SNAPCHAT = "snapchat"
+    TIKTOK = "tiktok"
+    DISCOGS = "discogs"
+    WIKIPEDIA = "wikipedia"
+    ALLMUSIC = "allmusic"
+
+
+@dataclass(frozen=True)
+class MediaItemLink(DataClassDictMixin):
+    """Model for a link."""
+
+    type: LinkType
+    url: str
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.type.value))
+
+
+class ImageType(Enum):
+    """Enum wth image types."""
+
+    THUMB = "thumb"
+    WIDE_THUMB = "wide_thumb"
+    FANART = "fanart"
+    LOGO = "logo"
+    CLEARART = "clearart"
+    BANNER = "banner"
+    CUTOUT = "cutout"
+    BACK = "back"
+    CDART = "cdart"
+    OTHER = "other"
+
+
+@dataclass(frozen=True)
+class MediaItemImage(DataClassDictMixin):
+    """Model for a image."""
+
+    type: ImageType
+    url: str
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.url))
+
+
+@dataclass
+class MediaItemMetadata(DataClassDictMixin):
+    """Model for a MediaItem's metadata."""
+
+    description: Optional[str] = None
+    review: Optional[str] = None
+    explicit: Optional[bool] = None
+    images: Optional[Set[MediaItemImage]] = None
+    genres: Optional[Set[str]] = None
+    mood: Optional[str] = None
+    style: Optional[str] = None
+    copyright: Optional[str] = None
+    lyrics: Optional[str] = None
+    ean: Optional[str] = None
+    label: Optional[str] = None
+    links: Optional[Set[MediaItemLink]] = None
+    performers: Optional[Set[str]] = None
+    preview: Optional[str] = None
+    replaygain: Optional[float] = None
+    popularity: Optional[int] = None
+    # last_refresh: timestamp the (full) metadata was last collected
+    last_refresh: Optional[int] = None
+
+    def update(
+        self,
+        new_values: "MediaItemMetadata",
+        allow_overwrite: bool = False,
+    ) -> "MediaItemMetadata":
+        """Update metadata (in-place) with new values."""
+        for fld in fields(self):
+            new_val = getattr(new_values, fld.name)
+            if new_val is None:
+                continue
+            cur_val = getattr(self, fld.name)
+            if isinstance(cur_val, set):
+                cur_val.update(new_val)
+            elif cur_val is None or allow_overwrite:
+                setattr(self, fld.name, new_val)
+        return self
+
+
 @dataclass
 class MediaItem(DataClassDictMixin):
     """Base representation of a media item."""
@@ -66,7 +162,7 @@ class MediaItem(DataClassDictMixin):
     # optional fields below
     provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
     sort_name: Optional[str] = None
-    metadata: Dict[str, MetadataTypes] = field(default_factory=dict)
+    metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN
     uri: str = ""
@@ -118,6 +214,15 @@ class MediaItem(DataClassDictMixin):
         """Return (calculated) availability."""
         return any(x.available for x in self.provider_ids)
 
+    @property
+    def image(self) -> str | None:
+        """Return (first/random) image/thumb from metadata (if any)."""
+        if self.metadata is None or self.metadata.images is None:
+            return None
+        return next(
+            (x.url for x in self.metadata.images if x.type == ImageType.THUMB), None
+        )
+
     def add_provider_id(self, prov_id: MediaItemProviderId) -> None:
         """Add provider ID, overwrite existing entry."""
         self.provider_ids = {
@@ -127,8 +232,13 @@ class MediaItem(DataClassDictMixin):
         }
         self.provider_ids.add(prov_id)
 
+    @property
+    def last_refresh(self) -> int:
+        """Return timestamp the metadata was last refreshed (0 if full data never retrieved)."""
+        return self.metadata.last_refresh or 0
 
-@dataclass
+
+@dataclass(frozen=True)
 class ItemMapping(DataClassDictMixin):
     """Representation of a minimized item object."""
 
@@ -158,7 +268,7 @@ class Artist(MediaItem):
     """Model for an artist."""
 
     media_type: MediaType = MediaType.ARTIST
-    musicbrainz_id: str = ""
+    musicbrainz_id: Optional[str] = None
 
 
 class AlbumType(Enum):
@@ -180,6 +290,7 @@ class Album(MediaItem):
     artist: Union[ItemMapping, Artist, None] = None
     album_type: AlbumType = AlbumType.UNKNOWN
     upc: Optional[str] = None
+    musicbrainz_id: Optional[str] = None  # release group id
 
     def __hash__(self):
         """Return custom hash."""
@@ -193,7 +304,8 @@ class Track(MediaItem):
     media_type: MediaType = MediaType.TRACK
     duration: int = 0
     version: str = ""
-    isrc: str = ""
+    isrc: Optional[str] = None
+    musicbrainz_id: Optional[str] = None  # Recording ID
     artists: List[Union[ItemMapping, Artist]] = field(default_factory=list)
     # album track only
     album: Union[ItemMapping, Album, None] = None

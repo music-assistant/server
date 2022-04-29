@@ -26,6 +26,7 @@ class MusicProvider:
     _attr_available: bool = True
     _attr_supported_mediatypes: List[MediaType] = []
     mass: MusicAssistant = None  # set by setup
+    cache: MusicAssistant = None  # set by setup
     logger: Logger = None  # set by setup
 
     @abstractmethod

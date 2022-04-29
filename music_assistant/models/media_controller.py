@@ -5,7 +5,8 @@ from abc import ABCMeta, abstractmethod
 from time import time
 from typing import Generic, List, Optional, Tuple, TypeVar
 
-from music_assistant.helpers.cache import cached
+from databases import Database as Db
+
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailableError
 
@@ -14,7 +15,6 @@ from .media_items import MediaItemType, MediaType
 ItemCls = TypeVar("ItemCls", bound="MediaControllerBase")
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 30
-REFRESH_KEY = "last_refresh"
 
 
 class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
@@ -28,10 +28,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Initialize class."""
         self.mass = mass
         self.logger = mass.logger.getChild(f"music.{self.media_type.value}")
-
-    @abstractmethod
-    async def setup(self):
-        """Async initialize of module."""
 
     @abstractmethod
     async def add(self, item: ItemCls) -> ItemCls:
@@ -56,10 +52,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         db_item = await self.get_db_item_by_prov_id(provider_id, provider_item_id)
-        if (
-            db_item
-            and (time() - db_item.metadata.get(REFRESH_KEY, 0)) > REFRESH_INTERVAL
-        ):
+        if db_item and (time() - db_item.last_refresh) > REFRESH_INTERVAL:
             force_refresh = True
         if db_item and force_refresh:
             provider_id, provider_item_id = await self.get_provider_id(db_item)
@@ -67,7 +60,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return db_item
         if not details:
             details = await self.get_provider_item(provider_item_id, provider_id)
-        details.metadata[REFRESH_KEY] = int(time())
         if not lazy:
             return await self.add(details)
         self.mass.add_job(self.add(details), f"Add {details.uri} to database")
@@ -88,13 +80,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider = self.mass.music.get_provider(provider_id)
         if not provider:
             return {}
-        cache_key = (
-            f"{provider_id}.search.{self.media_type.value}.{search_query}.{limit}"
-        )
-        return await cached(
-            self.mass.cache,
-            cache_key,
-            provider.search,
+        return await provider.search(
             search_query,
             [self.media_type],
             limit,
@@ -147,10 +133,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             func = self.mass.database.get_rows(self.db_table)
         return [self.item_cls.from_db_row(db_row) for db_row in await func]
 
-    async def get_db_item(self, item_id: int) -> ItemCls:
+    async def get_db_item(self, item_id: int, db: Optional[Db] = None) -> ItemCls:
+        # pylint: disable = invalid-name
         """Get record by id."""
         match = {"item_id": int(item_id)}
-        if db_row := await self.mass.database.get_row(self.db_table, match):
+        if db_row := await self.mass.database.get_row(self.db_table, match, db=db):
             return self.item_cls.from_db_row(db_row)
         return None
 
@@ -158,14 +145,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self,
         provider_id: str,
         provider_item_id: str,
+        db: Optional[Db] = None,  # pylint: disable = invalid-name
     ) -> ItemCls | None:
         """Get the database album for the given prov_id."""
         if provider_id == "database":
-            return await self.get_db_item(provider_item_id)
+            return await self.get_db_item(provider_item_id, db=db)
         if item_id := await self.mass.music.get_provider_mapping(
             self.media_type, provider_id, provider_item_id
         ):
-            return await self.get_db_item(item_id)
+            return await self.get_db_item(item_id, db=db)
         return None
 
     async def set_db_library(self, item_id: int, in_library: bool) -> None:
@@ -184,10 +172,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider = self.mass.music.get_provider(provider_id)
         if not provider:
             raise ProviderUnavailableError(f"Provider {provider_id} is not available!")
-        cache_key = f"{provider_id}.get_{self.media_type.value}.{item_id}"
-        item = await cached(
-            self.mass.cache, cache_key, provider.get_item, self.media_type, item_id
-        )
+        item = await provider.get_item(self.media_type, item_id)
         if not item:
             raise MediaNotFoundError(
                 f"{self.media_type.value} {item_id} not found on provider {provider_id}"

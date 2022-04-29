@@ -11,7 +11,16 @@ from music_assistant.helpers.typing import MusicAssistant
 
 # pylint: disable=invalid-name
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+TABLE_PROV_MAPPINGS = "provider_mappings"
+TABLE_TRACK_LOUDNESS = "track_loudness"
+TABLE_PLAYLOG = "playlog"
+TABLE_ARTISTS = "artists"
+TABLE_ALBUMS = "albums"
+TABLE_TRACKS = "tracks"
+TABLE_PLAYLISTS = "playlists"
+TABLE_RADIOS = "radios"
 
 
 class Database:
@@ -152,8 +161,8 @@ class Database:
                 SCHEMA_VERSION,
             )
 
-            if prev_version < 1:
-                # schema version 1: too many breaking changes, simply drop the media tables for now
+            if prev_version < 3:
+                # schema version 3: too many breaking changes, rebuild db
                 async with self.get_db() as _db:
                     await _db.execute("DROP TABLE IF EXISTS artists")
                     await _db.execute("DROP TABLE IF EXISTS albums")
@@ -165,16 +174,105 @@ class Database:
                     await _db.execute("DROP TABLE IF EXISTS provider_mappings")
                     await _db.execute("DROP TABLE IF EXISTS cache")
 
-            if prev_version < 2:
-                # schema version 2: repair invalid data for radio items
-                async with self.get_db() as _db:
-                    await _db.execute("DROP TABLE IF EXISTS radios")
-                    if await self.exists("provider_mappings", _db):
-                        await self.delete(
-                            "provider_mappings", {"media_type": "radio"}, _db
-                        )
-
+        # create db tables
+        await self.__create_database_tables()
         # store current schema version
         await self.insert_or_replace(
             "settings", {"key": "version", "value": str(SCHEMA_VERSION)}
         )
+
+    async def __create_database_tables(self) -> None:
+        """Init generic database tables."""
+        async with self.mass.database.get_db() as _db:
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {TABLE_PROV_MAPPINGS}(
+                        item_id INTEGER NOT NULL,
+                        media_type TEXT NOT NULL,
+                        prov_item_id TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        quality INTEGER NULL,
+                        details TEXT NULL,
+                        url TEXT NULL,
+                        UNIQUE(item_id, media_type, prov_item_id, provider)
+                        );"""
+            )
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {TABLE_TRACK_LOUDNESS}(
+                        item_id INTEGER NOT NULL,
+                        provider TEXT NOT NULL,
+                        loudness REAL,
+                        UNIQUE(item_id, provider));"""
+            )
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {TABLE_PLAYLOG}(
+                    item_id INTEGER NOT NULL,
+                    provider TEXT NOT NULL,
+                    timestamp REAL,
+                    UNIQUE(item_id, provider));"""
+            )
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {TABLE_ALBUMS}(
+                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        sort_name TEXT NOT NULL,
+                        album_type TEXT,
+                        year INTEGER,
+                        version TEXT,
+                        in_library BOOLEAN DEFAULT 0,
+                        upc TEXT,
+                        musicbrainz_id TEXT,
+                        artist json,
+                        metadata json,
+                        provider_ids json
+                    );"""
+            )
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {TABLE_ARTISTS}(
+                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        sort_name TEXT NOT NULL,
+                        musicbrainz_id TEXT NOT NULL UNIQUE,
+                        in_library BOOLEAN DEFAULT 0,
+                        metadata json,
+                        provider_ids json
+                        );"""
+            )
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {TABLE_TRACKS}(
+                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        sort_name TEXT NOT NULL,
+                        version TEXT,
+                        duration INTEGER,
+                        in_library BOOLEAN DEFAULT 0,
+                        isrc TEXT,
+                        musicbrainz_id TEXT,
+                        artists json,
+                        metadata json,
+                        provider_ids json
+                    );"""
+            )
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {TABLE_PLAYLISTS}(
+                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        sort_name TEXT NOT NULL,
+                        owner TEXT NOT NULL,
+                        is_editable BOOLEAN NOT NULL,
+                        checksum TEXT NOT NULL,
+                        in_library BOOLEAN DEFAULT 0,
+                        metadata json,
+                        provider_ids json,
+                        UNIQUE(name, owner)
+                    );"""
+            )
+            await _db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {TABLE_RADIOS}(
+                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL UNIQUE,
+                        sort_name TEXT NOT NULL,
+                        in_library BOOLEAN DEFAULT 0,
+                        metadata json,
+                        provider_ids json
+                    );"""
+            )

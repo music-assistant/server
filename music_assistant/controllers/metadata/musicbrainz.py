@@ -1,13 +1,13 @@
 """Handle getting Id's from MusicBrainz."""
+from __future__ import annotations
 
 import re
 from json.decoder import JSONDecodeError
-from typing import Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
 
-from music_assistant.helpers.cache import cached
+from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings, get_compare_string
 from music_assistant.helpers.typing import MusicAssistant
 
@@ -92,19 +92,11 @@ class MusicBrainz:
             get_compare_string(artistname),
         ]:
             if album_upc:
-                endpoint = "release"
-                params = {"query": f"barcode:{album_upc}"}
-                cache_key = f"{endpoint}.barcode.{album_upc}"
+                query = f"barcode:{album_upc}"
             else:
                 searchalbum = re.sub(LUCENE_SPECIAL, r"\\\1", albumname)
-                endpoint = "release"
-                params = {
-                    "query": f'artist:"{searchartist}" AND release:"{searchalbum}"'
-                }
-                cache_key = f"{endpoint}.{searchartist}.{searchalbum}"
-            result = await cached(
-                self.mass.cache, cache_key, self.get_data, endpoint, params
-            )
+                query = f'artist:"{searchartist}" AND release:"{searchalbum}"'
+            result = await self.get_data("release", query=query)
             if result and "releases" in result:
                 for strictness in [True, False]:
                     for item in result["releases"]:
@@ -125,20 +117,14 @@ class MusicBrainz:
 
     async def search_artist_by_track(self, artistname, trackname=None, track_isrc=None):
         """Retrieve artist id by providing the artist name and trackname or track isrc."""
-        endpoint = "recording"
         searchartist = re.sub(LUCENE_SPECIAL, r"\\\1", artistname)
         if track_isrc:
-            endpoint = f"isrc/{track_isrc}"
-            params = {"inc": "artist-credits"}
-            cache_key = endpoint
+            result = await self.get_data(f"isrc/{track_isrc}", inc="artist-credits")
         else:
             searchtrack = re.sub(LUCENE_SPECIAL, r"\\\1", trackname)
-            endpoint = "recording"
-            params = {"query": '"{searchtrack}" AND artist:"{searchartist}"'}
-            cache_key = f"{endpoint}.{searchtrack}.{searchartist}"
-        result = await cached(
-            self.mass.cache, cache_key, self.get_data(endpoint, params)
-        )
+            result = await self.get_data(
+                "recording", query=f'"{searchtrack}" AND artist:"{searchartist}"'
+            )
         if result and "recordings" in result:
             for strictness in [True, False]:
                 for item in result["recordings"]:
@@ -157,16 +143,17 @@ class MusicBrainz:
                                     return artist["id"]
         return ""
 
-    async def get_data(self, endpoint: str, params: Optional[dict] = None):
+    @use_cache(86400 * 30)
+    async def get_data(self, endpoint: str, **kwargs):
         """Get data from api."""
-        if params is None:
-            params = {}
         url = f"http://musicbrainz.org/ws/2/{endpoint}"
-        headers = {"User-Agent": "Music Assistant/1.0.0 https://github.com/marcelveldt"}
-        params["fmt"] = "json"
+        headers = {
+            "User-Agent": "Music Assistant/1.0.0 https://github.com/music-assistant"
+        }
+        kwargs["fmt"] = "json"
         async with self.throttler:
             async with self.mass.http_session.get(
-                url, headers=headers, params=params, verify_ssl=False
+                url, headers=headers, params=kwargs, verify_ssl=False
             ) as response:
                 try:
                     result = await response.json()

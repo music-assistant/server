@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import pickle
+import json
 import time
-from typing import Awaitable
 
 from music_assistant.helpers.typing import MusicAssistant
 
@@ -59,7 +58,7 @@ class Cache:
             ):
                 try:
                     data = await asyncio.get_running_loop().run_in_executor(
-                        None, pickle.loads, db_row["data"]
+                        None, json.loads, db_row["data"]
                     )
                 except Exception as exc:  # pylint: disable=broad-except
                     self.logger.exception(
@@ -81,9 +80,7 @@ class Cache:
         checksum = self._get_checksum(checksum)
         expires = int(time.time() + expiration)
         self._mem_cache[cache_key] = (data, checksum, expires)
-        data = await asyncio.get_running_loop().run_in_executor(
-            None, pickle.dumps, data
-        )
+        data = await asyncio.get_running_loop().run_in_executor(None, json.dumps, data)
         await self.mass.database.insert_or_replace(
             DB_TABLE,
             {"key": cache_key, "expires": expires, "checksum": checksum, "data": data},
@@ -122,21 +119,32 @@ class Cache:
         return functools.reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
-async def cached(
-    cache: Cache,
-    cache_key: str,
-    coro_func: Awaitable,
-    *args,
-    expires: int = (86400 * 30),
-    checksum=None,
-):
-    """Return helper method to store results of a coroutine in the cache."""
-    cache_result = await cache.get(cache_key, checksum)
-    if cache_result is not None:
-        return cache_result
-    if asyncio.iscoroutine(coro_func):
-        result = await coro_func
-    else:
-        result = await coro_func(*args)
-    cache.mass.create_task(cache.set(cache_key, result, checksum, expires))
-    return result
+def use_cache(expiration=86400 * 30):
+    """Return decorator that can be used to cache a method's result."""
+
+    def wrapper(func):
+        @functools.wraps(func)
+        async def wrapped(*args, **kwargs):
+            method_class = args[0]
+            method_class_name = method_class.__class__.__name__
+            cache_key_parts = [method_class_name, func.__name__]
+            skip_cache = kwargs.pop("skip_cache", False)
+            cache_checksum = kwargs.pop("cache_checksum", None)
+            if len(args) > 1:
+                cache_key_parts += args[1:]
+            for key in sorted(kwargs.keys()):
+                cache_key_parts.append(f"{key}{kwargs[key]}")
+            cache_key = ".".join(cache_key_parts)
+            cachedata = await method_class.cache.get(cache_key, checksum=cache_checksum)
+
+            if not skip_cache and cachedata is not None:
+                return cachedata
+            result = await func(*args, **kwargs)
+            await method_class.cache.set(
+                cache_key, result, expiration=expiration, checksum=cache_checksum
+            )
+            return result
+
+        return wrapped
+
+    return wrapper
