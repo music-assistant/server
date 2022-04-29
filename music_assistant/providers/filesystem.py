@@ -390,7 +390,7 @@ class FileSystemProvider(MusicProvider):
             MediaItemProviderId(provider=self.id, item_id=prov_item_id, url=filename)
         )
         playlist.owner = self._attr_name
-        playlist.checksum = os.path.getmtime(filename)
+        playlist.checksum = str(os.path.getmtime(filename))
         return playlist
 
     async def _parse_track_from_uri(self, uri):

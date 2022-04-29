@@ -425,7 +425,7 @@ class SpotifyProvider(MusicProvider):
             playlist.metadata.images = {
                 MediaItemImage(ImageType.THUMB, playlist_obj["images"][0]["url"])
             }
-        playlist.checksum = playlist_obj["snapshot_id"]
+        playlist.checksum = str(playlist_obj["snapshot_id"])
         return playlist
 
     async def get_token(self):

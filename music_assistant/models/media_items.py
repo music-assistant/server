@@ -12,7 +12,7 @@ from music_assistant.helpers.util import create_sort_name
 
 MetadataTypes = Union[int, bool, str, List[str]]
 
-JSON_KEYS = ("artists", "artist", "metadata", "provider_ids")
+JSON_KEYS = ("artists", "artist", "album", "metadata", "provider_ids")
 
 
 class MediaType(Enum):
@@ -182,7 +182,7 @@ class MediaItem(DataClassDictMixin):
         db_row = dict(db_row)
         db_row["provider"] = "database"
         for key in JSON_KEYS:
-            if key in db_row:
+            if key in db_row and db_row[key] is not None:
                 db_row[key] = json.loads(db_row[key])
         if "in_library" in db_row:
             db_row["in_library"] = bool(db_row["in_library"])

@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, List
 
 import unidecode
 
+from music_assistant.models.media_items import ItemMapping
+
 if TYPE_CHECKING:
     from music_assistant.models.media_items import (
         Album,
@@ -81,14 +83,19 @@ def compare_album(left_album: "Album", right_album: "Album"):
         and left_album.item_id == right_album.item_id
     ):
         return True
-    if left_album.upc and right_album.upc:
-        if (left_album.upc in right_album.upc) or (right_album.upc in left_album.upc):
-            # UPC is always 100% accurate match
-            return True
-    if left_album.musicbrainz_id and right_album.musicbrainz_id:
-        if left_album.musicbrainz_id == right_album.musicbrainz_id:
-            # musicbrainz_id is always 100% accurate match
-            return True
+    if not (
+        isinstance(left_album, ItemMapping) or isinstance(right_album, ItemMapping)
+    ):
+        if left_album.upc and right_album.upc:
+            if (left_album.upc in right_album.upc) or (
+                right_album.upc in left_album.upc
+            ):
+                # UPC is always 100% accurate match
+                return True
+        if left_album.musicbrainz_id and right_album.musicbrainz_id:
+            if left_album.musicbrainz_id == right_album.musicbrainz_id:
+                # musicbrainz_id is always 100% accurate match
+                return True
     if not compare_strings(left_album.name, right_album.name):
         return False
     if not compare_version(left_album.version, right_album.version):

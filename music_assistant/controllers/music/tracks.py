@@ -136,7 +136,7 @@ class TracksController(MediaControllerBase[Track]):
             track.sort_name = create_sort_name(track.name)
         cur_item = None
         async with self.mass.database.get_db() as _db:
-            if track.album:
+            if track.album and not isinstance(track.album, ItemMapping):
                 track.album = ItemMapping.from_item(
                     await self.get_db_item_by_prov_id(
                         track.album.provider, track.album.item_id, db=_db
@@ -194,23 +194,24 @@ class TracksController(MediaControllerBase[Track]):
         async with self.mass.database.get_db() as _db:
             cur_item = await self.get_db_item(item_id, db=_db)
             if overwrite:
-                metadata = track.metadata
                 provider_ids = track.provider_ids
                 track_artists = track.artists
+                track_album = track.album or cur_item.album
             else:
-                metadata = cur_item.metadata.update(track.metadata)
                 provider_ids = {*cur_item.provider_ids, *track.provider_ids}
-                track_artists = await self._get_track_artists(track, cur_item.artists)
-            if track.album and not isinstance(track.album, ItemMapping):
-                track.album = ItemMapping.from_item(
+                track_artists = cur_item.artists + track.artists
+                track_album = cur_item.album or track.album
+            metadata = cur_item.metadata.update(track.metadata, overwrite)
+            if track_album and not isinstance(track_album, ItemMapping):
+                track_album = ItemMapping.from_item(
                     await self.get_db_item_by_prov_id(
-                        track.album.provider, track.album.item_id, db=_db
+                        track_album.provider, track_album.item_id, db=_db
                     )
-                    or await self.mass.music.albums.add_db_item(track.album)
+                    or await self.mass.music.albums.add_db_item(track_album)
                 )
 
             # we store a mapping to artists on the track for easier access/listings
-            track_artists = await self._get_track_artists(track, cur_item.artists)
+            track_artists = await self._get_track_artists(track, track_artists)
             await self.mass.database.update(
                 self.db_table,
                 {"item_id": item_id},
@@ -220,6 +221,7 @@ class TracksController(MediaControllerBase[Track]):
                     "version": track.version if overwrite else cur_item.version,
                     "duration": track.duration if overwrite else cur_item.duration,
                     "artists": json_serializer(track_artists),
+                    "album": json_serializer(track_album),
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                     "isrc": track.isrc or cur_item.isrc,

@@ -66,6 +66,7 @@ class BackgroundJob:
             "id": self.id,
             "name": self.name,
             "timestamp": self.status.value,
+            "status": self.status.value,
         }
 
 
