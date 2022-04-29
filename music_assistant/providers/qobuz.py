@@ -561,7 +561,9 @@ class QobuzProvider(MusicProvider):
         if track_obj.get("isrc"):
             track.isrc = track_obj["isrc"]
         if track_obj.get("performers"):
-            track.metadata.performers = track_obj["performers"]
+            track.metadata.performers = {
+                x.strip() for x in track_obj["performers"].split("-")
+            }
         if track_obj.get("copyright"):
             track.metadata.copyright = track_obj["copyright"]
         if track_obj.get("audio_info"):
@@ -620,7 +622,7 @@ class QobuzProvider(MusicProvider):
         )
         if img := self.__get_image(playlist_obj):
             playlist.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
-        playlist.checksum = playlist_obj["updated_at"]
+        playlist.checksum = str(playlist_obj["updated_at"])
         return playlist
 
     async def _auth_token(self):

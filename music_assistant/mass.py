@@ -233,6 +233,8 @@ class MusicAssistant:
 
     def __job_done_cb(self, task: asyncio.Task, job: BackgroundJob):
         """Call when background job finishes."""
+        execution_time = round(time() - job.timestamp, 2)
+        job.timestamp = execution_time
         if task.cancelled():
             job.status = JobStatus.CANCELLED
             self.logger.debug("Job [%s] is cancelled.", job.name)
@@ -246,7 +248,6 @@ class MusicAssistant:
             )
         else:
             job.status = JobStatus.FINISHED
-            execution_time = round(time() - job.timestamp, 2)
             self.logger.info(
                 "Finished job [%s] in %s seconds.", job.name, execution_time
             )

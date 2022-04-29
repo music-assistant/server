@@ -11,7 +11,7 @@ from music_assistant.helpers.typing import MusicAssistant
 
 # pylint: disable=invalid-name
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 TABLE_PROV_MAPPINGS = "provider_mappings"
 TABLE_TRACK_LOUDNESS = "track_loudness"
@@ -21,6 +21,7 @@ TABLE_ALBUMS = "albums"
 TABLE_TRACKS = "tracks"
 TABLE_PLAYLISTS = "playlists"
 TABLE_RADIOS = "radios"
+TABLE_CACHE = "cache"
 
 
 class Database:
@@ -164,15 +165,22 @@ class Database:
             if prev_version < 3:
                 # schema version 3: too many breaking changes, rebuild db
                 async with self.get_db() as _db:
-                    await _db.execute("DROP TABLE IF EXISTS artists")
-                    await _db.execute("DROP TABLE IF EXISTS albums")
+                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
+                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_ALBUMS}")
+                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
+                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_PLAYLISTS}")
+                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
+                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_PROV_MAPPINGS}")
+                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
+
+            if prev_version < 4:
+                # schema version 4: add album to tracks table
+                async with self.get_db() as _db:
                     await _db.execute("DROP TABLE IF EXISTS tracks")
-                    await _db.execute("DROP TABLE IF EXISTS playlists")
-                    await _db.execute("DROP TABLE IF EXISTS radios")
-                    await _db.execute("DROP TABLE IF EXISTS playlist_tracks")
-                    await _db.execute("DROP TABLE IF EXISTS album_tracks")
-                    await _db.execute("DROP TABLE IF EXISTS provider_mappings")
-                    await _db.execute("DROP TABLE IF EXISTS cache")
+                    if await self.exists(TABLE_PROV_MAPPINGS, _db):
+                        await self.delete(
+                            TABLE_PROV_MAPPINGS, {"media_type": "track"}, db=_db
+                        )
 
         # create db tables
         await self.__create_database_tables()
@@ -248,6 +256,7 @@ class Database:
                         isrc TEXT,
                         musicbrainz_id TEXT,
                         artists json,
+                        album json,
                         metadata json,
                         provider_ids json
                     );"""
