@@ -707,7 +707,7 @@ class PlayerQueue:
             self._repeat_enabled = bool(db_row["repeat_enabled"])
             self._crossfade_duration = db_row["crossfade_duration"]
         if queue_cache := await self.mass.cache.get(f"queue_items.{self.queue_id}"):
-            self._items = queue_cache["items"]
+            self._items = [QueueItem.from_dict(x) for x in queue_cache["items"]]
             self._current_index = queue_cache["current_index"]
 
     async def _save_state(self, save_items: bool = True) -> None:
@@ -729,5 +729,8 @@ class PlayerQueue:
         if save_items:
             await self.mass.cache.set(
                 f"queue_items.{self.queue_id}",
-                {"items": self._items, "current_index": self._current_index},
+                {
+                    "items": [x.to_dict() for x in self._items],
+                    "current_index": self._current_index,
+                },
             )

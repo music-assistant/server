@@ -70,6 +70,7 @@ class FileSystemProvider(MusicProvider):
         ]
         if playlist_dir is not None:
             self._attr_supported_mediatypes.append(MediaType.PLAYLIST)
+        self._cached_tracks: List[Track] = []
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -141,10 +142,8 @@ class FileSystemProvider(MusicProvider):
     async def get_library_tracks(self, allow_cache=False) -> List[Track]:
         """Get all tracks recursively."""
         # pylint: disable = arguments-differ
-        cache_key = f"{self.id}.library_tracks"
-        if allow_cache:
-            if cache_result := await self.mass.cache.get(cache_key):
-                return cache_result
+        if allow_cache and self._cached_tracks:
+            return self._cached_tracks
         result = []
         cur_ids = set()
         for _root, _dirs, _files in os.walk(self._music_dir):
@@ -153,7 +152,7 @@ class FileSystemProvider(MusicProvider):
                 if track := await self._parse_track(filename):
                     result.append(track)
                     cur_ids.add(track.item_id)
-        await self.mass.cache.set(cache_key, result)
+        self._cached_tracks = result
         return result
 
     async def get_library_playlists(self) -> List[Playlist]:
@@ -341,14 +340,14 @@ class FileSystemProvider(MusicProvider):
             else:
                 track.album.album_type = AlbumType.ALBUM
         # parse other info
-        track.metadata["genres"] = list(split_items(tag.genre))
+        track.metadata.genres = set(split_items(tag.genre))
         track.disc_number = try_parse_int(tag.disc)
         track.track_number = try_parse_int(tag.track)
         track.isrc = tag.extra.get("isrc", "")
         if "copyright" in tag.extra:
-            track.metadata["copyright"] = tag.extra["copyright"]
+            track.metadata.copyright = tag.extra["copyright"]
         if "lyrics" in tag.extra:
-            track.metadata["lyrics"] = tag.extra["lyrics"]
+            track.metadata.lyrics = tag.extra["lyrics"]
 
         quality_details = ""
         if filename.endswith(".flac"):

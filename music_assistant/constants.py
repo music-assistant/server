@@ -2,7 +2,8 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional
+from time import time
+from typing import Any, Coroutine, Optional
 
 
 class EventType(Enum):
@@ -27,7 +28,7 @@ class EventType(Enum):
     RADIO_ADDED = "radio added"
     TASK_UPDATED = "task updated"
     PROVIDER_REGISTERED = "provider registered"
-    BACKGROUND_JOBS_UPDATED = "background_jobs_updated"
+    BACKGROUND_JOB_UPDATED = "background_job_updated"
 
 
 @dataclass
@@ -37,6 +38,35 @@ class MassEvent:
     type: EventType
     object_id: Optional[str] = None  # player_id, queue_id or uri
     data: Optional[Any] = None  # optional data (such as the object)
+
+
+class JobStatus(Enum):
+    """Enum with Job status."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    CANCELLED = "cancelled"
+    FINISHED = "success"
+    ERROR = "error"
+
+
+@dataclass
+class BackgroundJob:
+    """Description of a background job/task."""
+
+    id: str
+    coro: Coroutine
+    name: str
+    timestamp: float = time()
+    status: JobStatus = JobStatus.PENDING
+
+    def to_dict(self):
+        """Return serializable dict from object."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "timestamp": self.status.value,
+        }
 
 
 # player attributes

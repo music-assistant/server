@@ -1,15 +1,34 @@
 """FanartTv Metadata provider."""
+from __future__ import annotations
 
 from json.decoder import JSONDecodeError
-from typing import Dict
+from typing import Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
 
+from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-module
+    app_var,
+)
+from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.models.media_items import (
+    Album,
+    Artist,
+    ImageType,
+    MediaItemImage,
+    MediaItemMetadata,
+)
 
 # TODO: add support for personal api keys ?
 # TODO: Add support for album artwork ?
+
+IMG_MAPPING = {
+    "artistthumb": ImageType.THUMB,
+    "hdmusiclogo": ImageType.LOGO,
+    "musicbanner": ImageType.BANNER,
+    "artistbackground": ImageType.FANART,
+}
 
 
 class FanartTv:
@@ -18,40 +37,54 @@ class FanartTv:
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.mass = mass
+        self.cache = mass.cache
         self.logger = mass.logger.getChild("fanarttv")
-        self.throttler = Throttler(rate_limit=1, period=2)
+        self.throttler = Throttler(rate_limit=2, period=1)
 
-    async def get_artist_images(self, mb_artist_id: str) -> Dict:
-        """Retrieve images by musicbrainz artist id."""
-        metadata = {}
-        data = await self._get_data(f"music/{mb_artist_id}")
-        if data:
-            if data.get("hdmusiclogo"):
-                metadata["logo"] = data["hdmusiclogo"][0]["url"]
-            elif data.get("musiclogo"):
-                metadata["logo"] = data["musiclogo"][0]["url"]
-            if data.get("artistbackground"):
-                count = 0
-                for item in data["artistbackground"]:
-                    key = "fanart" if count == 0 else f"fanart.{count}"
-                    metadata[key] = item["url"]
-            if data.get("artistthumb"):
-                url = data["artistthumb"][0]["url"]
-                if "2a96cbd8b46e442fc41c2b86b821562f" not in url:
-                    metadata["image"] = url
-            if data.get("musicbanner"):
-                metadata["banner"] = data["musicbanner"][0]["url"]
-        return metadata
+    async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
+        """Retrieve metadata for artist on fanart.tv."""
+        if not artist.musicbrainz_id:
+            return
+        self.logger.debug("Fetching metadata for Artist %s on Fanart.tv", artist.name)
+        if data := await self._get_data(f"music/{artist.musicbrainz_id}"):
+            metadata = MediaItemMetadata()
+            metadata.images = set()
+            for key, img_type in IMG_MAPPING.items():
+                items = data.get(key)
+                if not items:
+                    continue
+                for item in items:
+                    metadata.images.add(MediaItemImage(img_type, item["url"]))
+            return metadata
+        return None
 
-    async def _get_data(self, endpoint, params=None):
+    async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
+        """Retrieve metadata for album on fanart.tv."""
+        if not album.musicbrainz_id:
+            return
+        self.logger.debug("Fetching metadata for Album %s on Fanart.tv", album.name)
+        if data := await self._get_data(f"music/albums/{album.musicbrainz_id}"):
+            if data and data.get("albums"):
+                data = data["albums"][album.musicbrainz_id]
+                metadata = MediaItemMetadata()
+                metadata.images = set()
+                for key, img_type in IMG_MAPPING.items():
+                    items = data.get(key)
+                    if not items:
+                        continue
+                    for item in items:
+                        metadata.images.add(MediaItemImage(img_type, item["url"]))
+                return metadata
+        return None
+
+    @use_cache(86400 * 14)
+    async def _get_data(self, endpoint, **kwargs) -> Optional[dict]:
         """Get data from api."""
-        if params is None:
-            params = {}
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
-        params["api_key"] = "639191cb0774661597f28a47e7e2bad5"
+        kwargs["api_key"] = app_var(4)
         async with self.throttler:
             async with self.mass.http_session.get(
-                url, params=params, verify_ssl=False
+                url, params=kwargs, verify_ssl=False
             ) as response:
                 try:
                     result = await response.json()

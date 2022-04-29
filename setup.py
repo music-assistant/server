@@ -10,7 +10,6 @@ PROJECT_VERSION = "1.0.17"
 PROJECT_REQ_PYTHON_VERSION = "3.9"
 PROJECT_LICENSE = "Apache License 2.0"
 PROJECT_AUTHOR = "Marcel van der Veldt"
-PROJECT_URL = "https://music-assistant.github.io/"
 PROJECT_EMAIL = "marcelveldt@users.noreply.github.com"
 
 PROJECT_GITHUB_USERNAME = "music-assistant"
@@ -23,8 +22,8 @@ GITHUB_URL = f"https://github.com/{GITHUB_PATH}"
 DOWNLOAD_URL = f"{GITHUB_URL}/archive/{PROJECT_VERSION}.zip"
 PROJECT_URLS = {
     "Bug Reports": f"{GITHUB_URL}/issues",
-    "Website": "https://music-assistant.github.io/",
-    "Discord": "https://discord.gg/9xHYFY",
+    "Website": GITHUB_URL,
+    "Discord": "https://discord.gg/AmDBM6QCAs",
 }
 PROJECT_DIR = Path(__file__).parent.resolve()
 README_FILE = PROJECT_DIR / "README.md"
@@ -38,7 +37,7 @@ for (path, directories, filenames) in os.walk("music_assistant/"):
 setup(
     name=PROJECT_PACKAGE_NAME,
     version=PROJECT_VERSION,
-    url=PROJECT_URL,
+    url=GITHUB_URL,
     download_url=DOWNLOAD_URL,
     project_urls=PROJECT_URLS,
     author=PROJECT_AUTHOR,

@@ -5,8 +5,11 @@ from typing import List, Optional
 
 from asyncio_throttle import Throttler
 
+from music_assistant.helpers.cache import use_cache
 from music_assistant.models.media_items import (
     ContentType,
+    ImageType,
+    MediaItemImage,
     MediaItemProviderId,
     MediaItemType,
     MediaQuality,
@@ -50,15 +53,13 @@ class TuneInProvider(MusicProvider):
     async def get_library_radios(self) -> List[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         result = []
-        params = {"c": "presets"}
-        radios = await self._get_data("Browse.ashx", params)
+        radios = await self._get_data("Browse.ashx", c="presets")
         if radios and "body" in radios:
             for radio in radios["body"]:
                 if radio.get("type", "") != "audio":
                     continue
                 # each radio station can have multiple streams add each one as different quality
-                params = {"id": radio["preset_id"]}
-                stream_info = await self._get_data("Tune.ashx", params)
+                stream_info = await self._get_data("Tune.ashx", id=radio["preset_id"])
                 for stream in stream_info["body"]:
                     result.append(await self._parse_radio(radio, stream))
         return result
@@ -67,10 +68,10 @@ class TuneInProvider(MusicProvider):
         """Get radio station details."""
         prov_radio_id, media_type = prov_radio_id.split("--", 1)
         params = {"c": "composite", "detail": "listing", "id": prov_radio_id}
-        result = await self._get_data("Describe.ashx", params)
+        result = await self._get_data("Describe.ashx", **params)
         if result and result.get("body") and result["body"][0].get("children"):
             item = result["body"][0]["children"][0]
-            stream_info = await self._get_data("Tune.ashx", {"id": prov_radio_id})
+            stream_info = await self._get_data("Tune.ashx", id=prov_radio_id)
             for stream in stream_info["body"]:
                 if stream["media_type"] != media_type:
                     continue
@@ -103,17 +104,17 @@ class TuneInProvider(MusicProvider):
                 details=stream["url"],
             )
         )
-        # image
-        if "image" in details:
-            radio.metadata["image"] = details["image"]
-        elif "logo" in details:
-            radio.metadata["image"] = details["logo"]
+        # images
+        if img := details.get("image"):
+            radio.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+        if img := details.get("logo"):
+            radio.metadata.images = {MediaItemImage(ImageType.LOGO, img)}
         return radio
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a radio station."""
         item_id, media_type = item_id.split("--", 1)
-        stream_info = await self._get_data("Tune.ashx", {"id": item_id})
+        stream_info = await self._get_data("Tune.ashx", id=item_id)
         for stream in stream_info["body"]:
             if stream["media_type"] == media_type:
                 return StreamDetails(
@@ -129,22 +130,21 @@ class TuneInProvider(MusicProvider):
                 )
         return None
 
-    async def _get_data(self, endpoint, params=None):
+    @use_cache(3600 * 2)
+    async def _get_data(self, endpoint, **kwargs):
         """Get data from api."""
-        if not params:
-            params = {}
         url = f"https://opml.radiotime.com/{endpoint}"
-        params["render"] = "json"
-        params["formats"] = "ogg,aac,wma,mp3"
-        params["username"] = self._username
-        params["partnerId"] = "1"
+        kwargs["render"] = "json"
+        kwargs["formats"] = "ogg,aac,wma,mp3"
+        kwargs["username"] = self._username
+        kwargs["partnerId"] = "1"
         async with self._throttler:
             async with self.mass.http_session.get(
-                url, params=params, verify_ssl=False
+                url, params=kwargs, verify_ssl=False
             ) as response:
                 result = await response.json()
                 if not result or "error" in result:
                     self.logger.error(url)
-                    self.logger.error(params)
+                    self.logger.error(kwargs)
                     result = None
                 return result
