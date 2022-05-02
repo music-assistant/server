@@ -53,6 +53,13 @@ class QueueItem(DataClassDictMixin):
             self.name = self.uri
 
     @classmethod
+    def __pre_deserialize__(cls, d: Dict[Any, Any]) -> Dict[Any, Any]:
+        """Run actions before serialization."""
+        # pylint: disable=invalid-name
+        d.pop("streamdetails", None)
+        return d
+
+    @classmethod
     def from_media_item(cls, media_item: "Track" | "Radio"):
         """Construct QueueItem from track/radio item."""
         return cls(

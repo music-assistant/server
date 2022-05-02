@@ -136,8 +136,9 @@ class TracksController(MediaControllerBase[Track]):
             track.sort_name = create_sort_name(track.name)
         cur_item = None
         async with self.mass.database.get_db() as _db:
-            if track.album and not isinstance(track.album, ItemMapping):
-                track.album = ItemMapping.from_item(
+            track_album = track.album
+            if track_album and not isinstance(track.album, ItemMapping):
+                track_album = ItemMapping.from_item(
                     await self.get_db_item_by_prov_id(
                         track.album.provider, track.album.item_id, db=_db
                     )
@@ -175,6 +176,7 @@ class TracksController(MediaControllerBase[Track]):
                 {
                     **track.to_db_row(),
                     "artists": json_serializer(track_artists),
+                    "album": json_serializer(track_album),
                 },
                 db=_db,
             )
