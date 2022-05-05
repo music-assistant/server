@@ -6,7 +6,7 @@ import random
 from asyncio import Task, TimerHandle
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
@@ -15,12 +15,15 @@ from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.audio import get_stream_details
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
-from music_assistant.models.media_items import ContentType, MediaType, StreamDetails
+from music_assistant.models.media_items import (
+    ContentType,
+    MediaType,
+    Radio,
+    StreamDetails,
+    Track,
+)
 
 from .player import Player, PlayerGroup, PlayerState
-
-if TYPE_CHECKING:
-    from music_assistant.models.media_items import Radio, Track
 
 
 class QueueOption(Enum):
@@ -43,6 +46,8 @@ class QueueItem(DataClassDictMixin):
     sort_index: int = 0
     streamdetails: Optional[StreamDetails] = None
     media_type: MediaType = MediaType.UNKNOWN
+    image: Optional[str] = None
+    available: bool = True
     is_media_item: bool = False
 
     def __post_init__(self):
@@ -60,14 +65,21 @@ class QueueItem(DataClassDictMixin):
         return d
 
     @classmethod
-    def from_media_item(cls, media_item: "Track" | "Radio"):
+    def from_media_item(cls, media_item: Track | Radio):
         """Construct QueueItem from track/radio item."""
+        if isinstance(media_item, Track):
+            artists = "/".join((x.name for x in media_item.artists))
+            name = f"{artists} - {media_item.name}"
+        else:
+            name = media_item.name
         return cls(
             uri=media_item.uri,
-            name=media_item.name,
+            name=name,
             duration=media_item.duration,
             media_type=media_item.media_type,
             is_media_item=True,
+            image=media_item.image,
+            available=media_item.available,
         )
 
 
@@ -156,6 +168,11 @@ class PlayerQueue:
     def items(self) -> List[QueueItem]:
         """Return all items in this queue."""
         return self._items
+
+    @property
+    def current_index(self) -> int | None:
+        """Return current index."""
+        return self._current_index
 
     @property
     def current_item(self) -> QueueItem | None:
@@ -665,6 +682,7 @@ class PlayerQueue:
             "elapsed_time": int(self.elapsed_time),
             "state": self.player.state.value,
             "available": self.player.available,
+            "current_index": self.current_index,
             "current_item": cur_item,
             "next_item": next_item,
             "shuffle_enabled": self.shuffle_enabled,
