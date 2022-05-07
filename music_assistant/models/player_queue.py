@@ -95,8 +95,8 @@ class CrossFadeMode(Enum):
 class RepeatMode(Enum):
     """Enum with repeat modes."""
 
-    DISABLED = "disabled"  # no repeat at all
-    SINGLE = "single"  # repeat current/single track
+    OFF = "off"  # no repeat at all
+    ONE = "one"  # repeat one/single track
     ALL = "all"  # repeat entire queue
 
 
@@ -107,7 +107,7 @@ class QueueSettings:
         """Initialize."""
         self._queue = queue
         self.mass = queue.mass
-        self._repeat_mode: RepeatMode = RepeatMode.DISABLED
+        self._repeat_mode: RepeatMode = RepeatMode.OFF
         self._shuffle_enabled: bool = False
         self._crossfade_mode: CrossFadeMode = CrossFadeMode.DISABLED
         self._crossfade_duration: int = 6
@@ -745,7 +745,7 @@ class PlayerQueue:
         if index is None:
             # guard just in case
             return 0
-        if self.settings.repeat_mode == RepeatMode.SINGLE:
+        if self.settings.repeat_mode == RepeatMode.ONE:
             return index
         if len(self._items) > (index + 1):
             return index + 1
