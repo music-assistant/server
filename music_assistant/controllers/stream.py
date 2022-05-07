@@ -515,7 +515,7 @@ class StreamController:
                     crossfade_part = await crossfade_pcm_parts(
                         fade_in_part,
                         last_fadeout_data,
-                        queue.crossfade_duration,
+                        queue.settings.crossfade_duration,
                         pcm_fmt,
                         sample_rate,
                     )
