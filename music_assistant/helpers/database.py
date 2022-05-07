@@ -155,6 +155,7 @@ class Database:
         async with self.get_db() as db:
             try:
                 prev_version = await self.get_setting("version", db)
+                prev_version = prev_version["version"]
             except Exception:  # pylint: disable=broad-except
                 # TODO: what exception to expect when table does not (yet) exist ?
                 prev_version = None
