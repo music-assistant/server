@@ -156,7 +156,7 @@ class Database:
             try:
                 prev_version = await self.get_setting("version", db)
                 prev_version = int(prev_version["value"])
-            except (KeyError, ValueError):  # pylint: disable=broad-except
+            except (KeyError, ValueError):
                 prev_version = None
             if prev_version is None:
                 prev_version = 0
