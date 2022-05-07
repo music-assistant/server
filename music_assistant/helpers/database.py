@@ -150,24 +150,11 @@ class Database:
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
             await _db.execute(sql_query, match)
 
-    async def exists(self, table: str, db: Optional[Db] = None) -> bool:
-        """Return bool if table exists."""
-        async with self.get_db(db) as _db:
-            try:
-                await _db.execute(f"SELECT COUNT(*) FROM '{table}'")
-                return True
-            except Exception as exc:  # pylint: disable=broad-except
-                if table in str(exc):
-                    return False
-                raise exc
-
     async def _migrate(self):
         """Perform database migration actions if needed."""
         async with self.get_db() as db:
-            if await self.exists(TABLE_SETTINGS, db):
-                prev_version = await self.get_setting("version", db)
-                prev_version = int(prev_version["value"])
-            else:
+            prev_version = await self.get_setting("version", db)
+            if prev_version is None:
                 prev_version = 0
 
             if SCHEMA_VERSION != prev_version:
@@ -177,7 +164,7 @@ class Database:
                     SCHEMA_VERSION,
                 )
 
-                if prev_version < 3:
+                if prev_version < 4:
                     # schema version 3: too many breaking changes, rebuild db
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ALBUMS}")
@@ -186,14 +173,6 @@ class Database:
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_PROV_MAPPINGS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
-
-                if prev_version < 4:
-                    # schema version 4: add album to tracks table
-                    await db.execute("DROP TABLE IF EXISTS tracks")
-                    if await self.exists(TABLE_PROV_MAPPINGS, db):
-                        await self.delete(
-                            TABLE_PROV_MAPPINGS, {"media_type": "track"}, db=db
-                        )
 
                 if prev_version < 5:
                     # delete player_settings table: use generic settings table instead
