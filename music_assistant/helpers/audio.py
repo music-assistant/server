@@ -241,9 +241,9 @@ async def get_gain_correct(
 ) -> Tuple[float, float]:
     """Get gain correction for given queue / track combination."""
     queue = mass.players.get_player_queue(queue_id)
-    if not queue or not queue.volume_normalization_enabled:
+    if not queue or not queue.settings.volume_normalization_enabled:
         return 0
-    target_gain = queue.volume_normalization_target
+    target_gain = queue.settings.volume_normalization_target
     track_loudness = await mass.music.get_track_loudness(item_id, provider_id)
     if track_loudness is None:
         # fallback to provider average
@@ -525,7 +525,7 @@ async def get_sox_args_for_pcm_stream(
     floating_point: bool = False,
     output_format: ContentType = ContentType.FLAC,
 ) -> List[str]:
-    """Collect args for aox (or ffmpeg) when converting from raw pcm to another contenttype."""
+    """Collect args for sox (or ffmpeg) when converting from raw pcm to another contenttype."""
 
     sox_present, ffmpeg_present = await check_audio_support()
     input_format = ContentType.from_bit_depth(bit_depth, floating_point)

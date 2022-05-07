@@ -26,16 +26,7 @@ class PlayerController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        async with self.mass.database.get_db() as _db:
-            await _db.execute(
-                """CREATE TABLE IF NOT EXISTS queue_settings(
-                    queue_id TEXT UNIQUE,
-                    crossfade_duration INTEGER,
-                    shuffle_enabled BOOLEAN,
-                    repeat_enabled BOOLEAN,
-                    volume_normalization_enabled BOOLEAN,
-                    volume_normalization_target INTEGER)"""
-            )
+        # nothing to setup (yet)
 
     async def cleanup(self) -> None:
         """Cleanup on exit."""

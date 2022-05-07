@@ -11,7 +11,7 @@ from music_assistant.helpers.typing import MusicAssistant
 
 # pylint: disable=invalid-name
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 TABLE_PROV_MAPPINGS = "provider_mappings"
 TABLE_TRACK_LOUDNESS = "track_loudness"
@@ -22,6 +22,7 @@ TABLE_TRACKS = "tracks"
 TABLE_PLAYLISTS = "playlists"
 TABLE_RADIOS = "radios"
 TABLE_CACHE = "cache"
+TABLE_SETTINGS = "settings"
 
 
 class Database:
@@ -52,6 +53,18 @@ class Database:
         else:
             async with Db(self.url, timeout=360) as _db:
                 yield _db
+
+    async def get_setting(self, key: str, db: Optional[Db] = None) -> str | None:
+        """Get setting from settings table."""
+        return await self.get_row(TABLE_SETTINGS, {"key": key}, db=db)
+
+    async def set_setting(self, key: str, value: str, db: Optional[Db] = None) -> None:
+        """Set setting in settings table."""
+        if not isinstance(value, str):
+            value = str(value)
+        return await self.insert_or_replace(
+            TABLE_SETTINGS, {"key": key, "value": value}
+        )
 
     async def get_rows(
         self,
@@ -150,138 +163,140 @@ class Database:
 
     async def _migrate(self):
         """Perform database migration actions if needed."""
-        prev_version = await self.get_row("settings", {"key": "version"})
-        if prev_version:
-            prev_version = int(prev_version["value"])
-        else:
-            prev_version = 0
-        if SCHEMA_VERSION != prev_version:
-            self.logger.info(
-                "Performing database migration from %s to %s",
-                prev_version,
-                SCHEMA_VERSION,
-            )
+        async with self.get_db() as db:
+            if await self.exists(TABLE_SETTINGS, db):
+                prev_version = await self.get_setting("version", db)
+                prev_version = int(prev_version["value"])
+            else:
+                prev_version = 0
 
-            if prev_version < 3:
-                # schema version 3: too many breaking changes, rebuild db
-                async with self.get_db() as _db:
-                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
-                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_ALBUMS}")
-                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
-                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_PLAYLISTS}")
-                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
-                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_PROV_MAPPINGS}")
-                    await _db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
+            if SCHEMA_VERSION != prev_version:
+                self.logger.info(
+                    "Performing database migration from %s to %s",
+                    prev_version,
+                    SCHEMA_VERSION,
+                )
 
-            if prev_version < 4:
-                # schema version 4: add album to tracks table
-                async with self.get_db() as _db:
-                    await _db.execute("DROP TABLE IF EXISTS tracks")
-                    if await self.exists(TABLE_PROV_MAPPINGS, _db):
+                if prev_version < 3:
+                    # schema version 3: too many breaking changes, rebuild db
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_ALBUMS}")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_PLAYLISTS}")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_PROV_MAPPINGS}")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
+
+                if prev_version < 4:
+                    # schema version 4: add album to tracks table
+                    await db.execute("DROP TABLE IF EXISTS tracks")
+                    if await self.exists(TABLE_PROV_MAPPINGS, db):
                         await self.delete(
-                            TABLE_PROV_MAPPINGS, {"media_type": "track"}, db=_db
+                            TABLE_PROV_MAPPINGS, {"media_type": "track"}, db=db
                         )
 
-        # create db tables
-        await self.__create_database_tables()
-        # store current schema version
-        await self.insert_or_replace(
-            "settings", {"key": "version", "value": str(SCHEMA_VERSION)}
-        )
+                if prev_version < 5:
+                    # delete player_settings table: use generic settings table instead
+                    await db.execute("DROP TABLE IF EXISTS queue_settings")
 
-    async def __create_database_tables(self) -> None:
+            # create db tables
+            await self.__create_database_tables(db)
+            # store current schema version
+            await self.set_setting("version", str(SCHEMA_VERSION), db=db)
+
+    @staticmethod
+    async def __create_database_tables(db: Db) -> None:
         """Init generic database tables."""
-        async with self.mass.database.get_db() as _db:
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {TABLE_PROV_MAPPINGS}(
-                        item_id INTEGER NOT NULL,
-                        media_type TEXT NOT NULL,
-                        prov_item_id TEXT NOT NULL,
-                        provider TEXT NOT NULL,
-                        quality INTEGER NULL,
-                        details TEXT NULL,
-                        url TEXT NULL,
-                        UNIQUE(item_id, media_type, prov_item_id, provider)
-                        );"""
-            )
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {TABLE_TRACK_LOUDNESS}(
-                        item_id INTEGER NOT NULL,
-                        provider TEXT NOT NULL,
-                        loudness REAL,
-                        UNIQUE(item_id, provider));"""
-            )
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {TABLE_PLAYLOG}(
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_PROV_MAPPINGS}(
+                    item_id INTEGER NOT NULL,
+                    media_type TEXT NOT NULL,
+                    prov_item_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    quality INTEGER NULL,
+                    details TEXT NULL,
+                    url TEXT NULL,
+                    UNIQUE(item_id, media_type, prov_item_id, provider)
+                    );"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_TRACK_LOUDNESS}(
                     item_id INTEGER NOT NULL,
                     provider TEXT NOT NULL,
-                    timestamp REAL,
+                    loudness REAL,
                     UNIQUE(item_id, provider));"""
-            )
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {TABLE_ALBUMS}(
-                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL,
-                        sort_name TEXT NOT NULL,
-                        album_type TEXT,
-                        year INTEGER,
-                        version TEXT,
-                        in_library BOOLEAN DEFAULT 0,
-                        upc TEXT,
-                        musicbrainz_id TEXT,
-                        artist json,
-                        metadata json,
-                        provider_ids json
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_PLAYLOG}(
+                item_id INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                timestamp REAL,
+                UNIQUE(item_id, provider));"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_ALBUMS}(
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    sort_name TEXT NOT NULL,
+                    album_type TEXT,
+                    year INTEGER,
+                    version TEXT,
+                    in_library BOOLEAN DEFAULT 0,
+                    upc TEXT,
+                    musicbrainz_id TEXT,
+                    artist json,
+                    metadata json,
+                    provider_ids json
+                );"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_ARTISTS}(
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    sort_name TEXT NOT NULL,
+                    musicbrainz_id TEXT NOT NULL UNIQUE,
+                    in_library BOOLEAN DEFAULT 0,
+                    metadata json,
+                    provider_ids json
                     );"""
-            )
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {TABLE_ARTISTS}(
-                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL,
-                        sort_name TEXT NOT NULL,
-                        musicbrainz_id TEXT NOT NULL UNIQUE,
-                        in_library BOOLEAN DEFAULT 0,
-                        metadata json,
-                        provider_ids json
-                        );"""
-            )
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {TABLE_TRACKS}(
-                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL,
-                        sort_name TEXT NOT NULL,
-                        version TEXT,
-                        duration INTEGER,
-                        in_library BOOLEAN DEFAULT 0,
-                        isrc TEXT,
-                        musicbrainz_id TEXT,
-                        artists json,
-                        album json,
-                        metadata json,
-                        provider_ids json
-                    );"""
-            )
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {TABLE_PLAYLISTS}(
-                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL,
-                        sort_name TEXT NOT NULL,
-                        owner TEXT NOT NULL,
-                        is_editable BOOLEAN NOT NULL,
-                        checksum TEXT NOT NULL,
-                        in_library BOOLEAN DEFAULT 0,
-                        metadata json,
-                        provider_ids json,
-                        UNIQUE(name, owner)
-                    );"""
-            )
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {TABLE_RADIOS}(
-                        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL UNIQUE,
-                        sort_name TEXT NOT NULL,
-                        in_library BOOLEAN DEFAULT 0,
-                        metadata json,
-                        provider_ids json
-                    );"""
-            )
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_TRACKS}(
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    sort_name TEXT NOT NULL,
+                    version TEXT,
+                    duration INTEGER,
+                    in_library BOOLEAN DEFAULT 0,
+                    isrc TEXT,
+                    musicbrainz_id TEXT,
+                    artists json,
+                    album json,
+                    metadata json,
+                    provider_ids json
+                );"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_PLAYLISTS}(
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    sort_name TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    is_editable BOOLEAN NOT NULL,
+                    checksum TEXT NOT NULL,
+                    in_library BOOLEAN DEFAULT 0,
+                    metadata json,
+                    provider_ids json,
+                    UNIQUE(name, owner)
+                );"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_RADIOS}(
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    sort_name TEXT NOT NULL,
+                    in_library BOOLEAN DEFAULT 0,
+                    metadata json,
+                    provider_ids json
+                );"""
+        )

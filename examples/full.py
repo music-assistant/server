@@ -6,6 +6,7 @@ import os
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player, PlayerState
+from music_assistant.models.player_queue import RepeatMode
 from music_assistant.providers.filesystem import FileSystemProvider
 from music_assistant.providers.qobuz import QobuzProvider
 from music_assistant.providers.spotify import SpotifyProvider
@@ -168,8 +169,8 @@ async def main():
         await mass.players.register_player(test_player1)
         await mass.players.register_player(test_player2)
         # try to play some playlist
-        await test_player1.active_queue.set_crossfade_duration(10)
-        await test_player1.active_queue.set_shuffle_enabled(True)
+        test_player1.active_queue.settings.shuffle_enabled = True
+        test_player1.active_queue.settings.repeat_mode = RepeatMode.ALL
         if len(playlists) > 0:
             await test_player1.active_queue.play_media(playlists[0].uri)
 

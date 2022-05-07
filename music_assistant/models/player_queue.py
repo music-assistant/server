@@ -83,6 +83,192 @@ class QueueItem(DataClassDictMixin):
         )
 
 
+class CrossFadeMode(Enum):
+    """Enum with crossfade modes."""
+
+    DISABLED = "disabled"  # no crossfading at all
+    STRICT = "strict"  # do not crossfade tracks of same album
+    SMART = "smart"  # crossfade if possible (do not crossfade different sample rates)
+    ALWAYS = "always"  # all tracks - resample to fixed sample rate
+
+
+class RepeatMode(Enum):
+    """Enum with repeat modes."""
+
+    DISABLED = "disabled"  # no repeat at all
+    SINGLE = "single"  # repeat current/single track
+    ALL = "all"  # repeat entire queue
+
+
+class QueueSettings:
+    """Representation of (user adjustable) PlayerQueue settings/preferences."""
+
+    def __init__(self, queue: PlayerQueue) -> None:
+        """Initialize."""
+        self._queue = queue
+        self.mass = queue.mass
+        self._repeat_mode: RepeatMode = RepeatMode.DISABLED
+        self._shuffle_enabled: bool = False
+        self._crossfade_mode: CrossFadeMode = CrossFadeMode.DISABLED
+        self._crossfade_duration: int = 6
+        self._volume_normalization_enabled: bool = True
+        self._volume_normalization_target: int = -23
+
+    @property
+    def repeat_mode(self) -> RepeatMode:
+        """Return repeat enabled setting."""
+        return self._repeat_mode
+
+    @repeat_mode.setter
+    def repeat_mode(self, enabled: bool) -> None:
+        """Set repeat enabled setting."""
+        if self._repeat_mode != enabled:
+            self._repeat_mode = enabled
+            self._on_update("repeat_mode")
+
+    @property
+    def shuffle_enabled(self) -> bool:
+        """Return shuffle enabled setting."""
+        return self._shuffle_enabled
+
+    @shuffle_enabled.setter
+    def shuffle_enabled(self, enabled: bool) -> None:
+        """Set shuffle enabled setting."""
+        if not self._shuffle_enabled and enabled:
+            # shuffle requested
+            self._shuffle_enabled = True
+            if self._queue.current_index is not None:
+                played_items = self._queue.items[: self._queue.current_index]
+                next_items = self._queue.items[self._queue.current_index + 1 :]
+                # for now we use default python random function
+                # can be extended with some more magic based on last_played and stuff
+                next_items = random.sample(next_items, len(next_items))
+                items = played_items + [self._queue.current_item] + next_items
+                asyncio.create_task(self._queue.update(items))
+                self._on_update("shuffle_enabled")
+        elif self._shuffle_enabled and not enabled:
+            # unshuffle
+            self._shuffle_enabled = False
+            if self._queue.current_index is not None:
+                played_items = self._queue.items[: self._queue.current_index]
+                next_items = self._queue.items[self._queue.current_index + 1 :]
+                next_items.sort(key=lambda x: x.sort_index, reverse=False)
+                items = played_items + [self._queue.current_item] + next_items
+                asyncio.create_task(self._queue.update(items))
+                self._on_update("shuffle_enabled")
+
+    @property
+    def crossfade_mode(self) -> CrossFadeMode:
+        """Return crossfade mode setting."""
+        return self._crossfade_mode
+
+    @crossfade_mode.setter
+    def crossfade_mode(self, mode: CrossFadeMode) -> None:
+        """Set crossfade enabled setting."""
+        if self._crossfade_mode != mode:
+            # TODO: restart the queue stream if its playing
+            self._crossfade_mode = mode
+            self._on_update("crossfade_mode")
+
+    @property
+    def crossfade_duration(self) -> int:
+        """Return crossfade_duration setting."""
+        return self._crossfade_duration
+
+    @crossfade_duration.setter
+    def crossfade_duration(self, duration: int) -> None:
+        """Set crossfade_duration setting (1..10 seconds)."""
+        duration = max(1, duration)
+        duration = min(10, duration)
+        if self._crossfade_duration != duration:
+            self._crossfade_duration = duration
+            self._on_update("crossfade_duration")
+
+    @property
+    def volume_normalization_enabled(self) -> bool:
+        """Return volume_normalization_enabled setting."""
+        return self._volume_normalization_enabled
+
+    @volume_normalization_enabled.setter
+    def volume_normalization_enabled(self, enabled: bool) -> None:
+        """Set volume_normalization_enabled setting."""
+        if self._volume_normalization_enabled != enabled:
+            self._volume_normalization_enabled = enabled
+            self._on_update("volume_normalization_enabled")
+            self.save()
+
+    @property
+    def volume_normalization_target(self) -> float:
+        """Return volume_normalization_target setting."""
+        return self._volume_normalization_target
+
+    @volume_normalization_target.setter
+    def volume_normalization_target(self, target: float) -> None:
+        """Set volume_normalization_target setting (-40..10 LUFS)."""
+        target = max(-40, target)
+        target = min(10, target)
+        if self._volume_normalization_target != target:
+            self._volume_normalization_target = target
+            self._on_update("volume_normalization_target")
+
+    @property
+    def stream_type(self) -> ContentType:
+        """Return supported/preferred stream type for playerqueue. Read only."""
+        # determine default stream type from player capabilities
+        return next(
+            x
+            for x in (
+                ContentType.FLAC,
+                ContentType.WAV,
+                ContentType.PCM_S16LE,
+                ContentType.MP3,
+                ContentType.MPEG,
+            )
+            if x in self._queue.player.supported_content_types
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return dict from settings."""
+        return {
+            "repeat_mode": self.repeat_mode.value,
+            "shuffle_enabled": self.shuffle_enabled,
+            "crossfade_mode": self.crossfade_mode,
+            "crossfade_duration": self.crossfade_duration,
+            "volume_normalization_enabled": self.volume_normalization_enabled,
+            "volume_normalization_target": self.volume_normalization_target,
+        }
+
+    async def restore(self) -> None:
+        """Restore state from db."""
+        async with self.mass.database.get_db() as _db:
+            for key, val_type in (
+                ("repeat_mode", RepeatMode),
+                ("crossfade_mode", CrossFadeMode),
+                ("shuffle_enabled", bool),
+                ("crossfade_duration", int),
+                ("volume_normalization_enabled", bool),
+                ("volume_normalization_target", float),
+            ):
+                db_key = f"{self._queue.queue_id}_{key}"
+                if db_value := await self.mass.database.get_setting(db_key, db=_db):
+                    value = val_type(db_value["value"])
+                    setattr(self, f"_{key}", value)
+
+    def _on_update(self, changed_key: Optional[str] = None) -> None:
+        """Handle state changed."""
+        self._queue.signal_update()
+        self.mass.create_task(self.save(changed_key))
+        # TODO: restart play if setting changed that impacts playing queue
+
+    async def save(self, changed_key: Optional[str] = None) -> None:
+        """Save state in db."""
+        async with self.mass.database.get_db() as _db:
+            for key, value in self.to_dict().items():
+                if key == changed_key or changed_key is None:
+                    db_key = f"{self._queue.queue_id}_{key}"
+                    await self.mass.database.set_setting(db_key, value, db=_db)
+
+
 class PlayerQueue:
     """Represents a PlayerQueue object."""
 
@@ -91,13 +277,7 @@ class PlayerQueue:
         self.mass = mass
         self.logger = mass.players.logger
         self.queue_id = player_id
-
-        self._shuffle_enabled: bool = False
-        self._repeat_enabled: bool = False
-        self._crossfade_duration: int = 0
-        self._volume_normalization_enabled: bool = True
-        self._volume_normalization_target: int = -23
-
+        self._settings = QueueSettings(self)
         self._current_index: Optional[int] = None
         self._current_item_elapsed_time: int = 0
         self._last_item: Optional[QueueItem] = None
@@ -109,14 +289,23 @@ class PlayerQueue:
         self._update_task: Task = None
         self._signal_next: bool = False
         self._last_player_update: int = 0
-        self._stream_url: str = self.mass.streams.get_stream_url(self.queue_id)
+        self._stream_url: str = ""
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
-        await self._restore_saved_state()
+        await self._settings.restore()
+        await self._restore_items()
+        self._stream_url: str = self.mass.streams.get_stream_url(
+            self.queue_id, content_type=self._settings.stream_type
+        )
         self.mass.signal_event(
             MassEvent(EventType.QUEUE_ADDED, object_id=self.queue_id, data=self)
         )
+
+    @property
+    def settings(self) -> QueueSettings:
+        """Return settings/preferences for this PlayerQueue."""
+        return self._settings
 
     @property
     def player(self) -> Player | PlayerGroup:
@@ -143,26 +332,9 @@ class PlayerQueue:
         return self._current_item_elapsed_time
 
     @property
-    def repeat_enabled(self) -> bool:
-        """Return if repeat is enabled."""
-        return self._repeat_enabled
-
-    @property
-    def shuffle_enabled(self) -> bool:
-        """Return if shuffle is enabled."""
-        return self._shuffle_enabled
-
-    @property
-    def crossfade_duration(self) -> int:
-        """Return crossfade duration (0 if disabled)."""
-        return self._crossfade_duration
-
-    @property
     def max_sample_rate(self) -> int:
-        """Return the maximum supported sample rate this playerqueue supports."""
-        if self.player.max_sample_rate is None:
-            return 96000
-        return self.player.max_sample_rate
+        """Return the maximum samplerate supported by this queue(player)."""
+        return max(self.player.supported_sample_rates)
 
     @property
     def items(self) -> List[QueueItem]:
@@ -197,16 +369,6 @@ class PlayerQueue:
         if next_index := self.get_next_index(self._current_index):
             return self._items[next_index]
         return None
-
-    @property
-    def volume_normalization_enabled(self) -> bool:
-        """Return bool if volume normalization is enabled for this queue."""
-        return self._volume_normalization_enabled
-
-    @property
-    def volume_normalization_target(self) -> int:
-        """Return volume target (in LUFS) for volume normalization for this queue."""
-        return self._volume_normalization_target
 
     def get_item(self, index: int) -> QueueItem | None:
         """Get queue item by index."""
@@ -299,75 +461,6 @@ class PlayerQueue:
         if queue_opt == QueueOption.ADD:
             return await self.append(queue_items)
 
-    async def set_shuffle_enabled(self, enable_shuffle: bool) -> None:
-        """Set shuffle."""
-        if not self._shuffle_enabled and enable_shuffle:
-            # shuffle requested
-            self._shuffle_enabled = True
-            if self._current_index is not None:
-                played_items = self.items[: self._current_index]
-                next_items = self.__shuffle_items(self.items[self._current_index + 1 :])
-                items = played_items + [self.current_item] + next_items
-                self.mass.signal_event(
-                    MassEvent(
-                        EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self
-                    )
-                )
-                await self.update(items)
-        elif self._shuffle_enabled and not enable_shuffle:
-            # unshuffle
-            self._shuffle_enabled = False
-            if self._current_index is not None:
-                played_items = self.items[: self._current_index]
-                next_items = self.items[self._current_index + 1 :]
-                next_items.sort(key=lambda x: x.sort_index, reverse=False)
-                items = played_items + [self.current_item] + next_items
-                self.mass.signal_event(
-                    MassEvent(
-                        EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self
-                    )
-                )
-                await self.update(items)
-
-    async def set_repeat_enabled(self, enable_repeat: bool) -> None:
-        """Set the repeat mode for this queue."""
-        if self._repeat_enabled != enable_repeat:
-            self._repeat_enabled = enable_repeat
-            self.mass.signal_event(
-                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
-            )
-            await self._save_state(False)
-
-    async def set_crossfade_duration(self, duration: int) -> None:
-        """Set the crossfade duration for this queue, 0 to disable."""
-        duration = max(duration, 10)
-        if self._crossfade_duration != duration:
-            self._crossfade_duration = duration
-            self.mass.signal_event(
-                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
-            )
-            await self._save_state(False)
-
-    async def set_volume_normalization_enabled(self, enable: bool) -> None:
-        """Set volume normalization."""
-        if self._repeat_enabled != enable:
-            self._repeat_enabled = enable
-            self.mass.signal_event(
-                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
-            )
-            await self._save_state(False)
-
-    async def set_volume_normalization_target(self, target: int) -> None:
-        """Set the target for the volume normalization in LUFS (default is -23)."""
-        target = min(target, 0)
-        target = max(target, -40)
-        if self._volume_normalization_target != target:
-            self._volume_normalization_target = target
-            self.mass.signal_event(
-                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
-            )
-            await self._save_state(False)
-
     async def stop(self) -> None:
         """Stop command on queue player."""
         # redirect to underlying player
@@ -429,23 +522,31 @@ class PlayerQueue:
         self._current_index = index
         self._next_start_index = index
         # send stream url to player connected to this queue
-        self._stream_url = self.mass.streams.get_stream_url(self.queue_id)
+        self._stream_url = self.mass.streams.get_stream_url(
+            self.queue_id, content_type=self._settings.stream_type
+        )
 
         if self.player.use_multi_stream:
             # multi stream enabled, all child players should receive the same audio stream
             # redirect command to all (powered) players
+            # TODO: this assumes that all client players support flac
+            content_type = ContentType.FLAC
             coros = []
             expected_clients = set()
             for child_id in self.player.group_childs:
                 if child_player := self.mass.players.get_player(child_id):
                     if child_player.powered:
+                        # TODO: this assumes that all client players support flac
                         player_url = self.mass.streams.get_stream_url(
-                            self.queue_id, child_id
+                            self.queue_id, child_id, content_type
                         )
                         expected_clients.add(child_id)
                         coros.append(child_player.play_url(player_url))
             await self.mass.streams.start_multi_client_queue_stream(
-                self.queue_id, expected_clients, ContentType.FLAC
+                # TODO: this assumes that all client players support flac
+                self.queue_id,
+                expected_clients,
+                content_type,
             )
             await asyncio.gather(*coros)
         else:
@@ -478,14 +579,11 @@ class PlayerQueue:
         """Load (overwrite) queue with new items."""
         for index, item in enumerate(queue_items):
             item.sort_index = index
-        if self._shuffle_enabled and len(queue_items) > 5:
-            queue_items = self.__shuffle_items(queue_items)
+        if self.settings.shuffle_enabled and len(queue_items) > 5:
+            queue_items = random.sample(queue_items, len(queue_items))
         self._items = queue_items
-        self.mass.signal_event(
-            MassEvent(EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self)
-        )
         await self.play_index(0)
-        await self._save_state()
+        self.signal_update(True)
 
     async def insert(self, queue_items: List[QueueItem], offset: int = 0) -> None:
         """
@@ -501,8 +599,8 @@ class PlayerQueue:
         insert_at_index = self._current_index + offset
         for index, item in enumerate(queue_items):
             item.sort_index = insert_at_index + index
-        if self.shuffle_enabled and len(queue_items) > 5:
-            queue_items = self.__shuffle_items(queue_items)
+        if self.settings.shuffle_enabled and len(queue_items) > 5:
+            queue_items = random.sample(queue_items, len(queue_items))
         if offset == 0:
             # replace current item with new
             self._items = (
@@ -520,35 +618,26 @@ class PlayerQueue:
         if offset == 0:
             await self.play_index(insert_at_index)
 
-        self.mass.signal_event(
-            MassEvent(EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self)
-        )
-        await self._save_state()
+        self.signal_update(True)
 
     async def append(self, queue_items: List[QueueItem]) -> None:
         """Append new items at the end of the queue."""
         for index, item in enumerate(queue_items):
             item.sort_index = len(self.items) + index
-        if self.shuffle_enabled:
+        if self.settings.shuffle_enabled:
             played_items = self.items[: self._current_index]
             next_items = self.items[self._current_index + 1 :] + queue_items
-            next_items = self.__shuffle_items(next_items)
+            next_items = random.sample(next_items, len(next_items))
             items = played_items + [self.current_item] + next_items
             await self.update(items)
             return
         self._items = self._items + queue_items
-        self.mass.signal_event(
-            MassEvent(EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self)
-        )
-        await self._save_state()
+        self.signal_update(True)
 
     async def update(self, queue_items: List[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
         self._items = queue_items
-        self.mass.signal_event(
-            MassEvent(EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self)
-        )
-        await self._save_state()
+        self.signal_update(True)
 
     async def clear(self) -> None:
         """Clear all items in the queue."""
@@ -611,10 +700,7 @@ class PlayerQueue:
         self._current_item_elapsed_time = int(track_time)
 
         if new_item_loaded:
-            self.mass.create_task(self._save_state())
-            self.mass.signal_event(
-                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
-            )
+            self.signal_update()
         if abs(prev_item_time - self._current_item_elapsed_time) >= 1:
             self.mass.signal_event(
                 MassEvent(
@@ -659,9 +745,11 @@ class PlayerQueue:
         if index is None:
             # guard just in case
             return 0
+        if self.settings.repeat_mode == RepeatMode.SINGLE:
+            return index
         if len(self._items) > (index + 1):
             return index + 1
-        if self.repeat_enabled:
+        if self.settings.repeat_mode == RepeatMode.ALL:
             # repeat enabled, start queue at beginning
             return 0
         return None
@@ -669,6 +757,20 @@ class PlayerQueue:
     async def queue_stream_signal_next(self):
         """Indicate that queue stream needs to start next index once playback finished."""
         self._signal_next = True
+
+    def signal_update(self, items_changed: bool = False) -> None:
+        """Signal state changed of this queue."""
+        if items_changed:
+            self.mass.create_task(self._save_items())
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self
+                )
+            )
+        else:
+            self.mass.signal_event(
+                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         """Export object to dict."""
@@ -685,11 +787,7 @@ class PlayerQueue:
             "current_index": self.current_index,
             "current_item": cur_item,
             "next_item": next_item,
-            "shuffle_enabled": self.shuffle_enabled,
-            "repeat_enabled": self.repeat_enabled,
-            "volume_normalization_enabled": self.volume_normalization_enabled,
-            "volume_normalization_target": self.volume_normalization_target,
-            "crossfade_duration": self.crossfade_duration,
+            "settings": self.settings.to_dict(),
         }
 
     def __get_queue_stream_index(self) -> Tuple[int, int]:
@@ -716,46 +814,26 @@ class PlayerQueue:
                     break
         return queue_index, track_time
 
-    @staticmethod
-    def __shuffle_items(queue_items: List[QueueItem]) -> List[QueueItem]:
-        """Shuffle a list of tracks."""
-        # for now we use default python random function
-        # can be extended with some more magic based on last_played and stuff
-        return random.sample(queue_items, len(queue_items))
-
-    async def _restore_saved_state(self) -> None:
-        """Try to load the saved state from database."""
-        if db_row := await self.mass.database.get_row(
-            "queue_settings", {"queue_id": self.queue_id}
-        ):
-            self._shuffle_enabled = bool(db_row["shuffle_enabled"])
-            self._repeat_enabled = bool(db_row["repeat_enabled"])
-            self._crossfade_duration = db_row["crossfade_duration"]
+    async def _restore_items(self) -> None:
+        """Try to load the saved state from cache."""
         if queue_cache := await self.mass.cache.get(f"queue_items.{self.queue_id}"):
-            self._items = [QueueItem.from_dict(x) for x in queue_cache["items"]]
-            self._current_index = queue_cache["current_index"]
+            try:
+                self._items = [QueueItem.from_dict(x) for x in queue_cache["items"]]
+                self._current_index = queue_cache["current_index"]
+            except (KeyError, AttributeError, TypeError) as err:
+                self.logger.warning(
+                    "Unable to restore queue state for queue %s",
+                    self.queue_id,
+                    exc_info=err,
+                )
+        await self.settings.restore()
 
-    async def _save_state(self, save_items: bool = True) -> None:
-        """Save state in database."""
-        # save queue settings in db
-        await self.mass.database.insert_or_replace(
-            "queue_settings",
+    async def _save_items(self) -> None:
+        """Save current queue items/state in cache."""
+        await self.mass.cache.set(
+            f"queue_items.{self.queue_id}",
             {
-                "queue_id": self.queue_id,
-                "shuffle_enabled": self._shuffle_enabled,
-                "repeat_enabled": self.repeat_enabled,
-                "crossfade_duration": self._crossfade_duration,
-                "volume_normalization_enabled": self._volume_normalization_enabled,
-                "volume_normalization_target": self._volume_normalization_target,
+                "items": [x.to_dict() for x in self._items],
+                "current_index": self._current_index,
             },
         )
-
-        # store current items in cache
-        if save_items:
-            await self.mass.cache.set(
-                f"queue_items.{self.queue_id}",
-                {
-                    "items": [x.to_dict() for x in self._items],
-                    "current_index": self._current_index,
-                },
-            )
