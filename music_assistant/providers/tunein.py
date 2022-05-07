@@ -52,17 +52,29 @@ class TuneInProvider(MusicProvider):
 
     async def get_library_radios(self) -> List[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
-        result = []
-        radios = await self._get_data("Browse.ashx", c="presets")
-        if radios and "body" in radios:
-            for radio in radios["body"]:
-                if radio.get("type", "") != "audio":
-                    continue
-                # each radio station can have multiple streams add each one as different quality
-                stream_info = await self._get_data("Tune.ashx", id=radio["preset_id"])
-                for stream in stream_info["body"]:
-                    result.append(await self._parse_radio(radio, stream))
-        return result
+
+        async def parse_api_response(resp: dict, folder: str = None) -> List[Radio]:
+            result = []
+            if not resp or "body" not in resp:
+                return result
+            for item in resp["body"]:
+                item_type = item.get("type", "")
+                if item_type == "audio":
+                    # each radio station can have multiple streams add each one as different quality
+                    stream_info = await self._get_data(
+                        "Tune.ashx", id=item["preset_id"]
+                    )
+                    for stream in stream_info["body"]:
+                        result.append(await self._parse_radio(item, stream, folder))
+                elif item_type == "link":
+                    # stations are in sublevel
+                    sublevel = await self._get_data(item["URL"], render="json")
+                    result += await parse_api_response(sublevel, item["text"])
+            return result
+
+        data = await self._get_data("Browse.ashx", c="presets")
+        items = await parse_api_response(data)
+        return items
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
@@ -78,7 +90,9 @@ class TuneInProvider(MusicProvider):
                 return await self._parse_radio(item, stream)
         return None
 
-    async def _parse_radio(self, details: dict, stream: dict) -> Radio:
+    async def _parse_radio(
+        self, details: dict, stream: dict, folder: Optional[str] = None
+    ) -> Radio:
         """Parse Radio object from json obj returned from api."""
         if "name" in details:
             name = details["name"]
@@ -104,6 +118,11 @@ class TuneInProvider(MusicProvider):
                 details=stream["url"],
             )
         )
+        if folder:
+            radio.sort_name = f'{folder}-{details["preset_number"]}'
+        else:
+            radio.sort_name = details["preset_number"]
+        radio.metadata.description = details["text"]
         # images
         if img := details.get("image"):
             radio.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
@@ -131,13 +150,16 @@ class TuneInProvider(MusicProvider):
         return None
 
     @use_cache(3600 * 2)
-    async def _get_data(self, endpoint, **kwargs):
+    async def _get_data(self, endpoint: str, **kwargs):
         """Get data from api."""
-        url = f"https://opml.radiotime.com/{endpoint}"
-        kwargs["render"] = "json"
-        kwargs["formats"] = "ogg,aac,wma,mp3"
-        kwargs["username"] = self._username
-        kwargs["partnerId"] = "1"
+        if endpoint.startswith("http"):
+            url = endpoint
+        else:
+            url = f"https://opml.radiotime.com/{endpoint}"
+            kwargs["formats"] = "ogg,aac,wma,mp3"
+            kwargs["username"] = self._username
+            kwargs["partnerId"] = "1"
+            kwargs["render"] = "json"
         async with self._throttler:
             async with self.mass.http_session.get(
                 url, params=kwargs, verify_ssl=False
