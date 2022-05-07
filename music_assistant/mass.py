@@ -37,7 +37,6 @@ class MusicAssistant:
     def __init__(
         self,
         db_url: DatabaseURL,
-        stream_port: int = 8095,
         session: Optional[aiohttp.ClientSession] = None,
     ) -> None:
         """
@@ -63,7 +62,7 @@ class MusicAssistant:
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
         self.players = PlayerController(self)
-        self.streams = StreamController(self, stream_port)
+        self.streams = StreamController(self)
         self._tracked_tasks: List[asyncio.Task] = []
         self.closed = False
 
