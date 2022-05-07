@@ -160,9 +160,9 @@ class StreamController:
                 # task that sends the raw pcm audio to the sox/ffmpeg process
                 async for audio_chunk in self._get_queue_stream(
                     queue,
-                    sample_rate=start_streamdetails.sample_rate,
-                    bit_depth=start_streamdetails.bit_depth,
-                    channels=start_streamdetails.channels,
+                    sample_rate=sample_rate,
+                    bit_depth=bit_depth,
+                    channels=channels,
                     resample=resample,
                 ):
                     if sox_proc.closed:
@@ -322,9 +322,9 @@ class StreamController:
                     """Task that sends the raw pcm audio to the sox/ffmpeg process."""
                     async for audio_chunk in self._get_queue_stream(
                         queue,
-                        sample_rate=start_streamdetails.sample_rate,
-                        bit_depth=start_streamdetails.bit_depth,
-                        channels=start_streamdetails.channels,
+                        sample_rate=sample_rate,
+                        bit_depth=bit_depth,
+                        channels=channels,
                         resample=resample,
                     ):
                         if sox_proc.closed:
