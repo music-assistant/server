@@ -153,7 +153,11 @@ class Database:
     async def _migrate(self):
         """Perform database migration actions if needed."""
         async with self.get_db() as db:
-            prev_version = await self.get_setting("version", db)
+            try:
+                prev_version = await self.get_setting("version", db)
+            except Exception:  # pylint: disable=broad-except
+                # TODO: what exception to expect when table does not (yet) exist ?
+                prev_version = None
             if prev_version is None:
                 prev_version = 0
 
