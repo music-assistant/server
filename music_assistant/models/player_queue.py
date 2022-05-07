@@ -195,7 +195,6 @@ class QueueSettings:
         if self._volume_normalization_enabled != enabled:
             self._volume_normalization_enabled = enabled
             self._on_update("volume_normalization_enabled")
-            self.save()
 
     @property
     def volume_normalization_target(self) -> float:
@@ -232,7 +231,7 @@ class QueueSettings:
         return {
             "repeat_mode": self.repeat_mode.value,
             "shuffle_enabled": self.shuffle_enabled,
-            "crossfade_mode": self.crossfade_mode,
+            "crossfade_mode": self.crossfade_mode.value,
             "crossfade_duration": self.crossfade_duration,
             "volume_normalization_enabled": self.volume_normalization_enabled,
             "volume_normalization_target": self.volume_normalization_target,
