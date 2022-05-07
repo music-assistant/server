@@ -703,7 +703,9 @@ class PlayerQueue:
         if abs(prev_item_time - self._current_item_elapsed_time) >= 1:
             self.mass.signal_event(
                 MassEvent(
-                    EventType.QUEUE_TIME_UPDATED, object_id=self.queue_id, data=self
+                    EventType.QUEUE_TIME_UPDATED,
+                    object_id=self.queue_id,
+                    data=self.elapsed_time,
                 )
             )
 
