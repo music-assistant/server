@@ -5,6 +5,7 @@ import asyncio
 import os
 import platform
 import socket
+import socketserver
 import tempfile
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
@@ -172,6 +173,20 @@ def get_ip():
     finally:
         sock.close()
     return _ip
+
+
+def is_port_in_use(port: int) -> bool:
+    """Check if port is in use."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+        return _sock.connect_ex(("localhost", port)) == 0
+
+
+def select_stream_port() -> int:
+    """Automaticlaly find available stream port, prefer the default 8095."""
+    if not is_port_in_use(8095):
+        return 8095
+    with socketserver.TCPServer(("localhost", 0), None) as _sock:
+        return _sock.server_address[1]
 
 
 def get_folder_size(folderpath):
