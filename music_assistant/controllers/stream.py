@@ -22,8 +22,8 @@ from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_ip
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
-from music_assistant.models.media_items import ContentType
-from music_assistant.models.player_queue import PlayerQueue
+from music_assistant.models.media_items import ContentType, MediaType
+from music_assistant.models.player_queue import CrossFadeMode, PlayerQueue, QueueItem
 
 
 class StreamController:
@@ -41,12 +41,16 @@ class StreamController:
         self._time_started: Dict[str, float] = {}
 
     def get_stream_url(
-        self, queue_id: str, child_player: Optional[str] = None, fmt: str = "flac"
+        self,
+        queue_id: str,
+        child_player: Optional[str] = None,
+        content_type: ContentType = ContentType.FLAC,
     ) -> str:
         """Return the full stream url for the PlayerQueue Stream."""
+        ext = content_type.value
         if child_player:
-            return f"http://{self._ip}:{self._port}/{queue_id}/{child_player}.{fmt}"
-        return f"http://{self._ip}:{self._port}/{queue_id}.{fmt}"
+            return f"http://{self._ip}:{self._port}/{queue_id}/{child_player}.{ext}"
+        return f"http://{self._ip}:{self._port}/{queue_id}.{ext}"
 
     async def get_preview_url(self, provider: str, track_id: str) -> str:
         """Return url to short preview sample."""
@@ -84,16 +88,20 @@ class StreamController:
         self.mass.subscribe(on_shutdown_event, EventType.SHUTDOWN)
 
         sox_present, ffmpeg_present = await check_audio_support(True)
-        if not ffmpeg_present:
+        if not ffmpeg_present and not sox_present:
             self.logger.error(
+                "SoX or FFmpeg binary not found on your system, "
+                "playback will NOT work!."
+            )
+        elif not ffmpeg_present:
+            self.logger.warning(
                 "The FFmpeg binary was not found on your system, "
-                "you might have issues with playback. "
+                "you might experience issues with playback. "
                 "Please install FFmpeg with your OS package manager.",
             )
         elif not sox_present:
             self.logger.warning(
-                "The SoX binary was not found on your system so FFmpeg is used as fallback. "
-                "For best audio quality, please install SoX with your OS package manager.",
+                "The SoX binary was not found on your system, FFmpeg is used as fallback."
             )
 
         self.logger.info("Started stream server on port %s", self._port)
@@ -127,13 +135,24 @@ class StreamController:
 
         start_streamdetails = await queue.queue_stream_prepare()
         output_fmt = ContentType(fmt)
+        # work out sample rate
+        if queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
+            sample_rate = min(96000, queue.max_sample_rate)
+            bit_depth = 24
+            channels = 2
+            resample = True
+        else:
+            sample_rate = start_streamdetails.sample_rate
+            bit_depth = start_streamdetails.bit_depth
+            channels = start_streamdetails.channels
+            resample = False
         sox_args = await get_sox_args_for_pcm_stream(
-            start_streamdetails.sample_rate,
-            start_streamdetails.bit_depth,
-            start_streamdetails.channels,
+            sample_rate,
+            bit_depth,
+            channels,
             output_format=output_fmt,
         )
-        # get the raw pcm bytes from the queue stream and on the fly encode as to wanted format
+        # get the raw pcm bytes from the queue stream and on the fly encode to wanted format
         # send the compressed/endoded stream to the client.
         async with AsyncProcess(sox_args, True) as sox_proc:
 
@@ -144,6 +163,7 @@ class StreamController:
                     sample_rate=start_streamdetails.sample_rate,
                     bit_depth=start_streamdetails.bit_depth,
                     channels=start_streamdetails.channels,
+                    resample=resample,
                 ):
                     if sox_proc.closed:
                         return
@@ -160,7 +180,7 @@ class StreamController:
         return resp
 
     async def serve_multi_client_queue_stream(self, request: web.Request):
-        """Serve queue audio stream to multiple (group)clients in the raw PCM format."""
+        """Serve queue audio stream to multiple (group)clients."""
         queue_id = request.match_info["queue_id"]
         player_id = request.match_info["player_id"]
         fmt = request.match_info.get("format", "flac")
@@ -274,16 +294,27 @@ class StreamController:
         queue = self.mass.players.get_player_queue(queue_id)
 
         start_streamdetails = await queue.queue_stream_prepare()
+        # work out sample rate
+        if queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
+            sample_rate = min(96000, queue.max_sample_rate)
+            bit_depth = 24
+            channels = 2
+            resample = True
+        else:
+            sample_rate = start_streamdetails.sample_rate
+            bit_depth = start_streamdetails.bit_depth
+            channels = start_streamdetails.channels
+            resample = False
         sox_args = await get_sox_args_for_pcm_stream(
-            start_streamdetails.sample_rate,
-            start_streamdetails.bit_depth,
-            start_streamdetails.channels,
+            sample_rate,
+            bit_depth,
+            channels,
             output_format=output_fmt,
         )
         self.logger.debug("Multi client queue stream %s started", queue.queue_id)
         try:
 
-            # get the raw pcm bytes from the queue stream and on the fly encode as to wanted format
+            # get the raw pcm bytes from the queue stream and on the fly encode to wanted format
             # send the compressed/endoded stream to the client.
             async with AsyncProcess(sox_args, True) as sox_proc:
 
@@ -294,6 +325,7 @@ class StreamController:
                         sample_rate=start_streamdetails.sample_rate,
                         bit_depth=start_streamdetails.bit_depth,
                         channels=start_streamdetails.channels,
+                        resample=resample,
                     ):
                         if sox_proc.closed:
                             return
@@ -362,6 +394,7 @@ class StreamController:
         last_fadeout_data = b""
         queue_index = None
         track_count = 0
+        prev_track: Optional[QueueItem] = None
 
         pcm_fmt = ContentType.from_bit_depth(bit_depth)
         self.logger.info(
@@ -400,7 +433,6 @@ class StreamController:
             if not resample and streamdetails.bit_depth > bit_depth:
                 await queue.queue_stream_signal_next()
                 self.logger.info("Abort queue stream due to bit depth mismatch")
-                await queue.queue_stream_signal_next()
                 break
             if (
                 not resample
@@ -411,10 +443,25 @@ class StreamController:
                 await queue.queue_stream_signal_next()
                 break
 
+            # check crossfade ability
+            use_crossfade = queue.settings.crossfade_mode != CrossFadeMode.DISABLED
+            if (
+                prev_track is not None
+                and prev_track.media_type == MediaType.TRACK
+                and queue_track.media_type == MediaType.TRACK
+            ):
+                prev_item = await self.mass.music.get_item_by_uri(prev_track.uri)
+                new_item = await self.mass.music.get_item_by_uri(queue_track.uri)
+                if (
+                    prev_item.album is not None
+                    and new_item.album is not None
+                    and prev_item.album == new_item.album
+                ):
+                    use_crossfade = False
+            prev_track = queue_track
+
             sample_size = int(sample_rate * (bit_depth / 8) * channels)  # 1 second
-            buffer_size = sample_size * (
-                queue.crossfade_duration or 1
-            )  # 1...10 seconds
+            buffer_size = sample_size * (queue.settings.crossfade_duration or 2)
 
             self.logger.debug(
                 "Start Streaming queue track: %s (%s) for queue %s",
@@ -496,10 +543,10 @@ class StreamController:
                         # part is too short after the strip action
                         # so we just use the entire original data
                         last_part = prev_chunk + chunk
-                    if not queue.crossfade_duration or len(last_part) < buffer_size:
+                    if not use_crossfade or len(last_part) < buffer_size:
                         # crossfading is not enabled or not enough data,
                         # so just pass the (stripped) audio data
-                        if queue.crossfade_duration:
+                        if use_crossfade:
                             self.logger.warning(
                                 "Not enough data for crossfade: %s", len(last_part)
                             )

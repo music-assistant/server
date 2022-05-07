@@ -5,16 +5,35 @@ import asyncio
 from abc import ABC
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_changed_keys
+from music_assistant.models.media_items import ContentType
 
 if TYPE_CHECKING:
     from .player_queue import PlayerQueue
+
+
+DEFAULT_SUPPORTED_CONTENT_TYPES = (
+    # if a player does not report/set its supported content types, we use a pretty safe default
+    ContentType.FLAC,
+    ContentType.MP3,
+    ContentType.WAV,
+    ContentType.PCM_S16LE,
+    ContentType.PCM_S24LE,
+)
+
+DEFAULT_SUPPORTED_SAMPLE_RATES = (
+    # if a player does not report/set its supported sample rates, we use a pretty safe default
+    44100,
+    48000,
+    88200,
+    96000,
+)
 
 
 class PlayerState(Enum):
@@ -49,7 +68,8 @@ class Player(ABC):
     _attr_available: bool = True
     _attr_volume_level: int = 100
     _attr_device_info: DeviceInfo = DeviceInfo()
-    _attr_max_sample_rate: int = 96000
+    _attr_supported_content_types: Tuple[ContentType] = DEFAULT_SUPPORTED_CONTENT_TYPES
+    _attr_supported_sample_rates: Tuple[int] = DEFAULT_SUPPORTED_SAMPLE_RATES
     _attr_active_queue_id: str = ""
     _attr_use_multi_stream: bool = False
     # below objects will be set by playermanager at register/update
@@ -116,9 +136,14 @@ class Player(ABC):
         return self._attr_device_info
 
     @property
-    def max_sample_rate(self) -> int:
-        """Return the maximum supported sample rate this player supports."""
-        return self._attr_max_sample_rate
+    def supported_sample_rates(self) -> Tuple[int]:
+        """Return the sample rates this player supports."""
+        return self._attr_supported_sample_rates
+
+    @property
+    def supported_content_types(self) -> Tuple[ContentType]:
+        """Return the content types this player supports."""
+        return self._attr_supported_content_types
 
     @property
     def active_queue(self) -> PlayerQueue:
