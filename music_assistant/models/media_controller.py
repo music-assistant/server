@@ -42,6 +42,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             for db_row in await self.mass.database.get_rows(self.db_table, match)
         ]
 
+    async def count(self) -> int:
+        """Return number of in-library items for this MediaType."""
+        return await self.mass.database.get_count(self.db_table, {"in_library": 1})
+
     async def get(
         self,
         provider_item_id: str,

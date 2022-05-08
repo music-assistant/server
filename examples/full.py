@@ -153,14 +153,14 @@ async def main():
         for prov in providers:
             await mass.music.register_provider(prov)
         # get some data
-        artists = await mass.music.artists.library()
-        print(f"Got {len(artists)} artists in library")
-        albums = await mass.music.albums.library()
-        print(f"Got {len(albums)} albums in library")
-        tracks = await mass.music.tracks.library()
-        print(f"Got {len(tracks)} tracks in library")
-        radios = await mass.music.radio.library()
-        print(f"Got {len(radios)} radio stations in library")
+        artists = await mass.music.artists.count()
+        print(f"Got {artists} artists in library")
+        albums = await mass.music.albums.count()
+        print(f"Got {albums} albums in library")
+        tracks = await mass.music.tracks.count()
+        print(f"Got {tracks} tracks in library")
+        radios = await mass.music.radio.count()
+        print(f"Got {radios} radio stations in library")
         playlists = await mass.music.playlists.library()
         print(f"Got {len(playlists)} playlists in library")
         # register a player
