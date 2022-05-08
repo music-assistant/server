@@ -647,6 +647,8 @@ class PlayerQueue:
         """Call when player updates."""
         if self._last_state != self.player.state:
             self._last_state = self.player.state
+            # always signal update if playback state changed
+            self.signal_update()
             # handle case where stream stopped on purpose and we need to restart it
             if self.player.state != PlayerState.PLAYING and self._signal_next:
                 self._signal_next = False
