@@ -118,6 +118,8 @@ class Player(ABC):
     @property
     def state(self) -> PlayerState:
         """Return current PlayerState of player."""
+        if not self.powered:
+            return PlayerState.OFF
         return self._attr_state
 
     @property
