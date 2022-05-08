@@ -467,7 +467,7 @@ class PlayerQueue:
 
     async def play(self) -> None:
         """Play (unpause) command on queue player."""
-        if self.player.state == PlayerState.PAUSED:
+        if self.active and self.player.state == PlayerState.PAUSED:
             await self.player.play()
         else:
             await self.resume()
