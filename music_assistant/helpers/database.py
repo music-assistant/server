@@ -66,6 +66,21 @@ class Database:
             TABLE_SETTINGS, {"key": key, "value": value}
         )
 
+    async def get_count(
+        self,
+        table: str,
+        match: dict = None,
+        db: Optional[Db] = None,
+    ) -> List[Mapping]:
+        """Get row count for given table/query."""
+        async with self.get_db(db) as _db:
+            sql_query = f"SELECT count() FROM {table}"
+            if match is not None:
+                sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
+            if res := await _db.fetch_one(sql_query, match):
+                return res["count()"]
+            return 0
+
     async def get_rows(
         self,
         table: str,
