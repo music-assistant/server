@@ -154,11 +154,11 @@ class Database:
         """Perform database migration actions if needed."""
         async with self.get_db() as db:
             try:
-                prev_version = await self.get_setting("version", db)
-                prev_version = int(prev_version["value"])
+                if prev_version := await self.get_setting("version", db):
+                    prev_version = int(prev_version["value"])
+                else:
+                    prev_version = 0
             except (KeyError, ValueError):
-                prev_version = None
-            if prev_version is None:
                 prev_version = 0
 
             if SCHEMA_VERSION != prev_version:
