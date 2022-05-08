@@ -11,7 +11,7 @@ from music_assistant.helpers.typing import MusicAssistant
 
 # pylint: disable=invalid-name
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 TABLE_PROV_MAPPINGS = "provider_mappings"
 TABLE_TRACK_LOUDNESS = "track_loudness"
@@ -71,7 +71,7 @@ class Database:
         table: str,
         match: dict = None,
         db: Optional[Db] = None,
-    ) -> List[Mapping]:
+    ) -> int:
         """Get row count for given table/query."""
         async with self.get_db(db) as _db:
             sql_query = f"SELECT count() FROM {table}"
@@ -196,6 +196,13 @@ class Database:
                 if prev_version < 5:
                     # delete player_settings table: use generic settings table instead
                     await db.execute("DROP TABLE IF EXISTS queue_settings")
+
+                if prev_version < 6:
+                    # recreate radio items due to some changes
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
+                    match = {"media_type": "radio"}
+                    if await self.get_count(TABLE_PROV_MAPPINGS, match):
+                        await self.delete(TABLE_PROV_MAPPINGS, match, db=db)
 
             # create db tables
             await self.__create_database_tables(db)
