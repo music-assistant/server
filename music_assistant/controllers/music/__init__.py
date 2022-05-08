@@ -89,7 +89,9 @@ class MusicController:
             self._providers[provider.id] = provider
             self.mass.signal_event(
                 MassEvent(
-                    EventType.PROVIDER_REGISTERED, object_id=provider.id, data=provider
+                    EventType.PROVIDER_REGISTERED,
+                    object_id=provider.id,
+                    data=provider.id,
                 )
             )
             self.mass.create_task(self.run_provider_sync(provider.id))
