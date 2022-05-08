@@ -80,6 +80,9 @@ class Cache:
         checksum = self._get_checksum(checksum)
         expires = int(time.time() + expiration)
         self._mem_cache[cache_key] = (data, checksum, expires)
+        if (time.time() - expires) < 3600 * 4:
+            # do not cache items in db with short expiration
+            return
         data = await asyncio.get_running_loop().run_in_executor(None, json.dumps, data)
         await self.mass.database.insert_or_replace(
             DB_TABLE,

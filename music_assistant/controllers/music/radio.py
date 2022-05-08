@@ -38,7 +38,7 @@ class RadioController(MediaControllerBase[Radio]):
             radio.sort_name = create_sort_name(radio.name)
         assert radio.provider_ids
         async with self.mass.database.get_db() as _db:
-            match = {"sort_name": radio.sort_name}
+            match = {"name": radio.name}
             if cur_item := await self.mass.database.get_row(
                 self.db_table, match, db=_db
             ):

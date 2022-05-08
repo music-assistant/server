@@ -172,11 +172,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def get_provider_item(self, item_id: str, provider_id: str) -> ItemCls:
         """Return item details for the given provider item id."""
         if provider_id == "database":
-            return await self.get_db_item(item_id)
-        provider = self.mass.music.get_provider(provider_id)
-        if not provider:
-            raise ProviderUnavailableError(f"Provider {provider_id} is not available!")
-        item = await provider.get_item(self.media_type, item_id)
+            item = await self.get_db_item(item_id)
+        else:
+            provider = self.mass.music.get_provider(provider_id)
+            if not provider:
+                raise ProviderUnavailableError(
+                    f"Provider {provider_id} is not available!"
+                )
+            item = await provider.get_item(self.media_type, item_id)
         if not item:
             raise MediaNotFoundError(
                 f"{self.media_type.value} {item_id} not found on provider {provider_id}"
