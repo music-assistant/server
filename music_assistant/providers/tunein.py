@@ -54,13 +54,13 @@ class TuneInProvider(MusicProvider):
     async def get_library_radios(self) -> List[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
 
-        async def parse_api_response(resp: dict, folder: str = None) -> List[Radio]:
+        async def parse_items(items: List[dict], folder: str = None) -> List[Radio]:
             result = []
-            if not resp or "body" not in resp:
-                return result
-            for item in resp["body"]:
+            for item in items:
                 item_type = item.get("type", "")
                 if item_type == "audio":
+                    if "preset_id" not in item:
+                        continue
                     # each radio station can have multiple streams add each one as different quality
                     stream_info = await self.__get_data(
                         "Tune.ashx", id=item["preset_id"]
@@ -68,14 +68,18 @@ class TuneInProvider(MusicProvider):
                     for stream in stream_info["body"]:
                         result.append(await self._parse_radio(item, stream, folder))
                 elif item_type == "link":
-                    # stations are in sublevel
-                    sublevel = await self.__get_data(item["URL"], render="json")
-                    result += await parse_api_response(sublevel, item["text"])
+                    # stations are in sublevel (new style)
+                    if sublevel := await self.__get_data(item["URL"], render="json"):
+                        result += await parse_items(sublevel["body"], item["text"])
+                elif item.get("children"):
+                    # stations are in sublevel (old style ?)
+                    result += await parse_items(item["children"], item["text"])
             return result
 
         data = await self.__get_data("Browse.ashx", c="presets")
-        items = await parse_api_response(data)
-        return items
+        if data and "body" in data:
+            return await parse_items(data["body"])
+        return []
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
