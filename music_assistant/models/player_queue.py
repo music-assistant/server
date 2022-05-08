@@ -707,7 +707,7 @@ class PlayerQueue:
                 MassEvent(
                     EventType.QUEUE_TIME_UPDATED,
                     object_id=self.queue_id,
-                    data=self.elapsed_time,
+                    data=int(self.elapsed_time),
                 )
             )
 
