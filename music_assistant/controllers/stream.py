@@ -462,6 +462,10 @@ class StreamController:
 
             sample_size = int(sample_rate * (bit_depth / 8) * channels)  # 1 second
             buffer_size = sample_size * (queue.settings.crossfade_duration or 2)
+            # force small buffer for radio to prevent too much lag at start
+            if queue_track.media_type == MediaType.RADIO:
+                use_crossfade = False
+                buffer_size = sample_size
 
             self.logger.debug(
                 "Start Streaming queue track: %s (%s) for queue %s",
