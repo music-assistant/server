@@ -392,7 +392,8 @@ class PlayerQueue:
         self,
         uris: str | List[str],
         queue_opt: QueueOption = QueueOption.PLAY,
-    ):
+        passive: bool = False,
+    ) -> str:
         """
         Play media item(s) on the given queue.
 
@@ -403,6 +404,8 @@ class PlayerQueue:
                 QueueOption.REPLACE -> Replace queue contents with these items
                 QueueOption.NEXT -> Play item(s) after current playing item
                 QueueOption.ADD -> Append new items at end of the queue
+            :param passive: do not actually start playback.
+        Returns: the stream URL for this queue.
         """
         # a single item or list of items may be provided
         if not isinstance(uris, list):
@@ -450,15 +453,18 @@ class PlayerQueue:
 
         # load items into the queue
         if queue_opt == QueueOption.REPLACE:
-            return await self.load(queue_items)
-        if queue_opt in [QueueOption.PLAY, QueueOption.NEXT] and len(queue_items) > 100:
-            return await self.load(queue_items)
-        if queue_opt == QueueOption.NEXT:
-            return await self.insert(queue_items, 1)
-        if queue_opt == QueueOption.PLAY:
-            return await self.insert(queue_items, 0)
-        if queue_opt == QueueOption.ADD:
-            return await self.append(queue_items)
+            await self.load(queue_items, passive=passive)
+        elif (
+            queue_opt in [QueueOption.PLAY, QueueOption.NEXT] and len(queue_items) > 100
+        ):
+            await self.load(queue_items, passive=passive)
+        elif queue_opt == QueueOption.NEXT:
+            await self.insert(queue_items, 1, passive=passive)
+        elif queue_opt == QueueOption.PLAY:
+            await self.insert(queue_items, 0, passive=passive)
+        elif queue_opt == QueueOption.ADD:
+            await self.append(queue_items)
+        return self._stream_url
 
     async def stop(self) -> None:
         """Stop command on queue player."""
@@ -508,7 +514,7 @@ class PlayerQueue:
                 "resume queue requested for %s but queue is empty", self.queue_id
             )
 
-    async def play_index(self, index: Union[int, str]) -> None:
+    async def play_index(self, index: Union[int, str], passive: bool = False) -> None:
         """Play item at index (or item_id) X in queue."""
         if self.player.use_multi_stream:
             await self.mass.streams.stop_multi_client_queue_stream(self.queue_id)
@@ -548,7 +554,7 @@ class PlayerQueue:
                 content_type,
             )
             await asyncio.gather(*coros)
-        else:
+        elif not passive:
             # regular (single player) request
             await self.player.play_url(self._stream_url)
 
@@ -574,17 +580,19 @@ class PlayerQueue:
         items.insert(new_index, items.pop(item_index))
         await self.update(items)
 
-    async def load(self, queue_items: List[QueueItem]) -> None:
+    async def load(self, queue_items: List[QueueItem], passive: bool = False) -> None:
         """Load (overwrite) queue with new items."""
         for index, item in enumerate(queue_items):
             item.sort_index = index
         if self.settings.shuffle_enabled and len(queue_items) > 5:
             queue_items = random.sample(queue_items, len(queue_items))
         self._items = queue_items
-        await self.play_index(0)
+        await self.play_index(0, passive=passive)
         self.signal_update(True)
 
-    async def insert(self, queue_items: List[QueueItem], offset: int = 0) -> None:
+    async def insert(
+        self, queue_items: List[QueueItem], offset: int = 0, passive: bool = False
+    ) -> None:
         """
         Insert new items at offset x from current position.
 
@@ -615,7 +623,7 @@ class PlayerQueue:
             )
 
         if offset == 0:
-            await self.play_index(insert_at_index)
+            await self.play_index(insert_at_index, passive=passive)
 
         self.signal_update(True)
 
