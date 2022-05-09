@@ -2,19 +2,17 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, List
+from typing import List
 
 import unidecode
 
-from music_assistant.models.media_items import ItemMapping
-
-if TYPE_CHECKING:
-    from music_assistant.models.media_items import (
-        Album,
-        Artist,
-        MediaItemMetadata,
-        Track,
-    )
+from music_assistant.models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    MediaItemMetadata,
+    Track,
+)
 
 
 def get_compare_string(input_str):
@@ -54,7 +52,7 @@ def compare_explicit(left: MediaItemMetadata, right: MediaItemMetadata):
     return left == right
 
 
-def compare_artists(left_artists: List["Artist"], right_artists: List["Artist"]):
+def compare_artists(left_artists: List[Artist], right_artists: List[Artist]):
     """Compare two lists of artist and return True if both lists match."""
     matches = 0
     for left_artist in left_artists:
@@ -64,7 +62,7 @@ def compare_artists(left_artists: List["Artist"], right_artists: List["Artist"])
     return len(left_artists) == matches
 
 
-def compare_albums(left_albums: List["Album"], right_albums: List["Album"]):
+def compare_albums(left_albums: List[Album], right_albums: List[Album]):
     """Compare two lists of albums and return True if a match was found."""
     for left_album in left_albums:
         for right_album in right_albums:
@@ -106,7 +104,7 @@ def compare_album(left_album: Album, right_album: Album):
     return True
 
 
-def compare_track(left_track: "Track", right_track: "Track"):
+def compare_track(left_track: Track, right_track: Track):
     """Compare two track items and return True if they match."""
     if (
         left_track.provider == right_track.provider
