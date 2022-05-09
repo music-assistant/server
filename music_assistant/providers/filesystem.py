@@ -276,7 +276,6 @@ class FileSystemProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        filename = item_id
         if os.sep in item_id:
             # this is already a filename
             itempath = item_id
@@ -286,7 +285,7 @@ class FileSystemProvider(MusicProvider):
             raise MediaNotFoundError(f"Track path does not exist: {itempath}")
 
         def parse_tag():
-            return TinyTag.get(filename)
+            return TinyTag.get(itempath)
 
         tag = await self.mass.loop.run_in_executor(None, parse_tag)
 
@@ -294,8 +293,8 @@ class FileSystemProvider(MusicProvider):
             type=StreamType.FILE,
             provider=self.id,
             item_id=item_id,
-            content_type=ContentType(filename.split(".")[-1]),
-            path=filename,
+            content_type=ContentType(itempath.split(".")[-1]),
+            path=itempath,
             sample_rate=tag.samplerate or 44100,
             bit_depth=16,  # TODO: parse bitdepth
         )
