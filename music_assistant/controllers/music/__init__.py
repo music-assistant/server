@@ -416,7 +416,7 @@ class MusicController:
                 # in case of filestem, removal from library means the whole item is
                 # moved/deleted so we remove the prov mapping from db.
                 if provider_id == "filesystem":
-                    if db_item := controller.get_db_item(item_id):
+                    if db_item := await controller.get_db_item(item_id):
                         db_item.provider_ids = {
                             x
                             for x in db_item.provider_ids

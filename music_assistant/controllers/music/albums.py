@@ -150,7 +150,11 @@ class AlbumsController(MediaControllerBase[Album]):
         """Update Album record in the database."""
         async with self.mass.database.get_db() as _db:
             cur_item = await self.get_db_item(item_id)
-            if album.artist.musicbrainz_id and album.artist.provider != "database":
+            if (
+                not isinstance(album.artist, ItemMapping)
+                and album.artist.musicbrainz_id
+                and album.artist.provider != "database"
+            ):
                 album_artist = await self.mass.music.artists.add_db_item(album.artist)
             else:
                 album_artist = (

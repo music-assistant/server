@@ -303,6 +303,12 @@ class FileSystemProvider(MusicProvider):
 
         # TODO: Fall back to parsing base details from filename if no tags found/supported
         tag = await self.mass.loop.run_in_executor(None, parse_tag)
+
+        # we need at least a title and artist
+        if tag.title is None or tag.artist is None:
+            self.logger.warning("Skipping track due to invalid ID3 tags: %s", filename)
+            return None
+
         prov_item_id = await self._get_item_id(filename, MediaType.TRACK)
         name, version = parse_title_and_version(tag.title)
         track = Track(
