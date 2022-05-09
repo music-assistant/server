@@ -318,7 +318,7 @@ class FileSystemProvider(MusicProvider):
         # parse track artists
         track.artists = [
             Artist(
-                item_id=await self._get_item_id(item, MediaType.ARTIST),
+                item_id=item,
                 provider=self._attr_id,
                 name=item,
             )
@@ -328,14 +328,14 @@ class FileSystemProvider(MusicProvider):
         # parse album
         if tag.album is not None:
             track.album = Album(
-                item_id=await self._get_item_id(tag.album, MediaType.ALBUM),
+                item_id=tag.album,
                 provider=self._attr_id,
                 name=tag.album,
                 year=try_parse_int(tag.year),
             )
             if tag.albumartist is not None:
                 track.album.artist = Artist(
-                    item_id=await self._get_item_id(tag.albumartist, MediaType.ARTIST),
+                    item_id=tag.albumartist,
                     provider=self._attr_id,
                     name=tag.albumartist,
                 )
