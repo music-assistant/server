@@ -73,29 +73,29 @@ def compare_albums(left_albums: List["Album"], right_albums: List["Album"]):
     return False
 
 
-def compare_album(left_album: "Album", right_album: "Album"):
+def compare_album(left_album: Album, right_album: Album):
     """Compare two album items and return True if they match."""
     if left_album is None or right_album is None:
         return False
-    # do not match on year and albumtype as this info is often inaccurate on providers
+    # return early on exact item_id match
     if (
         left_album.provider == right_album.provider
         and left_album.item_id == right_album.item_id
     ):
         return True
-    if not (
-        isinstance(left_album, ItemMapping) or isinstance(right_album, ItemMapping)
-    ):
-        if left_album.upc and right_album.upc:
-            if (left_album.upc in right_album.upc) or (
-                right_album.upc in left_album.upc
-            ):
-                # UPC is always 100% accurate match
-                return True
-        if left_album.musicbrainz_id and right_album.musicbrainz_id:
-            if left_album.musicbrainz_id == right_album.musicbrainz_id:
-                # musicbrainz_id is always 100% accurate match
-                return True
+    # make sure we have a full album and not a simplified ItemMapping
+    assert not isinstance(left_album, ItemMapping), "Full Album object required"
+    assert not isinstance(right_album, ItemMapping), "Full Album object required"
+    # prefer match on UPC
+    if left_album.upc and right_album.upc:
+        if (left_album.upc in right_album.upc) or (right_album.upc in left_album.upc):
+            return True
+    # prefer match on musicbrainz_id
+    if left_album.musicbrainz_id and right_album.musicbrainz_id:
+        if left_album.musicbrainz_id == right_album.musicbrainz_id:
+
+            return True
+    # fallback to comparing
     if not compare_strings(left_album.name, right_album.name):
         return False
     if not compare_version(left_album.version, right_album.version):
@@ -131,11 +131,16 @@ def compare_track(left_track: "Track", right_track: "Track"):
     # track if both tracks are (not) explicit
     if not compare_explicit(left_track.metadata, right_track.metadata):
         return False
-    # album match OR near exact duration match
-    if (
-        compare_album(left_track.album, right_track.album)
-        and left_track.duration == right_track.duration
-    ) or abs(left_track.duration - right_track.duration) <= 2:
+    # album match OR (near) exact duration match
+    if isinstance(left_track.album, Album) and isinstance(right_track.album, Album):
+        if compare_album(left_track.album, right_track.album):
+            return True
+    if isinstance(left_track.album, ItemMapping) and isinstance(
+        right_track.album, ItemMapping
+    ):
+        if compare_strings(left_track.album.name, right_track.album.name):
+            return True
+    if abs(left_track.duration - right_track.duration) <= 2:
         # 100% match, all criteria passed
         return True
     return False
