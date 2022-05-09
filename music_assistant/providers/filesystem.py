@@ -176,7 +176,7 @@ class FileSystemProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        return next(
+        if album_artist := next(
             (
                 track.album.artist
                 for track in await self.get_library_tracks(True)
@@ -185,7 +185,14 @@ class FileSystemProvider(MusicProvider):
                 and track.album.artist.item_id == prov_artist_id
             ),
             None,
-        )
+        ):
+            return album_artist
+        # fallback to track_artist
+        for track in await self.get_library_tracks(True):
+            for artist in track.artists:
+                if artist.item_id == prov_artist_id:
+                    return artist
+        return None
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
