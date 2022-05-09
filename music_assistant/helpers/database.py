@@ -182,6 +182,8 @@ class Database:
                     prev_version,
                     SCHEMA_VERSION,
                 )
+                # always create db tables if they don't exist to prevent errors trying to access them later
+                await self.__create_database_tables(db)
 
                 if prev_version < 4:
                     # schema version 3: too many breaking changes, rebuild db
@@ -192,20 +194,24 @@ class Database:
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_PROV_MAPPINGS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
+                    # recreate missing tables
+                    await self.__create_database_tables(db)
 
                 if prev_version < 5:
                     # delete player_settings table: use generic settings table instead
                     await db.execute("DROP TABLE IF EXISTS queue_settings")
+                    # recreate table
+                    await self.__create_database_tables(db)
 
                 if prev_version < 6:
                     # recreate radio items due to some changes
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
+                    # recreate table
+                    await self.__create_database_tables(db)
                     match = {"media_type": "radio"}
                     if await self.get_count(TABLE_PROV_MAPPINGS, match):
                         await self.delete(TABLE_PROV_MAPPINGS, match, db=db)
 
-            # create db tables
-            await self.__create_database_tables(db)
             # store current schema version
             await self.set_setting("version", str(SCHEMA_VERSION), db=db)
 
