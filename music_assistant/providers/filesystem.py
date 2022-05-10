@@ -268,7 +268,7 @@ class FileSystemProvider(MusicProvider):
             track
             for track in await self.get_library_tracks(True)
             if track.artists is not None
-            and prov_artist_id in (x.item_id for x in track.provider_ids)
+            and prov_artist_id in (x.item_id for x in track.artists)
         ]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
