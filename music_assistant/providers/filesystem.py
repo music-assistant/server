@@ -1,11 +1,12 @@
 """Filesystem musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
+import base64
 import os
 from typing import List, Optional, Tuple
 
 import aiofiles
-from tinytag import TinyTag
+from tinytag.tinytag import TinyTag
 
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
@@ -15,6 +16,8 @@ from music_assistant.models.media_items import (
     AlbumType,
     Artist,
     ContentType,
+    ImageType,
+    MediaItemImage,
     MediaItemProviderId,
     MediaItemType,
     MediaQuality,
@@ -292,13 +295,27 @@ class FileSystemProvider(MusicProvider):
             bit_depth=16,  # TODO: parse bitdepth
         )
 
+    async def get_embedded_image(self, filename: str) -> str | None:
+        """Return the embedded image of an audio file as base64 string."""
+        if not TinyTag.is_supported(filename):
+            return None
+
+        def parse_tags():
+            return TinyTag.get(filename, tags=True, image=True, ignore_errors=True)
+
+        tags = await self.mass.loop.run_in_executor(None, parse_tags)
+        if image_data := tags.get_image():
+            enc_image = base64.b64encode(image_data).decode()
+            enc_image = f"data:image/png;base64,{enc_image}"
+            return enc_image
+
     async def _parse_track(self, filename: str) -> Track | None:
         """Try to parse a track from a filename by reading its tags."""
         if not TinyTag.is_supported(filename):
             return None
 
         def parse_tags():
-            return TinyTag.get(filename)
+            return TinyTag.get(filename, image=True, ignore_errors=True)
 
         # parse ID3 tags with TinyTag
         tags = await self.mass.loop.run_in_executor(None, parse_tags)
@@ -326,7 +343,9 @@ class FileSystemProvider(MusicProvider):
         else:
             ext = filename_base.split(".")[-1]
             track_title = filename_base.replace(f".{ext}", "").replace("_", " ")
-            self.logger.warning("%s is missing ID3 tags, use filename as fallback")
+            self.logger.warning(
+                "%s is missing ID3 tags, use filename as fallback", filename_base
+            )
 
         name, version = parse_title_and_version(track_title)
         track = Track(
@@ -345,6 +364,13 @@ class FileSystemProvider(MusicProvider):
             for item in split_items(track_artists_str, ARTIST_SPLITTERS)
         ]
 
+        # Check if track has embedded metadata
+        if tags.get_image():
+            # we do not actually embed the image in the metadata because that would consume too
+            # much space and bandwidth. Instead we set the filename as value so the image can
+            # be retrieved later in realtime.
+            track.metadata.images = {MediaItemImage(ImageType.EMBEDDED_THUMB, filename)}
+
         # Parse album (only if we have album + album artist tags)
         if album_name and album_artist_name:
             album_id = album_name
@@ -361,6 +387,8 @@ class FileSystemProvider(MusicProvider):
                     name=album_artist_name,
                 ),
             )
+            track.album.metadata.images = track.metadata.images
+
             # try to guess the album type
             if name.lower() == album_name.lower():
                 track.album.album_type = AlbumType.SINGLE
