@@ -11,7 +11,7 @@ from music_assistant.helpers.typing import MusicAssistant
 
 # pylint: disable=invalid-name
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 TABLE_PROV_MAPPINGS = "provider_mappings"
 TABLE_TRACK_LOUDNESS = "track_loudness"
@@ -185,32 +185,17 @@ class Database:
                 # always create db tables if they don't exist to prevent errors trying to access them later
                 await self.__create_database_tables(db)
 
-                if prev_version < 4:
-                    # schema version 3: too many breaking changes, rebuild db
+                if prev_version < 7:
+                    # refactored file provider, start clean just in case.
+                    await db.execute("DROP TABLE IF EXISTS filesystem_mappings")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ALBUMS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_PLAYLISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_PROV_MAPPINGS}")
-                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
                     # recreate missing tables
                     await self.__create_database_tables(db)
-
-                if prev_version < 5:
-                    # delete player_settings table: use generic settings table instead
-                    await db.execute("DROP TABLE IF EXISTS queue_settings")
-                    # recreate table
-                    await self.__create_database_tables(db)
-
-                if prev_version < 6:
-                    # recreate radio items due to some changes
-                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
-                    # recreate table
-                    await self.__create_database_tables(db)
-                    match = {"media_type": "radio"}
-                    if await self.get_count(TABLE_PROV_MAPPINGS, match):
-                        await self.delete(TABLE_PROV_MAPPINGS, match, db=db)
 
             # store current schema version
             await self.set_setting("version", str(SCHEMA_VERSION), db=db)
@@ -310,4 +295,8 @@ class Database:
                     metadata json,
                     provider_ids json
                 );"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_CACHE}(
+                    key TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
         )

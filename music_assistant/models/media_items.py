@@ -96,6 +96,7 @@ class ImageType(Enum):
     CUTOUT = "cutout"
     BACK = "back"
     CDART = "cdart"
+    EMBEDDED_THUMB = "embedded_thumb"
     OTHER = "other"
 
 
