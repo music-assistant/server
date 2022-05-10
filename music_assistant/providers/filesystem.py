@@ -257,13 +257,20 @@ class FileSystemProvider(MusicProvider):
 
     async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
         """Get a list of albums for the given artist."""
-        return [
-            track.album
-            for track in await self.get_library_tracks(True)
-            if track.album is not None
-            and track.album.artist is not None
-            and track.album.artist.item_id == prov_artist_id
-        ]
+        result = []
+        cur_ids = set()
+        for track in await self.get_library_tracks(True):
+            if track.album is None:
+                continue
+            if track.album.item_id in cur_ids:
+                continue
+            if track.album.artist is None:
+                continue
+            if track.album.artist.item_id != prov_artist_id:
+                continue
+            result.append(track.album)
+            cur_ids.add(track.album.item_id)
+        return result
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
         """Get a list of all tracks as we have no clue about preference."""
