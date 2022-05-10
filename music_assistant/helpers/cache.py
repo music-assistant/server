@@ -6,9 +6,8 @@ import functools
 import json
 import time
 
+from music_assistant.helpers.database import TABLE_CACHE
 from music_assistant.helpers.typing import MusicAssistant
-
-DB_TABLE = "cache"
 
 
 class Cache:
@@ -22,12 +21,6 @@ class Cache:
 
     async def setup(self) -> None:
         """Async initialize of cache module."""
-        # prepare database
-        async with self.mass.database.get_db() as _db:
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {DB_TABLE}(
-                    key TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
-            )
         self.__schedule_cleanup_task()
 
     async def get(self, cache_key, checksum="", default=None):
@@ -50,7 +43,7 @@ class Cache:
         ):
             return cache_data[0]
         # fall back to db cache
-        if db_row := await self.mass.database.get_row(DB_TABLE, {"key": cache_key}):
+        if db_row := await self.mass.database.get_row(TABLE_CACHE, {"key": cache_key}):
             if (
                 not checksum
                 or db_row["checksum"] == checksum
@@ -80,26 +73,26 @@ class Cache:
         checksum = self._get_checksum(checksum)
         expires = int(time.time() + expiration)
         self._mem_cache[cache_key] = (data, checksum, expires)
-        if (time.time() - expires) < 3600 * 4:
+        if (expires - time.time()) < 3600 * 4:
             # do not cache items in db with short expiration
             return
         data = await asyncio.get_running_loop().run_in_executor(None, json.dumps, data)
         await self.mass.database.insert_or_replace(
-            DB_TABLE,
+            TABLE_CACHE,
             {"key": cache_key, "expires": expires, "checksum": checksum, "data": data},
         )
 
     async def delete(self, cache_key):
         """Delete data from cache."""
         self._mem_cache.pop(cache_key, None)
-        await self.mass.database.delete(DB_TABLE, {"key": cache_key})
+        await self.mass.database.delete(TABLE_CACHE, {"key": cache_key})
 
     async def auto_cleanup(self):
         """Sceduled auto cleanup task."""
         # for now we simply reset the memory cache
         self._mem_cache = {}
         cur_timestamp = int(time.time())
-        for db_row in await self.mass.database.get_rows(DB_TABLE):
+        for db_row in await self.mass.database.get_rows(TABLE_CACHE):
             # clean up db cache object only if expired
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
