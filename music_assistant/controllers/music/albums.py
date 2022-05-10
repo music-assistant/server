@@ -118,6 +118,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 return await self.update_db_item(cur_item.item_id, album)
 
             # insert new album
+            assert album.artist
             if album.artist.musicbrainz_id and album.artist.provider != "database":
                 album_artist = await self.mass.music.artists.add_db_item(album.artist)
             else:
