@@ -215,7 +215,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     "sort_name": playlist.sort_name,
                     "owner": playlist.owner,
                     "is_editable": playlist.is_editable,
-                    "checksum": playlist.checksum,
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                 },

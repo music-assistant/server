@@ -132,16 +132,17 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 return (prov.provider, prov.item_id)
         return None, None
 
-    async def get_db_items(self, custom_query: Optional[str] = None) -> List[ItemCls]:
+    async def get_db_items(
+        self, custom_query: Optional[str] = None, db: Optional[Db] = None
+    ) -> List[ItemCls]:
         """Fetch all records from database."""
         if custom_query is not None:
-            func = self.mass.database.get_rows_from_query(custom_query)
+            func = self.mass.database.get_rows_from_query(custom_query, db=db)
         else:
-            func = self.mass.database.get_rows(self.db_table)
+            func = self.mass.database.get_rows(self.db_table, db=db)
         return [self.item_cls.from_db_row(db_row) for db_row in await func]
 
     async def get_db_item(self, item_id: int, db: Optional[Db] = None) -> ItemCls:
-        # pylint: disable = invalid-name
         """Get record by id."""
         match = {"item_id": int(item_id)}
         if db_row := await self.mass.database.get_row(self.db_table, match, db=db):
@@ -152,7 +153,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self,
         provider_id: str,
         provider_item_id: str,
-        db: Optional[Db] = None,  # pylint: disable = invalid-name
+        db: Optional[Db] = None,
     ) -> ItemCls | None:
         """Get the database album for the given prov_id."""
         if provider_id == "database":
@@ -162,6 +163,16 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         ):
             return await self.get_db_item(item_id, db=db)
         return None
+
+    async def get_db_items_by_prov_id(
+        self, provider_id: str, db: Optional[Db] = None
+    ) -> List[ItemCls]:
+        """Fetch all records from database for given provider."""
+        db_ids = await self.mass.music.get_provider_mappings(
+            self.media_type, provider_id, db=db
+        )
+        query = f"SELECT * FROM tracks WHERE item_id in {str(tuple(db_ids))}"
+        return await self.get_db_items(query, db=db)
 
     async def set_db_library(self, item_id: int, in_library: bool) -> None:
         """Set the in-library bool on a database item."""

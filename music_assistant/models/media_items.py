@@ -86,6 +86,8 @@ class MediaItemMetadata(DataClassDictMixin):
     popularity: Optional[int] = None
     # last_refresh: timestamp the (full) metadata was last collected
     last_refresh: Optional[int] = None
+    # checksum: optional value to detect changes (e.g. playlists)
+    checksum: Optional[str] = None
 
     def update(
         self,
@@ -231,7 +233,7 @@ class Album(MediaItem):
     media_type: MediaType = MediaType.ALBUM
     version: str = ""
     year: Optional[int] = None
-    artist: Union[ItemMapping, Artist, None] = None
+    artist: Union[Artist, ItemMapping, None] = None
     album_type: AlbumType = AlbumType.UNKNOWN
     upc: Optional[str] = None
     musicbrainz_id: Optional[str] = None  # release group id
@@ -250,9 +252,9 @@ class Track(MediaItem):
     version: str = ""
     isrc: Optional[str] = None
     musicbrainz_id: Optional[str] = None  # Recording ID
-    artists: List[Union[ItemMapping, Artist]] = field(default_factory=list)
+    artists: List[Union[Artist, ItemMapping]] = field(default_factory=list)
     # album track only
-    album: Union[ItemMapping, Album, None] = None
+    album: Union[Album, ItemMapping, None] = None
     disc_number: Optional[int] = None
     track_number: Optional[int] = None
     # playlist track only
@@ -269,7 +271,6 @@ class Playlist(MediaItem):
 
     media_type: MediaType = MediaType.PLAYLIST
     owner: str = ""
-    checksum: str = ""  # some value to detect playlist track changes
     is_editable: bool = False
 
 
@@ -312,7 +313,7 @@ class StreamDetails(DataClassDictMixin):
 
     def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
         """Exclude internal fields from dict."""
-        # pylint: disable=invalid-name,no-self-use
+        # pylint: disable=no-self-use
         d.pop("path")
         d.pop("details")
         return d

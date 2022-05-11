@@ -1,13 +1,12 @@
 """Filesystem musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
-import asyncio
 import base64
 import os
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import aiofiles
-from tinytag.tinytag import TinyTag
+from tinytag.tinytag import TinyTag, TinyTagException
 
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
@@ -148,28 +147,38 @@ class FileSystemProvider(MusicProvider):
             cur_ids.add(track.album.item_id)
         return result
 
-    async def get_library_tracks(self, allow_cache=False) -> List[Track]:
+    async def get_library_tracks(self, use_cache=False) -> List[Track]:
         """Get all tracks recursively."""
-        # pylint: disable = arguments-differ
-        # we cache this listing in memory for performance and convenience reasons
+        # pylint: disable=arguments-differ
+        # we cache the entire tracks listing for performance and convenience reasons
         # so we can easy retrieve the library artists and albums from the tracks listing
-        # if this may ever lead to memory issues, we can do the caching in db instead.
-        if allow_cache and self._cached_tracks:
-            return self._cached_tracks
-        # delay the (uncached) retrieval of all tracks to solve race conditions where
-        # mounted folder is available a few seconds later after Music Assistant initialized.
-        # https://github.com/music-assistant/hass-music-assistant/issues/132
-        await asyncio.sleep(30)
-        result = []
-        cur_ids = set()
+        cache_key = f"{self.id}.tracks"
+        cache_result: Dict[str, dict] = await self.mass.cache.get(
+            cache_key, checksum=self._music_dir
+        )
+        if cache_result is not None and use_cache:
+            return [Track.from_dict(x) for x in cache_result.values()]
+        if cache_result is None:
+            cache_result = {}
+
         # find all music files in the music directory and all subfolders
+        result = []
         for _root, _dirs, _files in os.walk(self._music_dir):
             for file in _files:
                 filename = os.path.join(_root, file)
-                if track := await self._parse_track(filename):
+                checksum = self._get_checksum(filename)
+                prov_item_id = self._get_item_id(filename)
+                cache_track = cache_result.get(prov_item_id)
+                # we do not want to parse tags if there are no changes to the file
+                # so we speedup the sync by comparing a checksum
+                if cache_track and cache_track["metadata"].get("checksum") == checksum:
+                    # checksum did not change, use cached track
+                    result.append(Track.from_dict(cache_track))
+                elif track := await self._parse_track(filename):
+                    cache_result[prov_item_id] = track.to_dict()
                     result.append(track)
-                    cur_ids.add(track.item_id)
-        self._cached_tracks = result
+        # store cache listing in cache
+        await self.mass.cache.set(cache_key, cache_result, self._music_dir)
         return result
 
     async def get_library_playlists(self) -> List[Playlist]:
@@ -330,13 +339,12 @@ class FileSystemProvider(MusicProvider):
             return TinyTag.get(filename, image=True, ignore_errors=True)
 
         # parse ID3 tags with TinyTag
-        tags = await self.mass.loop.run_in_executor(None, parse_tags)
+        try:
+            tags = await self.mass.loop.run_in_executor(None, parse_tags)
+        except TinyTagException as err:
+            self.logger.error("Error processing %s: %s", filename, str(err))
 
-        # use the relative filename as item_id
-        filename_base = filename.replace(self._music_dir, "")
-        if filename_base.startswith(os.sep):
-            filename_base = filename_base[1:]
-        prov_item_id = filename_base
+        prov_item_id = self._get_item_id(filename)
 
         # work out if we have an artist/album/track.ext structure
         filename_base = filename.replace(self._music_dir, "")
@@ -419,6 +427,8 @@ class FileSystemProvider(MusicProvider):
             track.metadata.copyright = tags.extra["copyright"]
         if "lyrics" in tags.extra:
             track.metadata.lyrics = tags.extra["lyrics"]
+        # store last modified time as checksum
+        track.metadata.checksum = self._get_checksum(filename)
 
         quality_details = ""
         if filename.endswith(".flac"):
@@ -494,3 +504,18 @@ class FileSystemProvider(MusicProvider):
         if playlist:
             return os.path.join(self._playlists_dir, item_id)
         return os.path.join(self._music_dir, item_id)
+
+    def _get_item_id(self, filename: str, playlist: bool = False) -> str:
+        """Return item_id for given filename."""
+        # we simply use the base filename as item_id
+        base_path = self._playlists_dir if playlist else self._music_dir
+        filename_base = filename.replace(base_path, "")
+        if filename_base.startswith(os.sep):
+            filename_base = filename_base[1:]
+        return filename_base
+
+    @staticmethod
+    def _get_checksum(filename: str) -> str:
+        """Get checksum for file."""
+        # use last modified time as checksum
+        return str(os.path.getmtime(filename))

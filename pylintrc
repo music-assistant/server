@@ -10,7 +10,7 @@ suggestion-mode=yes
 extension-pkg-whitelist=taglib
 
 [BASIC]
-good-names=id,i,j,k,ex,Run,_,fp,T,ev
+good-names=id,i,j,k,ex,Run,_,fp,T,ev,db,d
 
 [MESSAGES CONTROL]
 # Reasons disabled:

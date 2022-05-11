@@ -54,7 +54,6 @@ class QueueItem(DataClassDictMixin):
     @classmethod
     def __pre_deserialize__(cls, d: Dict[Any, Any]) -> Dict[Any, Any]:
         """Run actions before serialization."""
-        # pylint: disable=invalid-name
         d.pop("streamdetails", None)
         return d
 

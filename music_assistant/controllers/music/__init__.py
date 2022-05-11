@@ -191,7 +191,7 @@ class MusicController:
         media_type: MediaType,
         provider_id: str,
         provider_item_id: str,
-        db: Optional[Db] = None,  # pylint: disable=invalid-name
+        db: Optional[Db] = None,
     ) -> int | None:
         """Lookup database id for media item from provider id."""
         if result := await self.mass.database.get_row(
@@ -206,12 +206,30 @@ class MusicController:
             return result["item_id"]
         return None
 
+    async def get_provider_mappings(
+        self,
+        media_type: MediaType,
+        provider_id: str,
+        db: Optional[Db] = None,
+    ) -> List[int]:
+        """Lookup all database id's for media type for given provider id."""
+        if result := await self.mass.database.get_rows(
+            TABLE_PROV_MAPPINGS,
+            {
+                "media_type": media_type.value,
+                "provider": provider_id,
+            },
+            db=db,
+        ):
+            return [x["item_id"] for x in result]
+        return None
+
     async def set_provider_mappings(
         self,
         item_id: int,
         media_type: MediaType,
         prov_ids: List[MediaItemProviderId],
-        db: Optional[Db] = None,  # pylint: disable=invalid-name
+        db: Optional[Db] = None,
     ):
         """Store provider ids for media item to database."""
         async with self.mass.database.get_db(db) as _db:
@@ -373,6 +391,7 @@ class MusicController:
         cur_ids = set()
         for prov_item in await music_provider.get_library_items(media_type):
             prov_item: MediaItemType = prov_item
+
             db_item: MediaItemType = await controller.get_db_item_by_prov_id(
                 prov_item.provider, prov_item.item_id
             )
@@ -386,11 +405,9 @@ class MusicController:
             elif not db_item:
                 # for other mediatypes its enough to simply dump the item in the db
                 db_item = await controller.add_db_item(prov_item)
-            elif (
-                media_type == MediaType.PLAYLIST
-                and db_item.checksum != prov_item.checksum
-            ):
-                # playlist checksum changed
+            elif db_item.metadata.checksum != prov_item.metadata.checksum:
+                # item checksum changed
+                # used by filesystem tracks and playlist items
                 db_item = await controller.add_db_item(prov_item)
 
             cur_ids.add(db_item.item_id)
