@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 from time import time
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from music_assistant.helpers.images import create_thumbnail
-from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.media_items import Album, Artist, Playlist, Radio, Track
 
 from .audiodb import TheAudioDb
 from .fanarttv import FanartTv
 from .musicbrainz import MusicBrainz
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 TABLE_THUMBS = "thumbnails"
 

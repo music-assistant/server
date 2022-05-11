@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
 
 from databases import Database as Db
 from databases import DatabaseURL
 
-from music_assistant.helpers.typing import MusicAssistant
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 # pylint: disable=invalid-name
 

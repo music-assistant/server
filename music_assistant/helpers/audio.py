@@ -5,21 +5,25 @@ import asyncio
 import logging
 import struct
 from io import BytesIO
-from typing import AsyncGenerator, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Tuple
 
 import aiofiles
 
-from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.process import AsyncProcess, check_output
-from music_assistant.helpers.typing import MusicAssistant, QueueItem
 from music_assistant.helpers.util import create_tempfile
+from music_assistant.models.enums import EventType
 from music_assistant.models.errors import AudioError, MediaNotFoundError
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import (
     ContentType,
     MediaType,
     StreamDetails,
     StreamType,
 )
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player_queue import QueueItem
 
 LOGGER = logging.getLogger("audio")
 
@@ -175,7 +179,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
 
 
 async def get_stream_details(
-    mass: MusicAssistant, queue_item: QueueItem, queue_id: str = ""
+    mass: MusicAssistant, queue_item: "QueueItem", queue_id: str = ""
 ) -> StreamDetails:
     """
     Get streamdetails for the given QueueItem.

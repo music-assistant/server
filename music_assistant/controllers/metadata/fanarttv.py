@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from json.decoder import JSONDecodeError
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -11,7 +11,6 @@ from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-mod
     app_var,
 )
 from music_assistant.helpers.cache import use_cache
-from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.media_items import (
     Album,
     Artist,
@@ -20,8 +19,11 @@ from music_assistant.models.media_items import (
     MediaItemMetadata,
 )
 
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
+
 # TODO: add support for personal api keys ?
-# TODO: Add support for album artwork ?
+
 
 IMG_MAPPING = {
     "artistthumb": ImageType.THUMB,

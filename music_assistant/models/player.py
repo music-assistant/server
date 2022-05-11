@@ -4,17 +4,18 @@ from __future__ import annotations
 import asyncio
 from abc import ABC
 from dataclasses import dataclass
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.constants import EventType, MassEvent
-from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_changed_keys
+from music_assistant.models.enums import EventType, PlayerState
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import ContentType
 
 if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
+
     from .player_queue import PlayerQueue
 
 
@@ -34,15 +35,6 @@ DEFAULT_SUPPORTED_SAMPLE_RATES = (
     88200,
     96000,
 )
-
-
-class PlayerState(Enum):
-    """Enum for the (playback)state of a player."""
-
-    IDLE = "idle"
-    PAUSED = "paused"
-    PLAYING = "playing"
-    OFF = "off"
 
 
 @dataclass(frozen=True)

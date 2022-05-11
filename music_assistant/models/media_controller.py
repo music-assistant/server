@@ -3,14 +3,17 @@ from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
 from time import time
-from typing import Generic, List, Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, Generic, List, Optional, Tuple, TypeVar
 
 from databases import Database as Db
 
-from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailableError
 
-from .media_items import MediaItemType, MediaType
+from .enums import MediaType
+from .media_items import MediaItemType
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 ItemCls = TypeVar("ItemCls", bound="MediaControllerBase")
 

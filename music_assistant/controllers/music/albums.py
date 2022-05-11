@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 from typing import List
 
-from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.compare import compare_album, compare_strings
 from music_assistant.helpers.database import TABLE_ALBUMS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.util import create_sort_name
+from music_assistant.models.enums import EventType
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
