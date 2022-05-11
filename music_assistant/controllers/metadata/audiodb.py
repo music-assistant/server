@@ -85,7 +85,7 @@ class TheAudioDb:
             result = await self._get_data("album-mb.php", i=album.musicbrainz_id)
             if result and result.get("album"):
                 adb_album = result["album"][0]
-        else:
+        elif album.artist:
             # lookup by name
             result = await self._get_data(
                 "searchalbum.php", s=album.artist.name, a=album.name
@@ -110,7 +110,7 @@ class TheAudioDb:
                 album.year = int(adb_album.get("intYearReleased", "0"))
             if not album.musicbrainz_id:
                 album.musicbrainz_id = adb_album["strMusicBrainzID"]
-            if not album.artist.musicbrainz_id:
+            if album.artist and not album.artist.musicbrainz_id:
                 album.artist.musicbrainz_id = adb_album["strMusicBrainzArtistID"]
             if album.album_type == AlbumType.UNKNOWN:
                 album.album_type = ALBUMTYPE_MAPPING.get(
@@ -148,7 +148,7 @@ class TheAudioDb:
             if adb_track:
                 if not track.musicbrainz_id:
                     track.musicbrainz_id = adb_track["strMusicBrainzID"]
-                if not track.album.musicbrainz_id:
+                if track.album and not track.album.musicbrainz_id:
                     track.album.musicbrainz_id = adb_track["strMusicBrainzAlbumID"]
                 if not track_artist.musicbrainz_id:
                     track_artist.musicbrainz_id = adb_track["strMusicBrainzArtistID"]

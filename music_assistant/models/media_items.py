@@ -200,6 +200,7 @@ class ItemMapping(DataClassDictMixin):
     item_id: str
     provider: str
     name: str = ""
+    version: str = ""
     media_type: MediaType = MediaType.ARTIST
     uri: str = ""
 

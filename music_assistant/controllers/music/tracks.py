@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List
+from typing import List, Optional
 
 from music_assistant.helpers.compare import (
     compare_artists,
@@ -137,14 +137,8 @@ class TracksController(MediaControllerBase[Track]):
             track.sort_name = create_sort_name(track.name)
         cur_item = None
         async with self.mass.database.get_db() as _db:
-            track_album = track.album
-            if track_album and not isinstance(track.album, ItemMapping):
-                track_album = ItemMapping.from_item(
-                    await self.get_db_item_by_prov_id(
-                        track.album.provider, track.album.item_id, db=_db
-                    )
-                    or await self.mass.music.albums.add_db_item(track.album)
-                )
+            track_album = await self._get_track_album(track)
+
             # always try to grab existing item by external_id
             if track.musicbrainz_id:
                 match = {"musicbrainz_id": track.musicbrainz_id}
@@ -177,7 +171,7 @@ class TracksController(MediaControllerBase[Track]):
                 {
                     **track.to_db_row(),
                     "artists": json_serializer(track_artists),
-                    "album": json_serializer(track_album),
+                    "album": json_serializer(track_album) or None,
                 },
                 db=_db,
             )
@@ -196,6 +190,7 @@ class TracksController(MediaControllerBase[Track]):
         """Update Track record in the database, merging data."""
         async with self.mass.database.get_db() as _db:
             cur_item = await self.get_db_item(item_id, db=_db)
+            track_album = await self._get_track_album(track)
             if overwrite:
                 provider_ids = track.provider_ids
                 track_artists = track.artists
@@ -261,3 +256,29 @@ class TracksController(MediaControllerBase[Track]):
             ):
                 track_artists.append(ItemMapping.from_item(track_artist))
         return track_artists
+
+    async def _get_track_album(
+        self, db_track: Track, updated_track: Optional[Track] = None
+    ) -> ItemMapping | None:
+        """Extract track album as ItemMapping, prefer database ID."""
+        for track in (updated_track, db_track):
+            if not track or not track.album:
+                continue
+
+            if isinstance(track.album, ItemMapping):
+                return track.album
+
+            if track.album.provider == "database":
+                return ItemMapping.from_item(track.album)
+
+            if track.album.musicbrainz_id:
+                track_album = await self.mass.music.albums.add_db_item(track.album)
+                return ItemMapping.from_item(track_album)
+
+            if track_album := await self.mass.music.albums.get_db_item_by_prov_id(
+                track.album.provider, track.album.item_id
+            ):
+                return ItemMapping.from_item(track_album)
+
+            return ItemMapping.from_item(track.album)
+        return None
