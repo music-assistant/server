@@ -292,7 +292,14 @@ class FileSystemProvider(MusicProvider):
             track
             for track in await self.get_library_tracks(True)
             if track.artists is not None
-            and prov_artist_id in (x.item_id for x in track.artists)
+            and (
+                (prov_artist_id in (x.item_id for x in track.artists))
+                or (
+                    track.album is not None
+                    and track.album.artist is not None
+                    and track.album.artist.item_id == prov_artist_id
+                )
+            )
         ]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
@@ -351,11 +358,12 @@ class FileSystemProvider(MusicProvider):
         if filename_base.startswith(os.sep):
             filename_base = filename_base[1:]
         track_parts = filename_base.rsplit(os.sep)
-        if track_parts == 3:
+        if len(track_parts) == 3:
             album_artist_name = track_parts[0]
             album_name = track_parts[1]
-        album_artist_name = tags.albumartist
-        album_name = tags.album
+        else:
+            album_artist_name = tags.albumartist
+            album_name = tags.album
 
         # prefer title from tag, fallback to filename
         if tags.title:
