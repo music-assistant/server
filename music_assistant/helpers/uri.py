@@ -2,8 +2,8 @@
 
 from typing import Tuple
 
+from music_assistant.models.enums import MediaType
 from music_assistant.models.errors import MusicAssistantError
-from music_assistant.models.media_items import MediaType
 
 
 def parse_uri(uri: str) -> Tuple[MediaType, str, str]:
