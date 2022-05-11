@@ -42,7 +42,7 @@ class QueueItem(DataClassDictMixin):
     media_type: MediaType = MediaType.UNKNOWN
     image: Optional[str] = None
     available: bool = True
-    is_media_item: bool = False
+    media_item: Union[Track, Radio, None] = None
 
     def __post_init__(self):
         """Set default values."""
@@ -70,7 +70,7 @@ class QueueItem(DataClassDictMixin):
             name=name,
             duration=media_item.duration,
             media_type=media_item.media_type,
-            is_media_item=True,
+            media_item=media_item,
             image=media_item.image,
             available=media_item.available,
         )

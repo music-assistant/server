@@ -189,7 +189,7 @@ async def get_stream_details(
         param media_item: The MediaItem (track/radio) for which to request the streamdetails for.
         param queue_id: Optionally provide the queue_id which will play this stream.
     """
-    if not queue_item.is_media_item:
+    if not queue_item.media_item:
         # special case: a plain url was added to the queue
         streamdetails = StreamDetails(
             type=StreamType.URL,
