@@ -1,6 +1,7 @@
 """Filesystem musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from typing import List, Optional, Tuple
@@ -155,6 +156,10 @@ class FileSystemProvider(MusicProvider):
         # if this may ever lead to memory issues, we can do the caching in db instead.
         if allow_cache and self._cached_tracks:
             return self._cached_tracks
+        # delay the (uncached) retrieval of all tracks to solve race conditions where
+        # mounted folder is available a few seconds later after Music Assistant initialized.
+        # https://github.com/music-assistant/hass-music-assistant/issues/132
+        await asyncio.sleep(30)
         result = []
         cur_ids = set()
         # find all music files in the music directory and all subfolders
