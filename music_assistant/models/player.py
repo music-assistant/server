@@ -59,6 +59,7 @@ class Player(ABC):
     _attr_state: PlayerState = PlayerState.IDLE
     _attr_available: bool = True
     _attr_volume_level: int = 100
+    _attr_volume_muted: bool = False
     _attr_device_info: DeviceInfo = DeviceInfo()
     _attr_supported_content_types: Tuple[ContentType] = DEFAULT_SUPPORTED_CONTENT_TYPES
     _attr_supported_sample_rates: Tuple[int] = DEFAULT_SUPPORTED_SAMPLE_RATES
@@ -125,6 +126,11 @@ class Player(ABC):
         return self._attr_volume_level
 
     @property
+    def volume_muted(self) -> bool:
+        """Return current mute mode of player."""
+        return self._attr_volume_muted
+
+    @property
     def device_info(self) -> DeviceInfo:
         """Return basic device/provider info for this player."""
         return self._attr_device_info
@@ -187,14 +193,23 @@ class Player(ABC):
         """Send volume level (0..100) command to player."""
         raise NotImplementedError
 
-    # SOME CONVENIENCE METHODS
+    # SOME CONVENIENCE METHODS (may be overridden if needed)
 
-    async def volume_up(self, step_size: int = 5):
+    async def volume_mute(self, muted: bool) -> None:
+        """Send volume mute command to player."""
+        # for players that do not support mute, we fake mute with volume
+        self._attr_volume_muted = muted
+        if muted:
+            setattr(self, "prev_volume", self.volume_level)
+        else:
+            await self.volume_set(getattr(self, "prev_volume", 0))
+
+    async def volume_up(self, step_size: int = 5) -> None:
         """Send volume UP command to player."""
         new_level = min(self.volume_level + step_size, 100)
         return await self.volume_set(new_level)
 
-    async def volume_down(self, step_size: int = 5):
+    async def volume_down(self, step_size: int = 5) -> None:
         """Send volume DOWN command to player."""
         new_level = max(self.volume_level - step_size, 0)
         return await self.volume_set(new_level)
