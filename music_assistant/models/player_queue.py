@@ -195,7 +195,7 @@ class QueueSettings:
             x
             for x in (
                 ContentType.FLAC,
-                ContentType.WAV,
+                ContentType.WAVE,
                 ContentType.PCM_S16LE,
                 ContentType.MP3,
                 ContentType.MPEG,

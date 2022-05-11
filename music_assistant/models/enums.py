@@ -79,14 +79,18 @@ class StreamType(Enum):
 
 
 class ContentType(Enum):
-    """Enum with audio content types supported by ffmpeg."""
+    """Enum with audio content/container types supported by ffmpeg."""
 
     OGG = "ogg"
     FLAC = "flac"
     MP3 = "mp3"
     AAC = "aac"
     MPEG = "mpeg"
-    WAV = "wav"
+    ALAC = "alac"
+    WAVE = "wave"
+    AIFF = "aiff"
+    WMA = "wma"
+    M4A = "m4a"
     PCM_S16LE = "s16le"  # PCM signed 16-bit little-endian
     PCM_S24LE = "s24le"  # PCM signed 24-bit little-endian
     PCM_S32LE = "s32le"  # PCM signed 32-bit little-endian
@@ -114,7 +118,13 @@ class ContentType(Enum):
 
     def sox_supported(self):
         """Return if ContentType is supported by SoX."""
-        return self not in [ContentType.AAC, ContentType.MPEG]
+        return self.is_pcm() or self in [
+            ContentType.OGG,
+            ContentType.FLAC,
+            ContentType.MP3,
+            ContentType.WAVE,
+            ContentType.AIFF,
+        ]
 
     def sox_format(self):
         """Convert the ContentType to SoX compatible format."""
