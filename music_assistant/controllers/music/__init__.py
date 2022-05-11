@@ -359,7 +359,12 @@ class MusicController:
                 job_desc,
             )
 
-    async def run_provider_sync(self, provider_id: str):
+    async def trigger_sync(self) -> None:
+        """Trigger sync of all providers."""
+        for prov in self.providers:
+            await self.run_provider_sync(prov.id)
+
+    async def run_provider_sync(self, provider_id: str) -> None:
         """Run library sync for a provider."""
         provider = self.get_provider(provider_id)
         if not provider:
