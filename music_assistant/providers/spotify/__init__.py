@@ -189,7 +189,8 @@ class SpotifyProvider(MusicProvider):
         return [
             await self._parse_track(item["track"])
             for item in await self._get_all_items(
-                f"playlists/{prov_playlist_id}/tracks", cache_checksum=playlist.checksum
+                f"playlists/{prov_playlist_id}/tracks",
+                cache_checksum=playlist.metadata.checksum,
             )
             if (item and item["track"] and item["track"]["id"])
         ]

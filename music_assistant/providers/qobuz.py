@@ -215,7 +215,7 @@ class QobuzProvider(MusicProvider):
                 key="tracks",
                 playlist_id=prov_playlist_id,
                 extra="tracks",
-                cache_checksum=playlist.checksum,
+                cache_checksum=playlist.metadata.checksum,
             )
             if (item and item["id"])
         ]
