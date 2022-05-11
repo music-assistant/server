@@ -7,6 +7,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.util import create_sort_name
+from music_assistant.models.errors import LoginFailed
 from music_assistant.models.media_items import (
     ContentType,
     ImageType,
@@ -25,17 +26,20 @@ from music_assistant.models.provider import MusicProvider
 class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
-    def __init__(self, username: Optional[str]) -> None:
-        """Initialize the provider."""
-        self._attr_id = "tunein"
-        self._attr_name = "Tune-in Radio"
-        self._attr_supported_mediatypes = [MediaType.RADIO]
-        self._username = username
-        self._throttler = Throttler(rate_limit=1, period=1)
+    _attr_id = "tunein"
+    _attr_name = "Tune-in Radio"
+    _attr_supported_mediatypes = [MediaType.RADIO]
+    _throttler = Throttler(rate_limit=1, period=1)
 
-    async def setup(self) -> None:
+    async def setup(self) -> bool:
         """Handle async initialization of the provider."""
-        # we have nothing to setup
+        if not self.mass.config.tunein_enabled:
+            return False
+        if not self.mass.config.tunein_username:
+            raise LoginFailed("Username is invalid")
+        if "@" in self.mass.config.tunein_username:
+            raise LoginFailed("You must provide the TuneIn username, not email")
+        return True
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
@@ -166,7 +170,7 @@ class TuneInProvider(MusicProvider):
         else:
             url = f"https://opml.radiotime.com/{endpoint}"
             kwargs["formats"] = "ogg,aac,wma,mp3"
-            kwargs["username"] = self._username
+            kwargs["username"] = self.mass.config.tunein_username
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
         async with self._throttler:

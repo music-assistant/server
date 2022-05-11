@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
 
 from databases import Database as Db
-from databases import DatabaseURL
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -28,9 +27,9 @@ TABLE_SETTINGS = "settings"
 class Database:
     """Class that holds the (logic to the) database."""
 
-    def __init__(self, mass: MusicAssistant, url: DatabaseURL):
+    def __init__(self, mass: MusicAssistant):
         """Initialize class."""
-        self.url = url
+        self.url = mass.config.database_url
         self.mass = mass
         self.logger = mass.logger.getChild("db")
 

@@ -19,7 +19,6 @@ from music_assistant.helpers.audio import (
     strip_silence,
 )
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import get_ip, select_stream_port
 from music_assistant.models.enums import (
     ContentType,
     CrossFadeMode,
@@ -37,12 +36,12 @@ if TYPE_CHECKING:
 class StreamController:
     """Controller to stream audio to players."""
 
-    def __init__(self, mass: MusicAssistant, port: Optional[int] = None):
+    def __init__(self, mass: MusicAssistant):
         """Initialize instance."""
         self.mass = mass
         self.logger = mass.logger.getChild("stream")
-        self._port = port or select_stream_port()
-        self._ip: str = get_ip()
+        self._port = mass.config.stream_port
+        self._ip = mass.config.stream_ip
         self._subscribers: Dict[str, Set[str]] = {}
         self._client_queues: Dict[str, Dict[str, asyncio.Queue]] = {}
         self._stream_tasks: Dict[str, Task] = {}

@@ -19,14 +19,8 @@ from music_assistant.helpers.database import (
 )
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.helpers.util import run_periodic
-from music_assistant.models.enums import EventType, MediaType
-from music_assistant.models.errors import (
-    AlreadyRegisteredError,
-    MusicAssistantError,
-    SetupFailedError,
-)
-from music_assistant.models.event import MassEvent
+from music_assistant.models.enums import MediaType
+from music_assistant.models.errors import MusicAssistantError, SetupFailedError
 from music_assistant.models.media_items import (
     MediaItem,
     MediaItemProviderId,
@@ -34,8 +28,15 @@ from music_assistant.models.media_items import (
 )
 from music_assistant.models.provider import MusicProvider
 
+from .providers.filesystem import FileSystemProvider
+from .providers.qobuz import QobuzProvider
+from .providers.spotify import SpotifyProvider
+from .providers.tunein import TuneInProvider
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
+
+PROVIDERS = (FileSystemProvider, QobuzProvider, SpotifyProvider, TuneInProvider)
 
 
 class MusicController:
@@ -54,7 +55,26 @@ class MusicController:
 
     async def setup(self):
         """Async initialize of module."""
-        self.mass.create_task(self.__periodic_sync)
+        # register providers
+        for prov in PROVIDERS:
+            await self._register_provider(prov)
+
+    async def start_sync(self, schedule: Optional[float] = 3) -> None:
+        """
+        Start running the sync of all registred providers.
+
+        schedule: schedule syncjob every X hours, set to None for just a manual sync run.
+        """
+
+        async def do_sync():
+            while True:
+                for prov in self.providers:
+                    await self.run_provider_sync(prov.id)
+                if schedule is None:
+                    return
+                await asyncio.sleep(3600 * schedule)
+
+        self.mass.create_task(do_sync())
 
     @property
     def provider_count(self) -> int:
@@ -72,32 +92,6 @@ class MusicController:
         if prov is None or not prov.available:
             self.logger.warning("Provider %s is not available", provider_id)
         return prov
-
-    async def register_provider(self, provider: MusicProvider) -> None:
-        """Register a music provider."""
-        if provider.id in self._providers:
-            raise AlreadyRegisteredError(
-                f"Provider {provider.id} is already registered"
-            )
-        try:
-            provider.mass = self.mass
-            provider.cache = self.mass.cache
-            provider.logger = self.logger.getChild(provider.id)
-            await provider.setup()
-        except Exception as err:  # pylint: disable=broad-except
-            raise SetupFailedError(
-                f"Setup failed of provider {provider.id}: {str(err)}"
-            ) from err
-        else:
-            self._providers[provider.id] = provider
-            self.mass.signal_event(
-                MassEvent(
-                    EventType.PROVIDER_REGISTERED,
-                    object_id=provider.id,
-                    data=provider.id,
-                )
-            )
-            self.mass.create_task(self.run_provider_sync(provider.id))
 
     async def search(
         self, search_query, media_types: List[MediaType], limit: int = 10
@@ -359,13 +353,8 @@ class MusicController:
                 job_desc,
             )
 
-    async def trigger_sync(self) -> None:
-        """Trigger sync of all providers."""
-        for prov in self.providers:
-            await self.run_provider_sync(prov.id)
-
     async def run_provider_sync(self, provider_id: str) -> None:
-        """Run library sync for a provider."""
+        """Run/schedule library sync for a provider."""
         provider = self.get_provider(provider_id)
         if not provider:
             return
@@ -378,6 +367,21 @@ class MusicController:
                 f"Library sync of {media_type.value}s for provider {provider.name}",
                 allow_duplicate=False,
             )
+
+    def get_controller(
+        self, media_type: MediaType
+    ) -> ArtistsController | AlbumsController | TracksController | RadioController | PlaylistController:
+        """Return controller for MediaType."""
+        if media_type == MediaType.ARTIST:
+            return self.artists
+        if media_type == MediaType.ALBUM:
+            return self.albums
+        if media_type == MediaType.TRACK:
+            return self.tracks
+        if media_type == MediaType.RADIO:
+            return self.radio
+        if media_type == MediaType.PLAYLIST:
+            return self.playlists
 
     async def _library_items_sync(
         self, media_type: MediaType, provider_id: str
@@ -431,29 +435,19 @@ class MusicController:
                 if provider_id == "filesystem":
                     if db_item := await controller.get_db_item(item_id):
                         db_item.provider_ids = {
-                            x
-                            for x in db_item.provider_ids
-                            if not (x.provider == provider_id)
+                            x for x in db_item.provider_ids if x.provider != provider_id
                         }
                         await controller.update_db_item(item_id, db_item, True)
 
-    def get_controller(
-        self, media_type: MediaType
-    ) -> ArtistsController | AlbumsController | TracksController | RadioController | PlaylistController:
-        """Return controller for MediaType."""
-        if media_type == MediaType.ARTIST:
-            return self.artists
-        if media_type == MediaType.ALBUM:
-            return self.albums
-        if media_type == MediaType.TRACK:
-            return self.tracks
-        if media_type == MediaType.RADIO:
-            return self.radio
-        if media_type == MediaType.PLAYLIST:
-            return self.playlists
-
-    @run_periodic(3 * 3600, True)
-    async def __periodic_sync(self):
-        """Periodically sync all providers."""
-        for prov in self.providers:
-            await self.run_provider_sync(prov.id)
+    async def _register_provider(self, provider: MusicProvider) -> None:
+        """Register a music provider."""
+        try:
+            provider.mass = self.mass
+            provider.cache = self.mass.cache
+            provider.logger = self.logger.getChild(provider.id)
+            if await provider.setup():
+                self._providers[provider.id] = provider
+        except Exception as err:  # pylint: disable=broad-except
+            raise SetupFailedError(
+                f"Setup failed of provider {provider.id}: {str(err)}"
+            ) from err

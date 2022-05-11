@@ -43,32 +43,35 @@ CACHE_DIR = gettempdir()
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
 
-    def __init__(self, username: str, password: str) -> None:
-        """Initialize the Spotify provider."""
-        self._attr_id = "spotify"
-        self._attr_name = "Spotify"
-        self._attr_supported_mediatypes = [
-            MediaType.ARTIST,
-            MediaType.ALBUM,
-            MediaType.TRACK,
-            MediaType.PLAYLIST
-            # TODO: Return spotify radio
-        ]
-        self._username = username
-        self._password = password
-        self._auth_token = None
-        self._sp_user = None
-        self._librespot_bin = None
-        self._throttler = Throttler(rate_limit=4, period=1)
+    _attr_id = "spotify"
+    _attr_name = "Spotify"
+    _attr_supported_mediatypes = [
+        MediaType.ARTIST,
+        MediaType.ALBUM,
+        MediaType.TRACK,
+        MediaType.PLAYLIST
+        # TODO: Return spotify radio
+    ]
+    _auth_token = None
+    _sp_user = None
+    _librespot_bin = None
+    _throttler = Throttler(rate_limit=4, period=1)
 
-    async def setup(self) -> None:
+    async def setup(self) -> bool:
         """Handle async initialization of the provider."""
-        if not self._username or not self._password:
+        if not self.mass.config.spotify_enabled:
+            return False
+        if (
+            not self.mass.config.spotify_username
+            or not self.mass.config.spotify_password
+        ):
             raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails
         token = await self.get_token()
         if not token:
-            raise LoginFailed(f"Login failed for user {self._username}")
+            raise LoginFailed(
+                f"Login failed for user {self.mass.config.spotify_username}"
+            )
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
@@ -439,7 +442,10 @@ class SpotifyProvider(MusicProvider):
         ):
             return self._auth_token
         tokeninfo = {}
-        if not self._username or not self._password:
+        if (
+            not self.mass.config.spotify_username
+            or not self.mass.config.spotify_password
+        ):
             return tokeninfo
         # retrieve token with librespot
         tokeninfo = await self._get_token()
@@ -452,7 +458,9 @@ class SpotifyProvider(MusicProvider):
             )
             self._auth_token = tokeninfo
         else:
-            self.logger.error("Login failed for user %s", self._username)
+            self.logger.error(
+                "Login failed for user %s", self.mass.config.spotify_username
+            )
         return tokeninfo
 
     async def _get_token(self):
@@ -465,9 +473,9 @@ class SpotifyProvider(MusicProvider):
             CACHE_DIR,
             "-a",
             "-u",
-            self._username,
+            self.mass.config.spotify_username,
             "-p",
-            self._password,
+            self.mass.config.spotify_password,
         ]
         librespot = await asyncio.create_subprocess_exec(*args)
         await librespot.wait()

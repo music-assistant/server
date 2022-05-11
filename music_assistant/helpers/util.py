@@ -1,7 +1,6 @@
 """Helper and utility functions."""
 from __future__ import annotations
 
-import asyncio
 import os
 import platform
 import socket
@@ -16,24 +15,6 @@ _UNDEF: dict = {}
 CALLABLE_T = TypeVar("CALLABLE_T", bound=Callable)
 CALLBACK_TYPE = Callable[[], None]
 # pylint: enable=invalid-name
-
-
-def run_periodic(delay: float, later: bool = False):
-    """Run a coroutine at interval."""
-
-    def scheduler(fcn):
-        async def wrapper(*args, **kwargs):
-            while True:
-                if later:
-                    await asyncio.sleep(delay)
-                    await fcn(*args, **kwargs)
-                else:
-                    await fcn(*args, **kwargs)
-                    await asyncio.sleep(delay)
-
-        return wrapper
-
-    return scheduler
 
 
 def filename_from_string(string):

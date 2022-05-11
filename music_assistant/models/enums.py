@@ -187,11 +187,9 @@ class EventType(Enum):
     """Enum with possible Events."""
 
     PLAYER_ADDED = "player added"
-    PLAYER_REMOVED = "player removed"
     PLAYER_UPDATED = "player updated"
     STREAM_STARTED = "streaming started"
     STREAM_ENDED = "streaming ended"
-    MUSIC_SYNC_STATUS = "music sync status"
     QUEUE_ADDED = "queue_added"
     QUEUE_UPDATED = "queue updated"
     QUEUE_ITEMS_UPDATED = "queue items updated"
@@ -203,8 +201,6 @@ class EventType(Enum):
     PLAYLIST_ADDED = "playlist added"
     PLAYLIST_UPDATED = "playlist updated"
     RADIO_ADDED = "radio added"
-    TASK_UPDATED = "task updated"
-    PROVIDER_REGISTERED = "provider registered"
     BACKGROUND_JOB_UPDATED = "background_job_updated"
 
 

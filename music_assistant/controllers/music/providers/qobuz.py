@@ -40,27 +40,29 @@ from music_assistant.models.provider import MusicProvider
 class QobuzProvider(MusicProvider):
     """Provider for the Qobux music service."""
 
-    def __init__(self, username: str, password: str) -> None:
-        """Initialize the Spotify provider."""
-        self._attr_id = "qobuz"
-        self._attr_name = "Qobuz"
-        self._attr_supported_mediatypes = [
-            MediaType.ARTIST,
-            MediaType.ALBUM,
-            MediaType.TRACK,
-            MediaType.PLAYLIST,
-        ]
-        self._username = username
-        self._password = password
-        self.__user_auth_info = None
-        self._throttler = Throttler(rate_limit=4, period=1)
+    _attr_id = "qobuz"
+    _attr_name = "Qobuz"
+    _attr_supported_mediatypes = [
+        MediaType.ARTIST,
+        MediaType.ALBUM,
+        MediaType.TRACK,
+        MediaType.PLAYLIST,
+    ]
+    _user_auth_info = None
+    _throttler = Throttler(rate_limit=4, period=1)
 
-    async def setup(self) -> None:
+    async def setup(self) -> bool:
         """Handle async initialization of the provider."""
+        if not self.mass.config.qobuz_enabled:
+            return False
+        if not self.mass.config.qobuz_username or not self.mass.config.qobuz_password:
+            raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails
         token = await self._auth_token()
         if not token:
-            raise LoginFailed(f"Login failed for user {self._username}")
+            raise LoginFailed(
+                f"Login failed for user {self.mass.config.qobuz_username}"
+            )
         # subscribe to stream events so we can report playback to Qobuz
         self.mass.subscribe(
             self.on_stream_event,
@@ -385,16 +387,16 @@ class QobuzProvider(MusicProvider):
 
         We use this to report playback start/stop to qobuz.
         """
-        if not self.__user_auth_info:
+        if not self._user_auth_info:
             return
         # TODO: need to figure out if the streamed track is purchased by user
         # https://www.qobuz.com/api.json/0.2/purchase/getUserPurchasesIds?limit=5000&user_id=xxxxxxx
         # {"albums":{"total":0,"items":[]},"tracks":{"total":0,"items":[]},"user":{"id":xxxx,"login":"xxxxx"}}
         if event.type == EventType.STREAM_STARTED:
             # report streaming started to qobuz
-            device_id = self.__user_auth_info["user"]["device"]["id"]
-            credential_id = self.__user_auth_info["user"]["credential"]["id"]
-            user_id = self.__user_auth_info["user"]["id"]
+            device_id = self._user_auth_info["user"]["device"]["id"]
+            credential_id = self._user_auth_info["user"]["credential"]["id"]
+            user_id = self._user_auth_info["user"]["id"]
             format_id = event.data.details["format_id"]
             timestamp = int(time.time())
             events = [
@@ -415,7 +417,7 @@ class QobuzProvider(MusicProvider):
             await self._post_data("track/reportStreamingStart", data=events)
         elif event.type == EventType.STREAM_ENDED:
             # report streaming ended to qobuz
-            user_id = self.__user_auth_info["user"]["id"]
+            user_id = self._user_auth_info["user"]["id"]
             await self._get_data(
                 "/track/reportStreamingEnd",
                 user_id=user_id,
@@ -618,7 +620,7 @@ class QobuzProvider(MusicProvider):
             )
         )
         playlist.is_editable = (
-            playlist_obj["owner"]["id"] == self.__user_auth_info["user"]["id"]
+            playlist_obj["owner"]["id"] == self._user_auth_info["user"]["id"]
             or playlist_obj["is_collaborative"]
         )
         if img := self.__get_image(playlist_obj):
@@ -628,16 +630,16 @@ class QobuzProvider(MusicProvider):
 
     async def _auth_token(self):
         """Login to qobuz and store the token."""
-        if self.__user_auth_info:
-            return self.__user_auth_info["user_auth_token"]
+        if self._user_auth_info:
+            return self._user_auth_info["user_auth_token"]
         params = {
-            "username": self._username,
-            "password": self._password,
+            "username": self.mass.config.qobuz_username,
+            "password": self.mass.config.qobuz_password,
             "device_manufacturer_id": "music_assistant",
         }
         details = await self._get_data("user/login", **params)
         if details and "user" in details:
-            self.__user_auth_info = details
+            self._user_auth_info = details
             self.logger.info(
                 "Succesfully logged in to Qobuz as %s", details["user"]["display_name"]
             )

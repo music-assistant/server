@@ -32,7 +32,7 @@ class MusicProvider:
     logger: Logger = None  # set by setup
 
     @abstractmethod
-    async def setup(self) -> None:
+    async def setup(self) -> bool:
         """
         Handle async initialization of the provider.
 
@@ -193,3 +193,7 @@ class MusicProvider:
             return await self.get_playlist(prov_item_id)
         if media_type == MediaType.RADIO:
             return await self.get_radio(prov_item_id)
+
+    async def sync(self) -> None:
+        """Run/schedule sync for this provider."""
+        await self.mass.music.run_provider_sync(self.id)
