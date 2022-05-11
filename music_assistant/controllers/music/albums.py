@@ -32,9 +32,10 @@ class AlbumsController(MediaControllerBase[Album]):
         """Return (full) details for a single media item."""
         album = await super().get(*args, **kwargs)
         # append full artist details to full album item
-        album.artist = await self.mass.music.artists.get(
-            album.artist.item_id, album.artist.provider
-        )
+        if album.artist:
+            album.artist = await self.mass.music.artists.get(
+                album.artist.item_id, album.artist.provider
+            )
         return album
 
     async def tracks(self, item_id: str, provider_id: str) -> List[Track]:
