@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 from io import BytesIO
+from typing import TYPE_CHECKING
 
 from PIL import Image
 
-from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.models.media_items import (
-    ImageType,
-    ItemMapping,
-    MediaItemType,
-    MediaType,
-)
+from music_assistant.models.enums import ImageType, MediaType
+from music_assistant.models.media_items import ItemMapping, MediaItemType
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 
 async def create_thumbnail(mass: MusicAssistant, url, size: int = 150) -> bytes:

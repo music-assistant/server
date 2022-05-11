@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import statistics
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from databases import Database as Db
 
-from music_assistant.constants import EventType, MassEvent
 from music_assistant.controllers.music.albums import AlbumsController
 from music_assistant.controllers.music.artists import ArtistsController
 from music_assistant.controllers.music.playlists import PlaylistController
@@ -19,20 +18,24 @@ from music_assistant.helpers.database import (
     TABLE_TRACK_LOUDNESS,
 )
 from music_assistant.helpers.datetime import utc_timestamp
-from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import run_periodic
+from music_assistant.models.enums import EventType, MediaType
 from music_assistant.models.errors import (
     AlreadyRegisteredError,
     MusicAssistantError,
     SetupFailedError,
 )
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import (
     MediaItem,
     MediaItemProviderId,
     MediaItemType,
-    MediaType,
 )
 from music_assistant.models.provider import MusicProvider
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 
 class MusicController:
@@ -147,19 +150,7 @@ class MusicController:
         self, uri: str, force_refresh: bool = False, lazy: bool = True
     ) -> MediaItemType:
         """Fetch MediaItem by uri."""
-        try:
-            if "://" in uri:
-                provider = uri.split("://")[0]
-                item_id = uri.split("/")[-1]
-                media_type = MediaType(uri.split("/")[-2])
-            elif "spotify" in uri:
-                # spotify new-style uri
-                provider, media_type, item_id = uri.split(":")
-                media_type = MediaType(media_type)
-        except (TypeError, AttributeError, ValueError) as err:
-            raise MusicAssistantError(
-                f"Not a valid Music Assistant uri: {uri}"
-            ) from err
+        media_type, provider, item_id = parse_uri(uri)
         return await self.get_item(
             item_id, provider, media_type, force_refresh=force_refresh, lazy=lazy
         )

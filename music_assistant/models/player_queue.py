@@ -5,34 +5,28 @@ import asyncio
 import random
 from asyncio import Task, TimerHandle
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.audio import get_stream_details
-from music_assistant.helpers.typing import MusicAssistant
-from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
-from music_assistant.models.media_items import (
+from music_assistant.models.enums import (
     ContentType,
+    CrossFadeMode,
+    EventType,
     MediaType,
-    Radio,
-    StreamDetails,
-    Track,
+    QueueOption,
+    RepeatMode,
 )
+from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
+from music_assistant.models.event import MassEvent
+from music_assistant.models.media_items import Radio, StreamDetails, Track
 
 from .player import Player, PlayerGroup, PlayerState
 
-
-class QueueOption(Enum):
-    """Enum representation of the queue (play) options."""
-
-    PLAY = "play"
-    REPLACE = "replace"
-    NEXT = "next"
-    ADD = "add"
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 
 @dataclass
@@ -81,23 +75,6 @@ class QueueItem(DataClassDictMixin):
             image=media_item.image,
             available=media_item.available,
         )
-
-
-class CrossFadeMode(Enum):
-    """Enum with crossfade modes."""
-
-    DISABLED = "disabled"  # no crossfading at all
-    STRICT = "strict"  # do not crossfade tracks of same album
-    SMART = "smart"  # crossfade if possible (do not crossfade different sample rates)
-    ALWAYS = "always"  # all tracks - resample to fixed sample rate
-
-
-class RepeatMode(Enum):
-    """Enum with repeat modes."""
-
-    OFF = "off"  # no repeat at all
-    ONE = "one"  # repeat one/single track
-    ALL = "all"  # repeat entire queue
 
 
 class QueueSettings:

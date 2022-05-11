@@ -1,13 +1,16 @@
 """Logic to play music from MusicProviders to supported players."""
 from __future__ import annotations
 
-from typing import Dict, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Tuple, Union
 
-from music_assistant.constants import EventType, MassEvent
-from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.models.enums import EventType
 from music_assistant.models.errors import AlreadyRegisteredError
+from music_assistant.models.event import MassEvent
 from music_assistant.models.player import Player, PlayerGroup
 from music_assistant.models.player_queue import PlayerQueue
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 PlayerType = Union[Player, PlayerGroup]
 

@@ -2,42 +2,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from enum import Enum, IntEnum
 from typing import Any, Dict, List, Mapping, Optional, Set, Union
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.helpers.json import json
+from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import create_sort_name
+from music_assistant.models.enums import (
+    AlbumType,
+    ContentType,
+    ImageType,
+    LinkType,
+    MediaQuality,
+    MediaType,
+    StreamType,
+)
 
 MetadataTypes = Union[int, bool, str, List[str]]
 
 JSON_KEYS = ("artists", "artist", "album", "metadata", "provider_ids")
-
-
-class MediaType(Enum):
-    """Enum for MediaType."""
-
-    ARTIST = "artist"
-    ALBUM = "album"
-    TRACK = "track"
-    PLAYLIST = "playlist"
-    RADIO = "radio"
-    UNKNOWN = "unknown"
-
-
-class MediaQuality(IntEnum):
-    """Enum for Media Quality."""
-
-    UNKNOWN = 0
-    LOSSY_MP3 = 1
-    LOSSY_OGG = 2
-    LOSSY_AAC = 3
-    FLAC_LOSSLESS = 10  # 44.1/48khz 16 bits
-    FLAC_LOSSLESS_HI_RES_1 = 20  # 44.1/48khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_2 = 21  # 88.2/96khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_3 = 22  # 176/192khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_4 = 23  # above 192khz 24 bits HI-RES
 
 
 @dataclass(frozen=True)
@@ -56,22 +40,6 @@ class MediaItemProviderId(DataClassDictMixin):
         return hash((self.provider, self.item_id, self.quality))
 
 
-class LinkType(Enum):
-    """Enum wth link types."""
-
-    WEBSITE = "website"
-    FACEBOOK = "facebook"
-    TWITTER = "twitter"
-    LASTFM = "lastfm"
-    YOUTUBE = "youtube"
-    INSTAGRAM = "instagram"
-    SNAPCHAT = "snapchat"
-    TIKTOK = "tiktok"
-    DISCOGS = "discogs"
-    WIKIPEDIA = "wikipedia"
-    ALLMUSIC = "allmusic"
-
-
 @dataclass(frozen=True)
 class MediaItemLink(DataClassDictMixin):
     """Model for a link."""
@@ -82,22 +50,6 @@ class MediaItemLink(DataClassDictMixin):
     def __hash__(self):
         """Return custom hash."""
         return hash((self.type.value))
-
-
-class ImageType(Enum):
-    """Enum wth image types."""
-
-    THUMB = "thumb"
-    WIDE_THUMB = "wide_thumb"
-    FANART = "fanart"
-    LOGO = "logo"
-    CLEARART = "clearart"
-    BANNER = "banner"
-    CUTOUT = "cutout"
-    BACK = "back"
-    CDART = "cdart"
-    EMBEDDED_THUMB = "embedded_thumb"
-    OTHER = "other"
 
 
 @dataclass(frozen=True)
@@ -272,15 +224,6 @@ class Artist(MediaItem):
     musicbrainz_id: Optional[str] = None
 
 
-class AlbumType(Enum):
-    """Enum for Album type."""
-
-    ALBUM = "album"
-    SINGLE = "single"
-    COMPILATION = "compilation"
-    UNKNOWN = "unknown"
-
-
 @dataclass
 class Album(MediaItem):
     """Model for an album."""
@@ -344,81 +287,7 @@ class Radio(MediaItem):
         return val
 
 
-def create_uri(media_type: MediaType, provider_id: str, item_id: str):
-    """Create uri for mediaitem."""
-    return f"{provider_id}://{media_type.value}/{item_id}"
-
-
 MediaItemType = Union[Artist, Album, Track, Radio, Playlist]
-
-
-class StreamType(Enum):
-    """Enum with stream types."""
-
-    EXECUTABLE = "executable"
-    URL = "url"
-    FILE = "file"
-    CACHE = "cache"
-
-
-class ContentType(Enum):
-    """Enum with audio content types supported by ffmpeg."""
-
-    OGG = "ogg"
-    FLAC = "flac"
-    MP3 = "mp3"
-    AAC = "aac"
-    MPEG = "mpeg"
-    WAV = "wav"
-    PCM_S16LE = "s16le"  # PCM signed 16-bit little-endian
-    PCM_S24LE = "s24le"  # PCM signed 24-bit little-endian
-    PCM_S32LE = "s32le"  # PCM signed 32-bit little-endian
-    PCM_F32LE = "f32le"  # PCM 32-bit floating-point little-endian
-    PCM_F64LE = "f64le"  # PCM 64-bit floating-point little-endian
-
-    @classmethod
-    def try_parse(
-        cls: "ContentType", string: str, fallback: str = "mp3"
-    ) -> "ContentType":
-        """Try to parse ContentType from (url)string."""
-        tempstr = string.lower()
-        if "." in tempstr:
-            tempstr = tempstr.split(".")[-1]
-        tempstr = tempstr.split("?")[0]
-        tempstr = tempstr.split("&")[0]
-        try:
-            return cls(tempstr)
-        except ValueError:
-            return cls(fallback)
-
-    def is_pcm(self):
-        """Return if contentype is PCM."""
-        return self.name.startswith("PCM")
-
-    def sox_supported(self):
-        """Return if ContentType is supported by SoX."""
-        return self not in [ContentType.AAC, ContentType.MPEG]
-
-    def sox_format(self):
-        """Convert the ContentType to SoX compatible format."""
-        if not self.sox_supported():
-            raise NotImplementedError
-        return self.value.replace("le", "")
-
-    @classmethod
-    def from_bit_depth(
-        cls, bit_depth: int, floating_point: bool = False
-    ) -> "ContentType":
-        """Return (PCM) Contenttype from PCM bit depth."""
-        if floating_point and bit_depth > 32:
-            return cls.PCM_F64LE
-        if floating_point:
-            return cls.PCM_F32LE
-        if bit_depth == 16:
-            return cls.PCM_S16LE
-        if bit_depth == 24:
-            return cls.PCM_S24LE
-        return cls.PCM_S32LE
 
 
 @dataclass

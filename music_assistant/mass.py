@@ -15,13 +15,15 @@ from uuid import uuid4
 import aiohttp
 from databases import DatabaseURL
 
-from music_assistant.constants import BackgroundJob, EventType, JobStatus, MassEvent
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.stream import StreamController
 from music_assistant.helpers.cache import Cache
 from music_assistant.helpers.database import Database
+from music_assistant.models.background_job import BackgroundJob
+from music_assistant.models.enums import EventType, JobStatus
+from music_assistant.models.event import MassEvent
 
 EventCallBackType = Callable[[MassEvent], None]
 EventSubscriptionType = Tuple[

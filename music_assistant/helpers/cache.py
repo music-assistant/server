@@ -5,9 +5,12 @@ import asyncio
 import functools
 import json
 import time
+from typing import TYPE_CHECKING
 
 from music_assistant.helpers.database import TABLE_CACHE
-from music_assistant.helpers.typing import MusicAssistant
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 
 class Cache:

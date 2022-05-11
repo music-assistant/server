@@ -3,19 +3,21 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from logging import Logger
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
-from music_assistant.helpers.typing import MusicAssistant
+from music_assistant.models.enums import MediaType
 from music_assistant.models.media_items import (
     Album,
     Artist,
     MediaItemType,
-    MediaType,
     Playlist,
     Radio,
     Track,
 )
 from music_assistant.models.player_queue import StreamDetails
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 
 class MusicProvider:

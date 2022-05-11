@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from time import time
 
-from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.database import TABLE_RADIOS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.util import create_sort_name
+from music_assistant.models.enums import EventType, MediaType
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
-from music_assistant.models.media_items import MediaType, Radio
+from music_assistant.models.media_items import Radio
 
 
 class RadioController(MediaControllerBase[Radio]):

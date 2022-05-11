@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from json.decoder import JSONDecodeError
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -12,7 +12,6 @@ from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-mod
 )
 from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -24,6 +23,9 @@ from music_assistant.models.media_items import (
     MediaItemMetadata,
     Track,
 )
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 IMG_MAPPING = {
     "strArtistThumb": ImageType.THUMB,

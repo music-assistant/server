@@ -4,11 +4,10 @@ from __future__ import annotations
 import asyncio
 from asyncio import Task
 from time import time
-from typing import AsyncGenerator, Dict, Optional, Set
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, Optional, Set
 
 from aiohttp import web
 
-from music_assistant.constants import EventType, MassEvent
 from music_assistant.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
@@ -19,11 +18,19 @@ from music_assistant.helpers.audio import (
     strip_silence,
 )
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.typing import MusicAssistant
 from music_assistant.helpers.util import get_ip, select_stream_port
+from music_assistant.models.enums import (
+    ContentType,
+    CrossFadeMode,
+    EventType,
+    MediaType,
+)
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
-from music_assistant.models.media_items import ContentType, MediaType
-from music_assistant.models.player_queue import CrossFadeMode, PlayerQueue, QueueItem
+from music_assistant.models.event import MassEvent
+from music_assistant.models.player_queue import PlayerQueue, QueueItem
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 
 class StreamController:

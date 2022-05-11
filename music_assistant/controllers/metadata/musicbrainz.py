@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import re
 from json.decoder import JSONDecodeError
+from typing import TYPE_CHECKING
 
 import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings, get_compare_string
-from music_assistant.helpers.typing import MusicAssistant
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
