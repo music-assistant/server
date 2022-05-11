@@ -623,7 +623,7 @@ class QobuzProvider(MusicProvider):
         )
         if img := self.__get_image(playlist_obj):
             playlist.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
-        playlist.checksum = str(playlist_obj["updated_at"])
+        playlist.metadata.checksum = str(playlist_obj["updated_at"])
         return playlist
 
     async def _auth_token(self):

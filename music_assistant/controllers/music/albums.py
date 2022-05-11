@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List
+from typing import List, Optional
 
 from music_assistant.helpers.compare import compare_album, compare_strings
 from music_assistant.helpers.database import TABLE_ALBUMS
@@ -119,21 +119,12 @@ class AlbumsController(MediaControllerBase[Album]):
                 return await self.update_db_item(cur_item.item_id, album)
 
             # insert new album
-            assert album.artist
-            if album.artist.musicbrainz_id and album.artist.provider != "database":
-                album_artist = await self.mass.music.artists.add_db_item(album.artist)
-            else:
-                album_artist = (
-                    await self.mass.music.artists.get_db_item_by_prov_id(
-                        album.artist.provider, album.artist.item_id, db=_db
-                    )
-                    or album.artist
-                )
+            album_artist = await self._get_album_artist(album, cur_item)
             new_item = await self.mass.database.insert_or_replace(
                 self.db_table,
                 {
                     **album.to_db_row(),
-                    "artist": json_serializer(ItemMapping.from_item(album_artist)),
+                    "artist": json_serializer(album_artist) or None,
                 },
                 db=_db,
             )
@@ -152,19 +143,7 @@ class AlbumsController(MediaControllerBase[Album]):
         """Update Album record in the database."""
         async with self.mass.database.get_db() as _db:
             cur_item = await self.get_db_item(item_id)
-            if (
-                not isinstance(album.artist, ItemMapping)
-                and album.artist.musicbrainz_id
-                and album.artist.provider != "database"
-            ):
-                album_artist = await self.mass.music.artists.add_db_item(album.artist)
-            else:
-                album_artist = (
-                    await self.mass.music.artists.get_db_item_by_prov_id(
-                        album.artist.provider, album.artist.item_id, db=_db
-                    )
-                    or album.artist
-                )
+            album_artist = await self._get_album_artist(album, cur_item)
             if overwrite:
                 metadata = album.metadata
                 provider_ids = album.provider_ids
@@ -187,7 +166,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     "year": album.year or cur_item.year,
                     "upc": album.upc or cur_item.upc,
                     "album_type": album_type.value,
-                    "artist": json_serializer(ItemMapping.from_item(album_artist)),
+                    "artist": json_serializer(album_artist) or None,
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                 },
@@ -250,3 +229,29 @@ class AlbumsController(MediaControllerBase[Album]):
                 continue
             if MediaType.ALBUM in provider.supported_mediatypes:
                 await find_prov_match(provider)
+
+    async def _get_album_artist(
+        self, db_album: Album, updated_album: Optional[Album] = None
+    ) -> ItemMapping | None:
+        """Extract album artist as ItemMapping, prefer database ID."""
+        for album in (updated_album, db_album):
+            if not album or not album.artist:
+                continue
+
+            if isinstance(album.artist, ItemMapping):
+                return album.artist
+
+            if album.artist.provider == "database":
+                return ItemMapping.from_item(album.artist)
+
+            if album.artist.musicbrainz_id:
+                album_artist = await self.mass.music.artists.add_db_item(album.artist)
+                return ItemMapping.from_item(album_artist)
+
+            if album_artist := await self.mass.music.artists.get_db_item_by_prov_id(
+                album.artist.provider, album.artist.item_id
+            ):
+                return ItemMapping.from_item(album_artist)
+
+            return ItemMapping.from_item(album.artist)
+        return None

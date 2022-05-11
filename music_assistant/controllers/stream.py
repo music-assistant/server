@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import urllib.parse
 from asyncio import Task
 from time import time
 from typing import TYPE_CHECKING, AsyncGenerator, Dict, Optional, Set
@@ -64,13 +65,14 @@ class StreamController:
         track = await self.mass.music.tracks.get_provider_item(track_id, provider)
         if preview := track.metadata.preview:
             return preview
-        return f"http://{self._ip}:{self._port}/preview/{provider}/{track_id}.mp3"
+        enc_track_id = urllib.parse.quote(track_id)
+        return f"http://{self._ip}:{self._port}/preview?provider={provider}&item_id={enc_track_id}"
 
     async def setup(self) -> None:
         """Async initialize of module."""
         app = web.Application()
 
-        app.router.add_get("/preview/{provider}/{item_id}.mp3", self.serve_preview)
+        app.router.add_get("/preview", self.serve_preview)
         app.router.add_get(
             "/{queue_id}/{player_id}.{format}",
             self.serve_multi_client_queue_stream,
@@ -115,8 +117,8 @@ class StreamController:
 
     async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""
-        provider = request.match_info["provider"]
-        item_id = request.match_info["item_id"]
+        provider = request.query["provider"]
+        item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(
             status=200, reason="OK", headers={"Content-Type": "audio/mp3"}
         )

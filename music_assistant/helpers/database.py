@@ -10,7 +10,6 @@ from databases import DatabaseURL
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
-# pylint: disable=invalid-name
 
 SCHEMA_VERSION = 7
 
@@ -280,7 +279,6 @@ class Database:
                     sort_name TEXT NOT NULL,
                     owner TEXT NOT NULL,
                     is_editable BOOLEAN NOT NULL,
-                    checksum TEXT NOT NULL,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_ids json,
