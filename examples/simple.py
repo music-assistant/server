@@ -6,7 +6,7 @@ import os
 
 
 from music_assistant.mass import MusicAssistant
-from music_assistant.providers.spotify import SpotifyProvider
+from music_assistant.models.config import MassConfig
 
 parser = argparse.ArgumentParser(description="MusicAssistant")
 parser.add_argument(
@@ -47,8 +47,14 @@ if not os.path.isdir(data_dir):
     os.makedirs(data_dir)
 db_file = os.path.join(data_dir, "music_assistant.db")
 
-mass = MusicAssistant(f"sqlite:///{db_file}")
-spotify = SpotifyProvider(args.username, args.password)
+mass = MusicAssistant(
+    MassConfig(
+        database_url=MassConfig,
+        spotify_enabled=True,
+        spotify_username=args.username,
+        spotify_password=args.password,
+    )
+)
 
 
 async def main():
@@ -58,8 +64,10 @@ async def main():
 
     # without contextmanager we need to call the async setup
     await mass.setup()
-    # register music provider(s)
-    await mass.music.register_provider(spotify)
+
+    # start sync
+    await mass.music.start_sync()
+
     # get some data
     await mass.music.artists.library()
     await mass.music.tracks.library()
