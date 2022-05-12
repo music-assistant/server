@@ -118,20 +118,6 @@ class Cache:
         return functools.reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
-def _get_cache_key(func, *args, **kwargs):
-    method_class = args[0]
-    method_class_name = method_class.__class__.__name__
-    cache_key_parts = [method_class_name, func.__name__]
-    if len(args) > 1:
-        cache_key_parts += args[1:]
-    for key in sorted(kwargs.keys()):
-        if key in ("skip_cache", "cache_checksum"):
-            continue
-        cache_key_parts.append(f"{key}{kwargs[key]}")
-    cache_key = ".".join(cache_key_parts)
-    return cache_key
-
-
 def use_cache(expiration=86400 * 30):
     """Return decorator that can be used to cache a method's result."""
 
