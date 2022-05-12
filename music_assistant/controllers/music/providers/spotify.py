@@ -507,7 +507,7 @@ class SpotifyProvider(MusicProvider):
     @cached_generator(3600 * 24)
     async def _get_all_items(
         self, endpoint, key="items", **kwargs
-    ) -> AsyncGenerator[dict, None]:
+    ) -> AsyncGenerator[List[dict], None]:
         """Get all items from a paged list."""
         limit = 50
         offset = 0
@@ -518,8 +518,7 @@ class SpotifyProvider(MusicProvider):
             offset += limit
             if not result or key not in result or not result[key]:
                 break
-            for item in result[key]:
-                yield item
+            yield result[key]
             if len(result[key]) < limit:
                 break
 
