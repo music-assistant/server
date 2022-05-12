@@ -57,35 +57,37 @@ class FileSystemProvider(MusicProvider):
     Should be compatible with LMS
     """
 
-    def __init__(self, music_dir: str, playlist_dir: Optional[str] = None) -> None:
-        """
-        Initialize the Filesystem provider.
+    _attr_id = "filesystem"
+    _attr_name = "Filesystem"
+    _playlists_dir = ""
+    _music_dir = ""
+    _attr_supported_mediatypes = [
+        MediaType.ARTIST,
+        MediaType.ALBUM,
+        MediaType.TRACK,
+        MediaType.PLAYLIST,
+    ]
 
-        music_dir: Directory on disk containing music files
-        playlist_dir: Directory on disk containing playlist files (optional)
-
-        """
-        self._attr_id = "filesystem"
-        self._attr_name = "Filesystem"
-        self._playlists_dir = playlist_dir
-        self._music_dir = music_dir
-        self._attr_supported_mediatypes = [
-            MediaType.ARTIST,
-            MediaType.ALBUM,
-            MediaType.TRACK,
-        ]
-        if playlist_dir is not None:
-            self._attr_supported_mediatypes.append(MediaType.PLAYLIST)
-        self._cached_tracks: List[Track] = []
-
-    async def setup(self) -> None:
+    async def setup(self) -> bool:
         """Handle async initialization of the provider."""
+        if not self.mass.config.filesystem_enabled:
+            return False
+
+        self._music_dir = self.mass.config.filesystem_music_dir
+        self._playlists_dir = (
+            self.mass.config.filesystem_playlists_dir or self._music_dir
+        )
+
         if not os.path.isdir(self._music_dir):
-            raise FileNotFoundError(f"Music Directory {self._music_dir} does not exist")
-        if self._playlists_dir is not None and not os.path.isdir(self._playlists_dir):
-            raise FileNotFoundError(
+            raise MediaNotFoundError(
+                f"Music Directory {self._music_dir} does not exist"
+            )
+
+        if not os.path.isdir(self._playlists_dir):
+            raise MediaNotFoundError(
                 f"Playlist Directory {self._playlists_dir} does not exist"
             )
+        return True
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5

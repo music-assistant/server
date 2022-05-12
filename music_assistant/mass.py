@@ -13,7 +13,6 @@ from typing import Any, Callable, Coroutine, Deque, List, Optional, Tuple, Type,
 from uuid import uuid4
 
 import aiohttp
-from databases import DatabaseURL
 
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
@@ -22,6 +21,7 @@ from music_assistant.controllers.stream import StreamController
 from music_assistant.helpers.cache import Cache
 from music_assistant.helpers.database import Database
 from music_assistant.models.background_job import BackgroundJob
+from music_assistant.models.config import MassConfig
 from music_assistant.models.enums import EventType, JobStatus
 from music_assistant.models.event import MassEvent
 
@@ -30,25 +30,24 @@ EventSubscriptionType = Tuple[
     EventCallBackType, Optional[Tuple[EventType]], Optional[Tuple[str]]
 ]
 
-MAX_SIMULTANEOUS_JOBS = 5
-
 
 class MusicAssistant:
     """Main MusicAssistant object."""
 
     def __init__(
         self,
-        db_url: DatabaseURL,
+        config: MassConfig,
         session: Optional[aiohttp.ClientSession] = None,
     ) -> None:
         """
         Create an instance of MusicAssistant.
 
-            db_url: Database connection string/url.
+            conf: Music Assistant runtimestartup Config
             stream_port: TCP port used for streaming audio.
             session: Optionally provide an aiohttp clientsession
         """
 
+        self.config = config
         self.loop: asyncio.AbstractEventLoop = None
         self.http_session: aiohttp.ClientSession = session
         self.http_session_provided = session is not None
@@ -59,7 +58,7 @@ class MusicAssistant:
         self._jobs_event = asyncio.Event()
 
         # init core controllers
-        self.database = Database(self, db_url)
+        self.database = Database(self)
         self.cache = Cache(self)
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
@@ -212,7 +211,7 @@ class MusicAssistant:
             self._jobs_event.clear()
             # make sure we're not running more jobs than allowed
             running_jobs = tuple(x for x in self._jobs if x.status == JobStatus.RUNNING)
-            slots_available = MAX_SIMULTANEOUS_JOBS - len(running_jobs)
+            slots_available = self.config.max_simultaneous_jobs - len(running_jobs)
             count = 0
             while count <= slots_available:
                 count += 1
