@@ -370,6 +370,7 @@ class FileSystemProvider(MusicProvider):
             tags = await self.mass.loop.run_in_executor(None, parse_tags)
         except TinyTagException as err:
             self.logger.error("Error processing %s: %s", filename, str(err))
+            return None
 
         prov_item_id = self._get_item_id(filename)
 
