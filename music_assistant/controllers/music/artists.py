@@ -105,7 +105,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider = self.mass.music.get_provider(provider_id)
         if not provider:
             return []
-        return [x async for x in provider.get_artist_toptracks(item_id)]
+        return await provider.get_artist_toptracks(item_id)
 
     async def get_provider_artist_albums(
         self, item_id: str, provider_id: str
@@ -114,7 +114,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider = self.mass.music.get_provider(provider_id)
         if not provider:
             return []
-        return [x async for x in provider.get_artist_albums(item_id)]
+        return await provider.get_artist_albums(item_id)
 
     async def add_db_item(self, artist: Artist) -> Artist:
         """Add a new artist record to the database."""

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from time import time
-from typing import AsyncGenerator, List
+from typing import List
 
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
@@ -27,15 +27,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def tracks(self, item_id: str, provider_id: str) -> List[Track]:
         """Return playlist tracks for the given provider playlist id."""
-        playlist = await self.get(item_id, provider_id)
-        # simply return the tracks from the first provider (there is only 1)
-        prov = next(x for x in playlist.provider_ids)
-        return [
-            x
-            async for x in self.get_provider_playlist_tracks(
-                prov.item_id, prov.provider
-            )
-        ]
+        if provider_id == "database":
+            playlist = await self.get_db_item(item_id)
+            prov = next(x for x in playlist.provider_ids)
+            item_id = prov.item_id
+            provider_id = prov.provider
+
+        provider = self.mass.music.get_provider(provider_id)
+        if not provider:
+            return []
+
+        return await provider.get_playlist_tracks(item_id)
 
     async def add(self, item: Playlist) -> Playlist:
         """Add playlist to local db and return the new database item."""
@@ -134,9 +136,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for prov in playlist.provider_ids:
             track_ids_to_remove = []
-            async for playlist_track in self.get_provider_playlist_tracks(
-                prov.item_id, prov.provider
-            ):
+            for playlist_track in await self.tracks(prov.item_id, prov.provider):
                 if playlist_track.position not in positions:
                     continue
                 track_ids_to_remove.append(playlist_track.item_id)
@@ -149,22 +149,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 type=EventType.PLAYLIST_UPDATED, object_id=db_playlist_id, data=playlist
             )
         )
-
-    async def get_provider_playlist_tracks(
-        self, item_id: str, provider_id: str
-    ) -> AsyncGenerator[Track, None]:
-        """Return playlist tracks for the given provider playlist id."""
-        provider = self.mass.music.get_provider(provider_id)
-        if not provider:
-            return
-
-        index = 0
-        async for track in provider.get_playlist_tracks(item_id):
-            # we need to make sure that position is set on the track
-            if track.position is None:
-                track.position = index
-            yield track
-            index += 1
 
     async def add_db_item(self, playlist: Playlist) -> Playlist:
         """Add a new playlist record to the database."""

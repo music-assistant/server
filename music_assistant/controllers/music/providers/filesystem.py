@@ -93,7 +93,7 @@ class FileSystemProvider(MusicProvider):
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> AsyncGenerator[MediaItemType, None]:
+    ) -> List[MediaItemType]:
         """
         Perform search on musicprovider.
 
@@ -101,19 +101,21 @@ class FileSystemProvider(MusicProvider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
+        result = []
         async for track in self.get_library_tracks(True):
             for search_part in search_query.split(" - "):
                 if media_types is None or MediaType.TRACK in media_types:
                     if compare_strings(track.name, search_part):
-                        yield track
+                        result.append(track)
                 if media_types is None or MediaType.ALBUM in media_types:
                     if track.album:
                         if compare_strings(track.album.name, search_part):
-                            yield track.album
+                            result.append(track.album)
                 if media_types is None or MediaType.ARTIST in media_types:
                     if track.album and track.album.artist:
                         if compare_strings(track.album.artist, search_part):
-                            yield track.album.artist
+                            result.append(track.album.artist)
+        return result
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists."""
@@ -261,19 +263,17 @@ class FileSystemProvider(MusicProvider):
             raise MediaNotFoundError(f"playlist path does not exist: {itempath}")
         return await self._parse_playlist(itempath)
 
-    async def get_album_tracks(self, prov_album_id) -> AsyncGenerator[Track, None]:
+    async def get_album_tracks(self, prov_album_id) -> List[Track]:
         """Get album tracks for given album id."""
-        async for track in self.get_library_tracks(True):
-            if track.album is None:
-                continue
-            if track.album.item_id != prov_album_id:
-                continue
-            yield track
+        return [
+            track
+            async for track in self.get_library_tracks(True)
+            if track.album is not None and track.album.item_id == prov_album_id
+        ]
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
         """Get playlist tracks for given playlist id."""
+        result = []
         itempath = self._get_filename(prov_playlist_id)
         if not os.path.isfile(itempath):
             raise MediaNotFoundError(f"playlist path does not exist: {itempath}")
@@ -284,13 +284,13 @@ class FileSystemProvider(MusicProvider):
                 if line and not line.startswith("#"):
                     if track := await self._parse_track_from_uri(line):
                         track.position = index
-                        yield track
+                        result.append(track)
                         index += 1
+        return result
 
-    async def get_artist_albums(
-        self, prov_artist_id: str
-    ) -> AsyncGenerator[Album, None]:
+    async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
         """Get a list of albums for the given artist."""
+        result = []
         cur_ids = set()
         async for track in self.get_library_tracks(True):
             if track.album is None:
@@ -301,23 +301,25 @@ class FileSystemProvider(MusicProvider):
                 continue
             if track.album.artist.item_id != prov_artist_id:
                 continue
-            yield track.album
+            result.append(track.album)
             cur_ids.add(track.album.item_id)
+        return result
 
-    async def get_artist_toptracks(
-        self, prov_artist_id: str
-    ) -> AsyncGenerator[Track, None]:
+    async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
         """Get a list of all tracks as we have no clue about preference."""
-        async for track in self.get_library_tracks(True):
-            if not track.artists:
-                continue
-            if prov_artist_id in (x.item_id for x in track.artists):
-                yield track
-                continue
-            if track.album is None or track.album.artist is None:
-                continue
-            if track.album.artist.item_id == prov_artist_id:
-                yield track
+        return [
+            track
+            async for track in self.get_library_tracks(True)
+            if track.artists is not None
+            and (
+                (prov_artist_id in (x.item_id for x in track.artists))
+                or (
+                    track.album is not None
+                    and track.album.artist is not None
+                    and track.album.artist.item_id == prov_artist_id
+                )
+            )
+        ]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""

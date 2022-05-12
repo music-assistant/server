@@ -43,7 +43,7 @@ class TuneInProvider(MusicProvider):
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> AsyncGenerator[MediaItemType, None]:
+    ) -> List[MediaItemType]:
         """
         Perform search on musicprovider.
 
@@ -51,9 +51,9 @@ class TuneInProvider(MusicProvider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
+        # pylint: disable=no-self-use
         # TODO: search for radio stations
-        for item in []:
-            yield item
+        return []
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""

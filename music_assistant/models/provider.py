@@ -61,7 +61,7 @@ class MusicProvider:
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> AsyncGenerator[MediaItemType, None]:
+    ) -> List[MediaItemType]:
         """
         Perform search on musicprovider.
 
@@ -101,16 +101,12 @@ class MusicProvider:
         if MediaType.ARTIST in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_artist_albums(
-        self, prov_artist_id: str
-    ) -> AsyncGenerator[Album, None]:
+    async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
         """Get a list of all albums for the given artist."""
         if MediaType.ALBUM in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_artist_toptracks(
-        self, prov_artist_id: str
-    ) -> AsyncGenerator[Track, None]:
+    async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
         """Get a list of most popular tracks for the given artist."""
         if MediaType.TRACK in self.supported_mediatypes:
             raise NotImplementedError
@@ -135,14 +131,12 @@ class MusicProvider:
         if MediaType.RADIO in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_album_tracks(self, prov_album_id: str) -> AsyncGenerator[Track, None]:
+    async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
         """Get album tracks for given album id."""
         if MediaType.ALBUM in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
