@@ -151,7 +151,7 @@ class FileSystemProvider(MusicProvider):
         """Get all tracks recursively."""
         # pylint: disable=arguments-differ
         # we cache the entire tracks listing for performance and convenience reasons
-        # so we can easy retrieve the library artists and albums from the tracks listing
+        # so we can easily retrieve the library artists and albums from the tracks listing
         if use_cache:
             await self._cache_built.wait()
         cache_key = f"{self.id}.tracks"
@@ -165,22 +165,24 @@ class FileSystemProvider(MusicProvider):
         if cache_result is None:
             cache_result = {}
 
-        # TEMP: account for mounted network location not yet available
-        prev_count = await self.mass.cache.get(f"{self.id}.count", self._music_dir)
-        cur_count = 0
-        retries = 0
-        while retries < 10:
-            cur_count = sum(len(files) for _, _, files in os.walk(self._music_dir))
-            if prev_count is not None and abs(prev_count - cur_count) > 10:
-                self.logger.warning("Delaying sync....")
-                await asyncio.sleep(60)
-            else:
-                break
-        if prev_count is not None and abs(prev_count - cur_count) > 100:
-            self.logger.warning(
-                "Many file changes detected, a database resync may be needed to solve this."
-            )
-        await self.mass.cache.set(f"{self.id}.count", cur_count, self._music_dir)
+        # TEMP FIX: account for mounted network location not yet available
+        # delete this once we have native support for network drives!
+        if not self._cache_built.is_set():
+            prev_count = await self.mass.cache.get(f"{self.id}.count", self._music_dir)
+            cur_count = 0
+            retries = 0
+            while retries < 10:
+                cur_count = sum(len(files) for _, _, files in os.walk(self._music_dir))
+                if prev_count is not None and abs(prev_count - cur_count) > 10:
+                    self.logger.warning("Delaying sync....")
+                    await asyncio.sleep(60)
+                else:
+                    break
+            if prev_count is not None and abs(prev_count - cur_count) > 100:
+                self.logger.warning(
+                    "Many file changes detected, a database resync may be needed to solve this."
+                )
+            await self.mass.cache.set(f"{self.id}.count", cur_count, self._music_dir)
 
         # find all music files in the music directory and all subfolders
         for _root, _dirs, _files in os.walk(self._music_dir):
