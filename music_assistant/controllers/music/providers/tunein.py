@@ -1,7 +1,7 @@
 """Tune-In musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import AsyncGenerator, List, Optional
 
 from asyncio_throttle import Throttler
 
@@ -43,7 +43,7 @@ class TuneInProvider(MusicProvider):
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> List[MediaItemType]:
+    ) -> AsyncGenerator[MediaItemType, None]:
         """
         Perform search on musicprovider.
 
@@ -51,15 +51,16 @@ class TuneInProvider(MusicProvider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
-        result = []
         # TODO: search for radio stations
-        return result
+        for item in []:
+            yield item
 
-    async def get_library_radios(self) -> List[Radio]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
 
-        async def parse_items(items: List[dict], folder: str = None) -> List[Radio]:
-            result = []
+        async def parse_items(
+            items: List[dict], folder: str = None
+        ) -> AsyncGenerator[Radio, None]:
             for item in items:
                 item_type = item.get("type", "")
                 if item_type == "audio":
@@ -70,20 +71,23 @@ class TuneInProvider(MusicProvider):
                         "Tune.ashx", id=item["preset_id"]
                     )
                     for stream in stream_info["body"]:
-                        result.append(await self._parse_radio(item, stream, folder))
+                        yield await self._parse_radio(item, stream, folder)
                 elif item_type == "link":
                     # stations are in sublevel (new style)
                     if sublevel := await self.__get_data(item["URL"], render="json"):
-                        result += await parse_items(sublevel["body"], item["text"])
+                        async for subitem in parse_items(
+                            sublevel["body"], item["text"]
+                        ):
+                            yield subitem
                 elif item.get("children"):
                     # stations are in sublevel (old style ?)
-                    result += await parse_items(item["children"], item["text"])
-            return result
+                    async for subitem in parse_items(item["children"], item["text"]):
+                        yield subitem
 
         data = await self.__get_data("Browse.ashx", c="presets")
         if data and "body" in data:
-            return await parse_items(data["body"])
-        return []
+            async for item in parse_items(data["body"]):
+                yield item
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""

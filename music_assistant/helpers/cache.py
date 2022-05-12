@@ -118,6 +118,20 @@ class Cache:
         return functools.reduce(lambda x, y: x + y, map(ord, stringinput))
 
 
+def _get_cache_key(func, *args, **kwargs):
+    method_class = args[0]
+    method_class_name = method_class.__class__.__name__
+    cache_key_parts = [method_class_name, func.__name__]
+    if len(args) > 1:
+        cache_key_parts += args[1:]
+    for key in sorted(kwargs.keys()):
+        if key in ("skip_cache", "cache_checksum"):
+            continue
+        cache_key_parts.append(f"{key}{kwargs[key]}")
+    cache_key = ".".join(cache_key_parts)
+    return cache_key
+
+
 def use_cache(expiration=86400 * 30):
     """Return decorator that can be used to cache a method's result."""
 
@@ -125,15 +139,9 @@ def use_cache(expiration=86400 * 30):
         @functools.wraps(func)
         async def wrapped(*args, **kwargs):
             method_class = args[0]
-            method_class_name = method_class.__class__.__name__
-            cache_key_parts = [method_class_name, func.__name__]
+            cache_key = _get_cache_key(func, *args, **kwargs)
             skip_cache = kwargs.pop("skip_cache", False)
             cache_checksum = kwargs.pop("cache_checksum", None)
-            if len(args) > 1:
-                cache_key_parts += args[1:]
-            for key in sorted(kwargs.keys()):
-                cache_key_parts.append(f"{key}{kwargs[key]}")
-            cache_key = ".".join(cache_key_parts)
             cachedata = await method_class.cache.get(cache_key, checksum=cache_checksum)
 
             if not skip_cache and cachedata is not None:
@@ -143,6 +151,35 @@ def use_cache(expiration=86400 * 30):
                 cache_key, result, expiration=expiration, checksum=cache_checksum
             )
             return result
+
+        return wrapped
+
+    return wrapper
+
+
+def cached_generator(expiration=86400 * 30):
+    """Return decorator that can be used to cache a method's result."""
+
+    def wrapper(func):
+        @functools.wraps(func)
+        async def wrapped(*args, **kwargs):
+            method_class = args[0]
+            cache_key = _get_cache_key(func, *args, **kwargs)
+
+            skip_cache = kwargs.pop("skip_cache", False)
+            cache_checksum = kwargs.pop("cache_checksum", None)
+            cachedata = await method_class.cache.get(cache_key, checksum=cache_checksum)
+
+            if not skip_cache and cachedata is not None:
+                for item in cachedata:
+                    yield item
+
+            result = []
+            async for item in func(*args, **kwargs):
+                yield item
+            await method_class.cache.set(
+                cache_key, result, expiration=expiration, checksum=cache_checksum
+            )
 
         return wrapped
 

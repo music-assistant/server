@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from logging import Logger
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, AsyncGenerator, List, Optional
 
 from music_assistant.models.enums import MediaType
 from music_assistant.models.media_items import (
@@ -61,7 +61,7 @@ class MusicProvider:
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> List[MediaItemType]:
+    ) -> AsyncGenerator[MediaItemType, None]:
         """
         Perform search on musicprovider.
 
@@ -71,27 +71,27 @@ class MusicProvider:
         """
         raise NotImplementedError
 
-    async def get_library_artists(self) -> List[Artist]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
         if MediaType.ARTIST in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_library_albums(self) -> List[Album]:
+    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider."""
         if MediaType.ALBUM in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_library_tracks(self) -> List[Track]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
         if MediaType.TRACK in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_library_playlists(self) -> List[Playlist]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library/subscribed playlists from the provider."""
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_library_radios(self) -> List[Radio]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
         if MediaType.RADIO in self.supported_mediatypes:
             raise NotImplementedError
@@ -101,12 +101,16 @@ class MusicProvider:
         if MediaType.ARTIST in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
+    async def get_artist_albums(
+        self, prov_artist_id: str
+    ) -> AsyncGenerator[Album, None]:
         """Get a list of all albums for the given artist."""
         if MediaType.ALBUM in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
+    async def get_artist_toptracks(
+        self, prov_artist_id: str
+    ) -> AsyncGenerator[Track, None]:
         """Get a list of most popular tracks for the given artist."""
         if MediaType.TRACK in self.supported_mediatypes:
             raise NotImplementedError
@@ -131,12 +135,14 @@ class MusicProvider:
         if MediaType.RADIO in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
+    async def get_album_tracks(self, prov_album_id: str) -> AsyncGenerator[Track, None]:
         """Get album tracks for given album id."""
         if MediaType.ALBUM in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str
+    ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
@@ -166,20 +172,6 @@ class MusicProvider:
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         raise NotImplementedError
-
-    # some helper methods below
-    async def get_library_items(self, media_type: MediaType) -> List[MediaItemType]:
-        """Return library items for given media_type."""
-        if media_type == MediaType.ARTIST:
-            return await self.get_library_artists()
-        if media_type == MediaType.ALBUM:
-            return await self.get_library_albums()
-        if media_type == MediaType.TRACK:
-            return await self.get_library_tracks()
-        if media_type == MediaType.PLAYLIST:
-            return await self.get_library_playlists()
-        if media_type == MediaType.RADIO:
-            return await self.get_library_radios()
 
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
         """Get single MediaItem from provider."""

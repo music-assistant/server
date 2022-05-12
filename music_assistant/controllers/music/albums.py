@@ -85,7 +85,7 @@ class AlbumsController(MediaControllerBase[Album]):
         provider = self.mass.music.get_provider(provider_id)
         if not provider:
             return []
-        return await provider.get_album_tracks(item_id)
+        return [x async for x in provider.get_album_tracks(item_id)]
 
     async def add_db_item(self, album: Album) -> Album:
         """Add a new album record to the database."""

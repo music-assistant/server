@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import statistics
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 
 from databases import Database as Db
 
@@ -138,7 +138,7 @@ class MusicController:
                 + await self.radio.search(search_query, "database", limit)
             )
         provider = self.get_provider(provider_id)
-        return await provider.search(search_query, media_types, limit)
+        return [x async for x in provider.search(search_query, media_types, limit)]
 
     async def get_item_by_uri(
         self, uri: str, force_refresh: bool = False, lazy: bool = True
@@ -398,7 +398,7 @@ class MusicController:
                 if prov_id.provider == provider_id:
                     prev_ids.add(db_item.item_id)
         cur_ids = set()
-        for prov_item in await music_provider.get_library_items(media_type):
+        async for prov_item in self._get_library_gen(media_type, music_provider)():
             prov_item: MediaItemType = prov_item
 
             db_item: MediaItemType = await controller.get_db_item_by_prov_id(
@@ -451,3 +451,20 @@ class MusicController:
             raise SetupFailedError(
                 f"Setup failed of provider {provider.id}: {str(err)}"
             ) from err
+
+    # some helper methods below
+    @staticmethod
+    def _get_library_gen(
+        media_type: MediaType, prov: MusicProvider
+    ) -> AsyncGenerator[MediaItemType]:
+        """Return library generator for given media_type."""
+        if media_type == MediaType.ARTIST:
+            return prov.get_library_artists
+        if media_type == MediaType.ALBUM:
+            return prov.get_library_albums
+        if media_type == MediaType.TRACK:
+            return prov.get_library_tracks
+        if media_type == MediaType.PLAYLIST:
+            return prov.get_library_playlists
+        if media_type == MediaType.RADIO:
+            return prov.get_library_radios

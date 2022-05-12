@@ -8,7 +8,7 @@ import platform
 import time
 from json.decoder import JSONDecodeError
 from tempfile import gettempdir
-from typing import List, Optional
+from typing import AsyncGenerator, List, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -16,7 +16,7 @@ from asyncio_throttle import Throttler
 from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name-in-module
     app_var,
 )
-from music_assistant.helpers.cache import use_cache
+from music_assistant.helpers.cache import cached_generator, use_cache
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.errors import LoginFailed
 from music_assistant.models.media_items import (
@@ -76,7 +76,7 @@ class SpotifyProvider(MusicProvider):
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> List[MediaItemType]:
+    ) -> AsyncGenerator[MediaItemType, None]:
         """
         Perform search on musicprovider.
 
@@ -84,7 +84,6 @@ class SpotifyProvider(MusicProvider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
-        result = []
         searchtypes = []
         if MediaType.ARTIST in media_types:
             searchtypes.append("artist")
@@ -99,65 +98,48 @@ class SpotifyProvider(MusicProvider):
             "search", q=search_query, type=searchtype, limit=limit
         ):
             if "artists" in searchresult:
-                result += [
-                    await self._parse_artist(item)
-                    for item in searchresult["artists"]["items"]
-                    if (item and item["id"])
-                ]
+                for item in searchresult["artists"]["items"]:
+                    if item and item["id"]:
+                        yield await self._parse_artist(item)
             if "albums" in searchresult:
-                result += [
-                    await self._parse_album(item)
-                    for item in searchresult["albums"]["items"]
-                    if (item and item["id"])
-                ]
+                for item in searchresult["albums"]["items"]:
+                    if item and item["id"]:
+                        yield await self._parse_album(item)
             if "tracks" in searchresult:
-                result += [
-                    await self._parse_track(item)
-                    for item in searchresult["tracks"]["items"]
-                    if (item and item["id"])
-                ]
+                for item in searchresult["tracks"]["items"]:
+                    if item and item["id"]:
+                        yield await self._parse_track(item)
             if "playlists" in searchresult:
-                result += [
-                    await self._parse_playlist(item)
-                    for item in searchresult["playlists"]["items"]
-                    if (item and item["id"])
-                ]
-        return result
+                for item in searchresult["playlists"]["items"]:
+                    if item and item["id"]:
+                        yield await self._parse_playlist(item)
 
-    async def get_library_artists(self) -> List[Artist]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from spotify."""
         spotify_artists = await self._get_data(
             "me/following", type="artist", limit=50, skip_cache=True
         )
-        return [
-            await self._parse_artist(item)
-            for item in spotify_artists["artists"]["items"]
-            if (item and item["id"])
-        ]
+        for item in spotify_artists["artists"]["items"]:
+            if item and item["id"]:
+                yield await self._parse_artist(item)
 
-    async def get_library_albums(self) -> List[Album]:
+    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider."""
-        return [
-            await self._parse_album(item["album"])
-            for item in await self._get_all_items("me/albums", skip_cache=True)
-            if (item["album"] and item["album"]["id"])
-        ]
+        async for item in self._get_all_items("me/albums", skip_cache=True):
+            if item["album"] and item["album"]["id"]:
+                yield await self._parse_album(item["album"])
 
-    async def get_library_tracks(self) -> List[Track]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        return [
-            await self._parse_track(item["track"])
-            for item in await self._get_all_items("me/tracks", skip_cache=True)
-            if (item and item["track"]["id"])
-        ]
+        async for item in self._get_all_items("me/tracks", skip_cache=True):
+            if item and item["track"]["id"]:
+                yield await self._parse_track(item["track"])
 
-    async def get_library_playlists(self) -> List[Playlist]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from the provider."""
-        return [
-            await self._parse_playlist(item)
-            for item in await self._get_all_items("me/playlists", skip_cache=True)
-            if (item and item["id"])
-        ]
+        async for item in self._get_all_items("me/playlists", skip_cache=True):
+            if item and item["id"]:
+                yield await self._parse_playlist(item)
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
@@ -179,46 +161,40 @@ class SpotifyProvider(MusicProvider):
         playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
         return await self._parse_playlist(playlist_obj) if playlist_obj else None
 
-    async def get_album_tracks(self, prov_album_id) -> List[Track]:
+    async def get_album_tracks(self, prov_album_id) -> AsyncGenerator[Track, None]:
         """Get all album tracks for given album id."""
-        return [
-            await self._parse_track(item)
-            for item in await self._get_all_items(f"albums/{prov_album_id}/tracks")
-            if (item and item["id"])
-        ]
+        async for item in self._get_all_items(f"albums/{prov_album_id}/tracks"):
+            if item and item["id"]:
+                yield await self._parse_track(item)
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id
+    ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         playlist = await self.get_playlist(prov_playlist_id)
-        return [
-            await self._parse_track(item["track"])
-            for item in await self._get_all_items(
-                f"playlists/{prov_playlist_id}/tracks",
-                cache_checksum=playlist.metadata.checksum,
-            )
-            if (item and item["track"] and item["track"]["id"])
-        ]
+        async for item in self._get_all_items(
+            f"playlists/{prov_playlist_id}/tracks",
+            cache_checksum=playlist.metadata.checksum,
+        ):
+            if item and item["track"] and item["track"]["id"]:
+                yield await self._parse_track(item["track"])
 
-    async def get_artist_albums(self, prov_artist_id) -> List[Album]:
+    async def get_artist_albums(self, prov_artist_id) -> AsyncGenerator[Album, None]:
         """Get a list of all albums for the given artist."""
-        return [
-            await self._parse_album(item)
-            for item in await self._get_all_items(
-                f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation"
-            )
-            if (item and item["id"])
-        ]
+        async for item in self._get_all_items(
+            f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation"
+        ):
+            if item and item["id"]:
+                yield await self._parse_album(item)
 
-    async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
+    async def get_artist_toptracks(self, prov_artist_id) -> AsyncGenerator[Track, None]:
         """Get a list of 10 most popular tracks for the given artist."""
         artist = await self.get_artist(prov_artist_id)
         endpoint = f"artists/{prov_artist_id}/top-tracks"
         items = await self._get_data(endpoint)
-        return [
-            await self._parse_track(item, artist=artist)
-            for item in items["tracks"]
-            if (item and item["id"])
-        ]
+        for item in items["tracks"]:
+            if item and item["id"]:
+                yield await self._parse_track(item, artist=artist)
 
     async def library_add(self, prov_item_id, media_type: MediaType):
         """Add item to library."""
@@ -528,12 +504,13 @@ class SpotifyProvider(MusicProvider):
             return tokeninfo
         return None
 
-    @use_cache(3600 * 24)
-    async def _get_all_items(self, endpoint, key="items", **kwargs):
+    @cached_generator(3600 * 24)
+    async def _get_all_items(
+        self, endpoint, key="items", **kwargs
+    ) -> AsyncGenerator[dict, None]:
         """Get all items from a paged list."""
         limit = 50
         offset = 0
-        all_items = []
         while True:
             kwargs["limit"] = limit
             kwargs["offset"] = offset
@@ -541,10 +518,10 @@ class SpotifyProvider(MusicProvider):
             offset += limit
             if not result or key not in result or not result[key]:
                 break
-            all_items += result[key]
+            for item in result[key]:
+                yield item
             if len(result[key]) < limit:
                 break
-        return all_items
 
     @use_cache(3600 * 2)
     async def _get_data(self, endpoint, **kwargs):
