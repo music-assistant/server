@@ -83,10 +83,11 @@ class FileSystemProvider(MusicProvider):
                 f"Music Directory {self._music_dir} does not exist"
             )
 
-        if self._playlists_dir is not None and not os.path.isdir(self._playlists_dir):
+        if not os.path.isdir(self._playlists_dir):
             raise MediaNotFoundError(
                 f"Playlist Directory {self._playlists_dir} does not exist"
             )
+        return True
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5

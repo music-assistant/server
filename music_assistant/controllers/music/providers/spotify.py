@@ -72,6 +72,7 @@ class SpotifyProvider(MusicProvider):
             raise LoginFailed(
                 f"Login failed for user {self.mass.config.spotify_username}"
             )
+        return True
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5

@@ -5,12 +5,10 @@ import logging
 import os
 
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.config import MassConfig
 from music_assistant.models.player import Player, PlayerState
 from music_assistant.models.player_queue import RepeatMode
-from music_assistant.providers.filesystem import FileSystemProvider
-from music_assistant.providers.qobuz import QobuzProvider
-from music_assistant.providers.spotify import SpotifyProvider
-from music_assistant.providers.tunein import TuneInProvider
+
 
 parser = argparse.ArgumentParser(description="MusicAssistant")
 parser.add_argument(
@@ -76,15 +74,20 @@ if not os.path.isdir(data_dir):
 db_file = os.path.join(data_dir, "music_assistant.db")
 
 
-providers = []
-if args.spotify_username and args.spotify_password:
-    providers.append(SpotifyProvider(args.spotify_username, args.spotify_password))
-if args.qobuz_username and args.qobuz_password:
-    providers.append(QobuzProvider(args.qobuz_username, args.qobuz_password))
-if args.tunein_username:
-    providers.append(TuneInProvider(args.tunein_username))
-if args.musicdir:
-    providers.append(FileSystemProvider(args.musicdir, args.playlistdir))
+mass_conf = MassConfig(
+    database_url=f"sqlite:///{db_file}",
+    spotify_enabled=args.spotify_username and args.spotify_password,
+    spotify_username=args.spotify_username,
+    spotify_password=args.spotify_password,
+    qobuz_enabled=args.qobuz_username and args.qobuz_password,
+    qobuz_username=args.qobuz_username,
+    qobuz_password=args.qobuz_password,
+    tunein_enabled=args.tunein_username is not None,
+    tunein_username=args.tunein_username,
+    filesystem_enabled=args.musicdir is not None,
+    filesystem_music_dir=args.musicdir,
+    filesystem_playlists_dir=args.playlistdir,
+)
 
 
 class TestPlayer(Player):
@@ -147,11 +150,11 @@ async def main():
 
     asyncio.get_event_loop().set_debug(args.debug)
 
-    async with MusicAssistant(f"sqlite:///{db_file}") as mass:
+    async with MusicAssistant(mass_conf) as mass:
 
-        # register music provider(s)
-        for prov in providers:
-            await mass.music.register_provider(prov)
+        # start sync
+        await mass.music.start_sync()
+
         # get some data
         artists = await mass.music.artists.count()
         print(f"Got {artists} artists in library")

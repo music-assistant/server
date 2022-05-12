@@ -57,7 +57,7 @@ class MusicController:
         """Async initialize of module."""
         # register providers
         for prov in PROVIDERS:
-            await self._register_provider(prov)
+            await self._register_provider(prov())
 
     async def start_sync(self, schedule: Optional[float] = 3) -> None:
         """

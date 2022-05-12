@@ -69,6 +69,7 @@ class QobuzProvider(MusicProvider):
             (EventType.STREAM_STARTED, EventType.STREAM_ENDED),
             id_filter=self.id,
         )
+        return True
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
