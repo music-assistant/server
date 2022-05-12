@@ -1,6 +1,7 @@
 """Filesystem musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from typing import Dict, List, Optional, Tuple
@@ -162,6 +163,23 @@ class FileSystemProvider(MusicProvider):
             return [Track.from_dict(x) for x in cache_result.values()]
         if cache_result is None:
             cache_result = {}
+
+        # TEMP: account for mounted network location not yet available
+        prev_count = await self.mass.cache.get(f"{self.id}.count", self._music_dir)
+        cur_count = 0
+        retries = 0
+        while retries < 10:
+            cur_count = sum(len(files) for _, _, files in os.walk(self._music_dir))
+            if prev_count is not None and abs(prev_count - cur_count) > 10:
+                self.logger.warning("Delaying sync....")
+                await asyncio.sleep(60)
+            else:
+                break
+        if prev_count is not None and abs(prev_count - cur_count) > 100:
+            self.logger.warning(
+                "Many file changes detected, a database resync may be needed to solve this."
+            )
+        await self.mass.cache.set(f"{self.id}.count", cur_count, self._music_dir)
 
         # find all music files in the music directory and all subfolders
         result = []
