@@ -41,7 +41,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         return itertools.chain.from_iterable(
             await asyncio.gather(
                 *[
-                    self.get_provider_artist_toptracks(item.item_id, item.provider)
+                    self.get_provider_artist_toptracks(item.item_id, item.prov_id)
                     for item in artist.provider_ids
                 ]
             )
@@ -55,7 +55,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         return itertools.chain.from_iterable(
             await asyncio.gather(
                 *[
-                    self.get_provider_artist_albums(item.item_id, item.provider)
+                    self.get_provider_artist_albums(item.item_id, item.prov_id)
                     for item in artist.provider_ids
                 ]
             )
@@ -83,11 +83,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         assert (
             db_artist.provider == "database"
         ), "Matching only supported for database items!"
-        cur_providers = {item.provider for item in db_artist.provider_ids}
+        cur_providers = {item.prov_id for item in db_artist.provider_ids}
         for provider in self.mass.music.providers:
             if provider.type in cur_providers:
                 continue
-            if "filesystem" in provider.type.value:
+            if provider.type.is_file():
                 continue
             if MediaType.ARTIST not in provider.supported_mediatypes:
                 continue

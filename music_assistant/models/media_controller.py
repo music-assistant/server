@@ -99,7 +99,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         db_item = await self.get(provider_item_id, provider_id, lazy=False)
         # add to provider libraries
         for prov_id in db_item.provider_ids:
-            if prov := self.mass.music.get_provider(prov_id.provider):
+            if prov := self.mass.music.get_provider(prov_id.prov_id):
                 await prov.library_add(prov_id.item_id, self.media_type)
         # mark as library item in internal db
         if not db_item.in_library:
@@ -128,8 +128,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             # returns the first provider that is available
             if not prov.available:
                 continue
-            if self.mass.music.get_provider(prov.provider):
-                return (prov.provider, prov.item_id)
+            if self.mass.music.get_provider(prov.prov_id):
+                return (prov.prov_id, prov.item_id)
         return None, None
 
     async def get_db_items(

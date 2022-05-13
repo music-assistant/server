@@ -223,3 +223,12 @@ class ProviderType(Enum):
     SPOTIFY = "spotify"
     QOBUZ = "qobuz"
     TUNEIN = "tunein"
+
+    def is_file(self) -> bool:
+        """Return if type is one of the filesystem providers."""
+        return self in (
+            self.FILESYSTEM_LOCAL,
+            self.FILESYSTEM_SMB,
+            self.FILESYSTEM_GOOGLE_DRIVE,
+            self.FILESYSTEM_ONEDRIVE,
+        )

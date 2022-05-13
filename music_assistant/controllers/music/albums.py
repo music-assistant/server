@@ -44,7 +44,7 @@ class AlbumsController(MediaControllerBase[Album]):
         # simply return the tracks from the first provider
         for prov in album.provider_ids:
             if tracks := await self.get_provider_album_tracks(
-                prov.item_id, prov.provider
+                prov.item_id, prov.prov_id
             ):
                 return tracks
         return []
@@ -224,7 +224,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
         # try to find match on all providers
         for provider in self.mass.music.providers:
-            if "filesystem" in provider.type.value:
+            if provider.type.is_file():
                 continue
             if MediaType.ALBUM in provider.supported_mediatypes:
                 await find_prov_match(provider)

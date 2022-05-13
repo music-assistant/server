@@ -31,7 +31,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             playlist = await self.get_db_item(item_id)
             prov = next(x for x in playlist.provider_ids)
             item_id = prov.item_id
-            provider_id = prov.provider
+            provider_id = prov.prov_id
 
         provider = self.mass.music.get_provider(provider_id)
         if not provider:
@@ -82,13 +82,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 {
                     i.item_id
                     for i in item.provider_ids
-                    if i.provider == playlist_prov.provider
+                    if i.prov_id == playlist_prov.prov_id
                 }
             )
         # check for duplicates
         for track_prov in track.provider_ids:
             if (
-                track_prov.provider == playlist_prov.provider
+                track_prov.prov_id == playlist_prov.prov_id
                 and track_prov.item_id in cur_playlist_track_ids
             ):
                 raise InvalidDataError(
@@ -104,10 +104,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             if not track.available:
                 continue
-            if track_version.provider == playlist_prov.provider:
+            if track_version.prov_id == playlist_prov.prov_id:
                 track_id_to_add = track_version.item_id
                 break
-            if playlist_prov.provider == "file":
+            if playlist_prov.prov_type.is_file():
                 # the file provider can handle uri's from all providers so simply add the uri
                 track_id_to_add = track.uri
                 break
@@ -136,13 +136,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for prov in playlist.provider_ids:
             track_ids_to_remove = []
-            for playlist_track in await self.tracks(prov.item_id, prov.provider):
+            for playlist_track in await self.tracks(prov.item_id, prov.prov_id):
                 if playlist_track.position not in positions:
                     continue
                 track_ids_to_remove.append(playlist_track.item_id)
             # actually remove the tracks from the playlist on the provider
             if track_ids_to_remove:
-                provider = self.mass.music.get_provider(prov.provider)
+                provider = self.mass.music.get_provider(prov.prov_id)
                 await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)
         self.mass.signal_event(
             MassEvent(

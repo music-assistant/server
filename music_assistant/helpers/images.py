@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from PIL import Image
 
-from music_assistant.models.enums import ImageType, MediaType
+from music_assistant.models.enums import ImageType, MediaType, ProviderType
 from music_assistant.models.media_items import ItemMapping, MediaItemType
 
 if TYPE_CHECKING:
@@ -38,8 +38,8 @@ async def get_image_url(
         for img in media_item.metadata.images:
             if img.type == img_type:
                 return img.url
-            if img_type == ImageType.THUMB and img.type == ImageType.EMBEDDED_THUMB:
-                if file_prov := mass.music.get_provider("filesystem"):
+            if img_type == ImageType.THUMB and img.is_file:
+                if file_prov := mass.music.get_provider(ProviderType.FILESYSTEM_LOCAL):
                     return await file_prov.get_embedded_image(img.url)
 
     # retry with track's album

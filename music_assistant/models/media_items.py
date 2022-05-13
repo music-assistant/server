@@ -190,7 +190,7 @@ class MediaItem(DataClassDictMixin):
         self.provider_ids = {
             x
             for x in self.provider_ids
-            if not (x.item_id == prov_id.item_id and x.provider == prov_id.provider)
+            if not (x.item_id == prov_id.item_id and x.prov_id == prov_id.prov_id)
         }
         self.provider_ids.add(prov_id)
 

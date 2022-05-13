@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import statistics
-from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 from databases import Database as Db
 
@@ -93,12 +93,18 @@ class MusicController:
         """Return all (available) music providers."""
         return tuple(x for x in self._providers.values() if x.available)
 
-    def get_provider(self, provider_id: str) -> MusicProvider | None:
-        """Return Music provider by id."""
-        prov = self._providers.get(provider_id, None)
-        if prov is None or not prov.available:
-            self.logger.warning("Provider %s is not available", provider_id)
-        return prov
+    def get_provider(
+        self, provider_id: Union[str, ProviderType]
+    ) -> MusicProvider | None:
+        """Return Music provider by id (or type)."""
+        if isinstance(provider_id, ProviderType):
+            for prov in self._providers.values():
+                if prov.type == provider_id:
+                    return prov
+        if prov := self._providers.get(provider_id):
+            return prov
+        self.logger.warning("Provider %s is not available", provider_id)
+        return None
 
     async def search(
         self, search_query, media_types: List[MediaType], limit: int = 10
@@ -456,7 +462,7 @@ class MusicController:
                 if "filesystem" in provider_id:
                     if db_item := await controller.get_db_item(item_id):
                         db_item.provider_ids = {
-                            x for x in db_item.provider_ids if x.provider != provider_id
+                            x for x in db_item.provider_ids if x.prov_id != provider_id
                         }
                         await controller.update_db_item(item_id, db_item, True)
 
