@@ -300,7 +300,7 @@ class Database:
         )
         await db.execute(
             f"""CREATE TABLE IF NOT EXISTS {TABLE_CACHE}(
-                    key TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
+                    key TEXT UNIQUE NOT NULL, expires INTEGER NOT NULL, data TEXT, checksum TEXT NULL)"""
         )
         await db.execute(
             f"""CREATE TABLE IF NOT EXISTS {TABLE_THUMBS}(

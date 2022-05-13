@@ -178,11 +178,11 @@ class TheAudioDb:
         else:
             metadata.description = artist_obj.get("strBiographyEN")
         # images
-        metadata.images = set()
+        metadata.images = []
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := artist_obj.get(f"{key}{postfix}"):
-                    metadata.images.add(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(img_type, img))
                 else:
                     break
         return metadata
@@ -218,11 +218,11 @@ class TheAudioDb:
             metadata.description = album_obj.get("strDescriptionEN")
         metadata.review = album_obj.get("strReview")
         # images
-        metadata.images = set()
+        metadata.images = []
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := album_obj.get(f"{key}{postfix}"):
-                    metadata.images.add(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(img_type, img))
                 else:
                     break
         return metadata
@@ -244,11 +244,11 @@ class TheAudioDb:
         else:
             metadata.description = track_obj.get("strDescriptionEN")
         # images
-        metadata.images = set()
+        metadata.images = []
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := track_obj.get(f"{key}{postfix}"):
-                    metadata.images.add(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(img_type, img))
                 else:
                     break
         return metadata

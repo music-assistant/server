@@ -9,7 +9,7 @@ from databases import Database as Db
 
 from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailableError
 
-from .enums import MediaType
+from .enums import MediaType, ProviderType
 from .media_items import MediaItemType
 
 if TYPE_CHECKING:
@@ -52,31 +52,52 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def get(
         self,
         provider_item_id: str,
-        provider_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
         force_refresh: bool = False,
         lazy: bool = True,
         details: ItemCls = None,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
-        db_item = await self.get_db_item_by_prov_id(provider_id, provider_item_id)
+        db_item = await self.get_db_item_by_prov_id(
+            provider_item_id, provider, provider_id
+        )
         if db_item and (time() - db_item.last_refresh) > REFRESH_INTERVAL:
             force_refresh = True
         if db_item and force_refresh:
             provider_id, provider_item_id = await self.get_provider_id(db_item)
         elif db_item:
             return db_item
-        if not details:
+        if not details and provider_id:
             details = await self.get_provider_item(provider_item_id, provider_id)
+        if not details and provider_id:
+            # check providers for given provider type one by one
+            for prov in self.mass.music.providers:
+                if not prov.available:
+                    continue
+                if prov.type == provider:
+                    try:
+                        details = await self.get_provider_item(
+                            provider_item_id, provider_id
+                        )
+                    except MediaNotFoundError:
+                        pass
+                    else:
+                        break
         if not lazy:
             return await self.add(details)
         self.mass.add_job(self.add(details), f"Add {details.uri} to database")
         return db_item if db_item else details
 
     async def search(
-        self, search_query: str, provider_id: str, limit: int = 25
+        self,
+        search_query: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
     ) -> List[ItemCls]:
         """Search database or provider with given query."""
-        if provider_id == "database":
+        if provider == ProviderType.DATABASE or provider_id == "database":
             return [
                 self.item_cls.from_db_row(db_row)
                 for db_row in await self.mass.database.search(
@@ -84,7 +105,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 )
             ]
 
-        provider = self.mass.music.get_provider(provider_id)
+        provider = self.mass.music.get_provider(provider_id or provider)
         if not provider:
             return {}
         return await provider.search(
@@ -121,7 +142,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def get_provider_id(self, item: ItemCls) -> Tuple[str, str]:
         """Return provider and item id."""
-        if item.provider == "database":
+        if item.provider == ProviderType.DATABASE:
             # make sure we have a full object
             item = await self.get_db_item(item.item_id)
         for prov in item.provider_ids:
@@ -151,25 +172,29 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def get_db_item_by_prov_id(
         self,
-        provider_id: str,
         provider_item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
         db: Optional[Db] = None,
     ) -> ItemCls | None:
         """Get the database album for the given prov_id."""
-        if provider_id == "database":
+        if provider == ProviderType.DATABASE or provider_id == "database":
             return await self.get_db_item(provider_item_id, db=db)
         if item_id := await self.mass.music.get_provider_mapping(
-            self.media_type, provider_id, provider_item_id
+            self.media_type, provider_item_id, provider, provider_id, db=db
         ):
             return await self.get_db_item(item_id, db=db)
         return None
 
     async def get_db_items_by_prov_id(
-        self, provider_id: str, db: Optional[Db] = None
+        self,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        db: Optional[Db] = None,
     ) -> List[ItemCls]:
         """Fetch all records from database for given provider."""
         db_ids = await self.mass.music.get_provider_mappings(
-            self.media_type, provider_id, db=db
+            self.media_type, provider, provider_id, db=db
         )
         query = f"SELECT * FROM tracks WHERE item_id in {str(tuple(db_ids))}"
         return await self.get_db_items(query, db=db)
@@ -183,7 +208,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             {"in_library": in_library},
         )
 
-    async def get_provider_item(self, item_id: str, provider_id: str) -> ItemCls:
+    async def get_provider_item(
+        self,
+        item_id: str,
+        provider_id: str,
+    ) -> ItemCls:
         """Return item details for the given provider item id."""
         if provider_id == "database":
             item = await self.get_db_item(item_id)
@@ -196,6 +225,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             item = await provider.get_item(self.media_type, item_id)
         if not item:
             raise MediaNotFoundError(
-                f"{self.media_type.value} {item_id} not found on provider {provider_id}"
+                f"{self.media_type.value} {item_id} not found on provider {provider.name}"
             )
         return item

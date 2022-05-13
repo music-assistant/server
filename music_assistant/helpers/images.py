@@ -30,7 +30,7 @@ async def create_thumbnail(
         for prov in mass.music.providers:
             if not prov.type.is_file():
                 continue
-            if not prov.has_file(path):
+            if not prov.exists(path):
                 continue
             path = prov.get_filepath(path)
             if TinyTag.is_supported(path):
@@ -54,7 +54,7 @@ async def get_image_url(
     mass: MusicAssistant,
     media_item: MediaItemType,
     img_type: ImageType = ImageType.THUMB,
-):
+) -> str:
     """Get url to image for given media media_item."""
     if not media_item:
         return None
@@ -82,3 +82,18 @@ async def get_image_url(
             return await get_image_url(mass, artist, img_type)
 
     return None
+
+
+# async def get_embedded_image(self, filename: str) -> str | None:
+#         """Return the embedded image of an audio file as base64 string."""
+#         if not TinyTag.is_supported(filename):
+#             return None
+
+#         def parse_tags():
+#             return TinyTag.get(filename, tags=True, image=True, ignore_errors=True)
+
+#         tags = await self.mass.loop.run_in_executor(None, parse_tags)
+#         if image_data := tags.get_image():
+#             enc_image = base64.b64encode(image_data).decode()
+#             enc_image = f"data:image/png;base64,{enc_image}"
+#             return enc_image

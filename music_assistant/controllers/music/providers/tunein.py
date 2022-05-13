@@ -115,7 +115,7 @@ class TuneInProvider(MusicProvider):
                 name = name.split(" | ")[1]
             name = name.split(" (")[0]
         item_id = f'{details["preset_id"]}--{stream["media_type"]}'
-        radio = Radio(item_id=item_id, provider=self.id, name=name)
+        radio = Radio(item_id=item_id, provider=self.type, name=name)
         if stream["media_type"] == "aac":
             quality = MediaQuality.LOSSY_AAC
         elif stream["media_type"] == "ogg":
@@ -142,9 +142,9 @@ class TuneInProvider(MusicProvider):
             radio.metadata.description = details["text"]
         # images
         if img := details.get("image"):
-            radio.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+            radio.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         if img := details.get("logo"):
-            radio.metadata.images = {MediaItemImage(ImageType.LOGO, img)}
+            radio.metadata.images = [MediaItemImage(ImageType.LOGO, img)]
         return radio
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
@@ -156,7 +156,7 @@ class TuneInProvider(MusicProvider):
                 return StreamDetails(
                     type=StreamType.URL,
                     item_id=item_id,
-                    provider=self.id,
+                    provider=self.type,
                     path=stream["url"],
                     content_type=ContentType(stream["media_type"]),
                     sample_rate=44100,

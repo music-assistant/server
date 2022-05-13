@@ -184,21 +184,67 @@ class MusicProvider:
         if media_type == MediaType.RADIO:
             return await self.get_radio(prov_item_id)
 
-    async def sync(self) -> None:
-        """Run/schedule sync for this provider."""
-        await self.mass.music.run_provider_sync(self.id)
+    async def sync_library(self) -> None:
+        """Run library sync for this provider."""
+        # this reference implementation can be overridden with provider specific approach
+        # this logic is aimed at streaming/online providers,
+        #  which all have more or less the same structure.
+        # filesystem implementation(s) just override this.
+        for media_type in self.supported_mediatypes:
+
+            self.logger.debug("Start sync of %s items.", media_type.value)
+            controller = self.mass.music.get_controller(media_type)
+
+            # create a set of all previous and current db id's
+            prev_ids = set()
+            for db_item in await controller.library():
+                for prov_id in db_item.provider_ids:
+                    if prov_id.prov_id == self.id:
+                        prev_ids.add(db_item.item_id)
+            cur_ids = set()
+            async for prov_item in self._get_library_gen(media_type)():
+                prov_item: MediaItemType = prov_item
+
+                db_item: MediaItemType = await controller.get_db_item_by_prov_id(
+                    prov_item.item_id,
+                    prov_item.provider,
+                )
+                if not db_item:
+                    # dump the item in the db, rich metadata is lazy loaded later
+                    db_item = await controller.add_db_item(prov_item)
+                elif (
+                    db_item.metadata.checksum and prov_item.metadata.checksum
+                ) and db_item.metadata.checksum != prov_item.metadata.checksum:
+                    # item checksum changed
+                    db_item = await controller.update_db_item(
+                        db_item.item_id, prov_item
+                    )
+                cur_ids.add(db_item.item_id)
+                if not db_item.in_library:
+                    await controller.set_db_library(db_item.item_id, True)
+
+            # process deletions
+            for item_id in prev_ids:
+                if item_id not in cur_ids:
+                    # only mark the item as not in library and leave the metadata in db
+                    await controller.set_db_library(item_id, False)
 
     # DO NOT OVERRIDE BELOW
 
     @property
     def id(self) -> str:
-        """
-        Return unique provider id to distinguish multiple instances of the same provider.
+        """Return unique provider id to distinguish multiple instances of the same provider."""
+        return self.config.id
 
-        Defaults to combination of type and username/path.
-        """
-        if self.config.path:
-            return f"{self.type.value}.{self.config.path}"
-        if self.config.username:
-            return f"{self.type.value}.{self.config.username}"
-        return self.type.value
+    def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType]:
+        """Return library generator for given media_type."""
+        if media_type == MediaType.ARTIST:
+            return self.get_library_artists
+        if media_type == MediaType.ALBUM:
+            return self.get_library_albums
+        if media_type == MediaType.TRACK:
+            return self.get_library_tracks
+        if media_type == MediaType.PLAYLIST:
+            return self.get_library_playlists
+        if media_type == MediaType.RADIO:
+            return self.get_library_radios

@@ -362,7 +362,7 @@ class QobuzProvider(MusicProvider):
         return StreamDetails(
             type=StreamType.URL,
             item_id=str(item_id),
-            provider=self.id,
+            provider=self.type,
             path=streamdata["url"],
             content_type=content_type,
             sample_rate=int(streamdata["sampling_rate"] * 1000),
@@ -417,7 +417,7 @@ class QobuzProvider(MusicProvider):
     async def _parse_artist(self, artist_obj: dict):
         """Parse qobuz artist object to generic layout."""
         artist = Artist(
-            item_id=str(artist_obj["id"]), provider=self.id, name=artist_obj["name"]
+            item_id=str(artist_obj["id"]), provider=self.type, name=artist_obj["name"]
         )
         artist.add_provider_id(
             MediaItemProviderId(
@@ -430,7 +430,7 @@ class QobuzProvider(MusicProvider):
             )
         )
         if img := self.__get_image(artist_obj):
-            artist.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+            artist.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         if artist_obj.get("biography"):
             artist.metadata.description = artist_obj["biography"].get("content")
         return artist
@@ -444,7 +444,7 @@ class QobuzProvider(MusicProvider):
             album_obj["title"], album_obj.get("version")
         )
         album = Album(
-            item_id=str(album_obj["id"]), provider=self.id, name=name, version=version
+            item_id=str(album_obj["id"]), provider=self.type, name=name, version=version
         )
         if album_obj["maximum_sampling_rate"] > 192:
             quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
@@ -494,7 +494,7 @@ class QobuzProvider(MusicProvider):
         if "genre" in album_obj:
             album.metadata.genres = {album_obj["genre"]["name"]}
         if img := self.__get_image(album_obj):
-            album.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+            album.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         if len(album_obj["upc"]) == 13:
             # qobuz writes ean as upc ?!
             album.upc = album_obj["upc"][1:]
@@ -517,7 +517,7 @@ class QobuzProvider(MusicProvider):
         )
         track = Track(
             item_id=str(track_obj["id"]),
-            provider=self.id,
+            provider=self.type,
             name=name,
             version=version,
             disc_number=track_obj["media_number"],
@@ -545,7 +545,7 @@ class QobuzProvider(MusicProvider):
                 role = performer_str.split(", ")[1]
                 name = performer_str.split(", ")[0]
                 if "artist" in role.lower():
-                    artist = Artist(name, self.id, name)
+                    artist = Artist(name, self.type, name)
                 track.artists.append(artist)
         # TODO: fix grabbing composer from details
 
@@ -566,7 +566,7 @@ class QobuzProvider(MusicProvider):
         if track_obj.get("parental_warning"):
             track.metadata.explicit = True
         if img := self.__get_image(track_obj):
-            track.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+            track.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         # get track quality
         if track_obj["maximum_sampling_rate"] > 192:
             quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
@@ -599,7 +599,7 @@ class QobuzProvider(MusicProvider):
         """Parse qobuz playlist object to generic layout."""
         playlist = Playlist(
             item_id=str(playlist_obj["id"]),
-            provider=self.id,
+            provider=self.type,
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["name"],
         )
@@ -618,7 +618,7 @@ class QobuzProvider(MusicProvider):
             or playlist_obj["is_collaborative"]
         )
         if img := self.__get_image(playlist_obj):
-            playlist.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+            playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         playlist.metadata.checksum = str(playlist_obj["updated_at"])
         return playlist
 
@@ -655,7 +655,7 @@ class QobuzProvider(MusicProvider):
                 break
             if not result.get(key) or not result[key].get("items"):
                 break
-            for item in result[key]:
+            for item in result[key]["items"]:
                 item["position"] = len(all_items) + 1
                 all_items.append(item)
             if len(result[key]["items"]) < limit:

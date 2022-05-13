@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 from time import time
-from typing import List
+from typing import List, Optional
 
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.helpers.util import create_sort_name
-from music_assistant.models.enums import EventType, MediaType
+from music_assistant.models.enums import EventType, MediaType, ProviderType
 from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
@@ -25,15 +24,20 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Get in-library playlist by name."""
         return await self.mass.database.get_row(self.db_table, {"name": name})
 
-    async def tracks(self, item_id: str, provider_id: str) -> List[Track]:
+    async def tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+    ) -> List[Track]:
         """Return playlist tracks for the given provider playlist id."""
-        if provider_id == "database":
+        if provider == ProviderType.DATABASE or provider_id == "database":
             playlist = await self.get_db_item(item_id)
             prov = next(x for x in playlist.provider_ids)
             item_id = prov.item_id
             provider_id = prov.prov_id
 
-        provider = self.mass.music.get_provider(provider_id)
+        provider = self.mass.music.get_provider(provider_id or provider)
         if not provider:
             return []
 
@@ -104,12 +108,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             if not track.available:
                 continue
-            if track_version.prov_id == playlist_prov.prov_id:
-                track_id_to_add = track_version.item_id
-                break
             if playlist_prov.prov_type.is_file():
                 # the file provider can handle uri's from all providers so simply add the uri
                 track_id_to_add = track.uri
+                break
+            if track_version.prov_id == playlist_prov.prov_id:
+                track_id_to_add = track_version.item_id
                 break
         if not track_id_to_add:
             raise MediaNotFoundError(
@@ -184,8 +188,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         else:
             metadata = cur_item.metadata.update(playlist.metadata)
             provider_ids = {*cur_item.provider_ids, *playlist.provider_ids}
-        if not playlist.sort_name:
-            playlist.sort_name = create_sort_name(playlist.name)
 
         async with self.mass.database.get_db() as _db:
             await self.mass.database.update(

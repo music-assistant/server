@@ -8,7 +8,7 @@ from mashumaro import DataClassDictMixin
 
 from music_assistant.helpers.json import json
 from music_assistant.helpers.uri import create_uri
-from music_assistant.helpers.util import create_sort_name
+from music_assistant.helpers.util import create_sort_name, merge_lists
 from music_assistant.models.enums import (
     AlbumType,
     ContentType,
@@ -74,7 +74,7 @@ class MediaItemMetadata(DataClassDictMixin):
     description: Optional[str] = None
     review: Optional[str] = None
     explicit: Optional[bool] = None
-    images: Optional[Set[MediaItemImage]] = None
+    images: Optional[List[MediaItemImage]] = None
     genres: Optional[Set[str]] = None
     mood: Optional[str] = None
     style: Optional[str] = None
@@ -95,7 +95,7 @@ class MediaItemMetadata(DataClassDictMixin):
     def update(
         self,
         new_values: "MediaItemMetadata",
-        allow_overwrite: bool = False,
+        allow_overwrite: bool = True,
     ) -> "MediaItemMetadata":
         """Update metadata (in-place) with new values."""
         for fld in fields(self):
@@ -103,7 +103,9 @@ class MediaItemMetadata(DataClassDictMixin):
             if new_val is None:
                 continue
             cur_val = getattr(self, fld.name)
-            if isinstance(cur_val, set):
+            if isinstance(cur_val, list):
+                merge_lists(cur_val, new_val)
+            elif isinstance(cur_val, set):
                 cur_val.update(new_val)
             elif cur_val is None or allow_overwrite:
                 setattr(self, fld.name, new_val)
@@ -115,7 +117,7 @@ class MediaItem(DataClassDictMixin):
     """Base representation of a media item."""
 
     item_id: str
-    provider: str
+    provider: ProviderType
     name: str
     # optional fields below
     provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
@@ -131,12 +133,6 @@ class MediaItem(DataClassDictMixin):
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
             self.sort_name = create_sort_name(self.name)
-        if not self.provider_ids and self.provider != "database":
-            # create default MediaItemProviderId from base details
-            prov_type = ProviderType(self.provider.split(".", 1)[0])
-            self.add_provider_id(
-                MediaItemProviderId(self.item_id, prov_type, self.provider)
-            )
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):
@@ -205,7 +201,7 @@ class ItemMapping(DataClassDictMixin):
     """Representation of a minimized item object."""
 
     item_id: str
-    provider: str
+    provider: ProviderType
     name: str = ""
     version: str = ""
     media_type: MediaType = MediaType.ARTIST
@@ -287,7 +283,7 @@ class Radio(MediaItem):
     """Model for a radio station."""
 
     media_type: MediaType = MediaType.RADIO
-    duration: int = 86400
+    duration: int = 0
 
     def to_db_row(self) -> dict:
         """Create dict from item suitable for db."""
@@ -304,7 +300,7 @@ class StreamDetails(DataClassDictMixin):
     """Model for streamdetails."""
 
     type: StreamType
-    provider: str
+    provider: ProviderType
     item_id: str
     path: str
     content_type: ContentType
@@ -328,4 +324,4 @@ class StreamDetails(DataClassDictMixin):
 
     def __str__(self):
         """Return pretty printable string of object."""
-        return f"{self.type.value}/{self.content_type.value} - {self.provider}/{self.item_id}"
+        return f"{self.type.value}/{self.content_type.value} - {self.provider.value}/{self.item_id}"

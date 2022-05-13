@@ -275,7 +275,7 @@ class SpotifyProvider(MusicProvider):
         return StreamDetails(
             type=StreamType.EXECUTABLE,
             item_id=track.item_id,
-            provider=self.id,
+            provider=self.type,
             path=librespot_exec,
             content_type=ContentType.OGG,
             sample_rate=44100,
@@ -285,7 +285,7 @@ class SpotifyProvider(MusicProvider):
     async def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
         artist = Artist(
-            item_id=artist_obj["id"], provider=self.id, name=artist_obj["name"]
+            item_id=artist_obj["id"], provider=self.type, name=artist_obj["name"]
         )
         artist.add_provider_id(
             MediaItemProviderId(
@@ -301,7 +301,7 @@ class SpotifyProvider(MusicProvider):
             for img in artist_obj["images"]:
                 img_url = img["url"]
                 if "2a96cbd8b46e442fc41c2b86b821562f" not in img_url:
-                    artist.metadata.images = {MediaItemImage(ImageType.THUMB, img_url)}
+                    artist.metadata.images = [MediaItemImage(ImageType.THUMB, img_url)]
                     break
         return artist
 
@@ -309,7 +309,7 @@ class SpotifyProvider(MusicProvider):
         """Parse spotify album object to generic layout."""
         name, version = parse_title_and_version(album_obj["name"])
         album = Album(
-            item_id=album_obj["id"], provider=self.id, name=name, version=version
+            item_id=album_obj["id"], provider=self.type, name=name, version=version
         )
         for artist in album_obj["artists"]:
             album.artist = await self._parse_artist(artist)
@@ -324,9 +324,9 @@ class SpotifyProvider(MusicProvider):
         if "genres" in album_obj:
             album.metadata.genre = set(album_obj["genres"])
         if album_obj.get("images"):
-            album.metadata.images = {
+            album.metadata.images = [
                 MediaItemImage(ImageType.THUMB, album_obj["images"][0]["url"])
-            }
+            ]
         if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
             album.upc = album_obj["external_ids"]["upc"]
         if "label" in album_obj:
@@ -353,7 +353,7 @@ class SpotifyProvider(MusicProvider):
         name, version = parse_title_and_version(track_obj["name"])
         track = Track(
             item_id=track_obj["id"],
-            provider=self.id,
+            provider=self.type,
             name=name,
             version=version,
             duration=track_obj["duration_ms"] / 1000,
@@ -376,11 +376,11 @@ class SpotifyProvider(MusicProvider):
         if "album" in track_obj:
             track.album = await self._parse_album(track_obj["album"])
             if track_obj["album"].get("images"):
-                track.metadata.images = {
+                track.metadata.images = [
                     MediaItemImage(
                         ImageType.THUMB, track_obj["album"]["images"][0]["url"]
                     )
-                }
+                ]
         if track_obj.get("copyright"):
             track.metadata.copyright = track_obj["copyright"]
         if track_obj.get("explicit"):
@@ -403,7 +403,7 @@ class SpotifyProvider(MusicProvider):
         """Parse spotify playlist object to generic layout."""
         playlist = Playlist(
             item_id=playlist_obj["id"],
-            provider=self.id,
+            provider=self.type,
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["display_name"],
         )
@@ -420,9 +420,9 @@ class SpotifyProvider(MusicProvider):
             or playlist_obj["collaborative"]
         )
         if playlist_obj.get("images"):
-            playlist.metadata.images = {
+            playlist.metadata.images = [
                 MediaItemImage(ImageType.THUMB, playlist_obj["images"][0]["url"])
-            }
+            ]
         playlist.metadata.checksum = str(playlist_obj["snapshot_id"])
         return playlist
 

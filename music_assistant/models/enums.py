@@ -216,13 +216,15 @@ class JobStatus(Enum):
 class ProviderType(Enum):
     """Enum with supported music providers."""
 
-    FILESYSTEM_LOCAL = "filesystem"
-    FILESYSTEM_SMB = "filesystem_smb"
-    FILESYSTEM_GOOGLE_DRIVE = "google_drive"
+    FILESYSTEM_LOCAL = "file"
+    FILESYSTEM_SMB = "smb"
+    FILESYSTEM_GOOGLE_DRIVE = "gdrive"
     FILESYSTEM_ONEDRIVE = "onedrive"
     SPOTIFY = "spotify"
     QOBUZ = "qobuz"
     TUNEIN = "tunein"
+    DATABASE = "database"  # internal only
+    URL = "url"  # internal only
 
     def is_file(self) -> bool:
         """Return if type is one of the filesystem providers."""
@@ -232,3 +234,13 @@ class ProviderType(Enum):
             self.FILESYSTEM_GOOGLE_DRIVE,
             self.FILESYSTEM_ONEDRIVE,
         )
+
+    @classmethod
+    def parse(cls: "ProviderType", val: str) -> "ProviderType":
+        """Try to parse ContentType from provider id."""
+        if isinstance(val, ProviderType):
+            return val
+        for mem in ProviderType:
+            if val.startswith(mem.value):
+                return mem
+        raise ValueError(f"Unable to parse ProviderType from {val}")

@@ -11,8 +11,7 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.helpers.util import create_sort_name
-from music_assistant.models.enums import EventType, MediaType
+from music_assistant.models.enums import EventType, MediaType, ProviderType
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import ItemMapping, Track
@@ -57,16 +56,21 @@ class TracksController(MediaControllerBase[Track]):
         )
         return db_item
 
-    async def versions(self, item_id: str, provider_id: str) -> List[Track]:
+    async def versions(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+    ) -> List[Track]:
         """Return all versions of a track we can find on all providers."""
-        track = await self.get(item_id, provider_id)
-        provider_ids = {item.id for item in self.mass.music.providers}
+        track = await self.get(item_id, provider, provider_id)
+        prov_types = {item.types for item in self.mass.music.providers}
         first_artist = next(iter(track.artists))
         search_query = f"{first_artist.name} {track.name}"
         return [
             prov_item
             for prov_items in await asyncio.gather(
-                *[self.search(search_query, prov_id) for prov_id in provider_ids]
+                *[self.search(search_query, prov_type) for prov_type in prov_types]
             )
             for prov_item in prov_items
             if compare_artists(prov_item.artists, track.artists)
@@ -78,7 +82,7 @@ class TracksController(MediaControllerBase[Track]):
 
         This is used to link objects of different providers/qualities together.
         """
-        if db_track.provider != "database":
+        if db_track.provider != ProviderType.DATABASE:
             return  # Matching only supported for database items
         if isinstance(db_track.album, ItemMapping):
             # matching only works if we have a full track object
@@ -86,7 +90,7 @@ class TracksController(MediaControllerBase[Track]):
         for provider in self.mass.music.providers:
             if MediaType.TRACK not in provider.supported_mediatypes:
                 continue
-            if "filesystem" in provider.type.value:
+            if provider.type.is_file():
                 continue
             self.logger.debug(
                 "Trying to match track %s on provider %s", db_track.name, provider.name
@@ -98,7 +102,7 @@ class TracksController(MediaControllerBase[Track]):
                 searchstr = f"{db_track_artist.name} {db_track.name}"
                 if db_track.version:
                     searchstr += " " + db_track.version
-                search_result = await self.search(searchstr, provider.id)
+                search_result = await self.search(searchstr, provider.type)
                 for search_result_item in search_result:
                     if not search_result_item.available:
                         continue
@@ -132,9 +136,7 @@ class TracksController(MediaControllerBase[Track]):
     async def add_db_item(self, track: Track) -> Track:
         """Add a new track record to the database."""
         assert track.artists, "Track is missing artist(s)"
-        assert track.provider_ids
-        if not track.sort_name:
-            track.sort_name = create_sort_name(track.name)
+        assert track.provider_ids, "Track is missing provider id(s)"
         cur_item = None
         async with self.mass.database.get_db() as _db:
             track_album = await self._get_track_album(track)
@@ -191,23 +193,14 @@ class TracksController(MediaControllerBase[Track]):
         """Update Track record in the database, merging data."""
         async with self.mass.database.get_db() as _db:
             cur_item = await self.get_db_item(item_id, db=_db)
-            track_album = await self._get_track_album(track)
+            track_album = await self._get_track_album(cur_item, track)
             if overwrite:
                 provider_ids = track.provider_ids
                 track_artists = track.artists
-                track_album = track.album or cur_item.album
             else:
                 provider_ids = {*cur_item.provider_ids, *track.provider_ids}
                 track_artists = cur_item.artists + track.artists
-                track_album = cur_item.album or track.album
             metadata = cur_item.metadata.update(track.metadata, overwrite)
-            if track_album and not isinstance(track_album, ItemMapping):
-                track_album = ItemMapping.from_item(
-                    await self.get_db_item_by_prov_id(
-                        track_album.provider, track_album.item_id, db=_db
-                    )
-                    or await self.mass.music.albums.add_db_item(track_album)
-                )
 
             # we store a mapping to artists on the track for easier access/listings
             track_artists = await self._get_track_artists(track, track_artists)
@@ -247,7 +240,8 @@ class TracksController(MediaControllerBase[Track]):
             cur_ids = {x.item_id for x in track_artists}
             track_artist = (
                 await self.mass.music.artists.get_db_item_by_prov_id(
-                    item.provider, item.item_id
+                    item.item_id,
+                    item.provider,
                 )
                 or item
             )
@@ -269,7 +263,7 @@ class TracksController(MediaControllerBase[Track]):
             if isinstance(track.album, ItemMapping):
                 return track.album
 
-            if track.album.provider == "database":
+            if track.album.provider == ProviderType.DATABASE:
                 return ItemMapping.from_item(track.album)
 
             if track.album.musicbrainz_id:
@@ -277,7 +271,8 @@ class TracksController(MediaControllerBase[Track]):
                 return ItemMapping.from_item(track_album)
 
             if track_album := await self.mass.music.albums.get_db_item_by_prov_id(
-                track.album.provider, track.album.item_id
+                track.album.item_id,
+                track.album.provider,
             ):
                 return ItemMapping.from_item(track_album)
 

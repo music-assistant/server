@@ -11,7 +11,7 @@ import aiofiles
 
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import create_tempfile
-from music_assistant.models.enums import EventType
+from music_assistant.models.enums import EventType, ProviderType
 from music_assistant.models.errors import AudioError, MediaNotFoundError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import (
@@ -193,7 +193,7 @@ async def get_stream_details(
         # special case: a plain url was added to the queue
         streamdetails = StreamDetails(
             type=StreamType.URL,
-            provider="url",
+            provider=ProviderType.URL,
             item_id=queue_item.item_id,
             path=queue_item.uri,
             content_type=ContentType.try_parse(queue_item.uri),
@@ -203,7 +203,7 @@ async def get_stream_details(
         full_item = await mass.music.get_item_by_uri(queue_item.uri)
         # sort by quality and check track availability
         for prov_media in sorted(
-            full_item.provider_ids, key=lambda x: x.quality, reverse=True
+            full_item.provider_ids, key=lambda x: x.quality or 0, reverse=True
         ):
             if not prov_media.available:
                 continue
@@ -241,17 +241,17 @@ async def get_stream_details(
 
 
 async def get_gain_correct(
-    mass: MusicAssistant, queue_id: str, item_id: str, provider_id: str
+    mass: MusicAssistant, queue_id: str, item_id: str, provider: ProviderType
 ) -> Tuple[float, float]:
     """Get gain correction for given queue / track combination."""
     queue = mass.players.get_player_queue(queue_id)
     if not queue or not queue.settings.volume_normalization_enabled:
         return 0
     target_gain = queue.settings.volume_normalization_target
-    track_loudness = await mass.music.get_track_loudness(item_id, provider_id)
+    track_loudness = await mass.music.get_track_loudness(item_id, provider)
     if track_loudness is None:
         # fallback to provider average
-        fallback_track_loudness = await mass.music.get_provider_loudness(provider_id)
+        fallback_track_loudness = await mass.music.get_provider_loudness(provider)
         if fallback_track_loudness is None:
             # fallback to some (hopefully sane) average value for now
             fallback_track_loudness = -8.5
