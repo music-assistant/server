@@ -5,7 +5,8 @@ import logging
 import os
 
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.config import MassConfig
+from music_assistant.models.config import MassConfig, MusicProviderConfig
+from music_assistant.models.enums import ProviderType
 from music_assistant.models.player import Player, PlayerState
 from music_assistant.models.player_queue import RepeatMode
 
@@ -42,11 +43,6 @@ parser.add_argument(
     help="Directory on disk for local music library",
 )
 parser.add_argument(
-    "--playlistdir",
-    required=False,
-    help="Directory on disk for local (m3u) playlists",
-)
-parser.add_argument(
     "--debug",
     action="store_true",
     help="Enable verbose debug logging",
@@ -76,18 +72,34 @@ db_file = os.path.join(data_dir, "music_assistant.db")
 
 mass_conf = MassConfig(
     database_url=f"sqlite:///{db_file}",
-    spotify_enabled=args.spotify_username and args.spotify_password,
-    spotify_username=args.spotify_username,
-    spotify_password=args.spotify_password,
-    qobuz_enabled=args.qobuz_username and args.qobuz_password,
-    qobuz_username=args.qobuz_username,
-    qobuz_password=args.qobuz_password,
-    tunein_enabled=args.tunein_username is not None,
-    tunein_username=args.tunein_username,
-    filesystem_enabled=args.musicdir is not None,
-    filesystem_music_dir=args.musicdir,
-    filesystem_playlists_dir=args.playlistdir,
 )
+if args.spotify_username and args.spotify_password:
+    mass_conf.providers.append(
+        MusicProviderConfig(
+            ProviderType.SPOTIFY,
+            username=args.spotify_username,
+            password=args.spotify_password,
+        )
+    )
+if args.qobuz_username and args.qobuz_password:
+    mass_conf.providers.append(
+        MusicProviderConfig(
+            type=ProviderType.QOBUZ,
+            username=args.qobuz_username,
+            password=args.qobuz_password,
+        )
+    )
+if args.tunein_username:
+    mass_conf.providers.append(
+        MusicProviderConfig(
+            type=ProviderType.TUNEIN,
+            username=args.tunein_username,
+        )
+    )
+if args.musicdir:
+    mass_conf.providers.append(
+        MusicProviderConfig(type=ProviderType.FILESYSTEM_LOCAL, path=args.musicdir)
+    )
 
 
 class TestPlayer(Player):

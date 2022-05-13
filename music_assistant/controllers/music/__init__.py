@@ -19,7 +19,8 @@ from music_assistant.helpers.database import (
 )
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.models.enums import MediaType
+from music_assistant.models.config import MusicProviderConfig
+from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.errors import MusicAssistantError, SetupFailedError
 from music_assistant.models.media_items import (
     MediaItem,
@@ -36,7 +37,12 @@ from .providers.tunein import TuneInProvider
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
-PROVIDERS = (FileSystemProvider, QobuzProvider, SpotifyProvider, TuneInProvider)
+PROV_MAP = {
+    ProviderType.FILESYSTEM_LOCAL: FileSystemProvider,
+    ProviderType.SPOTIFY: SpotifyProvider,
+    ProviderType.QOBUZ: QobuzProvider,
+    ProviderType.TUNEIN: TuneInProvider,
+}
 
 
 class MusicController:
@@ -56,8 +62,9 @@ class MusicController:
     async def setup(self):
         """Async initialize of module."""
         # register providers
-        for prov in PROVIDERS:
-            await self._register_provider(prov())
+        for prov_conf in self.mass.config.providers:
+            prov_cls = PROV_MAP[prov_conf.type]
+            await self._register_provider(prov_cls(self.mass, prov_conf), prov_conf)
 
     async def start_sync(self, schedule: Optional[float] = 3) -> None:
         """
@@ -87,7 +94,7 @@ class MusicController:
         return tuple(x for x in self._providers.values() if x.available)
 
     def get_provider(self, provider_id: str) -> MusicProvider | None:
-        """Return provider/plugin by id."""
+        """Return Music provider by id."""
         prov = self._providers.get(provider_id, None)
         if prov is None or not prov.available:
             self.logger.warning("Provider %s is not available", provider_id)
@@ -138,7 +145,7 @@ class MusicController:
                 + await self.radio.search(search_query, "database", limit)
             )
         provider = self.get_provider(provider_id)
-        return [x async for x in provider.search(search_query, media_types, limit)]
+        return await provider.search(search_query, media_types, limit)
 
     async def get_item_by_uri(
         self, uri: str, force_refresh: bool = False, lazy: bool = True
@@ -183,18 +190,23 @@ class MusicController:
     async def get_provider_mapping(
         self,
         media_type: MediaType,
-        provider_id: str,
         provider_item_id: str,
+        provider_id: Optional[str] = None,
+        provider_type: Optional[ProviderType] = None,
         db: Optional[Db] = None,
     ) -> int | None:
         """Lookup database id for media item from provider id."""
+        match = {
+            "media_type": media_type.value,
+            "prov_item_id": provider_item_id,
+        }
+        if provider_type is not None:
+            match["prov_id"] = provider_type.value
+        if provider_id is not None:
+            match["prov_id"] = provider_id
         if result := await self.mass.database.get_row(
             TABLE_PROV_MAPPINGS,
-            {
-                "media_type": media_type.value,
-                "provider": provider_id,
-                "prov_item_id": provider_item_id,
-            },
+            match,
             db=db,
         ):
             return result["item_id"]
@@ -203,16 +215,21 @@ class MusicController:
     async def get_provider_mappings(
         self,
         media_type: MediaType,
-        provider_id: str,
+        provider_id: Optional[str] = None,
+        provider_type: Optional[ProviderType] = None,
         db: Optional[Db] = None,
     ) -> List[int]:
         """Lookup all database id's for media type for given provider id."""
+        match = {
+            "media_type": media_type.value,
+        }
+        if provider_type is not None:
+            match["prov_id"] = provider_type.value
+        if provider_id is not None:
+            match["prov_id"] = provider_id
         if result := await self.mass.database.get_rows(
             TABLE_PROV_MAPPINGS,
-            {
-                "media_type": media_type.value,
-                "provider": provider_id,
-            },
+            match,
             db=db,
         ):
             return [x["item_id"] for x in result]
@@ -240,7 +257,8 @@ class MusicController:
                         "item_id": item_id,
                         "media_type": media_type.value,
                         "prov_item_id": prov_id.item_id,
-                        "provider": prov_id.provider,
+                        "prov_id": prov_id.prov_id,
+                        "prov_type": prov_id.prov_type.value,
                         "quality": prov_id.quality.value if prov_id.quality else None,
                         "details": prov_id.details,
                         "url": prov_id.url,
@@ -427,29 +445,35 @@ class MusicController:
                 await controller.tracks(prov_item.item_id, provider_id)
 
         # process deletions
+        if len(prev_ids - cur_ids) > 50:
+            self.logger.warning("Too many deletions detected, ignoring...")
+            return
         for item_id in prev_ids:
             if item_id not in cur_ids:
                 await controller.set_db_library(item_id, False)
                 # in case of filestem, removal from library means the whole item is
                 # moved/deleted so we remove the prov mapping from db.
-                if provider_id == "filesystem":
+                if "filesystem" in provider_id:
                     if db_item := await controller.get_db_item(item_id):
                         db_item.provider_ids = {
                             x for x in db_item.provider_ids if x.provider != provider_id
                         }
                         await controller.update_db_item(item_id, db_item, True)
 
-    async def _register_provider(self, provider: MusicProvider) -> None:
+    async def _register_provider(
+        self, provider: MusicProvider, conf: MusicProviderConfig
+    ) -> None:
         """Register a music provider."""
         try:
+            provider.config = conf
             provider.mass = self.mass
             provider.cache = self.mass.cache
-            provider.logger = self.logger.getChild(provider.id)
+            provider.logger = self.logger.getChild(provider.type.value)
             if await provider.setup():
                 self._providers[provider.id] = provider
         except Exception as err:  # pylint: disable=broad-except
             raise SetupFailedError(
-                f"Setup failed of provider {provider.id}: {str(err)}"
+                f"Setup failed of provider {provider.type.value}: {str(err)}"
             ) from err
 
     # some helper methods below

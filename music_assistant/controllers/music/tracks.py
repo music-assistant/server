@@ -86,7 +86,7 @@ class TracksController(MediaControllerBase[Track]):
         for provider in self.mass.music.providers:
             if MediaType.TRACK not in provider.supported_mediatypes:
                 continue
-            if provider.id == "filesystem":
+            if "filesystem" in provider.type.value:
                 continue
             self.logger.debug(
                 "Trying to match track %s on provider %s", db_track.name, provider.name
@@ -182,6 +182,7 @@ class TracksController(MediaControllerBase[Track]):
             )
 
             # return created object
+            self.logger.debug("added %s to database: %s", track.name, item_id)
             return await self.get_db_item(item_id, db=_db)
 
     async def update_db_item(

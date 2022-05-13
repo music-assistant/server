@@ -65,8 +65,6 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def add(self, item: Album) -> Album:
         """Add album to local db and return the database item."""
-        # make sure we have an artist
-        assert item.artist
         # grab additional metadata
         await self.mass.metadata.get_album_metadata(item)
         db_item = await self.add_db_item(item)
@@ -226,7 +224,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
         # try to find match on all providers
         for provider in self.mass.music.providers:
-            if provider.id == "filesystem":
+            if "filesystem" in provider.type.value:
                 continue
             if MediaType.ALBUM in provider.supported_mediatypes:
                 await find_prov_match(provider)

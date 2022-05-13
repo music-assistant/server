@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from logging import Logger
 from typing import TYPE_CHECKING, AsyncGenerator, List, Optional
 
-from music_assistant.models.enums import MediaType
+from music_assistant.models.config import MusicProviderConfig
+from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.media_items import (
     Album,
     Artist,
@@ -23,13 +23,17 @@ if TYPE_CHECKING:
 class MusicProvider:
     """Model for a Music Provider."""
 
-    _attr_id: str = None
     _attr_name: str = None
+    _attr_type: ProviderType = None
     _attr_available: bool = True
     _attr_supported_mediatypes: List[MediaType] = []
-    mass: MusicAssistant = None  # set by setup
-    cache: MusicAssistant = None  # set by setup
-    logger: Logger = None  # set by setup
+
+    def __init__(self, mass: MusicAssistant, config: MusicProviderConfig) -> None:
+        """Initialize MusicProvider."""
+        self.mass = mass
+        self.config = config
+        self.logger = mass.logger
+        self.cache = mass.cache
 
     @abstractmethod
     async def setup(self) -> bool:
@@ -40,9 +44,9 @@ class MusicProvider:
         """
 
     @property
-    def id(self) -> str:
-        """Return provider ID for this provider."""
-        return self._attr_id
+    def type(self) -> ProviderType:
+        """Return provider type for this provider."""
+        return self._attr_type
 
     @property
     def name(self) -> str:
@@ -183,3 +187,18 @@ class MusicProvider:
     async def sync(self) -> None:
         """Run/schedule sync for this provider."""
         await self.mass.music.run_provider_sync(self.id)
+
+    # DO NOT OVERRIDE BELOW
+
+    @property
+    def id(self) -> str:
+        """
+        Return unique provider id to distinguish multiple instances of the same provider.
+
+        Defaults to combination of type and username/path.
+        """
+        if self.config.path:
+            return f"{self.type.value}.{self.config.path}"
+        if self.config.username:
+            return f"{self.type.value}.{self.config.username}"
+        return self.type.value

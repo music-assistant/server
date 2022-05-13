@@ -85,9 +85,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         ), "Matching only supported for database items!"
         cur_providers = {item.provider for item in db_artist.provider_ids}
         for provider in self.mass.music.providers:
-            if provider.id in cur_providers:
+            if provider.type in cur_providers:
                 continue
-            if provider.id == "filesystem":
+            if "filesystem" in provider.type.value:
                 continue
             if MediaType.ARTIST not in provider.supported_mediatypes:
                 continue

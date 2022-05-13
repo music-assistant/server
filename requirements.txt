@@ -10,3 +10,4 @@ pillow>=8.0,<9.1.1
 unidecode>=1.0,<=1.3.4
 mashumaro>=3.0,<=3.1
 tinytag>=1.6,<=1.8.1
+xmltodict>=0.12.0,<=0.13.0

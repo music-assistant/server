@@ -59,19 +59,14 @@ class SpotifyProvider(MusicProvider):
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
-        if not self.mass.config.spotify_enabled:
+        if not self.config.enabled:
             return False
-        if (
-            not self.mass.config.spotify_username
-            or not self.mass.config.spotify_password
-        ):
+        if not self.config.username or not self.config.password:
             raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails
         token = await self.get_token()
         if not token:
-            raise LoginFailed(
-                f"Login failed for user {self.mass.config.spotify_username}"
-            )
+            raise LoginFailed(f"Login failed for user {self.config.username}")
         return True
 
     async def search(
@@ -293,8 +288,9 @@ class SpotifyProvider(MusicProvider):
         )
         artist.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=artist_obj["id"],
+                prov_type=self.type,
+                prov_id=self.id,
                 url=artist_obj["external_urls"]["spotify"],
             )
         )
@@ -342,8 +338,9 @@ class SpotifyProvider(MusicProvider):
             album.metadata.explicit = album_obj["explicit"]
         album.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=album_obj["id"],
+                prov_type=self.type,
+                prov_id=self.id,
                 quality=MediaQuality.LOSSY_OGG,
                 url=album_obj["external_urls"]["spotify"],
             )
@@ -391,8 +388,9 @@ class SpotifyProvider(MusicProvider):
             track.metadata.popularity = track_obj["popularity"]
         track.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=track_obj["id"],
+                prov_type=self.type,
+                prov_id=self.id,
                 quality=MediaQuality.LOSSY_OGG,
                 url=track_obj["external_urls"]["spotify"],
                 available=not track_obj["is_local"] and track_obj["is_playable"],
@@ -410,8 +408,9 @@ class SpotifyProvider(MusicProvider):
         )
         playlist.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=playlist_obj["id"],
+                prov_type=self.type,
+                prov_id=self.id,
                 url=playlist_obj["external_urls"]["spotify"],
             )
         )
@@ -436,10 +435,7 @@ class SpotifyProvider(MusicProvider):
         ):
             return self._auth_token
         tokeninfo = {}
-        if (
-            not self.mass.config.spotify_username
-            or not self.mass.config.spotify_password
-        ):
+        if not self.config.username or not self.config.password:
             return tokeninfo
         # retrieve token with librespot
         tokeninfo = await self._get_token()
@@ -452,9 +448,7 @@ class SpotifyProvider(MusicProvider):
             )
             self._auth_token = tokeninfo
         else:
-            self.logger.error(
-                "Login failed for user %s", self.mass.config.spotify_username
-            )
+            self.logger.error("Login failed for user %s", self.config.username)
         return tokeninfo
 
     async def _get_token(self):
@@ -467,9 +461,9 @@ class SpotifyProvider(MusicProvider):
             CACHE_DIR,
             "-a",
             "-u",
-            self.mass.config.spotify_username,
+            self.config.username,
             "-p",
-            self.mass.config.spotify_password,
+            self.config.password,
         ]
         librespot = await asyncio.create_subprocess_exec(*args)
         await librespot.wait()

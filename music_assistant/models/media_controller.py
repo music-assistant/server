@@ -87,14 +87,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider = self.mass.music.get_provider(provider_id)
         if not provider:
             return {}
-        return [
-            x
-            async for x in provider.search(
-                search_query,
-                [self.media_type],
-                limit,
-            )
-        ]
+        return await provider.search(
+            search_query,
+            [self.media_type],
+            limit,
+        )
 
     async def add_to_library(self, provider_item_id: str, provider_id: str) -> None:
         """Add an item to the library."""

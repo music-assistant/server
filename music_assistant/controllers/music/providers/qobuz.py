@@ -53,16 +53,14 @@ class QobuzProvider(MusicProvider):
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
-        if not self.mass.config.qobuz_enabled:
+        if not self.config.enabled:
             return False
-        if not self.mass.config.qobuz_username or not self.mass.config.qobuz_password:
+        if not self.config.username or not self.config.password:
             raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails
         token = await self._auth_token()
         if not token:
-            raise LoginFailed(
-                f"Login failed for user {self.mass.config.qobuz_username}"
-            )
+            raise LoginFailed(f"Login failed for user {self.config.username}")
         # subscribe to stream events so we can report playback to Qobuz
         self.mass.subscribe(
             self.on_stream_event,
@@ -423,8 +421,9 @@ class QobuzProvider(MusicProvider):
         )
         artist.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=str(artist_obj["id"]),
+                prov_type=self.type,
+                prov_id=self.id,
                 url=artist_obj.get(
                     "url", f'https://open.qobuz.com/artist/{artist_obj["id"]}'
                 ),
@@ -461,8 +460,9 @@ class QobuzProvider(MusicProvider):
             quality = MediaQuality.FLAC_LOSSLESS
         album.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=str(album_obj["id"]),
+                prov_type=self.type,
+                prov_id=self.id,
                 quality=quality,
                 url=album_obj.get(
                     "url", f'https://open.qobuz.com/album/{album_obj["id"]}'
@@ -582,8 +582,9 @@ class QobuzProvider(MusicProvider):
             quality = MediaQuality.FLAC_LOSSLESS
         track.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=str(track_obj["id"]),
+                prov_type=self.type,
+                prov_id=self.id,
                 quality=quality,
                 url=track_obj.get(
                     "url", f'https://open.qobuz.com/track/{track_obj["id"]}'
@@ -604,8 +605,9 @@ class QobuzProvider(MusicProvider):
         )
         playlist.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=str(playlist_obj["id"]),
+                prov_type=self.type,
+                prov_id=self.id,
                 url=playlist_obj.get(
                     "url", f'https://open.qobuz.com/playlist/{playlist_obj["id"]}'
                 ),
@@ -625,8 +627,8 @@ class QobuzProvider(MusicProvider):
         if self._user_auth_info:
             return self._user_auth_info["user_auth_token"]
         params = {
-            "username": self.mass.config.qobuz_username,
-            "password": self.mass.config.qobuz_password,
+            "username": self.config.username,
+            "password": self.config.password,
             "device_manufacturer_id": "music_assistant",
         }
         details = await self._get_data("user/login", **params)

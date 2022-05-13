@@ -48,15 +48,14 @@ class ImageType(Enum):
     """Enum wth image types."""
 
     THUMB = "thumb"
-    WIDE_THUMB = "wide_thumb"
+    LANDSCAPE = "landscape"
     FANART = "fanart"
     LOGO = "logo"
     CLEARART = "clearart"
     BANNER = "banner"
     CUTOUT = "cutout"
     BACK = "back"
-    CDART = "cdart"
-    EMBEDDED_THUMB = "embedded_thumb"
+    DISCART = "discart"
     OTHER = "other"
 
 
@@ -212,3 +211,15 @@ class JobStatus(Enum):
     CANCELLED = "cancelled"
     FINISHED = "success"
     ERROR = "error"
+
+
+class ProviderType(Enum):
+    """Enum with supported music providers."""
+
+    FILESYSTEM_LOCAL = "filesystem"
+    FILESYSTEM_SMB = "filesystem_smb"
+    FILESYSTEM_GOOGLE_DRIVE = "google_drive"
+    FILESYSTEM_ONEDRIVE = "onedrive"
+    SPOTIFY = "spotify"
+    QOBUZ = "qobuz"
+    TUNEIN = "tunein"

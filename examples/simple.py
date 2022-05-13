@@ -6,7 +6,8 @@ import os
 
 
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.config import MassConfig
+from music_assistant.models.config import MassConfig, MusicProviderConfig
+from music_assistant.models.enums import ProviderType
 
 parser = argparse.ArgumentParser(description="MusicAssistant")
 parser.add_argument(
@@ -50,9 +51,13 @@ db_file = os.path.join(data_dir, "music_assistant.db")
 mass = MusicAssistant(
     MassConfig(
         database_url=MassConfig,
-        spotify_enabled=True,
-        spotify_username=args.username,
-        spotify_password=args.password,
+        providers=[
+            MusicProviderConfig(
+                ProviderType.SPOTIFY,
+                username=args.spotify_username,
+                password=args.spotify_password,
+            )
+        ],
     )
 )
 

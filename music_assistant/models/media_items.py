@@ -16,6 +16,7 @@ from music_assistant.models.enums import (
     LinkType,
     MediaQuality,
     MediaType,
+    ProviderType,
     StreamType,
 )
 
@@ -28,8 +29,9 @@ JSON_KEYS = ("artists", "artist", "album", "metadata", "provider_ids")
 class MediaItemProviderId(DataClassDictMixin):
     """Model for a MediaItem's provider id."""
 
-    provider: str
     item_id: str
+    prov_type: ProviderType
+    prov_id: str
     available: bool = True
     quality: Optional[MediaQuality] = None
     details: Optional[str] = None
@@ -37,7 +39,7 @@ class MediaItemProviderId(DataClassDictMixin):
 
     def __hash__(self):
         """Return custom hash."""
-        return hash((self.provider, self.item_id, self.quality))
+        return hash((self.prov_id, self.item_id, self.quality))
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,7 @@ class MediaItemImage(DataClassDictMixin):
 
     type: ImageType
     url: str
+    is_file: bool = False  # indicator that image is local filepath instead of url
 
     def __hash__(self):
         """Return custom hash."""
@@ -128,8 +131,12 @@ class MediaItem(DataClassDictMixin):
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
             self.sort_name = create_sort_name(self.name)
-        if not self.provider_ids:
-            self.add_provider_id(MediaItemProviderId(self.provider, self.item_id))
+        if not self.provider_ids and self.provider != "database":
+            # create default MediaItemProviderId from base details
+            prov_type = ProviderType(self.provider.split("."))
+            self.add_provider_id(
+                MediaItemProviderId(self.item_id, prov_type, self.provider)
+            )
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):

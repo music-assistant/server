@@ -1,11 +1,23 @@
 """Model for the Music Assisant runtime config."""
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 from databases import DatabaseURL
 
 from music_assistant.helpers.util import get_ip, select_stream_port
+from music_assistant.models.enums import ProviderType
+
+
+@dataclass(frozen=True)
+class MusicProviderConfig:
+    """Base Model for a MusicProvider config."""
+
+    type: ProviderType
+    enabled: bool = True
+    username: Optional[str] = None
+    password: Optional[str] = None
+    path: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -14,20 +26,7 @@ class MassConfig:
 
     database_url: DatabaseURL
 
-    spotify_enabled: bool = False
-    spotify_username: Optional[str] = None
-    spotify_password: Optional[str] = None
-
-    qobuz_enabled: bool = False
-    qobuz_username: Optional[str] = None
-    qobuz_password: Optional[str] = None
-
-    tunein_enabled: bool = False
-    tunein_username: Optional[str] = None
-
-    filesystem_enabled: bool = False
-    filesystem_music_dir: Optional[str] = None
-    filesystem_playlists_dir: Optional[str] = None
+    providers: List[MusicProviderConfig] = field(default_factory=list)
 
     # advanced settings
     max_simultaneous_jobs: int = 10

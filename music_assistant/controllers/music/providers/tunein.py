@@ -33,12 +33,10 @@ class TuneInProvider(MusicProvider):
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
-        if not self.mass.config.tunein_enabled:
+        if not self.config.enabled:
             return False
-        if not self.mass.config.tunein_username:
+        if not self.config.username:
             raise LoginFailed("Username is invalid")
-        if "@" in self.mass.config.tunein_username:
-            raise LoginFailed("You must provide the TuneIn username, not email")
         return True
 
     async def search(
@@ -125,8 +123,9 @@ class TuneInProvider(MusicProvider):
             quality = MediaQuality.LOSSY_MP3
         radio.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=item_id,
+                prov_type=self.type,
+                prov_id=self.id,
                 quality=quality,
                 details=stream["url"],
             )
@@ -174,7 +173,7 @@ class TuneInProvider(MusicProvider):
         else:
             url = f"https://opml.radiotime.com/{endpoint}"
             kwargs["formats"] = "ogg,aac,wma,mp3"
-            kwargs["username"] = self.mass.config.tunein_username
+            kwargs["username"] = self.config.username
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
         async with self._throttler:
