@@ -51,6 +51,9 @@ class MusicProvider:
     @property
     def name(self) -> str:
         """Return provider Name for this provider."""
+        if sum(1 for x in self.mass.music.providers if x.type == self.type) > 1:
+            append_str = self.config.path or self.config.username
+            return f"{self._attr_name} ({append_str})"
         return self._attr_name
 
     @property

@@ -57,6 +57,7 @@ class SpotifyProvider(MusicProvider):
     _sp_user = None
     _librespot_bin = None
     _throttler = Throttler(rate_limit=4, period=1)
+    _cache_dir = CACHE_DIR
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
@@ -65,6 +66,7 @@ class SpotifyProvider(MusicProvider):
         if not self.config.username or not self.config.password:
             raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails
+        self._cache_dir = os.path.join(CACHE_DIR, self.id)
         token = await self.get_token()
         if not token:
             raise LoginFailed(f"Login failed for user {self.config.username}")
@@ -271,7 +273,7 @@ class SpotifyProvider(MusicProvider):
         # make sure that the token is still valid by just requesting it
         await self.get_token()
         librespot = await self.get_librespot_binary()
-        librespot_exec = f'{librespot} -c "{CACHE_DIR}" --pass-through -b 320 --single-track spotify://track:{track.item_id}'
+        librespot_exec = f'{librespot} -c "{self._cache_dir}" --pass-through -b 320 --single-track spotify://track:{track.item_id}'
         return StreamDetails(
             type=StreamType.EXECUTABLE,
             item_id=track.item_id,
@@ -431,7 +433,7 @@ class SpotifyProvider(MusicProvider):
         # return existing token if we have one in memory
         if (
             self._auth_token
-            and os.path.isdir(CACHE_DIR)
+            and os.path.isdir(self._cache_dir)
             and (self._auth_token["expiresAt"] > int(time.time()) + 20)
         ):
             return self._auth_token
@@ -459,7 +461,7 @@ class SpotifyProvider(MusicProvider):
             await self.get_librespot_binary(),
             "-O",
             "-c",
-            CACHE_DIR,
+            self._cache_dir,
             "-a",
             "-u",
             self.config.username,
@@ -496,7 +498,7 @@ class SpotifyProvider(MusicProvider):
             "--scope",
             scope,
             "-c",
-            CACHE_DIR,
+            self._cache_dir,
         ]
         librespot = await asyncio.create_subprocess_exec(
             *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT

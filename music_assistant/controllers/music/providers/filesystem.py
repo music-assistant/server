@@ -146,7 +146,7 @@ class FileSystemProvider(MusicProvider):
             if (time() - last_save) > 60:
                 await self.mass.cache.set(cache_key, checksums)
                 last_save = time()
-
+        # TODO: Handle deletions
         await self.mass.cache.set(cache_key, checksums)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:

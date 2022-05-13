@@ -118,7 +118,7 @@ class TestPlayer(Player):
 
     async def play_url(self, url: str) -> None:
         """Play the specified url on the player."""
-        print("play uri called: {url}")
+        print(f"stream url: {url}")
         self._attr_current_url = url
         self.update_state()
 

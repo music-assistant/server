@@ -37,7 +37,7 @@ class MusicProviderConfig:
                 .replace("_", "")
                 .lower()
                 .split("@")[0][1::2]
-            )
+            ) + self.username[-1]
             super().__setattr__("id", prov_id)
         elif not self.id:
             self.id = self.type.value

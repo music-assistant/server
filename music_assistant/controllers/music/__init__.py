@@ -65,6 +65,7 @@ class MusicController:
         for prov_conf in self.mass.config.providers:
             prov_cls = PROV_MAP[prov_conf.type]
             await self._register_provider(prov_cls(self.mass, prov_conf), prov_conf)
+        # TODO: handle deletion of providers ?
 
     async def start_sync(self, schedule: Optional[float] = 3) -> None:
         """
