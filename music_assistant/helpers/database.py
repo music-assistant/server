@@ -22,6 +22,7 @@ TABLE_PLAYLISTS = "playlists"
 TABLE_RADIOS = "radios"
 TABLE_CACHE = "cache"
 TABLE_SETTINGS = "settings"
+TABLE_THUMBS = "thumbnails"
 
 
 class Database:
@@ -193,6 +194,8 @@ class Database:
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_PLAYLISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_PROV_MAPPINGS}")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_THUMBS}")
                     # recreate missing tables
                     await self.__create_database_tables(db)
 
@@ -212,7 +215,7 @@ class Database:
                     quality INTEGER NULL,
                     details TEXT NULL,
                     url TEXT NULL,
-                    UNIQUE(db_id, media_type, prov_item_id, prov_id)
+                    UNIQUE(item_id, media_type, prov_item_id, prov_id)
                     );"""
         )
         await db.execute(
@@ -298,4 +301,12 @@ class Database:
         await db.execute(
             f"""CREATE TABLE IF NOT EXISTS {TABLE_CACHE}(
                     key TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_THUMBS}(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL,
+                size INTEGER NULL,
+                data BLOB,
+                UNIQUE(path, size));"""
         )

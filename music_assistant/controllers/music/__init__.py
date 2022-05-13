@@ -419,7 +419,7 @@ class MusicController:
         prev_ids = set()
         for db_item in await controller.library():
             for prov_id in db_item.provider_ids:
-                if prov_id.provider == provider_id:
+                if prov_id.prov_id == provider_id:
                     prev_ids.add(db_item.item_id)
         cur_ids = set()
         async for prov_item in self._get_library_gen(media_type, music_provider)():

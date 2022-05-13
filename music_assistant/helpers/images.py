@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from PIL import Image
+from tinytag import TinyTag
 
 from music_assistant.models.enums import ImageType, MediaType, ProviderType
 from music_assistant.models.media_items import ItemMapping, MediaItemType
@@ -13,15 +14,40 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-async def create_thumbnail(mass: MusicAssistant, url, size: int = 150) -> bytes:
+async def create_thumbnail(
+    mass: MusicAssistant, path: str, size: Optional[int]
+) -> bytes:
     """Create thumbnail from image url."""
-    async with mass.http_session.get(url, verify_ssl=False) as response:
-        assert response.status == 200
-        img_data = BytesIO(await response.read())
-        img = Image.open(img_data)
-        img.thumbnail((size, size), Image.ANTIALIAS)
-        img.save(format="png")
-        return img_data.getvalue()
+    if not size:
+        size = 200
+    img_data = None
+    if path.startswith("http"):
+        async with mass.http_session.get(path, verify_ssl=False) as response:
+            assert response.status == 200
+            img_data = BytesIO(await response.read())
+    else:
+        # assume file from file provider, we need to fetch it here...
+        for prov in mass.music.providers:
+            if not prov.type.is_file():
+                continue
+            if not prov.has_file(path):
+                continue
+            path = prov.get_filepath(path)
+            if TinyTag.is_supported(path):
+                # embedded image in music file
+                tags = await mass.loop.run_in_executor(
+                    None, TinyTag.get, path, False, False, True
+                )
+                img_data = await mass.loop.run_in_executor(None, tags.get_image)
+            async with prov.open_file(path) as _file:
+                img_data = await _file.read()
+            break
+    if not img_data:
+        raise FileNotFoundError(f"Image not found: {path}")
+    img = Image.open(img_data)
+    img.thumbnail((size, size), Image.ANTIALIAS)
+    img.save(format="png")
+    return img_data.getvalue()
 
 
 async def get_image_url(

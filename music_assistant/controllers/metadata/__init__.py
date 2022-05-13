@@ -4,6 +4,7 @@ from __future__ import annotations
 from time import time
 from typing import TYPE_CHECKING, Optional
 
+from music_assistant.helpers.database import TABLE_THUMBS
 from music_assistant.helpers.images import create_thumbnail
 from music_assistant.models.media_items import Album, Artist, Playlist, Radio, Track
 
@@ -13,8 +14,6 @@ from .musicbrainz import MusicBrainz
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
-
-TABLE_THUMBS = "thumbnails"
 
 
 class MetaDataController:
@@ -51,15 +50,6 @@ class MetaDataController:
 
     async def setup(self):
         """Async initialize of module."""
-        async with self.mass.database.get_db() as _db:
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {TABLE_THUMBS}(
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    url TEXT NOT NULL,
-                    size INTEGER,
-                    img BLOB,
-                    UNIQUE(url, size));"""
-            )
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
@@ -139,14 +129,14 @@ class MetaDataController:
         self.logger.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
         return artist.name
 
-    async def get_thumbnail(self, url, size) -> bytes:
-        """Get/create thumbnail image for url."""
-        match = {"url": url, "size": size}
+    async def get_thumbnail(self, path: str, size: Optional[int]) -> bytes:
+        """Get/create thumbnail image for path."""
+        match = {"path": path, "size": size}
         if result := await self.mass.database.get_row(TABLE_THUMBS, match):
-            return result["img"]
+            return result["data"]
         # create thumbnail if it doesn't exist
-        thumbnail = await create_thumbnail(self.mass, url, size)
+        thumbnail = await create_thumbnail(self.mass, path, size)
         await self.mass.database.insert_or_replace(
-            TABLE_THUMBS, {**match, "img": thumbnail}
+            TABLE_THUMBS, {**match, "data": thumbnail}
         )
         return thumbnail

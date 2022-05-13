@@ -18,6 +18,7 @@ from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name
 )
 from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import LoginFailed
 from music_assistant.models.media_items import (
     Album,
@@ -43,7 +44,7 @@ CACHE_DIR = gettempdir()
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
 
-    _attr_id = "spotify"
+    _attr_type = ProviderType.SPOTIFY
     _attr_name = "Spotify"
     _attr_supported_mediatypes = [
         MediaType.ARTIST,

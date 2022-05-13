@@ -7,6 +7,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.util import create_sort_name
+from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import LoginFailed
 from music_assistant.models.media_items import (
     ContentType,
@@ -26,7 +27,7 @@ from music_assistant.models.provider import MusicProvider
 class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
-    _attr_id = "tunein"
+    _attr_type = ProviderType.TUNEIN
     _attr_name = "Tune-in Radio"
     _attr_supported_mediatypes = [MediaType.RADIO]
     _throttler = Throttler(rate_limit=1, period=1)

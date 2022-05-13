@@ -15,7 +15,7 @@ from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-mod
 )
 from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
-from music_assistant.models.enums import EventType
+from music_assistant.models.enums import EventType, ProviderType
 from music_assistant.models.errors import LoginFailed
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import (
@@ -40,7 +40,7 @@ from music_assistant.models.provider import MusicProvider
 class QobuzProvider(MusicProvider):
     """Provider for the Qobux music service."""
 
-    _attr_id = "qobuz"
+    _attr_type = ProviderType.QOBUZ
     _attr_name = "Qobuz"
     _attr_supported_mediatypes = [
         MediaType.ARTIST,

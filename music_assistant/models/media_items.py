@@ -133,7 +133,7 @@ class MediaItem(DataClassDictMixin):
             self.sort_name = create_sort_name(self.name)
         if not self.provider_ids and self.provider != "database":
             # create default MediaItemProviderId from base details
-            prov_type = ProviderType(self.provider.split("."))
+            prov_type = ProviderType(self.provider.split(".", 1)[0])
             self.add_provider_id(
                 MediaItemProviderId(self.item_id, prov_type, self.provider)
             )

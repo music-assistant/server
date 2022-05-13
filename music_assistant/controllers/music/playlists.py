@@ -76,7 +76,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = set()
         count = 0
-        for item in await self.tracks(playlist_prov.item_id, playlist_prov.provider):
+        for item in await self.tracks(playlist_prov.item_id, playlist_prov.prov_id):
             count += 1
             cur_playlist_track_ids.update(
                 {
@@ -113,10 +113,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 break
         if not track_id_to_add:
             raise MediaNotFoundError(
-                "Track is not available on provider {playlist_prov.provider}"
+                f"Track is not available on provider {playlist_prov.prov_type}"
             )
         # actually add the tracks to the playlist on the provider
-        provider = self.mass.music.get_provider(playlist_prov.provider)
+        provider = self.mass.music.get_provider(playlist_prov.prov_id)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
         # update local db entry
         self.mass.signal_event(
