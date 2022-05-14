@@ -464,7 +464,9 @@ class FileSystemProvider(MusicProvider):
             if genre := info.get("genre"):
                 artist.metadata.genres = set(split_items(genre))
             if not artist.musicbrainz_id:
-                for uid in info.get("uniqueid", []):
+                for uid in info.get("uniqueid") or []:
+                    if not uid.get("@type"):
+                        continue
                     if uid["@type"] == "MusicBrainzArtist":
                         artist.musicbrainz_id = uid["#text"]
         # find local images
@@ -539,7 +541,9 @@ class FileSystemProvider(MusicProvider):
                 album.year = int(year)
             if genre := info.get("genre"):
                 album.metadata.genres = set(split_items(genre))
-            for uid in info.get("uniqueid", []):
+            for uid in info.get("uniqueid") or []:
+                if not uid.get("@type"):
+                    continue
                 if uid["@type"] == "MusicBrainzReleaseGroup":
                     if not album.musicbrainz_id:
                         album.musicbrainz_id = uid["#text"]
