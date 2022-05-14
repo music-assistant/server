@@ -45,8 +45,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.get_provider_artist_toptracks(item.item_id, item.prov_id)
             for item in artist.provider_ids
         ]
-        if provider == ProviderType.DATABASE or provider_id == "database":
-            coros.append(self.get_database_artist_tracks(item_id, "database"))
+        if provider == ProviderType.DATABASE:
+            coros.append(self.get_database_artist_tracks(item_id, provider))
         return itertools.chain.from_iterable(await asyncio.gather(*coros))
 
     async def albums(
@@ -62,8 +62,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.get_provider_artist_albums(item.item_id, item.prov_id)
             for item in artist.provider_ids
         ]
-        if provider == ProviderType.DATABASE or provider_id == "database":
-            coros.append(self.get_database_artist_albums(item_id, "database"))
+        if provider == ProviderType.DATABASE:
+            coros.append(self.get_database_artist_albums(item_id, provider))
         return itertools.chain.from_iterable(await asyncio.gather(*coros))
 
     async def add(self, item: Artist) -> Artist:
@@ -113,17 +113,19 @@ class ArtistsController(MediaControllerBase[Artist]):
         return await provider.get_artist_toptracks(item_id)
 
     async def get_database_artist_tracks(
-        self, artist_id: str, provider_id: str
+        self, artist_id: str, provider: ProviderType
     ) -> List[Track]:
         """Return tracks for an artist in database."""
-        query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{artist_id}\"%' and artists LIKE '%\"{provider_id}\"%'"
+        query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{artist_id}\"%'"
+        query += " and artists LIKE '%\"{provider.value}\"%'"
         return await self.mass.music.tracks.get_db_items(query)
 
     async def get_database_artist_albums(
-        self, artist_id: str, provider_id: str
+        self, artist_id: str, provider: ProviderType
     ) -> List[Track]:
         """Return tracks for an artist in database."""
-        query = f"SELECT * FROM albums WHERE artist LIKE '%\"{artist_id}\"%' and artist LIKE '%\"{provider_id}\"%'"
+        query = f"SELECT * FROM albums WHERE artist LIKE '%\"{artist_id}\"%'"
+        query += " and artist LIKE '%\"{provider.value}\"%'"
         return await self.mass.music.albums.get_db_items(query)
 
     async def get_provider_artist_albums(

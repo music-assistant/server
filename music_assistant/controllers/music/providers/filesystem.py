@@ -125,21 +125,17 @@ class FileSystemProvider(MusicProvider):
             try:
                 if track := await self._parse_track(entry.path, checksum):
                     # add/update track to db
-                    track.in_library = True
                     await self.mass.music.tracks.add_db_item(track)
                     # process album
                     if track.album:
-                        track.album.in_library = True
                         await self.mass.music.albums.add_db_item(track.album)
                         # process (album)artist
                         if track.album.artist:
-                            track.album.artist.in_library = True
                             await self.mass.music.artists.add_db_item(
                                 track.album.artist
                             )
                 elif playlist := await self._parse_playlist(entry.path, checksum):
                     # add/update] playlist to db
-                    playlist.in_library = True
                     await self.mass.music.playlists.add_db_item(playlist)
             except Exception:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
@@ -176,10 +172,8 @@ class FileSystemProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
         """Get album tracks for given album id."""
         itempath = await self.get_filepath(prov_album_id)
-        if not self.exists(itempath):
-            raise MediaNotFoundError(f"Album path does not exist: {itempath}")
         result = []
-        for entry in scantree(self.config.path):
+        for entry in scantree(itempath):
             # mtime is used as file checksum
             checksum = str(entry.stat().st_mtime)
             if track := await self._parse_track(entry.path, checksum):
@@ -207,7 +201,9 @@ class FileSystemProvider(MusicProvider):
         """Get a list of albums for the given artist."""
         itempath = await self.get_filepath(prov_artist_id)
         if not self.exists(itempath):
-            return []  # TODO
+            return await self.mass.music.artists.get_database_artist_albums(
+                prov_artist_id, self.type
+            )
         result = []
         for entry in os.scandir(itempath):
             if entry.is_dir(follow_symlinks=False):
@@ -219,7 +215,9 @@ class FileSystemProvider(MusicProvider):
         """Get a list of all tracks as we have no clue about preference."""
         itempath = await self.get_filepath(prov_artist_id)
         if not self.exists(itempath):
-            return []  # TODO
+            return await self.mass.music.artists.get_database_artist_tracks(
+                prov_artist_id, self.type
+            )
         result = []
         for entry in scantree(self.config.path):
             # mtime is used as file checksum
@@ -317,7 +315,12 @@ class FileSystemProvider(MusicProvider):
 
         name, version = parse_title_and_version(track_title)
         track = Track(
-            item_id=track_item_id, provider=self.type, name=name, version=version
+            item_id=track_item_id,
+            provider=self.type,
+            name=name,
+            version=version,
+            # a track on disk is always in library
+            in_library=True,
         )
 
         # work out if we have an artist/album/track.ext structure
@@ -440,6 +443,9 @@ class FileSystemProvider(MusicProvider):
             # happens if disk structure does not conform
             return artist
 
+        # mark artist as in-library when it exists as folder on disk
+        artist.in_library = True
+
         nfo_file = os.path.join(artist_path, "artist.nfo")
         if self.exists(nfo_file):
             # found NFO file with metadata
@@ -511,6 +517,9 @@ class FileSystemProvider(MusicProvider):
             # happens if disk structure does not conform
             return album
 
+        # mark album as in-library when it exists as folder on disk
+        album.in_library = True
+
         nfo_file = os.path.join(album_path, "album.nfo")
         if self.exists(nfo_file):
             # found NFO file with metadata
@@ -577,6 +586,7 @@ class FileSystemProvider(MusicProvider):
 
         playlist = Playlist(playlist_item_id, provider=self.type, name=name)
         playlist.is_editable = True
+        playlist.in_library = True
         playlist.add_provider_id(
             MediaItemProviderId(
                 item_id=playlist_item_id,
