@@ -2,11 +2,11 @@
 
 from typing import Tuple
 
-from music_assistant.models.enums import MediaType
+from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.errors import MusicAssistantError
 
 
-def parse_uri(uri: str) -> Tuple[MediaType, str, str]:
+def parse_uri(uri: str) -> Tuple[MediaType, ProviderType, str]:
     """
     Try to parse URI to Mass identifiers.
 
@@ -16,20 +16,21 @@ def parse_uri(uri: str) -> Tuple[MediaType, str, str]:
         if uri.startswith("https://open."):
             # public share URL (e.g. Spotify or Qobuz, not sure about others)
             # https://open.spotify.com/playlist/5lH9NjOeJvctAO92ZrKQNB?si=04a63c8234ac413e
-            provider = uri.split(".")[1]
+            provider = ProviderType.parse(uri.split(".")[1])
             media_type_str = uri.split("/")[3]
             media_type = MediaType(media_type_str)
             item_id = uri.split("/")[4].split("?")[0]
         elif "://" in uri:
             # music assistant-style uri
             # provider://media_type/item_id
-            provider = uri.split("://")[0]
+            provider = ProviderType.parse(uri.split("://")[0])
             media_type_str = uri.split("/")[2]
             media_type = MediaType(media_type_str)
             item_id = uri.split(f"{media_type_str}/")[1]
         elif ":" in uri:
             # spotify new-style uri
             provider, media_type_str, item_id = uri.split(":")
+            provider = ProviderType.parse(provider)
             media_type = MediaType(media_type_str)
         else:
             raise KeyError
@@ -38,6 +39,6 @@ def parse_uri(uri: str) -> Tuple[MediaType, str, str]:
     return (media_type, provider, item_id)
 
 
-def create_uri(media_type: MediaType, provider: str, item_id: str) -> str:
+def create_uri(media_type: MediaType, provider: ProviderType, item_id: str) -> str:
     """Create Music Assistant URI from MediaItem values."""
-    return f"{provider}://{media_type.value}/{item_id}"
+    return f"{provider.value}://{media_type.value}/{item_id}"

@@ -48,15 +48,14 @@ class ImageType(Enum):
     """Enum wth image types."""
 
     THUMB = "thumb"
-    WIDE_THUMB = "wide_thumb"
+    LANDSCAPE = "landscape"
     FANART = "fanart"
     LOGO = "logo"
     CLEARART = "clearart"
     BANNER = "banner"
     CUTOUT = "cutout"
     BACK = "back"
-    CDART = "cdart"
-    EMBEDDED_THUMB = "embedded_thumb"
+    DISCART = "discart"
     OTHER = "other"
 
 
@@ -212,3 +211,36 @@ class JobStatus(Enum):
     CANCELLED = "cancelled"
     FINISHED = "success"
     ERROR = "error"
+
+
+class ProviderType(Enum):
+    """Enum with supported music providers."""
+
+    FILESYSTEM_LOCAL = "file"
+    FILESYSTEM_SMB = "smb"
+    FILESYSTEM_GOOGLE_DRIVE = "gdrive"
+    FILESYSTEM_ONEDRIVE = "onedrive"
+    SPOTIFY = "spotify"
+    QOBUZ = "qobuz"
+    TUNEIN = "tunein"
+    DATABASE = "database"  # internal only
+    URL = "url"  # internal only
+
+    def is_file(self) -> bool:
+        """Return if type is one of the filesystem providers."""
+        return self in (
+            self.FILESYSTEM_LOCAL,
+            self.FILESYSTEM_SMB,
+            self.FILESYSTEM_GOOGLE_DRIVE,
+            self.FILESYSTEM_ONEDRIVE,
+        )
+
+    @classmethod
+    def parse(cls: "ProviderType", val: str) -> "ProviderType":
+        """Try to parse ContentType from provider id."""
+        if isinstance(val, ProviderType):
+            return val
+        for mem in ProviderType:
+            if val.startswith(mem.value):
+                return mem
+        raise ValueError(f"Unable to parse ProviderType from {val}")

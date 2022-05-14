@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from json.decoder import JSONDecodeError
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -32,12 +32,12 @@ IMG_MAPPING = {
     "strArtistLogo": ImageType.LOGO,
     "strArtistCutout": ImageType.CUTOUT,
     "strArtistClearart": ImageType.CLEARART,
-    "strArtistWideThumb": ImageType.WIDE_THUMB,
+    "strArtistWideThumb": ImageType.LANDSCAPE,
     "strArtistFanart": ImageType.FANART,
     "strArtistBanner": ImageType.BANNER,
     "strAlbumThumb": ImageType.THUMB,
     "strAlbumThumbHQ": ImageType.THUMB,
-    "strAlbumCDart": ImageType.CDART,
+    "strAlbumCDart": ImageType.DISCART,
     "strAlbum3DCase": ImageType.OTHER,
     "strAlbum3DFlat": ImageType.OTHER,
     "strAlbum3DFace": ImageType.OTHER,
@@ -156,6 +156,33 @@ class TheAudioDb:
                 return self.__parse_track(adb_track)
         return None
 
+    async def get_musicbrainz_id(
+        self, artist: Artist, ref_albums: List[Album]
+    ) -> str | None:
+        """Try to discover MusicBrainz ID for an artist given some reference albums."""
+        self.logger.debug(
+            "Lookup MusicbrainzID for Artist %s on TheAudioDb", artist.name
+        )
+        musicbrainz_id = None
+        if data := await self._get_data("searchalbum.php", s=artist.name):
+            # NOTE: object is 'null' when no records found instead of empty array
+            for item in data.get("album", []) or []:
+                if not compare_strings(item["strArtistStripped"], artist.name):
+                    continue
+                for ref_album in ref_albums:
+                    if not compare_strings(item["strAlbumStripped"], ref_album.name):
+                        continue
+                    # found match - update album metadata too while we're here
+                    if not ref_album.musicbrainz_id:
+                        ref_album.metadata = self.__parse_album(item)
+                        await self.mass.music.albums.add_db_item(ref_album)
+                    musicbrainz_id = item["strMusicBrainzArtistID"]
+        if musicbrainz_id:
+            self.logger.debug(
+                "Found MusicBrainzID for artist %s on TheAudioDb", artist.name
+            )
+        return musicbrainz_id
+
     def __parse_artist(self, artist_obj: Dict[str, Any]) -> MediaItemMetadata:
         """Parse audiodb artist object to MediaItemMetadata."""
         metadata = MediaItemMetadata()
@@ -178,11 +205,11 @@ class TheAudioDb:
         else:
             metadata.description = artist_obj.get("strBiographyEN")
         # images
-        metadata.images = set()
+        metadata.images = []
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := artist_obj.get(f"{key}{postfix}"):
-                    metadata.images.add(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(img_type, img))
                 else:
                     break
         return metadata
@@ -218,11 +245,11 @@ class TheAudioDb:
             metadata.description = album_obj.get("strDescriptionEN")
         metadata.review = album_obj.get("strReview")
         # images
-        metadata.images = set()
+        metadata.images = []
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := album_obj.get(f"{key}{postfix}"):
-                    metadata.images.add(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(img_type, img))
                 else:
                     break
         return metadata
@@ -244,11 +271,11 @@ class TheAudioDb:
         else:
             metadata.description = track_obj.get("strDescriptionEN")
         # images
-        metadata.images = set()
+        metadata.images = []
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := track_obj.get(f"{key}{postfix}"):
-                    metadata.images.add(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(img_type, img))
                 else:
                     break
         return metadata

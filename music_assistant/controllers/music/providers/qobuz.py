@@ -5,7 +5,7 @@ import datetime
 import hashlib
 import time
 from json import JSONDecodeError
-from typing import List, Optional
+from typing import AsyncGenerator, List, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -15,7 +15,7 @@ from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-mod
 )
 from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
-from music_assistant.models.enums import EventType
+from music_assistant.models.enums import EventType, ProviderType
 from music_assistant.models.errors import LoginFailed
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import (
@@ -40,7 +40,7 @@ from music_assistant.models.provider import MusicProvider
 class QobuzProvider(MusicProvider):
     """Provider for the Qobux music service."""
 
-    _attr_id = "qobuz"
+    _attr_type = ProviderType.QOBUZ
     _attr_name = "Qobuz"
     _attr_supported_mediatypes = [
         MediaType.ARTIST,
@@ -53,21 +53,19 @@ class QobuzProvider(MusicProvider):
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
-        if not self.mass.config.qobuz_enabled:
+        if not self.config.enabled:
             return False
-        if not self.mass.config.qobuz_username or not self.mass.config.qobuz_password:
+        if not self.config.username or not self.config.password:
             raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails
         token = await self._auth_token()
         if not token:
-            raise LoginFailed(
-                f"Login failed for user {self.mass.config.qobuz_username}"
-            )
+            raise LoginFailed(f"Login failed for user {self.config.username}")
         # subscribe to stream events so we can report playback to Qobuz
         self.mass.subscribe(
             self.on_stream_event,
             (EventType.STREAM_STARTED, EventType.STREAM_ENDED),
-            id_filter=self.id,
+            id_filter=self.type.value,
         )
         return True
 
@@ -120,43 +118,33 @@ class QobuzProvider(MusicProvider):
                 ]
         return result
 
-    async def get_library_artists(self) -> List[Artist]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Qobuz."""
         endpoint = "favorite/getUserFavorites"
-        return [
-            await self._parse_artist(item)
-            for item in await self._get_all_items(
-                endpoint, key="artists", type="artists"
-            )
-            if (item and item["id"])
-        ]
+        for item in await self._get_all_items(endpoint, key="artists", type="artists"):
+            if item and item["id"]:
+                yield await self._parse_artist(item)
 
-    async def get_library_albums(self) -> List[Album]:
+    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Qobuz."""
         endpoint = "favorite/getUserFavorites"
-        return [
-            await self._parse_album(item)
-            for item in await self._get_all_items(endpoint, key="albums", type="albums")
-            if (item and item["id"])
-        ]
+        for item in await self._get_all_items(endpoint, key="albums", type="albums"):
+            if item and item["id"]:
+                yield await self._parse_album(item)
 
-    async def get_library_tracks(self) -> List[Track]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Qobuz."""
         endpoint = "favorite/getUserFavorites"
-        return [
-            await self._parse_track(item)
-            for item in await self._get_all_items(endpoint, key="tracks", type="tracks")
-            if (item and item["id"])
-        ]
+        for item in await self._get_all_items(endpoint, key="tracks", type="tracks"):
+            if item and item["id"]:
+                yield await self._parse_track(item)
 
-    async def get_library_playlists(self) -> List[Playlist]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         endpoint = "playlist/getUserPlaylists"
-        return [
-            await self._parse_playlist(item)
-            for item in await self._get_all_items(endpoint, key="playlists")
-            if (item and item["id"])
-        ]
+        for item in await self._get_all_items(endpoint, key="playlists"):
+            if item and item["id"]:
+                yield await self._parse_playlist(item)
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
@@ -374,7 +362,7 @@ class QobuzProvider(MusicProvider):
         return StreamDetails(
             type=StreamType.URL,
             item_id=str(item_id),
-            provider=self.id,
+            provider=self.type,
             path=streamdata["url"],
             content_type=content_type,
             sample_rate=int(streamdata["sampling_rate"] * 1000),
@@ -429,19 +417,20 @@ class QobuzProvider(MusicProvider):
     async def _parse_artist(self, artist_obj: dict):
         """Parse qobuz artist object to generic layout."""
         artist = Artist(
-            item_id=str(artist_obj["id"]), provider=self.id, name=artist_obj["name"]
+            item_id=str(artist_obj["id"]), provider=self.type, name=artist_obj["name"]
         )
         artist.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=str(artist_obj["id"]),
+                prov_type=self.type,
+                prov_id=self.id,
                 url=artist_obj.get(
                     "url", f'https://open.qobuz.com/artist/{artist_obj["id"]}'
                 ),
             )
         )
         if img := self.__get_image(artist_obj):
-            artist.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+            artist.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         if artist_obj.get("biography"):
             artist.metadata.description = artist_obj["biography"].get("content")
         return artist
@@ -455,7 +444,7 @@ class QobuzProvider(MusicProvider):
             album_obj["title"], album_obj.get("version")
         )
         album = Album(
-            item_id=str(album_obj["id"]), provider=self.id, name=name, version=version
+            item_id=str(album_obj["id"]), provider=self.type, name=name, version=version
         )
         if album_obj["maximum_sampling_rate"] > 192:
             quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
@@ -471,8 +460,9 @@ class QobuzProvider(MusicProvider):
             quality = MediaQuality.FLAC_LOSSLESS
         album.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=str(album_obj["id"]),
+                prov_type=self.type,
+                prov_id=self.id,
                 quality=quality,
                 url=album_obj.get(
                     "url", f'https://open.qobuz.com/album/{album_obj["id"]}'
@@ -504,7 +494,7 @@ class QobuzProvider(MusicProvider):
         if "genre" in album_obj:
             album.metadata.genres = {album_obj["genre"]["name"]}
         if img := self.__get_image(album_obj):
-            album.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+            album.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         if len(album_obj["upc"]) == 13:
             # qobuz writes ean as upc ?!
             album.upc = album_obj["upc"][1:]
@@ -527,12 +517,13 @@ class QobuzProvider(MusicProvider):
         )
         track = Track(
             item_id=str(track_obj["id"]),
-            provider=self.id,
+            provider=self.type,
             name=name,
             version=version,
             disc_number=track_obj["media_number"],
             track_number=track_obj["track_number"],
             duration=track_obj["duration"],
+            position=track_obj.get("position"),
         )
         if track_obj.get("performer") and "Various " not in track_obj["performer"]:
             artist = await self._parse_artist(track_obj["performer"])
@@ -554,7 +545,7 @@ class QobuzProvider(MusicProvider):
                 role = performer_str.split(", ")[1]
                 name = performer_str.split(", ")[0]
                 if "artist" in role.lower():
-                    artist = Artist(name, self.id, name)
+                    artist = Artist(name, self.type, name)
                 track.artists.append(artist)
         # TODO: fix grabbing composer from details
 
@@ -575,7 +566,7 @@ class QobuzProvider(MusicProvider):
         if track_obj.get("parental_warning"):
             track.metadata.explicit = True
         if img := self.__get_image(track_obj):
-            track.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+            track.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         # get track quality
         if track_obj["maximum_sampling_rate"] > 192:
             quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
@@ -591,8 +582,9 @@ class QobuzProvider(MusicProvider):
             quality = MediaQuality.FLAC_LOSSLESS
         track.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=str(track_obj["id"]),
+                prov_type=self.type,
+                prov_id=self.id,
                 quality=quality,
                 url=track_obj.get(
                     "url", f'https://open.qobuz.com/track/{track_obj["id"]}'
@@ -607,14 +599,15 @@ class QobuzProvider(MusicProvider):
         """Parse qobuz playlist object to generic layout."""
         playlist = Playlist(
             item_id=str(playlist_obj["id"]),
-            provider=self.id,
+            provider=self.type,
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["name"],
         )
         playlist.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=str(playlist_obj["id"]),
+                prov_type=self.type,
+                prov_id=self.id,
                 url=playlist_obj.get(
                     "url", f'https://open.qobuz.com/playlist/{playlist_obj["id"]}'
                 ),
@@ -625,7 +618,7 @@ class QobuzProvider(MusicProvider):
             or playlist_obj["is_collaborative"]
         )
         if img := self.__get_image(playlist_obj):
-            playlist.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+            playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         playlist.metadata.checksum = str(playlist_obj["updated_at"])
         return playlist
 
@@ -634,8 +627,8 @@ class QobuzProvider(MusicProvider):
         if self._user_auth_info:
             return self._user_auth_info["user_auth_token"]
         params = {
-            "username": self.mass.config.qobuz_username,
-            "password": self.mass.config.qobuz_password,
+            "username": self.config.username,
+            "password": self.config.password,
             "device_manufacturer_id": "music_assistant",
         }
         details = await self._get_data("user/login", **params)
@@ -662,7 +655,9 @@ class QobuzProvider(MusicProvider):
                 break
             if not result.get(key) or not result[key].get("items"):
                 break
-            all_items += result[key]["items"]
+            for item in result[key]["items"]:
+                item["position"] = len(all_items) + 1
+                all_items.append(item)
             if len(result[key]["items"]) < limit:
                 break
         return all_items

@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 from time import time
-from typing import List
+from typing import List, Optional
 
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.helpers.util import create_sort_name
-from music_assistant.models.enums import EventType, MediaType
+from music_assistant.models.enums import EventType, MediaType, ProviderType
 from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
@@ -25,16 +24,24 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Get in-library playlist by name."""
         return await self.mass.database.get_row(self.db_table, {"name": name})
 
-    async def tracks(self, item_id: str, provider_id: str) -> List[Track]:
+    async def tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+    ) -> List[Track]:
         """Return playlist tracks for the given provider playlist id."""
-        playlist = await self.get(item_id, provider_id)
-        # simply return the tracks from the first provider
-        for prov in playlist.provider_ids:
-            if tracks := await self.get_provider_playlist_tracks(
-                prov.item_id, prov.provider
-            ):
-                return tracks
-        return []
+        if provider == ProviderType.DATABASE or provider_id == "database":
+            playlist = await self.get_db_item(item_id)
+            prov = next(x for x in playlist.provider_ids)
+            item_id = prov.item_id
+            provider_id = prov.prov_id
+
+        provider = self.mass.music.get_provider(provider_id or provider)
+        if not provider:
+            return []
+
+        return await provider.get_playlist_tracks(item_id)
 
     async def add(self, item: Playlist) -> Playlist:
         """Add playlist to local db and return the new database item."""
@@ -73,19 +80,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = set()
         count = 0
-        for item in await self.tracks(playlist_prov.item_id, playlist_prov.provider):
+        for item in await self.tracks(playlist_prov.item_id, playlist_prov.prov_id):
             count += 1
             cur_playlist_track_ids.update(
                 {
                     i.item_id
                     for i in item.provider_ids
-                    if i.provider == playlist_prov.provider
+                    if i.prov_id == playlist_prov.prov_id
                 }
             )
         # check for duplicates
         for track_prov in track.provider_ids:
             if (
-                track_prov.provider == playlist_prov.provider
+                track_prov.prov_id == playlist_prov.prov_id
                 and track_prov.item_id in cur_playlist_track_ids
             ):
                 raise InvalidDataError(
@@ -101,19 +108,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             if not track.available:
                 continue
-            if track_version.provider == playlist_prov.provider:
-                track_id_to_add = track_version.item_id
-                break
-            if playlist_prov.provider == "file":
+            if playlist_prov.prov_type.is_file():
                 # the file provider can handle uri's from all providers so simply add the uri
                 track_id_to_add = track.uri
                 break
+            if track_version.prov_id == playlist_prov.prov_id:
+                track_id_to_add = track_version.item_id
+                break
         if not track_id_to_add:
             raise MediaNotFoundError(
-                "Track is not available on provider {playlist_prov.provider}"
+                f"Track is not available on provider {playlist_prov.prov_type}"
             )
         # actually add the tracks to the playlist on the provider
-        provider = self.mass.music.get_provider(playlist_prov.provider)
+        provider = self.mass.music.get_provider(playlist_prov.prov_id)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
         # update local db entry
         self.mass.signal_event(
@@ -133,42 +140,20 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for prov in playlist.provider_ids:
             track_ids_to_remove = []
-            for playlist_track in await self.get_provider_playlist_tracks(
-                prov.item_id, prov.provider
-            ):
+            for playlist_track in await self.tracks(prov.item_id, prov.prov_id):
                 if playlist_track.position not in positions:
                     continue
                 track_ids_to_remove.append(playlist_track.item_id)
             # actually remove the tracks from the playlist on the provider
             # TODO: send positions to provider to delete
             if track_ids_to_remove:
-                provider = self.mass.music.get_provider(prov.provider)
+                provider = self.mass.music.get_provider(prov.prov_id)
                 await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)
         self.mass.signal_event(
             MassEvent(
                 type=EventType.PLAYLIST_UPDATED, object_id=db_playlist_id, data=playlist
             )
         )
-
-    async def get_provider_playlist_tracks(
-        self, item_id: str, provider_id: str
-    ) -> List[Track]:
-        """Return playlist tracks for the given provider playlist id."""
-        provider = self.mass.music.get_provider(provider_id)
-        if not provider:
-            return []
-
-        # we need to make sure that position is set on the track
-        def playlist_track_with_position(track: Track, index: int):
-            if track.position is None:
-                track.position = index
-            return track
-
-        tracks = await provider.get_playlist_tracks(item_id)
-        return [
-            playlist_track_with_position(track, index)
-            for index, track in enumerate(tracks)
-        ]
 
     async def add_db_item(self, playlist: Playlist) -> Playlist:
         """Add a new playlist record to the database."""
@@ -204,8 +189,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         else:
             metadata = cur_item.metadata.update(playlist.metadata)
             provider_ids = {*cur_item.provider_ids, *playlist.provider_ids}
-        if not playlist.sort_name:
-            playlist.sort_name = create_sort_name(playlist.name)
 
         async with self.mass.database.get_db() as _db:
             await self.mass.database.update(

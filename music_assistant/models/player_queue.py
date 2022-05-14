@@ -398,28 +398,28 @@ class PlayerQueue:
             # collect tracks to play
             if media_item.media_type == MediaType.ARTIST:
                 tracks = await self.mass.music.artists.toptracks(
-                    media_item.item_id, provider_id=media_item.provider
+                    media_item.item_id, provider=media_item.provider
                 )
             elif media_item.media_type == MediaType.ALBUM:
                 tracks = await self.mass.music.albums.tracks(
-                    media_item.item_id, provider_id=media_item.provider
+                    media_item.item_id, provider=media_item.provider
                 )
             elif media_item.media_type == MediaType.PLAYLIST:
                 tracks = await self.mass.music.playlists.tracks(
-                    media_item.item_id, provider_id=media_item.provider
+                    media_item.item_id, provider=media_item.provider
                 )
             elif media_item.media_type == MediaType.RADIO:
                 # single radio
                 tracks = [
                     await self.mass.music.radio.get(
-                        media_item.item_id, provider_id=media_item.provider
+                        media_item.item_id, provider=media_item.provider
                     )
                 ]
             else:
                 # single track
                 tracks = [
                     await self.mass.music.tracks.get(
-                        media_item.item_id, provider_id=media_item.provider
+                        media_item.item_id, provider=media_item.provider
                     )
                 ]
             for track in tracks:

@@ -35,7 +35,6 @@ class Cache:
                     cacheobject matches the checkum provided
         """
         cur_time = int(time.time())
-        checksum = self._get_checksum(checksum)
 
         # try memory cache first
         cache_data = self._mem_cache.get(cache_key)
@@ -73,7 +72,6 @@ class Cache:
 
     async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
         """Set data in cache."""
-        checksum = self._get_checksum(checksum)
         expires = int(time.time() + expiration)
         self._mem_cache[cache_key] = (data, checksum, expires)
         if (expires - time.time()) < 3600 * 4:
@@ -109,14 +107,6 @@ class Cache:
         # reschedule self
         self.mass.loop.call_later(3600, self.__schedule_cleanup_task)
 
-    @staticmethod
-    def _get_checksum(stringinput):
-        """Get int checksum from string."""
-        if not stringinput:
-            return 0
-        stringinput = str(stringinput)
-        return functools.reduce(lambda x, y: x + y, map(ord, stringinput))
-
 
 def use_cache(expiration=86400 * 30):
     """Return decorator that can be used to cache a method's result."""
@@ -134,6 +124,7 @@ def use_cache(expiration=86400 * 30):
             for key in sorted(kwargs.keys()):
                 cache_key_parts.append(f"{key}{kwargs[key]}")
             cache_key = ".".join(cache_key_parts)
+
             cachedata = await method_class.cache.get(cache_key, checksum=cache_checksum)
 
             if not skip_cache and cachedata is not None:

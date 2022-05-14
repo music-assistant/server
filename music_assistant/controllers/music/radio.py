@@ -5,7 +5,6 @@ from time import time
 
 from music_assistant.helpers.database import TABLE_RADIOS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.helpers.util import create_sort_name
 from music_assistant.models.enums import EventType, MediaType
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
@@ -35,8 +34,6 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def add_db_item(self, radio: Radio) -> Radio:
         """Add a new radio record to the database."""
-        if not radio.sort_name:
-            radio.sort_name = create_sort_name(radio.name)
         assert radio.provider_ids
         async with self.mass.database.get_db() as _db:
             match = {"name": radio.name}
@@ -71,8 +68,6 @@ class RadioController(MediaControllerBase[Radio]):
             else:
                 metadata = cur_item.metadata.update(radio.metadata)
                 provider_ids = {*cur_item.provider_ids, *radio.provider_ids}
-            if not radio.sort_name:
-                radio.sort_name = create_sort_name(radio.name)
 
             match = {"item_id": item_id}
             await self.mass.database.update(
