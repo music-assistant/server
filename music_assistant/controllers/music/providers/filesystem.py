@@ -176,11 +176,15 @@ class FileSystemProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
         """Get playlist tracks for given playlist id."""
         result = []
-        itempath = await self.get_filepath(prov_playlist_id)
-        if not self.exists(itempath):
-            raise MediaNotFoundError(f"playlist path does not exist: {itempath}")
+        playlist_path = await self.get_filepath(prov_playlist_id)
+        if not self.exists(playlist_path):
+            raise MediaNotFoundError(f"playlist path does not exist: {playlist_path}")
+        checksum = self._get_checksum(playlist_path)
+        cache_key = f"{self.id}_playlist_tracks_{prov_playlist_id}"
+        if cache := await self.mass.cache.get(cache_key, checksum):
+            return [Track.from_dict(x) for x in cache]
         index = 0
-        async with self.open_file(itempath, "r") as _file:
+        async with self.open_file(playlist_path, "r") as _file:
             for line in await _file.readlines():
                 line = urllib.parse.unquote(line.strip())
                 if line and not line.startswith("#"):
@@ -188,6 +192,7 @@ class FileSystemProvider(MusicProvider):
                         track.position = index
                         result.append(track)
                         index += 1
+        await self.mass.cache.set(cache_key, [x.to_dict() for x in result], checksum)
         return result
 
     async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
