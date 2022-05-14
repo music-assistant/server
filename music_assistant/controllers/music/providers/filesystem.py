@@ -165,6 +165,10 @@ class FileSystemProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
         """Get album tracks for given album id."""
         itempath = await self.get_filepath(prov_album_id)
+        if not self.exists(itempath):
+            query = f"SELECT * FROM tracks WHERE album LIKE '%\"{prov_album_id}\"%'"
+            query += f" and album LIKE '%\"{self.type.value}\"%'"
+            return await self.mass.music.tracks.get_db_items(query)
         result = []
         for entry in scantree(itempath):
             # mtime is used as file checksum
