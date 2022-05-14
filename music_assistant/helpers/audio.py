@@ -431,7 +431,7 @@ async def get_media_stream(
     mass.signal_event(
         MassEvent(
             EventType.STREAM_STARTED,
-            object_id=streamdetails.provider,
+            object_id=streamdetails.provider.value,
             data=streamdetails,
         )
     )
@@ -475,7 +475,7 @@ async def get_media_stream(
             mass.signal_event(
                 MassEvent(
                     EventType.STREAM_ENDED,
-                    object_id=streamdetails.provider,
+                    object_id=streamdetails.provider.value,
                     data=streamdetails,
                 )
             )
@@ -583,21 +583,14 @@ async def get_sox_args_for_pcm_stream(
 
 async def get_preview_stream(
     mass: MusicAssistant,
-    provider: str,
+    provider_id: str,
     track_id: str,
 ) -> AsyncGenerator[Tuple[bool, bytes], None]:
     """Get the audio stream for the given streamdetails."""
-    music_prov = mass.music.get_provider(provider)
+    music_prov = mass.music.get_provider(provider_id)
 
     streamdetails = await music_prov.get_stream_details(track_id)
 
-    mass.signal_event(
-        MassEvent(
-            EventType.STREAM_STARTED,
-            object_id=streamdetails.provider,
-            data=streamdetails,
-        )
-    )
     if streamdetails.type == StreamType.EXECUTABLE:
         # stream from executable
         input_args = [

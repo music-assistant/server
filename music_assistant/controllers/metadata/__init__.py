@@ -1,6 +1,7 @@
 """All logic for metadata retrieval."""
 from __future__ import annotations
 
+from base64 import b64encode
 from time import time
 from typing import TYPE_CHECKING, Optional
 
@@ -129,14 +130,20 @@ class MetaDataController:
         self.logger.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
         return artist.name
 
-    async def get_thumbnail(self, path: str, size: Optional[int]) -> bytes:
+    async def get_thumbnail(
+        self, path: str, size: Optional[int], base64: bool = False
+    ) -> bytes | str:
         """Get/create thumbnail image for path."""
         match = {"path": path, "size": size}
         if result := await self.mass.database.get_row(TABLE_THUMBS, match):
-            return result["data"]
-        # create thumbnail if it doesn't exist
-        thumbnail = await create_thumbnail(self.mass, path, size)
-        await self.mass.database.insert_or_replace(
-            TABLE_THUMBS, {**match, "data": thumbnail}
-        )
+            thumbnail = result["data"]
+        else:
+            # create thumbnail if it doesn't exist
+            thumbnail = await create_thumbnail(self.mass, path, size)
+            await self.mass.database.insert_or_replace(
+                TABLE_THUMBS, {**match, "data": thumbnail}
+            )
+        if base64:
+            enc_image = b64encode(thumbnail).decode()
+            thumbnail = f"data:image/png;base64,{enc_image}"
         return thumbnail

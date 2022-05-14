@@ -65,7 +65,7 @@ class QobuzProvider(MusicProvider):
         self.mass.subscribe(
             self.on_stream_event,
             (EventType.STREAM_STARTED, EventType.STREAM_ENDED),
-            id_filter=self.id,
+            id_filter=self.type.value,
         )
         return True
 

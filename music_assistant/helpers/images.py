@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Optional
 from PIL import Image
 from tinytag import TinyTag
 
-from music_assistant.models.enums import ImageType, MediaType, ProviderType
+from music_assistant.models.enums import ImageType, MediaType
 from music_assistant.models.media_items import ItemMapping, MediaItemType
 
 if TYPE_CHECKING:
@@ -24,7 +24,7 @@ async def create_thumbnail(
     if path.startswith("http"):
         async with mass.http_session.get(path, verify_ssl=False) as response:
             assert response.status == 200
-            img_data = BytesIO(await response.read())
+            img_data = await response.read()
     else:
         # assume file from file provider, we need to fetch it here...
         for prov in mass.music.providers:
@@ -32,22 +32,29 @@ async def create_thumbnail(
                 continue
             if not prov.exists(path):
                 continue
-            path = prov.get_filepath(path)
             if TinyTag.is_supported(path):
                 # embedded image in music file
-                tags = await mass.loop.run_in_executor(
-                    None, TinyTag.get, path, False, False, True
-                )
-                img_data = await mass.loop.run_in_executor(None, tags.get_image)
-            async with prov.open_file(path) as _file:
-                img_data = await _file.read()
+                def get_embedded_image():
+                    tags = TinyTag.get(path, image=True)
+                    return tags.get_image()
+
+                img_data = await mass.loop.run_in_executor(None, get_embedded_image)
+            else:
+                # regular image file on disk
+                async with prov.open_file(path) as _file:
+                    img_data = BytesIO(await _file.read())
             break
     if not img_data:
         raise FileNotFoundError(f"Image not found: {path}")
-    img = Image.open(img_data)
-    img.thumbnail((size, size), Image.ANTIALIAS)
-    img.save(format="png")
-    return img_data.getvalue()
+
+    def _create_image():
+        data = BytesIO(img_data)
+        img = Image.open(data)
+        img.thumbnail((size, size), Image.ANTIALIAS)
+        img.save(data, format="png")
+        return data.getvalue()
+
+    return await mass.loop.run_in_executor(None, _create_image)
 
 
 async def get_image_url(
@@ -64,9 +71,6 @@ async def get_image_url(
         for img in media_item.metadata.images:
             if img.type == img_type:
                 return img.url
-            if img_type == ImageType.THUMB and img.is_file:
-                if file_prov := mass.music.get_provider(ProviderType.FILESYSTEM_LOCAL):
-                    return await file_prov.get_embedded_image(img.url)
 
     # retry with track's album
     if media_item.media_type == MediaType.TRACK and media_item.album:
@@ -82,18 +86,3 @@ async def get_image_url(
             return await get_image_url(mass, artist, img_type)
 
     return None
-
-
-# async def get_embedded_image(self, filename: str) -> str | None:
-#         """Return the embedded image of an audio file as base64 string."""
-#         if not TinyTag.is_supported(filename):
-#             return None
-
-#         def parse_tags():
-#             return TinyTag.get(filename, tags=True, image=True, ignore_errors=True)
-
-#         tags = await self.mass.loop.run_in_executor(None, parse_tags)
-#         if image_data := tags.get_image():
-#             enc_image = base64.b64encode(image_data).decode()
-#             enc_image = f"data:image/png;base64,{enc_image}"
-#             return enc_image

@@ -614,8 +614,8 @@ class FileSystemProvider(MusicProvider):
         """Return bool is this FileSystem musicprovider has given file/dir."""
         return os.path.isfile(file_path) or os.path.isdir(file_path)
 
-    @asynccontextmanager
     @staticmethod
+    @asynccontextmanager
     async def open_file(filename: str, mode="rb") -> AsyncFileIO:
         """Return (async) handle to given file."""
         # remote file locations should return a tempfile here ?
