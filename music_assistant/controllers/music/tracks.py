@@ -240,8 +240,8 @@ class TracksController(MediaControllerBase[Track]):
             cur_ids = {x.item_id for x in track_artists}
             track_artist = (
                 await self.mass.music.artists.get_db_item_by_prov_id(
-                    item.item_id,
-                    item.provider,
+                    provider_item_id=item.item_id,
+                    provider=item.provider,
                 )
                 or item
             )
@@ -271,8 +271,8 @@ class TracksController(MediaControllerBase[Track]):
                 return ItemMapping.from_item(track_album)
 
             if track_album := await self.mass.music.albums.get_db_item_by_prov_id(
-                track.album.item_id,
-                track.album.provider,
+                provider_item_id=track.album.item_id,
+                provider=track.album.provider,
             ):
                 return ItemMapping.from_item(track_album)
 

@@ -1,11 +1,9 @@
 """Several helper/utils to compare objects."""
 from __future__ import annotations
 
-import re
 from typing import List, Union
 
-import unidecode
-
+from music_assistant.helpers.util import create_clean_string
 from music_assistant.models.media_items import (
     Album,
     Artist,
@@ -15,18 +13,11 @@ from music_assistant.models.media_items import (
 )
 
 
-def get_compare_string(input_str):
-    """Return clean lowered string for compare actions."""
-    unaccented_string = unidecode.unidecode(input_str)
-    return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string).lower()
-
-
 def compare_strings(str1, str2, strict=False):
     """Compare strings and return True if we have an (almost) perfect match."""
-    match = str1.lower() == str2.lower()
-    if not match and not strict:
-        match = get_compare_string(str1) == get_compare_string(str2)
-    return match
+    if not strict:
+        return create_clean_string(str1) == create_clean_string(str2)
+    return str1.lower().strip() == str2.lower().strip()
 
 
 def compare_version(left_version: str, right_version: str):
@@ -56,8 +47,12 @@ def compare_artists(left_artists: List[Artist], right_artists: List[Artist]):
     """Compare two lists of artist and return True if both lists match."""
     matches = 0
     for left_artist in left_artists:
+        if not left_artist.sort_name:
+            continue
         for right_artist in right_artists:
-            if compare_strings(left_artist.name, right_artist.name):
+            if not right_artist.sort_name:
+                continue
+            if left_artist.sort_name == right_artist.sort_name:
                 matches += 1
     return len(left_artists) == matches
 
@@ -84,29 +79,34 @@ def compare_album(
     ):
         return True
 
-    if isinstance(left_album, Album) and isinstance(right_album, Album):
-        # prefer match on UPC
-        if left_album.upc and right_album.upc:
-            if (left_album.upc in right_album.upc) or (
-                right_album.upc in left_album.upc
-            ):
-                return True
-        # prefer match on musicbrainz_id
-        if left_album.musicbrainz_id and right_album.musicbrainz_id:
-            if left_album.musicbrainz_id == right_album.musicbrainz_id:
+    # prefer match on UPC
+    if getattr(left_album, "upc", None) and getattr(right_album, "upc", None):
+        if (left_album.upc in right_album.upc) or (right_album.upc in left_album.upc):
+            return True
+    # prefer match on musicbrainz_id
+    if getattr(left_album, "musicbrainz_id", None) and getattr(
+        right_album, "musicbrainz_id", None
+    ):
+        return left_album.musicbrainz_id == right_album.musicbrainz_id
 
-                return True
     # fallback to comparing
+    assert left_album.sort_name, "sort_name is required"
+    assert right_album.sort_name, "sort_name is required"
     if not compare_strings(left_album.name, right_album.name):
         return False
     if not compare_version(left_album.version, right_album.version):
         return False
-    if not left_album.artist or not right_album.artist:
+    # album artist must be either set on both or not at all
+    if left_album.artist and not right_album.artist:
         return False
-    if not compare_strings(left_album.artist.name, right_album.artist.name):
+    if right_album.artist and not left_album.artist:
         return False
-    # 100% match, all criteria passed
-    return True
+    if left_album.artist and right_album.artist:
+        assert left_album.artist.sort_name, "sort_name is required"
+        assert right_album.artist.sort_name, "sort_name is required"
+        if left_album.artist.sort_name != right_album.artist.sort_name:
+            return False
+    return left_album.sort_name == right_album.sort_name
 
 
 def compare_track(left_track: Track, right_track: Track):
@@ -124,7 +124,9 @@ def compare_track(left_track: Track, right_track: Track):
             # musicbrainz_id is always 100% accurate match
             return True
     # track name and version must match
-    if not compare_strings(left_track.name, right_track.name):
+    assert left_track.sort_name, "sort_name is required"
+    assert right_track.sort_name, "sort_name is required"
+    if not left_track.sort_name != right_track.sort_name:
         return False
     if not compare_version(left_track.version, right_track.version):
         return False
@@ -141,7 +143,7 @@ def compare_track(left_track: Track, right_track: Track):
     if isinstance(left_track.album, ItemMapping) and isinstance(
         right_track.album, ItemMapping
     ):
-        if compare_strings(left_track.album.name, right_track.album.name):
+        if left_track.album.sort_name == right_track.album.sort_name:
             return True
     if abs(left_track.duration - right_track.duration) <= 2:
         # 100% match, all criteria passed

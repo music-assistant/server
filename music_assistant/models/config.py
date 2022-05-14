@@ -1,6 +1,5 @@
 """Model for the Music Assisant runtime config."""
 
-import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -25,19 +24,12 @@ class MusicProviderConfig:
     def __post_init__(self):
         """Call after init."""
         # create a default (hopefully unique enough) id from type + username/path
-        if not self.id and self.path:
+        if not self.id:
             prov_id = f"{self.type.value}_"
-            prov_id += "".join((x[0] for x in self.path.lower().split(os.sep) if x))
-            super().__setattr__("id", prov_id)
-            self.__dict__["id"] = prov_id
-        elif not self.id and self.username:
-            prov_id = f"{self.type.value}_"
+            base_str = (self.path or self.username).lower()
             prov_id += (
-                self.username.replace(".", "")
-                .replace("_", "")
-                .lower()
-                .split("@")[0][1::2]
-            ) + self.username[-1]
+                base_str.replace(".", "").replace("_", "").split("@")[0][1::2]
+            ) + base_str[-1]
             super().__setattr__("id", prov_id)
         elif not self.id:
             self.id = self.type.value

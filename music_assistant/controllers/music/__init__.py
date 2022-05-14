@@ -168,8 +168,8 @@ class MusicController:
         """Fetch MediaItem by uri."""
         media_type, provider, item_id = parse_uri(uri)
         return await self.get_item(
-            item_id,
-            media_type,
+            item_id=item_id,
+            media_type=media_type,
             provider=provider,
             force_refresh=force_refresh,
             lazy=lazy,
@@ -185,9 +185,10 @@ class MusicController:
         lazy: bool = True,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
+        assert provider or provider_id, "provider or provider_id must be supplied"
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
-            item_id,
+            provider_item_id=item_id,
             provider=provider,
             provider_id=provider_id,
             force_refresh=force_refresh,

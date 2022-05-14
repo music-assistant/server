@@ -6,7 +6,7 @@ from typing import AsyncGenerator, List, Optional
 from asyncio_throttle import Throttler
 
 from music_assistant.helpers.cache import use_cache
-from music_assistant.helpers.util import create_sort_name
+from music_assistant.helpers.util import create_clean_string
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import LoginFailed
 from music_assistant.models.media_items import (
@@ -137,7 +137,7 @@ class TuneInProvider(MusicProvider):
             radio.sort_name = f'{folder}-{details["preset_number"]}'
         elif preset_number:
             radio.sort_name = details["preset_number"]
-        radio.sort_name += create_sort_name(name)
+        radio.sort_name += create_clean_string(name)
         if "text" in details:
             radio.metadata.description = details["text"]
         # images

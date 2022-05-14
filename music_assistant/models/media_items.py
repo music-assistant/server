@@ -8,7 +8,7 @@ from mashumaro import DataClassDictMixin
 
 from music_assistant.helpers.json import json
 from music_assistant.helpers.uri import create_uri
-from music_assistant.helpers.util import create_sort_name, merge_lists
+from music_assistant.helpers.util import create_clean_string, merge_lists
 from music_assistant.models.enums import (
     AlbumType,
     ContentType,
@@ -121,18 +121,20 @@ class MediaItem(DataClassDictMixin):
     name: str
     # optional fields below
     provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
-    sort_name: Optional[str] = None
+
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN
-    uri: str = ""
+    # sort_name and uri are auto generated, do not override unless needed
+    sort_name: Optional[str] = None
+    uri: Optional[str] = None
 
     def __post_init__(self):
         """Call after init."""
         if not self.uri:
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
-            self.sort_name = create_sort_name(self.name)
+            self.sort_name = create_clean_string(self.name)
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):
@@ -200,17 +202,13 @@ class MediaItem(DataClassDictMixin):
 class ItemMapping(DataClassDictMixin):
     """Representation of a minimized item object."""
 
+    media_type: MediaType
     item_id: str
     provider: ProviderType
-    name: str = ""
+    name: str
+    sort_name: str
+    uri: str
     version: str = ""
-    media_type: MediaType = MediaType.ARTIST
-    uri: str = ""
-
-    def __post_init__(self):
-        """Call after init."""
-        if not self.uri:
-            self.uri = create_uri(self.media_type, self.provider, self.item_id)
 
     @classmethod
     def from_item(cls, item: "MediaItem"):

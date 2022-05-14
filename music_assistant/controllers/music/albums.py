@@ -262,7 +262,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
             if album_artist := await self.mass.music.artists.get_db_item_by_prov_id(
                 album.artist.item_id,
-                album.artist.provider,
+                provider=album.artist.provider,
             ):
                 return ItemMapping.from_item(album_artist)
 

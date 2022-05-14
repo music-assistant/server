@@ -59,8 +59,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         details: ItemCls = None,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
+        assert provider or provider_id, "provider or provider_id must be supplied"
         db_item = await self.get_db_item_by_prov_id(
-            provider_item_id, provider, provider_id
+            provider_item_id=provider_item_id,
+            provider=provider,
+            provider_id=provider_id,
         )
         if db_item and (time() - db_item.last_refresh) > REFRESH_INTERVAL:
             force_refresh = True
@@ -178,10 +181,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         db: Optional[Db] = None,
     ) -> ItemCls | None:
         """Get the database album for the given prov_id."""
+        assert provider or provider_id, "provider or provider_id must be supplied"
         if provider == ProviderType.DATABASE or provider_id == "database":
             return await self.get_db_item(provider_item_id, db=db)
         if item_id := await self.mass.music.get_provider_mapping(
-            self.media_type, provider_item_id, provider, provider_id, db=db
+            self.media_type, provider_item_id, provider, provider_id=provider_id, db=db
         ):
             return await self.get_db_item(item_id, db=db)
         return None
@@ -193,8 +197,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         db: Optional[Db] = None,
     ) -> List[ItemCls]:
         """Fetch all records from database for given provider."""
+        assert provider or provider_id, "provider or provider_id must be supplied"
         db_ids = await self.mass.music.get_provider_mappings(
-            self.media_type, provider, provider_id, db=db
+            self.media_type, provider=provider, provider_id=provider_id, db=db
         )
         query = f"SELECT * FROM tracks WHERE item_id in {str(tuple(db_ids))}"
         return await self.get_db_items(query, db=db)
