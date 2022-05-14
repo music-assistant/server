@@ -56,10 +56,12 @@ class MetaDataController:
         """Get/update rich metadata for an artist."""
         if not artist.musicbrainz_id:
             artist.musicbrainz_id = await self.get_artist_musicbrainz_id(artist)
-        if metadata := await self.fanarttv.get_artist_metadata(artist):
-            artist.metadata.update(metadata)
-        if metadata := await self.audiodb.get_artist_metadata(artist):
-            artist.metadata.update(metadata)
+
+        if artist.musicbrainz_id:
+            if metadata := await self.fanarttv.get_artist_metadata(artist):
+                artist.metadata.update(metadata)
+            if metadata := await self.audiodb.get_artist_metadata(artist):
+                artist.metadata.update(metadata)
 
         artist.metadata.last_refresh = int(time())
 
@@ -100,35 +102,51 @@ class MetaDataController:
         # NOTE: we do not have any metadata for radiso so consider this future proofing ;-)
         radio.metadata.last_refresh = int(time())
 
-    async def get_artist_musicbrainz_id(self, artist: Artist) -> str:
+    async def get_artist_musicbrainz_id(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
-        # try with album first
-        for lookup_album in await self.mass.music.artists.get_provider_artist_albums(
+        ref_albums = await self.mass.music.artists.get_provider_artist_albums(
             artist.item_id, artist.provider
-        ):
-            if artist.name != lookup_album.artist.name:
+        )
+        # first try audiodb
+        if musicbrainz_id := await self.audiodb.get_musicbrainz_id(artist, ref_albums):
+            return musicbrainz_id
+        # try again with musicbrainz with albums with upc
+        for ref_album in ref_albums:
+            if ref_album.upc:
+                if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
+                    artist.name,
+                    album_upc=ref_album.upc,
+                ):
+                    return musicbrainz_id
+            if ref_album.musicbrainz_id:
+                if musicbrainz_id := await self.musicbrainz.search_artist_by_album_mbid(
+                    artist.name, ref_album.musicbrainz_id
+                ):
+                    return musicbrainz_id
+
+        # try again with matching on track isrc
+        ref_tracks = await self.mass.music.artists.get_provider_artist_toptracks(
+            artist.item_id, artist.provider
+        )
+        for ref_track in ref_tracks:
+            if not ref_track.isrc:
                 continue
-            musicbrainz_id = await self.musicbrainz.get_mb_artist_id(
+            if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
                 artist.name,
-                albumname=lookup_album.name,
-                album_upc=lookup_album.upc,
-            )
-            if musicbrainz_id:
+                track_isrc=ref_track.isrc,
+            ):
                 return musicbrainz_id
-        # fallback to track
-        for lookup_track in await self.mass.music.artists.get_provider_artist_toptracks(
-            artist.item_id, artist.provider
-        ):
-            musicbrainz_id = await self.musicbrainz.get_mb_artist_id(
+
+        # last restort: track matching by name
+        for ref_track in ref_tracks[:10]:
+            if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
                 artist.name,
-                trackname=lookup_track.name,
-                track_isrc=lookup_track.isrc,
-            )
-            if musicbrainz_id:
+                trackname=ref_track.name,
+            ):
                 return musicbrainz_id
-        # lookup failed, use the shitty workaround to use the name as id.
+        # lookup failed
         self.logger.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
-        return artist.name
+        return None
 
     async def get_thumbnail(
         self, path: str, size: Optional[int], base64: bool = False

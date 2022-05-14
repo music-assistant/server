@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from json.decoder import JSONDecodeError
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -155,6 +155,32 @@ class TheAudioDb:
 
                 return self.__parse_track(adb_track)
         return None
+
+    async def get_musicbrainz_id(
+        self, artist: Artist, ref_albums: List[Album]
+    ) -> str | None:
+        """Try to discover MusicBrainz ID for an artist given some reference albums."""
+        self.logger.debug(
+            "Lookup MusicbrainzID for Artist %s on TheAudioDb", artist.name
+        )
+        musicbrainz_id = None
+        if data := await self._get_data("searchalbum.php", s=artist.name):
+            for item in data.get("album", []):
+                if not compare_strings(item["strArtistStripped"], artist.name):
+                    continue
+                for ref_album in ref_albums:
+                    if not compare_strings(item["strAlbumStripped"], ref_album.name):
+                        continue
+                    # found match - update album metadata too while we're here
+                    if not ref_album.musicbrainz_id:
+                        ref_album.metadata = self.__parse_album(item)
+                        await self.mass.music.albums.add_db_item(ref_album)
+                    musicbrainz_id = item["strMusicBrainzArtistID"]
+        if musicbrainz_id:
+            self.logger.debug(
+                "Found MusicBrainzID for artist %s on TheAudioDb", artist.name
+            )
+        return musicbrainz_id
 
     def __parse_artist(self, artist_obj: Dict[str, Any]) -> MediaItemMetadata:
         """Parse audiodb artist object to MediaItemMetadata."""

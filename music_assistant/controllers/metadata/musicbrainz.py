@@ -146,6 +146,19 @@ class MusicBrainz:
                                     return artist["id"]
         return ""
 
+    async def search_artist_by_album_mbid(
+        self, artistname, album_mbid: str
+    ) -> str | None:
+        """Retrieve musicbrainz artist id by providing the artist name and albumname or upc."""
+        result = await self.get_data(f"release-group/{album_mbid}?inc=artist-credits")
+        if result and "artist-credit" in result:
+            for strictness in [True, False]:
+                for item in result["artist-credit"]:
+                    if artist := item.get("artist"):
+                        if compare_strings(artistname, artist["name"], strictness):
+                            return artist["id"]
+        return None
+
     @use_cache(86400 * 30)
     async def get_data(self, endpoint: str, **kwargs):
         """Get data from api."""

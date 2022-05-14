@@ -70,7 +70,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return db_item
         if not details and provider_id:
             details = await self.get_provider_item(provider_item_id, provider_id)
-        if not details and provider_id:
+        if not details and provider:
             # check providers for given provider type one by one
             for prov in self.mass.music.providers:
                 if not prov.available:
@@ -78,7 +78,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 if prov.type == provider:
                     try:
                         details = await self.get_provider_item(
-                            provider_item_id, provider_id
+                            provider_item_id, prov.id
                         )
                     except MediaNotFoundError:
                         pass
