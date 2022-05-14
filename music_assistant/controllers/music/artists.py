@@ -117,7 +117,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> List[Track]:
         """Return tracks for an artist in database."""
         query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{artist_id}\"%'"
-        query += " and artists LIKE '%\"{provider.value}\"%'"
+        query += f" and artists LIKE '%\"{provider.value}\"%'"
         return await self.mass.music.tracks.get_db_items(query)
 
     async def get_database_artist_albums(
@@ -125,7 +125,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> List[Track]:
         """Return tracks for an artist in database."""
         query = f"SELECT * FROM albums WHERE artist LIKE '%\"{artist_id}\"%'"
-        query += " and artist LIKE '%\"{provider.value}\"%'"
+        query += f" and artist LIKE '%\"{provider.value}\"%'"
         return await self.mass.music.albums.get_db_items(query)
 
     async def get_provider_artist_albums(
