@@ -496,9 +496,9 @@ class StreamController:
                 cur_chunk += 1
 
                 # HANDLE FIRST PART OF TRACK
-                if not chunk and bytes_written == 0:
+                if not chunk and bytes_written == 0 and is_last_chunk:
                     # stream error: got empy first chunk
-                    self.logger.error("Stream error on track %s", queue_track.item_id)
+                    self.logger.warning("Stream error on track %s", queue_track.item_id)
                     # prevent player queue get stuck by just skipping to the next track
                     queue_track.duration = 0
                     continue
