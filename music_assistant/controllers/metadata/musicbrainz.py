@@ -9,7 +9,8 @@ import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.helpers.cache import use_cache
-from music_assistant.helpers.compare import compare_strings, get_compare_string
+from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.util import create_clean_string
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -92,7 +93,8 @@ class MusicBrainz:
         """Retrieve musicbrainz artist id by providing the artist name and albumname or upc."""
         for searchartist in [
             re.sub(LUCENE_SPECIAL, r"\\\1", artistname),
-            get_compare_string(artistname),
+            create_clean_string(artistname),
+            artistname,
         ]:
             if album_upc:
                 query = f"barcode:{album_upc}"
@@ -145,6 +147,19 @@ class MusicBrainz:
                                 ):
                                     return artist["id"]
         return ""
+
+    async def search_artist_by_album_mbid(
+        self, artistname, album_mbid: str
+    ) -> str | None:
+        """Retrieve musicbrainz artist id by providing the artist name and albumname or upc."""
+        result = await self.get_data(f"release-group/{album_mbid}?inc=artist-credits")
+        if result and "artist-credit" in result:
+            for strictness in [True, False]:
+                for item in result["artist-credit"]:
+                    if artist := item.get("artist"):
+                        if compare_strings(artistname, artist["name"], strictness):
+                            return artist["id"]
+        return None
 
     @use_cache(86400 * 30)
     async def get_data(self, endpoint: str, **kwargs):

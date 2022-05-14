@@ -8,7 +8,7 @@ from mashumaro import DataClassDictMixin
 
 from music_assistant.helpers.json import json
 from music_assistant.helpers.uri import create_uri
-from music_assistant.helpers.util import create_sort_name
+from music_assistant.helpers.util import create_clean_string, merge_lists
 from music_assistant.models.enums import (
     AlbumType,
     ContentType,
@@ -16,6 +16,7 @@ from music_assistant.models.enums import (
     LinkType,
     MediaQuality,
     MediaType,
+    ProviderType,
     StreamType,
 )
 
@@ -28,8 +29,9 @@ JSON_KEYS = ("artists", "artist", "album", "metadata", "provider_ids")
 class MediaItemProviderId(DataClassDictMixin):
     """Model for a MediaItem's provider id."""
 
-    provider: str
     item_id: str
+    prov_type: ProviderType
+    prov_id: str
     available: bool = True
     quality: Optional[MediaQuality] = None
     details: Optional[str] = None
@@ -37,7 +39,7 @@ class MediaItemProviderId(DataClassDictMixin):
 
     def __hash__(self):
         """Return custom hash."""
-        return hash((self.provider, self.item_id, self.quality))
+        return hash((self.prov_id, self.item_id, self.quality))
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,7 @@ class MediaItemImage(DataClassDictMixin):
 
     type: ImageType
     url: str
+    is_file: bool = False  # indicator that image is local filepath instead of url
 
     def __hash__(self):
         """Return custom hash."""
@@ -71,7 +74,7 @@ class MediaItemMetadata(DataClassDictMixin):
     description: Optional[str] = None
     review: Optional[str] = None
     explicit: Optional[bool] = None
-    images: Optional[Set[MediaItemImage]] = None
+    images: Optional[List[MediaItemImage]] = None
     genres: Optional[Set[str]] = None
     mood: Optional[str] = None
     style: Optional[str] = None
@@ -92,7 +95,7 @@ class MediaItemMetadata(DataClassDictMixin):
     def update(
         self,
         new_values: "MediaItemMetadata",
-        allow_overwrite: bool = False,
+        allow_overwrite: bool = True,
     ) -> "MediaItemMetadata":
         """Update metadata (in-place) with new values."""
         for fld in fields(self):
@@ -100,7 +103,9 @@ class MediaItemMetadata(DataClassDictMixin):
             if new_val is None:
                 continue
             cur_val = getattr(self, fld.name)
-            if isinstance(cur_val, set):
+            if isinstance(cur_val, list):
+                merge_lists(cur_val, new_val)
+            elif isinstance(cur_val, set):
                 cur_val.update(new_val)
             elif cur_val is None or allow_overwrite:
                 setattr(self, fld.name, new_val)
@@ -112,24 +117,24 @@ class MediaItem(DataClassDictMixin):
     """Base representation of a media item."""
 
     item_id: str
-    provider: str
+    provider: ProviderType
     name: str
     # optional fields below
     provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
-    sort_name: Optional[str] = None
+
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN
-    uri: str = ""
+    # sort_name and uri are auto generated, do not override unless needed
+    sort_name: Optional[str] = None
+    uri: Optional[str] = None
 
     def __post_init__(self):
         """Call after init."""
         if not self.uri:
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
-            self.sort_name = create_sort_name(self.name)
-        if not self.provider_ids:
-            self.add_provider_id(MediaItemProviderId(self.provider, self.item_id))
+            self.sort_name = create_clean_string(self.name)
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):
@@ -183,7 +188,7 @@ class MediaItem(DataClassDictMixin):
         self.provider_ids = {
             x
             for x in self.provider_ids
-            if not (x.item_id == prov_id.item_id and x.provider == prov_id.provider)
+            if not (x.item_id == prov_id.item_id and x.prov_id == prov_id.prov_id)
         }
         self.provider_ids.add(prov_id)
 
@@ -197,17 +202,13 @@ class MediaItem(DataClassDictMixin):
 class ItemMapping(DataClassDictMixin):
     """Representation of a minimized item object."""
 
+    media_type: MediaType
     item_id: str
-    provider: str
-    name: str = ""
+    provider: ProviderType
+    name: str
+    sort_name: str
+    uri: str
     version: str = ""
-    media_type: MediaType = MediaType.ARTIST
-    uri: str = ""
-
-    def __post_init__(self):
-        """Call after init."""
-        if not self.uri:
-            self.uri = create_uri(self.media_type, self.provider, self.item_id)
 
     @classmethod
     def from_item(cls, item: "MediaItem"):
@@ -280,7 +281,7 @@ class Radio(MediaItem):
     """Model for a radio station."""
 
     media_type: MediaType = MediaType.RADIO
-    duration: int = 86400
+    duration: int = 0
 
     def to_db_row(self) -> dict:
         """Create dict from item suitable for db."""
@@ -297,7 +298,7 @@ class StreamDetails(DataClassDictMixin):
     """Model for streamdetails."""
 
     type: StreamType
-    provider: str
+    provider: ProviderType
     item_id: str
     path: str
     content_type: ContentType
@@ -321,4 +322,4 @@ class StreamDetails(DataClassDictMixin):
 
     def __str__(self):
         """Return pretty printable string of object."""
-        return f"{self.type.value}/{self.content_type.value} - {self.provider}/{self.item_id}"
+        return f"{self.type.value}/{self.content_type.value} - {self.provider.value}/{self.item_id}"

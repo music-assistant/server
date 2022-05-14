@@ -59,13 +59,13 @@ class StreamController:
             return f"http://{self._ip}:{self._port}/{queue_id}/{child_player}.{ext}"
         return f"http://{self._ip}:{self._port}/{queue_id}.{ext}"
 
-    async def get_preview_url(self, provider: str, track_id: str) -> str:
+    async def get_preview_url(self, provider_id: str, track_id: str) -> str:
         """Return url to short preview sample."""
-        track = await self.mass.music.tracks.get_provider_item(track_id, provider)
+        track = await self.mass.music.tracks.get_provider_item(track_id, provider_id)
         if preview := track.metadata.preview:
             return preview
         enc_track_id = urllib.parse.quote(track_id)
-        return f"http://{self._ip}:{self._port}/preview?provider={provider}&item_id={enc_track_id}"
+        return f"http://{self._ip}:{self._port}/preview?provider_id={provider_id}&item_id={enc_track_id}"
 
     async def setup(self) -> None:
         """Async initialize of module."""
@@ -116,13 +116,13 @@ class StreamController:
 
     async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""
-        provider = request.query["provider"]
+        provider_id = request.query["provider_id"]
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(
             status=200, reason="OK", headers={"Content-Type": "audio/mp3"}
         )
         await resp.prepare(request)
-        async for _, chunk in get_preview_stream(self.mass, provider, item_id):
+        async for _, chunk in get_preview_stream(self.mass, provider_id, item_id):
             await resp.write(chunk)
         return resp
 

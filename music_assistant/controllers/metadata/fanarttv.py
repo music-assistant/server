@@ -50,13 +50,13 @@ class FanartTv:
         self.logger.debug("Fetching metadata for Artist %s on Fanart.tv", artist.name)
         if data := await self._get_data(f"music/{artist.musicbrainz_id}"):
             metadata = MediaItemMetadata()
-            metadata.images = set()
+            metadata.images = []
             for key, img_type in IMG_MAPPING.items():
                 items = data.get(key)
                 if not items:
                     continue
                 for item in items:
-                    metadata.images.add(MediaItemImage(img_type, item["url"]))
+                    metadata.images.append(MediaItemImage(img_type, item["url"]))
             return metadata
         return None
 
@@ -69,13 +69,13 @@ class FanartTv:
             if data and data.get("albums"):
                 data = data["albums"][album.musicbrainz_id]
                 metadata = MediaItemMetadata()
-                metadata.images = set()
+                metadata.images = []
                 for key, img_type in IMG_MAPPING.items():
                     items = data.get(key)
                     if not items:
                         continue
                     for item in items:
-                        metadata.images.add(MediaItemImage(img_type, item["url"]))
+                        metadata.images.append(MediaItemImage(img_type, item["url"]))
                 return metadata
         return None
 

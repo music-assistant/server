@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import socket
 import tempfile
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 import memory_tempfile
+import unidecode
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -55,13 +57,14 @@ def try_parse_bool(possible_bool):
     return possible_bool in ["true", "True", "1", "on", "ON", 1]
 
 
-def create_sort_name(name):
-    """Return sort name."""
-    sort_name = name
-    for item in ["The ", "De ", "de ", "Les "]:
-        if name.startswith(item):
-            sort_name = "".join(name.split(item)[1:])
-    return sort_name.lower()
+def create_clean_string(input_str: str) -> str:
+    """Return clean lowered string for compare actions."""
+    input_str = input_str.lower().strip()
+    for item in ["the ", "de ", "les "]:
+        if input_str.startswith(item):
+            input_str = input_str.replace(item, "")
+    unaccented_string = unidecode.unidecode(input_str)
+    return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string)
 
 
 def parse_title_and_version(title: str, track_version: str = None):

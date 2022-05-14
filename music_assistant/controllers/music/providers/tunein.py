@@ -1,12 +1,13 @@
 """Tune-In musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import AsyncGenerator, List, Optional
 
 from asyncio_throttle import Throttler
 
 from music_assistant.helpers.cache import use_cache
-from music_assistant.helpers.util import create_sort_name
+from music_assistant.helpers.util import create_clean_string
+from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import LoginFailed
 from music_assistant.models.media_items import (
     ContentType,
@@ -26,19 +27,17 @@ from music_assistant.models.provider import MusicProvider
 class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
-    _attr_id = "tunein"
+    _attr_type = ProviderType.TUNEIN
     _attr_name = "Tune-in Radio"
     _attr_supported_mediatypes = [MediaType.RADIO]
     _throttler = Throttler(rate_limit=1, period=1)
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
-        if not self.mass.config.tunein_enabled:
+        if not self.config.enabled:
             return False
-        if not self.mass.config.tunein_username:
+        if not self.config.username:
             raise LoginFailed("Username is invalid")
-        if "@" in self.mass.config.tunein_username:
-            raise LoginFailed("You must provide the TuneIn username, not email")
         return True
 
     async def search(
@@ -51,15 +50,16 @@ class TuneInProvider(MusicProvider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
-        result = []
+        # pylint: disable=no-self-use
         # TODO: search for radio stations
-        return result
+        return []
 
-    async def get_library_radios(self) -> List[Radio]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
 
-        async def parse_items(items: List[dict], folder: str = None) -> List[Radio]:
-            result = []
+        async def parse_items(
+            items: List[dict], folder: str = None
+        ) -> AsyncGenerator[Radio, None]:
             for item in items:
                 item_type = item.get("type", "")
                 if item_type == "audio":
@@ -70,20 +70,23 @@ class TuneInProvider(MusicProvider):
                         "Tune.ashx", id=item["preset_id"]
                     )
                     for stream in stream_info["body"]:
-                        result.append(await self._parse_radio(item, stream, folder))
+                        yield await self._parse_radio(item, stream, folder)
                 elif item_type == "link":
                     # stations are in sublevel (new style)
                     if sublevel := await self.__get_data(item["URL"], render="json"):
-                        result += await parse_items(sublevel["body"], item["text"])
+                        async for subitem in parse_items(
+                            sublevel["body"], item["text"]
+                        ):
+                            yield subitem
                 elif item.get("children"):
                     # stations are in sublevel (old style ?)
-                    result += await parse_items(item["children"], item["text"])
-            return result
+                    async for subitem in parse_items(item["children"], item["text"]):
+                        yield subitem
 
         data = await self.__get_data("Browse.ashx", c="presets")
         if data and "body" in data:
-            return await parse_items(data["body"])
-        return []
+            async for item in parse_items(data["body"]):
+                yield item
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
@@ -112,7 +115,7 @@ class TuneInProvider(MusicProvider):
                 name = name.split(" | ")[1]
             name = name.split(" (")[0]
         item_id = f'{details["preset_id"]}--{stream["media_type"]}'
-        radio = Radio(item_id=item_id, provider=self.id, name=name)
+        radio = Radio(item_id=item_id, provider=self.type, name=name)
         if stream["media_type"] == "aac":
             quality = MediaQuality.LOSSY_AAC
         elif stream["media_type"] == "ogg":
@@ -121,8 +124,9 @@ class TuneInProvider(MusicProvider):
             quality = MediaQuality.LOSSY_MP3
         radio.add_provider_id(
             MediaItemProviderId(
-                provider=self.id,
                 item_id=item_id,
+                prov_type=self.type,
+                prov_id=self.id,
                 quality=quality,
                 details=stream["url"],
             )
@@ -133,14 +137,14 @@ class TuneInProvider(MusicProvider):
             radio.sort_name = f'{folder}-{details["preset_number"]}'
         elif preset_number:
             radio.sort_name = details["preset_number"]
-        radio.sort_name += create_sort_name(name)
+        radio.sort_name += create_clean_string(name)
         if "text" in details:
             radio.metadata.description = details["text"]
         # images
         if img := details.get("image"):
-            radio.metadata.images = {MediaItemImage(ImageType.THUMB, img)}
+            radio.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         if img := details.get("logo"):
-            radio.metadata.images = {MediaItemImage(ImageType.LOGO, img)}
+            radio.metadata.images = [MediaItemImage(ImageType.LOGO, img)]
         return radio
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
@@ -152,7 +156,7 @@ class TuneInProvider(MusicProvider):
                 return StreamDetails(
                     type=StreamType.URL,
                     item_id=item_id,
-                    provider=self.id,
+                    provider=self.type,
                     path=stream["url"],
                     content_type=ContentType(stream["media_type"]),
                     sample_rate=44100,
@@ -170,7 +174,7 @@ class TuneInProvider(MusicProvider):
         else:
             url = f"https://opml.radiotime.com/{endpoint}"
             kwargs["formats"] = "ogg,aac,wma,mp3"
-            kwargs["username"] = self.mass.config.tunein_username
+            kwargs["username"] = self.config.username
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
         async with self._throttler:

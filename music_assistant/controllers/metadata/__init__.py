@@ -1,9 +1,11 @@
 """All logic for metadata retrieval."""
 from __future__ import annotations
 
+from base64 import b64encode
 from time import time
 from typing import TYPE_CHECKING, Optional
 
+from music_assistant.helpers.database import TABLE_THUMBS
 from music_assistant.helpers.images import create_thumbnail
 from music_assistant.models.media_items import Album, Artist, Playlist, Radio, Track
 
@@ -13,8 +15,6 @@ from .musicbrainz import MusicBrainz
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
-
-TABLE_THUMBS = "thumbnails"
 
 
 class MetaDataController:
@@ -51,24 +51,17 @@ class MetaDataController:
 
     async def setup(self):
         """Async initialize of module."""
-        async with self.mass.database.get_db() as _db:
-            await _db.execute(
-                f"""CREATE TABLE IF NOT EXISTS {TABLE_THUMBS}(
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    url TEXT NOT NULL,
-                    size INTEGER,
-                    img BLOB,
-                    UNIQUE(url, size));"""
-            )
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
         if not artist.musicbrainz_id:
             artist.musicbrainz_id = await self.get_artist_musicbrainz_id(artist)
-        if metadata := await self.fanarttv.get_artist_metadata(artist):
-            artist.metadata.update(metadata)
-        if metadata := await self.audiodb.get_artist_metadata(artist):
-            artist.metadata.update(metadata)
+
+        if artist.musicbrainz_id:
+            if metadata := await self.fanarttv.get_artist_metadata(artist):
+                artist.metadata.update(metadata)
+            if metadata := await self.audiodb.get_artist_metadata(artist):
+                artist.metadata.update(metadata)
 
         artist.metadata.last_refresh = int(time())
 
@@ -109,44 +102,66 @@ class MetaDataController:
         # NOTE: we do not have any metadata for radiso so consider this future proofing ;-)
         radio.metadata.last_refresh = int(time())
 
-    async def get_artist_musicbrainz_id(self, artist: Artist) -> str:
+    async def get_artist_musicbrainz_id(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
-        # try with album first
-        for lookup_album in await self.mass.music.artists.get_provider_artist_albums(
+        ref_albums = await self.mass.music.artists.get_provider_artist_albums(
             artist.item_id, artist.provider
-        ):
-            if artist.name != lookup_album.artist.name:
-                continue
-            musicbrainz_id = await self.musicbrainz.get_mb_artist_id(
-                artist.name,
-                albumname=lookup_album.name,
-                album_upc=lookup_album.upc,
-            )
-            if musicbrainz_id:
-                return musicbrainz_id
-        # fallback to track
-        for lookup_track in await self.mass.music.artists.get_provider_artist_toptracks(
-            artist.item_id, artist.provider
-        ):
-            musicbrainz_id = await self.musicbrainz.get_mb_artist_id(
-                artist.name,
-                trackname=lookup_track.name,
-                track_isrc=lookup_track.isrc,
-            )
-            if musicbrainz_id:
-                return musicbrainz_id
-        # lookup failed, use the shitty workaround to use the name as id.
-        self.logger.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
-        return artist.name
-
-    async def get_thumbnail(self, url, size) -> bytes:
-        """Get/create thumbnail image for url."""
-        match = {"url": url, "size": size}
-        if result := await self.mass.database.get_row(TABLE_THUMBS, match):
-            return result["img"]
-        # create thumbnail if it doesn't exist
-        thumbnail = await create_thumbnail(self.mass, url, size)
-        await self.mass.database.insert_or_replace(
-            TABLE_THUMBS, {**match, "img": thumbnail}
         )
+        # first try audiodb
+        if musicbrainz_id := await self.audiodb.get_musicbrainz_id(artist, ref_albums):
+            return musicbrainz_id
+        # try again with musicbrainz with albums with upc
+        for ref_album in ref_albums:
+            if ref_album.upc:
+                if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
+                    artist.name,
+                    album_upc=ref_album.upc,
+                ):
+                    return musicbrainz_id
+            if ref_album.musicbrainz_id:
+                if musicbrainz_id := await self.musicbrainz.search_artist_by_album_mbid(
+                    artist.name, ref_album.musicbrainz_id
+                ):
+                    return musicbrainz_id
+
+        # try again with matching on track isrc
+        ref_tracks = await self.mass.music.artists.get_provider_artist_toptracks(
+            artist.item_id, artist.provider
+        )
+        for ref_track in ref_tracks:
+            if not ref_track.isrc:
+                continue
+            if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
+                artist.name,
+                track_isrc=ref_track.isrc,
+            ):
+                return musicbrainz_id
+
+        # last restort: track matching by name
+        for ref_track in ref_tracks[:10]:
+            if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
+                artist.name,
+                trackname=ref_track.name,
+            ):
+                return musicbrainz_id
+        # lookup failed
+        self.logger.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
+        return None
+
+    async def get_thumbnail(
+        self, path: str, size: Optional[int], base64: bool = False
+    ) -> bytes | str:
+        """Get/create thumbnail image for path."""
+        match = {"path": path, "size": size}
+        if result := await self.mass.database.get_row(TABLE_THUMBS, match):
+            thumbnail = result["data"]
+        else:
+            # create thumbnail if it doesn't exist
+            thumbnail = await create_thumbnail(self.mass, path, size)
+            await self.mass.database.insert_or_replace(
+                TABLE_THUMBS, {**match, "data": thumbnail}
+            )
+        if base64:
+            enc_image = b64encode(thumbnail).decode()
+            thumbnail = f"data:image/png;base64,{enc_image}"
         return thumbnail

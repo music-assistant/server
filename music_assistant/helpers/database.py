@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 TABLE_PROV_MAPPINGS = "provider_mappings"
 TABLE_TRACK_LOUDNESS = "track_loudness"
@@ -22,6 +22,7 @@ TABLE_PLAYLISTS = "playlists"
 TABLE_RADIOS = "radios"
 TABLE_CACHE = "cache"
 TABLE_SETTINGS = "settings"
+TABLE_THUMBS = "thumbnails"
 
 
 class Database:
@@ -184,7 +185,7 @@ class Database:
                 # always create db tables if they don't exist to prevent errors trying to access them later
                 await self.__create_database_tables(db)
 
-                if prev_version < 7:
+                if prev_version < 9:
                     # refactored file provider, start clean just in case.
                     await db.execute("DROP TABLE IF EXISTS filesystem_mappings")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
@@ -193,6 +194,8 @@ class Database:
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_PLAYLISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_PROV_MAPPINGS}")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_THUMBS}")
                     # recreate missing tables
                     await self.__create_database_tables(db)
 
@@ -207,11 +210,12 @@ class Database:
                     item_id INTEGER NOT NULL,
                     media_type TEXT NOT NULL,
                     prov_item_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
+                    prov_type TEXT NOT NULL,
+                    prov_id TEXT NOT NULL,
                     quality INTEGER NULL,
                     details TEXT NULL,
                     url TEXT NULL,
-                    UNIQUE(item_id, media_type, prov_item_id, provider)
+                    UNIQUE(item_id, media_type, prov_item_id, prov_id)
                     );"""
         )
         await db.execute(
@@ -249,7 +253,7 @@ class Database:
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
-                    musicbrainz_id TEXT NOT NULL UNIQUE,
+                    musicbrainz_id TEXT,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_ids json
@@ -296,5 +300,13 @@ class Database:
         )
         await db.execute(
             f"""CREATE TABLE IF NOT EXISTS {TABLE_CACHE}(
-                    key TEXT UNIQUE, expires INTEGER, data TEXT, checksum INTEGER)"""
+                    key TEXT UNIQUE NOT NULL, expires INTEGER NOT NULL, data TEXT, checksum TEXT NULL)"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_THUMBS}(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL,
+                size INTEGER NULL,
+                data BLOB,
+                UNIQUE(path, size));"""
         )
