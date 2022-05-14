@@ -140,6 +140,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     continue
                 track_ids_to_remove.append(playlist_track.item_id)
             # actually remove the tracks from the playlist on the provider
+            # TODO: send positions to provider to delete
             if track_ids_to_remove:
                 provider = self.mass.music.get_provider(prov.provider)
                 await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)
