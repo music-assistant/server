@@ -48,10 +48,10 @@ def compare_artists(left_artists: List[Artist], right_artists: List[Artist]):
     matches = 0
     for left_artist in left_artists:
         if not left_artist.sort_name:
-            continue
+            left_artist.sort_name = create_clean_string(left_artist.name)
         for right_artist in right_artists:
             if not right_artist.sort_name:
-                continue
+                right_artist.sort_name = create_clean_string(right_artist.name)
             if left_artist.sort_name == right_artist.sort_name:
                 matches += 1
     return len(left_artists) == matches
@@ -90,8 +90,10 @@ def compare_album(
         return left_album.musicbrainz_id == right_album.musicbrainz_id
 
     # fallback to comparing
-    assert left_album.sort_name, "sort_name is required"
-    assert right_album.sort_name, "sort_name is required"
+    if not left_album.sort_name:
+        left_album.sort_name = create_clean_string(left_album.name)
+    if not right_album.sort_name:
+        right_album.sort_name = create_clean_string(right_album.name)
     if not compare_strings(left_album.name, right_album.name):
         return False
     if not compare_version(left_album.version, right_album.version):
@@ -102,8 +104,10 @@ def compare_album(
     if right_album.artist and not left_album.artist:
         return False
     if left_album.artist and right_album.artist:
-        assert left_album.artist.sort_name, "sort_name is required"
-        assert right_album.artist.sort_name, "sort_name is required"
+        if not left_album.artist.sort_name:
+            left_album.artist.sort_name = create_clean_string(left_album.artist.name)
+        if not right_album.artist.sort_name:
+            right_album.artist.sort_name = create_clean_string(right_album.artist.name)
         if left_album.artist.sort_name != right_album.artist.sort_name:
             return False
     return left_album.sort_name == right_album.sort_name
@@ -124,8 +128,10 @@ def compare_track(left_track: Track, right_track: Track):
             # musicbrainz_id is always 100% accurate match
             return True
     # track name and version must match
-    assert left_track.sort_name, "sort_name is required"
-    assert right_track.sort_name, "sort_name is required"
+    if not left_track.sort_name:
+        left_track.sort_name = create_clean_string(left_track.name)
+    if not right_track.sort_name:
+        right_track.sort_name = create_clean_string(right_track.name)
     if not left_track.sort_name != right_track.sort_name:
         return False
     if not compare_version(left_track.version, right_track.version):
