@@ -412,14 +412,14 @@ class PlayerQueue:
                 # single radio
                 tracks = [
                     await self.mass.music.radio.get(
-                        media_item.item_id, provider_id=media_item.provider
+                        media_item.item_id, provider=media_item.provider
                     )
                 ]
             else:
                 # single track
                 tracks = [
                     await self.mass.music.tracks.get(
-                        media_item.item_id, provider_id=media_item.provider
+                        media_item.item_id, provider=media_item.provider
                     )
                 ]
             for track in tracks:

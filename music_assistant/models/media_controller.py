@@ -117,7 +117,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def add_to_library(self, provider_item_id: str, provider_id: str) -> None:
         """Add an item to the library."""
         # make sure we have a valid full item
-        db_item = await self.get(provider_item_id, provider_id, lazy=False)
+        db_item = await self.get(provider_item_id, provider_id=provider_id, lazy=False)
         # add to provider libraries
         for prov_id in db_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
@@ -131,7 +131,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> None:
         """Remove item from the library."""
         # make sure we have a valid full item
-        db_item = await self.get(provider_item_id, provider_id, lazy=False)
+        db_item = await self.get(provider_item_id, provider_id=provider_id, lazy=False)
         # add to provider's libraries
         for prov_id in db_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.provider):

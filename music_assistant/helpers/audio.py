@@ -208,7 +208,7 @@ async def get_stream_details(
             if not prov_media.available:
                 continue
             # get streamdetails from provider
-            music_prov = mass.music.get_provider(prov_media.provider)
+            music_prov = mass.music.get_provider(prov_media.prov_id)
             if not music_prov or not music_prov.available:
                 continue  # provider temporary unavailable ?
 
