@@ -199,18 +199,27 @@ class MusicController:
         self,
         media_type: MediaType,
         provider_item_id: str,
-        provider_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
     ) -> None:
         """Add an item to the library."""
         ctrl = self.get_controller(media_type)
-        await ctrl.add_to_library(provider_item_id, provider_id)
+        await ctrl.add_to_library(
+            provider_item_id, provider=provider, provider_id=provider_id
+        )
 
     async def remove_from_library(
-        self, media_type: MediaType, provider_item_id: str, provider_id: str
+        self,
+        media_type: MediaType,
+        provider_item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
     ) -> None:
         """Remove item from the library."""
         ctrl = self.get_controller(media_type)
-        await ctrl.remove_from_library(provider_item_id, provider_id)
+        await ctrl.remove_from_library(
+            provider_item_id, provider=provider, provider_id=provider_id
+        )
 
     async def get_provider_mapping(
         self,

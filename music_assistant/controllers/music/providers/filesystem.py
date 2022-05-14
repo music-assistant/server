@@ -625,11 +625,14 @@ class FileSystemProvider(MusicProvider):
 
     async def get_filepath(self, item_id: str) -> str | None:
         """Get full filepath on disk for item_id."""
-        prov_mapping = await self.mass.music.get_provider_mapping(
+        file_path = await self.mass.music.get_provider_mapping(
             provider_id=self.id, provider_item_id=item_id, return_key="url"
         )
-        if prov_mapping is not None:
-            return prov_mapping
+        if file_path is not None:
+            # ensure we have a full path and not relative
+            if self.config.path not in file_path:
+                file_path = os.path.join(self.config.path, file_path)
+            return file_path
         return None
 
     def _get_relative_path(self, filename: str) -> str:

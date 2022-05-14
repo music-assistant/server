@@ -183,6 +183,11 @@ async def main():
         test_player2 = TestPlayer("test2")
         await mass.players.register_player(test_player1)
         await mass.players.register_player(test_player2)
+        # get full artist details
+        await mass.music.artists.get("6", ProviderType.DATABASE)
+        await mass.music.artists.albums("6", ProviderType.DATABASE)
+        await mass.music.artists.toptracks("6", ProviderType.DATABASE)
+
         # try to play some playlist
         test_player1.active_queue.settings.shuffle_enabled = True
         test_player1.active_queue.settings.repeat_mode = RepeatMode.ALL

@@ -117,10 +117,17 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             limit,
         )
 
-    async def add_to_library(self, provider_item_id: str, provider_id: str) -> None:
+    async def add_to_library(
+        self,
+        provider_item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+    ) -> None:
         """Add an item to the library."""
         # make sure we have a valid full item
-        db_item = await self.get(provider_item_id, provider_id=provider_id, lazy=False)
+        db_item = await self.get(
+            provider_item_id, provider=provider, provider_id=provider_id, lazy=False
+        )
         # add to provider libraries
         for prov_id in db_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
@@ -130,14 +137,19 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             await self.set_db_library(db_item.item_id, True)
 
     async def remove_from_library(
-        self, provider_item_id: str, provider_id: str
+        self,
+        provider_item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
     ) -> None:
         """Remove item from the library."""
         # make sure we have a valid full item
-        db_item = await self.get(provider_item_id, provider_id=provider_id, lazy=False)
+        db_item = await self.get(
+            provider_item_id, provider=provider, provider_id=provider_id, lazy=False
+        )
         # add to provider's libraries
         for prov_id in db_item.provider_ids:
-            if prov := self.mass.music.get_provider(prov_id.provider):
+            if prov := self.mass.music.get_provider(prov_id.prov_id):
                 await prov.library_remove(prov_id.item_id, self.media_type)
         # unmark as library item in internal db
         if db_item.in_library:
