@@ -5,7 +5,6 @@ import asyncio
 import os
 import urllib.parse
 from contextlib import asynccontextmanager
-from time import time
 from typing import Generator, List, Optional, Tuple
 
 import aiofiles
@@ -108,13 +107,12 @@ class FileSystemProvider(MusicProvider):
 
     async def sync_library(self) -> None:
         """Run library sync for this provider."""
-        last_save = 0
         cache_key = f"{self.id}.checksums"
         checksums = await self.mass.cache.get(cache_key)
         if checksums is None:
             checksums = {}
         # find all music files in the music directory and all subfolders
-        # we work bottom down, as-in we derive all info from the tracks
+        # we work bottom up, as-in we derive all info from the tracks
         for entry in scantree(self.config.path):
 
             # mtime is used as file checksum
@@ -141,11 +139,6 @@ class FileSystemProvider(MusicProvider):
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s", entry.path)
 
-            # save current checksum cache every 5 mins for large listings
-            checksums[entry.path] = checksum
-            if (time() - last_save) > 60:
-                await self.mass.cache.set(cache_key, checksums)
-                last_save = time()
         # TODO: Handle deletions
         await self.mass.cache.set(cache_key, checksums)
 
