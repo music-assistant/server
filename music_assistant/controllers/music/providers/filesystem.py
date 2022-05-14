@@ -212,7 +212,7 @@ class FileSystemProvider(MusicProvider):
                 prov_artist_id, self.type
             )
         result = []
-        for entry in scantree(self.config.path):
+        for entry in scantree(itempath):
             # mtime is used as file checksum
             checksum = str(entry.stat().st_mtime)
             if track := await self._parse_track(entry.path, checksum):
