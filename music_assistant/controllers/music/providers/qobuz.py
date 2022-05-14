@@ -261,20 +261,14 @@ class QobuzProvider(MusicProvider):
         """Add item to library."""
         result = None
         if media_type == MediaType.ARTIST:
-            result = await self._get_data(
-                "favorite/create", {"artist_ids": prov_item_id}
-            )
+            result = await self._get_data("favorite/create", artist_id=prov_item_id)
         elif media_type == MediaType.ALBUM:
-            result = await self._get_data(
-                "favorite/create", {"album_ids": prov_item_id}
-            )
+            result = await self._get_data("favorite/create", album_ids=prov_item_id)
         elif media_type == MediaType.TRACK:
-            result = await self._get_data(
-                "favorite/create", {"track_ids": prov_item_id}
-            )
+            result = await self._get_data("favorite/create", track_ids=prov_item_id)
         elif media_type == MediaType.PLAYLIST:
             result = await self._get_data(
-                "playlist/subscribe", {"playlist_id": prov_item_id}
+                "playlist/subscribe", playlist_id=prov_item_id
             )
         return result
 
@@ -282,26 +276,20 @@ class QobuzProvider(MusicProvider):
         """Remove item from library."""
         result = None
         if media_type == MediaType.ARTIST:
-            result = await self._get_data(
-                "favorite/delete", {"artist_ids": prov_item_id}
-            )
+            result = await self._get_data("favorite/delete", artist_ids=prov_item_id)
         elif media_type == MediaType.ALBUM:
-            result = await self._get_data(
-                "favorite/delete", {"album_ids": prov_item_id}
-            )
+            result = await self._get_data("favorite/delete", album_ids=prov_item_id)
         elif media_type == MediaType.TRACK:
-            result = await self._get_data(
-                "favorite/delete", {"track_ids": prov_item_id}
-            )
+            result = await self._get_data("favorite/delete", track_ids=prov_item_id)
         elif media_type == MediaType.PLAYLIST:
             playlist = await self.get_playlist(prov_item_id)
             if playlist.is_editable:
                 result = await self._get_data(
-                    "playlist/delete", {"playlist_id": prov_item_id}
+                    "playlist/delete", playlist_id=prov_item_id
                 )
             else:
                 result = await self._get_data(
-                    "playlist/unsubscribe", {"playlist_id": prov_item_id}
+                    "playlist/unsubscribe", playlist_id=prov_item_id
                 )
         return result
 

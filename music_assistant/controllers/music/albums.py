@@ -170,10 +170,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 self.db_table,
                 {"item_id": item_id},
                 {
-                    "name": album.name if overwrite and album.name else cur_item.name,
-                    "sort_name": album.sort_name
-                    if overwrite and album.sort_name
-                    else cur_item.sort_name,
+                    "name": album.name if overwrite else cur_item.name,
+                    "sort_name": album.sort_name if overwrite else cur_item.sort_name,
                     "version": album.version if overwrite else cur_item.version,
                     "year": album.year or cur_item.year,
                     "upc": album.upc or cur_item.upc,
