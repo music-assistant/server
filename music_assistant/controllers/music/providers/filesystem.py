@@ -97,7 +97,8 @@ class FileSystemProvider(MusicProvider):
 
         return True
 
-    async def search(self, *args, **kwargs) -> List[MediaItemType]:
+    @staticmethod
+    async def search(*args, **kwargs) -> List[MediaItemType]:
         """Perform search on musicprovider."""
         # items for the filesystem provider are already returned by the database
         return []
@@ -203,7 +204,7 @@ class FileSystemProvider(MusicProvider):
         """Get a list of albums for the given artist."""
         itempath = await self.get_filepath(prov_artist_id)
         if not self.exists(itempath):
-            raise MediaNotFoundError(f"Artist path does not exist: {itempath}")
+            return []  # TODO
         result = []
         for entry in os.scandir(itempath):
             if entry.is_dir(follow_symlinks=False):
@@ -215,7 +216,7 @@ class FileSystemProvider(MusicProvider):
         """Get a list of all tracks as we have no clue about preference."""
         itempath = await self.get_filepath(prov_artist_id)
         if not self.exists(itempath):
-            raise MediaNotFoundError(f"Artist path does not exist: {itempath}")
+            return []  # TODO
         result = []
         for entry in scantree(self.config.path):
             # mtime is used as file checksum
@@ -248,6 +249,7 @@ class FileSystemProvider(MusicProvider):
         self, prov_playlist_id: str, prov_track_ids: List[str]
     ) -> None:
         """Remove track(s) from playlist."""
+        # TODO !
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
 
@@ -323,12 +325,11 @@ class FileSystemProvider(MusicProvider):
             album_artist = await self._parse_artist(artist_path, True)
             track.album = await self._parse_album(album_path, album_artist, True)
 
-        if track.album is None and tags.album:
-            if tags.albumartist:
-                album_path = f"{tags.albumartist}/{tags.album}"
-            else:
-                album_path = tags.album
+        if track.album is None and tags.album and tags.albumartist:
+            artist_path = os.path.join(self.config.path, tags.albumartist)
+            album_path = os.path.join(artist_path, tags.album)
             album_id = await self._get_item_id(album_path)
+            artist_id = await self._get_item_id(artist_path)
             album_name, album_version = parse_title_and_version(tags.album)
             track.album = Album(
                 item_id=album_id,
@@ -339,10 +340,7 @@ class FileSystemProvider(MusicProvider):
                 provider_ids={
                     MediaItemProviderId(album_id, self.type, self.id, url=album_path)
                 },
-            )
-            if tags.albumartist:
-                artist_id = await self._get_item_id(tags.albumartist)
-                track.album.artist = Artist(
+                artist=Artist(
                     item_id=artist_id,
                     provider=self.type,
                     name=tags.albumartist,
@@ -351,14 +349,13 @@ class FileSystemProvider(MusicProvider):
                             artist_id, self.type, self.id, url=tags.albumartist
                         )
                     },
-                )
+                ),
+            )
 
             # try to guess the album type
             if name.lower() == album_name.lower():
                 track.album.album_type = AlbumType.SINGLE
-            elif track.album.artist and track.album.artist not in (
-                x.name for x in track.artists
-            ):
+            elif track.album.artist not in (x.name for x in track.artists):
                 track.album.album_type = AlbumType.COMPILATION
             else:
                 track.album.album_type = AlbumType.ALBUM
@@ -367,7 +364,7 @@ class FileSystemProvider(MusicProvider):
         # NOTE: do not use a '/' or '&' to prevent artists like AC/DC become messed up
         track_artists_str = tags.artist or FALLBACK_ARTIST
         track.artists = [
-            await self._parse_artist(item)
+            await self._parse_artist(os.path.join(self.config.path, item))
             for item in split_items(track_artists_str, ARTIST_SPLITTERS)
         ]
 
