@@ -64,7 +64,7 @@ class TracksController(MediaControllerBase[Track]):
     ) -> List[Track]:
         """Return all versions of a track we can find on all providers."""
         track = await self.get(item_id, provider, provider_id)
-        prov_types = {item.types for item in self.mass.music.providers}
+        prov_types = {item.type for item in self.mass.music.providers}
         first_artist = next(iter(track.artists))
         search_query = f"{first_artist.name} {track.name}"
         return [

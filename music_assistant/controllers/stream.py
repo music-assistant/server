@@ -24,6 +24,7 @@ from music_assistant.models.enums import (
     CrossFadeMode,
     EventType,
     MediaType,
+    ProviderType,
 )
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
@@ -59,13 +60,13 @@ class StreamController:
             return f"http://{self._ip}:{self._port}/{queue_id}/{child_player}.{ext}"
         return f"http://{self._ip}:{self._port}/{queue_id}.{ext}"
 
-    async def get_preview_url(self, provider_id: str, track_id: str) -> str:
+    async def get_preview_url(self, provider: ProviderType, track_id: str) -> str:
         """Return url to short preview sample."""
-        track = await self.mass.music.tracks.get_provider_item(track_id, provider_id)
+        track = await self.mass.music.tracks.get_provider_item(track_id, provider)
         if preview := track.metadata.preview:
             return preview
         enc_track_id = urllib.parse.quote(track_id)
-        return f"http://{self._ip}:{self._port}/preview?provider_id={provider_id}&item_id={enc_track_id}"
+        return f"http://{self._ip}:{self._port}/preview?provider_id={provider.value}&item_id={enc_track_id}"
 
     async def setup(self) -> None:
         """Async initialize of module."""
