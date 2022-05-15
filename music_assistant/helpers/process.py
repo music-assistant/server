@@ -134,7 +134,7 @@ class AsyncProcess:
         return await self._proc.communicate(input_data)
 
     def attach_task(self, coro: Coroutine) -> None:
-        """Attach given coro func as reader/writer task so properly cancel it when needed."""
+        """Attach given coro func as reader/writer task to properly cancel it when needed."""
         self._attached_task = asyncio.create_task(coro)
 
 
