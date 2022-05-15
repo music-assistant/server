@@ -15,6 +15,8 @@ from music_assistant.models.media_items import (
 
 def compare_strings(str1, str2, strict=False):
     """Compare strings and return True if we have an (almost) perfect match."""
+    if str1 is None or str2 is None:
+        return False
     if not strict:
         return create_clean_string(str1) == create_clean_string(str2)
     return str1.lower().strip() == str2.lower().strip()
