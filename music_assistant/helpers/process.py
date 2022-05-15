@@ -58,11 +58,12 @@ class AsyncProcess:
         self.closed = True
         if self._proc.returncode is None:
             # prevent subprocess deadlocking, send terminate and read remaining bytes
-            if self._enable_write:
-                self._proc.stdin.close()
             try:
                 self._proc.terminate()
                 await self._proc.stdout.read()
+                if self._enable_write:
+                    await self._proc.stdin.drain()
+                    self._proc.stdin.close()
                 self._proc.kill()
             except (ProcessLookupError, BrokenPipeError, RuntimeError):
                 pass
@@ -98,6 +99,8 @@ class AsyncProcess:
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
+        if self.closed:
+            return
         try:
             self._proc.stdin.write(data)
             await self._proc.stdin.drain()
