@@ -136,7 +136,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
 
     LOGGER.debug(
         "Start analyzing track %s/%s",
-        streamdetails.provider,
+        streamdetails.provider.value,
         streamdetails.item_id,
     )
     # calculate BS.1770 R128 integrated loudness with ffmpeg
@@ -165,17 +165,27 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         stdout=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.PIPE if audio_data else None,
     )
-    value, _ = await proc.communicate(audio_data or None)
-    loudness = float(value.decode().strip())
-    await mass.music.set_track_loudness(
-        streamdetails.item_id, streamdetails.provider, loudness
-    )
-    LOGGER.debug(
-        "Integrated loudness of %s/%s is: %s",
-        streamdetails.provider,
-        streamdetails.item_id,
-        loudness,
-    )
+    stdout, stderr = await proc.communicate(audio_data or None)
+    try:
+        loudness = float(stdout.decode().strip())
+    except ValueError:  # pylint: disable=broad-except
+        LOGGER.warning(
+            "Could not determine integrated loudness of %s/%s - %s %s",
+            streamdetails.provider.value,
+            streamdetails.item_id,
+            stdout.decode(),
+            stderr.decode(),
+        )
+    else:
+        await mass.music.set_track_loudness(
+            streamdetails.item_id, streamdetails.provider, loudness
+        )
+        LOGGER.debug(
+            "Integrated loudness of %s/%s is: %s",
+            streamdetails.provider.value,
+            streamdetails.item_id,
+            loudness,
+        )
 
 
 async def get_stream_details(

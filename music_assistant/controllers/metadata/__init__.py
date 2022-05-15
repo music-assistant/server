@@ -7,7 +7,16 @@ from typing import TYPE_CHECKING, Optional
 
 from music_assistant.helpers.database import TABLE_THUMBS
 from music_assistant.helpers.images import create_thumbnail
-from music_assistant.models.media_items import Album, Artist, Playlist, Radio, Track
+from music_assistant.models.enums import ImageType, MediaType
+from music_assistant.models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    MediaItemType,
+    Playlist,
+    Radio,
+    Track,
+)
 
 from .audiodb import TheAudioDb
 from .fanarttv import FanartTv
@@ -148,10 +157,72 @@ class MetaDataController:
         self.logger.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
         return None
 
+    async def get_image_data_for_item(
+        self,
+        media_item: MediaItemType,
+        img_type: ImageType = ImageType.THUMB,
+        size: Optional[int] = None,
+    ) -> bytes | None:
+        """Get image data for given MedaItem."""
+        img_path = await self.get_image_url_for_item(
+            media_item=media_item,
+            img_type=img_type,
+            allow_local=True,
+            local_as_base64=False,
+        )
+        if not img_path:
+            return None
+        return await self.get_thumbnail(img_path, size)
+
+    async def get_image_url_for_item(
+        self,
+        media_item: MediaItemType,
+        img_type: ImageType = ImageType.THUMB,
+        allow_local: bool = True,
+        local_as_base64: bool = True,
+    ) -> str | None:
+        """Get url to image for given media media_item."""
+        if not media_item:
+            return None
+        if isinstance(media_item, ItemMapping):
+            media_item = await self.mass.music.get_item_by_uri(media_item.uri)
+        if media_item and media_item.metadata.images:
+            for img in media_item.metadata.images:
+                if img.type != img_type:
+                    continue
+                if img.is_file and not allow_local:
+                    continue
+                if img.is_file and local_as_base64:
+                    # return base64 string of the image (compatible with browsers)
+                    return await self.get_thumbnail(img.url, base64=True)
+                return img.url
+
+        # retry with track's album
+        if media_item.media_type == MediaType.TRACK and media_item.album:
+            return await self.get_image_url_for_item(
+                media_item.album, img_type, allow_local, local_as_base64
+            )
+
+        # try artist instead for albums
+        if media_item.media_type == MediaType.ALBUM and media_item.artist:
+            return await self.get_image_url_for_item(
+                media_item.artist, img_type, allow_local, local_as_base64
+            )
+
+        # last resort: track artist(s)
+        if media_item.media_type == MediaType.TRACK and media_item.artists:
+            for artist in media_item.artists:
+                return await self.get_image_url_for_item(
+                    artist, img_type, allow_local, local_as_base64
+                )
+
+        return None
+
     async def get_thumbnail(
-        self, path: str, size: Optional[int], base64: bool = False
+        self, path: str, size: Optional[int] = None, base64: bool = False
     ) -> bytes | str:
-        """Get/create thumbnail image for path."""
+        """Get/create thumbnail image for path (image url or local path)."""
+        # check if we already have this cached in the db
         match = {"path": path, "size": size}
         if result := await self.mass.database.get_row(TABLE_THUMBS, match):
             thumbnail = result["data"]

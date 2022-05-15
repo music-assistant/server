@@ -410,10 +410,13 @@ class PlayerGroup(Player):
 
     async def power(self, powered: bool) -> None:
         """Send POWER command to player."""
-        if not self.use_multi_stream:
+        if self.use_multi_stream:
+            # redirect command to all child players
+            await asyncio.gather(
+                *[x.power(powered) for x in self._get_child_players(True)]
+            )
+        else:
             return await super().power(powered)
-        # redirect command to all child players
-        await asyncio.gather(*[x.power(powered) for x in self._get_child_players(True)])
 
     async def volume_set(self, volume_level: int) -> None:
         """Send volume level (0..100) command to player."""
@@ -452,13 +455,20 @@ class PlayerGroup(Player):
     def on_child_update(self, player_id: str, changed_keys: set) -> None:
         """Call when one of the child players of a playergroup updates."""
         self.update_state(True)
-        if "powered" in changed_keys:
-            # convenience helper:
-            # power off group player if last child player turns off
-            powered_childs = set()
-            for child_id in self._attr_group_childs:
-                if player := self.mass.players.get_player(child_id):
-                    if player.powered:
-                        powered_childs.add(child_id)
-            if self.powered and len(powered_childs) == 0:
-                self.mass.create_task(self.power(False))
+
+        # convenience helper:
+        # power off group player if last child player turns off
+        if "powered" not in changed_keys or not self.active_queue.active:
+            return
+        powered_childs = set()
+        for child_id in self._attr_group_childs:
+            if player := self.mass.players.get_player(child_id):
+                if player.powered:
+                    powered_childs.add(child_id)
+        if self.powered and len(powered_childs) == 0:
+
+            async def auto_turn_off_group():
+                await self.active_queue.stop()
+                await self.power(False)
+
+            self.mass.create_task(auto_turn_off_group())
