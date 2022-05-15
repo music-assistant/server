@@ -37,6 +37,8 @@ class Cache:
                     cacheobject matches the checkum provided
         """
         cur_time = int(time.time())
+        if not isinstance(checksum, str):
+            checksum = str(checksum)
 
         # try memory cache first
         cache_data = self._mem_cache.get(cache_key)
@@ -73,6 +75,8 @@ class Cache:
 
     async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
         """Set data in cache."""
+        if not isinstance(checksum, str):
+            checksum = str(checksum)
         expires = int(time.time() + expiration)
         self._mem_cache[cache_key] = (data, checksum, expires)
         if (expires - time.time()) < 3600 * 4:
@@ -119,7 +123,7 @@ def use_cache(expiration=86400 * 30):
             method_class_name = method_class.__class__.__name__
             cache_key_parts = [method_class_name, func.__name__]
             skip_cache = kwargs.pop("skip_cache", False)
-            cache_checksum = kwargs.pop("cache_checksum", None)
+            cache_checksum = kwargs.pop("cache_checksum", "")
             if len(args) > 1:
                 cache_key_parts += args[1:]
             for key in sorted(kwargs.keys()):
