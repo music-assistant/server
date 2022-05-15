@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import AsyncGenerator, List, Optional, Tuple, Union
+from typing import AsyncGenerator, Coroutine, List, Optional, Tuple, Union
 
 from async_timeout import timeout as _timeout
 
@@ -26,6 +26,7 @@ class AsyncProcess:
         self._proc = None
         self._args = args
         self._enable_write = enable_write
+        self._attached_task: asyncio.Task = None
         self.closed = False
 
     async def __aenter__(self) -> "AsyncProcess":
@@ -56,16 +57,27 @@ class AsyncProcess:
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
         """Exit context manager."""
         self.closed = True
+        if self._attached_task:
+            # cancel the attached reader/writer task
+            self._attached_task.cancel()
         if self._proc.returncode is None:
             # prevent subprocess deadlocking, send terminate and read remaining bytes
             try:
                 self._proc.terminate()
-                await self._proc.stdout.read()
+                # close stdin and let it drain
                 if self._enable_write:
                     await self._proc.stdin.drain()
                     self._proc.stdin.close()
+                # read remaining bytes
+                await self._proc.stdout.read()
+                # we really want to make this thing die ;-)
                 self._proc.kill()
-            except (ProcessLookupError, BrokenPipeError, RuntimeError):
+            except (
+                ProcessLookupError,
+                BrokenPipeError,
+                RuntimeError,
+                ConnectionResetError,
+            ):
                 pass
         del self._proc
 
@@ -120,6 +132,10 @@ class AsyncProcess:
     async def communicate(self, input_data: Optional[bytes] = None) -> bytes:
         """Write bytes to process and read back results."""
         return await self._proc.communicate(input_data)
+
+    def attach_task(self, coro: Coroutine) -> None:
+        """Attach given coro func as reader/writer task so properly cancel it when needed."""
+        self._attached_task = asyncio.create_task(coro)
 
 
 async def check_output(shell_cmd: str) -> Tuple[int, bytes]:

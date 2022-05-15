@@ -179,7 +179,7 @@ class StreamController:
                 # write eof when last packet is received
                 sox_proc.write_eof()
 
-            self.mass.create_task(writer)
+            sox_proc.attach_task(writer())
 
             # read bytes from final output
             async for audio_chunk in sox_proc.iterate_chunks():
