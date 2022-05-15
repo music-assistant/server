@@ -254,16 +254,20 @@ class PlayerQueue:
         self.queue_id = player_id
         self._settings = QueueSettings(self)
         self._current_index: Optional[int] = None
+        # index_in_buffer: which track is currently (pre)loaded in the streamer
+        self._index_in_buffer: Optional[int] = None
         self._current_item_elapsed_time: int = 0
         self._last_item: Optional[QueueItem] = None
-        self._start_index: int = 0  # from which index did the queue start playing
-        self._next_start_index: int = 0  # which index should the stream start
+        # start_index: from which index did the queuestream start playing
+        self._start_index: int = 0
+        self._next_start_index: int = 0
         self._last_state = PlayerState.IDLE
         self._items: List[QueueItem] = []
         self._save_task: TimerHandle = None
         self._update_task: Task = None
         self._signal_next: bool = False
         self._last_player_update: int = 0
+
         self._stream_url: str = ""
 
     async def setup(self) -> None:
@@ -559,6 +563,16 @@ class PlayerQueue:
         items.insert(new_index, items.pop(item_index))
         await self.update(items)
 
+    async def delete_item(self, queue_item_id: str) -> None:
+        """Delete item (by id or index) from the queue."""
+        item_index = self.index_by_id(queue_item_id)
+        if item_index <= self._index_in_buffer:
+            # ignore request if track already loaded in the buffer
+            # the frontend should guard so this is just in case
+            return
+        self._items.pop(item_index)
+        self.signal_update(True)
+
     async def load(self, queue_items: List[QueueItem], passive: bool = False) -> None:
         """Load (overwrite) queue with new items."""
         for index, item in enumerate(queue_items):
@@ -601,7 +615,7 @@ class PlayerQueue:
                 + self._items[insert_at_index:]
             )
 
-        if offset == 0:
+        if offset in (0, self._index_in_buffer):
             await self.play_index(insert_at_index, passive=passive)
 
         self.signal_update(True)
@@ -719,11 +733,13 @@ class PlayerQueue:
         self._current_index = start_from_index
         self._start_index = start_from_index
         self._next_start_index = self.get_next_index(start_from_index)
+        self._index_in_buffer = start_from_index
         return start_from_index
 
     async def queue_stream_next(self, cur_index: int) -> int | None:
         """Call when queue_streamer loads next track in buffer."""
         next_idx = self._next_start_index
+        self._index_in_buffer = next_idx
         self._next_start_index = self.get_next_index(self._next_start_index)
         return next_idx
 
