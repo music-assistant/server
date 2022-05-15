@@ -539,7 +539,7 @@ async def get_sox_args_for_pcm_stream(
     if not sox_present:
         if not ffmpeg_present:
             raise AudioError(
-                "FFmpeg binary is missing from system."
+                "FFmpeg binary is missing from system. "
                 "Please install ffmpeg on your OS to enable playback.",
             )
         # collect input args
