@@ -463,8 +463,8 @@ class PlayerQueue:
         """Toggle play/pause on queue/player."""
         if self.player.state == PlayerState.PLAYING:
             await self.pause()
-        else:
-            await self.play()
+            return
+        await self.play()
 
     async def next(self) -> None:
         """Play the next track in the queue."""
@@ -492,6 +492,9 @@ class PlayerQueue:
 
     async def play_index(self, index: Union[int, str], passive: bool = False) -> None:
         """Play item at index (or item_id) X in queue."""
+        # power on player when requesting play
+        if not self.player.powered:
+            await self.player.power(True)
         if self.player.use_multi_stream:
             await self.mass.streams.stop_multi_client_queue_stream(self.queue_id)
         if not isinstance(index, int):
