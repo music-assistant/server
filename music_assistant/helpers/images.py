@@ -42,7 +42,7 @@ async def create_thumbnail(
             else:
                 # regular image file on disk
                 async with prov.open_file(path) as _file:
-                    img_data = BytesIO(await _file.read())
+                    img_data = await _file.read()
             break
     if not img_data:
         raise FileNotFoundError(f"Image not found: {path}")
