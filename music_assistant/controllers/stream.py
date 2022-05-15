@@ -408,7 +408,7 @@ class StreamController:
         self.logger.info(
             "Starting Queue audio stream for Queue %s (PCM format: %s - sample rate: %s)",
             queue.player.name,
-            pcm_fmt,
+            pcm_fmt.value,
             sample_rate,
         )
 
@@ -424,7 +424,9 @@ class StreamController:
                 queue_index = await queue.queue_stream_next(queue_index)
             queue_track = queue.get_item(queue_index)
             if not queue_track:
-                self.logger.debug("no (more) tracks in queue %s", queue.queue_id)
+                self.logger.debug(
+                    "Abort Queue stream %s: no (more) tracks in queue", queue.queue_id
+                )
                 break
             # get streamdetails
             try:
@@ -433,21 +435,28 @@ class StreamController:
                 )
             except MediaNotFoundError as err:
                 self.logger.warning(
-                    "Skip track due to missing streamdetails", exc_info=err
+                    "Skip track %s due to missing streamdetails",
+                    queue_track.name,
+                    exc_info=err,
                 )
                 continue
 
             # check the PCM samplerate/bitrate
             if not resample and streamdetails.bit_depth > bit_depth:
                 await queue.queue_stream_signal_next()
-                self.logger.info("Abort queue stream due to bit depth mismatch")
+                self.logger.debug(
+                    "Abort queue stream %s due to bit depth mismatch", queue.player.name
+                )
                 break
             if (
                 not resample
                 and streamdetails.sample_rate > sample_rate
                 and streamdetails.sample_rate <= queue.max_sample_rate
             ):
-                self.logger.info("Abort queue stream due to sample rate mismatch")
+                self.logger.debug(
+                    "Abort queue stream %s due to sample rate mismatch",
+                    queue.player.name,
+                )
                 await queue.queue_stream_signal_next()
                 break
 
@@ -475,9 +484,9 @@ class StreamController:
                 use_crossfade = False
                 buffer_size = sample_size
 
-            self.logger.debug(
+            self.logger.info(
                 "Start Streaming queue track: %s (%s) for queue %s",
-                queue_track.item_id,
+                queue_track.uri,
                 queue_track.name,
                 queue.player.name,
             )
@@ -602,11 +611,11 @@ class StreamController:
             queue_track.duration = accurate_duration
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
-                queue_track.item_id,
+                queue_track.uri,
                 queue_track.name,
                 queue.player.name,
             )
         # end of queue reached, pass last fadeout bits to final output
         yield last_fadeout_data
         # END OF QUEUE STREAM
-        self.logger.info("Queue stream for Queue %s finished.", queue.queue_id)
+        self.logger.info("Queue stream for Queue %s finished.", queue.player.name)
