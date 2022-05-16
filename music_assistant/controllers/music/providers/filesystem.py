@@ -671,6 +671,18 @@ class FileSystemProvider(MusicProvider):
         async with aiofiles.open(file_path, mode) as _file:
             yield _file
 
+    async def get_embedded_image(self, file_path) -> bytes | None:
+        """Return embedded image data."""
+        if not TinyTag.is_supported(file_path):
+            return None
+
+        # embedded image in music file
+        def _get_data():
+            tags = TinyTag.get(file_path, image=True)
+            return tags.get_image()
+
+        return await self.mass.loop.run_in_executor(None, _get_data)
+
     async def get_filepath(self, item_id: str) -> str | None:
         """Get full filepath on disk for item_id."""
         file_path = await self.mass.music.get_provider_mapping(
