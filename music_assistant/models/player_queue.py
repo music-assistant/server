@@ -53,8 +53,14 @@ class QueueItem(DataClassDictMixin):
 
     @classmethod
     def __pre_deserialize__(cls, d: Dict[Any, Any]) -> Dict[Any, Any]:
-        """Run actions before serialization."""
+        """Run actions before deserialization."""
         d.pop("streamdetails", None)
+        return d
+
+    def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
+        """Run actions before serialization."""
+        if self.media_type == MediaType.RADIO:
+            d.pop("duration")
         return d
 
     @classmethod
