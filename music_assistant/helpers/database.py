@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 TABLE_PROV_MAPPINGS = "provider_mappings"
 TABLE_TRACK_LOUDNESS = "track_loudness"
@@ -185,9 +185,8 @@ class Database:
                 # always create db tables if they don't exist to prevent errors trying to access them later
                 await self.__create_database_tables(db)
 
-                if prev_version < 9:
+                if prev_version < 10:
                     # refactored file provider, start clean just in case.
-                    await db.execute("DROP TABLE IF EXISTS filesystem_mappings")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ALBUMS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
