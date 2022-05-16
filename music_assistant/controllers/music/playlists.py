@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
+from music_assistant.helpers.uri import create_uri
 from music_assistant.models.enums import EventType, MediaType, ProviderType
 from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.models.event import MassEvent
@@ -110,7 +111,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
             if playlist_prov.prov_type.is_file():
                 # the file provider can handle uri's from all providers so simply add the uri
-                track_id_to_add = track_version.url
+                track_id_to_add = track_version.url or create_uri(
+                    MediaType.TRACK,
+                    track_version.prov_type,
+                    track_version.item_id,
+                )
                 break
             if track_version.prov_id == playlist_prov.prov_id:
                 track_id_to_add = track_version.item_id
