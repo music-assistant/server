@@ -43,7 +43,7 @@ def scantree(path: str) -> Generator[os.DirEntry]:
     """Recursively yield DirEntry objects for given directory."""
     for entry in os.scandir(path):
         if entry.is_dir(follow_symlinks=False):
-            yield from scantree(entry.path)  # see below for Python 2.x
+            yield from scantree(entry.path)
         else:
             yield entry
 
@@ -70,10 +70,10 @@ class FileSystemProvider(MusicProvider):
     """
     Implementation of a musicprovider for local files.
 
-    Assumes files are stored on disk in format <artist>/<album>/<track.ext>
-    Reads ID3 tags from file and falls back to parsing filename
-    Supports m3u files only for playlists
-    Supports having URI's from streaming providers within m3u playlist
+    Reads ID3 tags from file and falls back to parsing filename.
+    Optionally reads metadata from nfo files and images in folder structure <artist>/<album>.
+    Supports m3u files only for playlists.
+    Supports having URI's from streaming providers within m3u playlist.
     """
 
     _attr_name = "Filesystem"
@@ -617,8 +617,7 @@ class FileSystemProvider(MusicProvider):
         self, playlist_path: str, checksum: Optional[str] = None
     ) -> Playlist | None:
         """Parse playlist from file."""
-        if self.config.path not in playlist_path:
-            playlist_path = os.path.join(self.config.path, playlist_path)
+        playlist_path = self._get_absolute_path(playlist_path)
         playlist_path_base = self._get_relative_path(playlist_path)
         playlist_item_id = self._get_item_id(playlist_path_base)
         checksum = checksum or self._get_checksum(playlist_path)
@@ -694,6 +693,8 @@ class FileSystemProvider(MusicProvider):
 
     def _get_relative_path(self, filename: str) -> str:
         """Get relative path for filename (without the base dir)."""
+        if self.config.path not in filename:
+            return filename
         filename = filename.replace(self.config.path, "")
         if filename.startswith(os.sep):
             filename = filename[1:]
@@ -703,6 +704,8 @@ class FileSystemProvider(MusicProvider):
 
     def _get_absolute_path(self, filename: str) -> str:
         """Get absolute path for filename (including the base dir)."""
+        if self.config.path in filename:
+            return filename
         return os.path.join(self.config.path, filename)
 
     def _get_item_id(self, filename: str) -> str:

@@ -481,6 +481,12 @@ async def get_media_stream(
             await mass.music.mark_item_played(
                 streamdetails.item_id, streamdetails.provider
             )
+            # send analyze job to background worker
+            if streamdetails.loudness is None and streamdetails.provider != "url":
+                uri = f"{streamdetails.provider}://{streamdetails.media_type.value}/{streamdetails.item_id}"
+                mass.add_job(
+                    analyze_audio(mass, streamdetails), f"Analyze audio for {uri}"
+                )
         finally:
             mass.signal_event(
                 MassEvent(
@@ -489,12 +495,6 @@ async def get_media_stream(
                     data=streamdetails,
                 )
             )
-            # send analyze job to background worker
-            if streamdetails.loudness is None and streamdetails.provider != "url":
-                uri = f"{streamdetails.provider}://{streamdetails.media_type.value}/{streamdetails.item_id}"
-                mass.add_job(
-                    analyze_audio(mass, streamdetails), f"Analyze audio for {uri}"
-                )
 
 
 async def check_audio_support(try_install: bool = False) -> Tuple[bool, bool, bool]:

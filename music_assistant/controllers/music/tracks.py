@@ -90,8 +90,6 @@ class TracksController(MediaControllerBase[Track]):
         for provider in self.mass.music.providers:
             if MediaType.TRACK not in provider.supported_mediatypes:
                 continue
-            if provider.type.is_file():
-                continue
             self.logger.debug(
                 "Trying to match track %s on provider %s", db_track.name, provider.name
             )

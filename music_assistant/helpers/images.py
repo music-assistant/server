@@ -5,7 +5,6 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Optional
 
 from PIL import Image
-from tinytag import TinyTag
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -29,15 +28,10 @@ async def create_thumbnail(
                 continue
             if not prov.exists(path):
                 continue
-            if TinyTag.is_supported(path):
-                # embedded image in music file
-                def get_embedded_image():
-                    tags = TinyTag.get(path, image=True)
-                    return tags.get_image()
-
-                img_data = await mass.loop.run_in_executor(None, get_embedded_image)
-            else:
-                # regular image file on disk
+            # embedded image in music file
+            img_data = await prov.get_embedded_image(path)
+            # regular image file on disk
+            if not img_data:
                 async with prov.open_file(path) as _file:
                     img_data = await _file.read()
             break
