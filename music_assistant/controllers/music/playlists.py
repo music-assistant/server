@@ -110,7 +110,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
             if playlist_prov.prov_type.is_file():
                 # the file provider can handle uri's from all providers so simply add the uri
-                track_id_to_add = track.uri
+                track_id_to_add = track_version.url
                 break
             if track_version.prov_id == playlist_prov.prov_id:
                 track_id_to_add = track_version.item_id
