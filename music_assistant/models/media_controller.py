@@ -87,6 +87,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                         pass
                     else:
                         break
+        if not details:
+            raise MediaNotFoundError(
+                f"Item not found: {provider.value or provider_id}/{provider_item_id}"
+            )
         if not lazy:
             return await self.add(details)
         self.mass.add_job(self.add(details), f"Add {details.uri} to database")
