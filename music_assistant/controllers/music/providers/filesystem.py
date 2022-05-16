@@ -285,10 +285,7 @@ class FileSystemProvider(MusicProvider):
         self, track_path: str, checksum: Optional[int] = None
     ) -> Track | None:
         """Try to parse a track from a filename by reading its tags."""
-        if self.config.path not in track_path:
-            track_path = os.path.join(self.config.path, track_path)
-        track_path_base = self._get_relative_path(track_path)
-        track_item_id = self._get_item_id(track_path_base)
+        track_item_id = self._get_item_id(track_path)
 
         if not self.exists(track_path):
             raise MediaNotFoundError(f"Track path does not exist: {track_path}")
@@ -313,10 +310,11 @@ class FileSystemProvider(MusicProvider):
             track_title = tags.title
         else:
 
-            ext = track_path_base.split(".")[-1]
-            track_title = track_path_base.replace(f".{ext}", "").replace("_", " ")
+            ext = track_path.split(".")[-1]
+            track_title = track_path.split(os.sep)[-1]
+            track_title = track_title.replace(f".{ext}", "").replace("_", " ")
             self.logger.warning(
-                "%s is missing ID3 tags, use filename as fallback", track_path_base
+                "%s is missing ID3 tags, use filename as fallback", track_path
             )
 
         name, version = parse_title_and_version(track_title)
@@ -330,7 +328,7 @@ class FileSystemProvider(MusicProvider):
         )
 
         # work out if we have an artist/album/track.ext structure
-        track_parts = track_path_base.rsplit(os.sep)
+        track_parts = track_path.rsplit(os.sep)
         album_folder = None
         artist_folder = None
         parentdir = os.path.dirname(track_path)
@@ -432,7 +430,7 @@ class FileSystemProvider(MusicProvider):
                 prov_id=self.id,
                 quality=quality,
                 details=quality_details,
-                url=track_path_base,
+                url=track_path,
             )
         )
         await self.mass.cache.set(cache_key, track.to_dict(), checksum, 86400 * 365 * 5)
@@ -448,10 +446,10 @@ class FileSystemProvider(MusicProvider):
         """Lookup metadata in Artist folder."""
         assert name or artist_path
         if not artist_path:
-            artist_path = self._get_absolute_path(name)
+            # create fake path
+            artist_path = os.path.join(self.config.path, name)
 
-        artist_path_base = self._get_relative_path(artist_path)
-        artist_item_id = self._get_item_id(artist_path_base)
+        artist_item_id = self._get_item_id(artist_path)
         if not name:
             name = artist_path.split(os.sep)[-1]
 
@@ -465,9 +463,7 @@ class FileSystemProvider(MusicProvider):
             self.type,
             name,
             provider_ids={
-                MediaItemProviderId(
-                    artist_item_id, self.type, self.id, url=artist_path_base
-                )
+                MediaItemProviderId(artist_item_id, self.type, self.id, url=artist_path)
             },
             in_library=in_library,
         )
@@ -531,12 +527,12 @@ class FileSystemProvider(MusicProvider):
         """Lookup metadata in Album folder."""
         assert name or album_path
         if not album_path and artist:
-            album_path = self._get_absolute_path(f"{artist.name}{os.sep}{name}")
+            # create fake path
+            album_path = os.path.join(self.config.path, artist.name, name)
         elif not album_path:
-            album_path = self._get_absolute_path(name)
+            album_path = os.path.join(self.config.path, name)
 
-        album_path_base = self._get_relative_path(album_path)
-        album_item_id = self._get_item_id(album_path_base)
+        album_item_id = self._get_item_id(album_path)
         if not name:
             name = album_path.split(os.sep)[-1]
 
@@ -551,9 +547,7 @@ class FileSystemProvider(MusicProvider):
             name,
             artist=artist,
             provider_ids={
-                MediaItemProviderId(
-                    album_item_id, self.type, self.id, url=album_path_base
-                )
+                MediaItemProviderId(album_item_id, self.type, self.id, url=album_path)
             },
             in_library=in_library,
         )
@@ -617,9 +611,7 @@ class FileSystemProvider(MusicProvider):
         self, playlist_path: str, checksum: Optional[str] = None
     ) -> Playlist | None:
         """Parse playlist from file."""
-        playlist_path = self._get_absolute_path(playlist_path)
-        playlist_path_base = self._get_relative_path(playlist_path)
-        playlist_item_id = self._get_item_id(playlist_path_base)
+        playlist_item_id = self._get_item_id(playlist_path)
         checksum = checksum or self._get_checksum(playlist_path)
 
         if not playlist_path.endswith(".m3u"):
@@ -628,7 +620,7 @@ class FileSystemProvider(MusicProvider):
         if not self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
 
-        name = playlist_path_base.split(os.sep)[-1].replace(".m3u", "")
+        name = playlist_path.split(os.sep)[-1].replace(".m3u", "")
 
         playlist = Playlist(playlist_item_id, provider=self.type, name=name)
         playlist.is_editable = True
@@ -638,7 +630,7 @@ class FileSystemProvider(MusicProvider):
                 item_id=playlist_item_id,
                 prov_type=self.type,
                 prov_id=self.id,
-                url=playlist_path_base,
+                url=playlist_path,
             )
         )
         playlist.owner = self._attr_name
@@ -691,26 +683,9 @@ class FileSystemProvider(MusicProvider):
             return file_path
         return None
 
-    def _get_relative_path(self, filename: str) -> str:
-        """Get relative path for filename (without the base dir)."""
-        if self.config.path not in filename:
-            return filename
-        filename = filename.replace(self.config.path, "")
-        if filename.startswith(os.sep):
-            filename = filename[1:]
-        if filename.endswith(os.sep):
-            filename = filename[:-1]
-        return filename
-
-    def _get_absolute_path(self, filename: str) -> str:
-        """Get absolute path for filename (including the base dir)."""
-        if self.config.path in filename:
-            return filename
-        return os.path.join(self.config.path, filename)
-
-    def _get_item_id(self, filename: str) -> str:
+    def _get_item_id(self, file_path: str) -> str:
         """Create item id from filename."""
-        return create_clean_string(self._get_relative_path(filename))
+        return create_clean_string(file_path.replace(self.config.path, ""))
 
     @staticmethod
     def _get_checksum(filename: str) -> int:
