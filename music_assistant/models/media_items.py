@@ -281,7 +281,7 @@ class Radio(MediaItem):
     """Model for a radio station."""
 
     media_type: MediaType = MediaType.RADIO
-    duration: int = 0
+    duration: int = 172800
 
     def to_db_row(self) -> dict:
         """Create dict from item suitable for db."""
