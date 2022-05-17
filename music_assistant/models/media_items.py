@@ -227,6 +227,10 @@ class Artist(MediaItem):
     media_type: MediaType = MediaType.ARTIST
     musicbrainz_id: Optional[str] = None
 
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.provider, self.item_id))
+
 
 @dataclass
 class Album(MediaItem):
