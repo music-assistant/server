@@ -228,13 +228,13 @@ class FileSystemProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
-        query = f"SELECT * FROM tracks WHERE (album LIKE '%{prov_album_id}%'"
-        query += f" AND album LIKE '%{self.type.value}%')"
+        query = f"SELECT * FROM tracks WHERE (album LIKE '%\"{prov_album_id}\"%'"
+        query += f" AND album LIKE '%\"{self.type.value}\"%')"
         db_id = await self.mass.music.get_provider_mapping(
             MediaType.ALBUM, provider=self.type, provider_item_id=prov_album_id
         )
         if db_id is not None:
-            query += f" OR (album LIKE '%{db_id}%' AND album LIKE '%database%')"
+            query += f" OR (album LIKE '%\"{db_id}\"%' AND album LIKE '%\"database\"%')"
         return await self.mass.music.tracks.get_db_items(query)
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
@@ -274,13 +274,15 @@ class FileSystemProvider(MusicProvider):
     async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
         """Get a list of all tracks as we have no clue about preference."""
         # filesystem items are always stored in db so we can query the database
-        query = f"SELECT * FROM tracks WHERE (artists LIKE '%{prov_artist_id}%'"
-        query += f" AND artists LIKE '%{self.type.value}%')"
+        query = f"SELECT * FROM tracks WHERE (artists LIKE '%\"{prov_artist_id}\"%'"
+        query += f" AND artists LIKE '%\"{self.type.value}\"%')"
         db_id = await self.mass.music.get_provider_mapping(
             MediaType.ARTIST, provider=self.type, provider_item_id=prov_artist_id
         )
         if db_id is not None:
-            query += f" OR (artists LIKE '%{db_id}%' AND artists LIKE '%database%')"
+            query += (
+                f" OR (artists LIKE '%\"{db_id}\"%' AND artists LIKE '%\"database\"%')"
+            )
         return await self.mass.music.tracks.get_db_items(query)
 
     async def library_add(self, *args, **kwargs) -> bool:
