@@ -168,7 +168,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
     stdout, stderr = await proc.communicate(audio_data or None)
     try:
         loudness = float(stdout.decode().strip())
-    except ValueError:  # pylint: disable=broad-except
+    except (ValueError, AttributeError):
         LOGGER.warning(
             "Could not determine integrated loudness of %s/%s - %s %s",
             streamdetails.provider.value,
