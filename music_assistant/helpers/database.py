@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 TABLE_PROV_MAPPINGS = "provider_mappings"
 TABLE_TRACK_LOUDNESS = "track_loudness"
@@ -198,6 +198,12 @@ class Database:
                     # recreate missing tables
                     await self.__create_database_tables(db)
 
+                if prev_version < 11:
+                    # fix for duplicate thumbs creation
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_THUMBS}")
+                    # recreate missing tables
+                    await self.__create_database_tables(db)
+
             # store current schema version
             await self.set_setting("version", str(SCHEMA_VERSION), db=db)
 
@@ -305,7 +311,7 @@ class Database:
             f"""CREATE TABLE IF NOT EXISTS {TABLE_THUMBS}(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 path TEXT NOT NULL,
-                size INTEGER NULL,
+                size INTEGER DEFAULT 0,
                 data BLOB,
                 UNIQUE(path, size));"""
         )

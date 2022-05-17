@@ -161,7 +161,7 @@ class MetaDataController:
         self,
         media_item: MediaItemType,
         img_type: ImageType = ImageType.THUMB,
-        size: Optional[int] = None,
+        size: int = 0,
     ) -> bytes | None:
         """Get image data for given MedaItem."""
         img_path = await self.get_image_url_for_item(
@@ -179,7 +179,7 @@ class MetaDataController:
         media_item: MediaItemType,
         img_type: ImageType = ImageType.THUMB,
         allow_local: bool = True,
-        local_as_base64: bool = True,
+        local_as_base64: bool = False,
     ) -> str | None:
         """Get url to image for given media media_item."""
         if not media_item:
@@ -219,7 +219,7 @@ class MetaDataController:
         return None
 
     async def get_thumbnail(
-        self, path: str, size: Optional[int] = None, base64: bool = False
+        self, path: str, size: int = 0, base64: bool = False
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
         # check if we already have this cached in the db

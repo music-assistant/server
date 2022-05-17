@@ -14,8 +14,6 @@ async def create_thumbnail(
     mass: MusicAssistant, path: str, size: Optional[int]
 ) -> bytes:
     """Create thumbnail from image url."""
-    if not size:
-        size = 200
     img_data = None
     if path.startswith("http"):
         async with mass.http_session.get(path, verify_ssl=False) as response:
@@ -41,7 +39,8 @@ async def create_thumbnail(
     def _create_image():
         data = BytesIO(img_data)
         img = Image.open(data)
-        img.thumbnail((size, size), Image.ANTIALIAS)
+        if size:
+            img.thumbnail((size, size), Image.ANTIALIAS)
         img.save(data, format="png")
         return data.getvalue()
 
