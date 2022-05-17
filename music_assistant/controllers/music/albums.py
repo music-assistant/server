@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List, Optional
+import itertools
+from typing import Dict, List, Optional
 
 from music_assistant.helpers.compare import compare_album, compare_strings
 from music_assistant.helpers.database import TABLE_ALBUMS
@@ -45,13 +46,22 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> List[Track]:
         """Return album tracks for the given provider album id."""
         album = await self.get(item_id, provider, provider_id)
-        # simply return the tracks from the first provider
-        for prov in album.provider_ids:
-            if tracks := await self.get_provider_album_tracks(
-                prov.item_id, prov.prov_id
-            ):
-                return tracks
-        return []
+        # get results from all providers
+        coros = [
+            self.get_provider_album_tracks(item.item_id, item.prov_id)
+            for item in album.provider_ids
+        ]
+        tracks = itertools.chain.from_iterable(await asyncio.gather(*coros))
+        # merge duplicates using a dict
+        final_items: Dict[str, Track] = {}
+        for track in tracks:
+            key = f"{track.disc_number}.{track.track_number}"
+            if key in final_items:
+                final_items[key].provider_ids.update(track.provider_ids)
+            else:
+                track.album = album
+                final_items[key] = track
+        return list(final_items.values())
 
     async def versions(
         self,
@@ -69,7 +79,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 *[self.search(search_query, prov_type) for prov_type in prov_types]
             )
             for prov_item in prov_items
-            if compare_strings(prov_item.artist.name, album.artist.name)
+            if prov_item.sort_name == album.sort_name
+            and compare_strings(prov_item.artist.name, album.artist.name)
         ]
 
     async def add(self, item: Album) -> Album:

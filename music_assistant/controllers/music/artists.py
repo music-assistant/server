@@ -45,9 +45,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.get_provider_artist_toptracks(item.item_id, item.prov_id)
             for item in artist.provider_ids
         ]
-        if provider == ProviderType.DATABASE:
-            coros.append(self.get_database_artist_tracks(item_id, provider))
-        return itertools.chain.from_iterable(await asyncio.gather(*coros))
+        # use intermediate set to remove duplicates
+        return list(set(itertools.chain.from_iterable(await asyncio.gather(*coros))))
 
     async def albums(
         self,
@@ -62,9 +61,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.get_provider_artist_albums(item.item_id, item.prov_id)
             for item in artist.provider_ids
         ]
-        if provider == ProviderType.DATABASE:
-            coros.append(self.get_database_artist_albums(item_id, provider))
-        return itertools.chain.from_iterable(await asyncio.gather(*coros))
+        # use intermediate set to remove duplicates
+        return list(set(itertools.chain.from_iterable(await asyncio.gather(*coros))))
 
     async def add(self, item: Artist) -> Artist:
         """Add artist to local db and return the database item."""
@@ -111,22 +109,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         if not provider:
             return []
         return await provider.get_artist_toptracks(item_id)
-
-    async def get_database_artist_tracks(
-        self, artist_id: str, provider: ProviderType
-    ) -> List[Track]:
-        """Return tracks for an artist in database."""
-        query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{artist_id}\"%'"
-        query += f" and artists LIKE '%\"{provider.value}\"%'"
-        return await self.mass.music.tracks.get_db_items(query)
-
-    async def get_database_artist_albums(
-        self, artist_id: str, provider: ProviderType
-    ) -> List[Track]:
-        """Return tracks for an artist in database."""
-        query = f"SELECT * FROM albums WHERE artist LIKE '%\"{artist_id}\"%'"
-        query += f" and artist LIKE '%\"{provider.value}\"%'"
-        return await self.mass.music.albums.get_db_items(query)
 
     async def get_provider_artist_albums(
         self, item_id: str, provider_id: str
