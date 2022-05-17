@@ -5,7 +5,7 @@ import asyncio
 import os
 import urllib.parse
 from contextlib import asynccontextmanager
-from typing import Generator, List, Optional, Tuple
+from typing import Generator, List, Optional, Set, Tuple
 
 import aiofiles
 import xmltodict
@@ -26,6 +26,7 @@ from music_assistant.models.media_items import (
     Artist,
     ContentType,
     ImageType,
+    ItemMapping,
     MediaItemImage,
     MediaItemProviderId,
     MediaItemType,
@@ -109,16 +110,18 @@ class FileSystemProvider(MusicProvider):
     async def sync_library(self) -> None:
         """Run library sync for this provider."""
         cache_key = f"{self.id}.checksums"
-        checksums = await self.mass.cache.get(cache_key)
-        if checksums is None:
-            checksums = {}
+        prev_checksums = await self.mass.cache.get(cache_key)
+        if prev_checksums is None:
+            prev_checksums = {}
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
+        cur_checksums = {}
         for entry in scantree(self.config.path):
 
             # mtime is used as file checksum
             checksum = int(entry.stat().st_mtime)
-            if checksum == checksums.get(entry.path):
+            cur_checksums[entry.path] = checksum
+            if checksum == prev_checksums.get(entry.path):
                 continue
 
             try:
@@ -140,11 +143,67 @@ class FileSystemProvider(MusicProvider):
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s", entry.path)
 
-            # save checksum in cache for next sync
-            checksums[entry.path] = checksum
+        # save checksums for next sync
+        await self.mass.cache.set(cache_key, cur_checksums)
 
-        # TODO: Handle deletions
-        await self.mass.cache.set(cache_key, checksums)
+        # work out deletions
+        deleted_files = set(prev_checksums.keys()) - set(cur_checksums.keys())
+        artists: Set[ItemMapping] = set()
+        albums: Set[ItemMapping] = set()
+        # process deleted tracks
+        for file_path in deleted_files:
+            item_id = self._get_item_id(file_path)
+            if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
+                item_id, self.type
+            ):
+                # remove provider mapping from track
+                db_item.provider_ids = {
+                    x for x in db_item.provider_ids if x.item_id != item_id
+                }
+                if not db_item.provider_ids:
+                    # track has no more provider_ids left, it is completely deleted
+                    await self.mass.music.tracks.delete_db_item(db_item.item_id)
+                else:
+                    await self.mass.music.tracks.update_db_item(
+                        db_item.item_id, db_item
+                    )
+                for artist in db_item.artists:
+                    artists.add(artist)
+                if db_item.album:
+                    albums.add(db_item.album)
+        # check if artists are deleted
+        for artist in artists:
+            if db_item := await self.mass.music.artists.get_db_item_by_prov_id(
+                artist.item_id, artist.provider
+            ):
+                if len(db_item.provider_ids) > 1:
+                    continue
+                artist_tracks = await self.mass.music.artists.toptracks(
+                    db_item.item_id, db_item.provider
+                )
+                if artist_tracks:
+                    continue
+                artist_albums = await self.mass.music.artists.albums(
+                    db_item.item_id, db_item.provider
+                )
+                if artist_albums:
+                    continue
+                # artist has no more items attached, delete it
+                await self.mass.music.artists.delete_db_item(db_item.item_id)
+        # check if albums are deleted
+        for album in albums:
+            if db_item := await self.mass.music.albums.get_db_item_by_prov_id(
+                album.item_id, album.provider
+            ):
+                if len(db_item.provider_ids) > 1:
+                    continue
+                album_tracks = await self.mass.music.albums.tracks(
+                    db_item.item_id, db_item.provider
+                )
+                if album_tracks:
+                    continue
+                # album has no more tracks attached, delete it
+                await self.mass.music.albums.delete_db_item(db_item.item_id)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""

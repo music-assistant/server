@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Generic, List, Optional, Tuple, TypeVar
 
 from databases import Database as Db
 
+from music_assistant.helpers.database import TABLE_PROV_MAPPINGS
 from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailableError
 
 from .enums import MediaType, ProviderType
@@ -249,3 +250,22 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 f"{self.media_type.value} {item_id} not found on provider {provider.name}"
             )
         return item
+
+    async def delete_db_item(self, item_id: int) -> None:
+        """Delete record from the database."""
+        async with self.mass.database.get_db() as _db:
+
+            # delete prov mappings
+            await self.mass.database.delete(
+                TABLE_PROV_MAPPINGS,
+                {"item_id": int(item_id), "media_type": self.media_type.value},
+                db=_db,
+            )
+            # delete item
+            await self.mass.database.delete(
+                self.db_table,
+                {"item_id": int(item_id)},
+                db=_db,
+            )
+        # NOTE: this does not delete any references to this item in other records
+        self.logger.debug("deleted item with id %s from database", item_id)
