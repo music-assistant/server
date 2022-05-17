@@ -661,6 +661,8 @@ class FileSystemProvider(MusicProvider):
 
     def exists(self, file_path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""
+        if not file_path:
+            return False  # guard
         # ensure we have a full path and not relative
         if self.config.path not in file_path:
             file_path = os.path.join(self.config.path, file_path)
