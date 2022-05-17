@@ -697,6 +697,8 @@ class FileSystemProvider(MusicProvider):
 
     async def get_filepath(self, item_id: str) -> str | None:
         """Get full filepath on disk for item_id."""
+        if item_id is None:
+            return None  # guard
         file_path = await self.mass.music.get_provider_mapping(
             provider_id=self.id, provider_item_id=item_id, return_key="url"
         )
