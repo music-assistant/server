@@ -398,13 +398,16 @@ class PlayerQueue:
             uris = [uris]
         queue_items = []
         for uri in uris:
-            if uri.startswith("http"):
-                # a plain url was provided
-                queue_items.append(QueueItem(uri))
-                continue
-            media_item = await self.mass.music.get_item_by_uri(uri)
-            if not media_item:
-                raise FileNotFoundError(f"Invalid uri: {uri}")
+            # parse provided uri into a MA MediaItem or Basis QueueItem from URL
+            try:
+                media_item = await self.mass.music.get_item_by_uri(uri)
+            except MediaNotFoundError as err:
+                if uri.startswith("http"):
+                    # a plain url was provided
+                    queue_items.append(QueueItem(uri))
+                    continue
+                raise MediaNotFoundError(f"Invalid uri: {uri}") from err
+
             # collect tracks to play
             if media_item.media_type == MediaType.ARTIST:
                 tracks = await self.mass.music.artists.toptracks(
