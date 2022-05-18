@@ -46,106 +46,111 @@ class MusicBrainz:
             trackname,
             track_isrc,
         )
-        mb_artist_id = None
+
         if album_upc:
-            mb_artist_id = await self.search_artist_by_album(
-                artistname, None, album_upc
-            )
-            if mb_artist_id:
+            if mb_id := await self.search_artist_by_album(artistname, None, album_upc):
                 self.logger.debug(
                     "Got MusicbrainzArtistId for %s after search on upc %s --> %s",
                     artistname,
                     album_upc,
-                    mb_artist_id,
+                    mb_id,
                 )
-        if not mb_artist_id and track_isrc:
-            mb_artist_id = await self.search_artist_by_track(
-                artistname, None, track_isrc
-            )
-            if mb_artist_id:
+                return mb_id
+        if track_isrc:
+            if mb_id := await self.search_artist_by_track(artistname, None, track_isrc):
                 self.logger.debug(
                     "Got MusicbrainzArtistId for %s after search on isrc %s --> %s",
                     artistname,
                     track_isrc,
-                    mb_artist_id,
+                    mb_id,
                 )
-        if not mb_artist_id and albumname:
-            mb_artist_id = await self.search_artist_by_album(artistname, albumname)
-            if mb_artist_id:
-                self.logger.debug(
-                    "Got MusicbrainzArtistId for %s after search on albumname %s --> %s",
-                    artistname,
-                    albumname,
-                    mb_artist_id,
-                )
-        if not mb_artist_id and trackname:
-            mb_artist_id = await self.search_artist_by_track(artistname, trackname)
-            if mb_artist_id:
-                self.logger.debug(
-                    "Got MusicbrainzArtistId for %s after search on trackname %s --> %s",
-                    artistname,
-                    trackname,
-                    mb_artist_id,
-                )
-        return mb_artist_id
+                return mb_id
+        for strictness in (True, False):
+            if albumname:
+                if mb_id := await self.search_artist_by_album(
+                    artistname, albumname, strict=strictness
+                ):
+                    self.logger.debug(
+                        "Got MusicbrainzArtistId for %s after search on albumname %s --> %s",
+                        artistname,
+                        albumname,
+                        mb_id,
+                    )
+                    return mb_id
+            if trackname:
+                if mb_id := await self.search_artist_by_track(
+                    artistname, trackname, strict=strictness
+                ):
+                    self.logger.debug(
+                        "Got MusicbrainzArtistId for %s after search on trackname %s --> %s",
+                        artistname,
+                        trackname,
+                        mb_id,
+                    )
+                    return mb_id
+        return None
 
-    async def search_artist_by_album(self, artistname, albumname=None, album_upc=None):
+    async def search_artist_by_album(
+        self, artistname, albumname=None, album_upc=None, strict=True
+    ):
         """Retrieve musicbrainz artist id by providing the artist name and albumname or upc."""
         for searchartist in [
             re.sub(LUCENE_SPECIAL, r"\\\1", artistname),
             create_clean_string(artistname),
             artistname,
         ]:
+            searchalbum = re.sub(LUCENE_SPECIAL, r"\\\1", albumname)
             if album_upc:
                 query = f"barcode:{album_upc}"
-            else:
-                searchalbum = re.sub(LUCENE_SPECIAL, r"\\\1", albumname)
+            elif strict:
                 query = f'artist:"{searchartist}" AND release:"{searchalbum}"'
+            else:
+                query = f'release:"{searchalbum}"'
             result = await self.get_data("release", query=query)
             if result and "releases" in result:
-                for strictness in [True, False]:
-                    for item in result["releases"]:
-                        if album_upc or compare_strings(
-                            item["title"], albumname, strictness
+
+                for item in result["releases"]:
+                    if not (
+                        album_upc or compare_strings(item["title"], albumname, strict)
+                    ):
+                        continue
+                    for artist in item["artist-credit"]:
+                        if compare_strings(
+                            artist["artist"]["name"], artistname, strict
                         ):
-                            for artist in item["artist-credit"]:
-                                if compare_strings(
-                                    artist["artist"]["name"], artistname, strictness
-                                ):
-                                    return artist["artist"]["id"]
-                                for alias in artist.get("aliases", []):
-                                    if compare_strings(
-                                        alias["name"], artistname, strictness
-                                    ):
-                                        return artist["id"]
+                            return artist["artist"]["id"]
+                        for alias in artist.get("aliases", []):
+                            if compare_strings(alias["name"], artistname, strict):
+                                return artist["id"]
         return ""
 
-    async def search_artist_by_track(self, artistname, trackname=None, track_isrc=None):
+    async def search_artist_by_track(
+        self, artistname, trackname=None, track_isrc=None, strict=True
+    ):
         """Retrieve artist id by providing the artist name and trackname or track isrc."""
         searchartist = re.sub(LUCENE_SPECIAL, r"\\\1", artistname)
         if track_isrc:
             result = await self.get_data(f"isrc/{track_isrc}", inc="artist-credits")
         else:
             searchtrack = re.sub(LUCENE_SPECIAL, r"\\\1", trackname)
-            result = await self.get_data(
-                "recording", query=f'"{searchtrack}" AND artist:"{searchartist}"'
-            )
+            if strict:
+                result = await self.get_data(
+                    "recording", query=f'"{searchtrack}" AND artist:"{searchartist}"'
+                )
+            else:
+                result = await self.get_data("recording", query=f'"{searchtrack}"')
         if result and "recordings" in result:
-            for strictness in [True, False]:
-                for item in result["recordings"]:
-                    if track_isrc or compare_strings(
-                        item["title"], trackname, strictness
-                    ):
-                        for artist in item["artist-credit"]:
-                            if compare_strings(
-                                artist["artist"]["name"], artistname, strictness
-                            ):
-                                return artist["artist"]["id"]
-                            for alias in artist.get("aliases", []):
-                                if compare_strings(
-                                    alias["name"], artistname, strictness
-                                ):
-                                    return artist["id"]
+            for item in result["recordings"]:
+                if not (
+                    track_isrc or compare_strings(item["title"], trackname, strict)
+                ):
+                    continue
+                for artist in item["artist-credit"]:
+                    if compare_strings(artist["artist"]["name"], artistname, strict):
+                        return artist["artist"]["id"]
+                    for alias in artist.get("aliases", []):
+                        if compare_strings(alias["name"], artistname, strict):
+                            return artist["id"]
         return ""
 
     async def search_artist_by_album_mbid(
