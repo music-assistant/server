@@ -256,7 +256,7 @@ async def get_gain_correct(
     """Get gain correction for given queue / track combination."""
     queue = mass.players.get_player_queue(queue_id)
     if not queue or not queue.settings.volume_normalization_enabled:
-        return 0
+        return (0, 0)
     target_gain = queue.settings.volume_normalization_target
     track_loudness = await mass.music.get_track_loudness(item_id, provider)
     if track_loudness is None:
