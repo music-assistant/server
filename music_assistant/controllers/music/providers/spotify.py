@@ -124,12 +124,19 @@ class SpotifyProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from spotify."""
-        spotify_artists = await self._get_data(
-            "me/following", type="artist", limit=50, skip_cache=True
-        )
-        for item in spotify_artists["artists"]["items"]:
-            if item and item["id"]:
-                yield await self._parse_artist(item)
+        endpoint = "me/following"
+        while True:
+            spotify_artists = await self._get_data(
+                endpoint, type="artist", limit=50, skip_cache=True
+            )
+            for item in spotify_artists["artists"]["items"]:
+                if item and item["id"]:
+                    yield await self._parse_artist(item)
+            if spotify_artists["artists"]["next"]:
+                endpoint = spotify_artists["artists"]["next"]
+                endpoint = endpoint.replace("https://api.spotify.com/v1/", "")
+            else:
+                break
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider."""
