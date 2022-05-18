@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 TABLE_PROV_MAPPINGS = "provider_mappings"
 TABLE_TRACK_LOUDNESS = "track_loudness"
@@ -185,8 +185,8 @@ class Database:
                 # always create db tables if they don't exist to prevent errors trying to access them later
                 await self.__create_database_tables(db)
 
-                if prev_version < 10:
-                    # refactored file provider, start clean just in case.
+                if prev_version < 12:
+                    # fixed nasty bugs in file provider, start clean just in case.
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ALBUMS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
@@ -194,12 +194,6 @@ class Database:
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_PROV_MAPPINGS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
-                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_THUMBS}")
-                    # recreate missing tables
-                    await self.__create_database_tables(db)
-
-                if prev_version < 11:
-                    # fix for duplicate thumbs creation
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_THUMBS}")
                     # recreate missing tables
                     await self.__create_database_tables(db)
@@ -277,6 +271,8 @@ class Database:
                     artists json,
                     album json,
                     metadata json,
+                    disc_number INTEGER NULL,
+                    track_number INTEGER NULL,
                     provider_ids json
                 );"""
         )
