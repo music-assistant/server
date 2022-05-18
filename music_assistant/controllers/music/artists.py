@@ -213,7 +213,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                     continue
                 # get matching artist from track
                 for search_item_artist in search_result_item.artists:
-                    if not compare_artist(db_artist, search_result_item.artist):
+                    if not compare_artist(db_artist, search_item_artist):
                         continue
                     # 100% album match
                     # get full artist details so we have all metadata
