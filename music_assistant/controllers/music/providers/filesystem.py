@@ -117,24 +117,24 @@ class FileSystemProvider(MusicProvider):
             if artist:
                 query += f" AND artists LIKE '%{artist}%'"
             tracks = await self.mass.music.tracks.get_db_items(query)
-            result.append(tracks)
+            result += tracks
         if media_types is None or MediaType.ALBUM in media_types:
             query = f"SELECT * FROM albums WHERE name LIKE '%{title}%'"
             query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
             if artist:
                 query += f" AND artist LIKE '%{artist}%'"
             albums = await self.mass.music.albums.get_db_items(query)
-            result.append(albums)
+            result += albums
         if media_types is None or MediaType.ARTIST in media_types:
             query = f"SELECT * FROM artists WHERE name LIKE '%{title}%'"
             query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
             artists = await self.mass.music.artists.get_db_items(query)
-            result.append(artists)
+            result += artists
         if media_types is None or MediaType.PLAYLIST in media_types:
             query = f"SELECT * FROM playlists WHERE name LIKE '%{title}%'"
             query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
             playlists = await self.mass.music.playlists.get_db_items(query)
-            result.append(playlists)
+            result += playlists
         return result
 
     async def sync_library(self) -> None:
