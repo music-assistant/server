@@ -265,7 +265,7 @@ class FileSystemProvider(MusicProvider):
         if db_id is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
         query = f"SELECT * FROM tracks WHERE album LIKE '%\"{db_id}\"%'"
-        query += f" AND provider_ids like  '%\"{self.type.value}\"%'"
+        query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
         return await self.mass.music.tracks.get_db_items(query)
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:

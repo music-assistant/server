@@ -163,8 +163,6 @@ class MediaItem(DataClassDictMixin):
                 "media_type",
                 "uri",
                 "album",
-                "disc_number",
-                "track_number",
                 "position",
             ]
         }

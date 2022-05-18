@@ -213,6 +213,8 @@ class TracksController(MediaControllerBase[Track]):
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                     "isrc": track.isrc or cur_item.isrc,
+                    "disc_number": track.disc_number or cur_item.disc_number,
+                    "track_number": track.track_number or cur_item.track_number,
                 },
                 db=_db,
             )
