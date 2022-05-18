@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import List, Union
 
 from music_assistant.helpers.util import create_clean_string
+from music_assistant.models.enums import AlbumType
 from music_assistant.models.media_items import (
     Album,
     Artist,
@@ -49,11 +50,8 @@ def compare_explicit(left: MediaItemMetadata, right: MediaItemMetadata) -> bool:
 def compare_artist(
     left_artist: Union[Artist, ItemMapping],
     right_artist: Union[Artist, ItemMapping],
-    allow_none=False,
 ) -> bool:
     """Compare two artist items and return True if they match."""
-    if allow_none and left_artist is None and right_artist is None:
-        return True
     if left_artist is None or right_artist is None:
         return False
     # return early on exact item_id match
@@ -67,7 +65,6 @@ def compare_artist(
         return left_artist.musicbrainz_id == right_artist.musicbrainz_id
 
     # fallback to comparing
-
     if not left_artist.sort_name:
         left_artist.sort_name = create_clean_string(left_artist.name)
     if not right_artist.sort_name:
@@ -126,11 +123,8 @@ def compare_albums(
 def compare_album(
     left_album: Union[Album, ItemMapping],
     right_album: Union[Album, ItemMapping],
-    allow_none=False,
 ):
     """Compare two album items and return True if they match."""
-    if left_album is None and right_album is None:
-        return True
     if left_album is None or right_album is None:
         return False
     # return early on exact item_id match
@@ -142,6 +136,7 @@ def compare_album(
         if (left_album.upc in right_album.upc) or (right_album.upc in left_album.upc):
             return True
     # prefer match on musicbrainz_id
+    # not present on ItemMapping
     if getattr(left_album, "musicbrainz_id", None) and getattr(
         right_album, "musicbrainz_id", None
     ):
@@ -156,9 +151,10 @@ def compare_album(
         return False
     if not compare_version(left_album.version, right_album.version):
         return False
-    # album artist must be either set on both or not at all
+    # compare album artist
+    # Note: Not present on ItemMapping
     if hasattr(left_album, "artist") and hasattr(right_album, "artist"):
-        if not compare_artist(left_album.artist, right_album.artist, True):
+        if not compare_artist(left_album.artist, right_album.artist):
             return False
     return left_album.sort_name == right_album.sort_name
 
@@ -166,6 +162,9 @@ def compare_album(
 def compare_track(left_track: Track, right_track: Track):
     """Compare two track items and return True if they match."""
     if left_track is None or right_track is None:
+        return False
+    # album is required for track linking
+    if left_track.album is None or right_track.album is None:
         return False
     # return early on exact item_id match
     if compare_item_id(left_track, right_track):
@@ -192,10 +191,12 @@ def compare_track(left_track: Track, right_track: Track):
     # track if both tracks are (not) explicit
     if not compare_explicit(left_track.metadata, right_track.metadata):
         return False
-    # exact album match OR (near) exact duration match
-    if compare_album(left_track.album, right_track.album, True):
+    # exact album match = 100% match
+    if compare_album(left_track.album, right_track.album):
         return True
-    if abs(left_track.duration - right_track.duration) <= 2:
-        # 100% match, all criteria passed
-        return True
-    return False
+    # fallback: both albums are compilations and (near-exact) track duration match
+    return (
+        abs(left_track.duration - right_track.duration) <= 1
+        and left_track.album.album_type in (AlbumType.UNKNOWN, AlbumType.COMPILATION)
+        and right_track.album.album_type in (AlbumType.UNKNOWN, AlbumType.COMPILATION)
+    )
