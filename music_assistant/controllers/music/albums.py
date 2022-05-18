@@ -231,7 +231,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     await self.update_db_item(db_album.item_id, prov_album)
                     match_found = True
                     # while we're here, also match the artist
-                    if db_album.artist.provider == "database":
+                    if db_album.artist.provider == ProviderType.DATABASE:
                         await self.mass.music.artists.update_db_item(
                             db_album.artist.item_id, prov_album.artist
                         )
@@ -264,7 +264,7 @@ class AlbumsController(MediaControllerBase[Album]):
             if isinstance(album.artist, ItemMapping):
                 return album.artist
 
-            if album.artist.provider == "database":
+            if album.artist.provider == ProviderType.DATABASE:
                 return ItemMapping.from_item(album.artist)
 
             if album.artist.musicbrainz_id:

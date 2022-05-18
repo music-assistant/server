@@ -109,7 +109,7 @@ class TracksController(MediaControllerBase[Track]):
                         match_found = True
                         await self.update_db_item(db_track.item_id, search_result_item)
                         # while we're here, also match the artist
-                        if db_track_artist.provider == "database":
+                        if db_track_artist.provider == ProviderType.DATABASE:
                             for artist in search_result_item.artists:
                                 if not compare_strings(
                                     db_track_artist.name, artist.name
