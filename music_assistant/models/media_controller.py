@@ -105,6 +105,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         limit: int = 25,
     ) -> List[ItemCls]:
         """Search database or provider with given query."""
+        search_query = search_query.replace("/", " ")  # safe search string
         if provider == ProviderType.DATABASE or provider_id == "database":
             return [
                 self.item_cls.from_db_row(db_row)
