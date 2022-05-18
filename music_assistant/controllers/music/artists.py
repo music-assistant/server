@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from music_assistant.helpers.compare import (
     compare_album,
+    compare_artist,
     compare_strings,
     compare_track,
 )
@@ -208,17 +209,19 @@ class ArtistsController(MediaControllerBase[Artist]):
                 searchstr, provider.type
             )
             for search_result_item in search_results:
-                if compare_track(search_result_item, ref_track):
-                    # get matching artist from track
-                    for search_item_artist in search_result_item.artists:
-                        if compare_strings(db_artist.name, search_item_artist.name):
-                            # 100% album match
-                            # get full artist details so we have all metadata
-                            prov_artist = await self.get_provider_item(
-                                search_item_artist.item_id, search_item_artist.provider
-                            )
-                            await self.update_db_item(db_artist.item_id, prov_artist)
-                            return True
+                if not compare_track(search_result_item, ref_track):
+                    continue
+                # get matching artist from track
+                for search_item_artist in search_result_item.artists:
+                    if not compare_artist(db_artist, search_result_item.artist):
+                        continue
+                    # 100% album match
+                    # get full artist details so we have all metadata
+                    prov_artist = await self.get_provider_item(
+                        search_item_artist.item_id, search_item_artist.provider
+                    )
+                    await self.update_db_item(db_artist.item_id, prov_artist)
+                    return True
         # try to get a match with some reference albums of this artist
         artist_albums = await self.albums(db_artist.item_id, db_artist.provider)
         for ref_album in artist_albums:
@@ -230,15 +233,16 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             for search_result_item in search_result:
                 # artist must match 100%
-                if not compare_strings(db_artist.name, search_result_item.artist.name):
+                if not compare_artist(db_artist, search_result_item.artist):
                     continue
-                if compare_album(search_result_item, ref_album):
-                    # 100% album match
-                    # get full artist details so we have all metadata
-                    prov_artist = await self.get_provider_item(
-                        search_result_item.artist.item_id,
-                        search_result_item.artist.provider,
-                    )
-                    await self.update_db_item(db_artist.item_id, prov_artist)
-                    return True
+                if not compare_album(search_result_item, ref_album):
+                    continue
+                # 100% match
+                # get full artist details so we have all metadata
+                prov_artist = await self.get_provider_item(
+                    search_result_item.artist.item_id,
+                    search_result_item.artist.provider,
+                )
+                await self.update_db_item(db_artist.item_id, prov_artist)
+                return True
         return False

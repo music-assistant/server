@@ -103,16 +103,15 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_id: Optional[str] = None,
     ) -> List[Track]:
         """Return album tracks for the given provider album id."""
-        provider = self.mass.music.get_provider(provider_id or provider)
-        if not provider:
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if not prov:
             return []
-        return await provider.get_album_tracks(item_id)
+        return await prov.get_album_tracks(item_id)
 
     async def add_db_item(self, album: Album) -> Album:
         """Add a new album record to the database."""
         assert album.provider_ids, "Album is missing provider id(s)"
         cur_item = None
-        assert album.provider_ids
         async with self.mass.database.get_db() as _db:
             # always try to grab existing item by musicbrainz_id
             if album.musicbrainz_id:
@@ -256,26 +255,23 @@ class AlbumsController(MediaControllerBase[Album]):
     async def _get_album_artist(
         self, db_album: Album, updated_album: Optional[Album] = None
     ) -> ItemMapping | None:
-        """Extract album artist as ItemMapping, prefer database ID."""
+        """Extract (database) album artist as ItemMapping."""
         for album in (updated_album, db_album):
             if not album or not album.artist:
                 continue
 
-            if isinstance(album.artist, ItemMapping):
-                return album.artist
-
             if album.artist.provider == ProviderType.DATABASE:
+                if isinstance(album.artist, ItemMapping):
+                    return album.artist
                 return ItemMapping.from_item(album.artist)
 
-            if album.artist.musicbrainz_id:
-                album_artist = await self.mass.music.artists.add_db_item(album.artist)
-                return ItemMapping.from_item(album_artist)
-
-            if album_artist := await self.mass.music.artists.get_db_item_by_prov_id(
+            if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
                 album.artist.item_id,
                 provider=album.artist.provider,
             ):
-                return ItemMapping.from_item(album_artist)
+                return ItemMapping.from_item(db_artist)
 
-            return ItemMapping.from_item(album.artist)
+            db_artist = await self.mass.music.artists.add_db_item(album.artist)
+            return ItemMapping.from_item(db_artist)
+
         return None
