@@ -24,7 +24,7 @@ async def create_thumbnail(
         for prov in mass.music.providers:
             if not prov.type.is_file():
                 continue
-            if not prov.exists(path):
+            if not await prov.exists(path):
                 continue
             # embedded image in music file
             img_data = await prov.get_embedded_image(path)

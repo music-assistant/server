@@ -76,6 +76,8 @@ class MetaDataController:
 
     async def get_album_metadata(self, album: Album) -> None:
         """Get/update rich metadata for an album."""
+        if not (album.musicbrainz_id or album.artist):
+            return
         if metadata := await self.audiodb.get_album_metadata(album):
             album.metadata.update(metadata)
         if metadata := await self.fanarttv.get_album_metadata(album):
@@ -85,6 +87,8 @@ class MetaDataController:
 
     async def get_track_metadata(self, track: Track) -> None:
         """Get/update rich metadata for a track."""
+        if not (track.album and track.artists):
+            return
         if metadata := await self.audiodb.get_track_metadata(track):
             track.metadata.update(metadata)
 
@@ -147,7 +151,7 @@ class MetaDataController:
                 return musicbrainz_id
 
         # last restort: track matching by name
-        for ref_track in ref_tracks[:10]:
+        for ref_track in ref_tracks:
             if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
                 artist.name,
                 trackname=ref_track.name,
