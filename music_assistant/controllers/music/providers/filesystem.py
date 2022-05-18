@@ -298,7 +298,7 @@ class FileSystemProvider(MusicProvider):
         )
         if db_id is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
-        query = f"SELECT * FROM albums WHERE artist LIKE '%\"{prov_artist_id}\"%'"
+        query = f"SELECT * FROM albums WHERE artist LIKE '%\"{db_id}\"%'"
         query += f" AND provider_ids like  '%\"{self.type.value}\"%'"
         return await self.mass.music.albums.get_db_items(query)
 
@@ -310,7 +310,7 @@ class FileSystemProvider(MusicProvider):
         )
         if db_id is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
-        query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{prov_artist_id}\"%'"
+        query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_id}\"%'"
         query += f" AND provider_ids like  '%\"{self.type.value}\"%'"
         return await self.mass.music.tracks.get_db_items(query)
 
