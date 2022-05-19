@@ -459,14 +459,6 @@ class FileSystemProvider(MusicProvider):
                 in_library=True,
             )
 
-            # try to guess the album type
-            if name.lower() == track.album.name.lower():
-                track.album.album_type = AlbumType.SINGLE
-            elif track.album.artist not in (x.name for x in track.artists):
-                track.album.album_type = AlbumType.COMPILATION
-            else:
-                track.album.album_type = AlbumType.ALBUM
-
         if (
             track.album
             and track.album.artist
@@ -596,7 +588,8 @@ class FileSystemProvider(MusicProvider):
                 artist.metadata.genres = set(split_items(genre))
         # find local images
         images = []
-        for _filename in os.listdir(artist_path):
+        async for _path in scantree(artist_path):
+            _filename = _path.path
             ext = _filename.split(".")[-1]
             if ext not in ("jpg", "png"):
                 continue
@@ -679,9 +672,22 @@ class FileSystemProvider(MusicProvider):
                 album.metadata.genres = set(split_items(genre))
         # parse name/version
         album.name, album.version = parse_title_and_version(album.name)
+
+        # try to guess the album type
+        album_tracks = [
+            x async for x in scantree(album_path) if TinyTag.is_supported(x.path)
+        ]
+        if artist and artist.sort_name == "variousartists":
+            album.album_type = AlbumType.COMPILATION
+        elif len(album_tracks) <= 5:
+            album.album_type = AlbumType.SINGLE
+        else:
+            album.album_type = AlbumType.ALBUM
+
         # find local images
         images = []
-        for _filename in os.listdir(album_path):
+        async for _path in scantree(album_path):
+            _filename = _path.path
             ext = _filename.split(".")[-1]
             if ext not in ("jpg", "png"):
                 continue
