@@ -589,12 +589,6 @@ class FileSystemProvider(MusicProvider):
                 artist.metadata.description = descripton
             if genre := info.get("genre"):
                 artist.metadata.genres = set(split_items(genre))
-            if not artist.musicbrainz_id:
-                for uid in info.get("uniqueid") or []:
-                    if not uid.get("@type"):
-                        continue
-                    if uid["@type"] == "MusicBrainzArtist":
-                        artist.musicbrainz_id = uid["#text"]
         # find local images
         images = []
         for _filename in os.listdir(artist_path):
@@ -669,21 +663,15 @@ class FileSystemProvider(MusicProvider):
                 album.sort_name = sort_name
             if musicbrainz_id := info.get("musicbrainzreleasegroupid"):
                 album.musicbrainz_id = musicbrainz_id
+            if mb_artist_id := info.get("musicbrainzalbumartistid"):
+                if album.artist and not album.artist.musicbrainz_id:
+                    album.artist.musicbrainz_id = mb_artist_id
             if description := info.get("review"):
                 album.metadata.description = description
             if year := info.get("label"):
                 album.year = int(year)
             if genre := info.get("genre"):
                 album.metadata.genres = set(split_items(genre))
-            for uid in info.get("uniqueid") or []:
-                if not uid.get("@type"):
-                    continue
-                if uid["@type"] == "MusicBrainzReleaseGroup":
-                    if not album.musicbrainz_id:
-                        album.musicbrainz_id = uid["#text"]
-                if uid["@type"] == "MusicBrainzAlbumArtist":
-                    if album.artist and not album.artist.musicbrainz_id:
-                        album.artist.musicbrainz_id = uid["#text"]
         # parse name/version
         album.name, album.version = parse_title_and_version(album.name)
         # find local images
