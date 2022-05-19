@@ -48,7 +48,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.get_provider_artist_toptracks(item.item_id, item.prov_id)
             for item in artist.provider_ids
         ]
-        # use intermediate set to remove duplicates
+        # use intermediate set to remove (some) duplicates
         return list(set(itertools.chain.from_iterable(await asyncio.gather(*coros))))
 
     async def albums(
@@ -64,7 +64,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.get_provider_artist_albums(item.item_id, item.prov_id)
             for item in artist.provider_ids
         ]
-        # use intermediate set to remove duplicates
+        # use intermediate set to remove (some) duplicates
         return list(set(itertools.chain.from_iterable(await asyncio.gather(*coros))))
 
     async def add(self, item: Artist) -> Artist:
