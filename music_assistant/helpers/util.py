@@ -140,6 +140,8 @@ def get_version_substitute(version_str: str):
         version_str = "spanish version"
     elif version_str.endswith("remaster"):
         version_str = "remaster"
+    elif version_str.endswith("remastered"):
+        version_str = "remaster"
     return version_str.strip()
 
 
