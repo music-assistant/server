@@ -138,7 +138,7 @@ class MetaDataController:
                     return musicbrainz_id
 
         # try again with matching on track isrc
-        ref_tracks = await self.mass.music.artists.get_provider_artist_toptracks(
+        ref_tracks = await self.mass.music.artists.toptracks(
             artist.item_id, artist.provider
         )
         for ref_track in ref_tracks:
