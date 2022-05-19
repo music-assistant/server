@@ -57,10 +57,10 @@ class AlbumsController(MediaControllerBase[Album]):
         # merge duplicates using a dict
         final_items: Dict[str, Track] = {}
         for track in tracks:
-            if track.disc_number is None or track.track_number is None:
-                key = f"{track.name}.{track.version}"
-            else:
-                key = f"{track.disc_number}.{track.track_number}"
+            key = f".{track.name}.{track.version}"
+            if track.disc_number and track.track_number:
+                key += f".{track.disc_number}.{track.track_number}"
+
             if key in final_items:
                 final_items[key].provider_ids.update(track.provider_ids)
             else:
