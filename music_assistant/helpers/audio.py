@@ -483,7 +483,7 @@ async def get_media_stream(
             )
             # send analyze job to background worker
             if streamdetails.loudness is None and streamdetails.provider != "url":
-                uri = f"{streamdetails.provider}://{streamdetails.media_type.value}/{streamdetails.item_id}"
+                uri = f"{streamdetails.provider.value}://{streamdetails.media_type.value}/{streamdetails.item_id}"
                 mass.add_job(
                     analyze_audio(mass, streamdetails), f"Analyze audio for {uri}"
                 )
