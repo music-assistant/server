@@ -134,33 +134,35 @@ class FileSystemProvider(MusicProvider):
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_checksums = {}
-        async for entry in scantree(self.config.path):
+        async with self.mass.database.get_db() as db:
+            async for entry in scantree(self.config.path):
 
-            # mtime is used as file checksum
-            stat = await asyncio.get_running_loop().run_in_executor(None, entry.stat)
-            checksum = int(stat.st_mtime)
-            cur_checksums[entry.path] = checksum
-            if checksum == prev_checksums.get(entry.path):
-                continue
-
-            try:
-                if track := await self._parse_track(entry.path, checksum):
-                    # add/update track to db
-                    await self.mass.music.tracks.add_db_item(track)
-                    # process album
-                    if track.album:
-                        await self.mass.music.albums.add_db_item(track.album)
-                        # process (album)artist
-                        if track.album.artist:
-                            await self.mass.music.artists.add_db_item(
-                                track.album.artist
-                            )
-                elif playlist := await self._parse_playlist(entry.path, checksum):
-                    # add/update] playlist to db
-                    await self.mass.music.playlists.add_db_item(playlist)
-            except Exception:  # pylint: disable=broad-except
-                # we don't want the whole sync to crash on one file so we catch all exceptions here
-                self.logger.exception("Error processing %s", entry.path)
+                # mtime is used as file checksum
+                stat = await asyncio.get_running_loop().run_in_executor(
+                    None, entry.stat
+                )
+                checksum = int(stat.st_mtime)
+                cur_checksums[entry.path] = checksum
+                if checksum == prev_checksums.get(entry.path):
+                    continue
+                try:
+                    if track := await self._parse_track(entry.path, checksum):
+                        # process album
+                        if track.album:
+                            await self.mass.music.albums.add_db_item(track.album, db=db)
+                            # process (album)artist
+                            if track.album.artist:
+                                await self.mass.music.artists.add_db_item(
+                                    track.album.artist, db=db
+                                )
+                        # add/update track to db
+                        await self.mass.music.tracks.add_db_item(track, db=db)
+                    elif playlist := await self._parse_playlist(entry.path, checksum):
+                        # add/update] playlist to db
+                        await self.mass.music.playlists.add_db_item(playlist, db=db)
+                except Exception:  # pylint: disable=broad-except
+                    # we don't want the whole sync to crash on one file so we catch all exceptions here
+                    self.logger.exception("Error processing %s", entry.path)
 
         # save checksums for next sync
         await self.mass.cache.set(cache_key, cur_checksums)
@@ -227,17 +229,29 @@ class FileSystemProvider(MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         itempath = await self.get_filepath(MediaType.ARTIST, prov_artist_id)
-        return await self._parse_artist(artist_path=itempath)
+        if await self.exists(itempath):
+            return await self._parse_artist(artist_path=itempath)
+        return await self.mass.music.artists.get_db_item_by_prov_id(
+            provider_item_id=prov_artist_id, provider_id=self.id
+        )
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         itempath = await self.get_filepath(MediaType.ALBUM, prov_album_id)
-        return await self._parse_album(album_path=itempath)
+        if await self.exists(itempath):
+            return await self._parse_album(album_path=itempath)
+        return await self.mass.music.albums.get_db_item_by_prov_id(
+            provider_item_id=prov_album_id, provider_id=self.id
+        )
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         itempath = await self.get_filepath(MediaType.TRACK, prov_track_id)
-        return await self._parse_track(itempath)
+        if await self.exists(itempath):
+            return await self._parse_track(itempath)
+        return await self.mass.music.tracks.get_db_item_by_prov_id(
+            provider_item_id=prov_track_id, provider_id=self.id
+        )
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
