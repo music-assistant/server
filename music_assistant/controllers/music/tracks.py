@@ -4,11 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import List, Optional, Union
 
-from music_assistant.helpers.compare import (
-    compare_artists,
-    compare_strings,
-    compare_track,
-)
+from music_assistant.helpers.compare import compare_artists, compare_track
 from music_assistant.helpers.database import TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MediaType, ProviderType
@@ -65,12 +61,10 @@ class TracksController(MediaControllerBase[Track]):
         """Return all versions of a track we can find on all providers."""
         track = await self.get(item_id, provider, provider_id)
         prov_types = {item.type for item in self.mass.music.providers}
-        first_artist = next(iter(track.artists))
-        search_query = f"{first_artist.name} {track.name}"
         return [
             prov_item
             for prov_items in await asyncio.gather(
-                *[self.search(search_query, prov_type) for prov_type in prov_types]
+                *[self.search(track.name, prov_type) for prov_type in prov_types]
             )
             for prov_item in prov_items
             if compare_artists(prov_item.artists, track.artists)
@@ -94,35 +88,14 @@ class TracksController(MediaControllerBase[Track]):
                 "Trying to match track %s on provider %s", db_track.name, provider.name
             )
             match_found = False
-            for db_track_artist in db_track.artists:
-                if match_found:
-                    break
-                searchstr = f"{db_track_artist.name} {db_track.name}"
-                if db_track.version:
-                    searchstr += " " + db_track.version
-                search_result = await self.search(searchstr, provider.type)
-                for search_result_item in search_result:
-                    if not search_result_item.available:
-                        continue
-                    if compare_track(search_result_item, db_track):
-                        # 100% match, we can simply update the db with additional provider ids
-                        match_found = True
-                        await self.update_db_item(db_track.item_id, search_result_item)
-                        # while we're here, also match the artist
-                        if db_track_artist.provider == ProviderType.DATABASE:
-                            for artist in search_result_item.artists:
-                                if not compare_strings(
-                                    db_track_artist.name, artist.name
-                                ):
-                                    continue
-                                prov_artist = (
-                                    await self.mass.music.artists.get_provider_item(
-                                        artist.item_id, artist.provider
-                                    )
-                                )
-                                await self.mass.music.artists.update_db_item(
-                                    db_track_artist.item_id, prov_artist
-                                )
+            search_result = await self.search(db_track.name, provider.type)
+            for search_result_item in search_result:
+                if not search_result_item.available:
+                    continue
+                if compare_track(search_result_item, db_track):
+                    # 100% match, we can simply update the db with additional provider ids
+                    match_found = True
+                    await self.update_db_item(db_track.item_id, search_result_item)
 
             if not match_found:
                 self.logger.debug(

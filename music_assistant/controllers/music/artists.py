@@ -204,9 +204,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 ref_track = await self.mass.music.tracks.get(
                     ref_track.item_id, ref_track.provider
                 )
-            searchstr = f"{db_artist.name} {ref_track.name}"
             search_results = await self.mass.music.tracks.search(
-                searchstr, provider.type
+                ref_track.name, provider.type
             )
             for search_result_item in search_results:
                 if not compare_track(search_result_item, ref_track):
@@ -227,9 +226,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         for ref_album in artist_albums:
             if ref_album.album_type == AlbumType.COMPILATION:
                 continue
-            searchstr = f"{db_artist.name} {ref_album.name}"
             search_result = await self.mass.music.albums.search(
-                searchstr, provider.type
+                ref_album.name, provider.type
             )
             for search_result_item in search_result:
                 # artist must match 100%

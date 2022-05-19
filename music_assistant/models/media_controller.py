@@ -175,11 +175,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         return None, None
 
     async def get_db_items(
-        self, custom_query: Optional[str] = None, db: Optional[Db] = None
+        self,
+        query: Optional[str] = None,
+        query_params: Optional[dict] = None,
+        db: Optional[Db] = None,
     ) -> List[ItemCls]:
         """Fetch all records from database."""
-        if custom_query is not None:
-            func = self.mass.database.get_rows_from_query(custom_query, db=db)
+        if query is not None:
+            func = self.mass.database.get_rows_from_query(query, query_params, db=db)
         else:
             func = self.mass.database.get_rows(self.db_table, db=db)
         return [self.item_cls.from_db_row(db_row) for db_row in await func]

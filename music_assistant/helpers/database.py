@@ -98,19 +98,20 @@ class Database:
             return await _db.fetch_all(sql_query, match)
 
     async def get_rows_from_query(
-        self, query: str, db: Optional[Db] = None
+        self, query: str, params: Optional[dict] = None, db: Optional[Db] = None
     ) -> List[Mapping]:
         """Get all rows for given custom query."""
         async with self.get_db(db) as _db:
-            return await _db.fetch_all(query)
+            return await _db.fetch_all(query, params)
 
     async def search(
         self, table: str, search: str, column: str = "name", db: Optional[Db] = None
     ) -> List[Mapping]:
         """Search table by column."""
         async with self.get_db(db) as _db:
-            sql_query = f'SELECT * FROM {table} WHERE {column} LIKE "{search}"'
-            return await _db.fetch_all(sql_query)
+            sql_query = f"SELECT * FROM {table} WHERE {column} LIKE :search"
+            params = {"search": f"%{search}%"}
+            return await _db.fetch_all(sql_query, params)
 
     async def get_row(
         self, table: str, match: Dict[str, Any] = None, db: Optional[Db] = None
