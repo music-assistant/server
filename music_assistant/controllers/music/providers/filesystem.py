@@ -281,14 +281,19 @@ class FileSystemProvider(MusicProvider):
         if cache := await self.mass.cache.get(cache_key, checksum):
             return [Track.from_dict(x) for x in cache]
         index = 0
-        async with self.open_file(playlist_path, "r") as _file:
-            for line in await _file.readlines():
-                line = urllib.parse.unquote(line.strip())
-                if line and not line.startswith("#"):
-                    if track := await self._parse_track_from_uri(line):
-                        track.position = index
-                        result.append(track)
-                        index += 1
+        try:
+            async with self.open_file(playlist_path, "r") as _file:
+                for line in await _file.readlines():
+                    line = urllib.parse.unquote(line.strip())
+                    if line and not line.startswith("#"):
+                        if track := await self._parse_track_from_uri(line):
+                            track.position = index
+                            result.append(track)
+                            index += 1
+        except Exception as err:  # pylint: disable=broad-except
+            self.logger.warning(
+                "Error while parsing playlist %s", playlist_path, exc_info=err
+            )
         await self.mass.cache.set(cache_key, [x.to_dict() for x in result], checksum)
         return result
 
