@@ -214,10 +214,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 "Trying to match album %s on provider %s", db_album.name, provider.name
             )
             match_found = False
-            searchstr = f"{db_album.artist.name} {db_album.name}"
-            if db_album.version:
-                searchstr += " " + db_album.version
-            search_result = await self.search(searchstr, provider.id)
+            search_result = await self.search(db_album.name, provider.id)
             for search_result_item in search_result:
                 if not search_result_item.available:
                     continue
@@ -231,11 +228,6 @@ class AlbumsController(MediaControllerBase[Album]):
                     # 100% match, we can simply update the db with additional provider ids
                     await self.update_db_item(db_album.item_id, prov_album)
                     match_found = True
-                    # while we're here, also match the artist
-                    if db_album.artist.provider == ProviderType.DATABASE:
-                        await self.mass.music.artists.update_db_item(
-                            db_album.artist.item_id, prov_album.artist
-                        )
             return match_found
 
         # try to find match on all providers
