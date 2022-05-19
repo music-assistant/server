@@ -83,9 +83,10 @@ class Cache:
             # do not cache items in db with short expiration
             return
         data = await asyncio.get_running_loop().run_in_executor(None, json.dumps, data)
-        await self.mass.database.insert_or_replace(
+        await self.mass.database.insert(
             TABLE_CACHE,
             {"key": cache_key, "expires": expires, "checksum": checksum, "data": data},
+            allow_replace=True,
         )
 
     async def delete(self, cache_key):

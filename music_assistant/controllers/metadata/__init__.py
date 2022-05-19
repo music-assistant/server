@@ -233,8 +233,8 @@ class MetaDataController:
         else:
             # create thumbnail if it doesn't exist
             thumbnail = await create_thumbnail(self.mass, path, size)
-            await self.mass.database.insert_or_replace(
-                TABLE_THUMBS, {**match, "data": thumbnail}
+            await self.mass.database.insert(
+                TABLE_THUMBS, {**match, "data": thumbnail}, allow_replace=True
             )
         if base64:
             enc_image = b64encode(thumbnail).decode()

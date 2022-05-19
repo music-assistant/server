@@ -4,6 +4,8 @@ from __future__ import annotations
 from time import time
 from typing import List, Optional
 
+from databases import Database as Db
+
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.uri import create_uri
@@ -160,42 +162,49 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
         )
 
-    async def add_db_item(self, playlist: Playlist) -> Playlist:
+    async def add_db_item(
+        self, playlist: Playlist, db: Optional[Db] = None
+    ) -> Playlist:
         """Add a new playlist record to the database."""
-        async with self.mass.database.get_db() as _db:
+        async with self.mass.database.get_db(db) as db:
             match = {"name": playlist.name, "owner": playlist.owner}
             if cur_item := await self.mass.database.get_row(
-                self.db_table, match, db=_db
+                self.db_table, match, db=db
             ):
                 # update existing
-                return await self.update_db_item(cur_item["item_id"], playlist)
+                return await self.update_db_item(cur_item["item_id"], playlist, db=db)
 
             # insert new playlist
-            new_item = await self.mass.database.insert_or_replace(
-                self.db_table, playlist.to_db_row(), db=_db
+            new_item = await self.mass.database.insert(
+                self.db_table, playlist.to_db_row(), db=db
             )
             item_id = new_item["item_id"]
             # store provider mappings
             await self.mass.music.set_provider_mappings(
-                item_id, MediaType.PLAYLIST, playlist.provider_ids, db=_db
+                item_id, MediaType.PLAYLIST, playlist.provider_ids, db=db
             )
             self.logger.debug("added %s to database", playlist.name)
             # return created object
-            return await self.get_db_item(item_id, db=_db)
+            return await self.get_db_item(item_id, db=db)
 
     async def update_db_item(
-        self, item_id: int, playlist: Playlist, overwrite: bool = False
+        self,
+        item_id: int,
+        playlist: Playlist,
+        overwrite: bool = False,
+        db: Optional[Db] = None,
     ) -> Playlist:
         """Update Playlist record in the database."""
-        cur_item = await self.get_db_item(item_id)
-        if overwrite:
-            metadata = playlist.metadata
-            provider_ids = playlist.provider_ids
-        else:
-            metadata = cur_item.metadata.update(playlist.metadata)
-            provider_ids = {*cur_item.provider_ids, *playlist.provider_ids}
+        async with self.mass.database.get_db(db) as db:
 
-        async with self.mass.database.get_db() as _db:
+            cur_item = await self.get_db_item(item_id, db=db)
+            if overwrite:
+                metadata = playlist.metadata
+                provider_ids = playlist.provider_ids
+            else:
+                metadata = cur_item.metadata.update(playlist.metadata)
+                provider_ids = {*cur_item.provider_ids, *playlist.provider_ids}
+
             await self.mass.database.update(
                 self.db_table,
                 {"item_id": item_id},
@@ -207,13 +216,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                 },
-                db=_db,
+                db=db,
             )
             await self.mass.music.set_provider_mappings(
-                item_id, MediaType.PLAYLIST, provider_ids, db=_db
+                item_id, MediaType.PLAYLIST, provider_ids, db=db
             )
             self.logger.debug("updated %s in database: %s", playlist.name, item_id)
-            db_item = await self.get_db_item(item_id, db=_db)
+            db_item = await self.get_db_item(item_id, db=db)
             self.mass.signal_event(
                 MassEvent(
                     type=EventType.PLAYLIST_UPDATED, object_id=item_id, data=playlist

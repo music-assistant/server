@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from time import time
+from typing import Optional
+
+from databases import Database as Db
 
 from music_assistant.helpers.database import TABLE_RADIOS
 from music_assistant.helpers.json import json_serializer
@@ -32,36 +35,40 @@ class RadioController(MediaControllerBase[Radio]):
         )
         return db_item
 
-    async def add_db_item(self, radio: Radio) -> Radio:
+    async def add_db_item(self, radio: Radio, db: Optional[Db] = None) -> Radio:
         """Add a new radio record to the database."""
         assert radio.provider_ids
-        async with self.mass.database.get_db() as _db:
+        async with self.mass.database.get_db(db) as db:
             match = {"name": radio.name}
             if cur_item := await self.mass.database.get_row(
-                self.db_table, match, db=_db
+                self.db_table, match, db=db
             ):
                 # update existing
-                return await self.update_db_item(cur_item["item_id"], radio)
+                return await self.update_db_item(cur_item["item_id"], radio, db=db)
 
             # insert new radio
-            new_item = await self.mass.database.insert_or_replace(
-                self.db_table, radio.to_db_row(), db=_db
+            new_item = await self.mass.database.insert(
+                self.db_table, radio.to_db_row(), db=db
             )
             item_id = new_item["item_id"]
             # store provider mappings
             await self.mass.music.set_provider_mappings(
-                item_id, MediaType.RADIO, radio.provider_ids, db=_db
+                item_id, MediaType.RADIO, radio.provider_ids, db=db
             )
             self.logger.debug("added %s to database", radio.name)
             # return created object
-            return await self.get_db_item(item_id, db=_db)
+            return await self.get_db_item(item_id, db=db)
 
     async def update_db_item(
-        self, item_id: int, radio: Radio, overwrite: bool = False
+        self,
+        item_id: int,
+        radio: Radio,
+        overwrite: bool = False,
+        db: Optional[Db] = None,
     ) -> Radio:
         """Update Radio record in the database."""
-        async with self.mass.database.get_db() as _db:
-            cur_item = await self.get_db_item(item_id, db=_db)
+        async with self.mass.database.get_db(db) as db:
+            cur_item = await self.get_db_item(item_id, db=db)
             if overwrite:
                 metadata = radio.metadata
                 provider_ids = radio.provider_ids
@@ -79,10 +86,10 @@ class RadioController(MediaControllerBase[Radio]):
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                 },
-                db=_db,
+                db=db,
             )
             await self.mass.music.set_provider_mappings(
-                item_id, MediaType.RADIO, provider_ids, db=_db
+                item_id, MediaType.RADIO, provider_ids, db=db
             )
             self.logger.debug("updated %s in database: %s", radio.name, item_id)
-            return await self.get_db_item(item_id, db=_db)
+            return await self.get_db_item(item_id, db=db)

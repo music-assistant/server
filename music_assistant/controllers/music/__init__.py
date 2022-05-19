@@ -282,15 +282,15 @@ class MusicController:
         db: Optional[Db] = None,
     ):
         """Store provider ids for media item to database."""
-        async with self.mass.database.get_db(db) as _db:
+        async with self.mass.database.get_db(db) as db:
             # make sure that existing items are deleted first
             await self.mass.database.delete(
                 TABLE_PROV_MAPPINGS,
                 {"item_id": int(item_id), "media_type": media_type.value},
-                db=_db,
+                db=db,
             )
             for prov_id in prov_ids:
-                await self.mass.database.insert_or_replace(
+                await self.mass.database.insert(
                     TABLE_PROV_MAPPINGS,
                     {
                         "item_id": item_id,
@@ -302,7 +302,8 @@ class MusicController:
                         "details": prov_id.details,
                         "url": prov_id.url,
                     },
-                    db=_db,
+                    allow_replace=True,
+                    db=db,
                 )
 
     async def refresh_items(self, items: List[MediaItem]) -> None:
@@ -341,9 +342,10 @@ class MusicController:
         self, item_id: str, provider: ProviderType, loudness: int
     ):
         """List integrated loudness for a track in db."""
-        await self.mass.database.insert_or_replace(
+        await self.mass.database.insert(
             TABLE_TRACK_LOUDNESS,
             {"item_id": item_id, "provider": provider.value, "loudness": loudness},
+            allow_replace=True,
         )
 
     async def get_track_loudness(
@@ -377,9 +379,10 @@ class MusicController:
     async def mark_item_played(self, item_id: str, provider: ProviderType):
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
-        await self.mass.database.insert_or_replace(
+        await self.mass.database.insert(
             TABLE_PLAYLOG,
             {"item_id": item_id, "provider": provider.value, "timestamp": timestamp},
+            allow_replace=True,
         )
 
     async def library_add_items(self, items: List[MediaItem]) -> None:

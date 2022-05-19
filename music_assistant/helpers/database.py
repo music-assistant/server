@@ -62,8 +62,8 @@ class Database:
         """Set setting in settings table."""
         if not isinstance(value, str):
             value = str(value)
-        return await self.insert_or_replace(
-            TABLE_SETTINGS, {"key": key, "value": value}
+        return await self.insert(
+            TABLE_SETTINGS, {"key": key, "value": value}, allow_replace=True
         )
 
     async def get_count(
@@ -122,13 +122,20 @@ class Database:
             sql_query += " AND ".join((f"{x} = :{x}" for x in match))
             return await _db.fetch_one(sql_query, match)
 
-    async def insert_or_replace(
-        self, table: str, values: Dict[str, Any], db: Optional[Db] = None
+    async def insert(
+        self,
+        table: str,
+        values: Dict[str, Any],
+        allow_replace: bool = False,
+        db: Optional[Db] = None,
     ) -> Mapping:
-        """Insert or replace data in given table."""
+        """Insert data in given table."""
         async with self.get_db(db) as _db:
             keys = tuple(values.keys())
-            sql_query = f'INSERT OR REPLACE INTO {table}({",".join(keys)})'
+            if allow_replace:
+                sql_query = f'INSERT OR REPLACE INTO {table}({",".join(keys)})'
+            else:
+                sql_query = f'INSERT INTO {table}({",".join(keys)})'
             sql_query += f' VALUES ({",".join((f":{x}" for x in keys))})'
             await _db.execute(sql_query, values)
             # return inserted/replaced item
@@ -138,6 +145,12 @@ class Database:
                 if value is not None and value != ""
             }
             return await self.get_row(table, lookup_vals, db=_db)
+
+    async def insert_or_replace(
+        self, table: str, values: Dict[str, Any], db: Optional[Db] = None
+    ) -> Mapping:
+        """Insert or replace data in given table."""
+        return await self.insert(table=table, values=values, allow_replace=True, db=db)
 
     async def update(
         self,

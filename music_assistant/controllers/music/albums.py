@@ -5,6 +5,8 @@ import asyncio
 import itertools
 from typing import Dict, List, Optional
 
+from databases import Database as Db
+
 from music_assistant.helpers.compare import compare_album, compare_artist
 from music_assistant.helpers.database import TABLE_ALBUMS
 from music_assistant.helpers.json import json_serializer
@@ -110,27 +112,23 @@ class AlbumsController(MediaControllerBase[Album]):
             return []
         return await prov.get_album_tracks(item_id)
 
-    async def add_db_item(self, album: Album) -> Album:
+    async def add_db_item(self, album: Album, db: Optional[Db] = None) -> Album:
         """Add a new album record to the database."""
         assert album.provider_ids, "Album is missing provider id(s)"
         cur_item = None
-        async with self.mass.database.get_db() as _db:
+        async with self.mass.database.get_db(db) as db:
             # always try to grab existing item by musicbrainz_id
             if album.musicbrainz_id:
                 match = {"musicbrainz_id": album.musicbrainz_id}
-                cur_item = await self.mass.database.get_row(
-                    self.db_table, match, db=_db
-                )
+                cur_item = await self.mass.database.get_row(self.db_table, match, db=db)
             if not cur_item and album.upc:
                 match = {"upc": album.upc}
-                cur_item = await self.mass.database.get_row(
-                    self.db_table, match, db=_db
-                )
+                cur_item = await self.mass.database.get_row(self.db_table, match, db=db)
             if not cur_item:
                 # fallback to matching
                 match = {"sort_name": album.sort_name}
                 for row in await self.mass.database.get_rows(
-                    self.db_table, match, db=_db
+                    self.db_table, match, db=db
                 ):
                     row_album = Album.from_db_row(row)
                     if compare_album(row_album, album):
@@ -138,34 +136,38 @@ class AlbumsController(MediaControllerBase[Album]):
                         break
             if cur_item:
                 # update existing
-                return await self.update_db_item(cur_item.item_id, album)
+                return await self.update_db_item(cur_item.item_id, album, db=db)
 
             # insert new album
-            album_artist = await self._get_album_artist(album, cur_item)
-            new_item = await self.mass.database.insert_or_replace(
+            album_artist = await self._get_album_artist(album, cur_item, db=db)
+            new_item = await self.mass.database.insert(
                 self.db_table,
                 {
                     **album.to_db_row(),
                     "artist": json_serializer(album_artist) or None,
                 },
-                db=_db,
+                db=db,
             )
             item_id = new_item["item_id"]
             # store provider mappings
             await self.mass.music.set_provider_mappings(
-                item_id, MediaType.ALBUM, album.provider_ids, db=_db
+                item_id, MediaType.ALBUM, album.provider_ids, db=db
             )
             self.logger.debug("added %s to database", album.name)
             # return created object
-            return await self.get_db_item(item_id, db=_db)
+            return await self.get_db_item(item_id, db=db)
 
     async def update_db_item(
-        self, item_id: int, album: Album, overwrite: bool = False
+        self,
+        item_id: int,
+        album: Album,
+        overwrite: bool = False,
+        db: Optional[Db] = None,
     ) -> Album:
         """Update Album record in the database."""
-        async with self.mass.database.get_db() as _db:
+        async with self.mass.database.get_db(db) as db:
             cur_item = await self.get_db_item(item_id)
-            album_artist = await self._get_album_artist(album, cur_item)
+            album_artist = await self._get_album_artist(album, cur_item, db=db)
             if overwrite:
                 metadata = album.metadata
                 provider_ids = album.provider_ids
@@ -192,13 +194,13 @@ class AlbumsController(MediaControllerBase[Album]):
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                 },
-                db=_db,
+                db=db,
             )
             await self.mass.music.set_provider_mappings(
-                item_id, MediaType.ALBUM, provider_ids, db=_db
+                item_id, MediaType.ALBUM, provider_ids, db=db
             )
             self.logger.debug("updated %s in database: %s", album.name, item_id)
-            return await self.get_db_item(item_id)
+            return await self.get_db_item(item_id, db=db)
 
     async def _match(self, db_album: Album) -> None:
         """
@@ -247,7 +249,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 )
 
     async def _get_album_artist(
-        self, db_album: Album, updated_album: Optional[Album] = None
+        self,
+        db_album: Album,
+        updated_album: Optional[Album] = None,
+        db: Optional[Db] = None,
     ) -> ItemMapping | None:
         """Extract (database) album artist as ItemMapping."""
         for album in (updated_album, db_album):
@@ -260,12 +265,11 @@ class AlbumsController(MediaControllerBase[Album]):
                 return ItemMapping.from_item(album.artist)
 
             if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
-                album.artist.item_id,
-                provider=album.artist.provider,
+                album.artist.item_id, provider=album.artist.provider, db=db
             ):
                 return ItemMapping.from_item(db_artist)
 
-            db_artist = await self.mass.music.artists.add_db_item(album.artist)
+            db_artist = await self.mass.music.artists.add_db_item(album.artist, db=db)
             return ItemMapping.from_item(db_artist)
 
         return None
