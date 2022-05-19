@@ -161,11 +161,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if db_item.in_library:
             await self.set_db_library(db_item.item_id, False)
 
-    async def get_provider_id(self, item: ItemCls) -> Tuple[str, str]:
+    async def get_provider_id(
+        self, item: ItemCls, db: Optional[Db] = None
+    ) -> Tuple[str, str]:
         """Return provider and item id."""
         if item.provider == ProviderType.DATABASE:
             # make sure we have a full object
-            item = await self.get_db_item(item.item_id)
+            item = await self.get_db_item(item.item_id, db=db)
         for prov in item.provider_ids:
             # returns the first provider that is available
             if not prov.available:
@@ -225,13 +227,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         query = f"SELECT * FROM tracks WHERE item_id in {str(tuple(db_ids))}"
         return await self.get_db_items(query, db=db)
 
-    async def set_db_library(self, item_id: int, in_library: bool) -> None:
+    async def set_db_library(
+        self, item_id: int, in_library: bool, db: Optional[Db] = None
+    ) -> None:
         """Set the in-library bool on a database item."""
         match = {"item_id": item_id}
         await self.mass.database.update(
-            self.db_table,
-            match,
-            {"in_library": in_library},
+            self.db_table, match, {"in_library": in_library}, db=db
         )
 
     async def get_provider_item(
@@ -255,21 +257,21 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
         return item
 
-    async def delete_db_item(self, item_id: int) -> None:
+    async def delete_db_item(self, item_id: int, db: Optional[Db] = None) -> None:
         """Delete record from the database."""
-        async with self.mass.database.get_db() as _db:
+        async with self.mass.database.get_db(db) as db:
 
             # delete prov mappings
             await self.mass.database.delete(
                 TABLE_PROV_MAPPINGS,
                 {"item_id": int(item_id), "media_type": self.media_type.value},
-                db=_db,
+                db=db,
             )
             # delete item
             await self.mass.database.delete(
                 self.db_table,
                 {"item_id": int(item_id)},
-                db=_db,
+                db=db,
             )
         # NOTE: this does not delete any references to this item in other records
         self.logger.debug("deleted item with id %s from database", item_id)

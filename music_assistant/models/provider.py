@@ -193,44 +193,45 @@ class MusicProvider:
         # this logic is aimed at streaming/online providers,
         #  which all have more or less the same structure.
         # filesystem implementation(s) just override this.
-        for media_type in self.supported_mediatypes:
+        async with self.mass.database.get_db() as db:
+            for media_type in self.supported_mediatypes:
+                self.logger.debug("Start sync of %s items.", media_type.value)
+                controller = self.mass.music.get_controller(media_type)
 
-            self.logger.debug("Start sync of %s items.", media_type.value)
-            controller = self.mass.music.get_controller(media_type)
+                # create a set of all previous and current db id's
+                prev_ids = set()
+                for db_item in await controller.library():
+                    for prov_id in db_item.provider_ids:
+                        if prov_id.prov_id == self.id:
+                            prev_ids.add(db_item.item_id)
+                cur_ids = set()
+                async for prov_item in self._get_library_gen(media_type)():
+                    prov_item: MediaItemType = prov_item
 
-            # create a set of all previous and current db id's
-            prev_ids = set()
-            for db_item in await controller.library():
-                for prov_id in db_item.provider_ids:
-                    if prov_id.prov_id == self.id:
-                        prev_ids.add(db_item.item_id)
-            cur_ids = set()
-            async for prov_item in self._get_library_gen(media_type)():
-                prov_item: MediaItemType = prov_item
-
-                db_item: MediaItemType = await controller.get_db_item_by_prov_id(
-                    provider_item_id=prov_item.item_id,
-                    provider=prov_item.provider,
-                )
-                if not db_item:
-                    # dump the item in the db, rich metadata is lazy loaded later
-                    db_item = await controller.add_db_item(prov_item)
-                elif (
-                    db_item.metadata.checksum and prov_item.metadata.checksum
-                ) and db_item.metadata.checksum != prov_item.metadata.checksum:
-                    # item checksum changed
-                    db_item = await controller.update_db_item(
-                        db_item.item_id, prov_item
+                    db_item: MediaItemType = await controller.get_db_item_by_prov_id(
+                        provider_item_id=prov_item.item_id,
+                        provider=prov_item.provider,
+                        db=db,
                     )
-                cur_ids.add(db_item.item_id)
-                if not db_item.in_library:
-                    await controller.set_db_library(db_item.item_id, True)
+                    if not db_item:
+                        # dump the item in the db, rich metadata is lazy loaded later
+                        db_item = await controller.add_db_item(prov_item, db=db)
+                    elif (
+                        db_item.metadata.checksum and prov_item.metadata.checksum
+                    ) and db_item.metadata.checksum != prov_item.metadata.checksum:
+                        # item checksum changed
+                        db_item = await controller.update_db_item(
+                            db_item.item_id, prov_item, db=db
+                        )
+                    cur_ids.add(db_item.item_id)
+                    if not db_item.in_library:
+                        await controller.set_db_library(db_item.item_id, True, db=db)
 
-            # process deletions
-            for item_id in prev_ids:
-                if item_id not in cur_ids:
-                    # only mark the item as not in library and leave the metadata in db
-                    await controller.set_db_library(item_id, False)
+                # process deletions
+                for item_id in prev_ids:
+                    if item_id not in cur_ids:
+                        # only mark the item as not in library and leave the metadata in db
+                        await controller.set_db_library(item_id, False, db=db)
 
     # DO NOT OVERRIDE BELOW
 
