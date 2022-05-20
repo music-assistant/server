@@ -45,7 +45,7 @@ async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
     """Recursively yield DirEntry objects for given directory."""
     loop = asyncio.get_running_loop()
     for entry in await loop.run_in_executor(None, os.scandir, path):
-        if entry.is_dir(follow_symlinks=False):
+        if await loop.run_in_executor(None, entry.is_dir):
             async for subitem in scantree(entry.path):
                 yield subitem
         else:
@@ -261,14 +261,19 @@ class FileSystemProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
-        db_id = await self.mass.music.get_provider_mapping(
-            MediaType.ALBUM, provider=self.type, provider_item_id=prov_album_id
+        db_album = await self.mass.music.albums.get_db_item_by_prov_id(
+            prov_album_id, provider_id=self.id
         )
-        if db_id is None:
+        if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
-        query = f"SELECT * FROM tracks WHERE album LIKE '%\"{db_id}\"%'"
+        # TODO: adjust to json query instead of text search
+        query = f"SELECT * FROM tracks WHERE album LIKE '%\"{db_album.item_id}\"%'"
         query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
-        return await self.mass.music.tracks.get_db_items(query)
+        result = []
+        for track in await self.mass.music.tracks.get_db_items(query):
+            track.album = db_album
+            result.append(track)
+        return result
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
         """Get playlist tracks for given playlist id."""
@@ -300,24 +305,26 @@ class FileSystemProvider(MusicProvider):
     async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
         """Get a list of albums for the given artist."""
         # filesystem items are always stored in db so we can query the database
-        db_id = await self.mass.music.get_provider_mapping(
-            MediaType.ARTIST, provider=self.type, provider_item_id=prov_artist_id
+        db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
+            prov_artist_id, provider_id=self.id
         )
-        if db_id is None:
+        if db_artist is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
-        query = f"SELECT * FROM albums WHERE artist LIKE '%\"{db_id}\"%'"
+        # TODO: adjust to json query instead of text search
+        query = f"SELECT * FROM albums WHERE artist LIKE '%\"{db_artist.item_id}\"%'"
         query += f" AND provider_ids like  '%\"{self.type.value}\"%'"
         return await self.mass.music.albums.get_db_items(query)
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
         """Get a list of all tracks as we have no clue about preference."""
         # filesystem items are always stored in db so we can query the database
-        db_id = await self.mass.music.get_provider_mapping(
-            MediaType.ARTIST, provider=self.type, provider_item_id=prov_artist_id
+        db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
+            prov_artist_id, provider_id=self.id
         )
-        if db_id is None:
+        if db_artist is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
-        query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_id}\"%'"
+        # TODO: adjust to json query instead of text search
+        query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
         query += f" AND provider_ids like  '%\"{self.type.value}\"%'"
         return await self.mass.music.tracks.get_db_items(query)
 
@@ -781,12 +788,26 @@ class FileSystemProvider(MusicProvider):
 
         return await self.mass.loop.run_in_executor(None, _get_data)
 
-    async def get_filepath(self, media_type: MediaType, item_id: str) -> str | None:
+    async def get_filepath(
+        self, media_type: MediaType, prov_item_id: str
+    ) -> str | None:
         """Get full filepath on disk for item_id."""
-        if item_id is None:
+        if prov_item_id is None:
             return None  # guard
-        file_path = await self.mass.music.get_provider_mapping(
-            media_type, provider_id=self.id, provider_item_id=item_id, return_key="url"
+        # funky sql queries go here ;-)
+        query = (
+            "SELECT json_extract(json_each.value, '$.url') as url FROM :table, "
+            "json_each(provider_ids) WHERE "
+            "json_extract(json_each.value, '$.prov_id') = :prov_id"
+            "AND json_extract(json_each.value, '$.item_id') = :item_id"
+        )
+        params = {
+            "table": f"{media_type.value}s",
+            "prov_id": self.id,
+            "item_id": prov_item_id,
+        }
+        file_path = next(
+            await self.mass.database.get_rows_from_query(query, params), None
         )
         if file_path is not None:
             # ensure we have a full path and not relative

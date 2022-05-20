@@ -51,10 +51,6 @@ class RadioController(MediaControllerBase[Radio]):
                 self.db_table, radio.to_db_row(), db=db
             )
             item_id = new_item["item_id"]
-            # store provider mappings
-            await self.mass.music.set_provider_mappings(
-                item_id, MediaType.RADIO, radio.provider_ids, db=db
-            )
             self.logger.debug("added %s to database", radio.name)
             # return created object
             return await self.get_db_item(item_id, db=db)
@@ -87,9 +83,6 @@ class RadioController(MediaControllerBase[Radio]):
                     "provider_ids": json_serializer(provider_ids),
                 },
                 db=db,
-            )
-            await self.mass.music.set_provider_mappings(
-                item_id, MediaType.RADIO, provider_ids, db=db
             )
             self.logger.debug("updated %s in database: %s", radio.name, item_id)
             return await self.get_db_item(item_id, db=db)

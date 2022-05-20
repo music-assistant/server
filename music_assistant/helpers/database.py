@@ -10,9 +10,8 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
-TABLE_PROV_MAPPINGS = "provider_mappings"
 TABLE_TRACK_LOUDNESS = "track_loudness"
 TABLE_PLAYLOG = "playlog"
 TABLE_ARTISTS = "artists"
@@ -206,9 +205,17 @@ class Database:
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_PLAYLISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
-                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_PROV_MAPPINGS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_THUMBS}")
+                    # recreate missing tables
+                    await self.__create_database_tables(db)
+
+                if prev_version < 14:
+                    # album --> albums on track entity
+                    # no more need for prov_mappings table
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
+                    await db.execute("DROP TABLE IF EXISTS provider_mappings")
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
                     # recreate missing tables
                     await self.__create_database_tables(db)
 
@@ -217,20 +224,9 @@ class Database:
 
     @staticmethod
     async def __create_database_tables(db: Db) -> None:
-        """Init generic database tables."""
-        await db.execute(
-            f"""CREATE TABLE IF NOT EXISTS {TABLE_PROV_MAPPINGS}(
-                    item_id INTEGER NOT NULL,
-                    media_type TEXT NOT NULL,
-                    prov_item_id TEXT NOT NULL,
-                    prov_type TEXT NOT NULL,
-                    prov_id TEXT NOT NULL,
-                    quality INTEGER NULL,
-                    details TEXT NULL,
-                    url TEXT NULL,
-                    UNIQUE(item_id, media_type, prov_item_id, prov_id)
-                    );"""
-        )
+        """Init database tables."""
+        # TODO: create indexes, especially for the json columns
+
         await db.execute(
             f"""CREATE TABLE IF NOT EXISTS {TABLE_TRACK_LOUDNESS}(
                     item_id INTEGER NOT NULL,
@@ -283,7 +279,7 @@ class Database:
                     isrc TEXT,
                     musicbrainz_id TEXT,
                     artists json,
-                    album json,
+                    albums json,
                     metadata json,
                     disc_number INTEGER NULL,
                     track_number INTEGER NULL,

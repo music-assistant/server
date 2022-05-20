@@ -179,10 +179,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 self.db_table, playlist.to_db_row(), db=db
             )
             item_id = new_item["item_id"]
-            # store provider mappings
-            await self.mass.music.set_provider_mappings(
-                item_id, MediaType.PLAYLIST, playlist.provider_ids, db=db
-            )
             self.logger.debug("added %s to database", playlist.name)
             # return created object
             return await self.get_db_item(item_id, db=db)
@@ -217,9 +213,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     "provider_ids": json_serializer(provider_ids),
                 },
                 db=db,
-            )
-            await self.mass.music.set_provider_mappings(
-                item_id, MediaType.PLAYLIST, provider_ids, db=db
             )
             self.logger.debug("updated %s in database: %s", playlist.name, item_id)
             db_item = await self.get_db_item(item_id, db=db)

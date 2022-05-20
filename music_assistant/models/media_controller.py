@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Generic, List, Optional, Tuple, TypeVar
 
 from databases import Database as Db
 
-from music_assistant.helpers.database import TABLE_PROV_MAPPINGS
 from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailableError
 
 from .enums import MediaType, ProviderType
@@ -207,24 +206,40 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         assert provider or provider_id, "provider or provider_id must be supplied"
         if provider == ProviderType.DATABASE or provider_id == "database":
             return await self.get_db_item(provider_item_id, db=db)
-        if item_id := await self.mass.music.get_provider_mapping(
-            self.media_type, provider_item_id, provider, provider_id=provider_id, db=db
+        for item in await self.get_db_items_by_prov_id(
+            provider=provider,
+            provider_id=provider_id,
+            provider_item_ids=(provider_item_id,),
+            db=db,
         ):
-            return await self.get_db_item(item_id, db=db)
+            return item
         return None
 
     async def get_db_items_by_prov_id(
         self,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
+        provider_item_ids: Optional[Tuple[str]] = None,
         db: Optional[Db] = None,
     ) -> List[ItemCls]:
         """Fetch all records from database for given provider."""
         assert provider or provider_id, "provider or provider_id must be supplied"
-        db_ids = await self.mass.music.get_provider_mappings(
-            self.media_type, provider=provider, provider_id=provider_id, db=db
-        )
-        query = f"SELECT * FROM tracks WHERE item_id in {str(tuple(db_ids))}"
+        if provider == ProviderType.DATABASE or provider_id == "database":
+            return await self.get_db_items(db=db)
+
+        query = f"SELECT * FROM {self.db_table}, json_each(provider_ids)"
+        if provider_id is not None:
+            query += (
+                f" WHERE json_extract(json_each.value, '$.prov_id') = '{provider_id}'"
+            )
+        elif provider is not None:
+            query += f" WHERE json_extract(json_each.value, '$.prov_type') = '{provider.value}'"
+        if provider_item_ids is not None:
+            prov_ids = str(tuple(provider_item_ids))
+            if prov_ids.endswith(",)"):
+                prov_ids = prov_ids.replace(",)", ")")
+            query += f" AND json_extract(json_each.value, '$.item_id') in {prov_ids}"
+
         return await self.get_db_items(query, db=db)
 
     async def set_db_library(
@@ -261,12 +276,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Delete record from the database."""
         async with self.mass.database.get_db(db) as db:
 
-            # delete prov mappings
-            await self.mass.database.delete(
-                TABLE_PROV_MAPPINGS,
-                {"item_id": int(item_id), "media_type": self.media_type.value},
-                db=db,
-            )
             # delete item
             await self.mass.database.delete(
                 self.db_table,
