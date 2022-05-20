@@ -149,10 +149,6 @@ class AlbumsController(MediaControllerBase[Album]):
                 db=db,
             )
             item_id = new_item["item_id"]
-            # store provider mappings
-            await self.mass.music.set_provider_mappings(
-                item_id, MediaType.ALBUM, album.provider_ids, db=db
-            )
             self.logger.debug("added %s to database", album.name)
             # return created object
             return await self.get_db_item(item_id, db=db)
@@ -195,9 +191,6 @@ class AlbumsController(MediaControllerBase[Album]):
                     "provider_ids": json_serializer(provider_ids),
                 },
                 db=db,
-            )
-            await self.mass.music.set_provider_mappings(
-                item_id, MediaType.ALBUM, provider_ids, db=db
             )
             self.logger.debug("updated %s in database: %s", album.name, item_id)
             return await self.get_db_item(item_id, db=db)

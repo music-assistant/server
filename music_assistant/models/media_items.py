@@ -22,7 +22,7 @@ from music_assistant.models.enums import (
 
 MetadataTypes = Union[int, bool, str, List[str]]
 
-JSON_KEYS = ("artists", "artist", "album", "metadata", "provider_ids")
+JSON_KEYS = ("artists", "artist", "albums", "metadata", "provider_ids")
 
 
 @dataclass(frozen=True)
@@ -259,6 +259,7 @@ class Track(MediaItem):
     artists: List[Union[Artist, ItemMapping]] = field(default_factory=list)
     # album track only
     album: Union[Album, ItemMapping, None] = None
+    albums: List[ItemMapping] = field(default_factory=list)
     disc_number: Optional[int] = None
     track_number: Optional[int] = None
     # playlist track only

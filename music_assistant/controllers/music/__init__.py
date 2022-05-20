@@ -5,28 +5,18 @@ import asyncio
 import statistics
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
-from databases import Database as Db
-
 from music_assistant.controllers.music.albums import AlbumsController
 from music_assistant.controllers.music.artists import ArtistsController
 from music_assistant.controllers.music.playlists import PlaylistController
 from music_assistant.controllers.music.radio import RadioController
 from music_assistant.controllers.music.tracks import TracksController
-from music_assistant.helpers.database import (
-    TABLE_PLAYLOG,
-    TABLE_PROV_MAPPINGS,
-    TABLE_TRACK_LOUDNESS,
-)
+from music_assistant.helpers.database import TABLE_PLAYLOG, TABLE_TRACK_LOUDNESS
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.config import MusicProviderConfig
 from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.errors import MusicAssistantError, SetupFailedError
-from music_assistant.models.media_items import (
-    MediaItem,
-    MediaItemProviderId,
-    MediaItemType,
-)
+from music_assistant.models.media_items import MediaItem, MediaItemType
 from music_assistant.models.provider import MusicProvider
 
 from .providers.filesystem import FileSystemProvider
@@ -220,91 +210,6 @@ class MusicController:
         await ctrl.remove_from_library(
             provider_item_id, provider=provider, provider_id=provider_id
         )
-
-    async def get_provider_mapping(
-        self,
-        media_type: Optional[MediaType] = None,
-        provider_item_id: Optional[str] = None,
-        provider: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
-        url: Optional[str] = None,
-        db: Optional[Db] = None,
-        return_key: str = "item_id",
-    ) -> int | None:
-        """Lookup database id for media item from provider id."""
-        match = {}
-        if media_type is not None:
-            match["media_type"] = media_type.value
-        if provider_item_id is not None:
-            match["prov_item_id"] = provider_item_id
-        if provider is not None:
-            match["prov_type"] = provider.value
-        if provider_id is not None:
-            match["prov_id"] = provider_id
-        if url is not None:
-            match["url"] = url
-        if result := await self.mass.database.get_row(
-            TABLE_PROV_MAPPINGS,
-            match,
-            db=db,
-        ):
-            return result[return_key] if return_key else result
-        return None
-
-    async def get_provider_mappings(
-        self,
-        media_type: MediaType,
-        provider: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
-        db: Optional[Db] = None,
-    ) -> List[int]:
-        """Lookup all database id's for media type for given provider id."""
-        match = {
-            "media_type": media_type.value,
-        }
-        if provider is not None:
-            match["prov_type"] = provider.value
-        if provider_id is not None:
-            match["prov_id"] = provider_id
-        if result := await self.mass.database.get_rows(
-            TABLE_PROV_MAPPINGS,
-            match,
-            db=db,
-        ):
-            return [x["item_id"] for x in result]
-        return None
-
-    async def set_provider_mappings(
-        self,
-        item_id: int,
-        media_type: MediaType,
-        prov_ids: List[MediaItemProviderId],
-        db: Optional[Db] = None,
-    ):
-        """Store provider ids for media item to database."""
-        async with self.mass.database.get_db(db) as db:
-            # make sure that existing items are deleted first
-            await self.mass.database.delete(
-                TABLE_PROV_MAPPINGS,
-                {"item_id": int(item_id), "media_type": media_type.value},
-                db=db,
-            )
-            for prov_id in prov_ids:
-                await self.mass.database.insert(
-                    TABLE_PROV_MAPPINGS,
-                    {
-                        "item_id": item_id,
-                        "media_type": media_type.value,
-                        "prov_item_id": prov_id.item_id,
-                        "prov_id": prov_id.prov_id,
-                        "prov_type": prov_id.prov_type.value,
-                        "quality": prov_id.quality.value if prov_id.quality else None,
-                        "details": prov_id.details,
-                        "url": prov_id.url,
-                    },
-                    allow_replace=True,
-                    db=db,
-                )
 
     async def refresh_items(self, items: List[MediaItem]) -> None:
         """

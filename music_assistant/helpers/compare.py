@@ -194,9 +194,16 @@ def compare_track(left_track: Track, right_track: Track):
     # exact album match = 100% match
     if compare_album(left_track.album, right_track.album):
         return True
+    if left_track.albums and right_track.albums:
+        for left_album in left_track.albums:
+            for right_album in right_track.albums:
+                if compare_album(left_album, right_album):
+                    return True
     # fallback: both albums are compilations and (near-exact) track duration match
-    return (
+    if (
         abs(left_track.duration - right_track.duration) <= 1
         and left_track.album.album_type in (AlbumType.UNKNOWN, AlbumType.COMPILATION)
         and right_track.album.album_type in (AlbumType.UNKNOWN, AlbumType.COMPILATION)
-    )
+    ):
+        return True
+    return False
