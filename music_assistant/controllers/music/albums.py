@@ -94,9 +94,6 @@ class AlbumsController(MediaControllerBase[Album]):
         # also fetch same album on all providers
         await self._match(db_item)
         db_item = await self.get_db_item(db_item.item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.ALBUM_ADDED, object_id=db_item.uri, data=db_item)
-        )
         return db_item
 
     async def get_provider_album_tracks(
@@ -150,7 +147,13 @@ class AlbumsController(MediaControllerBase[Album]):
             item_id = new_item["item_id"]
             self.logger.debug("added %s to database", album.name)
             # return created object
-            return await self.get_db_item(item_id, db=db)
+            db_item = await self.get_db_item(item_id, db=db)
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.MEDIA_ITEM_ADDED, object_id=db_item.uri, data=db_item
+                )
+            )
+            return db_item
 
     async def update_db_item(
         self,
@@ -192,7 +195,13 @@ class AlbumsController(MediaControllerBase[Album]):
                 db=db,
             )
             self.logger.debug("updated %s in database: %s", album.name, item_id)
-            return await self.get_db_item(item_id, db=db)
+            db_item = await self.get_db_item(item_id, db=db)
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item
+                )
+            )
+            return db_item
 
     async def _match(self, db_album: Album) -> None:
         """

@@ -50,11 +50,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Add playlist to local db and return the new database item."""
         item.metadata.last_refresh = int(time())
         await self.mass.metadata.get_playlist_metadata(item)
-        db_item = await self.add_db_item(item)
-        self.mass.signal_event(
-            MassEvent(EventType.PLAYLIST_ADDED, object_id=db_item.uri, data=db_item)
-        )
-        return db_item
+        return await self.add_db_item(item)
 
     async def add_playlist_tracks(self, db_playlist_id: str, uris: List[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
@@ -132,7 +128,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # update local db entry
         self.mass.signal_event(
             MassEvent(
-                type=EventType.PLAYLIST_UPDATED, object_id=db_playlist_id, data=playlist
+                type=EventType.MEDIA_ITEM_UPDATED,
+                object_id=db_playlist_id,
+                data=playlist,
             )
         )
 
@@ -158,7 +156,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)
         self.mass.signal_event(
             MassEvent(
-                type=EventType.PLAYLIST_UPDATED, object_id=db_playlist_id, data=playlist
+                type=EventType.MEDIA_ITEM_UPDATED,
+                object_id=db_playlist_id,
+                data=playlist,
             )
         )
 
@@ -181,7 +181,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
             item_id = new_item["item_id"]
             self.logger.debug("added %s to database", playlist.name)
             # return created object
-            return await self.get_db_item(item_id, db=db)
+            db_item = await self.get_db_item(item_id, db=db)
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.MEDIA_ITEM_ADDED, object_id=db_item.uri, data=db_item
+                )
+            )
+            return db_item
 
     async def update_db_item(
         self,
@@ -218,7 +224,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             db_item = await self.get_db_item(item_id, db=db)
             self.mass.signal_event(
                 MassEvent(
-                    type=EventType.PLAYLIST_UPDATED, object_id=item_id, data=playlist
+                    EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item
                 )
             )
             return db_item

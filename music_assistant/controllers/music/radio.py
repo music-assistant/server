@@ -29,11 +29,7 @@ class RadioController(MediaControllerBase[Radio]):
         """Add radio to local db and return the new database item."""
         item.metadata.last_refresh = int(time())
         await self.mass.metadata.get_radio_metadata(item)
-        db_item = await self.add_db_item(item)
-        self.mass.signal_event(
-            MassEvent(EventType.RADIO_ADDED, object_id=db_item.uri, data=db_item)
-        )
-        return db_item
+        return await self.add_db_item(item)
 
     async def add_db_item(self, radio: Radio, db: Optional[Db] = None) -> Radio:
         """Add a new radio record to the database."""
@@ -53,7 +49,13 @@ class RadioController(MediaControllerBase[Radio]):
             item_id = new_item["item_id"]
             self.logger.debug("added %s to database", radio.name)
             # return created object
-            return await self.get_db_item(item_id, db=db)
+            db_item = await self.get_db_item(item_id, db=db)
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.MEDIA_ITEM_ADDED, object_id=db_item.uri, data=db_item
+                )
+            )
+            return db_item
 
     async def update_db_item(
         self,
@@ -85,4 +87,10 @@ class RadioController(MediaControllerBase[Radio]):
                 db=db,
             )
             self.logger.debug("updated %s in database: %s", radio.name, item_id)
-            return await self.get_db_item(item_id, db=db)
+            db_item = await self.get_db_item(item_id, db=db)
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item
+                )
+            )
+            return db_item
