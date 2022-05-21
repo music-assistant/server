@@ -165,16 +165,15 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         stdout=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.PIPE if audio_data else None,
     )
-    stdout, stderr = await proc.communicate(audio_data or None)
+    stdout, _ = await proc.communicate(audio_data or None)
     try:
         loudness = float(stdout.decode().strip())
     except (ValueError, AttributeError):
         LOGGER.warning(
-            "Could not determine integrated loudness of %s/%s - %s %s",
+            "Could not determine integrated loudness of %s/%s - %s",
             streamdetails.provider.value,
             streamdetails.item_id,
-            stdout.decode(),
-            stderr.decode(),
+            stdout.decode() or "received empty value",
         )
     else:
         await mass.music.set_track_loudness(
