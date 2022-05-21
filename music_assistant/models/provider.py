@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING, AsyncGenerator, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional
 
 from music_assistant.models.config import MusicProviderConfig
 from music_assistant.models.enums import MediaType, ProviderType
@@ -239,6 +239,15 @@ class MusicProvider:
     def id(self) -> str:
         """Return unique provider id to distinguish multiple instances of the same provider."""
         return self.config.id
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return (serializable) dict representation of MusicProvider."""
+        return {
+            "type": self.type.value,
+            "name": self.name,
+            "id": self.id,
+            "supported_mediatypes": [x.value for x in self.supported_mediatypes],
+        }
 
     def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType]:
         """Return library generator for given media_type."""
