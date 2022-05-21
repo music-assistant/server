@@ -208,20 +208,27 @@ class AlbumsController(MediaControllerBase[Album]):
                 "Trying to match album %s on provider %s", db_album.name, provider.name
             )
             match_found = False
-            search_result = await self.search(db_album.name, provider.id)
-            for search_result_item in search_result:
-                if not search_result_item.available:
-                    continue
-                if not compare_album(search_result_item, db_album):
-                    continue
-                # we must fetch the full album version, search results are simplified objects
-                prov_album = await self.get_provider_item(
-                    search_result_item.item_id, search_result_item.provider
-                )
-                if compare_album(prov_album, db_album):
-                    # 100% match, we can simply update the db with additional provider ids
-                    await self.update_db_item(db_album.item_id, prov_album)
-                    match_found = True
+            for search_str in (
+                db_album.name,
+                f"{db_album.artist.name} - {db_album.name}",
+                f"{db_album.artist.name} {db_album.name}",
+            ):
+                if match_found:
+                    break
+                search_result = await self.search(search_str, provider.id)
+                for search_result_item in search_result:
+                    if not search_result_item.available:
+                        continue
+                    if not compare_album(search_result_item, db_album):
+                        continue
+                    # we must fetch the full album version, search results are simplified objects
+                    prov_album = await self.get_provider_item(
+                        search_result_item.item_id, search_result_item.provider
+                    )
+                    if compare_album(prov_album, db_album):
+                        # 100% match, we can simply update the db with additional provider ids
+                        await self.update_db_item(db_album.item_id, prov_album)
+                        match_found = True
             return match_found
 
         # try to find match on all providers
