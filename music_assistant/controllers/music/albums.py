@@ -62,7 +62,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 final_items[key].provider_ids.update(track.provider_ids)
             else:
                 track.album = album
-                track[key] = track
+                final_items[key] = track
             if album.in_library:
                 final_items[key].in_library = True
         return list(final_items.values())
