@@ -6,12 +6,6 @@ from typing import Dict, List, Optional
 
 from databases import Database as Db
 
-from music_assistant.helpers.compare import (
-    compare_album,
-    compare_artist,
-    compare_strings,
-    compare_track,
-)
 from music_assistant.helpers.database import TABLE_ARTISTS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, ProviderType
@@ -159,7 +153,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                     self.db_table, match, db=db
                 ):
                     row_artist = Artist.from_db_row(row)
-                    if compare_strings(row_artist.sort_name, artist.sort_name):
+                    if row_artist.sort_name == artist.sort_name:
+                        # just to be sure ?!
                         cur_item = row_artist
                         break
             if cur_item:
@@ -219,43 +214,60 @@ class ArtistsController(MediaControllerBase[Artist]):
                 ref_track = await self.mass.music.tracks.get(
                     ref_track.item_id, ref_track.provider
                 )
-            search_results = await self.mass.music.tracks.search(
-                ref_track.name, provider.type
-            )
-            for search_result_item in search_results:
-                if not compare_track(search_result_item, ref_track):
-                    continue
-                # get matching artist from track
-                for search_item_artist in search_result_item.artists:
-                    if not compare_artist(db_artist, search_item_artist):
+            for search_str in (
+                f"{db_artist.name} - {ref_track.name}",
+                f"{db_artist.name} {ref_track.name}",
+                ref_track.name,
+            ):
+                search_results = await self.mass.music.tracks.search(
+                    search_str, provider.type
+                )
+                for search_result_item in search_results:
+                    if search_result_item.sort_name != ref_track.sort_name:
                         continue
-                    # 100% album match
-                    # get full artist details so we have all metadata
-                    prov_artist = await self.get_provider_item(
-                        search_item_artist.item_id, search_item_artist.provider
-                    )
-                    await self.update_db_item(db_artist.item_id, prov_artist)
-                    return True
+                    # get matching artist from track
+                    for search_item_artist in search_result_item.artists:
+                        if search_item_artist.sort_name != db_artist.sort_name:
+                            continue
+                        # 100% album match
+                        # get full artist details so we have all metadata
+                        prov_artist = await self.get_provider_item(
+                            search_item_artist.item_id, search_item_artist.provider
+                        )
+                        await self.update_db_item(db_artist.item_id, prov_artist)
+                        return True
         # try to get a match with some reference albums of this artist
         artist_albums = await self.albums(db_artist.item_id, db_artist.provider)
         for ref_album in artist_albums:
             if ref_album.album_type == AlbumType.COMPILATION:
                 continue
-            search_result = await self.mass.music.albums.search(
-                ref_album.name, provider.type
-            )
-            for search_result_item in search_result:
-                # artist must match 100%
-                if not compare_artist(db_artist, search_result_item.artist):
-                    continue
-                if not compare_album(search_result_item, ref_album):
-                    continue
-                # 100% match
-                # get full artist details so we have all metadata
-                prov_artist = await self.get_provider_item(
-                    search_result_item.artist.item_id,
-                    search_result_item.artist.provider,
+            if ref_album.artist is None:
+                continue
+            for search_str in (
+                ref_album.name,
+                f"{db_artist.name} - {ref_album.name}",
+                f"{db_artist.name} {ref_album.name}",
+            ):
+                search_result = await self.mass.music.albums.search(
+                    search_str, provider.type
                 )
-                await self.update_db_item(db_artist.item_id, prov_artist)
-                return True
+                for search_result_item in search_result:
+                    if search_result_item.artist is None:
+                        continue
+                    if search_result_item.sort_name != ref_album.sort_name:
+                        continue
+                    # artist must match 100%
+                    if (
+                        search_result_item.artist.sort_name
+                        != ref_album.artist.sort_name
+                    ):
+                        continue
+                    # 100% match
+                    # get full artist details so we have all metadata
+                    prov_artist = await self.get_provider_item(
+                        search_result_item.artist.item_id,
+                        search_result_item.artist.provider,
+                    )
+                    await self.update_db_item(db_artist.item_id, prov_artist)
+                    return True
         return False

@@ -96,14 +96,21 @@ class TracksController(MediaControllerBase[Track]):
                 "Trying to match track %s on provider %s", db_track.name, provider.name
             )
             match_found = False
-            search_result = await self.search(db_track.name, provider.type)
-            for search_result_item in search_result:
-                if not search_result_item.available:
-                    continue
-                if compare_track(search_result_item, db_track):
-                    # 100% match, we can simply update the db with additional provider ids
-                    match_found = True
-                    await self.update_db_item(db_track.item_id, search_result_item)
+            for search_str in (
+                db_track.name,
+                f"{db_track.artists[0].name} - {db_track.name}",
+                f"{db_track.artists[0].name} {db_track.name}",
+            ):
+                if match_found:
+                    break
+                search_result = await self.search(search_str, provider.type)
+                for search_result_item in search_result:
+                    if not search_result_item.available:
+                        continue
+                    if compare_track(search_result_item, db_track):
+                        # 100% match, we can simply update the db with additional provider ids
+                        match_found = True
+                        await self.update_db_item(db_track.item_id, search_result_item)
 
             if not match_found:
                 self.logger.debug(
