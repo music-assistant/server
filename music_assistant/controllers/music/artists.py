@@ -87,9 +87,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         # also fetch same artist on all providers
         await self.match_artist(db_item)
         db_item = await self.get_db_item(db_item.item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.ARTIST_ADDED, object_id=db_item.uri, data=db_item)
-        )
         return db_item
 
     async def match_artist(self, db_artist: Artist):
@@ -168,7 +165,13 @@ class ArtistsController(MediaControllerBase[Artist]):
             item_id = new_item["item_id"]
             self.logger.debug("added %s to database", artist.name)
             # return created object
-            return await self.get_db_item(item_id, db=db)
+            db_item = await self.get_db_item(item_id, db=db)
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.MEDIA_ITEM_ADDED, object_id=db_item.uri, data=db_item
+                )
+            )
+            return db_item
 
     async def update_db_item(
         self,
@@ -200,7 +203,13 @@ class ArtistsController(MediaControllerBase[Artist]):
                 db=db,
             )
             self.logger.debug("updated %s in database: %s", artist.name, item_id)
-            return await self.get_db_item(item_id, db=db)
+            db_item = await self.get_db_item(item_id, db=db)
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item
+                )
+            )
+            return db_item
 
     async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""

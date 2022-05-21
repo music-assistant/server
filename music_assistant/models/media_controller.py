@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, Generic, List, Optional, Tuple, TypeVar
 from databases import Database as Db
 
 from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant.models.event import MassEvent
 
-from .enums import MediaType, ProviderType
+from .enums import EventType, MediaType, ProviderType
 from .media_items import MediaItemType
 
 if TYPE_CHECKING:
@@ -139,7 +140,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 await prov.library_add(prov_id.item_id, self.media_type)
         # mark as library item in internal db
         if not db_item.in_library:
+            db_item.in_library = True
             await self.set_db_library(db_item.item_id, True)
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item
+                )
+            )
 
     async def remove_from_library(
         self,
@@ -158,7 +165,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 await prov.library_remove(prov_id.item_id, self.media_type)
         # unmark as library item in internal db
         if db_item.in_library:
+            db_item.in_library = False
             await self.set_db_library(db_item.item_id, False)
+            self.mass.signal_event(
+                MassEvent(
+                    EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item
+                )
+            )
 
     async def get_provider_id(
         self, item: ItemCls, db: Optional[Db] = None
