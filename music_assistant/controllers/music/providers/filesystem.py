@@ -271,7 +271,7 @@ class FileSystemProvider(MusicProvider):
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
         # TODO: adjust to json query instead of text search
-        query = f"SELECT * FROM tracks WHERE album LIKE '%\"{db_album.item_id}\"%'"
+        query = f"SELECT * FROM tracks WHERE albums LIKE '%\"{db_album.item_id}\"%'"
         query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
         result = []
         for track in await self.mass.music.tracks.get_db_items(query):
@@ -447,7 +447,7 @@ class FileSystemProvider(MusicProvider):
         parentdir = os.path.dirname(track_path)
         for _ in range(len(track_parts)):
             dirname = parentdir.rsplit(os.sep)[-1]
-            if compare_strings(dirname, tags.albumartist or tags.artist):
+            if compare_strings(dirname, tags.albumartist):
                 artist_folder = parentdir
             if compare_strings(dirname, tags.album):
                 album_folder = parentdir
@@ -459,7 +459,9 @@ class FileSystemProvider(MusicProvider):
                 name=tags.albumartist, artist_path=artist_folder, in_library=True
             )
         else:
-            album_artist = None
+            # always fallback to various artists as album artist if user did not tag album artist
+            # ID3 tag properly because we must have an album artist
+            album_artist = await self._parse_artist(name="Various Artists")
 
         # album
         if tags.album:
@@ -799,21 +801,15 @@ class FileSystemProvider(MusicProvider):
         if prov_item_id is None:
             return None  # guard
         # funky sql queries go here ;-)
+        table = f"{media_type.value}s"
         query = (
-            "SELECT json_extract(json_each.value, '$.url') as url FROM :table, "
-            "json_each(provider_ids) WHERE "
-            "json_extract(json_each.value, '$.prov_id') = :prov_id"
-            "AND json_extract(json_each.value, '$.item_id') = :item_id"
+            f"SELECT json_extract(json_each.value, '$.url') as url FROM {table}"
+            " ,json_each(provider_ids) WHERE"
+            f" json_extract(json_each.value, '$.prov_id') = '{self.id}'"
+            f" AND json_extract(json_each.value, '$.item_id') = '{prov_item_id}'"
         )
-        params = {
-            "table": f"{media_type.value}s",
-            "prov_id": self.id,
-            "item_id": prov_item_id,
-        }
-        file_path = next(
-            await self.mass.database.get_rows_from_query(query, params), None
-        )
-        if file_path is not None:
+        for db_row in await self.mass.database.get_rows_from_query(query):
+            file_path = db_row["url"]
             # ensure we have a full path and not relative
             if self.config.path not in file_path:
                 file_path = os.path.join(self.config.path, file_path)
