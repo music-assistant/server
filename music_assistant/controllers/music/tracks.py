@@ -12,7 +12,13 @@ from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MediaType, ProviderType
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
-from music_assistant.models.media_items import Album, Artist, ItemMapping, Track
+from music_assistant.models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    Track,
+    TrackAlbumMapping,
+)
 
 
 class TracksController(MediaControllerBase[Track]):
@@ -183,8 +189,6 @@ class TracksController(MediaControllerBase[Track]):
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                     "isrc": track.isrc or cur_item.isrc,
-                    "disc_number": track.disc_number or cur_item.disc_number,
-                    "track_number": track.track_number or cur_item.track_number,
                 },
                 db=db,
             )
@@ -210,22 +214,40 @@ class TracksController(MediaControllerBase[Track]):
         base_track: Track,
         upd_track: Optional[Track] = None,
         db: Optional[Db] = None,
-    ) -> List[ItemMapping]:
-        """Extract all (unique) artists of track as ItemMapping."""
-        track_albums = []
+    ) -> List[TrackAlbumMapping]:
+        """Extract all (unique) albums of track as TrackAlbumMapping."""
+        track_albums: List[TrackAlbumMapping] = []
+        # existing TrackAlbumMappings are starting point
+        if upd_track and upd_track.albums:
+            track_albums = upd_track.albums
+        elif base_track.albums:
+            track_albums = base_track.albums
+        # append update item album if needed
         if upd_track and upd_track.album:
-            track_albums.append(upd_track.album)
-        if base_track.album and base_track.album not in track_albums:
-            track_albums.append(base_track.album)
-        for item in base_track.albums:
-            if item not in track_albums:
-                track_albums.append(item)
-        if upd_track:
-            for item in upd_track.albums:
-                if item not in track_albums:
-                    track_albums.append(item)
-        # use intermediate set to clear out duplicates
-        return [await self._get_album_mapping(x, db=db) for x in track_albums]
+            mapping = await self._get_album_mapping(upd_track.album, db=db)
+            mapping = TrackAlbumMapping.from_dict(
+                {
+                    **mapping.to_dict(),
+                    "disc_number": upd_track.disc_number,
+                    "track_number": upd_track.track_number,
+                }
+            )
+            if mapping not in track_albums:
+                track_albums.append(mapping)
+        # append base item album if needed
+        elif base_track and base_track.album:
+            mapping = await self._get_album_mapping(base_track.album, db=db)
+            mapping = TrackAlbumMapping.from_dict(
+                {
+                    **mapping.to_dict(),
+                    "disc_number": base_track.disc_number,
+                    "track_number": base_track.track_number,
+                }
+            )
+            if mapping not in track_albums:
+                track_albums.append(mapping)
+
+        return track_albums
 
     async def _get_album_mapping(
         self, album: Union[Album, ItemMapping], db: Optional[Db] = None

@@ -57,15 +57,14 @@ class AlbumsController(MediaControllerBase[Album]):
         # merge duplicates using a dict
         final_items: Dict[str, Track] = {}
         for track in tracks:
-            key = f".{track.name}.{track.version}"
-            if track.disc_number and track.track_number:
-                key += f".{track.disc_number}.{track.track_number}"
-
+            key = f".{track.name}.{track.version}.{track.disc_number}.{track.track_number}"
             if key in final_items:
                 final_items[key].provider_ids.update(track.provider_ids)
             else:
                 track.album = album
                 final_items[key] = track
+            if album.in_library:
+                final_items[key].in_library = True
         return list(final_items.values())
 
     async def versions(

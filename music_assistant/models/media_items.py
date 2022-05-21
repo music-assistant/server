@@ -148,6 +148,8 @@ class MediaItem(DataClassDictMixin):
             db_row["in_library"] = bool(db_row["in_library"])
         if db_row.get("albums"):
             db_row["album"] = db_row["albums"][0]
+            db_row["disc_number"] = db_row["albums"][0]["disc_number"]
+            db_row["track_number"] = db_row["albums"][0]["track_number"]
         db_row["item_id"] = str(db_row["item_id"])
         return cls.from_dict(db_row)
 
@@ -164,6 +166,8 @@ class MediaItem(DataClassDictMixin):
                 "uri",
                 "album",
                 "position",
+                "track_number",
+                "disc_number",
             ]
         }
 
@@ -194,6 +198,10 @@ class MediaItem(DataClassDictMixin):
     def last_refresh(self) -> int:
         """Return timestamp the metadata was last refreshed (0 if full data never retrieved)."""
         return self.metadata.last_refresh or 0
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
 
 
 @dataclass(frozen=True)
@@ -247,6 +255,14 @@ class Album(MediaItem):
         return hash((self.provider, self.item_id))
 
 
+@dataclass(frozen=True)
+class TrackAlbumMapping(ItemMapping):
+    """Model for a track that is mapped to an album."""
+
+    disc_number: Optional[int] = None
+    track_number: Optional[int] = None
+
+
 @dataclass
 class Track(MediaItem):
     """Model for a track."""
@@ -259,7 +275,7 @@ class Track(MediaItem):
     artists: List[Union[Artist, ItemMapping]] = field(default_factory=list)
     # album track only
     album: Union[Album, ItemMapping, None] = None
-    albums: List[ItemMapping] = field(default_factory=list)
+    albums: List[TrackAlbumMapping] = field(default_factory=list)
     disc_number: Optional[int] = None
     track_number: Optional[int] = None
     # playlist track only
@@ -278,6 +294,10 @@ class Playlist(MediaItem):
     owner: str = ""
     is_editable: bool = False
 
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.provider, self.item_id))
+
 
 @dataclass
 class Radio(MediaItem):
@@ -291,6 +311,10 @@ class Radio(MediaItem):
         val = super().to_db_row()
         val.pop("duration", None)
         return val
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.provider, self.item_id))
 
 
 MediaItemType = Union[Artist, Album, Track, Radio, Playlist]
