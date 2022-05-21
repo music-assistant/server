@@ -202,7 +202,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider_id: Optional[str] = None,
         db: Optional[Db] = None,
     ) -> ItemCls | None:
-        """Get the database album for the given prov_id."""
+        """Get the database item for the given prov_id."""
         assert provider or provider_id, "provider or provider_id must be supplied"
         if provider == ProviderType.DATABASE or provider_id == "database":
             return await self.get_db_item(provider_item_id, db=db)

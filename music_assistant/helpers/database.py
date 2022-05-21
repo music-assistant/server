@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 TABLE_TRACK_LOUDNESS = "track_loudness"
 TABLE_PLAYLOG = "playlog"
@@ -211,10 +211,12 @@ class Database:
                     await self.__create_database_tables(db)
 
                 if prev_version < 14:
-                    # album --> albums on track entity
                     # no more need for prov_mappings table
-                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
                     await db.execute("DROP TABLE IF EXISTS provider_mappings")
+
+                if prev_version < 15:
+                    # album --> albums on track entity
+                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
                     # recreate missing tables
                     await self.__create_database_tables(db)
@@ -281,8 +283,6 @@ class Database:
                     artists json,
                     albums json,
                     metadata json,
-                    disc_number INTEGER NULL,
-                    track_number INTEGER NULL,
                     provider_ids json
                 );"""
         )
@@ -321,3 +321,45 @@ class Database:
                 data BLOB,
                 UNIQUE(path, size));"""
         )
+        # create indexes
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(in_library);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS albums_in_library_idx on albums(in_library);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS tracks_in_library_idx on tracks(in_library);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS playlists_in_library_idx on playlists(in_library);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS radios_in_library_idx on radios(in_library);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS artists_sort_name_idx on artists(sort_name);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS albums_sort_name_idx on albums(sort_name);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS tracks_sort_name_idx on tracks(sort_name);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS playlists_sort_name_idx on playlists(sort_name);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS radios_sort_name_idx on radios(sort_name);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS artists_musicbrainz_id_idx on artists(musicbrainz_id);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS albums_musicbrainz_id_idx on albums(musicbrainz_id);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS tracks_musicbrainz_id_idx on tracks(musicbrainz_id);"
+        )
+        await db.execute("CREATE INDEX IF NOT EXISTS tracks_isrc_idx on tracks(isrc);")
+        await db.execute("CREATE INDEX IF NOT EXISTS albums_upc_idx on albums(upc);")

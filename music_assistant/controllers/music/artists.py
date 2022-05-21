@@ -2,7 +2,7 @@
 
 import asyncio
 import itertools
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from databases import Database as Db
 
@@ -48,8 +48,16 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.get_provider_artist_toptracks(item.item_id, item.prov_id)
             for item in artist.provider_ids
         ]
-        # use intermediate set to remove (some) duplicates
-        return list(set(itertools.chain.from_iterable(await asyncio.gather(*coros))))
+        tracks = itertools.chain.from_iterable(await asyncio.gather(*coros))
+        # merge duplicates using a dict
+        final_items: Dict[str, Track] = {}
+        for track in tracks:
+            key = f".{track.name}.{track.version}"
+            if key in final_items:
+                final_items[key].provider_ids.update(track.provider_ids)
+            else:
+                final_items[key] = track
+        return list(final_items.values())
 
     async def albums(
         self,
@@ -64,8 +72,18 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.get_provider_artist_albums(item.item_id, item.prov_id)
             for item in artist.provider_ids
         ]
-        # use intermediate set to remove (some) duplicates
-        return list(set(itertools.chain.from_iterable(await asyncio.gather(*coros))))
+        albums = itertools.chain.from_iterable(await asyncio.gather(*coros))
+        # merge duplicates using a dict
+        final_items: Dict[str, Album] = {}
+        for album in albums:
+            key = f".{album.name}.{album.version}"
+            if key in final_items:
+                final_items[key].provider_ids.update(album.provider_ids)
+            else:
+                final_items[key] = album
+            if album.in_library:
+                final_items[key].in_library = True
+        return list(final_items.values())
 
     async def add(self, item: Artist) -> Artist:
         """Add artist to local db and return the database item."""

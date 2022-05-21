@@ -276,6 +276,11 @@ class FileSystemProvider(MusicProvider):
         result = []
         for track in await self.mass.music.tracks.get_db_items(query):
             track.album = db_album
+            album_mapping = next(
+                (x for x in track.albums if x.item_id == db_album.item_id), None
+            )
+            track.disc_number = album_mapping.disc_number
+            track.track_number = album_mapping.track_number
             result.append(track)
         return result
 
