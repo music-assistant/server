@@ -43,9 +43,13 @@ from music_assistant.models.provider import MusicProvider
 
 async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
     """Recursively yield DirEntry objects for given directory."""
+
+    def is_dir(entry: os.DirEntry) -> bool:
+        return entry.is_dir(follow_symlinks=False)
+
     loop = asyncio.get_running_loop()
     for entry in await loop.run_in_executor(None, os.scandir, path):
-        if await loop.run_in_executor(None, entry.is_dir):
+        if await loop.run_in_executor(None, is_dir, entry):
             async for subitem in scantree(entry.path):
                 yield subitem
         else:
