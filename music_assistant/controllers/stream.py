@@ -147,7 +147,7 @@ class StreamController:
         except QueueEmpty:
             # send stop here to prevent the player from retrying over and over
             await queue.stop()
-            # send 10 seconds of silence to allow the player to
+            # send some silence to allow the player to process the stop request
             result = create_wave_header(duration=10)
             result += b"\0" * 1764000
             return web.Response(status=200, body=result, content_type="audio/wav")
