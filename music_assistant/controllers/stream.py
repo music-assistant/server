@@ -144,6 +144,8 @@ class StreamController:
         try:
             start_streamdetails = await queue.queue_stream_prepare()
         except QueueEmpty:
+            # send stop here to prevent the player from retruying over and over
+            await queue.stop()
             return web.Response(status=404)
 
         resp = web.StreamResponse(
