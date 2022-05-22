@@ -110,7 +110,8 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def add_db_item(self, album: Album, db: Optional[Db] = None) -> Album:
         """Add a new album record to the database."""
-        assert album.provider_ids, "Album is missing provider id(s)"
+        assert album.provider_ids, f"Album {album.name} is missing provider id(s)"
+        assert album.artist, f"Album {album.name} is missing artist"
         cur_item = None
         async with self.mass.database.get_db(db) as db:
             # always try to grab existing item by musicbrainz_id
@@ -163,6 +164,8 @@ class AlbumsController(MediaControllerBase[Album]):
         db: Optional[Db] = None,
     ) -> Album:
         """Update Album record in the database."""
+        assert album.provider_ids, f"Album {album.name} is missing provider id(s)"
+        assert album.artist, f"Album {album.name} is missing artist"
         async with self.mass.database.get_db(db) as db:
             cur_item = await self.get_db_item(item_id)
             album_artist = await self._get_album_artist(album, cur_item, db=db)
