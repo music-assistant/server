@@ -191,7 +191,7 @@ class MusicProvider:
         """Run library sync for this provider."""
         # this reference implementation can be overridden with provider specific approach
         # this logic is aimed at streaming/online providers,
-        #  which all have more or less the same structure.
+        # which all have more or less the same structure.
         # filesystem implementation(s) just override this.
         async with self.mass.database.get_db() as db:
             for media_type in self.supported_mediatypes:
@@ -199,8 +199,17 @@ class MusicProvider:
                 controller = self.mass.music.get_controller(media_type)
 
                 # create a set of all previous and current db id's
+                # note we only store the items in the prev_ids list that are
+                # unique to this provider to avoid getting into a mess where
+                # for example an item still exists on disk (in case of file provider)
+                # and no longer favorite on streaming provider.
+                # Bottomline this means that we don't do a full 2 way sync if multiple
+                # providers are attached to the same media item.
                 prev_ids = set()
                 for db_item in await controller.library():
+                    prov_types = {x.prov_type for x in db_item.provider_ids}
+                    if len(prov_types) > 1:
+                        continue
                     for prov_id in db_item.provider_ids:
                         if prov_id.prov_id == self.id:
                             prev_ids.add(db_item.item_id)

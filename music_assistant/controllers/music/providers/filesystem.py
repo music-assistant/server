@@ -153,14 +153,30 @@ class FileSystemProvider(MusicProvider):
                     if track := await self._parse_track(entry.path, checksum):
                         # process album
                         if track.album:
-                            await self.mass.music.albums.add_db_item(track.album, db=db)
+                            db_album = await self.mass.music.albums.add_db_item(
+                                track.album, db=db
+                            )
+                            if not db_album.in_library:
+                                await self.mass.music.albums.set_db_library(
+                                    db_album.item_id, True, db=db
+                                )
                             # process (album)artist
                             if track.album.artist:
-                                await self.mass.music.artists.add_db_item(
+                                db_artist = await self.mass.music.artists.add_db_item(
                                     track.album.artist, db=db
                                 )
+                                if not db_artist.in_library:
+                                    await self.mass.music.artists.set_db_library(
+                                        db_artist.item_id, True, db=db
+                                    )
                         # add/update track to db
-                        await self.mass.music.tracks.add_db_item(track, db=db)
+                        db_track = await self.mass.music.tracks.add_db_item(
+                            track, db=db
+                        )
+                        if not db_track.in_library:
+                            await self.mass.music.tracks.set_db_library(
+                                db_track.item_id, True, db=db
+                            )
                     elif playlist := await self._parse_playlist(entry.path, checksum):
                         # add/update] playlist to db
                         await self.mass.music.playlists.add_db_item(playlist, db=db)
@@ -321,7 +337,7 @@ class FileSystemProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
         # TODO: adjust to json query instead of text search
         query = f"SELECT * FROM albums WHERE artist LIKE '%\"{db_artist.item_id}\"%'"
-        query += f" AND provider_ids like  '%\"{self.type.value}\"%'"
+        query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
         return await self.mass.music.albums.get_db_items(query)
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
@@ -334,7 +350,7 @@ class FileSystemProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
         # TODO: adjust to json query instead of text search
         query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
-        query += f" AND provider_ids like  '%\"{self.type.value}\"%'"
+        query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
         return await self.mass.music.tracks.get_db_items(query)
 
     async def library_add(self, *args, **kwargs) -> bool:
@@ -430,7 +446,6 @@ class FileSystemProvider(MusicProvider):
         if tags.title:
             track_title = tags.title
         else:
-
             ext = track_path.split(".")[-1]
             track_title = track_path.split(os.sep)[-1]
             track_title = track_title.replace(f".{ext}", "").replace("_", " ")

@@ -24,7 +24,7 @@ class MusicProviderConfig:
     def __post_init__(self):
         """Call after init."""
         # create a default (hopefully unique enough) id from type + username/path
-        if not self.id:
+        if not self.id and (self.path or self.username):
             prov_id = f"{self.type.value}_"
             base_str = (self.path or self.username).lower()
             prov_id += (
