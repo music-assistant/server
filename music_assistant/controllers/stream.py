@@ -11,6 +11,7 @@ from aiohttp import web
 
 from music_assistant.helpers.audio import (
     check_audio_support,
+    create_wave_header,
     crossfade_pcm_parts,
     get_media_stream,
     get_preview_stream,
@@ -26,7 +27,11 @@ from music_assistant.models.enums import (
     MediaType,
     ProviderType,
 )
-from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant.models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    QueueEmpty,
+)
 from music_assistant.models.event import MassEvent
 from music_assistant.models.player_queue import PlayerQueue, QueueItem
 
@@ -137,12 +142,21 @@ class StreamController:
             return web.Response(status=404)
 
         # prepare request
+        try:
+            start_streamdetails = await queue.queue_stream_prepare()
+        except QueueEmpty:
+            # send stop here to prevent the player from retrying over and over
+            await queue.stop()
+            # send some silence to allow the player to process the stop request
+            result = create_wave_header(duration=10)
+            result += b"\0" * 1764000
+            return web.Response(status=200, body=result, content_type="audio/wav")
+
         resp = web.StreamResponse(
             status=200, reason="OK", headers={"Content-Type": f"audio/{fmt}"}
         )
         await resp.prepare(request)
 
-        start_streamdetails = await queue.queue_stream_prepare()
         output_fmt = ContentType(fmt)
         # work out sample rate
         if queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
@@ -162,7 +176,7 @@ class StreamController:
             output_format=output_fmt,
         )
         # get the raw pcm bytes from the queue stream and on the fly encode to wanted format
-        # send the compressed/endoded stream to the client.
+        # send the compressed/encoded stream to the client.
         async with AsyncProcess(sox_args, True) as sox_proc:
 
             async def writer():

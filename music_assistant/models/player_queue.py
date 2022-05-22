@@ -723,7 +723,7 @@ class PlayerQueue:
 
     async def queue_stream_prepare(self) -> StreamDetails:
         """Call when queue_streamer is about to start playing."""
-        start_from_index = self._next_start_index or 0
+        start_from_index = self._next_start_index
         try:
             next_item = self._items[start_from_index]
         except (IndexError, TypeError) as err:
@@ -737,7 +737,7 @@ class PlayerQueue:
 
     async def queue_stream_start(self) -> int:
         """Call when queue_streamer starts playing the queue stream."""
-        start_from_index = self._next_start_index or 0
+        start_from_index = self._next_start_index
         self._current_item_elapsed_time = 0
         self._current_index = start_from_index
         self._start_index = start_from_index
@@ -754,12 +754,9 @@ class PlayerQueue:
 
     def get_next_index(self, index: int) -> int | None:
         """Return the next index or None if no more items."""
-        if not self._items:
+        if not self._items or index is None:
             # queue is empty
             return None
-        if index is None:
-            # guard just in case
-            return 0
         if self.settings.repeat_mode == RepeatMode.ONE:
             return index
         if len(self._items) > (index + 1):
