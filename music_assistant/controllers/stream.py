@@ -26,7 +26,11 @@ from music_assistant.models.enums import (
     MediaType,
     ProviderType,
 )
-from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant.models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    QueueEmpty,
+)
 from music_assistant.models.event import MassEvent
 from music_assistant.models.player_queue import PlayerQueue, QueueItem
 
@@ -137,12 +141,16 @@ class StreamController:
             return web.Response(status=404)
 
         # prepare request
+        try:
+            start_streamdetails = await queue.queue_stream_prepare()
+        except QueueEmpty:
+            return web.Response(status=404)
+
         resp = web.StreamResponse(
             status=200, reason="OK", headers={"Content-Type": f"audio/{fmt}"}
         )
         await resp.prepare(request)
 
-        start_streamdetails = await queue.queue_stream_prepare()
         output_fmt = ContentType(fmt)
         # work out sample rate
         if queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
@@ -162,7 +170,7 @@ class StreamController:
             output_format=output_fmt,
         )
         # get the raw pcm bytes from the queue stream and on the fly encode to wanted format
-        # send the compressed/endoded stream to the client.
+        # send the compressed/encoded stream to the client.
         async with AsyncProcess(sox_args, True) as sox_proc:
 
             async def writer():
