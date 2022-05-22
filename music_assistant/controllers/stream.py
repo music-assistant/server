@@ -11,6 +11,7 @@ from aiohttp import web
 
 from music_assistant.helpers.audio import (
     check_audio_support,
+    create_wave_header,
     crossfade_pcm_parts,
     get_media_stream,
     get_preview_stream,
@@ -144,9 +145,12 @@ class StreamController:
         try:
             start_streamdetails = await queue.queue_stream_prepare()
         except QueueEmpty:
-            # send stop here to prevent the player from retruying over and over
+            # send stop here to prevent the player from retrying over and over
             await queue.stop()
-            return web.Response(status=404)
+            # send 10 seconds of silence to allow the player to
+            result = create_wave_header(duration=10)
+            result += b"\0" * 1764000
+            return web.Response(status=200, body=result, content_type="audio/wav")
 
         resp = web.StreamResponse(
             status=200, reason="OK", headers={"Content-Type": f"audio/{fmt}"}
