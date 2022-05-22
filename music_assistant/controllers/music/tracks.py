@@ -273,13 +273,13 @@ class TracksController(MediaControllerBase[Track]):
                 return album
             return ItemMapping.from_item(album)
 
-        if db_artist := await self.mass.music.albums.get_db_item_by_prov_id(
+        if db_album := await self.mass.music.albums.get_db_item_by_prov_id(
             album.item_id, provider=album.provider, db=db
         ):
-            return ItemMapping.from_item(db_artist)
+            return ItemMapping.from_item(db_album)
 
-        db_artist = await self.mass.music.albums.add_db_item(album, db=db)
-        return ItemMapping.from_item(db_artist)
+        db_album = await self.mass.music.albums.add_db_item(album, db=db)
+        return ItemMapping.from_item(db_album)
 
     async def _get_artist_mapping(
         self, artist: Union[Artist, ItemMapping], db: Optional[Db] = None
