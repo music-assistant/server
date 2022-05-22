@@ -423,6 +423,9 @@ class FileSystemProvider(MusicProvider):
 
         tags = await self.mass.loop.run_in_executor(None, parse_tags)
 
+        assert tags.title, "Required tag title is missing"
+        assert tags.artist, "Required tag artist is missing"
+
         # prefer title from tag, fallback to filename
         if tags.title:
             track_title = tags.title
