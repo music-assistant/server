@@ -6,7 +6,7 @@ from setuptools import find_packages, setup
 
 PROJECT_NAME = "Music Assistant"
 PROJECT_PACKAGE_NAME = "music_assistant"
-PROJECT_VERSION = "1.1.15"
+PROJECT_VERSION = "1.1.16"
 PROJECT_REQ_PYTHON_VERSION = "3.9"
 PROJECT_LICENSE = "Apache License 2.0"
 PROJECT_AUTHOR = "Marcel van der Veldt"
