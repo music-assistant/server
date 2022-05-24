@@ -32,7 +32,7 @@ class MusicProviderConfig:
             ) + base_str[-1]
             super().__setattr__("id", prov_id)
         elif not self.id:
-            self.id = self.type.value
+            super().__setattr__("id", self.type.value)
 
 
 @dataclass(frozen=True)
