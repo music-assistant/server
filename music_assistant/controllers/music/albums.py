@@ -192,7 +192,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     "year": album.year or cur_item.year,
                     "upc": album.upc or cur_item.upc,
                     "album_type": album_type.value,
-                    "artist": json_serializer(album_artists) or None,
+                    "artists": json_serializer(album_artists) or None,
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                 },
