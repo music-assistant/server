@@ -129,7 +129,9 @@ class FileSystemProvider(MusicProvider):
             result += playlists
         return result
 
-    async def sync_library(self) -> None:
+    async def sync_library(
+        self, media_types: Optional[Tuple[MediaType]] = None
+    ) -> None:
         """Run library sync for this provider."""
         cache_key = f"{self.id}.checksums"
         prev_checksums = await self.mass.cache.get(cache_key)

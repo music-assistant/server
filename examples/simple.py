@@ -71,7 +71,7 @@ async def main():
     await mass.setup()
 
     # start sync
-    await mass.music.start_sync()
+    await mass.music.start_sync(schedule=3)
 
     # get some data
     await mass.music.artists.library()
