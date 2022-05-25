@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 TABLE_TRACK_LOUDNESS = "track_loudness"
 TABLE_PLAYLOG = "playlog"
@@ -198,8 +198,8 @@ class Database:
                 # always create db tables if they don't exist to prevent errors trying to access them later
                 await self.__create_database_tables(db)
 
-                if prev_version < 13:
-                    # fixed nasty bugs in file provider, start clean just in case.
+                if prev_version < 15:
+                    # too many changes, just recreate
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ALBUMS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
@@ -207,19 +207,18 @@ class Database:
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_THUMBS}")
-                    # recreate missing tables
-                    await self.__create_database_tables(db)
-
-                if prev_version < 14:
-                    # no more need for prov_mappings table
                     await db.execute("DROP TABLE IF EXISTS provider_mappings")
-
-                if prev_version < 15:
-                    # album --> albums on track entity
-                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_TRACKS}")
-                    await db.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
                     # recreate missing tables
                     await self.__create_database_tables(db)
+
+                if prev_version and prev_version < 16:
+                    # album artist --> album artists
+                    await db.execute(f"ALTER TABLE {TABLE_ALBUMS} ADD artists json;")
+                    for db_row in await self.get_rows(TABLE_ALBUMS, db=db):
+                        match = {"item_id": db_row["item_id"]}
+                        new_values = {"artists": f'[{ db_row["artist"]}]'}
+                        await self.update(TABLE_ALBUMS, match, new_values, db=db)
+                    await db.execute(f"ALTER TABLE {TABLE_ALBUMS} DROP COLUMN artist;")
 
             # store current schema version
             await self.set_setting("version", str(SCHEMA_VERSION), db=db)
@@ -254,7 +253,7 @@ class Database:
                     in_library BOOLEAN DEFAULT 0,
                     upc TEXT,
                     musicbrainz_id TEXT,
-                    artist json,
+                    artists json,
                     metadata json,
                     provider_ids json
                 );"""

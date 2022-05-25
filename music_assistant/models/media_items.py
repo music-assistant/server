@@ -245,10 +245,22 @@ class Album(MediaItem):
     media_type: MediaType = MediaType.ALBUM
     version: str = ""
     year: Optional[int] = None
-    artist: Union[Artist, ItemMapping, None] = None
+    artists: List[Union[Artist, ItemMapping]] = field(default_factory=list)
     album_type: AlbumType = AlbumType.UNKNOWN
     upc: Optional[str] = None
     musicbrainz_id: Optional[str] = None  # release group id
+
+    @property
+    def artist(self) -> Artist | ItemMapping | None:
+        """Return (first) artist of album."""
+        if self.artists:
+            return self.artists[0]
+        return None
+
+    @artist.setter
+    def artist(self, artist: Union[Artist, ItemMapping]) -> None:
+        """Set (first/only) artist of album."""
+        self.artists = [artist]
 
     def __hash__(self):
         """Return custom hash."""

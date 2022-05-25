@@ -460,10 +460,7 @@ class QobuzProvider(MusicProvider):
             )
         )
 
-        if artist_obj:
-            album.artist = artist_obj
-        else:
-            album.artist = await self._parse_artist(album_obj["artist"])
+        album.artist = await self._parse_artist(artist_obj or album_obj["artist"])
         if (
             album_obj.get("product_type", "") == "single"
             or album_obj.get("release_type", "") == "single"
