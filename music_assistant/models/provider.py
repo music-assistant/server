@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from music_assistant.models.config import MusicProviderConfig
 from music_assistant.models.enums import MediaType, ProviderType
@@ -187,7 +187,9 @@ class MusicProvider:
         if media_type == MediaType.RADIO:
             return await self.get_radio(prov_item_id)
 
-    async def sync_library(self) -> None:
+    async def sync_library(
+        self, media_types: Optional[Tuple[MediaType]] = None
+    ) -> None:
         """Run library sync for this provider."""
         # this reference implementation can be overridden with provider specific approach
         # this logic is aimed at streaming/online providers,
@@ -195,6 +197,8 @@ class MusicProvider:
         # filesystem implementation(s) just override this.
         async with self.mass.database.get_db() as db:
             for media_type in self.supported_mediatypes:
+                if media_types is not None and media_type not in media_types:
+                    continue
                 self.logger.debug("Start sync of %s items.", media_type.value)
                 controller = self.mass.music.get_controller(media_type)
 

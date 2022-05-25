@@ -8,8 +8,8 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List, Optional, Set, Tuple
 
 import aiofiles
-import aiofiles.ospath as aiopath
 import xmltodict
+from aiofiles.os import wrap
 from aiofiles.threadpool.binary import AsyncFileIO
 from tinytag.tinytag import TinyTag
 
@@ -94,7 +94,9 @@ class FileSystemProvider(MusicProvider):
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
 
-        if not await aiopath.isdir(self.config.path):
+        isdir = wrap(os.path.exists)
+
+        if not await isdir(self.config.path):
             raise MediaNotFoundError(
                 f"Music Directory {self.config.path} does not exist"
             )
@@ -127,7 +129,9 @@ class FileSystemProvider(MusicProvider):
             result += playlists
         return result
 
-    async def sync_library(self) -> None:
+    async def sync_library(
+        self, media_types: Optional[Tuple[MediaType]] = None
+    ) -> None:
         """Run library sync for this provider."""
         cache_key = f"{self.id}.checksums"
         prev_checksums = await self.mass.cache.get(cache_key)
@@ -303,7 +307,8 @@ class FileSystemProvider(MusicProvider):
         playlist_path = await self.get_filepath(MediaType.PLAYLIST, prov_playlist_id)
         if not await self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
-        mtime = await aiopath.getmtime(playlist_path)
+        getmtime = wrap(os.path.getmtime)
+        mtime = await getmtime(playlist_path)
         checksum = f"{SCHEMA_VERSION}.{int(mtime)}"
         cache_key = f"playlist_{self.id}_tracks_{prov_playlist_id}"
         if cache := await self.mass.cache.get(cache_key, checksum):
@@ -772,7 +777,8 @@ class FileSystemProvider(MusicProvider):
         # ensure we have a full path and not relative
         if self.config.path not in file_path:
             file_path = os.path.join(self.config.path, file_path)
-        return await aiopath.exists(file_path)
+        _exists = wrap(os.path.exists)
+        return await _exists(file_path)
 
     @asynccontextmanager
     async def open_file(self, file_path: str, mode="rb") -> AsyncFileIO:

@@ -650,7 +650,8 @@ class PlayerQueue:
 
     async def clear(self) -> None:
         """Clear all items in the queue."""
-        await self.stop()
+        if self.player.state not in (PlayerState.IDLE, PlayerState.OFF):
+            await self.stop()
         await self.update([])
 
     def on_player_update(self) -> None:

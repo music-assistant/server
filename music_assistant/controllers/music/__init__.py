@@ -55,20 +55,28 @@ class MusicController:
         for prov_conf in self.mass.config.providers:
             prov_cls = PROV_MAP[prov_conf.type]
             await self._register_provider(prov_cls(self.mass, prov_conf), prov_conf)
-        # TODO: handle deletion of providers ?
 
-    async def start_sync(self, schedule: Optional[float] = 3) -> None:
+    async def start_sync(
+        self,
+        media_types: Optional[Tuple[MediaType]] = None,
+        prov_types: Optional[Tuple[ProviderType]] = None,
+        schedule: Optional[float] = None,
+    ) -> None:
         """
         Start running the sync of all registred providers.
 
-        :param schedule: schedule syncjob every X hours, set to None for just a manual sync run.
+        media_types: only sync these media types. None for all.
+        prov_types: only sync these provider types. None for all.
+        schedule: schedule syncjob every X hours, set to None for just a manual sync run.
         """
 
         async def do_sync():
             while True:
                 for prov in self.providers:
+                    if prov_types is not None and prov.type not in prov_types:
+                        continue
                     self.mass.add_job(
-                        prov.sync_library(),
+                        prov.sync_library(media_types),
                         f"Library sync for provider {prov.name}",
                         allow_duplicate=False,
                     )

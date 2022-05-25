@@ -640,7 +640,7 @@ async def get_preview_stream(
             mass.signal_event(
                 MassEvent(
                     EventType.STREAM_ENDED,
-                    object_id=streamdetails.provider,
+                    object_id=streamdetails.provider.value,
                     data=streamdetails,
                 )
             )

@@ -165,7 +165,7 @@ async def main():
     async with MusicAssistant(mass_conf) as mass:
 
         # start sync
-        await mass.music.start_sync()
+        await mass.music.start_sync(schedule=3)
 
         # get some data
         artists = await mass.music.artists.count()
