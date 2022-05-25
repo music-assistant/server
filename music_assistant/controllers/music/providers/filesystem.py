@@ -14,6 +14,7 @@ from aiofiles.threadpool.binary import AsyncFileIO
 from tinytag.tinytag import TinyTag
 
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.database import SCHEMA_VERSION
 from music_assistant.helpers.util import (
     create_clean_string,
     parse_title_and_version,
@@ -42,7 +43,6 @@ from music_assistant.models.provider import MusicProvider
 
 FALLBACK_ARTIST = "Various Artists"
 SPLITTERS = (";", ",", "Featuring", " Feat. ", " Feat ", "feat.", " & ", " / ")
-BASE_CHECKSUM = 1  # changing this will force a rescan of files on disk
 
 
 async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
@@ -130,7 +130,7 @@ class FileSystemProvider(MusicProvider):
     async def sync_library(self) -> None:
         """Run library sync for this provider."""
         cache_key = f"{self.id}.checksums"
-        prev_checksums = await self.mass.cache.get(cache_key, BASE_CHECKSUM)
+        prev_checksums = await self.mass.cache.get(cache_key)
         if prev_checksums is None:
             prev_checksums = {}
         # find all music files in the music directory and all subfolders
@@ -184,7 +184,7 @@ class FileSystemProvider(MusicProvider):
                     self.logger.exception("Error processing %s", entry.path)
 
         # save checksums for next sync
-        await self.mass.cache.set(cache_key, cur_checksums, BASE_CHECKSUM)
+        await self.mass.cache.set(cache_key, cur_checksums)
 
         # work out deletions
         deleted_files = set(prev_checksums.keys()) - set(cur_checksums.keys())
@@ -304,8 +304,8 @@ class FileSystemProvider(MusicProvider):
         if not await self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
         mtime = await aiopath.getmtime(playlist_path)
-        checksum = f"{BASE_CHECKSUM}.{int(mtime)}"
-        cache_key = f"{self.id}_playlist_tracks_{prov_playlist_id}"
+        checksum = f"{SCHEMA_VERSION}.{int(mtime)}"
+        cache_key = f"playlist_{self.id}_tracks_{prov_playlist_id}"
         if cache := await self.mass.cache.get(cache_key, checksum):
             return [Track.from_dict(x) for x in cache]
         index = 0
