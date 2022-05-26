@@ -218,7 +218,12 @@ class Database:
                         match = {"item_id": db_row["item_id"]}
                         new_values = {"artists": f'[{ db_row["artist"]}]'}
                         await self.update(TABLE_ALBUMS, match, new_values, db=db)
-                    await db.execute(f"ALTER TABLE {TABLE_ALBUMS} DROP COLUMN artist;")
+                    try:
+                        await db.execute(
+                            f"ALTER TABLE {TABLE_ALBUMS} DROP COLUMN artist;"
+                        )
+                    except Exception:  # pylint: disable=broad-except
+                        pass  # old sqlite version
 
             # store current schema version
             await self.set_setting("version", str(SCHEMA_VERSION), db=db)
