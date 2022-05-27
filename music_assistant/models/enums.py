@@ -86,7 +86,7 @@ class ContentType(Enum):
     AAC = "aac"
     MPEG = "mpeg"
     ALAC = "alac"
-    WAVE = "wave"
+    WAV = "wav"
     AIFF = "aiff"
     WMA = "wma"
     M4A = "m4a"
@@ -121,7 +121,7 @@ class ContentType(Enum):
             ContentType.OGG,
             ContentType.FLAC,
             ContentType.MP3,
-            ContentType.WAVE,
+            ContentType.WAV,
             ContentType.AIFF,
         ]
 

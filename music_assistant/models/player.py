@@ -23,7 +23,7 @@ DEFAULT_SUPPORTED_CONTENT_TYPES = (
     # if a player does not report/set its supported content types, we use a pretty safe default
     ContentType.FLAC,
     ContentType.MP3,
-    ContentType.WAVE,
+    ContentType.WAV,
     ContentType.PCM_S16LE,
     ContentType.PCM_S24LE,
 )
