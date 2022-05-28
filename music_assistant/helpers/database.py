@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Mapping, Optional
 
 from databases import Database as Db
 
@@ -102,6 +102,20 @@ class Database:
         """Get all rows for given custom query."""
         async with self.get_db(db) as _db:
             return await _db.fetch_all(query, params)
+
+    async def iterate_rows(
+        self,
+        table: str,
+        match: dict = None,
+        db: Optional[Db] = None,
+    ) -> AsyncGenerator[Mapping, None]:
+        """Iterate rows for given table."""
+        async with self.get_db(db) as _db:
+            sql_query = f"SELECT * FROM {table}"
+            if match is not None:
+                sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
+            async for row in _db.iterate(sql_query, match):
+                yield row
 
     async def search(
         self, table: str, search: str, column: str = "name", db: Optional[Db] = None

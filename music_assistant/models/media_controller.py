@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
 from time import time
-from typing import TYPE_CHECKING, Generic, List, Optional, Tuple, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    AsyncGenerator,
+    Generic,
+    List,
+    Optional,
+    Tuple,
+    TypeVar,
+)
 
 from databases import Database as Db
 
@@ -271,6 +279,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         return await self.get_db_items(query, db=db)
 
+    async def iterate_db_items(
+        self,
+        db: Optional[Db] = None,
+    ) -> AsyncGenerator[ItemCls, None]:
+        """Iterate all records from database."""
+        async for db_row in self.mass.database.iterate_rows(self.db_table, db=db):
+            yield self.item_cls.from_db_row(db_row)
+
     async def set_db_library(
         self, item_id: int, in_library: bool, db: Optional[Db] = None
     ) -> None:
@@ -313,17 +329,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 if not db_item.provider_ids:
                     # item has no more provider_ids left, it is completely deleted
                     await self.delete_db_item(db_item.item_id)
-                else:
-                    await self.update_db_item(db_item.item_id, db_item)
+                    return
+                await self.update_db_item(db_item.item_id, db_item)
 
-            # delete item
-            await self.mass.database.delete(
-                self.db_table,
-                {"item_id": int(item_id)},
-                db=db,
-            )
-        # NOTE: this does not delete any references to this item in other records!
-        self.logger.debug("deleted item with id %s from database", item_id)
+        self.logger.debug("removed provider %s from item id %s", prov_id, item_id)
 
     async def delete_db_item(self, item_id: int, db: Optional[Db] = None) -> None:
         """Delete record from the database."""

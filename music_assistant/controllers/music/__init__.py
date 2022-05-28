@@ -55,6 +55,12 @@ class MusicController:
         for prov_conf in self.mass.config.providers:
             prov_cls = PROV_MAP[prov_conf.type]
             await self._register_provider(prov_cls(self.mass, prov_conf), prov_conf)
+        # add job to cleanup old records from db
+        self.mass.add_job(
+            self._cleanup_library(),
+            "Cleanup removed items from database",
+            allow_duplicate=False,
+        )
 
     async def start_sync(
         self,
@@ -362,3 +368,22 @@ class MusicController:
             raise SetupFailedError(
                 f"Setup failed of provider {provider.type.value}: {str(err)}"
             ) from err
+
+    async def _cleanup_library(self) -> None:
+        """Cleanup deleted items from library/database."""
+        async with self.mass.database.get_db() as db:
+            for ctrl in (
+                self.mass.music.artists,
+                self.mass.music.albums,
+                self.mass.music.tracks,
+                self.mass.music.radio,
+                self.mass.music.playlists,
+            ):
+                async for item in ctrl.iterate_db_items(db=db):
+                    for prov in item.provider_ids:
+                        provider = self.get_provider(prov.prov_id)
+                        if provider is None:
+                            # provider no longer exists
+                            await ctrl.remove_prov_mapping(
+                                item.item_id, prov.prov_id, db=db
+                            )
