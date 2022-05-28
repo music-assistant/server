@@ -38,6 +38,22 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Add item to local db and return the database item."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def add_db_item(self, item: ItemCls, db: Optional[Db] = None) -> ItemCls:
+        """Add a new record for this mediatype to the database."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_db_item(
+        self,
+        item_id: int,
+        item: ItemCls,
+        overwrite: bool = False,
+        db: Optional[Db] = None,
+    ) -> ItemCls:
+        """Update record in the database, merging data."""
+        raise NotImplementedError
+
     async def library(self) -> List[ItemCls]:
         """Get all in-library items."""
         match = {"in_library": True}
@@ -285,6 +301,30 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
         return item
 
+    async def remove_prov_mapping(
+        self, item_id: int, prov_id: str, db: Optional[Db] = None
+    ) -> None:
+        """Remove provider id(s) from item."""
+        async with self.mass.database.get_db(db) as db:
+            if db_item := await self.get_db_item(item_id, db=db):
+                db_item.provider_ids = {
+                    x for x in db_item.provider_ids if x.prov_id != prov_id
+                }
+                if not db_item.provider_ids:
+                    # item has no more provider_ids left, it is completely deleted
+                    await self.delete_db_item(db_item.item_id)
+                else:
+                    await self.update_db_item(db_item.item_id, db_item)
+
+            # delete item
+            await self.mass.database.delete(
+                self.db_table,
+                {"item_id": int(item_id)},
+                db=db,
+            )
+        # NOTE: this does not delete any references to this item in other records!
+        self.logger.debug("deleted item with id %s from database", item_id)
+
     async def delete_db_item(self, item_id: int, db: Optional[Db] = None) -> None:
         """Delete record from the database."""
         async with self.mass.database.get_db(db) as db:
@@ -295,5 +335,5 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 {"item_id": int(item_id)},
                 db=db,
             )
-        # NOTE: this does not delete any references to this item in other records
+        # NOTE: this does not delete any references to this item in other records!
         self.logger.debug("deleted item with id %s from database", item_id)

@@ -162,24 +162,22 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
         )
 
-    async def add_db_item(
-        self, playlist: Playlist, db: Optional[Db] = None
-    ) -> Playlist:
-        """Add a new playlist record to the database."""
+    async def add_db_item(self, item: Playlist, db: Optional[Db] = None) -> Playlist:
+        """Add a new record to the database."""
         async with self.mass.database.get_db(db) as db:
-            match = {"name": playlist.name, "owner": playlist.owner}
+            match = {"name": item.name, "owner": item.owner}
             if cur_item := await self.mass.database.get_row(
                 self.db_table, match, db=db
             ):
                 # update existing
-                return await self.update_db_item(cur_item["item_id"], playlist, db=db)
+                return await self.update_db_item(cur_item["item_id"], item, db=db)
 
-            # insert new playlist
+            # insert new item
             new_item = await self.mass.database.insert(
-                self.db_table, playlist.to_db_row(), db=db
+                self.db_table, item.to_db_row(), db=db
             )
             item_id = new_item["item_id"]
-            self.logger.debug("added %s to database", playlist.name)
+            self.logger.debug("added %s to database", item.name)
             # return created object
             db_item = await self.get_db_item(item_id, db=db)
             self.mass.signal_event(
@@ -192,7 +190,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def update_db_item(
         self,
         item_id: int,
-        playlist: Playlist,
+        item: Playlist,
         overwrite: bool = False,
         db: Optional[Db] = None,
     ) -> Playlist:
@@ -201,26 +199,26 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             cur_item = await self.get_db_item(item_id, db=db)
             if overwrite:
-                metadata = playlist.metadata
-                provider_ids = playlist.provider_ids
+                metadata = item.metadata
+                provider_ids = item.provider_ids
             else:
-                metadata = cur_item.metadata.update(playlist.metadata)
-                provider_ids = {*cur_item.provider_ids, *playlist.provider_ids}
+                metadata = cur_item.metadata.update(item.metadata)
+                provider_ids = {*cur_item.provider_ids, *item.provider_ids}
 
             await self.mass.database.update(
                 self.db_table,
                 {"item_id": item_id},
                 {
-                    "name": playlist.name,
-                    "sort_name": playlist.sort_name,
-                    "owner": playlist.owner,
-                    "is_editable": playlist.is_editable,
+                    "name": item.name,
+                    "sort_name": item.sort_name,
+                    "owner": item.owner,
+                    "is_editable": item.is_editable,
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                 },
                 db=db,
             )
-            self.logger.debug("updated %s in database: %s", playlist.name, item_id)
+            self.logger.debug("updated %s in database: %s", item.name, item_id)
             db_item = await self.get_db_item(item_id, db=db)
             self.mass.signal_event(
                 MassEvent(
