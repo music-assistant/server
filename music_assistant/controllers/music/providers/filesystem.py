@@ -45,12 +45,13 @@ from music_assistant.models.provider import MusicProvider
 FALLBACK_ARTIST = "Various Artists"
 SPLITTERS = (";", ",", "Featuring", " Feat. ", " Feat ", "feat.", " & ", " / ")
 CONTENT_TYPE_EXT = {
-    ".mp3": ContentType.MP3,
-    ".m4a": ContentType.M4A,
-    ".flac": ContentType.FLAC,
-    ".wav": ContentType.WAV,
-    ".ogg": ContentType.OGG,
-    ".wma": ContentType.WMA,
+    # map of supported file extensions (mapped to ContentType)
+    "mp3": ContentType.MP3,
+    "m4a": ContentType.M4A,
+    "flac": ContentType.FLAC,
+    "wav": ContentType.WAV,
+    "ogg": ContentType.OGG,
+    "wma": ContentType.WMA,
 }
 
 
@@ -429,7 +430,7 @@ class FileSystemProvider(MusicProvider):
             return None
 
         filename_base, ext = Path(track_path).name.rsplit(".", 1)
-        content_type = CONTENT_TYPE_EXT.get(ext)
+        content_type = CONTENT_TYPE_EXT.get(ext.lower())
         if content_type is None:
             # unsupported file extension
             return None
@@ -515,7 +516,7 @@ class FileSystemProvider(MusicProvider):
             self.logger.warning("%s is missing ID3 tag [album]", track_path)
 
         # track artist(s)
-        if tags.artist == tags.albumartist:
+        if tags.artist == tags.albumartist and track.album:
             track.artists = track.album.artists
         else:
             # Parse track artist(s) from artist string using common splitters used in ID3 tags

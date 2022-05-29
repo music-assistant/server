@@ -330,7 +330,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     # item has no more provider_ids left, it is completely deleted
                     await self.delete_db_item(db_item.item_id)
                     return
-                await self.update_db_item(db_item.item_id, db_item)
+                await self.update_db_item(
+                    db_item.item_id, db_item, overwrite=True, db=db
+                )
 
         self.logger.debug("removed provider %s from item id %s", prov_id, item_id)
 

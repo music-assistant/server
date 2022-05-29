@@ -192,6 +192,14 @@ class Database:
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
             await _db.execute(sql_query, match)
 
+    async def delete_where_query(
+        self, table: str, query: str, db: Optional[Db] = None
+    ) -> None:
+        """Delete data in given table using given where clausule."""
+        async with self.get_db(db) as _db:
+            sql_query = f"DELETE FROM {table} WHERE {query}"
+            await _db.execute(sql_query)
+
     async def _migrate(self):
         """Perform database migration actions if needed."""
         async with self.get_db() as db:
