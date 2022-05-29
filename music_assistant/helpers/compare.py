@@ -163,9 +163,6 @@ def compare_track(left_track: Track, right_track: Track):
     """Compare two track items and return True if they match."""
     if left_track is None or right_track is None:
         return False
-    # album is required for track linking
-    if left_track.album is None or right_track.album is None:
-        return False
     # return early on exact item_id match
     if compare_item_id(left_track, right_track):
         return True
@@ -176,6 +173,9 @@ def compare_track(left_track: Track, right_track: Track):
         if left_track.musicbrainz_id == right_track.musicbrainz_id:
             # musicbrainz_id is always 100% accurate match
             return True
+    # album is required for track linking
+    if left_track.album is None or right_track.album is None:
+        return False
     # track name and version must match
     if not left_track.sort_name:
         left_track.sort_name = create_clean_string(left_track.name)
