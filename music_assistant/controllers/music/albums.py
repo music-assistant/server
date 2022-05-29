@@ -109,45 +109,45 @@ class AlbumsController(MediaControllerBase[Album]):
             return []
         return await prov.get_album_tracks(item_id)
 
-    async def add_db_item(self, album: Album, db: Optional[Db] = None) -> Album:
-        """Add a new album record to the database."""
-        assert album.provider_ids, f"Album {album.name} is missing provider id(s)"
-        assert album.artist, f"Album {album.name} is missing artist"
+    async def add_db_item(self, item: Album, db: Optional[Db] = None) -> Album:
+        """Add a new record to the database."""
+        assert item.provider_ids, f"Album {item.name} is missing provider id(s)"
+        assert item.artist, f"Album {item.name} is missing artist"
         cur_item = None
         async with self.mass.database.get_db(db) as db:
             # always try to grab existing item by musicbrainz_id
-            if album.musicbrainz_id:
-                match = {"musicbrainz_id": album.musicbrainz_id}
+            if item.musicbrainz_id:
+                match = {"musicbrainz_id": item.musicbrainz_id}
                 cur_item = await self.mass.database.get_row(self.db_table, match, db=db)
-            if not cur_item and album.upc:
-                match = {"upc": album.upc}
+            if not cur_item and item.upc:
+                match = {"upc": item.upc}
                 cur_item = await self.mass.database.get_row(self.db_table, match, db=db)
             if not cur_item:
                 # fallback to matching
-                match = {"sort_name": album.sort_name}
+                match = {"sort_name": item.sort_name}
                 for row in await self.mass.database.get_rows(
                     self.db_table, match, db=db
                 ):
                     row_album = Album.from_db_row(row)
-                    if compare_album(row_album, album):
+                    if compare_album(row_album, item):
                         cur_item = row_album
                         break
             if cur_item:
                 # update existing
-                return await self.update_db_item(cur_item.item_id, album, db=db)
+                return await self.update_db_item(cur_item.item_id, item, db=db)
 
-            # insert new album
-            album_artists = await self._get_album_artists(album, cur_item, db=db)
+            # insert new item
+            album_artists = await self._get_album_artists(item, cur_item, db=db)
             new_item = await self.mass.database.insert(
                 self.db_table,
                 {
-                    **album.to_db_row(),
+                    **item.to_db_row(),
                     "artists": json_serializer(album_artists) or None,
                 },
                 db=db,
             )
             item_id = new_item["item_id"]
-            self.logger.debug("added %s to database", album.name)
+            self.logger.debug("added %s to database", item.name)
             # return created object
             db_item = await self.get_db_item(item_id, db=db)
             self.mass.signal_event(
@@ -160,25 +160,25 @@ class AlbumsController(MediaControllerBase[Album]):
     async def update_db_item(
         self,
         item_id: int,
-        album: Album,
+        item: Album,
         overwrite: bool = False,
         db: Optional[Db] = None,
     ) -> Album:
         """Update Album record in the database."""
-        assert album.provider_ids, f"Album {album.name} is missing provider id(s)"
-        assert album.artist, f"Album {album.name} is missing artist"
+        assert item.provider_ids, f"Album {item.name} is missing provider id(s)"
+        assert item.artist, f"Album {item.name} is missing artist"
         async with self.mass.database.get_db(db) as db:
             cur_item = await self.get_db_item(item_id)
-            album_artists = await self._get_album_artists(album, cur_item, db=db)
+            album_artists = await self._get_album_artists(item, cur_item, db=db)
             if overwrite:
-                metadata = album.metadata
-                provider_ids = album.provider_ids
+                metadata = item.metadata
+                provider_ids = item.provider_ids
             else:
-                metadata = cur_item.metadata.update(album.metadata)
-                provider_ids = {*cur_item.provider_ids, *album.provider_ids}
+                metadata = cur_item.metadata.update(item.metadata)
+                provider_ids = {*cur_item.provider_ids, *item.provider_ids}
 
-            if album.album_type != AlbumType.UNKNOWN:
-                album_type = album.album_type
+            if item.album_type != AlbumType.UNKNOWN:
+                album_type = item.album_type
             else:
                 album_type = cur_item.album_type
 
@@ -186,11 +186,11 @@ class AlbumsController(MediaControllerBase[Album]):
                 self.db_table,
                 {"item_id": item_id},
                 {
-                    "name": album.name if overwrite else cur_item.name,
-                    "sort_name": album.sort_name if overwrite else cur_item.sort_name,
-                    "version": album.version if overwrite else cur_item.version,
-                    "year": album.year or cur_item.year,
-                    "upc": album.upc or cur_item.upc,
+                    "name": item.name if overwrite else cur_item.name,
+                    "sort_name": item.sort_name if overwrite else cur_item.sort_name,
+                    "version": item.version if overwrite else cur_item.version,
+                    "year": item.year or cur_item.year,
+                    "upc": item.upc or cur_item.upc,
                     "album_type": album_type.value,
                     "artists": json_serializer(album_artists) or None,
                     "metadata": json_serializer(metadata),
@@ -198,7 +198,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 },
                 db=db,
             )
-            self.logger.debug("updated %s in database: %s", album.name, item_id)
+            self.logger.debug("updated %s in database: %s", item.name, item_id)
             db_item = await self.get_db_item(item_id, db=db)
             self.mass.signal_event(
                 MassEvent(

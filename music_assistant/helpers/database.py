@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Mapping, Optional
 
 from databases import Database as Db
 
@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 TABLE_TRACK_LOUDNESS = "track_loudness"
 TABLE_PLAYLOG = "playlog"
@@ -103,6 +103,20 @@ class Database:
         async with self.get_db(db) as _db:
             return await _db.fetch_all(query, params)
 
+    async def iterate_rows(
+        self,
+        table: str,
+        match: dict = None,
+        db: Optional[Db] = None,
+    ) -> AsyncGenerator[Mapping, None]:
+        """Iterate rows for given table."""
+        async with self.get_db(db) as _db:
+            sql_query = f"SELECT * FROM {table}"
+            if match is not None:
+                sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
+            async for row in _db.iterate(sql_query, match):
+                yield row
+
     async def search(
         self, table: str, search: str, column: str = "name", db: Optional[Db] = None
     ) -> List[Mapping]:
@@ -177,6 +191,14 @@ class Database:
             sql_query = f"DELETE FROM {table}"
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
             await _db.execute(sql_query, match)
+
+    async def delete_where_query(
+        self, table: str, query: str, db: Optional[Db] = None
+    ) -> None:
+        """Delete data in given table using given where clausule."""
+        async with self.get_db(db) as _db:
+            sql_query = f"DELETE FROM {table} WHERE {query}"
+            await _db.execute(sql_query)
 
     async def _migrate(self):
         """Perform database migration actions if needed."""

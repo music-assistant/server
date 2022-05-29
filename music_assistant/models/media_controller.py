@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
 from time import time
-from typing import TYPE_CHECKING, Generic, List, Optional, Tuple, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    AsyncGenerator,
+    Generic,
+    List,
+    Optional,
+    Tuple,
+    TypeVar,
+)
 
 from databases import Database as Db
 
@@ -36,6 +44,22 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     @abstractmethod
     async def add(self, item: ItemCls) -> ItemCls:
         """Add item to local db and return the database item."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add_db_item(self, item: ItemCls, db: Optional[Db] = None) -> ItemCls:
+        """Add a new record for this mediatype to the database."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_db_item(
+        self,
+        item_id: int,
+        item: ItemCls,
+        overwrite: bool = False,
+        db: Optional[Db] = None,
+    ) -> ItemCls:
+        """Update record in the database, merging data."""
         raise NotImplementedError
 
     async def library(self) -> List[ItemCls]:
@@ -255,6 +279,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         return await self.get_db_items(query, db=db)
 
+    async def iterate_db_items(
+        self,
+        db: Optional[Db] = None,
+    ) -> AsyncGenerator[ItemCls, None]:
+        """Iterate all records from database."""
+        async for db_row in self.mass.database.iterate_rows(self.db_table, db=db):
+            yield self.item_cls.from_db_row(db_row)
+
     async def set_db_library(
         self, item_id: int, in_library: bool, db: Optional[Db] = None
     ) -> None:
@@ -285,6 +317,25 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
         return item
 
+    async def remove_prov_mapping(
+        self, item_id: int, prov_id: str, db: Optional[Db] = None
+    ) -> None:
+        """Remove provider id(s) from item."""
+        async with self.mass.database.get_db(db) as db:
+            if db_item := await self.get_db_item(item_id, db=db):
+                db_item.provider_ids = {
+                    x for x in db_item.provider_ids if x.prov_id != prov_id
+                }
+                if not db_item.provider_ids:
+                    # item has no more provider_ids left, it is completely deleted
+                    await self.delete_db_item(db_item.item_id)
+                    return
+                await self.update_db_item(
+                    db_item.item_id, db_item, overwrite=True, db=db
+                )
+
+        self.logger.debug("removed provider %s from item id %s", prov_id, item_id)
+
     async def delete_db_item(self, item_id: int, db: Optional[Db] = None) -> None:
         """Delete record from the database."""
         async with self.mass.database.get_db(db) as db:
@@ -295,5 +346,5 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 {"item_id": int(item_id)},
                 db=db,
             )
-        # NOTE: this does not delete any references to this item in other records
+        # NOTE: this does not delete any references to this item in other records!
         self.logger.debug("deleted item with id %s from database", item_id)

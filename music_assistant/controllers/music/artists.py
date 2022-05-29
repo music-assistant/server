@@ -131,39 +131,39 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
         return await provider.get_artist_albums(item_id)
 
-    async def add_db_item(self, artist: Artist, db: Optional[Db] = None) -> Artist:
-        """Add a new artist record to the database."""
-        assert artist.provider_ids, "Album is missing provider id(s)"
+    async def add_db_item(self, item: Artist, db: Optional[Db] = None) -> Artist:
+        """Add a new item record to the database."""
+        assert item.provider_ids, "Album is missing provider id(s)"
         async with self.mass.database.get_db(db) as db:
             # always try to grab existing item by musicbrainz_id
             cur_item = None
-            if artist.musicbrainz_id:
-                match = {"musicbrainz_id": artist.musicbrainz_id}
+            if item.musicbrainz_id:
+                match = {"musicbrainz_id": item.musicbrainz_id}
                 cur_item = await self.mass.database.get_row(self.db_table, match, db=db)
             if not cur_item:
                 # fallback to matching
                 # NOTE: we match an artist by name which could theoretically lead to collisions
                 # but the chance is so small it is not worth the additional overhead of grabbing
                 # the musicbrainz id upfront
-                match = {"sort_name": artist.sort_name}
+                match = {"sort_name": item.sort_name}
                 for row in await self.mass.database.get_rows(
                     self.db_table, match, db=db
                 ):
                     row_artist = Artist.from_db_row(row)
-                    if row_artist.sort_name == artist.sort_name:
+                    if row_artist.sort_name == item.sort_name:
                         # just to be sure ?!
                         cur_item = row_artist
                         break
             if cur_item:
                 # update existing
-                return await self.update_db_item(cur_item.item_id, artist, db=db)
+                return await self.update_db_item(cur_item.item_id, item, db=db)
 
-            # insert artist
+            # insert item
             new_item = await self.mass.database.insert(
-                self.db_table, artist.to_db_row(), db=db
+                self.db_table, item.to_db_row(), db=db
             )
             item_id = new_item["item_id"]
-            self.logger.debug("added %s to database", artist.name)
+            self.logger.debug("added %s to database", item.name)
             # return created object
             db_item = await self.get_db_item(item_id, db=db)
             self.mass.signal_event(
@@ -176,33 +176,33 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def update_db_item(
         self,
         item_id: int,
-        artist: Artist,
+        item: Artist,
         overwrite: bool = False,
         db: Optional[Db] = None,
     ) -> Artist:
         """Update Artist record in the database."""
         cur_item = await self.get_db_item(item_id)
         if overwrite:
-            metadata = artist.metadata
-            provider_ids = artist.provider_ids
+            metadata = item.metadata
+            provider_ids = item.provider_ids
         else:
-            metadata = cur_item.metadata.update(artist.metadata)
-            provider_ids = {*cur_item.provider_ids, *artist.provider_ids}
+            metadata = cur_item.metadata.update(item.metadata)
+            provider_ids = {*cur_item.provider_ids, *item.provider_ids}
 
         async with self.mass.database.get_db(db) as db:
             await self.mass.database.update(
                 self.db_table,
                 {"item_id": item_id},
                 {
-                    "name": artist.name if overwrite else cur_item.name,
-                    "sort_name": artist.sort_name if overwrite else cur_item.sort_name,
-                    "musicbrainz_id": artist.musicbrainz_id or cur_item.musicbrainz_id,
+                    "name": item.name if overwrite else cur_item.name,
+                    "sort_name": item.sort_name if overwrite else cur_item.sort_name,
+                    "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                 },
                 db=db,
             )
-            self.logger.debug("updated %s in database: %s", artist.name, item_id)
+            self.logger.debug("updated %s in database: %s", item.name, item_id)
             db_item = await self.get_db_item(item_id, db=db)
             self.mass.signal_event(
                 MassEvent(

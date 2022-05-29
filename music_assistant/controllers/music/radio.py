@@ -31,23 +31,23 @@ class RadioController(MediaControllerBase[Radio]):
         await self.mass.metadata.get_radio_metadata(item)
         return await self.add_db_item(item)
 
-    async def add_db_item(self, radio: Radio, db: Optional[Db] = None) -> Radio:
-        """Add a new radio record to the database."""
-        assert radio.provider_ids
+    async def add_db_item(self, item: Radio, db: Optional[Db] = None) -> Radio:
+        """Add a new item record to the database."""
+        assert item.provider_ids
         async with self.mass.database.get_db(db) as db:
-            match = {"name": radio.name}
+            match = {"name": item.name}
             if cur_item := await self.mass.database.get_row(
                 self.db_table, match, db=db
             ):
                 # update existing
-                return await self.update_db_item(cur_item["item_id"], radio, db=db)
+                return await self.update_db_item(cur_item["item_id"], item, db=db)
 
-            # insert new radio
+            # insert new item
             new_item = await self.mass.database.insert(
-                self.db_table, radio.to_db_row(), db=db
+                self.db_table, item.to_db_row(), db=db
             )
             item_id = new_item["item_id"]
-            self.logger.debug("added %s to database", radio.name)
+            self.logger.debug("added %s to database", item.name)
             # return created object
             db_item = await self.get_db_item(item_id, db=db)
             self.mass.signal_event(
@@ -60,7 +60,7 @@ class RadioController(MediaControllerBase[Radio]):
     async def update_db_item(
         self,
         item_id: int,
-        radio: Radio,
+        item: Radio,
         overwrite: bool = False,
         db: Optional[Db] = None,
     ) -> Radio:
@@ -68,25 +68,25 @@ class RadioController(MediaControllerBase[Radio]):
         async with self.mass.database.get_db(db) as db:
             cur_item = await self.get_db_item(item_id, db=db)
             if overwrite:
-                metadata = radio.metadata
-                provider_ids = radio.provider_ids
+                metadata = item.metadata
+                provider_ids = item.provider_ids
             else:
-                metadata = cur_item.metadata.update(radio.metadata)
-                provider_ids = {*cur_item.provider_ids, *radio.provider_ids}
+                metadata = cur_item.metadata.update(item.metadata)
+                provider_ids = {*cur_item.provider_ids, *item.provider_ids}
 
             match = {"item_id": item_id}
             await self.mass.database.update(
                 self.db_table,
                 match,
                 {
-                    "name": radio.name,
-                    "sort_name": radio.sort_name,
+                    "name": item.name,
+                    "sort_name": item.sort_name,
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
                 },
                 db=db,
             )
-            self.logger.debug("updated %s in database: %s", radio.name, item_id)
+            self.logger.debug("updated %s in database: %s", item.name, item_id)
             db_item = await self.get_db_item(item_id, db=db)
             self.mass.signal_event(
                 MassEvent(
