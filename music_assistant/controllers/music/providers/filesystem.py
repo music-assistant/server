@@ -314,6 +314,7 @@ class FileSystemProvider(MusicProvider):
         cache_key = f"playlist_{self.id}_tracks_{prov_playlist_id}"
         if cache := await self.mass.cache.get(cache_key, checksum):
             return [Track.from_dict(x) for x in cache]
+        playlist_base_path = Path(playlist_path).parent
         index = 0
         try:
             async with self.open_file(playlist_path, "r") as _file:
@@ -321,7 +322,9 @@ class FileSystemProvider(MusicProvider):
                     line = urllib.parse.unquote(line.strip())
                     if line and not line.startswith("#"):
                         # TODO: add support for .pls playlist files
-                        if track := await self._parse_track_from_uri(line):
+                        if track := await self._parse_playlist_line(
+                            line, playlist_base_path
+                        ):
                             track.position = index
                             result.append(track)
                             index += 1
@@ -331,6 +334,25 @@ class FileSystemProvider(MusicProvider):
             )
         await self.mass.cache.set(cache_key, [x.to_dict() for x in result], checksum)
         return result
+
+    async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
+        """Try to parse a track from a playlist line."""
+        if "://" in line:
+            # track is uri from external provider?
+            try:
+                return await self.mass.music.get_item_by_uri(line)
+            except MusicAssistantError as err:
+                self.logger.warning(
+                    "Could not parse uri %s to track: %s", line, str(err)
+                )
+                return None
+        # try to treat uri as filename
+        if await self.exists(line):
+            return await self._parse_track(line)
+        rel_path = os.path.join(playlist_path, line)
+        if await self.exists(rel_path):
+            return await self._parse_track(rel_path)
+        return None
 
     async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
         """Get a list of albums for the given artist."""
@@ -762,25 +784,6 @@ class FileSystemProvider(MusicProvider):
         )
         playlist.owner = self._attr_name
         return playlist
-
-    async def _parse_track_from_uri(self, uri: str):
-        """Try to parse a track from an uri found in playlist."""
-        if "://" in uri:
-            # track is uri from external provider?
-            try:
-                return await self.mass.music.get_item_by_uri(uri)
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Could not parse uri %s to track: %s", uri, str(err)
-                )
-                return None
-        # try to treat uri as filename
-        if self.config.path not in uri:
-            uri = os.path.join(self.config.path, uri)
-        try:
-            return await self._parse_track(uri)
-        except MediaNotFoundError:
-            return None
 
     async def exists(self, file_path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""
