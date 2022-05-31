@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Union
 from databases import Database as Db
 
 from music_assistant.helpers.compare import compare_album, compare_artist
-from music_assistant.helpers.database import TABLE_ALBUMS
+from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, ProviderType
 from music_assistant.models.event import MassEvent
@@ -206,6 +206,19 @@ class AlbumsController(MediaControllerBase[Album]):
                 )
             )
             return db_item
+
+    async def delete_db_item(self, item_id: int, db: Optional[Db] = None) -> None:
+        """Delete record from the database."""
+
+        # delete tracks connected to this album
+        async with self.mass.database.get_db(db) as db:
+            await self.mass.database.delete_where_query(
+                TABLE_TRACKS, f"albums LIKE '%\"{item_id}\"%'", db=db
+            )
+        # delete the album itself from db
+        await super().delete_db_item(item_id, db)
+
+        self.logger.debug("deleted item with id %s from database", item_id)
 
     async def _match(self, db_album: Album) -> None:
         """

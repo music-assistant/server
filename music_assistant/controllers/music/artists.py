@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 
 from databases import Database as Db
 
-from music_assistant.helpers.database import TABLE_ARTISTS
+from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_ARTISTS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, ProviderType
 from music_assistant.models.event import MassEvent
@@ -210,6 +210,22 @@ class ArtistsController(MediaControllerBase[Artist]):
                 )
             )
             return db_item
+
+    async def delete_db_item(self, item_id: int, db: Optional[Db] = None) -> None:
+        """Delete record from the database."""
+
+        # delete tracks/albums connected to this artist
+        async with self.mass.database.get_db(db) as db:
+            await self.mass.database.delete_where_query(
+                TABLE_TRACKS, f"artists LIKE '%\"{item_id}\"%'", db=db
+            )
+            await self.mass.database.delete_where_query(
+                TABLE_ALBUMS, f"artists LIKE '%\"{item_id}\"%'", db=db
+            )
+        # delete the artist itself from db
+        await super().delete_db_item(item_id, db)
+
+        self.logger.debug("deleted item with id %s from database", item_id)
 
     async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""
