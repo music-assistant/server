@@ -7,13 +7,7 @@ from asyncio import Task, TimerHandle
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from music_assistant.helpers.audio import get_stream_details
-from music_assistant.models.enums import (
-    ContentType,
-    EventType,
-    MediaType,
-    QueueOption,
-    RepeatMode,
-)
+from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
 from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import StreamDetails
