@@ -7,8 +7,17 @@ from asyncio import Task, TimerHandle
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from music_assistant.helpers.audio import get_stream_details
-from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
-from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
+from music_assistant.models.enums import (
+    EventType,
+    MediaType,
+    QueueOption,
+    RepeatMode,
+)
+from music_assistant.models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    QueueEmpty,
+)
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import StreamDetails
 
@@ -173,7 +182,8 @@ class PlayerQueue:
             # parse provided uri into a MA MediaItem or Basis QueueItem from URL
             try:
                 media_item = await self.mass.music.get_item_by_uri(uri)
-            except MediaNotFoundError as err:
+            except MusicAssistantError as err:
+                # invalid MA uri or item not found error
                 if uri.startswith("http"):
                     # a plain url was provided
                     queue_items.append(QueueItem(uri))
@@ -213,7 +223,7 @@ class PlayerQueue:
                 queue_items.append(QueueItem.from_media_item(track))
 
         # clear queue first if it was finished
-        if self._current_index >= (len(self._items) - 1):
+        if (self._current_index or 0) >= (len(self._items) - 1):
             self._current_index = None
             self._items = []
 
@@ -429,12 +439,16 @@ class PlayerQueue:
     def on_player_update(self) -> None:
         """Call when player updates."""
         if self._last_state != self.player.state:
+            # playback state changed
             self._last_state = self.player.state
+
             # always signal update if playback state changed
             self.signal_update()
-            if self.player.state != PlayerState.PLAYING:
+            if self.player.state == PlayerState.IDLE:
                 # handle end of queue
-                if (self._current_index or 0) >= (len(self._items) - 1):
+                if self._current_index and self._current_index >= (
+                    len(self._items) - 1
+                ):
                     self._current_index += 1
                     self._current_item_elapsed_time = 0
                     # repeat enabled (of whole queue), play queue from beginning
