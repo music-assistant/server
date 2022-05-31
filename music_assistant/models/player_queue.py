@@ -753,19 +753,18 @@ class PlayerQueue:
         self._next_start_index = self.get_next_index(self._next_start_index)
         return next_idx
 
-    def get_next_index(self, index: int) -> int | None:
-        """Return the next index or None if no more items."""
-        if not self._items or index is None:
+    def get_next_index(self, cur_index: int) -> int | None:
+        """Return the next index for the queue, accounting for repeat settings."""
+        if not self._items or cur_index is None:
             # queue is empty
             return None
         if self.settings.repeat_mode == RepeatMode.ONE:
-            return index
-        if len(self._items) > (index + 1):
-            return index + 1
-        if self.settings.repeat_mode == RepeatMode.ALL:
-            # repeat enabled, start queue at beginning
+            return cur_index
+        last_index = len(self._items) - 1
+        if (cur_index >= last_index) and self.settings.repeat_mode == RepeatMode.ALL:
+            # end of queue reached and repeat enabled, start queue at beginning
             return 0
-        return None
+        return cur_index + 1
 
     async def queue_stream_signal_next(self):
         """Indicate that queue stream needs to start next index once playback finished."""
