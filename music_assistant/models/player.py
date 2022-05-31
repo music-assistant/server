@@ -391,7 +391,7 @@ class PlayerGroup(Player):
     def supported_content_types(self) -> Tuple[ContentType]:
         """Return the content types this player supports."""
         # return contenttypes that are supported by all child players
-        return (
+        return tuple(
             content_type
             for content_type in ContentType
             if all(
