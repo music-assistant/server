@@ -528,8 +528,6 @@ class PlayerQueue:
         if self.player.use_multi_stream:
             # multi stream enabled, all child players should receive the same audio stream
             # redirect command to all (powered) players
-            # TODO: this assumes that all client players support flac
-            content_type = ContentType.FLAC
             coros = []
             expected_clients = set()
             for child_id in self.player.group_childs:
@@ -537,7 +535,7 @@ class PlayerQueue:
                     if child_player.powered:
                         # TODO: this assumes that all client players support flac
                         player_url = self.mass.streams.get_stream_url(
-                            self.queue_id, child_id, content_type
+                            self.queue_id, child_id, self._settings.stream_type
                         )
                         expected_clients.add(child_id)
                         coros.append(child_player.play_url(player_url))
@@ -545,7 +543,7 @@ class PlayerQueue:
                 # TODO: this assumes that all client players support flac
                 self.queue_id,
                 expected_clients,
-                content_type,
+                self._settings.stream_type,
             )
             await asyncio.gather(*coros)
         elif not passive:
