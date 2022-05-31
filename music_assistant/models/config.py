@@ -18,7 +18,7 @@ class MusicProviderConfig:
     username: Optional[str] = None
     password: Optional[str] = None
     path: Optional[str] = None
-    # no need to override the id unless you really know what you're doing ;-)
+    # if id is omitted, an id is generated/derived from the other params
     id: Optional[str] = None
 
     def __post_init__(self):
