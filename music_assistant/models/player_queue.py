@@ -662,10 +662,15 @@ class PlayerQueue:
             self._last_state = self.player.state
             # always signal update if playback state changed
             self.signal_update()
-            # handle case where stream stopped on purpose and we need to restart it
-            if self.player.state != PlayerState.PLAYING and self._signal_next:
-                self._signal_next = False
-                self.mass.create_task(self.resume())
+            if self.player.state != PlayerState.PLAYING:
+                # handle end of queue, clear current item.
+                if self._current_index == (len(self._items) - 1):
+                    self._current_index += 1
+                    self._current_item_elapsed_time = 0
+                # handle case where stream stopped on purpose and we need to restart it
+                elif self._signal_next:
+                    self._signal_next = False
+                    self.mass.create_task(self.resume())
 
             # start poll/updater task if playback starts on player
             async def updater() -> None:
@@ -690,7 +695,6 @@ class PlayerQueue:
         new_index = self._current_index
         track_time = self._current_item_elapsed_time
         new_item_loaded = False
-        # if self.player.state == PlayerState.PLAYING:
         if self.player.state == PlayerState.PLAYING and self.player.elapsed_time > 0:
             new_index, track_time = self.__get_queue_stream_index()
         # process new index
