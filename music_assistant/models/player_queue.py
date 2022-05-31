@@ -663,10 +663,14 @@ class PlayerQueue:
             # always signal update if playback state changed
             self.signal_update()
             if self.player.state != PlayerState.PLAYING:
-                # handle end of queue, clear current item.
-                if self._current_index == (len(self._items) - 1):
+                # handle end of queue
+                if self._current_index >= (len(self._items) - 1):
                     self._current_index += 1
                     self._current_item_elapsed_time = 0
+                    # repeat enabled (of whole queue), play queue from beginning
+                    if self.settings.repeat_mode == RepeatMode.ALL:
+                        self.mass.create_task(self.play_index(0))
+
                 # handle case where stream stopped on purpose and we need to restart it
                 elif self._signal_next:
                     self._signal_next = False
@@ -765,10 +769,8 @@ class PlayerQueue:
             raise IndexError("No (more) items in queue")
         if self.settings.repeat_mode == RepeatMode.ONE:
             return cur_index
-        last_index = len(self._items) - 1
-        if (cur_index >= last_index) and self.settings.repeat_mode == RepeatMode.ALL:
-            # end of queue reached and repeat enabled, start queue at beginning
-            return 0
+        # simply return the next index. other logic is guarded to detect the index
+        # being higher than the number of items to detect end of queue and/or handle repeat.
         return cur_index + 1
 
     async def queue_stream_signal_next(self):
