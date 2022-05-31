@@ -14,7 +14,11 @@ from music_assistant.models.enums import (
     QueueOption,
     RepeatMode,
 )
-from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
+from music_assistant.models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    QueueEmpty,
+)
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import StreamDetails
 
@@ -179,7 +183,8 @@ class PlayerQueue:
             # parse provided uri into a MA MediaItem or Basis QueueItem from URL
             try:
                 media_item = await self.mass.music.get_item_by_uri(uri)
-            except MediaNotFoundError as err:
+            except MusicAssistantError as err:
+                # invalid MA uri or item not found error
                 if uri.startswith("http"):
                     # a plain url was provided
                     queue_items.append(QueueItem(uri))
