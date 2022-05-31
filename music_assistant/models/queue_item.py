@@ -46,6 +46,18 @@ class QueueItem(DataClassDictMixin):
         return d
 
     @classmethod
+    def from_url(cls, url: str) -> QueueItem:
+        """Create QueueItem from plain url."""
+        return cls(
+            uri=url,
+            name=url,
+            duration=None,
+            media_type=MediaType.UNKNOWN,
+            image=None,
+            media_item=None,
+        )
+
+    @classmethod
     def from_media_item(cls, media_item: Track | Radio):
         """Construct QueueItem from track/radio item."""
         if isinstance(media_item, Track):
