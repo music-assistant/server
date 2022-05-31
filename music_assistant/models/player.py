@@ -387,6 +387,21 @@ class PlayerGroup(Player):
             return child_player.current_url
         return super().current_url
 
+    @property
+    def supported_content_types(self) -> Tuple[ContentType]:
+        """Return the content types this player supports."""
+        # return contenttypes that are supported by all child players
+        return tuple(
+            content_type
+            for content_type in ContentType
+            if all(
+                (
+                    content_type in child_player.supported_content_types
+                    for child_player in self._get_child_players(False, False)
+                )
+            )
+        )
+
     async def stop(self) -> None:
         """Send STOP command to player."""
         if not self.use_multi_stream:
