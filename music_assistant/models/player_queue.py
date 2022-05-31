@@ -219,7 +219,7 @@ class PlayerQueue:
                 queue_items.append(QueueItem.from_media_item(track))
 
         # clear queue first if it was finished
-        if self._current_index >= (len(self._items) - 1):
+        if (self._current_index or 0) >= (len(self._items) - 1):
             self._current_index = None
             self._items = []
 
@@ -437,12 +437,16 @@ class PlayerQueue:
     def on_player_update(self) -> None:
         """Call when player updates."""
         if self._last_state != self.player.state:
+            # playback state changed
             self._last_state = self.player.state
+
             # always signal update if playback state changed
             self.signal_update()
-            if self.player.state != PlayerState.PLAYING:
+            if self.player.state == PlayerState.IDLE:
                 # handle end of queue
-                if (self._current_index or 0) >= (len(self._items) - 1):
+                if self._current_index and self._current_index >= (
+                    len(self._items) - 1
+                ):
                     self._current_index += 1
                     self._current_item_elapsed_time = 0
                     # repeat enabled (of whole queue), play queue from beginning
