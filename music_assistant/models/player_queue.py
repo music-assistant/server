@@ -7,12 +7,7 @@ from asyncio import Task, TimerHandle
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from music_assistant.helpers.audio import get_stream_details
-from music_assistant.models.enums import (
-    EventType,
-    MediaType,
-    QueueOption,
-    RepeatMode,
-)
+from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
 from music_assistant.models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
@@ -186,7 +181,7 @@ class PlayerQueue:
                 # invalid MA uri or item not found error
                 if uri.startswith("http"):
                     # a plain url was provided
-                    queue_items.append(QueueItem(uri))
+                    queue_items.append(QueueItem.from_url(uri))
                     continue
                 raise MediaNotFoundError(f"Invalid uri: {uri}") from err
 
