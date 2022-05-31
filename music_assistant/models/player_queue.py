@@ -351,9 +351,11 @@ class PlayerQueue:
 
         Returns None if queue is empty or no more items.
         """
-        if next_index := self.get_next_index(self._current_index):
+        try:
+            next_index = self.get_next_index(self._current_index)
             return self._items[next_index]
-        return None
+        except IndexError:
+            return None
 
     def get_item(self, index: int) -> QueueItem | None:
         """Get queue item by index."""
@@ -753,11 +755,10 @@ class PlayerQueue:
         self._next_start_index = self.get_next_index(self._next_start_index)
         return next_idx
 
-    def get_next_index(self, cur_index: int) -> int | None:
+    def get_next_index(self, cur_index: int) -> int:
         """Return the next index for the queue, accounting for repeat settings."""
         if not self._items or cur_index is None:
-            # queue is empty
-            return None
+            raise IndexError("No (more) items in queue")
         if self.settings.repeat_mode == RepeatMode.ONE:
             return cur_index
         last_index = len(self._items) - 1
