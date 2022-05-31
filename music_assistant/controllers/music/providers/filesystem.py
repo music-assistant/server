@@ -224,6 +224,8 @@ class FileSystemProvider(MusicProvider):
         # check if albums are deleted
         for album_id in albums:
             album = await self.mass.music.albums.get_db_item(album_id)
+            if not album:
+                continue
             prov_album_id = next(
                 x.item_id for x in album.provider_ids if x.prov_id == self.id
             )
@@ -430,12 +432,14 @@ class FileSystemProvider(MusicProvider):
             return TinyTag.get(itempath)
 
         tags = await self.mass.loop.run_in_executor(None, parse_tag)
+        _, ext = Path(itempath).name.rsplit(".", 1)
+        content_type = CONTENT_TYPE_EXT.get(ext.lower())
 
         return StreamDetails(
             type=StreamType.FILE,
             provider=self.type,
             item_id=item_id,
-            content_type=ContentType(itempath.split(".")[-1]),
+            content_type=content_type,
             path=itempath,
             sample_rate=tags.samplerate or 44100,
             bit_depth=16,  # TODO: parse bitdepth
