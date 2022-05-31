@@ -99,13 +99,16 @@ class MusicBrainz:
             create_clean_string(artistname),
             artistname,
         ]:
-            searchalbum = re.sub(LUCENE_SPECIAL, r"\\\1", albumname)
             if album_upc:
+                # search by album UPC (barcode)
                 query = f"barcode:{album_upc}"
-            elif strict:
-                query = f'artist:"{searchartist}" AND release:"{searchalbum}"'
             else:
-                query = f'release:"{searchalbum}"'
+                # search by name
+                searchalbum = re.sub(LUCENE_SPECIAL, r"\\\1", albumname)
+                if strict:
+                    query = f'artist:"{searchartist}" AND release:"{searchalbum}"'
+                else:
+                    query = f'release:"{searchalbum}"'
             result = await self.get_data("release", query=query)
             if result and "releases" in result:
 
