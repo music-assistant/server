@@ -263,7 +263,7 @@ class PlayerQueue:
         # index_in_buffer: which track is currently (pre)loaded in the streamer
         self._index_in_buffer: Optional[int] = None
         self._current_item_elapsed_time: int = 0
-        self._last_item: Optional[QueueItem] = None
+        self._prev_item: Optional[QueueItem] = None
         # start_index: from which index did the queuestream start playing
         self._start_index: int = 0
         self._next_start_index: int = 0
@@ -708,15 +708,15 @@ class PlayerQueue:
         # check if a new track is loaded, wait for the streamdetails
         if (
             self.current_item
-            and self._last_item != self.current_item
+            and self._prev_item != self.current_item
             and self.current_item.streamdetails
         ):
             # new active item in queue
             new_item_loaded = True
             # invalidate previous streamdetails
-            if self._last_item:
-                self._last_item.streamdetails = None
-            self._last_item = self.current_item
+            if self._prev_item:
+                self._prev_item.streamdetails = None
+            self._prev_item = self.current_item
         # update vars and signal update on eventbus if needed
         prev_item_time = int(self._current_item_elapsed_time)
         self._current_item_elapsed_time = int(track_time)
