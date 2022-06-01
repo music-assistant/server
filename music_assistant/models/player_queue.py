@@ -220,7 +220,7 @@ class PlayerQueue:
                 queue_items.append(QueueItem.from_media_item(track))
 
         # clear queue first if it was finished
-        if (self._current_index or 0) >= (len(self._items) - 1):
+        if self._current_index and self._current_index >= (len(self._items) - 1):
             self._current_index = None
             self._items = []
         # clear resume point if any
@@ -361,12 +361,12 @@ class PlayerQueue:
         items = self._items.copy()
         item_index = self.index_by_id(queue_item_id)
         if pos_shift == 0 and self.player.state == PlayerState.PLAYING:
-            new_index = self._current_index + 1
+            new_index = (self._current_index or 0) + 1
         elif pos_shift == 0:
-            new_index = self._current_index
+            new_index = self._current_index or 0
         else:
             new_index = item_index + pos_shift
-        if (new_index < self._current_index) or (new_index > len(self.items)):
+        if (new_index < (self._current_index or 0)) or (new_index > len(self.items)):
             return
         # move the item in the list
         items.insert(new_index, items.pop(item_index))
@@ -431,11 +431,12 @@ class PlayerQueue:
 
     async def append(self, queue_items: List[QueueItem]) -> None:
         """Append new items at the end of the queue."""
+        cur_index = self._current_index or 0
         for index, item in enumerate(queue_items):
             item.sort_index = len(self.items) + index
         if self.settings.shuffle_enabled:
-            played_items = self.items[: self._current_index]
-            next_items = self.items[self._current_index + 1 :] + queue_items
+            played_items = self.items[:cur_index]
+            next_items = self.items[cur_index + 1 :] + queue_items
             next_items = random.sample(next_items, len(next_items))
             items = played_items + [self.current_item] + next_items
             await self.update(items)
@@ -462,12 +463,11 @@ class PlayerQueue:
 
             # always signal update if playback state changed
             self.signal_update()
+            cur_index = self._current_index or 0
             if self.player.state == PlayerState.IDLE:
 
                 # handle end of queue
-                if self._current_index and self._current_index >= (
-                    len(self._items) - 1
-                ):
+                if cur_index >= (len(self._items) - 1):
                     self._current_index += 1
                     self._current_item_elapsed_time = 0
                     # repeat enabled (of whole queue), play queue from beginning
