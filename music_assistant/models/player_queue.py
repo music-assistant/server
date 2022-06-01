@@ -31,6 +31,7 @@ RESOURCES_DIR = (
     .joinpath("helpers/resources")
 )
 ALERT_ANNOUNCE_FILE = str(RESOURCES_DIR.joinpath("announce.flac"))
+FALLBACK_DURATION = 172800  # if duration is None (e.g. radio stream) = 48 hours
 
 
 class PlayerQueue:
@@ -717,7 +718,7 @@ class PlayerQueue:
                 track_duration = (
                     queue_track.streamdetails.seconds_played
                     or queue_track.duration
-                    or 172800
+                    or FALLBACK_DURATION
                 )
                 if elapsed_time_queue > (track_duration + total_time):
                     # total elapsed time is more than (streamed) track duration
