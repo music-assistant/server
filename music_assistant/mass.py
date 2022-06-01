@@ -8,6 +8,7 @@ import threading
 from collections import deque
 from functools import partial
 from time import time
+from tkinter import NONE
 from types import TracebackType
 from typing import Any, Callable, Coroutine, Deque, List, Optional, Tuple, Type, Union
 from uuid import uuid4
@@ -137,20 +138,20 @@ class MusicAssistant:
 
     def add_job(
         self, coro: Coroutine, name: Optional[str] = None, allow_duplicate=False
-    ) -> None:
+    ) -> BackgroundJob:
         """Add job to be (slowly) processed in the background."""
         if not allow_duplicate:
-            # pylint: disable=protected-access
-            if any(x for x in self._jobs if x.name == name):
+            if existing := next((x for x in self._jobs if x.name == name), NONE):
                 self.logger.debug("Ignored duplicate job: %s", name)
                 coro.close()
-                return
+                return existing
         if not name:
             name = coro.__qualname__ or coro.__name__
         job = BackgroundJob(str(uuid4()), name=name, coro=coro)
         self._jobs.append(job)
         self._jobs_event.set()
         self.signal_event(MassEvent(EventType.BACKGROUND_JOB_UPDATED, data=job))
+        return job
 
     def create_task(
         self,
@@ -247,12 +248,15 @@ class MusicAssistant:
                 exc_info=err,
             )
         else:
+            job.result = task.result()
             job.status = JobStatus.FINISHED
             self.logger.info(
                 "Finished job [%s] in %s seconds.", job.name, execution_time
             )
         self._jobs.remove(job)
         self._jobs_event.set()
+        # mark job as done
+        job.done()
         self.signal_event(MassEvent(EventType.BACKGROUND_JOB_UPDATED, data=job))
 
     async def __aenter__(self) -> "MusicAssistant":

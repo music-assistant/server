@@ -91,12 +91,16 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             provider_id=provider_id,
         )
         if db_item and (time() - db_item.last_refresh) > REFRESH_INTERVAL:
+            # it's been too long since the full metadata was last retrieved (or never at all)
             force_refresh = True
         if db_item and force_refresh:
+            # get (first) provider item id belonging to this db item
             provider_id, provider_item_id = await self.get_provider_id(db_item)
         elif db_item:
+            # we have a db item and no refreshing is needed, return the results!
             return db_item
         if not details and provider_id:
+            # no details provider nor in db, fetch them from the provider
             details = await self.get_provider_item(provider_item_id, provider_id)
         if not details and provider:
             # check providers for given provider type one by one
@@ -113,12 +117,19 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     else:
                         break
         if not details:
+            # we couldn't get a match from any of the providers, raise error
             raise MediaNotFoundError(
                 f"Item not found: {provider.value or provider_id}/{provider_item_id}"
             )
+        # create job to add the item to the db, including matching metadata etc. takes some time
+        # in 99% of the cases we just return lazy because we want the details as fast as possible
+        # only if we really need to wait for the result (e.g. to prevent race conditions), we
+        # can set lazy to false and we await to job to complete.
+        add_job = self.mass.add_job(self.add(details), f"Add {details.uri} to database")
         if not lazy:
-            return await self.add(details)
-        self.mass.add_job(self.add(details), f"Add {details.uri} to database")
+            await add_job.wait()
+            return add_job.result
+
         return db_item if db_item else details
 
     async def search(
@@ -155,6 +166,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> None:
         """Add an item to the library."""
         # make sure we have a valid full item
+        # note that we set 'lazy' to False because we need a full db item
         db_item = await self.get(
             provider_item_id, provider=provider, provider_id=provider_id, lazy=False
         )
@@ -180,10 +192,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> None:
         """Remove item from the library."""
         # make sure we have a valid full item
+        # note that we set 'lazy' to False because we need a full db item
         db_item = await self.get(
             provider_item_id, provider=provider, provider_id=provider_id, lazy=False
         )
-        # add to provider's libraries
+        # remove from provider's libraries
         for prov_id in db_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
                 await prov.library_remove(prov_id.item_id, self.media_type)
