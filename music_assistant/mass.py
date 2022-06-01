@@ -8,7 +8,6 @@ import threading
 from collections import deque
 from functools import partial
 from time import time
-from tkinter import NONE
 from types import TracebackType
 from typing import Any, Callable, Coroutine, Deque, List, Optional, Tuple, Type, Union
 from uuid import uuid4
@@ -141,7 +140,7 @@ class MusicAssistant:
     ) -> BackgroundJob:
         """Add job to be (slowly) processed in the background."""
         if not allow_duplicate:
-            if existing := next((x for x in self._jobs if x.name == name), NONE):
+            if existing := next((x for x in self._jobs if x.name == name), None):
                 self.logger.debug("Ignored duplicate job: %s", name)
                 coro.close()
                 return existing
