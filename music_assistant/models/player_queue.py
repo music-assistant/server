@@ -218,7 +218,7 @@ class PlayerQueue:
                 queue_items.append(QueueItem.from_media_item(track))
 
         # clear queue first if it was finished
-        if (self._current_index or 0) >= (len(self._items) - 1):
+        if self._current_index and self._current_index >= (len(self._items) - 1):
             self._current_index = None
             self._items = []
 
