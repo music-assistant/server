@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import random
 from asyncio import Task, TimerHandle
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
@@ -22,6 +23,14 @@ from .queue_settings import QueueSettings
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
+
+RESOURCES_DIR = (
+    pathlib.Path(__file__)
+    .parent.resolve()
+    .parent.resolve()
+    .joinpath("helpers/resources")
+)
+ALERT_ANNOUNCE_FILE = str(RESOURCES_DIR.joinpath("announce.flac"))
 
 
 class PlayerQueue:
@@ -161,7 +170,6 @@ class PlayerQueue:
         """
         Play media item(s) on the given queue.
 
-            :param queue_id: queue id of the PlayerQueue to handle the command.
             :param uri: uri(s) that should be played (single item or list of uri's).
             :param queue_opt:
                 QueueOption.PLAY -> Insert new items in queue and start playing at inserted position
@@ -240,6 +248,79 @@ class PlayerQueue:
         elif queue_opt == QueueOption.ADD:
             await self.append(queue_items)
         return self._stream_url
+
+    async def play_alert(
+        self, uri: str, announce: bool = False, volume_adjust: int = 10
+    ) -> str:
+        """
+        Play given uri as Alert on the queue.
+
+        uri: Uri that should be played as announcement, can be Music Assistant URI or plain url.
+        announce: Announce the (TTS) alert with a small announce sound.
+        volume_adjust: Adjust the volume of the player by this percentage (relative).
+        """
+        prev_state = self.player.state
+        prev_volume = self.player.volume_level
+        prev_index = self._current_index
+        prev_position = self.elapsed_time
+        prev_items = self._items
+
+        new_volume = prev_volume + (prev_volume / 100 * volume_adjust)
+        queue_items = []
+
+        # prepend annnounce sound if needed
+        if announce:
+            queue_items.append(QueueItem.from_url(ALERT_ANNOUNCE_FILE))
+
+        # parse provided uri into a MA MediaItem or Basic QueueItem from URL
+        try:
+            media_item = await self.mass.music.get_item_by_uri(uri)
+            media_item.name = uri
+            queue_items.append(QueueItem.from_media_item(media_item))
+        except MusicAssistantError as err:
+            # invalid MA uri or item not found error
+            if uri.startswith("http"):
+                # a plain url was provided
+                queue_items.append(QueueItem.from_url(uri))
+            else:
+                raise MediaNotFoundError(f"Invalid uri: {uri}") from err
+
+        # load queue with alert sounds
+        await self.load(queue_items)
+        # set new volume
+        await self.player.volume_set(new_volume)
+
+        # wait for the alert to start playing
+        ticks = 0
+        while ticks < 300:
+            await asyncio.sleep(0.1)
+            if (
+                self.current_item
+                and self.current_item.name == uri
+                and self.elapsed_time > 0
+            ):
+                # all conditions met, the alert is now loaded/playing in the queue
+                break
+
+        # now wait for the alert to stop playing
+        ticks = 0
+        while ticks < 300:
+            await asyncio.sleep(0.5)
+            if self.current_item is None and self.player.state == PlayerState.IDLE:
+                # all conditions met, the alert has been played and the queue is idle
+                break
+
+        # restore volume
+        await self.player.volume_set(prev_volume)
+        # restore queue
+        await self.update(prev_items)
+        self._current_index = prev_index
+        if prev_state in (PlayerState.PLAYING, PlayerState.PAUSED):
+            await self.play_index(self._current_index, prev_position)
+        if prev_state == PlayerState.PAUSED:
+            await self.pause()
+        if prev_state == PlayerState.OFF:
+            await self.player.power(False)
 
     async def stop(self) -> None:
         """Stop command on queue player."""
@@ -634,7 +715,9 @@ class PlayerQueue:
                     track_time = elapsed_time_queue - total_time
                     break
                 track_duration = (
-                    queue_track.streamdetails.seconds_played or queue_track.duration
+                    queue_track.streamdetails.seconds_played
+                    or queue_track.duration
+                    or 172800
                 )
                 if elapsed_time_queue > (track_duration + total_time):
                     # total elapsed time is more than (streamed) track duration
