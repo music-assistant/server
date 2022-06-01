@@ -329,6 +329,7 @@ async def get_sox_args(
     streamdetails: StreamDetails,
     output_format: Optional[ContentType] = None,
     resample: Optional[int] = None,
+    seek_position: Optional[int] = None,
 ) -> List[str]:
     """Collect all args to send to the sox (or ffmpeg) process."""
     stream_path = streamdetails.path
@@ -338,9 +339,10 @@ async def get_sox_args(
         output_format = input_format
 
     sox_present, ffmpeg_present = await check_audio_support()
+    use_ffmpeg = not sox_present or not input_format.sox_supported() or seek_position
 
     # use ffmpeg if content not supported by SoX (e.g. AAC radio streams)
-    if not sox_present or not input_format.sox_supported():
+    if use_ffmpeg:
         if not ffmpeg_present:
             raise AudioError(
                 "FFmpeg binary is missing from system."
@@ -387,6 +389,8 @@ async def get_sox_args(
             filter_args += ["-filter:a", f"volume={streamdetails.gain_correct}dB"]
         if resample or input_format.is_pcm():
             filter_args += ["-ar", str(resample)]
+        if seek_position:
+            filter_args += ["-ss", str(seek_position)]
         return input_args + filter_args + output_args
 
     # Prefer SoX for all other (=highest quality)
@@ -434,6 +438,7 @@ async def get_media_stream(
     output_format: Optional[ContentType] = None,
     resample: Optional[int] = None,
     chunk_size: Optional[int] = None,
+    seek_position: Optional[int] = None,
 ) -> AsyncGenerator[Tuple[bool, bytes], None]:
     """Get the audio stream for the given streamdetails."""
 
@@ -444,7 +449,7 @@ async def get_media_stream(
             data=streamdetails,
         )
     )
-    args = await get_sox_args(streamdetails, output_format, resample)
+    args = await get_sox_args(streamdetails, output_format, resample, seek_position)
     async with AsyncProcess(args) as sox_proc:
 
         LOGGER.debug(
