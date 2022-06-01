@@ -434,9 +434,10 @@ class StreamController:
             track_count += 1
             if track_count == 1:
                 # report start of queue playback so we can calculate current track/duration etc.
-                queue_index = await queue.queue_stream_start()
+                queue_index, seek_position = await queue.queue_stream_start()
             else:
                 queue_index = await queue.queue_stream_next(queue_index)
+                seek_position = 0
             queue_track = queue.get_item(queue_index)
             if not queue_track:
                 self.logger.debug(
@@ -505,6 +506,7 @@ class StreamController:
                 queue_track.name,
                 queue.player.name,
             )
+            queue_track.streamdetails.seconds_skipped = seek_position
             fade_in_part = b""
             cur_chunk = 0
             prev_chunk = None
@@ -516,6 +518,7 @@ class StreamController:
                 pcm_fmt,
                 resample=sample_rate,
                 chunk_size=buffer_size,
+                seek_position=seek_position,
             ):
                 cur_chunk += 1
 
@@ -621,9 +624,8 @@ class StreamController:
                 if diff:
                     await asyncio.sleep(diff)
             # end of the track reached
-            # update actual duration to the queue for more accurate now playing info
-            accurate_duration = bytes_written / sample_size
-            queue_track.duration = accurate_duration
+            # set actual duration to the queue for more accurate now playing info
+            queue_track.streamdetails.seconds_played = bytes_written / sample_size
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
                 queue_track.uri,

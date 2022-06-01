@@ -290,25 +290,27 @@ class PlayerQueue:
         """Seek to a specific position in the track (given in seconds)."""
         assert self.current_item, "No item loaded"
         assert position < self.current_item.duration, "Position exceeds track duration"
-        self._next_start_pos = position
-        await self.play_index(self._current_index)
+        await self.play_index(self._current_index, position)
 
     async def resume(self) -> None:
         """Resume previous queue."""
         resume_item = self.current_item
-        if resume_item and self._next_start_pos > (resume_item.duration * 0.8):
+        resume_pos = self._current_item_elapsed_time
+        if resume_item and resume_pos > (resume_item.duration * 0.8):
             # track is already played for > 80% - skip to next
             resume_item = self.next_item
-            self._next_start_pos = 0
+            resume_pos = 0
 
         if resume_item is not None:
-            await self.play_index(resume_item.item_id)
+            await self.play_index(resume_item.item_id, resume_pos)
         else:
             self.logger.warning(
                 "resume queue requested for %s but queue is empty", self.queue_id
             )
 
-    async def play_index(self, index: Union[int, str], passive: bool = False) -> None:
+    async def play_index(
+        self, index: Union[int, str], seek_position: int = 0, passive: bool = False
+    ) -> None:
         """Play item at index (or item_id) X in queue."""
         if self.player.use_multi_stream:
             await self.mass.streams.stop_multi_client_queue_stream(self.queue_id)
@@ -320,6 +322,7 @@ class PlayerQueue:
             return
         self._current_index = index
         self._next_start_index = index
+        self._next_start_pos = int(seek_position)
         # send stream url to player connected to this queue
         self._stream_url = self.mass.streams.get_stream_url(
             self.queue_id, content_type=self._settings.stream_type
@@ -463,11 +466,12 @@ class PlayerQueue:
 
             # always signal update if playback state changed
             self.signal_update()
-            cur_index = self._current_index or 0
             if self.player.state == PlayerState.IDLE:
 
                 # handle end of queue
-                if cur_index >= (len(self._items) - 1):
+                if self._current_index is not None and self._current_index >= (
+                    len(self._items) - 1
+                ):
                     self._current_index += 1
                     self._current_item_elapsed_time = 0
                     # repeat enabled (of whole queue), play queue from beginning
@@ -478,10 +482,6 @@ class PlayerQueue:
                 elif self._signal_next:
                     self._signal_next = False
                     self.mass.create_task(self.resume())
-
-                # handle regular stop of player - store position so we can resume
-                elif self.current_item:
-                    self._next_start_pos = self.elapsed_time
 
             # start poll/updater task if playback starts on player
             async def updater() -> None:
@@ -520,9 +520,6 @@ class PlayerQueue:
         ):
             # new active item in queue
             new_item_loaded = True
-            # invalidate previous streamdetails
-            if self._prev_item:
-                self._prev_item.streamdetails = None
             self._prev_item = self.current_item
         # update vars and signal update on eventbus if needed
         prev_item_time = int(self._current_item_elapsed_time)
@@ -561,16 +558,15 @@ class PlayerQueue:
         self._start_index = start_from_index
         self._next_start_index = self.get_next_index(start_from_index)
         self._index_in_buffer = start_from_index
-        start_pos = self._next_start_pos
-        self._next_start_pos = 0  # reset after resume/skip
-        return (start_from_index, start_pos)
+        seek_position = self._next_start_pos
+        self._next_start_pos = 0
+        return (start_from_index, seek_position)
 
     async def queue_stream_next(self, cur_index: int) -> int | None:
         """Call when queue_streamer loads next track in buffer."""
         next_idx = self._next_start_index
         self._index_in_buffer = next_idx
         self._next_start_index = self.get_next_index(self._next_start_index)
-        self._next_start_pos = 0
         return next_idx
 
     def get_next_index(self, cur_index: int) -> int:
@@ -623,7 +619,7 @@ class PlayerQueue:
         """Calculate current queue index and current track elapsed time."""
         # player is playing a constant stream so we need to do this the hard way
         queue_index = 0
-        elapsed_time_queue = self.player.elapsed_time + self._start_pos
+        elapsed_time_queue = self.player.elapsed_time
         total_time = 0
         track_time = 0
         if self._items and len(self._items) > self._start_index:
@@ -631,15 +627,25 @@ class PlayerQueue:
             queue_index = self._start_index
             queue_track = None
             while len(self._items) > queue_index:
+                # keep enumerating the queue tracks to find current track
+                # starting from the start index
                 queue_track = self._items[queue_index]
-                if queue_track.duration is None:
-                    # in case of a radio stream
-                    queue_track.duration = 86400
-                if elapsed_time_queue > (queue_track.duration + total_time):
-                    total_time += queue_track.duration
+                if not queue_track.streamdetails:
+                    track_time = elapsed_time_queue - total_time
+                    break
+                track_duration = (
+                    queue_track.streamdetails.seconds_played or queue_track.duration
+                )
+                if elapsed_time_queue > (track_duration + total_time):
+                    # total elapsed time is more than (streamed) track duration
+                    # move index one up
+                    total_time += track_duration
                     queue_index += 1
                 else:
-                    track_time = elapsed_time_queue - total_time
+                    # no more seconds left to divide, this is our track
+                    # account for any seeking by adding the skipped seconds
+                    track_sec_skipped = queue_track.streamdetails.seconds_skipped
+                    track_time = elapsed_time_queue + track_sec_skipped - total_time
                     break
         return queue_index, track_time
 

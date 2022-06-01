@@ -346,6 +346,7 @@ class StreamDetails(DataClassDictMixin):
     player_id: str = ""
     details: Dict[str, Any] = field(default_factory=dict)
     seconds_played: int = 0
+    seconds_skipped: int = 0
     gain_correct: float = 0
     loudness: Optional[float] = None
     sample_rate: int = 44100
