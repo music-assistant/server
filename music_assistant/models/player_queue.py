@@ -5,6 +5,7 @@ import asyncio
 import pathlib
 import random
 from asyncio import Task, TimerHandle
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from music_assistant.helpers.audio import get_stream_details
@@ -34,6 +35,18 @@ ALERT_ANNOUNCE_FILE = str(RESOURCES_DIR.joinpath("announce.flac"))
 FALLBACK_DURATION = 172800  # if duration is None (e.g. radio stream) = 48 hours
 
 
+@dataclass
+class QueueSnapShot:
+    """Represent a snapshot of the queue and its settings."""
+
+    powered: bool
+    state: PlayerState
+    volume_level: int
+    items: List[QueueItem]
+    index: Optional[int]
+    position: int
+
+
 class PlayerQueue:
     """Represents a PlayerQueue object."""
 
@@ -61,6 +74,7 @@ class PlayerQueue:
         self._signal_next: bool = False
         self._last_player_update: int = 0
         self._stream_url: str = ""
+        self._snapshot: Optional[QueueSnapShot] = None
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
@@ -257,71 +271,67 @@ class PlayerQueue:
         Play given uri as Alert on the queue.
 
         uri: Uri that should be played as announcement, can be Music Assistant URI or plain url.
-        announce: Announce the (TTS) alert with a small announce sound.
+        announce: Prepend the (TTS) alert with a small announce sound.
         volume_adjust: Adjust the volume of the player by this percentage (relative).
         """
-        prev_state = self.player.state
-        prev_volume = self.player.volume_level
-        prev_index = self._current_index
-        prev_position = self.elapsed_time
-        prev_items = self._items
+        if self._snapshot:
+            self.logger.debug("Ignore play_alert: already in progress")
+            return
 
-        new_volume = prev_volume + (prev_volume / 100 * volume_adjust)
+        # create snapshot
+        await self.snapshot_create()
+
         queue_items = []
 
         # prepend annnounce sound if needed
         if announce:
-            queue_items.append(QueueItem.from_url(ALERT_ANNOUNCE_FILE))
+            queue_items.append(QueueItem.from_url(ALERT_ANNOUNCE_FILE, "alert"))
 
         # parse provided uri into a MA MediaItem or Basic QueueItem from URL
         try:
             media_item = await self.mass.music.get_item_by_uri(uri)
-            media_item.name = uri
             queue_items.append(QueueItem.from_media_item(media_item))
         except MusicAssistantError as err:
             # invalid MA uri or item not found error
             if uri.startswith("http"):
                 # a plain url was provided
-                queue_items.append(QueueItem.from_url(uri))
+                queue_items.append(QueueItem.from_url(uri, "alert"))
             else:
                 raise MediaNotFoundError(f"Invalid uri: {uri}") from err
 
-        # load queue with alert sounds
+        # append silence track, we use this to reliably detect when the alert is ready
+        silence_url = self.mass.streams.get_silence_url(600)
+        queue_items.append(QueueItem.from_url(silence_url, "alert"))
+
+        # load queue with alert sound(s)
         await self.load(queue_items)
         # set new volume
+        new_volume = self.player.volume_level + (
+            self.player.volume_level / 100 * volume_adjust
+        )
         await self.player.volume_set(new_volume)
 
-        # wait for the alert to start playing
-        ticks = 0
-        while ticks < 300:
-            await asyncio.sleep(0.1)
+        # wait for the alert to finish playing
+        alert_done = asyncio.Event()
+
+        def handle_event(evt: MassEvent):
             if (
                 self.current_item
-                and self.current_item.name == uri
-                and self.elapsed_time > 0
+                and self.current_item.uri == silence_url
+                and self.elapsed_time
             ):
-                # all conditions met, the alert is now loaded/playing in the queue
-                break
+                alert_done.set()
 
-        # now wait for the alert to stop playing
-        ticks = 0
-        while ticks < 300:
-            await asyncio.sleep(0.5)
-            if self.current_item is None and self.player.state == PlayerState.IDLE:
-                # all conditions met, the alert has been played and the queue is idle
-                break
+        unsub = self.mass.subscribe(
+            handle_event, EventType.QUEUE_TIME_UPDATED, self.queue_id
+        )
+        try:
+            await asyncio.wait_for(alert_done.wait(), 120)
+        finally:
 
-        # restore volume
-        await self.player.volume_set(prev_volume)
-        # restore queue
-        await self.update(prev_items)
-        self._current_index = prev_index
-        if prev_state in (PlayerState.PLAYING, PlayerState.PAUSED):
-            await self.play_index(self._current_index, prev_position)
-        if prev_state == PlayerState.PAUSED:
-            await self.pause()
-        if prev_state == PlayerState.OFF:
-            await self.player.power(False)
+            unsub()
+            # restore queue
+            await self.snapshot_restore()
 
     async def stop(self) -> None:
         """Stop command on queue player."""
@@ -378,7 +388,11 @@ class PlayerQueue:
         """Resume previous queue."""
         resume_item = self.current_item
         resume_pos = self._current_item_elapsed_time
-        if resume_item and resume_pos > (resume_item.duration * 0.8):
+        if (
+            resume_item
+            and resume_item.duration
+            and resume_pos > (resume_item.duration * 0.8)
+        ):
             # track is already played for > 80% - skip to next
             resume_item = self.next_item
             resume_pos = 0
@@ -389,6 +403,36 @@ class PlayerQueue:
             self.logger.warning(
                 "resume queue requested for %s but queue is empty", self.queue_id
             )
+
+    async def snapshot_create(self) -> None:
+        """Create snapshot of current Queue state."""
+        self._snapshot = QueueSnapShot(
+            powered=self.player.powered,
+            state=self.player.state,
+            volume_level=self.player.volume_level,
+            items=self._items,
+            index=self._current_index,
+            position=self._current_item_elapsed_time,
+        )
+
+    async def snapshot_restore(self) -> None:
+        """Restore snapshot of Queue state."""
+        assert self._snapshot, "Create snapshot before restoring it."
+        # clear queue first
+        await self.clear()
+        # restore volume
+        await self.player.volume_set(self._snapshot.volume_level)
+        # restore queue
+        await self.update(self._snapshot.items)
+        self._current_index = self._snapshot.index
+        if self._snapshot.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+            await self.play_index(self._current_index, self._snapshot.position)
+        if self._snapshot.state == PlayerState.PAUSED:
+            await self.pause()
+        if not self._snapshot.powered:
+            await self.player.power(False)
+        # reset snapshot once restored
+        self._snapshot = None
 
     async def play_index(
         self, index: Union[int, str], seek_position: int = 0, passive: bool = False
@@ -715,15 +759,11 @@ class PlayerQueue:
                 if not queue_track.streamdetails:
                     track_time = elapsed_time_queue - total_time
                     break
-                track_duration = (
-                    queue_track.streamdetails.seconds_played
-                    or queue_track.duration
-                    or FALLBACK_DURATION
-                )
-                if elapsed_time_queue > (track_duration + total_time):
+                track_seconds = queue_track.streamdetails.seconds_played
+                if elapsed_time_queue > (track_seconds + total_time):
                     # total elapsed time is more than (streamed) track duration
                     # move index one up
-                    total_time += track_duration
+                    total_time += track_seconds
                     queue_index += 1
                 else:
                     # no more seconds left to divide, this is our track
@@ -739,6 +779,9 @@ class PlayerQueue:
             try:
                 self._items = [QueueItem.from_dict(x) for x in queue_cache["items"]]
                 self._current_index = queue_cache["current_index"]
+                self._current_item_elapsed_time = queue_cache.get(
+                    "current_item_elapsed_time", 0
+                )
             except (KeyError, AttributeError, TypeError) as err:
                 self.logger.warning(
                     "Unable to restore queue state for queue %s",
@@ -754,5 +797,6 @@ class PlayerQueue:
             {
                 "items": [x.to_dict() for x in self._items],
                 "current_index": self._current_index,
+                "current_item_elapsed_time": self._current_item_elapsed_time,
             },
         )

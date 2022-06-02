@@ -442,6 +442,17 @@ async def get_media_stream(
 ) -> AsyncGenerator[Tuple[bool, bytes], None]:
     """Get the audio stream for the given streamdetails."""
 
+    if chunk_size is None:
+        if streamdetails.content_type in (
+            ContentType.AAC,
+            ContentType.M4A,
+            ContentType.MP3,
+            ContentType.OGG,
+        ):
+            chunk_size = 32000
+        else:
+            chunk_size = 256000
+
     mass.signal_event(
         MassEvent(
             EventType.STREAM_STARTED,
@@ -486,7 +497,10 @@ async def get_media_stream(
                 streamdetails.item_id, streamdetails.provider
             )
             # send analyze job to background worker
-            if streamdetails.loudness is None and streamdetails.provider != "url":
+            if (
+                streamdetails.loudness is None
+                and streamdetails.provider != ProviderType.URL
+            ):
                 uri = f"{streamdetails.provider.value}://{streamdetails.media_type.value}/{streamdetails.item_id}"
                 mass.add_job(
                     analyze_audio(mass, streamdetails), f"Analyze audio for {uri}"
