@@ -93,6 +93,34 @@ async def crossfade_pcm_parts(
     return crossfade_part
 
 
+async def fadein_pcm_part(
+    pcm_audio: bytes,
+    fade_length: int,
+    fmt: ContentType,
+    sample_rate: int,
+) -> bytes:
+    """Fadein chunk of pcm/raw audio using ffmpeg."""
+    # input args
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    args += [
+        "-f",
+        fmt.value,
+        "-ac",
+        "2",
+        "-ar",
+        str(sample_rate),
+        "-i",
+        "-",
+    ]
+    # filter args
+    args += ["-af", f"afade=type=in:start_time=0:duration={fade_length}"]
+    # output args
+    args += ["-f", fmt.value, "-"]
+    async with AsyncProcess(args, True) as proc:
+        result_audio, _ = await proc.communicate(pcm_audio)
+        return result_audio
+
+
 async def strip_silence(
     audio_data: bytes, fmt: ContentType, sample_rate: int, reverse=False
 ) -> bytes:
@@ -372,6 +400,8 @@ async def get_sox_args(
                 "-i",
                 stream_path,
             ]
+        if seek_position:
+            input_args += ["-ss", str(seek_position)]
         # collect output args
         if output_format.is_pcm():
             output_args = [
@@ -389,8 +419,6 @@ async def get_sox_args(
             filter_args += ["-filter:a", f"volume={streamdetails.gain_correct}dB"]
         if resample or input_format.is_pcm():
             filter_args += ["-ar", str(resample)]
-        if seek_position:
-            filter_args += ["-ss", str(seek_position)]
         return input_args + filter_args + output_args
 
     # Prefer SoX for all other (=highest quality)
@@ -442,6 +470,17 @@ async def get_media_stream(
 ) -> AsyncGenerator[Tuple[bool, bytes], None]:
     """Get the audio stream for the given streamdetails."""
 
+    if chunk_size is None:
+        if streamdetails.content_type in (
+            ContentType.AAC,
+            ContentType.M4A,
+            ContentType.MP3,
+            ContentType.OGG,
+        ):
+            chunk_size = 32000
+        else:
+            chunk_size = 256000
+
     mass.signal_event(
         MassEvent(
             EventType.STREAM_STARTED,
@@ -486,7 +525,10 @@ async def get_media_stream(
                 streamdetails.item_id, streamdetails.provider
             )
             # send analyze job to background worker
-            if streamdetails.loudness is None and streamdetails.provider != "url":
+            if (
+                streamdetails.loudness is None
+                and streamdetails.provider != ProviderType.URL
+            ):
                 uri = f"{streamdetails.provider.value}://{streamdetails.media_type.value}/{streamdetails.item_id}"
                 mass.add_job(
                     analyze_audio(mass, streamdetails), f"Analyze audio for {uri}"

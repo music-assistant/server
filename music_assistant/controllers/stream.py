@@ -13,6 +13,7 @@ from music_assistant.helpers.audio import (
     check_audio_support,
     create_wave_header,
     crossfade_pcm_parts,
+    fadein_pcm_part,
     get_media_stream,
     get_preview_stream,
     get_sox_args_for_pcm_stream,
@@ -73,11 +74,16 @@ class StreamController:
         enc_track_id = urllib.parse.quote(track_id)
         return f"http://{self._ip}:{self._port}/preview?provider_id={provider.value}&item_id={enc_track_id}"
 
+    def get_silence_url(self, duration: int = 600) -> str:
+        """Return url to silence."""
+        return f"http://{self._ip}:{self._port}/silence?duration={duration}"
+
     async def setup(self) -> None:
         """Async initialize of module."""
         app = web.Application()
 
         app.router.add_get("/preview", self.serve_preview)
+        app.router.add_get("/silence", self.serve_silence)
         app.router.add_get(
             "/{queue_id}/{player_id}.{format}",
             self.serve_multi_client_queue_stream,
@@ -120,6 +126,19 @@ class StreamController:
 
         self.logger.info("Started stream server on port %s", self._port)
 
+    @staticmethod
+    async def serve_silence(request: web.Request):
+        """Serve silence."""
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": "audio/wav"}
+        )
+        await resp.prepare(request)
+        duration = int(request.query.get("duration", 600))
+        await resp.write(create_wave_header(duration=duration))
+        for _ in range(0, duration):
+            await resp.write(b"\0" * 1764000)
+        return resp
+
     async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""
         provider_id = request.query["provider_id"]
@@ -148,9 +167,7 @@ class StreamController:
             # send stop here to prevent the player from retrying over and over
             await queue.stop()
             # send some silence to allow the player to process the stop request
-            result = create_wave_header(duration=10)
-            result += b"\0" * 1764000
-            return web.Response(status=200, body=result, content_type="audio/wav")
+            return await self.serve_silence(request)
 
         resp = web.StreamResponse(
             status=200, reason="OK", headers={"Content-Type": f"audio/{fmt}"}
@@ -414,6 +431,7 @@ class StreamController:
         resample: bool = False,
     ) -> AsyncGenerator[None, bytes]:
         """Stream the PlayerQueue's tracks as constant feed of PCM raw audio."""
+        bytes_written_total = 0
         last_fadeout_data = b""
         queue_index = None
         track_count = 0
@@ -429,15 +447,15 @@ class StreamController:
 
         # stream queue tracks one by one
         while True:
-            start_timestamp = time()
             # get the (next) track in queue
             track_count += 1
             if track_count == 1:
                 # report start of queue playback so we can calculate current track/duration etc.
-                queue_index, seek_position = await queue.queue_stream_start()
+                queue_index, seek_position, fade_in = await queue.queue_stream_start()
             else:
                 queue_index = await queue.queue_stream_next(queue_index)
                 seek_position = 0
+                fade_in = 0
             queue_track = queue.get_item(queue_index)
             if not queue_track:
                 self.logger.debug(
@@ -524,18 +542,24 @@ class StreamController:
 
                 # HANDLE FIRST PART OF TRACK
                 if not chunk and bytes_written == 0 and is_last_chunk:
-                    # stream error: got empy first chunk
+                    # stream error: got empy first chunk ?!
                     self.logger.warning("Stream error on %s", queue_track.uri)
-                    # prevent player queue get stuck by just skipping to the next track
-                    queue_track.duration = 0
-                    continue
-                if cur_chunk <= 2 and not last_fadeout_data:
+                elif cur_chunk == 1 and last_fadeout_data:
+                    prev_chunk = chunk
+                    del chunk
+                elif cur_chunk == 1 and fade_in:
+                    # fadein first chunk
+                    fadein_first_part = await fadein_pcm_part(
+                        chunk, fade_in, pcm_fmt, sample_rate
+                    )
+                    yield fadein_first_part
+                    bytes_written += len(fadein_first_part)
+                    del chunk
+                    del fadein_first_part
+                elif cur_chunk <= 2 and not last_fadeout_data:
                     # no fadeout_part available so just pass it to the output directly
                     yield chunk
                     bytes_written += len(chunk)
-                    del chunk
-                elif cur_chunk == 1 and last_fadeout_data:
-                    prev_chunk = chunk
                     del chunk
                 # HANDLE CROSSFADE OF PREVIOUS TRACK FADE_OUT AND THIS TRACK FADE_IN
                 elif cur_chunk == 2 and last_fadeout_data:
@@ -617,15 +641,16 @@ class StreamController:
                     else:
                         prev_chunk = chunk
                     del chunk
-                # allow clients to only buffer max ~15 seconds ahead
-                seconds_streamed = bytes_written / sample_size
-                seconds_needed = int(time() - start_timestamp) + 15
-                diff = seconds_streamed - seconds_needed
-                if diff:
+                # allow clients to only buffer max ~10 seconds ahead
+                queue_track.streamdetails.seconds_played = bytes_written / sample_size
+                seconds_buffered = (bytes_written_total + bytes_written) / sample_size
+                seconds_needed = queue.player.elapsed_time + 10
+                diff = seconds_buffered - seconds_needed
+                track_time = queue_track.duration or 0
+                if track_time > 10 and diff > 1:
                     await asyncio.sleep(diff)
             # end of the track reached
-            # set actual duration to the queue for more accurate now playing info
-            queue_track.streamdetails.seconds_played = bytes_written / sample_size
+            bytes_written_total += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
                 queue_track.uri,
