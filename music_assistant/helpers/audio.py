@@ -372,6 +372,8 @@ async def get_sox_args(
                 "-i",
                 stream_path,
             ]
+        if seek_position:
+            input_args += ["-ss", str(seek_position)]
         # collect output args
         if output_format.is_pcm():
             output_args = [
@@ -389,8 +391,6 @@ async def get_sox_args(
             filter_args += ["-filter:a", f"volume={streamdetails.gain_correct}dB"]
         if resample or input_format.is_pcm():
             filter_args += ["-ar", str(resample)]
-        if seek_position:
-            filter_args += ["-ss", str(seek_position)]
         return input_args + filter_args + output_args
 
     # Prefer SoX for all other (=highest quality)
