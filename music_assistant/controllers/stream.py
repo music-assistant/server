@@ -13,6 +13,7 @@ from music_assistant.helpers.audio import (
     check_audio_support,
     create_wave_header,
     crossfade_pcm_parts,
+    fadein_pcm_part,
     get_media_stream,
     get_preview_stream,
     get_sox_args_for_pcm_stream,
@@ -450,10 +451,11 @@ class StreamController:
             track_count += 1
             if track_count == 1:
                 # report start of queue playback so we can calculate current track/duration etc.
-                queue_index, seek_position = await queue.queue_stream_start()
+                queue_index, seek_position, fade_in = await queue.queue_stream_start()
             else:
                 queue_index = await queue.queue_stream_next(queue_index)
                 seek_position = 0
+                fade_in = 0
             queue_track = queue.get_item(queue_index)
             if not queue_track:
                 self.logger.debug(
@@ -540,17 +542,24 @@ class StreamController:
 
                 # HANDLE FIRST PART OF TRACK
                 if not chunk and bytes_written == 0 and is_last_chunk:
-                    # stream error: got empy first chunk
+                    # stream error: got empy first chunk ?!
                     self.logger.warning("Stream error on %s", queue_track.uri)
-                    # prevent player queue get stuck by just skipping to the next track
-                    continue
-                if cur_chunk <= 2 and not last_fadeout_data:
+                elif cur_chunk == 1 and last_fadeout_data:
+                    prev_chunk = chunk
+                    del chunk
+                elif cur_chunk == 1 and fade_in:
+                    # fadein first chunk
+                    fadein_first_part = await fadein_pcm_part(
+                        chunk, fade_in, pcm_fmt, sample_rate
+                    )
+                    yield fadein_first_part
+                    bytes_written += len(fadein_first_part)
+                    del chunk
+                    del fadein_first_part
+                elif cur_chunk <= 2 and not last_fadeout_data:
                     # no fadeout_part available so just pass it to the output directly
                     yield chunk
                     bytes_written += len(chunk)
-                    del chunk
-                elif cur_chunk == 1 and last_fadeout_data:
-                    prev_chunk = chunk
                     del chunk
                 # HANDLE CROSSFADE OF PREVIOUS TRACK FADE_OUT AND THIS TRACK FADE_IN
                 elif cur_chunk == 2 and last_fadeout_data:

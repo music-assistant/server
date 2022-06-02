@@ -93,6 +93,34 @@ async def crossfade_pcm_parts(
     return crossfade_part
 
 
+async def fadein_pcm_part(
+    pcm_audio: bytes,
+    fade_length: int,
+    fmt: ContentType,
+    sample_rate: int,
+) -> bytes:
+    """Fadein chunk of pcm/raw audio using ffmpeg."""
+    # input args
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    args += [
+        "-f",
+        fmt.value,
+        "-ac",
+        "2",
+        "-ar",
+        str(sample_rate),
+        "-i",
+        "-",
+    ]
+    # filter args
+    args += ["-af", f"afade=type=in:start_time=0:duration={fade_length}"]
+    # output args
+    args += ["-f", fmt.value, "-"]
+    async with AsyncProcess(args, True) as proc:
+        result_audio, _ = await proc.communicate(pcm_audio)
+        return result_audio
+
+
 async def strip_silence(
     audio_data: bytes, fmt: ContentType, sample_rate: int, reverse=False
 ) -> bytes:

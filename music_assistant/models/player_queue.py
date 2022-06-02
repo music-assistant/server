@@ -65,6 +65,7 @@ class PlayerQueue:
         self._start_index: int = 0
         # start_pos: from which position (in seconds) did the first track start playing?
         self._start_pos: int = 0
+        self._next_fadein: int = 0
         self._next_start_index: int = 0
         self._next_start_pos: int = 0
         self._last_state = PlayerState.IDLE
@@ -391,14 +392,14 @@ class PlayerQueue:
         if (
             resume_item
             and resume_item.duration
-            and resume_pos > (resume_item.duration * 0.8)
+            and resume_pos > (resume_item.duration * 0.9)
         ):
-            # track is already played for > 80% - skip to next
+            # track is already played for > 90% - skip to next
             resume_item = self.next_item
             resume_pos = 0
 
         if resume_item is not None:
-            await self.play_index(resume_item.item_id, resume_pos)
+            await self.play_index(resume_item.item_id, resume_pos, 5)
         else:
             self.logger.warning(
                 "resume queue requested for %s but queue is empty", self.queue_id
@@ -426,7 +427,7 @@ class PlayerQueue:
         await self.update(self._snapshot.items)
         self._current_index = self._snapshot.index
         if self._snapshot.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-            await self.play_index(self._current_index, self._snapshot.position)
+            await self.resume()
         if self._snapshot.state == PlayerState.PAUSED:
             await self.pause()
         if not self._snapshot.powered:
@@ -435,7 +436,11 @@ class PlayerQueue:
         self._snapshot = None
 
     async def play_index(
-        self, index: Union[int, str], seek_position: int = 0, passive: bool = False
+        self,
+        index: Union[int, str],
+        seek_position: int = 0,
+        fade_in: int = 0,
+        passive: bool = False,
     ) -> None:
         """Play item at index (or item_id) X in queue."""
         if self.player.use_multi_stream:
@@ -449,6 +454,7 @@ class PlayerQueue:
         self._current_index = index
         self._next_start_index = index
         self._next_start_pos = int(seek_position)
+        self._next_fadein = fade_in
         # send stream url to player connected to this queue
         self._stream_url = self.mass.streams.get_stream_url(
             self.queue_id, content_type=self._settings.stream_type
@@ -676,7 +682,7 @@ class PlayerQueue:
             await self.play_index(self._current_index + 2)
             raise err
 
-    async def queue_stream_start(self) -> Tuple[int, int]:
+    async def queue_stream_start(self) -> Tuple[int, int, int]:
         """Call when queue_streamer starts playing the queue stream."""
         start_from_index = self._next_start_index
         self._current_item_elapsed_time = 0
@@ -686,7 +692,9 @@ class PlayerQueue:
         self._index_in_buffer = start_from_index
         seek_position = self._next_start_pos
         self._next_start_pos = 0
-        return (start_from_index, seek_position)
+        fade_in = self._next_fadein
+        self._next_fadein = 0
+        return (start_from_index, seek_position, fade_in)
 
     async def queue_stream_next(self, cur_index: int) -> int | None:
         """Call when queue_streamer loads next track in buffer."""
