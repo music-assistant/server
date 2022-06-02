@@ -446,7 +446,16 @@ class SpotifyProvider(MusicProvider):
         if not self.config.username or not self.config.password:
             return tokeninfo
         # retrieve token with librespot
-        tokeninfo = await self._get_token()
+        retries = 0
+        while retries < 4:
+            try:
+                tokeninfo = await asyncio.wait_for(self._get_token(), 5)
+                if tokeninfo:
+                    break
+                retries += 1
+                await asyncio.sleep(2)
+            except TimeoutError:
+                pass
         if tokeninfo:
             self._auth_token = tokeninfo
             self._sp_user = await self._get_data("me")
