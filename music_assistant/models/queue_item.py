@@ -50,7 +50,7 @@ class QueueItem(DataClassDictMixin):
         """Create QueueItem from plain url."""
         return cls(
             uri=url,
-            name=name or url,
+            name=name or url.split("?")[0],
             media_type=MediaType.UNKNOWN,
             image=None,
             media_item=None,
