@@ -195,6 +195,22 @@ class Player(ABC):
 
     # SOME CONVENIENCE METHODS (may be overridden if needed)
 
+    @property
+    def stream_type(self) -> ContentType:
+        """Return supported/preferred stream type for playerqueue. Read only."""
+        # determine default stream type from player capabilities
+        return next(
+            x
+            for x in (
+                ContentType.FLAC,
+                ContentType.WAV,
+                ContentType.PCM_S16LE,
+                ContentType.MP3,
+                ContentType.MPEG,
+            )
+            if x in self.supported_content_types
+        )
+
     async def volume_mute(self, muted: bool) -> None:
         """Send volume mute command to player."""
         # for players that do not support mute, we fake mute with volume

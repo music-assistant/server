@@ -5,6 +5,7 @@ import asyncio
 import logging
 import struct
 from io import BytesIO
+from time import time
 from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Tuple
 
 import aiofiles
@@ -226,6 +227,16 @@ async def get_stream_details(
         param media_item: The MediaItem (track/radio) for which to request the streamdetails for.
         param queue_id: Optionally provide the queue_id which will play this stream.
     """
+    if (
+        queue_item.streamdetails is not None
+        and (time() - queue_item.streamdetails.timestamp) < 600
+    ):
+        # we already have fresh streamdetails, use these
+        queue_item.streamdetails.seconds_skipped = 0
+        queue_item.streamdetails.seconds_streamed = 0
+        if queue_item.streamdetails.data is not None:
+            queue_item.streamdetails.type = StreamType.CACHE
+        return queue_item.streamdetails
     if not queue_item.media_item:
         # special case: a plain url was added to the queue
         streamdetails = StreamDetails(
@@ -471,15 +482,7 @@ async def get_media_stream(
     """Get the audio stream for the given streamdetails."""
 
     if chunk_size is None:
-        if streamdetails.content_type in (
-            ContentType.AAC,
-            ContentType.M4A,
-            ContentType.MP3,
-            ContentType.OGG,
-        ):
-            chunk_size = 32000
-        else:
-            chunk_size = 256000
+        chunk_size = get_chunksize(output_format)
 
     mass.signal_event(
         MassEvent(
@@ -691,3 +694,15 @@ async def get_preview_stream(
                     data=streamdetails,
                 )
             )
+
+
+def get_chunksize(content_type: ContentType) -> int:
+    """Get a default chunksize for given contenttype."""
+    if content_type in (
+        ContentType.AAC,
+        ContentType.M4A,
+        ContentType.MP3,
+        ContentType.OGG,
+    ):
+        return 32000
+    return 256000

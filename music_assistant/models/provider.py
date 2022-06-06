@@ -12,9 +12,9 @@ from music_assistant.models.media_items import (
     MediaItemType,
     Playlist,
     Radio,
+    StreamDetails,
     Track,
 )
-from music_assistant.models.player_queue import StreamDetails
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant

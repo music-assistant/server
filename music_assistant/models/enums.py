@@ -11,6 +11,7 @@ class MediaType(Enum):
     TRACK = "track"
     PLAYLIST = "playlist"
     RADIO = "radio"
+    ALERT = "alert"
     UNKNOWN = "unknown"
 
 

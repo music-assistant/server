@@ -399,7 +399,7 @@ class QobuzProvider(MusicProvider):
                 "/track/reportStreamingEnd",
                 user_id=user_id,
                 track_id=str(event.data.item_id),
-                duration=try_parse_int(event.data.seconds_played),
+                duration=try_parse_int(event.data.seconds_streamed),
             )
 
     async def _parse_artist(self, artist_obj: dict):

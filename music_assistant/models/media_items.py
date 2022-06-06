@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
+from time import time
 from typing import Any, Dict, List, Mapping, Optional, Set, Union
 
 from mashumaro import DataClassDictMixin
@@ -345,7 +346,7 @@ class StreamDetails(DataClassDictMixin):
     content_type: ContentType
     player_id: str = ""
     details: Dict[str, Any] = field(default_factory=dict)
-    seconds_played: int = 0
+    seconds_streamed: int = 0
     seconds_skipped: int = 0
     gain_correct: float = 0
     loudness: Optional[float] = None
@@ -353,13 +354,16 @@ class StreamDetails(DataClassDictMixin):
     bit_depth: int = 16
     channels: int = 2
     media_type: MediaType = MediaType.TRACK
-    queue_id: str = None
+    queue_id: Optional[str] = None
+    timestamp: float = field(default_factory=time)
+    data: Optional[bytes] = None
 
     def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
         """Exclude internal fields from dict."""
         # pylint: disable=no-self-use
         d.pop("path")
         d.pop("details")
+        d.pop("data")
         return d
 
     def __str__(self):

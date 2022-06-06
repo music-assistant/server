@@ -14,7 +14,7 @@ from async_timeout import timeout as _timeout
 
 LOGGER = logging.getLogger("AsyncProcess")
 
-DEFAULT_CHUNKSIZE = 512000
+DEFAULT_CHUNKSIZE = 64000
 DEFAULT_TIMEOUT = 120
 
 
@@ -41,7 +41,7 @@ class AsyncProcess:
                 args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE,
-                limit=DEFAULT_CHUNKSIZE * 10,
+                limit=69120000,  # ~ 64mb - 2 minutes of pcm audio at 96000/24
                 close_fds=True,
             )
         else:
@@ -49,7 +49,7 @@ class AsyncProcess:
                 *args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE,
-                limit=DEFAULT_CHUNKSIZE * 10,
+                limit=69120000,  # ~ 64mb - 2 minutes of pcm audio at 96000/24
                 close_fds=True,
             )
         return self
@@ -77,6 +77,7 @@ class AsyncProcess:
                 BrokenPipeError,
                 RuntimeError,
                 ConnectionResetError,
+                asyncio.CancelledError,
             ):
                 pass
         del self._proc

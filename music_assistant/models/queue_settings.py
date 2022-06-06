@@ -124,18 +124,7 @@ class QueueSettings:
     @property
     def stream_type(self) -> ContentType:
         """Return supported/preferred stream type for playerqueue. Read only."""
-        # determine default stream type from player capabilities
-        return next(
-            x
-            for x in (
-                ContentType.FLAC,
-                ContentType.WAV,
-                ContentType.PCM_S16LE,
-                ContentType.MP3,
-                ContentType.MPEG,
-            )
-            if x in self._queue.player.supported_content_types
-        )
+        return self._queue.player.stream_type
 
     def to_dict(self) -> Dict[str, Any]:
         """Return dict from settings."""

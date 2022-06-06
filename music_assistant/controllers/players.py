@@ -66,6 +66,13 @@ class PlayerController:
         """Return PlayerQueue by id or None if not found/unavailable."""
         return self._player_queues.get(queue_id)
 
+    def get_player_queue_by_stream_id(self, stream_id: str) -> PlayerQueue | None:
+        """Return PlayerQueue by url or None if not found/unavailable."""
+        return next(
+            (x for x in self._player_queues.values() if x.audio.stream_id == stream_id),
+            None,
+        )
+
     def get_player_by_name(self, name: str) -> PlayerType | None:
         """Return Player by name or None if no match is found."""
         return next((x for x in self._players.values() if x.name == name), None)
