@@ -144,6 +144,7 @@ class QueueStream:
         queue_index = None
         track_count = 0
         prev_track: Optional[QueueItem] = None
+        prev_last_update = self.queue.last_update
 
         pcm_fmt = ContentType.from_bit_depth(self.pcm_bit_depth)
         self.logger.info(
@@ -184,6 +185,15 @@ class QueueStream:
                     exc_info=err,
                 )
                 continue
+
+            # checksum on queue changes
+            if track_count > 1 and self.queue.last_update != prev_last_update:
+                await self.queue.queue_stream_signal_next()
+                self.logger.debug(
+                    "Abort queue stream %s due to checksum mismatch",
+                    self.queue.player.name,
+                )
+                break
 
             # check the PCM samplerate/bitrate
             if not self.pcm_resample and streamdetails.bit_depth > self.pcm_bit_depth:
