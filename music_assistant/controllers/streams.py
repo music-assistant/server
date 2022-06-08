@@ -1,36 +1,232 @@
-"""Model for a (multisubscriber) Audio Queue."""
+"""Controller to stream audio to players."""
 from __future__ import annotations
 
 import asyncio
+import gc
+import urllib.parse
 from types import CoroutineType
 from typing import TYPE_CHECKING, AsyncGenerator, Dict, Optional
+from uuid import uuid4
+
+from aiohttp import web
 
 from music_assistant.helpers.audio import (
+    check_audio_support,
+    create_wave_header,
     crossfade_pcm_parts,
     fadein_pcm_part,
     get_chunksize,
     get_media_stream,
+    get_preview_stream,
     get_sox_args_for_pcm_stream,
     get_stream_details,
     strip_silence,
 )
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.models.enums import ContentType, CrossFadeMode, MediaType
-from music_assistant.models.errors import MediaNotFoundError
+from music_assistant.models.enums import (
+    ContentType,
+    CrossFadeMode,
+    EventType,
+    MediaType,
+    ProviderType,
+)
+from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
+from music_assistant.models.event import MassEvent
+from music_assistant.models.player_queue import PlayerQueue
 from music_assistant.models.queue_item import QueueItem
 
 if TYPE_CHECKING:
-    from .player_queue import PlayerQueue
+    from music_assistant.mass import MusicAssistant
+
+
+class StreamsController:
+    """Controller to stream audio to players."""
+
+    def __init__(self, mass: MusicAssistant):
+        """Initialize instance."""
+        self.mass = mass
+        self.logger = mass.logger.getChild("stream")
+        self._port = mass.config.stream_port
+        self._ip = mass.config.stream_ip
+        self.queue_streams: Dict[str, QueueStream] = {}
+
+    def get_stream_url(
+        self,
+        stream_id: str,
+        content_type: ContentType = ContentType.FLAC,
+    ) -> str:
+        """Generate unique stream url for the PlayerQueue Stream."""
+        ext = content_type.value
+        return f"http://{self._ip}:{self._port}/{stream_id}.{ext}"
+
+    async def get_preview_url(self, provider: ProviderType, track_id: str) -> str:
+        """Return url to short preview sample."""
+        track = await self.mass.music.tracks.get_provider_item(track_id, provider)
+        if preview := track.metadata.preview:
+            return preview
+        enc_track_id = urllib.parse.quote(track_id)
+        return f"http://{self._ip}:{self._port}/preview?provider_id={provider.value}&item_id={enc_track_id}"
+
+    def get_silence_url(self, duration: int = 600) -> str:
+        """Return url to silence."""
+        return f"http://{self._ip}:{self._port}/silence?duration={duration}"
+
+    async def setup(self) -> None:
+        """Async initialize of module."""
+        app = web.Application()
+
+        app.router.add_get("/preview", self.serve_preview)
+        app.router.add_get("/silence", self.serve_silence)
+        app.router.add_get("/{stream_id}.{format}", self.serve_queue_stream)
+
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        # set host to None to bind to all addresses on both IPv4 and IPv6
+        http_site = web.TCPSite(runner, host=None, port=self._port)
+        await http_site.start()
+
+        async def on_shutdown_event(*event: MassEvent):
+            """Handle shutdown event."""
+            await http_site.stop()
+            await runner.cleanup()
+            await app.shutdown()
+            await app.cleanup()
+            self.logger.info("Streamserver exited.")
+
+        self.mass.subscribe(on_shutdown_event, EventType.SHUTDOWN)
+
+        sox_present, ffmpeg_present = await check_audio_support(True)
+        if not ffmpeg_present and not sox_present:
+            self.logger.error(
+                "SoX or FFmpeg binary not found on your system, "
+                "playback will NOT work!."
+            )
+        elif not ffmpeg_present:
+            self.logger.warning(
+                "The FFmpeg binary was not found on your system, "
+                "you might experience issues with playback. "
+                "Please install FFmpeg with your OS package manager.",
+            )
+        elif not sox_present:
+            self.logger.warning(
+                "The SoX binary was not found on your system, FFmpeg is used as fallback."
+            )
+
+        self.logger.info("Started stream server on port %s", self._port)
+
+    @staticmethod
+    async def serve_silence(request: web.Request):
+        """Serve silence."""
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": "audio/wav"}
+        )
+        await resp.prepare(request)
+        duration = int(request.query.get("duration", 600))
+        await resp.write(create_wave_header(duration=duration))
+        for _ in range(0, duration):
+            await resp.write(b"\0" * 1764000)
+        return resp
+
+    async def serve_preview(self, request: web.Request):
+        """Serve short preview sample."""
+        provider_id = request.query["provider_id"]
+        item_id = urllib.parse.unquote(request.query["item_id"])
+        resp = web.StreamResponse(
+            status=200, reason="OK", headers={"Content-Type": "audio/mp3"}
+        )
+        await resp.prepare(request)
+        async for _, chunk in get_preview_stream(self.mass, provider_id, item_id):
+            await resp.write(chunk)
+        return resp
+
+    async def serve_queue_stream(self, request: web.Request):
+        """Serve queue audio stream to a single player."""
+        self.logger.info(request)
+        self.logger.info(request.headers)
+
+        stream_id = request.match_info["stream_id"]
+        queue_stream = self.queue_streams.get(stream_id)
+
+        if queue_stream is None:
+            self.logger.warning("Got stream request for unknown id: %s", stream_id)
+            return web.Response(status=404)
+
+        # prepare request, add some DLNA/UPNP compatible headers
+        headers = {
+            "Content-Type": f"audio/{queue_stream.output_format.value}",
+            "transferMode.dlna.org": "Streaming",
+            "Connection": "Close",
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
+        }
+        resp = web.StreamResponse(headers=headers)
+        await resp.prepare(request)
+        client_id = request.remote
+        await queue_stream.subscribe(client_id, resp.write)
+
+        return resp
+
+    async def start_queue_stream(
+        self,
+        queue: PlayerQueue,
+        expected_clients: int,
+        start_index: int,
+        seek_position: int,
+        fade_in: bool,
+        output_format: ContentType,
+    ) -> str:
+        """Start running a queue stream."""
+        # generate unique stream url
+        stream_id = uuid4().hex
+        # determine the pcm details based on the first track we need to stream
+        try:
+            first_item = queue.items[start_index]
+        except (IndexError, TypeError) as err:
+            raise QueueEmpty() from err
+
+        streamdetails = await get_stream_details(self.mass, first_item, queue.queue_id)
+
+        # work out pcm details
+        if queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
+            pcm_sample_rate = min(96000, queue.max_sample_rate)
+            pcm_bit_depth = 24
+            pcm_channels = 2
+            pcm_resample = True
+        elif streamdetails.sample_rate > queue.max_sample_rate:
+            pcm_sample_rate = queue.max_sample_rate
+            pcm_bit_depth = streamdetails.bit_depth
+            pcm_channels = streamdetails.channels
+            pcm_resample = True
+        else:
+            pcm_sample_rate = streamdetails.sample_rate
+            pcm_bit_depth = streamdetails.bit_depth
+            pcm_channels = streamdetails.channels
+            pcm_resample = False
+
+        self.queue_streams[stream_id] = QueueStream(
+            queue=queue,
+            stream_id=stream_id,
+            expected_clients=expected_clients,
+            start_index=start_index,
+            seek_position=seek_position,
+            fade_in=fade_in,
+            output_format=output_format,
+            pcm_sample_rate=pcm_sample_rate,
+            pcm_bit_depth=pcm_bit_depth,
+            pcm_channels=pcm_channels,
+            pcm_resample=pcm_resample,
+            autostart=True,
+        )
+        return self.get_stream_url(stream_id, output_format)
 
 
 class QueueStream:
-    """Model for a (multisubscriber) Audio Queue stream."""
+    """Representation of a (multisubscriber) Audio Queue stream."""
 
     def __init__(
         self,
         queue: PlayerQueue,
         stream_id: str,
-        expected_clients: set,
+        expected_clients: int,
         start_index: int,
         seek_position: int,
         fade_in: bool,
@@ -40,6 +236,7 @@ class QueueStream:
         pcm_channels: int = 2,
         pcm_floating_point: bool = False,
         pcm_resample: bool = False,
+        autostart: bool = False,
     ):
         """Init QueueStreamJob instance."""
         self.queue = queue
@@ -59,44 +256,51 @@ class QueueStream:
         self.logger = self.queue.logger.getChild("stream")
         self.expected_clients = expected_clients
         self.connected_clients: Dict[str, CoroutineType[bytes]] = {}
-        self._runner_task = self.mass.create_task(self._queue_stream_runner())
+        self._runner_task: Optional[asyncio.Task] = None
         self.done = asyncio.Event()
+        self.all_clients_connected = asyncio.Event()
+        self.index_in_buffer = start_index
+        self.signal_next: bool = False
+        if autostart:
+            self.mass.create_task(self.start())
+
+    async def start(self) -> None:
+        """Start running queue stream."""
+        self._runner_task = self.mass.create_task(self._queue_stream_runner())
+
+    async def stop(self) -> None:
+        """Stop running queue stream and cleanup."""
+        self.done.set()
+        if self._runner_task and not self._runner_task.done():
+            self._runner_task.cancel()
+            # allow some time to cleanup
+            await asyncio.sleep(2)
+
+        self._runner_task = None
+        self.connected_clients = {}
+
+        self.mass.streams.queue_streams.pop(self.stream_id, None)
+        # run garbage collection manually due to the high number of
+        # processed bytes blocks
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, gc.collect)
+        self.logger.debug("Stream job %s cleaned up", self.stream_id)
 
     async def subscribe(self, client_id: str, callback: CoroutineType[bytes]) -> None:
         """Subscribe callback and wait for completion."""
-        assert client_id in self.expected_clients, "Unexpected client connected"
         assert client_id not in self.connected_clients, "Client is already connected"
         self.connected_clients[client_id] = callback
         self.logger.debug("client connected: %s", client_id)
+        if len(self.connected_clients) == self.expected_clients:
+            self.all_clients_connected.set()
         try:
             await self.done.wait()
         finally:
-            self.connected_clients.pop(client_id)
+            self.connected_clients.pop(client_id, None)
             self.logger.debug("client disconnected: %s", client_id)
             if len(self.connected_clients) == 0:
-                # no more clients, schedule cleanup
-                self.mass.create_task(self.close())
-
-    async def _wait_for_clients(self) -> None:
-        """Wait until all expected clients connected."""
-        self.logger.debug("wait for clients...")
-        # wait max 2 seconds for all client(s) to connect to have a
-        # more or less coordinated start
-        count = 0
-        while len(self.connected_clients) < len(self.expected_clients):
-            if count > 200:
-                break
-            await asyncio.sleep(0.01)
-        self.logger.debug("%s clients connected", len(self.connected_clients))
-
-    async def close(self) -> None:
-        """Cleanup stream Job when finished."""
-        self.logger.debug("Finishing stream job %s", self.stream_id)
-        self.done.set()
-        if not self._runner_task.done():
-            self._runner_task.cancel()
-        self.mass.streams.queue_streams.pop(self.stream_id)
-        self.logger.debug("Stream job %s cleaned up", self.stream_id)
+                # no more clients, perform cleanup
+                await self.stop()
 
     async def _queue_stream_runner(self) -> None:
         """Distribute audio chunks over connected client queues."""
@@ -108,7 +312,8 @@ class QueueStream:
         )
         # get the raw pcm bytes from the queue stream and on the fly encode to wanted format
         # send the compressed/endoded stream to the client(s).
-        async with AsyncProcess(sox_args, True) as sox_proc:
+        chunk_size = get_chunksize(self.output_format)
+        async with AsyncProcess(sox_args, True, chunk_size) as sox_proc:
 
             async def writer():
                 """Task that sends the raw pcm audio to the sox/ffmpeg process."""
@@ -116,21 +321,51 @@ class QueueStream:
                     if sox_proc.closed:
                         return
                     await sox_proc.write(audio_chunk)
+                    del audio_chunk
                 # write eof when last packet is received
                 sox_proc.write_eof()
 
             sox_proc.attach_task(writer())
 
-            # Read bytes from final output and put chunk on child callback.
-            await self._wait_for_clients()
-            chunk_size = get_chunksize(self.output_format)
-            async for chunk in sox_proc.iterate_chunks(chunk_size):
-                await asyncio.gather(
-                    *[x(chunk) for x in self.connected_clients.values()],
-                    return_exceptions=False,
+            # wait max 5 seconds for all client(s) to connect
+            try:
+                await asyncio.wait_for(self.all_clients_connected.wait(), 5)
+            except asyncio.exceptions.TimeoutError:
+                self.logger.warning(
+                    "Abort: client(s) did not connect within 5 seconds."
                 )
+                return
+            self.logger.debug("%s clients connected", len(self.connected_clients))
+
+            # Read bytes from final output and send chunk to child callback.
+            async for chunk in sox_proc.iterate_chunks():
                 if len(self.connected_clients) == 0:
+                    # no more clients
                     break
+                # asyncio.gather(
+                #     *[x(chunk) for x in self.connected_clients.values()],
+                #     return_exceptions=True,
+                # )
+                for client_id in set(self.connected_clients.keys()):
+                    try:
+                        callback = self.connected_clients[client_id]
+                        await callback(chunk)
+                    except (
+                        asyncio.exceptions.CancelledError,
+                        ConnectionResetError,
+                        KeyError,
+                        BrokenPipeError,
+                    ):
+                        self.connected_clients.pop(client_id, None)
+
+                del chunk
+
+            # complete queue streamed
+            if self.signal_next:
+                # the queue stream was aborted (e.g. because of sample rate mismatch)
+                # tell the queue to load the next track (restart stream) as soon
+                # as the player finished playing and returns to idle
+                self.queue.signal_next = True
 
         # set event that we're finished
         self.done.set()
@@ -139,7 +374,6 @@ class QueueStream:
         self,
     ) -> AsyncGenerator[None, bytes]:
         """Stream the PlayerQueue's tracks as constant feed of PCM raw audio."""
-        bytes_written_total = 0
         last_fadeout_data = b""
         queue_index = None
         track_count = 0
@@ -147,7 +381,7 @@ class QueueStream:
         prev_last_update = self.queue.last_update
 
         pcm_fmt = ContentType.from_bit_depth(self.pcm_bit_depth)
-        self.logger.info(
+        self.logger.debug(
             "Starting Queue audio stream for Queue %s (PCM format: %s - sample rate: %s)",
             self.queue.player.name,
             pcm_fmt.value,
@@ -166,6 +400,7 @@ class QueueStream:
                 queue_index = await self.queue.queue_stream_next(queue_index)
                 seek_position = 0
                 fade_in = 0
+            self.index_in_buffer = queue_index
             queue_track = self.queue.get_item(queue_index)
             if not queue_track:
                 self.logger.debug(
@@ -188,7 +423,7 @@ class QueueStream:
 
             # checksum on queue changes
             if track_count > 1 and self.queue.last_update != prev_last_update:
-                await self.queue.queue_stream_signal_next()
+                self.signal_next = True
                 self.logger.debug(
                     "Abort queue stream %s due to checksum mismatch",
                     self.queue.player.name,
@@ -197,7 +432,7 @@ class QueueStream:
 
             # check the PCM samplerate/bitrate
             if not self.pcm_resample and streamdetails.bit_depth > self.pcm_bit_depth:
-                await self.queue.queue_stream_signal_next()
+                self.signal_next = True
                 self.logger.debug(
                     "Abort queue stream %s due to bit depth mismatch",
                     self.queue.player.name,
@@ -212,7 +447,7 @@ class QueueStream:
                     "Abort queue stream %s due to sample rate mismatch",
                     self.queue.player.name,
                 )
-                await self.queue.queue_stream_signal_next()
+                self.signal_next = True
                 break
 
             # check crossfade ability
@@ -332,10 +567,6 @@ class QueueStream:
                     if not use_crossfade or len(last_part) < buffer_size:
                         # crossfading is not enabled or not enough data,
                         # so just pass the (stripped) audio data
-                        if use_crossfade:
-                            self.logger.warning(
-                                "Not enough data for crossfade: %s", len(last_part)
-                            )
                         yield last_part
                         bytes_written += len(last_part)
                         del last_part
@@ -364,16 +595,8 @@ class QueueStream:
                     else:
                         prev_chunk = chunk
                     del chunk
-                # allow clients to only buffer max ~60 seconds ahead
-                queue_track.streamdetails.seconds_streamed = bytes_written / sample_size
-                seconds_buffered = (bytes_written_total + bytes_written) / sample_size
-                seconds_needed = self.queue.player.elapsed_time + 10
-                diff = seconds_buffered - seconds_needed
-                track_time = queue_track.duration or 0
-                if track_time > 10 and diff > 1:
-                    await asyncio.sleep(diff)
             # end of the track reached
-            bytes_written_total += bytes_written
+            queue_track.streamdetails.seconds_streamed = bytes_written / sample_size
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
                 queue_track.uri,
@@ -382,5 +605,6 @@ class QueueStream:
             )
         # end of queue reached, pass last fadeout bits to final output
         yield last_fadeout_data
+        del last_fadeout_data
         # END OF QUEUE STREAM
-        self.logger.info("Queue stream for Queue %s finished.", self.queue.player.name)
+        self.logger.debug("Queue stream for Queue %s finished.", self.queue.player.name)

@@ -12,7 +12,7 @@ from typing import AsyncGenerator, Coroutine, List, Optional, Tuple, Union
 
 from async_timeout import timeout as _timeout
 
-LOGGER = logging.getLogger("AsyncProcess")
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHUNKSIZE = 64000
 DEFAULT_TIMEOUT = 120
@@ -21,13 +21,19 @@ DEFAULT_TIMEOUT = 120
 class AsyncProcess:
     """Implementation of a (truly) non blocking subprocess."""
 
-    def __init__(self, args: Union[List, str], enable_write: bool = False):
+    def __init__(
+        self,
+        args: Union[List, str],
+        enable_write: bool = False,
+        chunk_size: int = DEFAULT_CHUNKSIZE,
+    ):
         """Initialize."""
         self._proc = None
         self._args = args
         self._enable_write = enable_write
         self._attached_task: asyncio.Task = None
         self.closed = False
+        self.chunk_size = chunk_size or DEFAULT_CHUNKSIZE
 
     async def __aenter__(self) -> "AsyncProcess":
         """Enter context manager."""
@@ -41,7 +47,6 @@ class AsyncProcess:
                 args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE,
-                limit=69120000,  # ~ 64mb - 2 minutes of pcm audio at 96000/24
                 close_fds=True,
             )
         else:
@@ -49,7 +54,6 @@ class AsyncProcess:
                 *args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE,
-                limit=69120000,  # ~ 64mb - 2 minutes of pcm audio at 96000/24
                 close_fds=True,
             )
         return self
@@ -59,50 +63,32 @@ class AsyncProcess:
         self.closed = True
         if self._attached_task:
             # cancel the attached reader/writer task
-            self._attached_task.cancel()
-        if self._proc.returncode is None:
-            # prevent subprocess deadlocking, send terminate and read remaining bytes
             try:
-                self._proc.terminate()
-                # close stdin and let it drain
-                if self._enable_write:
-                    await self._proc.stdin.drain()
-                    self._proc.stdin.close()
-                # read remaining bytes
-                await self._proc.stdout.read()
-                # we really want to make this thing die ;-)
-                self._proc.kill()
-            except (
-                ProcessLookupError,
-                BrokenPipeError,
-                RuntimeError,
-                ConnectionResetError,
-                asyncio.CancelledError,
-            ):
+                self._attached_task.cancel()
+            except asyncio.CancelledError:
                 pass
-        del self._proc
+        if self._proc.returncode is None:
+            # prevent subprocess deadlocking, read remaining bytes
+            await self._proc.communicate(b"" if self._enable_write else None)
+            if self._proc.returncode is None:
+                # just in case?
+                self._proc.kill()
 
-    async def iterate_chunks(
-        self, chunk_size: int = DEFAULT_CHUNKSIZE, timeout: int = DEFAULT_TIMEOUT
-    ) -> AsyncGenerator[bytes, None]:
+    async def iterate_chunks(self) -> AsyncGenerator[bytes, None]:
         """Yield chunks from the process stdout. Generator."""
         while True:
-            chunk = await self.read(chunk_size, timeout)
-            if not chunk:
-                break
+            chunk = await self._read_chunk()
             yield chunk
-            if chunk_size is not None and len(chunk) < chunk_size:
+            if len(chunk) < self.chunk_size:
+                del chunk
                 break
+            del chunk
 
-    async def read(
-        self, chunk_size: int = DEFAULT_CHUNKSIZE, timeout: int = DEFAULT_TIMEOUT
-    ) -> bytes:
-        """Read x bytes from the process stdout."""
+    async def _read_chunk(self, timeout: int = DEFAULT_TIMEOUT) -> bytes:
+        """Read chunk_size bytes from the process stdout."""
         try:
             async with _timeout(timeout):
-                if chunk_size is None:
-                    return await self._proc.stdout.read(DEFAULT_CHUNKSIZE)
-                return await self._proc.stdout.readexactly(chunk_size)
+                return await self._proc.stdout.readexactly(self.chunk_size)
         except asyncio.IncompleteReadError as err:
             return err.partial
         except AttributeError as exc:

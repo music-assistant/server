@@ -363,9 +363,13 @@ class StreamDetails(DataClassDictMixin):
         # pylint: disable=no-self-use
         d.pop("path")
         d.pop("details")
-        d.pop("data")
         return d
 
     def __str__(self):
         """Return pretty printable string of object."""
         return f"{self.type.value}/{self.content_type.value} - {self.provider.value}/{self.item_id}"
+
+    @property
+    def uri(self) -> str:
+        """Return uri representation of item."""
+        return f"{self.provider.value}://{self.media_type.value}/{self.item_id}"

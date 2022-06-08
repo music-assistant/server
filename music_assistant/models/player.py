@@ -418,6 +418,20 @@ class PlayerGroup(Player):
             )
         )
 
+    @property
+    def supported_sample_rates(self) -> Tuple[int]:
+        """Return the sample rates this player supports."""
+        return tuple(
+            sample_rate
+            for sample_rate in DEFAULT_SUPPORTED_SAMPLE_RATES
+            if all(
+                (
+                    sample_rate in child_player.supported_sample_rates
+                    for child_player in self._get_child_players(False, False)
+                )
+            )
+        )
+
     async def stop(self) -> None:
         """Send STOP command to player."""
         if not self.use_multi_stream:

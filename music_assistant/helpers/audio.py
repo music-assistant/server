@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
 import struct
+from base64 import b64encode
 from io import BytesIO
+from tempfile import gettempdir
 from time import time
 from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Tuple
 
@@ -26,7 +30,10 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player_queue import QueueItem
 
-LOGGER = logging.getLogger("audio")
+LOGGER = logging.getLogger(__name__)
+CACHE_DIR = os.path.join(gettempdir(), "mass")
+if not os.path.isdir(CACHE_DIR):
+    os.mkdir(CACHE_DIR)
 
 # pylint:disable=consider-using-f-string
 
@@ -163,22 +170,11 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         # only when needed we do the analyze job
         return
 
-    LOGGER.debug(
-        "Start analyzing track %s/%s",
-        streamdetails.provider.value,
-        streamdetails.item_id,
-    )
+    if streamdetails.type not in (StreamType.URL, StreamType.CACHE, StreamType.FILE):
+        return
+
+    LOGGER.debug("Start analyzing track %s", streamdetails.uri)
     # calculate BS.1770 R128 integrated loudness with ffmpeg
-    if streamdetails.type == StreamType.EXECUTABLE:
-        proc_args = (
-            "%s | ffmpeg -i pipe: -af ebur128=framelog=verbose -f null - 2>&1 | awk '/I:/{print $2}'"
-            % streamdetails.path
-        )
-    else:
-        proc_args = (
-            "ffmpeg -i '%s' -af ebur128=framelog=verbose -f null - 2>&1 | awk '/I:/{print $2}'"
-            % streamdetails.path
-        )
     audio_data = b""
     if streamdetails.media_type == MediaType.RADIO:
         proc_args = "ffmpeg -i pipe: -af ebur128=framelog=verbose -f null - 2>&1 | awk '/I:/{print $2}'"
@@ -188,6 +184,11 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
                 audio_data += chunk
                 if len(audio_data) >= 20000:
                     break
+    else:
+        proc_args = (
+            "ffmpeg -i '%s' -af ebur128=framelog=verbose -f null - 2>&1 | awk '/I:/{print $2}'"
+            % streamdetails.path
+        )
 
     proc = await asyncio.create_subprocess_shell(
         proc_args,
@@ -199,9 +200,8 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         loudness = float(stdout.decode().strip())
     except (ValueError, AttributeError):
         LOGGER.warning(
-            "Could not determine integrated loudness of %s/%s - %s",
-            streamdetails.provider.value,
-            streamdetails.item_id,
+            "Could not determine integrated loudness of %s - %s",
+            streamdetails.uri,
             stdout.decode() or "received empty value",
         )
     else:
@@ -209,9 +209,8 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
             streamdetails.item_id, streamdetails.provider, loudness
         )
         LOGGER.debug(
-            "Integrated loudness of %s/%s is: %s",
-            streamdetails.provider.value,
-            streamdetails.item_id,
+            "Integrated loudness of %s is: %s",
+            streamdetails.uri,
             loudness,
         )
 
@@ -234,8 +233,6 @@ async def get_stream_details(
         # we already have fresh streamdetails, use these
         queue_item.streamdetails.seconds_skipped = 0
         queue_item.streamdetails.seconds_streamed = 0
-        if queue_item.streamdetails.data is not None:
-            queue_item.streamdetails.type = StreamType.CACHE
         return queue_item.streamdetails
     if not queue_item.media_item:
         # special case: a plain url was added to the queue
@@ -282,6 +279,11 @@ async def get_stream_details(
     )
     streamdetails.gain_correct = gain_correct
     streamdetails.loudness = loudness
+    # check if cache file exists
+    tmpfile = get_temp_filename(streamdetails.provider, streamdetails.item_id)
+    if os.path.isfile(tmpfile):
+        streamdetails.path = tmpfile
+        streamdetails.type = StreamType.CACHE
     # set streamdetails as attribute on the media_item
     # this way the app knows what content is playing
     queue_item.streamdetails = streamdetails
@@ -369,16 +371,17 @@ async def get_sox_args(
     output_format: Optional[ContentType] = None,
     resample: Optional[int] = None,
     seek_position: Optional[int] = None,
+    use_file: bool = False,
 ) -> List[str]:
     """Collect all args to send to the sox (or ffmpeg) process."""
-    stream_path = streamdetails.path
-    stream_type = StreamType(streamdetails.type)
     input_format = streamdetails.content_type
     if output_format is None:
         output_format = input_format
 
     sox_present, ffmpeg_present = await check_audio_support()
     use_ffmpeg = not sox_present or not input_format.sox_supported() or seek_position
+
+    input_filename = streamdetails.path if use_file else "-"
 
     # use ffmpeg if content not supported by SoX (e.g. AAC radio streams)
     if use_ffmpeg:
@@ -388,29 +391,16 @@ async def get_sox_args(
                 "Please install ffmpeg on your OS to enable playback.",
             )
         # collect input args
-        if stream_type == StreamType.EXECUTABLE:
-            # stream from executable
-            input_args = [
-                stream_path,
-                "|",
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                input_format.value,
-                "-i",
-                "-",
-            ]
-        else:
-            input_args = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                stream_path,
-            ]
+        input_args = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            input_format.value,
+            "-i",
+            input_filename,
+        ]
         if seek_position:
             input_args += ["-ss", str(seek_position)]
         # collect output args
@@ -433,25 +423,20 @@ async def get_sox_args(
         return input_args + filter_args + output_args
 
     # Prefer SoX for all other (=highest quality)
-    if stream_type == StreamType.EXECUTABLE:
-        # stream from executable
+    if input_format.is_pcm():
         input_args = [
-            stream_path,
-            "|",
             "sox",
             "-t",
             input_format.sox_format(),
+            "-r",
+            str(streamdetails.sample_rate),
+            "-c",
+            str(streamdetails.channels),
+            input_filename,
         ]
-        if input_format.is_pcm():
-            input_args += [
-                "-r",
-                str(streamdetails.sample_rate),
-                "-c",
-                str(streamdetails.channels),
-            ]
-        input_args.append("-")
     else:
-        input_args = ["sox", "-t", input_format.sox_format(), stream_path]
+        input_args = ["sox", "-t", input_format.sox_format(), input_filename]
+
     # collect output args
     if output_format.is_pcm():
         output_args = ["-t", output_format.sox_format(), "-c", "2", "-"]
@@ -481,9 +466,6 @@ async def get_media_stream(
 ) -> AsyncGenerator[Tuple[bool, bytes], None]:
     """Get the audio stream for the given streamdetails."""
 
-    if chunk_size is None:
-        chunk_size = get_chunksize(output_format)
-
     mass.signal_event(
         MassEvent(
             EventType.STREAM_STARTED,
@@ -491,51 +473,55 @@ async def get_media_stream(
             data=streamdetails,
         )
     )
-    args = await get_sox_args(streamdetails, output_format, resample, seek_position)
-    async with AsyncProcess(args) as sox_proc:
+    use_file = streamdetails.type in (StreamType.CACHE, StreamType.FILE)
+    args = await get_sox_args(
+        streamdetails, output_format, resample, seek_position, use_file
+    )
+    async with AsyncProcess(
+        args, enable_write=not use_file, chunk_size=chunk_size
+    ) as sox_proc:
 
         LOGGER.debug(
-            "start media stream for: %s/%s (%s)",
-            streamdetails.provider,
-            streamdetails.item_id,
+            "start media stream for: %s (%s)",
+            streamdetails.uri,
             streamdetails.type,
         )
+
+        async def writer():
+            """Task that grabs the source audio and feeds it to sox/ffmpeg."""
+            LOGGER.debug("writer started for %s", streamdetails.uri)
+            async for audio_chunk in _get_source_stream(mass, streamdetails):
+                if sox_proc.closed:
+                    return
+                await sox_proc.write(audio_chunk)
+                del audio_chunk
+            LOGGER.debug("writer finished for %s", streamdetails.uri)
+            # write eof when last packet is received
+            sox_proc.write_eof()
+
+        if not use_file:
+            sox_proc.attach_task(writer())
 
         # yield chunks from stdout
         # we keep 1 chunk behind to detect end of stream properly
         try:
             prev_chunk = b""
-            async for chunk in sox_proc.iterate_chunks(chunk_size):
+            async for chunk in sox_proc.iterate_chunks():
                 if prev_chunk:
                     yield (False, prev_chunk)
+                    del prev_chunk
                 prev_chunk = chunk
             # send last chunk
             yield (True, prev_chunk)
+            del prev_chunk
         except (asyncio.CancelledError, GeneratorExit) as err:
-            LOGGER.debug(
-                "media stream aborted for: %s/%s",
-                streamdetails.provider,
-                streamdetails.item_id,
-            )
+            LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
             raise err
         else:
-            LOGGER.debug(
-                "finished media stream for: %s/%s",
-                streamdetails.provider,
-                streamdetails.item_id,
-            )
+            LOGGER.debug("finished media stream for: %s", streamdetails.uri)
             await mass.music.mark_item_played(
                 streamdetails.item_id, streamdetails.provider
             )
-            # send analyze job to background worker
-            if (
-                streamdetails.loudness is None
-                and streamdetails.provider != ProviderType.URL
-            ):
-                uri = f"{streamdetails.provider.value}://{streamdetails.media_type.value}/{streamdetails.item_id}"
-                mass.add_job(
-                    analyze_audio(mass, streamdetails), f"Analyze audio for {uri}"
-                )
         finally:
             mass.signal_event(
                 MassEvent(
@@ -544,6 +530,55 @@ async def get_media_stream(
                     data=streamdetails,
                 )
             )
+            # send analyze job to background worker
+            if (
+                streamdetails.loudness is None
+                and streamdetails.provider != ProviderType.URL
+            ):
+                mass.add_job(
+                    analyze_audio(mass, streamdetails),
+                    f"Analyze audio for {streamdetails.uri}",
+                )
+
+
+async def _get_source_stream(
+    mass: MusicAssistant, streamdetails: StreamDetails
+) -> AsyncGenerator[bytes, None]:
+    """Get source media stream."""
+    allow_cache = (
+        streamdetails.media_type == MediaType.TRACK
+        and streamdetails.type in (StreamType.URL, StreamType.EXECUTABLE)
+    )
+    async with aiofiles.tempfile.NamedTemporaryFile("wb") as _tmpfile:
+        if streamdetails.type == StreamType.EXECUTABLE:
+            async with AsyncProcess(streamdetails.path) as proc:
+                async for chunk in proc.iterate_chunks():
+                    yield chunk
+                    if allow_cache:
+                        await _tmpfile.write(chunk)
+                    del chunk
+        elif streamdetails.type == StreamType.URL:
+            async with mass.http_session.get(streamdetails.path) as resp:
+                async for chunk in resp.content.iter_any():
+                    yield chunk
+                    if allow_cache:
+                        await _tmpfile.write(chunk)
+                    del chunk
+        elif streamdetails.type in (StreamType.FILE, StreamType.CACHE):
+            async with aiofiles.open(streamdetails.path, "rb") as _file:
+                async for chunk in _file:
+                    yield chunk
+                    del chunk
+        # we streamed the full content, now save the cache file for later use
+        # this cache file is used for 2 purposes:
+        # 1: this same track is being seeked
+        # 2: the audio needs to be analysed
+        if allow_cache:
+            # move to final location
+            cachefile = get_temp_filename(streamdetails.provider, streamdetails.item_id)
+            await mass.loop.run_in_executor(None, shutil.move, _tmpfile.name, cachefile)
+            streamdetails.type = StreamType.CACHE
+            streamdetails.path = cachefile
 
 
 async def check_audio_support(try_install: bool = False) -> Tuple[bool, bool, bool]:
@@ -706,3 +741,9 @@ def get_chunksize(content_type: ContentType) -> int:
     ):
         return 32000
     return 256000
+
+
+def get_temp_filename(provider: ProviderType, item_id: str) -> str:
+    """Create temp filename for media item."""
+    tmpname = b64encode(f"{provider.name}{item_id}".encode()).decode()
+    return os.path.join(CACHE_DIR, tmpname)

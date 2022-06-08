@@ -44,6 +44,6 @@ class MassConfig:
     providers: List[MusicProviderConfig] = field(default_factory=list)
 
     # advanced settings
-    max_simultaneous_jobs: int = 5
+    max_simultaneous_jobs: int = 2
     stream_port: int = select_stream_port()
     stream_ip: str = get_ip()
