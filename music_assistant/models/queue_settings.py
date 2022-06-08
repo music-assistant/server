@@ -23,7 +23,7 @@ class QueueSettings:
         self._crossfade_mode: CrossFadeMode = CrossFadeMode.DISABLED
         self._crossfade_duration: int = 6
         self._volume_normalization_enabled: bool = True
-        self._volume_normalization_target: int = -23
+        self._volume_normalization_target: int = -14
 
     @property
     def repeat_mode(self) -> RepeatMode:
