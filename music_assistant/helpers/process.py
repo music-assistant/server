@@ -47,6 +47,7 @@ class AsyncProcess:
                 args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE,
+                limit=16000000,
                 close_fds=True,
             )
         else:
@@ -54,6 +55,7 @@ class AsyncProcess:
                 *args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE,
+                limit=16000000,
                 close_fds=True,
             )
         return self
@@ -103,7 +105,7 @@ class AsyncProcess:
         try:
             self._proc.stdin.write(data)
             await self._proc.stdin.drain()
-        except (AttributeError, AssertionError, BrokenPipeError):
+        except (AttributeError, AssertionError, BrokenPipeError, RuntimeError):
             # already exited, race condition
             pass
 
@@ -112,7 +114,7 @@ class AsyncProcess:
         try:
             if self._proc.stdin.can_write_eof():
                 self._proc.stdin.write_eof()
-        except (AttributeError, AssertionError, BrokenPipeError):
+        except (AttributeError, AssertionError, BrokenPipeError, RuntimeError):
             # already exited, race condition
             pass
 

@@ -75,7 +75,6 @@ class StreamType(Enum):
     EXECUTABLE = "executable"
     URL = "url"
     FILE = "file"
-    CACHE = "cache"
 
 
 class ContentType(Enum):

@@ -3,12 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import shutil
 import struct
-from base64 import b64encode
 from io import BytesIO
-from tempfile import gettempdir
 from time import time
 from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Tuple
 
@@ -31,9 +27,6 @@ if TYPE_CHECKING:
     from music_assistant.models.player_queue import QueueItem
 
 LOGGER = logging.getLogger(__name__)
-CACHE_DIR = os.path.join(gettempdir(), "mass")
-if not os.path.isdir(CACHE_DIR):
-    os.mkdir(CACHE_DIR)
 
 # pylint:disable=consider-using-f-string
 
@@ -46,59 +39,29 @@ async def crossfade_pcm_parts(
     sample_rate: int,
 ) -> bytes:
     """Crossfade two chunks of pcm/raw audio using sox."""
-    _, ffmpeg_present = await check_audio_support()
-
-    # prefer ffmpeg implementation (due to simplicity)
-    if ffmpeg_present:
-        fadeoutfile = create_tempfile()
-        async with aiofiles.open(fadeoutfile.name, "wb") as outfile:
-            await outfile.write(fade_out_part)
-        # input args
-        args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-        args += [
-            "-f",
-            fmt.value,
-            "-ac",
-            "2",
-            "-ar",
-            str(sample_rate),
-            "-i",
-            fadeoutfile.name,
-        ]
-        args += ["-f", fmt.value, "-ac", "2", "-ar", str(sample_rate), "-i", "-"]
-        # filter args
-        args += ["-filter_complex", f"[0][1]acrossfade=d={fade_length}"]
-        # output args
-        args += ["-f", fmt.value, "-"]
-        async with AsyncProcess(args, True) as proc:
-            crossfade_data, _ = await proc.communicate(fade_in_part)
-            return crossfade_data
-
-    # sox based implementation
-    sox_args = [fmt.sox_format(), "-c", "2", "-r", str(sample_rate)]
-    # create fade-in part
-    fadeinfile = create_tempfile()
-    args = ["sox", "--ignore-length", "-t"] + sox_args
-    args += ["-", "-t"] + sox_args + [fadeinfile.name, "fade", "t", str(fade_length)]
-    async with AsyncProcess(args, enable_write=True) as sox_proc:
-        await sox_proc.communicate(fade_in_part)
-    # create fade-out part
     fadeoutfile = create_tempfile()
-    args = ["sox", "--ignore-length", "-t"] + sox_args + ["-", "-t"] + sox_args
-    args += [fadeoutfile.name, "reverse", "fade", "t", str(fade_length), "reverse"]
-    async with AsyncProcess(args, enable_write=True) as sox_proc:
-        await sox_proc.communicate(fade_out_part)
-    # create crossfade using sox and some temp files
-    # TODO: figure out how to make this less complex and without the tempfiles
-    args = ["sox", "-m", "-v", "1.0", "-t"] + sox_args + [fadeoutfile.name, "-v", "1.0"]
-    args += ["-t"] + sox_args + [fadeinfile.name, "-t"] + sox_args + ["-"]
-    async with AsyncProcess(args, enable_write=False) as sox_proc:
-        crossfade_part, _ = await sox_proc.communicate()
-    fadeinfile.close()
-    fadeoutfile.close()
-    del fadeinfile
-    del fadeoutfile
-    return crossfade_part
+    async with aiofiles.open(fadeoutfile.name, "wb") as outfile:
+        await outfile.write(fade_out_part)
+    # input args
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    args += [
+        "-f",
+        fmt.value,
+        "-ac",
+        "2",
+        "-ar",
+        str(sample_rate),
+        "-i",
+        fadeoutfile.name,
+    ]
+    args += ["-f", fmt.value, "-ac", "2", "-ar", str(sample_rate), "-i", "-"]
+    # filter args
+    args += ["-filter_complex", f"[0][1]acrossfade=d={fade_length}"]
+    # output args
+    args += ["-f", fmt.value, "-"]
+    async with AsyncProcess(args, True) as proc:
+        crossfade_data, _ = await proc.communicate(fade_in_part)
+        return crossfade_data
 
 
 async def fadein_pcm_part(
@@ -133,34 +96,19 @@ async def strip_silence(
     audio_data: bytes, fmt: ContentType, sample_rate: int, reverse=False
 ) -> bytes:
     """Strip silence from (a chunk of) pcm audio."""
-    _, ffmpeg_present = await check_audio_support()
-    # prefer ffmpeg implementation
-    if ffmpeg_present:
-        # input args
-        args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-        args += ["-f", fmt.value, "-ac", "2", "-ar", str(sample_rate), "-i", "-"]
-        # filter args
-        if reverse:
-            args += ["-af", "areverse,silenceremove=1:0:-50dB:detection=peak,areverse"]
-        else:
-            args += ["-af", "silenceremove=1:0:-50dB:detection=peak"]
-        # output args
-        args += ["-f", fmt.value, "-"]
-        async with AsyncProcess(args, True) as proc:
-            stripped_data, _ = await proc.communicate(audio_data)
-            return stripped_data
-
-    # sox implementation
-    sox_args = [fmt.sox_format(), "-c", "2", "-r", str(sample_rate)]
-    args = ["sox", "--ignore-length", "-t"] + sox_args + ["-", "-t"] + sox_args + ["-"]
+    # input args
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    args += ["-f", fmt.value, "-ac", "2", "-ar", str(sample_rate), "-i", "-"]
+    # filter args
     if reverse:
-        args.append("reverse")
-    args += ["silence", "1", "0.1", "1%"]
-    if reverse:
-        args.append("reverse")
-    async with AsyncProcess(args, enable_write=True) as sox_proc:
-        stripped_data, _ = await sox_proc.communicate(audio_data)
-    return stripped_data
+        args += ["-af", "areverse,silenceremove=1:0:-50dB:detection=peak,areverse"]
+    else:
+        args += ["-af", "silenceremove=1:0:-50dB:detection=peak"]
+    # output args
+    args += ["-f", fmt.value, "-"]
+    async with AsyncProcess(args, True) as proc:
+        stripped_data, _ = await proc.communicate(audio_data)
+        return stripped_data
 
 
 async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> None:
@@ -170,7 +118,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         # only when needed we do the analyze job
         return
 
-    if streamdetails.type not in (StreamType.URL, StreamType.CACHE, StreamType.FILE):
+    if streamdetails.type not in (StreamType.URL, StreamType.FILE):
         return
 
     LOGGER.debug("Start analyzing track %s", streamdetails.uri)
@@ -279,11 +227,8 @@ async def get_stream_details(
     )
     streamdetails.gain_correct = gain_correct
     streamdetails.loudness = loudness
-    # check if cache file exists
-    tmpfile = get_temp_filename(streamdetails.provider, streamdetails.item_id)
-    if os.path.isfile(tmpfile):
-        streamdetails.path = tmpfile
-        streamdetails.type = StreamType.CACHE
+    if not streamdetails.duration:
+        streamdetails.duration = queue_item.duration
     # set streamdetails as attribute on the media_item
     # this way the app knows what content is playing
     queue_item.streamdetails = streamdetails
@@ -370,8 +315,8 @@ async def get_sox_args(
     streamdetails: StreamDetails,
     output_format: Optional[ContentType] = None,
     resample: Optional[int] = None,
-    seek_position: Optional[int] = None,
     use_file: bool = False,
+    seek_position: Optional[int] = None,
 ) -> List[str]:
     """Collect all args to send to the sox (or ffmpeg) process."""
     input_format = streamdetails.content_type
@@ -473,9 +418,14 @@ async def get_media_stream(
             data=streamdetails,
         )
     )
-    use_file = streamdetails.type in (StreamType.CACHE, StreamType.FILE)
+    if streamdetails.type == StreamType.FILE:
+        use_file = True
+    elif seek_position and streamdetails.type == StreamType.URL:
+        use_file = True
+    else:
+        use_file = False
     args = await get_sox_args(
-        streamdetails, output_format, resample, seek_position, use_file
+        streamdetails, output_format, resample, use_file, seek_position
     )
     async with AsyncProcess(
         args, enable_write=not use_file, chunk_size=chunk_size
@@ -491,13 +441,10 @@ async def get_media_stream(
             """Task that grabs the source audio and feeds it to sox/ffmpeg."""
             LOGGER.debug("writer started for %s", streamdetails.uri)
             async for audio_chunk in _get_source_stream(mass, streamdetails):
-                if sox_proc.closed:
-                    return
                 await sox_proc.write(audio_chunk)
-                del audio_chunk
-            LOGGER.debug("writer finished for %s", streamdetails.uri)
             # write eof when last packet is received
             sox_proc.write_eof()
+            LOGGER.debug("writer finished for %s", streamdetails.uri)
 
         if not use_file:
             sox_proc.attach_task(writer())
@@ -509,11 +456,9 @@ async def get_media_stream(
             async for chunk in sox_proc.iterate_chunks():
                 if prev_chunk:
                     yield (False, prev_chunk)
-                    del prev_chunk
                 prev_chunk = chunk
             # send last chunk
             yield (True, prev_chunk)
-            del prev_chunk
         except (asyncio.CancelledError, GeneratorExit) as err:
             LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
             raise err
@@ -545,40 +490,19 @@ async def _get_source_stream(
     mass: MusicAssistant, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
     """Get source media stream."""
-    allow_cache = (
-        streamdetails.media_type == MediaType.TRACK
-        and streamdetails.type in (StreamType.URL, StreamType.EXECUTABLE)
-    )
-    async with aiofiles.tempfile.NamedTemporaryFile("wb") as _tmpfile:
-        if streamdetails.type == StreamType.EXECUTABLE:
-            async with AsyncProcess(streamdetails.path) as proc:
-                async for chunk in proc.iterate_chunks():
-                    yield chunk
-                    if allow_cache:
-                        await _tmpfile.write(chunk)
-                    del chunk
-        elif streamdetails.type == StreamType.URL:
-            async with mass.http_session.get(streamdetails.path) as resp:
-                async for chunk in resp.content.iter_any():
-                    yield chunk
-                    if allow_cache:
-                        await _tmpfile.write(chunk)
-                    del chunk
-        elif streamdetails.type in (StreamType.FILE, StreamType.CACHE):
-            async with aiofiles.open(streamdetails.path, "rb") as _file:
-                async for chunk in _file:
-                    yield chunk
-                    del chunk
-        # we streamed the full content, now save the cache file for later use
-        # this cache file is used for 2 purposes:
-        # 1: this same track is being seeked
-        # 2: the audio needs to be analysed
-        if allow_cache:
-            # move to final location
-            cachefile = get_temp_filename(streamdetails.provider, streamdetails.item_id)
-            await mass.loop.run_in_executor(None, shutil.move, _tmpfile.name, cachefile)
-            streamdetails.type = StreamType.CACHE
-            streamdetails.path = cachefile
+    if streamdetails.type == StreamType.EXECUTABLE:
+        chunk_size = get_chunksize(streamdetails.content_type)
+        async with AsyncProcess(streamdetails.path, chunk_size=chunk_size) as proc:
+            async for chunk in proc.iterate_chunks():
+                yield chunk
+    elif streamdetails.type == StreamType.URL:
+        async with mass.http_session.get(streamdetails.path) as resp:
+            async for chunk in resp.content.iter_any():
+                yield chunk
+    elif streamdetails.type == StreamType.FILE:
+        async with aiofiles.open(streamdetails.path, "rb") as _file:
+            async for chunk in _file:
+                yield chunk
 
 
 async def check_audio_support(try_install: bool = False) -> Tuple[bool, bool, bool]:
@@ -741,9 +665,3 @@ def get_chunksize(content_type: ContentType) -> int:
     ):
         return 32000
     return 256000
-
-
-def get_temp_filename(provider: ProviderType, item_id: str) -> str:
-    """Create temp filename for media item."""
-    tmpname = b64encode(f"{provider.name}{item_id}".encode()).decode()
-    return os.path.join(CACHE_DIR, tmpname)

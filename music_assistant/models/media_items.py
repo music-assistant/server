@@ -356,7 +356,7 @@ class StreamDetails(DataClassDictMixin):
     media_type: MediaType = MediaType.TRACK
     queue_id: Optional[str] = None
     timestamp: float = field(default_factory=time)
-    data: Optional[bytes] = None
+    duration: Optional[int] = None
 
     def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
         """Exclude internal fields from dict."""
