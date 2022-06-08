@@ -191,6 +191,7 @@ async def get_stream_details(
             item_id=queue_item.item_id,
             path=queue_item.uri,
             content_type=ContentType.try_parse(queue_item.uri),
+            media_type=MediaType.ALERT,
         )
     else:
         # always request the full db track as there might be other qualities available
@@ -223,9 +224,7 @@ async def get_stream_details(
     # set player_id on the streamdetails so we know what players stream
     streamdetails.queue_id = queue_id
     # get gain correct / replaygain
-    loudness, gain_correct = await get_gain_correct(
-        mass, queue_id, streamdetails.item_id, streamdetails.provider
-    )
+    loudness, gain_correct = await get_gain_correct(mass, streamdetails)
     streamdetails.gain_correct = gain_correct
     streamdetails.loudness = loudness
     if not streamdetails.duration:
@@ -237,17 +236,23 @@ async def get_stream_details(
 
 
 async def get_gain_correct(
-    mass: MusicAssistant, queue_id: str, item_id: str, provider: ProviderType
+    mass: MusicAssistant, streamdetails: StreamDetails
 ) -> Tuple[float, float]:
     """Get gain correction for given queue / track combination."""
-    queue = mass.players.get_player_queue(queue_id)
+    queue = mass.players.get_player_queue(streamdetails.queue_id)
     if not queue or not queue.settings.volume_normalization_enabled:
         return (0, 0)
+    if streamdetails.media_type == MediaType.ALERT:
+        return (0, 6)
     target_gain = queue.settings.volume_normalization_target
-    track_loudness = await mass.music.get_track_loudness(item_id, provider)
+    track_loudness = await mass.music.get_track_loudness(
+        streamdetails.item_id, streamdetails.provider
+    )
     if track_loudness is None:
         # fallback to provider average
-        fallback_track_loudness = await mass.music.get_provider_loudness(provider)
+        fallback_track_loudness = await mass.music.get_provider_loudness(
+            streamdetails.provider
+        )
         if fallback_track_loudness is None:
             # fallback to some (hopefully sane) average value for now
             fallback_track_loudness = -8.5
@@ -422,6 +427,11 @@ async def get_media_stream(
     if streamdetails.type == StreamType.FILE:
         use_file = True
     elif seek_position and streamdetails.type == StreamType.URL:
+        use_file = True
+    elif (
+        streamdetails.type == StreamType.URL
+        and streamdetails.media_type == MediaType.ALERT
+    ):
         use_file = True
     else:
         use_file = False
@@ -685,6 +695,9 @@ def get_chunksize(content_type: ContentType) -> int:
     if content_type in (
         ContentType.AAC,
         ContentType.M4A,
+    ):
+        return 16000
+    if content_type in (
         ContentType.MP3,
         ContentType.OGG,
     ):

@@ -36,7 +36,6 @@ class QueueSnapShot:
 
     powered: bool
     state: PlayerState
-    volume_level: int
     items: List[QueueItem]
     index: Optional[int]
     position: int
@@ -261,7 +260,7 @@ class PlayerQueue:
         """
         if self._snapshot:
             self.logger.debug("Ignore play_alert: already in progress")
-            return
+            # return
 
         # create snapshot
         await self.snapshot_create()
@@ -270,7 +269,9 @@ class PlayerQueue:
 
         # prepend annnounce sound if needed
         if announce:
-            queue_items.append(QueueItem.from_url(ALERT_ANNOUNCE_FILE, "alert"))
+            item = QueueItem.from_url(ALERT_ANNOUNCE_FILE, "alert")
+            item.media_type = MediaType.ALERT
+            queue_items.append(item)
 
         # parse provided uri into a MA MediaItem or Basic QueueItem from URL
         try:
@@ -280,21 +281,20 @@ class PlayerQueue:
             # invalid MA uri or item not found error
             if uri.startswith("http"):
                 # a plain url was provided
-                queue_items.append(QueueItem.from_url(uri, "alert"))
+                item = QueueItem.from_url(uri, "alert")
+                item.media_type = MediaType.ALERT
+                queue_items.append(item)
             else:
                 raise MediaNotFoundError(f"Invalid uri: {uri}") from err
 
         # append silence track, we use this to reliably detect when the alert is ready
         silence_url = self.mass.streams.get_silence_url(600)
-        queue_items.append(QueueItem.from_url(silence_url, "alert"))
+        item = QueueItem.from_url(silence_url, "alert")
+        item.media_type = MediaType.ALERT
+        queue_items.append(item)
 
         # load queue with alert sound(s)
         await self.load(queue_items)
-        # set new volume
-        new_volume = self.player.volume_level + (
-            self.player.volume_level / 100 * volume_adjust
-        )
-        await self.player.volume_set(new_volume)
 
         # wait for the alert to finish playing
         alert_done = asyncio.Event()
@@ -396,7 +396,6 @@ class PlayerQueue:
         self._snapshot = QueueSnapShot(
             powered=self.player.powered,
             state=self.player.state,
-            volume_level=self.player.volume_level,
             items=self._items,
             index=self._current_index,
             position=self._current_item_elapsed_time,
@@ -407,8 +406,6 @@ class PlayerQueue:
         assert self._snapshot, "Create snapshot before restoring it."
         # clear queue first
         await self.clear()
-        # restore volume
-        await self.player.volume_set(self._snapshot.volume_level)
         # restore queue
         await self.update(self._snapshot.items)
         self._current_index = self._snapshot.index

@@ -498,7 +498,7 @@ class QueueStream:
                 cur_chunk += 1
 
                 # HANDLE FIRST PART OF TRACK
-                if not chunk and bytes_written == 0 and is_last_chunk:
+                if len(chunk) == 0 and bytes_written == 0 and is_last_chunk:
                     # stream error: got empy first chunk ?!
                     self.logger.warning("Stream error on %s", queue_track.uri)
                 elif cur_chunk == 1 and last_fadeout_data:
