@@ -52,6 +52,7 @@ class PlayerQueue:
         self.queue_id = player_id
         self.last_update: int = int(time())
         self.stream_url: str = ""
+        self.icy_metadata: str = ""
         self._settings = QueueSettings(self)
         self._current_index: Optional[int] = None
         # index_in_buffer: which track is currently (pre)loaded in the streamer
@@ -320,6 +321,7 @@ class PlayerQueue:
     async def stop(self) -> None:
         """Stop command on queue player."""
         self.signal_next = False
+        self.icy_metadata = ""
         # redirect to underlying player
         await self.player.stop()
 
@@ -434,6 +436,7 @@ class PlayerQueue:
         if not len(self.items) > index:
             return
         self._current_index = index
+        self.icy_metadata = ""
         # start the queue stream
         await self.queue_stream_start(index, int(seek_position), fade_in, passive)
 
@@ -700,6 +703,7 @@ class PlayerQueue:
             "current_index": self.current_index,
             "current_item": cur_item,
             "next_item": next_item,
+            "icy_metadata": self.icy_metadata,
             "settings": self.settings.to_dict(),
         }
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import struct
 from io import BytesIO
 from time import time
@@ -496,9 +497,33 @@ async def _get_source_stream(
             async for chunk in proc.iterate_chunks():
                 yield chunk
     elif streamdetails.type == StreamType.URL:
-        async with mass.http_session.get(streamdetails.path) as resp:
-            async for chunk in resp.content.iter_any():
-                yield chunk
+        headers = {"Icy-MetaData": "1"}
+        async with mass.http_session.get(streamdetails.path, headers=headers) as resp:
+            headers = resp.headers
+            meta_int = int(headers.get("icy-metaint", "0"))
+            # radio stream with ICY Metadata
+            if meta_int:
+                while True:
+                    audio_chunk = await resp.content.readexactly(meta_int)
+                    yield audio_chunk
+                    meta_byte = await resp.content.readexactly(1)
+                    meta_length = ord(meta_byte) * 16
+                    meta_data = await resp.content.readexactly(meta_length)
+                    if not meta_data:
+                        continue
+                    meta_data = meta_data.rstrip(b"\0")
+                    stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
+                    if not stream_title:
+                        continue
+                    stream_title = stream_title.group(1).decode()
+                    if queue := mass.players.get_player_queue(streamdetails.queue_id):
+                        if queue.icy_metadata != stream_title:
+                            queue.icy_metadata = stream_title
+                            queue.signal_update()
+            # Regular HTTP stream
+            else:
+                async for chunk in resp.content.iter_any():
+                    yield chunk
     elif streamdetails.type == StreamType.FILE:
         async with aiofiles.open(streamdetails.path, "rb") as _file:
             async for chunk in _file:
