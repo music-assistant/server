@@ -351,7 +351,6 @@ class QueueStream:
                         callback = self.connected_clients[client_id]
                         await callback(chunk)
                     except (
-                        asyncio.exceptions.CancelledError,
                         ConnectionResetError,
                         KeyError,
                         BrokenPipeError,
