@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import random
 from asyncio import Task, TimerHandle
@@ -190,8 +191,8 @@ class PlayerQueue:
                 media_item = await self.mass.music.get_item_by_uri(uri)
             except MusicAssistantError as err:
                 # invalid MA uri or item not found error
-                if uri.startswith("http"):
-                    # a plain url was provided
+                if uri.startswith("http") or os.path.isfile(uri):
+                    # a plain url (or local file) was provided
                     queue_items.append(QueueItem.from_url(uri))
                     continue
                 raise MediaNotFoundError(f"Invalid uri: {uri}") from err
@@ -268,9 +269,9 @@ class PlayerQueue:
 
         # prepend annnounce sound if needed
         if announce:
-            item = QueueItem.from_url(ALERT_ANNOUNCE_FILE, "alert")
-            item.media_type = MediaType.ALERT
-            queue_items.append(item)
+            queue_item = QueueItem.from_url(ALERT_ANNOUNCE_FILE, "alert")
+            queue_item.streamdetails.gain_correct = 10
+            queue_items.append(queue_item)
 
         # parse provided uri into a MA MediaItem or Basic QueueItem from URL
         try:
@@ -278,19 +279,18 @@ class PlayerQueue:
             queue_items.append(QueueItem.from_media_item(media_item))
         except MusicAssistantError as err:
             # invalid MA uri or item not found error
-            if uri.startswith("http"):
+            if uri.startswith("http") or os.path.isfile(uri):
                 # a plain url was provided
-                item = QueueItem.from_url(uri, "alert")
-                item.media_type = MediaType.ALERT
-                queue_items.append(item)
+                queue_item = QueueItem.from_url(uri, "alert")
+                queue_item.streamdetails.gain_correct = 6
+                queue_items.append(queue_item)
             else:
                 raise MediaNotFoundError(f"Invalid uri: {uri}") from err
 
         # append silence track, we use this to reliably detect when the alert is ready
         silence_url = self.mass.streams.get_silence_url(600)
-        item = QueueItem.from_url(silence_url, "alert")
-        item.media_type = MediaType.ALERT
-        queue_items.append(item)
+        queue_item = QueueItem.from_url(silence_url, "alert")
+        queue_items.append(queue_item)
 
         # load queue with alert sound(s)
         await self.load(queue_items)

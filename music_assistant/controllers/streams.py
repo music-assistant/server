@@ -483,7 +483,7 @@ class QueueStream:
                 self.mass,
                 streamdetails,
                 pcm_fmt,
-                resample=self.pcm_sample_rate,
+                pcm_sample_rate=self.pcm_sample_rate,
                 chunk_size=buffer_size,
                 seek_position=seek_position,
             ):

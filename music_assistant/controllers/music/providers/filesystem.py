@@ -14,6 +14,7 @@ from aiofiles.os import wrap
 from aiofiles.threadpool.binary import AsyncFileIO
 from tinytag.tinytag import TinyTag
 
+from music_assistant.helpers.audio import get_file_stream
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.database import SCHEMA_VERSION
 from music_assistant.helpers.util import (
@@ -452,12 +453,10 @@ class FileSystemProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        async with aiofiles.open(streamdetails.data, "rb") as _file:
-            if seek_position:
-                seek_pos = (streamdetails.size / streamdetails.duration) * seek_position
-                await _file.seek(seek_pos)
-            async for chunk in _file:
-                yield chunk
+        async for chunk in get_file_stream(
+            self.mass, streamdetails.data, streamdetails, seek_position
+        ):
+            yield chunk
 
     async def _parse_track(self, track_path: str) -> Track | None:
         """Try to parse a track from a filename by reading its tags."""

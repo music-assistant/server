@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.models.enums import MediaType
+from music_assistant.models.enums import ContentType, MediaType, ProviderType
 from music_assistant.models.media_items import Radio, StreamDetails, Track
 
 
@@ -46,14 +46,24 @@ class QueueItem(DataClassDictMixin):
         return d
 
     @classmethod
-    def from_url(cls, url: str, name: Optional[str] = None) -> QueueItem:
-        """Create QueueItem from plain url."""
+    def from_url(
+        cls,
+        url: str,
+        name: Optional[str] = None,
+        media_type: MediaType = MediaType.URL,
+    ) -> QueueItem:
+        """Create QueueItem from plain url (or local file)."""
         return cls(
             uri=url,
             name=name or url.split("?")[0],
-            media_type=MediaType.UNKNOWN,
-            image=None,
-            media_item=None,
+            media_type=media_type,
+            streamdetails=StreamDetails(
+                provider=ProviderType.URL,
+                item_id=url,
+                content_type=ContentType.try_parse(url),
+                media_type=media_type,
+                data=url,
+            ),
         )
 
     @classmethod

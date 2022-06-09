@@ -194,16 +194,12 @@ async def get_stream_details(
         queue_item.streamdetails.seconds_skipped = 0
         queue_item.streamdetails.seconds_streamed = 0
         return queue_item.streamdetails
-    if not queue_item.media_item:
-        # special case: a plain url was added to the queue
-        streamdetails = StreamDetails(
-            provider=ProviderType.URL,
-            item_id=queue_item.item_id,
-            content_type=ContentType.try_parse(queue_item.uri),
-            media_type=MediaType.ALERT,
-            data=queue_item.uri,
-        )
+    if queue_item.media_type == MediaType.URL:
+        # handle URL provider items
+        url_prov = mass.music.get_provider(ProviderType.URL)
+        streamdetails = await url_prov.get_stream_details(queue_item.uri)
     else:
+        # regular media items
         # always request the full db track as there might be other qualities available
         full_item = await mass.music.get_item_by_uri(queue_item.uri)
         # sort by quality and check track availability
@@ -248,10 +244,10 @@ async def get_gain_correct(
 ) -> Tuple[float, float]:
     """Get gain correction for given queue / track combination."""
     queue = mass.players.get_player_queue(streamdetails.queue_id)
-    if streamdetails.media_type == MediaType.ALERT:
-        return (0, 6)
     if not queue or not queue.settings.volume_normalization_enabled:
         return (0, 0)
+    if streamdetails.gain_correct is not None:
+        return (streamdetails.loudness, streamdetails.gain_correct)
     target_gain = queue.settings.volume_normalization_target
     track_loudness = await mass.music.get_track_loudness(
         streamdetails.item_id, streamdetails.provider
@@ -328,7 +324,7 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
 async def get_ffmpeg_args(
     streamdetails: StreamDetails,
     output_format: Optional[ContentType] = None,
-    resample: Optional[int] = None,
+    pcm_sample_rate: Optional[int] = None,
 ) -> List[str]:
     """Collect all args to send to the ffmpeg process."""
     input_format = streamdetails.content_type
@@ -365,29 +361,38 @@ async def get_ffmpeg_args(
         ]
     else:
         output_args = ["-f", output_format.value, "-"]
-    # collect filter args
-    filter_args = []
+    # collect extra and filter args
+    extra_args = []
+    filter_params = []
     if streamdetails.gain_correct:
-        filter_args += ["-filter:a", f"volume={streamdetails.gain_correct}dB"]
-    if resample and libsoxr_support:
-        # prefer libsoxr high quality resampler (if present)
-        filter_args += ["-af", "aresample=resampler=soxr"]
-    if resample or input_format.is_pcm():
-        filter_args += ["-ar", str(resample)]
-    return input_args + filter_args + output_args
+        filter_params.append(f"volume={streamdetails.gain_correct}dB")
+    if (
+        pcm_sample_rate is not None
+        and streamdetails.sample_rate != pcm_sample_rate
+        and libsoxr_support
+    ):
+        # prefer libsoxr high quality resampler (if present) for sample rate conversions
+        filter_params.append("aresample=resampler=soxr")
+    if filter_params:
+        extra_args += ["-af", ",".join(filter_params)]
+
+    if pcm_sample_rate is not None:
+        extra_args += ["-ar", str(pcm_sample_rate)]
+
+    return input_args + extra_args + output_args
 
 
 async def get_media_stream(
     mass: MusicAssistant,
     streamdetails: StreamDetails,
     output_format: Optional[ContentType] = None,
-    resample: Optional[int] = None,
+    pcm_sample_rate: Optional[int] = None,
     chunk_size: Optional[int] = None,
     seek_position: int = 0,
 ) -> AsyncGenerator[Tuple[bool, bytes], None]:
     """Get the audio stream for the given streamdetails."""
 
-    args = await get_ffmpeg_args(streamdetails, output_format, resample)
+    args = await get_ffmpeg_args(streamdetails, output_format, pcm_sample_rate)
     async with AsyncProcess(
         args, enable_write=True, chunk_size=chunk_size
     ) as ffmpeg_proc:
@@ -430,10 +435,7 @@ async def get_media_stream(
             )
         finally:
             # send analyze job to background worker
-            if (
-                streamdetails.loudness is None
-                and streamdetails.provider != ProviderType.URL
-            ):
+            if streamdetails.loudness is None:
                 mass.add_job(
                     analyze_audio(mass, streamdetails),
                     f"Analyze audio for {streamdetails.uri}",
@@ -532,12 +534,19 @@ async def get_file_stream(
     if not streamdetails.size:
         stat = await mass.loop.run_in_executor(None, os.stat, filename)
         streamdetails.size = stat.st_size
+    chunk_size = get_chunksize(streamdetails.content_type)
     async with aiofiles.open(streamdetails.data, "rb") as _file:
         if seek_position:
-            seek_pos = (streamdetails.size / streamdetails.duration) * seek_position
+            seek_pos = int(
+                (streamdetails.size / streamdetails.duration) * seek_position
+            )
             await _file.seek(seek_pos)
-        async for chunk in _file:
-            yield chunk
+        # yield chunks of data from file
+        while True:
+            data = await _file.read(chunk_size)
+            if not data:
+                break
+            yield data
 
 
 async def check_audio_support(try_install: bool = False) -> Tuple[bool, bool]:
@@ -632,6 +641,8 @@ async def get_preview_stream(
 
 def get_chunksize(content_type: ContentType) -> int:
     """Get a default chunksize for given contenttype."""
+    if content_type.is_pcm():
+        return 512000
     if content_type in (
         ContentType.AAC,
         ContentType.M4A,
@@ -642,4 +653,4 @@ def get_chunksize(content_type: ContentType) -> int:
         ContentType.OGG,
     ):
         return 32000
-    return 256000
+    return 128000
