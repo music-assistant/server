@@ -26,10 +26,12 @@ class AsyncProcess:
         args: Union[List, str],
         enable_write: bool = False,
         chunk_size: int = DEFAULT_CHUNKSIZE,
+        use_stderr: bool = False,
     ):
         """Initialize."""
         self._proc = None
         self._args = args
+        self._use_stderr = use_stderr
         self._enable_write = enable_write
         self._attached_task: asyncio.Task = None
         self.closed = False
@@ -46,7 +48,8 @@ class AsyncProcess:
             self._proc = await asyncio.create_subprocess_shell(
                 args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
-                stdout=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE if not self._use_stderr else None,
+                stderr=asyncio.subprocess.PIPE if self._use_stderr else None,
                 limit=16000000,
                 close_fds=True,
             )
@@ -54,7 +57,8 @@ class AsyncProcess:
             self._proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
-                stdout=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE if not self._use_stderr else None,
+                stderr=asyncio.subprocess.PIPE if self._use_stderr else None,
                 limit=16000000,
                 close_fds=True,
             )
@@ -124,9 +128,10 @@ class AsyncProcess:
         """Write bytes to process and read back results."""
         return await self._proc.communicate(input_data)
 
-    def attach_task(self, coro: Coroutine) -> None:
+    def attach_task(self, coro: Coroutine) -> asyncio.Task:
         """Attach given coro func as reader/writer task to properly cancel it when needed."""
-        self._attached_task = asyncio.create_task(coro)
+        self._attached_task = task = asyncio.create_task(coro)
+        return task
 
 
 async def check_output(shell_cmd: str) -> Tuple[int, bytes]:

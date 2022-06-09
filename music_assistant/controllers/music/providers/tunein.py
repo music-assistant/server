@@ -5,10 +5,11 @@ from typing import AsyncGenerator, List, Optional
 
 from asyncio_throttle import Throttler
 
+from music_assistant.helpers.audio import get_radio_stream
 from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.util import create_clean_string
 from music_assistant.models.enums import ProviderType
-from music_assistant.models.errors import LoginFailed
+from music_assistant.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.models.media_items import (
     ContentType,
     ImageType,
@@ -19,7 +20,6 @@ from music_assistant.models.media_items import (
     MediaType,
     Radio,
     StreamDetails,
-    StreamType,
 )
 from music_assistant.models.provider import MusicProvider
 
@@ -154,17 +154,22 @@ class TuneInProvider(MusicProvider):
         for stream in stream_info["body"]:
             if stream["media_type"] == media_type:
                 return StreamDetails(
-                    type=StreamType.URL,
-                    item_id=item_id,
                     provider=self.type,
-                    path=stream["url"],
+                    item_id=item_id,
                     content_type=ContentType(stream["media_type"]),
-                    sample_rate=44100,
-                    bit_depth=16,
                     media_type=MediaType.RADIO,
-                    details=stream,
+                    data=stream,
                 )
-        return None
+        raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        async for chunk in get_radio_stream(
+            self.mass, streamdetails.data["url"], streamdetails
+        ):
+            yield chunk
 
     @use_cache(3600 * 2)
     async def __get_data(self, endpoint: str, **kwargs):

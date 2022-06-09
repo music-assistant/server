@@ -16,9 +16,9 @@ from music_assistant.helpers.audio import (
     crossfade_pcm_parts,
     fadein_pcm_part,
     get_chunksize,
+    get_ffmpeg_args_for_pcm_stream,
     get_media_stream,
     get_preview_stream,
-    get_sox_args_for_pcm_stream,
     get_stream_details,
     strip_silence,
 )
@@ -95,21 +95,15 @@ class StreamsController:
 
         self.mass.subscribe(on_shutdown_event, EventType.SHUTDOWN)
 
-        sox_present, ffmpeg_present = await check_audio_support(True)
-        if not ffmpeg_present and not sox_present:
+        ffmpeg_present, libsoxr_support = await check_audio_support(True)
+        if not ffmpeg_present:
             self.logger.error(
-                "SoX or FFmpeg binary not found on your system, "
-                "playback will NOT work!."
+                "FFmpeg binary not found on your system, " "playback will NOT work!."
             )
-        elif not ffmpeg_present:
+        elif not libsoxr_support:
             self.logger.warning(
-                "The FFmpeg binary was not found on your system, "
-                "you might experience issues with playback. "
-                "Please install FFmpeg with your OS package manager.",
-            )
-        elif not sox_present:
-            self.logger.warning(
-                "The SoX binary was not found on your system, FFmpeg is used as fallback."
+                "FFmpeg version found without libsoxr support, "
+                "highest quality audio not available. "
             )
 
         self.logger.info("Started stream server on port %s", self._port)
@@ -135,7 +129,7 @@ class StreamsController:
             status=200, reason="OK", headers={"Content-Type": "audio/mp3"}
         )
         await resp.prepare(request)
-        async for _, chunk in get_preview_stream(self.mass, provider_id, item_id):
+        async for chunk in get_preview_stream(self.mass, provider_id, item_id):
             await resp.write(chunk)
         return resp
 
@@ -304,7 +298,7 @@ class QueueStream:
 
     async def _queue_stream_runner(self) -> None:
         """Distribute audio chunks over connected client queues."""
-        sox_args = await get_sox_args_for_pcm_stream(
+        ffmpeg_args = await get_ffmpeg_args_for_pcm_stream(
             self.pcm_sample_rate,
             self.pcm_bit_depth,
             self.pcm_channels,
@@ -313,17 +307,17 @@ class QueueStream:
         # get the raw pcm bytes from the queue stream and on the fly encode to wanted format
         # send the compressed/endoded stream to the client(s).
         chunk_size = get_chunksize(self.output_format)
-        async with AsyncProcess(sox_args, True, chunk_size) as sox_proc:
+        async with AsyncProcess(ffmpeg_args, True, chunk_size) as ffmpeg_proc:
 
             async def writer():
-                """Task that sends the raw pcm audio to the sox/ffmpeg process."""
+                """Task that sends the raw pcm audio to the ffmpeg process."""
                 async for audio_chunk in self._get_queue_stream():
-                    await sox_proc.write(audio_chunk)
+                    await ffmpeg_proc.write(audio_chunk)
                     del audio_chunk
                 # write eof when last packet is received
-                sox_proc.write_eof()
+                ffmpeg_proc.write_eof()
 
-            sox_proc.attach_task(writer())
+            ffmpeg_proc.attach_task(writer())
 
             # wait max 5 seconds for all client(s) to connect
             try:
@@ -336,7 +330,7 @@ class QueueStream:
             self.logger.debug("%s clients connected", len(self.connected_clients))
 
             # Read bytes from final output and send chunk to child callback.
-            async for chunk in sox_proc.iterate_chunks():
+            async for chunk in ffmpeg_proc.iterate_chunks():
                 if len(self.connected_clients) == 0:
                     # no more clients
                     break
@@ -395,7 +389,7 @@ class QueueStream:
                 fade_in = self.fade_in
             else:
                 queue_index = await self.queue.queue_stream_next(queue_index)
-                seek_position = None
+                seek_position = 0
                 fade_in = False
             self.index_in_buffer = queue_index
             queue_track = self.queue.get_item(queue_index)

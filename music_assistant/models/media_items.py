@@ -18,7 +18,6 @@ from music_assistant.models.enums import (
     MediaQuality,
     MediaType,
     ProviderType,
-    StreamType,
 )
 
 MetadataTypes = Union[int, bool, str, List[str]]
@@ -339,35 +338,48 @@ MediaItemType = Union[Artist, Album, Track, Radio, Playlist]
 class StreamDetails(DataClassDictMixin):
     """Model for streamdetails."""
 
-    type: StreamType
+    # NOTE: the actual provider/itemid of the streamdetails may differ
+    # from the connected media_item due to track linking etc.
+    # the streamdetails are only used to provide details about the content
+    # that is going to be streamed.
+
+    # mandatory fields
     provider: ProviderType
     item_id: str
-    path: str
     content_type: ContentType
-    player_id: str = ""
-    details: Dict[str, Any] = field(default_factory=dict)
+    media_type: MediaType = MediaType.TRACK
+    sample_rate: int = 44100
+    bit_depth: int = 16
+    channels: int = 2
+    # stream_title: radio streams can optionally set this field
+    stream_title: Optional[str] = None
+    # duration of the item to stream, copied from media_item if omitted
+    duration: Optional[int] = None
+    # total size in bytes of the item, calculated at eof when omitted
+    size: Optional[int] = None
+    # expires: timestamp this streamdetails expire
+    expires: float = time() + 3600
+    # data: provider specific data (not exposed externally)
+    data: Optional[Any] = None
+
+    # the fields below will be set/controlled by the streamcontroller
+    queue_id: Optional[str] = None
     seconds_streamed: int = 0
     seconds_skipped: int = 0
     gain_correct: float = 0
     loudness: Optional[float] = None
-    sample_rate: int = 44100
-    bit_depth: int = 16
-    channels: int = 2
-    media_type: MediaType = MediaType.TRACK
-    queue_id: Optional[str] = None
-    timestamp: float = field(default_factory=time)
-    duration: Optional[int] = None
 
     def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
         """Exclude internal fields from dict."""
         # pylint: disable=no-self-use
-        d.pop("path")
-        d.pop("details")
+        d.pop("data")
+        d.pop("expires")
+        d.pop("queue_id")
         return d
 
     def __str__(self):
         """Return pretty printable string of object."""
-        return f"{self.type.value}/{self.content_type.value} - {self.provider.value}/{self.item_id}"
+        return self.uri
 
     @property
     def uri(self) -> str:

@@ -69,14 +69,6 @@ class AlbumType(Enum):
     UNKNOWN = "unknown"
 
 
-class StreamType(Enum):
-    """Enum with stream types."""
-
-    EXECUTABLE = "executable"
-    URL = "url"
-    FILE = "file"
-
-
 class ContentType(Enum):
     """Enum with audio content/container types supported by ffmpeg."""
 
@@ -113,22 +105,6 @@ class ContentType(Enum):
     def is_pcm(self):
         """Return if contentype is PCM."""
         return self.name.startswith("PCM")
-
-    def sox_supported(self):
-        """Return if ContentType is supported by SoX."""
-        return self.is_pcm() or self in [
-            ContentType.OGG,
-            ContentType.FLAC,
-            ContentType.MP3,
-            ContentType.WAV,
-            ContentType.AIFF,
-        ]
-
-    def sox_format(self):
-        """Convert the ContentType to SoX compatible format."""
-        if not self.sox_supported():
-            raise NotImplementedError
-        return self.value.replace("le", "")
 
     @classmethod
     def from_bit_depth(
@@ -186,8 +162,6 @@ class EventType(Enum):
 
     PLAYER_ADDED = "player_added"
     PLAYER_UPDATED = "player_updated"
-    STREAM_STARTED = "streaming_started"
-    STREAM_ENDED = "streaming_ended"
     QUEUE_ADDED = "queue_added"
     QUEUE_UPDATED = "queue_updated"
     QUEUE_ITEMS_UPDATED = "queue_items_updated"
