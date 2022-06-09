@@ -111,6 +111,8 @@ class AsyncProcess:
 
     def write_eof(self) -> None:
         """Write end of file to to process stdin."""
+        if self.closed:
+            return
         try:
             if self._proc.stdin.can_write_eof():
                 self._proc.stdin.write_eof()

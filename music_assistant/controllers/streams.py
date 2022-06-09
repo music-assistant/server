@@ -318,8 +318,6 @@ class QueueStream:
             async def writer():
                 """Task that sends the raw pcm audio to the sox/ffmpeg process."""
                 async for audio_chunk in self._get_queue_stream():
-                    if sox_proc.closed:
-                        return
                     await sox_proc.write(audio_chunk)
                     del audio_chunk
                 # write eof when last packet is received
@@ -397,8 +395,8 @@ class QueueStream:
                 fade_in = self.fade_in
             else:
                 queue_index = await self.queue.queue_stream_next(queue_index)
-                seek_position = 0
-                fade_in = 0
+                seek_position = None
+                fade_in = False
             self.index_in_buffer = queue_index
             queue_track = self.queue.get_item(queue_index)
             if not queue_track:
