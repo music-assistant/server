@@ -103,7 +103,7 @@ class StreamsController:
         ffmpeg_present, libsoxr_support = await check_audio_support(True)
         if not ffmpeg_present:
             self.logger.error(
-                "FFmpeg binary not found on your system, " "playback will NOT work!."
+                "FFmpeg binary not found on your system, playback will NOT work!."
             )
         elif not libsoxr_support:
             self.logger.warning(
