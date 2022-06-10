@@ -61,6 +61,12 @@ async def crossfade_pcm_parts(
     args += ["-f", fmt.value, "-"]
     async with AsyncProcess(args, True) as proc:
         crossfade_data, _ = await proc.communicate(fade_in_part)
+        LOGGER.debug(
+            "crossfaded 2 pcm chunks. fade_in_part: %s - fade_out_part: %s - result: %s",
+            len(fade_in_part),
+            len(fade_out_part),
+            len(crossfade_data),
+        )
         return crossfade_data
 
 
@@ -108,6 +114,11 @@ async def strip_silence(
     args += ["-f", fmt.value, "-"]
     async with AsyncProcess(args, True) as proc:
         stripped_data, _ = await proc.communicate(audio_data)
+        LOGGER.debug(
+            "stripped silence of pcm chunk. size before: %s - after: %s",
+            len(audio_data),
+            len(stripped_data),
+        )
         return stripped_data
 
 
@@ -187,19 +198,17 @@ async def get_stream_details(
         param media_item: The MediaItem (track/radio) for which to request the streamdetails for.
         param queue_id: Optionally provide the queue_id which will play this stream.
     """
-    if queue_item.streamdetails is not None and (
-        time() < queue_item.streamdetails.expires
-    ):
+    if queue_item.streamdetails and (time() < queue_item.streamdetails.expires):
         # we already have fresh streamdetails, use these
         queue_item.streamdetails.seconds_skipped = 0
         queue_item.streamdetails.seconds_streamed = 0
-        return queue_item.streamdetails
-    if queue_item.media_type == MediaType.URL:
+        streamdetails = queue_item.streamdetails
+    elif queue_item.media_type == MediaType.URL:
         # handle URL provider items
         url_prov = mass.music.get_provider(ProviderType.URL)
         streamdetails = await url_prov.get_stream_details(queue_item.uri)
     else:
-        # regular media items
+        # media item: fetch streamdetails from provider
         # always request the full db track as there might be other qualities available
         full_item = await mass.music.get_item_by_uri(queue_item.uri)
         # sort by quality and check track availability
@@ -225,12 +234,13 @@ async def get_stream_details(
     if not streamdetails:
         raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
 
-    # set player_id on the streamdetails so we know what players stream
+    # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_id
     # get gain correct / replaygain
-    loudness, gain_correct = await get_gain_correct(mass, streamdetails)
-    streamdetails.gain_correct = gain_correct
-    streamdetails.loudness = loudness
+    if not streamdetails.gain_correct:
+        loudness, gain_correct = await get_gain_correct(mass, streamdetails)
+        streamdetails.gain_correct = gain_correct
+        streamdetails.loudness = loudness
     if not streamdetails.duration:
         streamdetails.duration = queue_item.duration
     # set streamdetails as attribute on the media_item
@@ -325,6 +335,7 @@ async def get_ffmpeg_args(
     streamdetails: StreamDetails,
     output_format: Optional[ContentType] = None,
     pcm_sample_rate: Optional[int] = None,
+    pcm_channels: int = 2,
 ) -> List[str]:
     """Collect all args to send to the ffmpeg process."""
     input_format = streamdetails.content_type
@@ -345,18 +356,21 @@ async def get_ffmpeg_args(
         "-loglevel",
         "error",
         "-ignore_unknown",
-        "-f",
-        input_format.value,
-        "-i",
-        "-",
     ]
+    if streamdetails.content_type != ContentType.UNKNOWN:
+        input_args += ["-f", input_format.value]
+    input_args += ["-i", "-"]
     # collect output args
     if output_format.is_pcm():
         output_args = [
+            "-acodec",
+            output_format.name.lower(),
             "-f",
             output_format.value,
-            "-c:a",
-            output_format.name.lower(),
+            "-ac",
+            str(pcm_channels),
+            "-ar",
+            str(pcm_sample_rate),
             "-",
         ]
     else:
@@ -370,13 +384,14 @@ async def get_ffmpeg_args(
         pcm_sample_rate is not None
         and streamdetails.sample_rate != pcm_sample_rate
         and libsoxr_support
+        and streamdetails.media_type == MediaType.TRACK
     ):
         # prefer libsoxr high quality resampler (if present) for sample rate conversions
         filter_params.append("aresample=resampler=soxr")
     if filter_params:
         extra_args += ["-af", ",".join(filter_params)]
 
-    if pcm_sample_rate is not None:
+    if pcm_sample_rate is not None and not output_format.is_pcm():
         extra_args += ["-ar", str(pcm_sample_rate)]
 
     return input_args + extra_args + output_args
@@ -389,7 +404,7 @@ async def get_media_stream(
     pcm_sample_rate: Optional[int] = None,
     chunk_size: Optional[int] = None,
     seek_position: int = 0,
-) -> AsyncGenerator[Tuple[bool, bytes], None]:
+) -> AsyncGenerator[bytes, None]:
     """Get the audio stream for the given streamdetails."""
 
     args = await get_ffmpeg_args(streamdetails, output_format, pcm_sample_rate)
@@ -416,15 +431,9 @@ async def get_media_stream(
         ffmpeg_proc.attach_task(writer())
 
         # yield chunks from stdout
-        # we keep 1 chunk behind to detect end of stream properly
         try:
-            prev_chunk = b""
             async for chunk in ffmpeg_proc.iterate_chunks():
-                if prev_chunk:
-                    yield (False, prev_chunk)
-                prev_chunk = chunk
-            # send last chunk
-            yield (True, prev_chunk)
+                yield chunk
         except (asyncio.CancelledError, GeneratorExit) as err:
             LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
             raise err
@@ -447,32 +456,37 @@ async def get_radio_stream(
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
     headers = {"Icy-MetaData": "1"}
-    async with mass.http_session.get(url, headers=headers) as resp:
-        headers = resp.headers
-        meta_int = int(headers.get("icy-metaint", "0"))
-        # stream with ICY Metadata
-        if meta_int:
-            while True:
-                audio_chunk = await resp.content.readexactly(meta_int)
-                yield audio_chunk
-                meta_byte = await resp.content.readexactly(1)
-                meta_length = ord(meta_byte) * 16
-                meta_data = await resp.content.readexactly(meta_length)
-                if not meta_data:
-                    continue
-                meta_data = meta_data.rstrip(b"\0")
-                stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
-                if not stream_title:
-                    continue
-                stream_title = stream_title.group(1).decode()
-                if stream_title != streamdetails.stream_title:
-                    streamdetails.stream_title = stream_title
-                    if queue := mass.players.get_player_queue(streamdetails.queue_id):
-                        queue.signal_update()
-        # Regular HTTP stream
-        else:
-            async for chunk in resp.content.iter_any():
-                yield chunk
+    while True:
+        # in loop to reconnect on connection failure
+        LOGGER.debug("radio stream (re)connecting to: %s", url)
+        async with mass.http_session.get(url, headers=headers) as resp:
+            headers = resp.headers
+            meta_int = int(headers.get("icy-metaint", "0"))
+            # stream with ICY Metadata
+            if meta_int:
+                while True:
+                    audio_chunk = await resp.content.readexactly(meta_int)
+                    yield audio_chunk
+                    meta_byte = await resp.content.readexactly(1)
+                    meta_length = ord(meta_byte) * 16
+                    meta_data = await resp.content.readexactly(meta_length)
+                    if not meta_data:
+                        continue
+                    meta_data = meta_data.rstrip(b"\0")
+                    stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
+                    if not stream_title:
+                        continue
+                    stream_title = stream_title.group(1).decode()
+                    if stream_title != streamdetails.stream_title:
+                        streamdetails.stream_title = stream_title
+                        if queue := mass.players.get_player_queue(
+                            streamdetails.queue_id
+                        ):
+                            queue.signal_update()
+            # Regular HTTP stream
+            else:
+                async for chunk in resp.content.iter_any():
+                    yield chunk
 
 
 async def get_http_stream(
@@ -647,10 +661,10 @@ def get_chunksize(content_type: ContentType) -> int:
         ContentType.AAC,
         ContentType.M4A,
     ):
-        return 16000
+        return 32000
     if content_type in (
         ContentType.MP3,
         ContentType.OGG,
     ):
-        return 32000
-    return 128000
+        return 64000
+    return 256000

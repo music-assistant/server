@@ -298,7 +298,6 @@ class SpotifyProvider(MusicProvider):
             "-c",
             self._cache_dir,
             "--pass-through",
-            "--enable-audio-cache",
             "-b",
             "320",
             "--single-track",

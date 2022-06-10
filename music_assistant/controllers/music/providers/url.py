@@ -54,20 +54,21 @@ class URLProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        if os.path.isfile(streamdetails.data):
+        if streamdetails.media_type == MediaType.RADIO:
+            # radio stream url
+            async for chunk in get_radio_stream(
+                self.mass, streamdetails.data, streamdetails
+            ):
+                yield chunk
+        elif os.path.isfile(streamdetails.data):
+            # local file
             async for chunk in get_file_stream(
                 self.mass, streamdetails.data, streamdetails, seek_position
             ):
                 yield chunk
-        elif seek_position:
-            # url with seek
+        else:
+            # regular stream url (without icy meta and reconnect)
             async for chunk in get_http_stream(
                 self.mass, streamdetails.data, streamdetails, seek_position
-            ):
-                yield chunk
-        else:
-            # prefer radio implementation (to get icy meta if available)
-            async for chunk in get_radio_stream(
-                self.mass, streamdetails.data, streamdetails
             ):
                 yield chunk

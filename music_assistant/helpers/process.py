@@ -14,7 +14,7 @@ from async_timeout import timeout as _timeout
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_CHUNKSIZE = 64000
+DEFAULT_CHUNKSIZE = 128000
 DEFAULT_TIMEOUT = 120
 
 
@@ -50,7 +50,7 @@ class AsyncProcess:
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE if not self._use_stderr else None,
                 stderr=asyncio.subprocess.PIPE if self._use_stderr else None,
-                limit=16000000,
+                limit=self.chunk_size * 5,
                 close_fds=True,
             )
         else:
@@ -59,7 +59,7 @@ class AsyncProcess:
                 stdin=asyncio.subprocess.PIPE if self._enable_write else None,
                 stdout=asyncio.subprocess.PIPE if not self._use_stderr else None,
                 stderr=asyncio.subprocess.PIPE if self._use_stderr else None,
-                limit=16000000,
+                limit=self.chunk_size * 5,
                 close_fds=True,
             )
         return self
@@ -71,6 +71,7 @@ class AsyncProcess:
             # cancel the attached reader/writer task
             try:
                 self._attached_task.cancel()
+                await self._attached_task
             except asyncio.CancelledError:
                 pass
         if self._proc.returncode is None:
@@ -92,13 +93,13 @@ class AsyncProcess:
 
     async def _read_chunk(self, timeout: int = DEFAULT_TIMEOUT) -> bytes:
         """Read chunk_size bytes from the process stdout."""
+        if self.closed:
+            return b""
         try:
             async with _timeout(timeout):
                 return await self._proc.stdout.readexactly(self.chunk_size)
         except asyncio.IncompleteReadError as err:
             return err.partial
-        except AttributeError as exc:
-            raise asyncio.CancelledError() from exc
         except asyncio.TimeoutError:
             return b""
 
@@ -109,20 +110,22 @@ class AsyncProcess:
         try:
             self._proc.stdin.write(data)
             await self._proc.stdin.drain()
-        except (AttributeError, AssertionError, BrokenPipeError, RuntimeError):
+        except (
+            AttributeError,
+            AssertionError,
+            BrokenPipeError,
+            RuntimeError,
+            ConnectionResetError,
+        ) as err:
             # already exited, race condition
-            pass
+            raise asyncio.CancelledError() from err
 
     def write_eof(self) -> None:
         """Write end of file to to process stdin."""
         if self.closed:
             return
-        try:
-            if self._proc.stdin.can_write_eof():
-                self._proc.stdin.write_eof()
-        except (AttributeError, AssertionError, BrokenPipeError, RuntimeError):
-            # already exited, race condition
-            pass
+        if self._proc.stdin.can_write_eof():
+            self._proc.stdin.write_eof()
 
     async def communicate(self, input_data: Optional[bytes] = None) -> bytes:
         """Write bytes to process and read back results."""

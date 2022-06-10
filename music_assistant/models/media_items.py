@@ -366,7 +366,7 @@ class StreamDetails(DataClassDictMixin):
     queue_id: Optional[str] = None
     seconds_streamed: int = 0
     seconds_skipped: int = 0
-    gain_correct: float = 0
+    gain_correct: Optional[float] = None
     loudness: Optional[float] = None
 
     def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
