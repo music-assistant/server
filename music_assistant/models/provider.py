@@ -12,9 +12,9 @@ from music_assistant.models.media_items import (
     MediaItemType,
     Playlist,
     Radio,
+    StreamDetails,
     Track,
 )
-from music_assistant.models.player_queue import StreamDetails
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -170,8 +170,14 @@ class MusicProvider:
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Get streamdetails for a track/radio."""
+        raise NotImplementedError
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
         raise NotImplementedError
 
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:

@@ -23,7 +23,7 @@ class QueueSettings:
         self._crossfade_mode: CrossFadeMode = CrossFadeMode.DISABLED
         self._crossfade_duration: int = 6
         self._volume_normalization_enabled: bool = True
-        self._volume_normalization_target: int = -23
+        self._volume_normalization_target: int = -14
 
     @property
     def repeat_mode(self) -> RepeatMode:
@@ -124,18 +124,7 @@ class QueueSettings:
     @property
     def stream_type(self) -> ContentType:
         """Return supported/preferred stream type for playerqueue. Read only."""
-        # determine default stream type from player capabilities
-        return next(
-            x
-            for x in (
-                ContentType.FLAC,
-                ContentType.WAV,
-                ContentType.PCM_S16LE,
-                ContentType.MP3,
-                ContentType.MPEG,
-            )
-            if x in self._queue.player.supported_content_types
-        )
+        return self._queue.player.stream_type
 
     def to_dict(self) -> Dict[str, Any]:
         """Return dict from settings."""

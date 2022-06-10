@@ -2,27 +2,23 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import random
 from asyncio import Task, TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
-from music_assistant.helpers.audio import get_stream_details
 from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
-from music_assistant.models.errors import (
-    MediaNotFoundError,
-    MusicAssistantError,
-    QueueEmpty,
-)
+from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
-from music_assistant.models.media_items import StreamDetails
 
 from .player import Player, PlayerGroup, PlayerState
 from .queue_item import QueueItem
 from .queue_settings import QueueSettings
 
 if TYPE_CHECKING:
+    from music_assistant.controllers.streams import QueueStream
     from music_assistant.mass import MusicAssistant
 
 RESOURCES_DIR = (
@@ -41,7 +37,6 @@ class QueueSnapShot:
 
     powered: bool
     state: PlayerState
-    volume_level: int
     items: List[QueueItem]
     index: Optional[int]
     position: int
@@ -55,35 +50,24 @@ class PlayerQueue:
         self.mass = mass
         self.logger = mass.players.logger
         self.queue_id = player_id
+        self.signal_next: bool = False
+        self._stream_id: str = ""
         self._settings = QueueSettings(self)
         self._current_index: Optional[int] = None
-        # index_in_buffer: which track is currently (pre)loaded in the streamer
-        self._index_in_buffer: Optional[int] = None
         self._current_item_elapsed_time: int = 0
         self._prev_item: Optional[QueueItem] = None
-        # start_index: from which index did the queuestream start playing
-        self._start_index: int = 0
-        # start_pos: from which position (in seconds) did the first track start playing?
-        self._start_pos: int = 0
-        self._next_fadein: int = 0
-        self._next_start_index: int = 0
-        self._next_start_pos: int = 0
-        self._last_state = PlayerState.IDLE
+        self._last_state = str
         self._items: List[QueueItem] = []
         self._save_task: TimerHandle = None
         self._update_task: Task = None
-        self._signal_next: bool = False
         self._last_player_update: int = 0
-        self._stream_url: str = ""
+        self._last_stream_id: str = ""
         self._snapshot: Optional[QueueSnapShot] = None
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
         await self._settings.restore()
         await self._restore_items()
-        self._stream_url: str = self.mass.streams.get_stream_url(
-            self.queue_id, content_type=self._settings.stream_type
-        )
         self.mass.signal_event(
             MassEvent(EventType.QUEUE_ADDED, object_id=self.queue_id, data=self)
         )
@@ -104,11 +88,27 @@ class PlayerQueue:
         return self.player.available
 
     @property
+    def stream(self) -> QueueStream | None:
+        """Return the currently connected/active stream for this queue."""
+        return self.mass.streams.queue_streams.get(self._stream_id)
+
+    @property
+    def index_in_buffer(self) -> int | None:
+        """Return the item that is curently loaded into the buffer."""
+        if not self._stream_id:
+            return None
+        if stream := self.mass.streams.queue_streams.get(self._stream_id):
+            return stream.index_in_buffer
+        return None
+
+    @property
     def active(self) -> bool:
         """Return bool if the queue is currenty active on the player."""
-        if self.player.use_multi_stream:
-            return self.queue_id in self.player.current_url
-        return self._stream_url == self.player.current_url
+        if not self.player.current_url:
+            return False
+        if stream := self.stream:
+            return stream.url == self.player.current_url
+        return False
 
     @property
     def elapsed_time(self) -> float:
@@ -192,8 +192,7 @@ class PlayerQueue:
                 QueueOption.REPLACE -> Replace queue contents with these items
                 QueueOption.NEXT -> Play item(s) after current playing item
                 QueueOption.ADD -> Append new items at end of the queue
-            :param passive: do not actually start playback.
-        Returns: the stream URL for this queue.
+            :param passive: if passive set to true the stream url will not be sent to the player.
         """
         # a single item or list of items may be provided
         if not isinstance(uris, list):
@@ -205,8 +204,8 @@ class PlayerQueue:
                 media_item = await self.mass.music.get_item_by_uri(uri)
             except MusicAssistantError as err:
                 # invalid MA uri or item not found error
-                if uri.startswith("http"):
-                    # a plain url was provided
+                if uri.startswith("http") or os.path.isfile(uri):
+                    # a plain url (or local file) was provided
                     queue_items.append(QueueItem.from_url(uri))
                     continue
                 raise MediaNotFoundError(f"Invalid uri: {uri}") from err
@@ -247,23 +246,20 @@ class PlayerQueue:
         if self._current_index and self._current_index >= (len(self._items) - 1):
             self._current_index = None
             self._items = []
-        # clear resume point if any
-        self._start_pos = 0
 
         # load items into the queue
         if queue_opt == QueueOption.REPLACE:
-            await self.load(queue_items, passive=passive)
+            await self.load(queue_items, passive)
         elif (
             queue_opt in [QueueOption.PLAY, QueueOption.NEXT] and len(queue_items) > 100
         ):
-            await self.load(queue_items, passive=passive)
+            await self.load(queue_items, passive)
         elif queue_opt == QueueOption.NEXT:
-            await self.insert(queue_items, 1, passive=passive)
+            await self.insert(queue_items, 1, passive)
         elif queue_opt == QueueOption.PLAY:
-            await self.insert(queue_items, 0, passive=passive)
+            await self.insert(queue_items, 0, passive)
         elif queue_opt == QueueOption.ADD:
             await self.append(queue_items)
-        return self._stream_url
 
     async def play_alert(
         self, uri: str, announce: bool = False, volume_adjust: int = 10
@@ -277,7 +273,7 @@ class PlayerQueue:
         """
         if self._snapshot:
             self.logger.debug("Ignore play_alert: already in progress")
-            return
+            # return
 
         # create snapshot
         await self.snapshot_create()
@@ -286,7 +282,9 @@ class PlayerQueue:
 
         # prepend annnounce sound if needed
         if announce:
-            queue_items.append(QueueItem.from_url(ALERT_ANNOUNCE_FILE, "alert"))
+            queue_item = QueueItem.from_url(ALERT_ANNOUNCE_FILE, "alert")
+            queue_item.streamdetails.gain_correct = 10
+            queue_items.append(queue_item)
 
         # parse provided uri into a MA MediaItem or Basic QueueItem from URL
         try:
@@ -294,23 +292,21 @@ class PlayerQueue:
             queue_items.append(QueueItem.from_media_item(media_item))
         except MusicAssistantError as err:
             # invalid MA uri or item not found error
-            if uri.startswith("http"):
+            if uri.startswith("http") or os.path.isfile(uri):
                 # a plain url was provided
-                queue_items.append(QueueItem.from_url(uri, "alert"))
+                queue_item = QueueItem.from_url(uri, "alert")
+                queue_item.streamdetails.gain_correct = 6
+                queue_items.append(queue_item)
             else:
                 raise MediaNotFoundError(f"Invalid uri: {uri}") from err
 
         # append silence track, we use this to reliably detect when the alert is ready
         silence_url = self.mass.streams.get_silence_url(600)
-        queue_items.append(QueueItem.from_url(silence_url, "alert"))
+        queue_item = QueueItem.from_url(silence_url, "alert")
+        queue_items.append(queue_item)
 
         # load queue with alert sound(s)
         await self.load(queue_items)
-        # set new volume
-        new_volume = self.player.volume_level + (
-            self.player.volume_level / 100 * volume_adjust
-        )
-        await self.player.volume_set(new_volume)
 
         # wait for the alert to finish playing
         alert_done = asyncio.Event()
@@ -336,6 +332,7 @@ class PlayerQueue:
 
     async def stop(self) -> None:
         """Stop command on queue player."""
+        self.signal_next = False
         # redirect to underlying player
         await self.player.stop()
 
@@ -399,7 +396,9 @@ class PlayerQueue:
             resume_pos = 0
 
         if resume_item is not None:
-            await self.play_index(resume_item.item_id, resume_pos, 5)
+            resume_pos = resume_pos if resume_pos > 10 else 0
+            fade_in = 5 if resume_pos else 0
+            await self.play_index(resume_item.item_id, resume_pos, fade_in)
         else:
             self.logger.warning(
                 "resume queue requested for %s but queue is empty", self.queue_id
@@ -410,7 +409,6 @@ class PlayerQueue:
         self._snapshot = QueueSnapShot(
             powered=self.player.powered,
             state=self.player.state,
-            volume_level=self.player.volume_level,
             items=self._items,
             index=self._current_index,
             position=self._current_item_elapsed_time,
@@ -421,11 +419,10 @@ class PlayerQueue:
         assert self._snapshot, "Create snapshot before restoring it."
         # clear queue first
         await self.clear()
-        # restore volume
-        await self.player.volume_set(self._snapshot.volume_level)
         # restore queue
         await self.update(self._snapshot.items)
         self._current_index = self._snapshot.index
+        self._current_item_elapsed_time = self._snapshot.position
         if self._snapshot.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             await self.resume()
         if self._snapshot.state == PlayerState.PAUSED:
@@ -443,8 +440,6 @@ class PlayerQueue:
         passive: bool = False,
     ) -> None:
         """Play item at index (or item_id) X in queue."""
-        if self.player.use_multi_stream:
-            await self.mass.streams.stop_multi_client_queue_stream(self.queue_id)
         if not isinstance(index, int):
             index = self.index_by_id(index)
         if index is None:
@@ -452,38 +447,8 @@ class PlayerQueue:
         if not len(self.items) > index:
             return
         self._current_index = index
-        self._next_start_index = index
-        self._next_start_pos = int(seek_position)
-        self._next_fadein = fade_in
-        # send stream url to player connected to this queue
-        self._stream_url = self.mass.streams.get_stream_url(
-            self.queue_id, content_type=self._settings.stream_type
-        )
-
-        if self.player.use_multi_stream:
-            # multi stream enabled, all child players should receive the same audio stream
-            # redirect command to all (powered) players
-            coros = []
-            expected_clients = set()
-            for child_id in self.player.group_childs:
-                if child_player := self.mass.players.get_player(child_id):
-                    if child_player.powered:
-                        # TODO: this assumes that all client players support flac
-                        player_url = self.mass.streams.get_stream_url(
-                            self.queue_id, child_id, self._settings.stream_type
-                        )
-                        expected_clients.add(child_id)
-                        coros.append(child_player.play_url(player_url))
-            await self.mass.streams.start_multi_client_queue_stream(
-                # TODO: this assumes that all client players support flac
-                self.queue_id,
-                expected_clients,
-                self._settings.stream_type,
-            )
-            await asyncio.gather(*coros)
-        elif not passive:
-            # regular (single player) request
-            await self.player.play_url(self._stream_url)
+        # start the queue stream
+        await self.queue_stream_start(index, int(seek_position), fade_in, passive)
 
     async def move_item(self, queue_item_id: str, pos_shift: int = 1) -> None:
         """
@@ -510,9 +475,10 @@ class PlayerQueue:
     async def delete_item(self, queue_item_id: str) -> None:
         """Delete item (by id or index) from the queue."""
         item_index = self.index_by_id(queue_item_id)
-        if item_index <= self._index_in_buffer:
+        if self.stream and item_index <= self.index_in_buffer:
             # ignore request if track already loaded in the buffer
             # the frontend should guard so this is just in case
+            self.logger.warning("delete requested for item already loaded in buffer")
             return
         self._items.pop(item_index)
         self.signal_update(True)
@@ -538,9 +504,10 @@ class PlayerQueue:
             :param queue_items: a list of QueueItem
             :param offset: offset from current queue position
         """
-        if not self.items or self._current_index is None:
-            return await self.load(queue_items)
-        insert_at_index = self._current_index + offset
+        cur_index = self.index_in_buffer or self._current_index
+        if not self.items or cur_index is None:
+            return await self.load(queue_items, passive)
+        insert_at_index = cur_index + offset
         for index, item in enumerate(queue_items):
             item.sort_index = insert_at_index + index
         if self.settings.shuffle_enabled and len(queue_items) > 5:
@@ -559,7 +526,7 @@ class PlayerQueue:
                 + self._items[insert_at_index:]
             )
 
-        if offset in (0, self._index_in_buffer):
+        if offset in (0, cur_index):
             await self.play_index(insert_at_index, passive=passive)
 
         self.signal_update(True)
@@ -592,9 +559,10 @@ class PlayerQueue:
 
     def on_player_update(self) -> None:
         """Call when player updates."""
-        if self._last_state != self.player.state:
+        player_state_str = f"{self.player.state.value}.{self.player.current_url}"
+        if self._last_state != player_state_str:
             # playback state changed
-            self._last_state = self.player.state
+            self._last_state = player_state_str
 
             # always signal update if playback state changed
             self.signal_update()
@@ -606,13 +574,10 @@ class PlayerQueue:
                 ):
                     self._current_index += 1
                     self._current_item_elapsed_time = 0
-                    # repeat enabled (of whole queue), play queue from beginning
-                    if self.settings.repeat_mode == RepeatMode.ALL:
-                        self.mass.create_task(self.play_index(0))
 
                 # handle case where stream stopped on purpose and we need to restart it
-                elif self._signal_next:
-                    self._signal_next = False
+                elif self.signal_next:
+                    self.signal_next = False
                     self.mass.create_task(self.resume())
 
             # start poll/updater task if playback starts on player
@@ -668,54 +633,57 @@ class PlayerQueue:
                 )
             )
 
-    async def queue_stream_prepare(self) -> StreamDetails:
-        """Call when queue_streamer is about to start playing."""
-        start_from_index = self._next_start_index
-        try:
-            next_item = self._items[start_from_index]
-        except (IndexError, TypeError) as err:
-            raise QueueEmpty() from err
-        try:
-            return await get_stream_details(self.mass, next_item, self.queue_id)
-        except MediaNotFoundError as err:
-            # something bad happened, try to recover by requesting the next track in the queue
-            await self.play_index(self._current_index + 2)
-            raise err
+    async def queue_stream_start(
+        self, start_index: int, seek_position: int, fade_in: bool, passive: bool = False
+    ) -> None:
+        """Start the queue stream runner."""
+        players: List[Player] = []
+        output_format = self._settings.stream_type
+        # if multi stream is enabled, all child players should receive the same audio stream
+        if self.player.use_multi_stream:
+            for child_id in self.player.group_childs:
+                child_player = self.mass.players.get_player(child_id)
+                if not child_player or not child_player.powered:
+                    continue
+                players.append(child_player)
+        else:
+            # regular (single player) request
+            players.append(self.player)
 
-    async def queue_stream_start(self) -> Tuple[int, int, int]:
-        """Call when queue_streamer starts playing the queue stream."""
-        start_from_index = self._next_start_index
         self._current_item_elapsed_time = 0
-        self._current_index = start_from_index
-        self._start_index = start_from_index
-        self._next_start_index = self.get_next_index(start_from_index)
-        self._index_in_buffer = start_from_index
-        seek_position = self._next_start_pos
-        self._next_start_pos = 0
-        fade_in = self._next_fadein
-        self._next_fadein = 0
-        return (start_from_index, seek_position, fade_in)
+        self._current_index = start_index
 
-    async def queue_stream_next(self, cur_index: int) -> int | None:
-        """Call when queue_streamer loads next track in buffer."""
-        next_idx = self._next_start_index
-        self._index_in_buffer = next_idx
-        self._next_start_index = self.get_next_index(self._next_start_index)
-        return next_idx
+        # start the queue stream background task
+        stream = await self.mass.streams.start_queue_stream(
+            queue=self,
+            expected_clients=len(players),
+            start_index=start_index,
+            seek_position=seek_position,
+            fade_in=fade_in,
+            output_format=output_format,
+        )
+        self._stream_id = stream.stream_id
+        # execute the play command on the player(s)
+        if not passive:
+            await asyncio.gather(*[x.play_url(stream.url) for x in players])
 
-    def get_next_index(self, cur_index: int) -> int:
+    def get_next_index(self, cur_index: Optional[int]) -> int:
         """Return the next index for the queue, accounting for repeat settings."""
-        if not self._items or cur_index is None:
-            raise IndexError("No (more) items in queue")
+        # handle repeat single track
         if self.settings.repeat_mode == RepeatMode.ONE:
             return cur_index
+        # handle repeat all
+        if (
+            self.settings.repeat_mode == RepeatMode.ALL
+            and self._items
+            and cur_index == (len(self._items) - 1)
+        ):
+            return 0
         # simply return the next index. other logic is guarded to detect the index
         # being higher than the number of items to detect end of queue and/or handle repeat.
+        if cur_index is None:
+            return 0
         return cur_index + 1
-
-    async def queue_stream_signal_next(self):
-        """Indicate that queue stream needs to start next index once playback finished."""
-        self._signal_next = True
 
     def signal_update(self, items_changed: bool = False) -> None:
         """Signal state changed of this queue."""
@@ -744,6 +712,7 @@ class PlayerQueue:
             "state": self.player.state.value,
             "available": self.player.available,
             "current_index": self.current_index,
+            "index_in_buffer": self.index_in_buffer,
             "current_item": cur_item,
             "next_item": next_item,
             "settings": self.settings.to_dict(),
@@ -756,9 +725,9 @@ class PlayerQueue:
         elapsed_time_queue = self.player.elapsed_time
         total_time = 0
         track_time = 0
-        if self._items and len(self._items) > self._start_index:
-            # start_index: holds the last starting position
-            queue_index = self._start_index
+        if self._items and self.stream and len(self._items) > self.stream.start_index:
+            # start_index: holds the position from which the stream started
+            queue_index = self.stream.start_index
             queue_track = None
             while len(self._items) > queue_index:
                 # keep enumerating the queue tracks to find current track
@@ -767,11 +736,15 @@ class PlayerQueue:
                 if not queue_track.streamdetails:
                     track_time = elapsed_time_queue - total_time
                     break
-                track_seconds = queue_track.streamdetails.seconds_played
-                if elapsed_time_queue > (track_seconds + total_time):
+                duration = (
+                    queue_track.streamdetails.seconds_streamed or queue_track.duration
+                )
+                if duration is not None and elapsed_time_queue > (
+                    duration + total_time
+                ):
                     # total elapsed time is more than (streamed) track duration
                     # move index one up
-                    total_time += track_seconds
+                    total_time += duration
                     queue_index += 1
                 else:
                     # no more seconds left to divide, this is our track

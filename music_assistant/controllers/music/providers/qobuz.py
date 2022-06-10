@@ -13,11 +13,11 @@ from asyncio_throttle import Throttler
 from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-module
     app_var,
 )
+from music_assistant.helpers.audio import get_http_stream
 from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
-from music_assistant.models.enums import EventType, ProviderType
-from music_assistant.models.errors import LoginFailed
-from music_assistant.models.event import MassEvent
+from music_assistant.models.enums import ProviderType
+from music_assistant.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -31,7 +31,6 @@ from music_assistant.models.media_items import (
     MediaType,
     Playlist,
     StreamDetails,
-    StreamType,
     Track,
 )
 from music_assistant.models.provider import MusicProvider
@@ -61,12 +60,6 @@ class QobuzProvider(MusicProvider):
         token = await self._auth_token()
         if not token:
             raise LoginFailed(f"Login failed for user {self.config.username}")
-        # subscribe to stream events so we can report playback to Qobuz
-        self.mass.subscribe(
-            self.on_stream_event,
-            (EventType.STREAM_STARTED, EventType.STREAM_ENDED),
-            id_filter=self.type.value,
-        )
         return True
 
     async def search(
@@ -338,69 +331,81 @@ class QobuzProvider(MusicProvider):
                 streamdata = result
                 break
         if not streamdata:
-            self.logger.error("Unable to retrieve stream details for track %s", item_id)
-            return None
+            raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
         if streamdata["mime_type"] == "audio/mpeg":
             content_type = ContentType.MPEG
         elif streamdata["mime_type"] == "audio/flac":
             content_type = ContentType.FLAC
         else:
-            self.logger.error("Unsupported mime type for track %s", item_id)
-            return None
+            raise MediaNotFoundError(f"Unsupported mime type for {item_id}")
         return StreamDetails(
-            type=StreamType.URL,
             item_id=str(item_id),
             provider=self.type,
-            path=streamdata["url"],
             content_type=content_type,
+            duration=streamdata["duration"],
             sample_rate=int(streamdata["sampling_rate"] * 1000),
             bit_depth=streamdata["bit_depth"],
-            details=streamdata,  # we need these details for reporting playback
+            data=streamdata,  # we need these details for reporting playback
+            expires=time.time() + 1800,  # not sure about the real allowed value
         )
 
-    async def on_stream_event(self, event: MassEvent):
-        """
-        Received event from mass.
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        self.mass.create_task(self._report_playback_started(streamdetails))
+        bytes_sent = 0
+        try:
+            url = streamdetails.data["url"]
+            async for chunk in get_http_stream(
+                self.mass, url, streamdetails, seek_position
+            ):
+                yield chunk
+                bytes_sent += len(chunk)
+        finally:
+            if bytes_sent:
+                self.mass.create_task(
+                    self._report_playback_stopped(streamdetails, bytes_sent)
+                )
 
-        We use this to report playback start/stop to qobuz.
-        """
-        if not self._user_auth_info:
-            return
+    async def _report_playback_started(self, streamdetails: StreamDetails) -> None:
+        """Report playback start to qobuz."""
         # TODO: need to figure out if the streamed track is purchased by user
         # https://www.qobuz.com/api.json/0.2/purchase/getUserPurchasesIds?limit=5000&user_id=xxxxxxx
         # {"albums":{"total":0,"items":[]},"tracks":{"total":0,"items":[]},"user":{"id":xxxx,"login":"xxxxx"}}
-        if event.type == EventType.STREAM_STARTED:
-            # report streaming started to qobuz
-            device_id = self._user_auth_info["user"]["device"]["id"]
-            credential_id = self._user_auth_info["user"]["credential"]["id"]
-            user_id = self._user_auth_info["user"]["id"]
-            format_id = event.data.details["format_id"]
-            timestamp = int(time.time())
-            events = [
-                {
-                    "online": True,
-                    "sample": False,
-                    "intent": "stream",
-                    "device_id": device_id,
-                    "track_id": str(event.data.item_id),
-                    "purchase": False,
-                    "date": timestamp,
-                    "credential_id": credential_id,
-                    "user_id": user_id,
-                    "local": False,
-                    "format_id": format_id,
-                }
-            ]
-            await self._post_data("track/reportStreamingStart", data=events)
-        elif event.type == EventType.STREAM_ENDED:
-            # report streaming ended to qobuz
-            user_id = self._user_auth_info["user"]["id"]
-            await self._get_data(
-                "/track/reportStreamingEnd",
-                user_id=user_id,
-                track_id=str(event.data.item_id),
-                duration=try_parse_int(event.data.seconds_played),
-            )
+        device_id = self._user_auth_info["user"]["device"]["id"]
+        credential_id = self._user_auth_info["user"]["credential"]["id"]
+        user_id = self._user_auth_info["user"]["id"]
+        format_id = streamdetails.data["format_id"]
+        timestamp = int(time.time())
+        events = [
+            {
+                "online": True,
+                "sample": False,
+                "intent": "stream",
+                "device_id": device_id,
+                "track_id": str(streamdetails.item_id),
+                "purchase": False,
+                "date": timestamp,
+                "credential_id": credential_id,
+                "user_id": user_id,
+                "local": False,
+                "format_id": format_id,
+            }
+        ]
+        await self._post_data("track/reportStreamingStart", data=events)
+
+    async def _report_playback_stopped(
+        self, streamdetails: StreamDetails, bytes_sent: int
+    ) -> None:
+        """Report playback stop to qobuz."""
+        user_id = self._user_auth_info["user"]["id"]
+        await self._get_data(
+            "/track/reportStreamingEnd",
+            user_id=user_id,
+            track_id=str(streamdetails.item_id),
+            duration=try_parse_int(streamdetails.seconds_streamed),
+        )
 
     async def _parse_artist(self, artist_obj: dict):
         """Parse qobuz artist object to generic layout."""

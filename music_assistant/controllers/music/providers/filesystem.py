@@ -14,6 +14,7 @@ from aiofiles.os import wrap
 from aiofiles.threadpool.binary import AsyncFileIO
 from tinytag.tinytag import TinyTag
 
+from music_assistant.helpers.audio import get_file_stream
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.database import SCHEMA_VERSION
 from music_assistant.helpers.util import (
@@ -37,7 +38,6 @@ from music_assistant.models.media_items import (
     MediaType,
     Playlist,
     StreamDetails,
-    StreamType,
     Track,
 )
 from music_assistant.models.provider import MusicProvider
@@ -435,15 +435,28 @@ class FileSystemProvider(MusicProvider):
         _, ext = Path(itempath).name.rsplit(".", 1)
         content_type = CONTENT_TYPE_EXT.get(ext.lower())
 
+        stat = await self.mass.loop.run_in_executor(None, os.stat, itempath)
+
         return StreamDetails(
-            type=StreamType.FILE,
             provider=self.type,
             item_id=item_id,
             content_type=content_type,
-            path=itempath,
+            media_type=MediaType.TRACK,
+            duration=tags.duration,
+            size=stat.st_size,
             sample_rate=tags.samplerate or 44100,
             bit_depth=16,  # TODO: parse bitdepth
+            data=itempath,
         )
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        async for chunk in get_file_stream(
+            self.mass, streamdetails.data, streamdetails, seek_position
+        ):
+            yield chunk
 
     async def _parse_track(self, track_path: str) -> Track | None:
         """Try to parse a track from a filename by reading its tags."""

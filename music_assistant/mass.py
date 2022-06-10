@@ -14,10 +14,11 @@ from uuid import uuid4
 
 import aiohttp
 
+from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
-from music_assistant.controllers.stream import StreamController
+from music_assistant.controllers.streams import StreamsController
 from music_assistant.helpers.cache import Cache
 from music_assistant.helpers.database import Database
 from music_assistant.models.background_job import BackgroundJob
@@ -51,7 +52,7 @@ class MusicAssistant:
         self.loop: asyncio.AbstractEventLoop = None
         self.http_session: aiohttp.ClientSession = session
         self.http_session_provided = session is not None
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger(ROOT_LOGGER_NAME)
 
         self._listeners = []
         self._jobs: Deque[BackgroundJob] = deque()
@@ -63,7 +64,7 @@ class MusicAssistant:
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
         self.players = PlayerController(self)
-        self.streams = StreamController(self)
+        self.streams = StreamsController(self)
         self._tracked_tasks: List[asyncio.Task] = []
         self.closed = False
 

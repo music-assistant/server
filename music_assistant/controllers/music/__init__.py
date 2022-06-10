@@ -27,6 +27,8 @@ from .providers.filesystem import FileSystemProvider
 from .providers.qobuz import QobuzProvider
 from .providers.spotify import SpotifyProvider
 from .providers.tunein import TuneInProvider
+from .providers.url import PROVIDER_CONFIG as URL_CONFIG
+from .providers.url import URLProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -59,6 +61,8 @@ class MusicController:
         for prov_conf in self.mass.config.providers:
             prov_cls = PROV_MAP[prov_conf.type]
             await self._register_provider(prov_cls(self.mass, prov_conf), prov_conf)
+        # always register url provider
+        await self._register_provider(URLProvider(self.mass, URL_CONFIG), URL_CONFIG)
 
     async def start_sync(
         self,

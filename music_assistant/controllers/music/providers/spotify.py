@@ -17,9 +17,10 @@ from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name
     app_var,
 )
 from music_assistant.helpers.cache import use_cache
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.enums import ProviderType
-from music_assistant.models.errors import LoginFailed
+from music_assistant.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -33,7 +34,6 @@ from music_assistant.models.media_items import (
     MediaType,
     Playlist,
     StreamDetails,
-    StreamType,
     Track,
 )
 from music_assistant.models.provider import MusicProvider
@@ -276,20 +276,38 @@ class SpotifyProvider(MusicProvider):
         # make sure a valid track is requested.
         track = await self.get_track(item_id)
         if not track:
-            return None
+            raise MediaNotFoundError(f"track {item_id} not found")
+        # make sure that the token is still valid by just requesting it
+        await self.get_token()
+        return StreamDetails(
+            item_id=track.item_id,
+            provider=self.type,
+            content_type=ContentType.OGG,
+            duration=track.duration,
+        )
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
         # make sure that the token is still valid by just requesting it
         await self.get_token()
         librespot = await self.get_librespot_binary()
-        librespot_exec = f'{librespot} -c "{self._cache_dir}" --pass-through -b 320 --single-track spotify://track:{track.item_id}'
-        return StreamDetails(
-            type=StreamType.EXECUTABLE,
-            item_id=track.item_id,
-            provider=self.type,
-            path=librespot_exec,
-            content_type=ContentType.OGG,
-            sample_rate=44100,
-            bit_depth=16,
-        )
+        args = [
+            librespot,
+            "-c",
+            self._cache_dir,
+            "--pass-through",
+            "-b",
+            "320",
+            "--single-track",
+            f"spotify://track:{streamdetails.item_id}",
+        ]
+        if seek_position:
+            args += ["--start-position", str(int(seek_position))]
+        async with AsyncProcess(args) as librespot_proc:
+            async for chunk in librespot_proc.iterate_chunks():
+                yield chunk
 
     async def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""

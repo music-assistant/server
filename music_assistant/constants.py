@@ -21,3 +21,6 @@ ATTR_CONFIG_ENTRIES = "config_entries"
 ATTR_UPDATED_AT = "updated_at"
 ATTR_ACTIVE_QUEUE = "active_queue"
 ATTR_GROUP_PARENTS = "group_parents"
+
+
+ROOT_LOGGER_NAME = "music_assistant"

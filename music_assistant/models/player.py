@@ -195,6 +195,22 @@ class Player(ABC):
 
     # SOME CONVENIENCE METHODS (may be overridden if needed)
 
+    @property
+    def stream_type(self) -> ContentType:
+        """Return supported/preferred stream type for playerqueue. Read only."""
+        # determine default stream type from player capabilities
+        return next(
+            x
+            for x in (
+                ContentType.FLAC,
+                ContentType.WAV,
+                ContentType.PCM_S16LE,
+                ContentType.MP3,
+                ContentType.MPEG,
+            )
+            if x in self.supported_content_types
+        )
+
     async def volume_mute(self, muted: bool) -> None:
         """Send volume mute command to player."""
         # for players that do not support mute, we fake mute with volume
@@ -397,6 +413,20 @@ class PlayerGroup(Player):
             if all(
                 (
                     content_type in child_player.supported_content_types
+                    for child_player in self._get_child_players(False, False)
+                )
+            )
+        )
+
+    @property
+    def supported_sample_rates(self) -> Tuple[int]:
+        """Return the sample rates this player supports."""
+        return tuple(
+            sample_rate
+            for sample_rate in DEFAULT_SUPPORTED_SAMPLE_RATES
+            if all(
+                (
+                    sample_rate in child_player.supported_sample_rates
                     for child_player in self._get_child_players(False, False)
                 )
             )
