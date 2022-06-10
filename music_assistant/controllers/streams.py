@@ -96,7 +96,7 @@ class StreamsController:
             await runner.cleanup()
             await app.shutdown()
             await app.cleanup()
-            self.logger.info("Streamserver exited.")
+            self.logger.debug("Streamserver exited.")
 
         self.mass.subscribe(on_shutdown_event, EventType.SHUTDOWN)
 
@@ -140,9 +140,6 @@ class StreamsController:
 
     async def serve_queue_stream(self, request: web.Request):
         """Serve queue audio stream to a single player."""
-        self.logger.info(request)
-        self.logger.info(request.headers)
-
         stream_id = request.match_info["stream_id"]
         queue_stream = self.queue_streams.get(stream_id)
 
