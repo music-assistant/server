@@ -312,7 +312,7 @@ class Player(ABC):
             queue = self.mass.players.get_player_queue(player_id)
             if not queue or not queue.active:
                 continue
-            if queue.queue_id in player.current_url:
+            if queue.stream.stream_id in player.current_url:
                 # match found!
                 return queue.queue_id
         return self.player_id
