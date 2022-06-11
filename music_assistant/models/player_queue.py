@@ -13,7 +13,7 @@ from music_assistant.models.enums import EventType, MediaType, QueueOption, Repe
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
 
-from .player import Player, PlayerGroup, PlayerState
+from .player import Player, PlayerState, get_child_players
 from .queue_item import QueueItem
 from .queue_settings import QueueSettings
 
@@ -78,7 +78,7 @@ class PlayerQueue:
         return self._settings
 
     @property
-    def player(self) -> Player | PlayerGroup:
+    def player(self) -> Player:
         """Return the player attached to this queue."""
         return self.mass.players.get_player(self.queue_id, include_unavailable=True)
 
@@ -637,18 +637,12 @@ class PlayerQueue:
         self, start_index: int, seek_position: int, fade_in: bool, passive: bool = False
     ) -> None:
         """Start the queue stream runner."""
-        players: List[Player] = []
         output_format = self._settings.stream_type
-        # if multi stream is enabled, all child players should receive the same audio stream
         if self.player.use_multi_stream:
-            for child_id in self.player.group_childs:
-                child_player = self.mass.players.get_player(child_id)
-                if not child_player or not child_player.powered:
-                    continue
-                players.append(child_player)
+            # if multi stream is enabled, all child players should receive the same audio stream
+            expected_clients = len(get_child_players(self.player, True))
         else:
-            # regular (single player) request
-            players.append(self.player)
+            expected_clients = 1
 
         self._current_item_elapsed_time = 0
         self._current_index = start_index
@@ -656,7 +650,7 @@ class PlayerQueue:
         # start the queue stream background task
         stream = await self.mass.streams.start_queue_stream(
             queue=self,
-            expected_clients=len(players),
+            expected_clients=expected_clients,
             start_index=start_index,
             seek_position=seek_position,
             fade_in=fade_in,
@@ -665,7 +659,7 @@ class PlayerQueue:
         self._stream_id = stream.stream_id
         # execute the play command on the player(s)
         if not passive:
-            await asyncio.gather(*[x.play_url(stream.url) for x in players])
+            await self.player.play_url(stream.url)
 
     def get_next_index(self, cur_index: Optional[int]) -> int:
         """Return the next index for the queue, accounting for repeat settings."""

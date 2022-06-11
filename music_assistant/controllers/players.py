@@ -1,18 +1,17 @@
 """Logic to play music from MusicProviders to supported players."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Tuple
 
 from music_assistant.models.enums import EventType
 from music_assistant.models.errors import AlreadyRegisteredError
 from music_assistant.models.event import MassEvent
-from music_assistant.models.player import Player, PlayerGroup
+from music_assistant.models.player import Player
 from music_assistant.models.player_queue import PlayerQueue
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
-PlayerType = Union[Player, PlayerGroup]
 
 DB_TABLE = "queue_settings"
 
@@ -24,7 +23,7 @@ class PlayerController:
         """Initialize class."""
         self.mass = mass
         self.logger = mass.logger.getChild("players")
-        self._players: Dict[str, PlayerType] = {}
+        self._players: Dict[str, Player] = {}
         self._player_queues: Dict[str, PlayerQueue] = {}
 
     async def setup(self) -> None:
@@ -40,7 +39,7 @@ class PlayerController:
             self._player_queues.pop(queue_id)
 
     @property
-    def players(self) -> Tuple[PlayerType]:
+    def players(self) -> Tuple[Player]:
         """Return all available players."""
         return tuple(x for x in self._players.values() if x.available)
 
@@ -55,7 +54,7 @@ class PlayerController:
 
     def get_player(
         self, player_id: str, include_unavailable: bool = False
-    ) -> PlayerType | None:
+    ) -> Player | None:
         """Return Player by player_id or None if not found/unavailable."""
         if player := self._players.get(player_id):
             if player.available or include_unavailable:
@@ -66,11 +65,11 @@ class PlayerController:
         """Return PlayerQueue by id or None if not found/unavailable."""
         return self._player_queues.get(queue_id)
 
-    def get_player_by_name(self, name: str) -> PlayerType | None:
+    def get_player_by_name(self, name: str) -> Player | None:
         """Return Player by name or None if no match is found."""
         return next((x for x in self._players.values() if x.name == name), None)
 
-    async def register_player(self, player: PlayerType) -> None:
+    async def register_player(self, player: Player) -> None:
         """Register a new player on the controller."""
         if self.mass.closed:
             return
