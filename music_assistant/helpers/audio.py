@@ -169,7 +169,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
                 .split("LUFS")[0]
             )
             loudness = float(loudness_str.strip())
-        except (ValueError, AttributeError):
+        except (IndexError, ValueError, AttributeError):
             LOGGER.warning(
                 "Could not determine integrated loudness of %s - %s",
                 streamdetails.uri,
