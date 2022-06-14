@@ -16,7 +16,6 @@ from music_assistant.helpers.audio import (
     crossfade_pcm_parts,
     fadein_pcm_part,
     get_chunksize,
-    get_ffmpeg_args_for_pcm_stream,
     get_media_stream,
     get_preview_stream,
     get_stream_details,
@@ -265,11 +264,13 @@ class QueueStream:
         self.logger = self.queue.logger.getChild("stream")
         self.expected_clients = expected_clients
         self.connected_clients: Dict[str, CoroutineType[bytes]] = {}
-        self._runner_task: Optional[asyncio.Task] = None
+        self.bytes_sent = 0
+        self.streaming_started = 0
         self.done = asyncio.Event()
         self.all_clients_connected = asyncio.Event()
         self.index_in_buffer = start_index
         self.signal_next: bool = False
+        self._runner_task: Optional[asyncio.Task] = None
         if autostart:
             self.mass.create_task(self.start())
 
@@ -313,12 +314,32 @@ class QueueStream:
 
     async def _queue_stream_runner(self) -> None:
         """Distribute audio chunks over connected client queues."""
-        ffmpeg_args = await get_ffmpeg_args_for_pcm_stream(
-            self.pcm_sample_rate,
-            self.pcm_bit_depth,
-            self.pcm_channels,
-            output_format=self.output_format,
+        # collect ffmpeg args
+        input_format = ContentType.from_bit_depth(
+            self.pcm_bit_depth, self.pcm_floating_point
         )
+        ffmpeg_args = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ignore_unknown",
+            # pcm input args
+            "-f",
+            input_format.value,
+            "-ac",
+            str(self.pcm_channels),
+            "-ar",
+            str(self.pcm_sample_rate),
+            "-i",
+            "-",
+            # output args
+            "-f",
+            self.output_format.value,
+            "-compression_level",
+            "0",
+            "-",
+        ]
         # get the raw pcm bytes from the queue stream and on the fly encode to wanted format
         # send the compressed/encoded stream to the client(s).
         chunk_size = get_chunksize(self.output_format)
@@ -492,21 +513,26 @@ class QueueStream:
             prev_chunk = None
             bytes_written = 0
             # handle incoming audio chunks
-            async for chunk in get_media_stream(
+            async for is_last_chunk, chunk in get_media_stream(
                 self.mass,
                 streamdetails,
-                pcm_fmt,
-                pcm_sample_rate=self.pcm_sample_rate,
+                pcm_fmt=pcm_fmt,
+                sample_rate=self.pcm_sample_rate,
+                channels=self.pcm_channels,
                 chunk_size=buffer_size,
                 seek_position=seek_position,
             ):
                 cur_chunk += 1
-                is_last_chunk = len(chunk) < buffer_size
 
                 # HANDLE FIRST PART OF TRACK
                 if len(chunk) == 0 and bytes_written == 0 and is_last_chunk:
                     # stream error: got empy first chunk ?!
                     self.logger.warning("Stream error on %s", queue_track.uri)
+                elif cur_chunk == 1 and is_last_chunk:
+                    # audio only has one single chunk (alert?)
+                    bytes_written += len(chunk)
+                    yield chunk
+                    del chunk
                 elif cur_chunk == 1 and last_fadeout_data:
                     prev_chunk = chunk
                     del chunk
@@ -563,7 +589,7 @@ class QueueStream:
                     # with the previous chunk and this chunk
                     # and strip off silence
                     last_part = await strip_silence(
-                        prev_chunk + chunk, pcm_fmt, self.pcm_sample_rate, True
+                        prev_chunk + chunk, pcm_fmt, self.pcm_sample_rate, reverse=True
                     )
                     if len(last_part) < buffer_size:
                         # part is too short after the strip action
