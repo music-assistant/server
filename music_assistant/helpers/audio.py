@@ -448,7 +448,7 @@ async def get_radio_stream(
         # in loop to reconnect on connection failure
         try:
             LOGGER.debug("radio stream (re)connecting to: %s", url)
-            async with mass.http_session.get(url, headers=headers, timeout=2) as resp:
+            async with mass.http_session.get(url, headers=headers, timeout=60) as resp:
                 headers = resp.headers
                 meta_int = int(headers.get("icy-metaint", "0"))
                 # stream with ICY Metadata

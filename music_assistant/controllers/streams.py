@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import urllib.parse
+from time import time
 from types import CoroutineType
 from typing import TYPE_CHECKING, AsyncGenerator, Dict, Optional
 from uuid import uuid4
@@ -264,7 +265,7 @@ class QueueStream:
         self.logger = self.queue.logger.getChild("stream")
         self.expected_clients = expected_clients
         self.connected_clients: Dict[str, CoroutineType[bytes]] = {}
-        self.bytes_sent = 0
+        self.seconds_streamed = 0
         self.streaming_started = 0
         self.done = asyncio.Event()
         self.all_clients_connected = asyncio.Event()
@@ -343,13 +344,26 @@ class QueueStream:
         # get the raw pcm bytes from the queue stream and on the fly encode to wanted format
         # send the compressed/encoded stream to the client(s).
         chunk_size = get_chunksize(self.output_format)
+        sample_size = int(
+            self.pcm_sample_rate * (self.pcm_bit_depth / 8) * self.pcm_channels
+        )
         async with AsyncProcess(ffmpeg_args, True, chunk_size) as ffmpeg_proc:
 
             async def writer():
                 """Task that sends the raw pcm audio to the ffmpeg process."""
                 async for audio_chunk in self._get_queue_stream():
                     await ffmpeg_proc.write(audio_chunk)
+                    self.seconds_streamed += len(audio_chunk) / sample_size
                     del audio_chunk
+                    # allow clients to only buffer max ~30 seconds ahead
+                    seconds_allowed = int(time() - self.streaming_started) + 30
+                    diff = self.seconds_streamed - seconds_allowed
+                    if diff > 1:
+                        self.logger.debug(
+                            "Player is buffering %s seconds ahead, slowing it down",
+                            diff,
+                        )
+                        await asyncio.sleep(10)
                 # write eof when last packet is received
                 ffmpeg_proc.write_eof()
 
@@ -357,14 +371,15 @@ class QueueStream:
 
             # wait max 5 seconds for all client(s) to connect
             try:
-                await asyncio.wait_for(self.all_clients_connected.wait(), 5)
+                await asyncio.wait_for(self.all_clients_connected.wait(), 10)
             except asyncio.exceptions.TimeoutError:
                 self.logger.warning(
-                    "Abort: client(s) did not connect within 5 seconds."
+                    "Abort: client(s) did not connect within 10 seconds."
                 )
                 self.done.set()
                 return
             self.logger.debug("%s clients connected", len(self.connected_clients))
+            self.streaming_started = time()
 
             # Read bytes from final output and send chunk to child callback.
             async for chunk in ffmpeg_proc.iterate_chunks():
