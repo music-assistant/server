@@ -446,35 +446,38 @@ async def get_radio_stream(
     headers = {"Icy-MetaData": "1"}
     while True:
         # in loop to reconnect on connection failure
-        LOGGER.debug("radio stream (re)connecting to: %s", url)
-        async with mass.http_session.get(url, headers=headers) as resp:
-            headers = resp.headers
-            meta_int = int(headers.get("icy-metaint", "0"))
-            # stream with ICY Metadata
-            if meta_int:
-                while True:
-                    audio_chunk = await resp.content.readexactly(meta_int)
-                    yield audio_chunk
-                    meta_byte = await resp.content.readexactly(1)
-                    meta_length = ord(meta_byte) * 16
-                    meta_data = await resp.content.readexactly(meta_length)
-                    if not meta_data:
-                        continue
-                    meta_data = meta_data.rstrip(b"\0")
-                    stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
-                    if not stream_title:
-                        continue
-                    stream_title = stream_title.group(1).decode()
-                    if stream_title != streamdetails.stream_title:
-                        streamdetails.stream_title = stream_title
-                        if queue := mass.players.get_player_queue(
-                            streamdetails.queue_id
-                        ):
-                            queue.signal_update()
-            # Regular HTTP stream
-            else:
-                async for chunk in resp.content.iter_any():
-                    yield chunk
+        try:
+            LOGGER.debug("radio stream (re)connecting to: %s", url)
+            async with mass.http_session.get(url, headers=headers, timeout=2) as resp:
+                headers = resp.headers
+                meta_int = int(headers.get("icy-metaint", "0"))
+                # stream with ICY Metadata
+                if meta_int:
+                    while True:
+                        audio_chunk = await resp.content.readexactly(meta_int)
+                        yield audio_chunk
+                        meta_byte = await resp.content.readexactly(1)
+                        meta_length = ord(meta_byte) * 16
+                        meta_data = await resp.content.readexactly(meta_length)
+                        if not meta_data:
+                            continue
+                        meta_data = meta_data.rstrip(b"\0")
+                        stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
+                        if not stream_title:
+                            continue
+                        stream_title = stream_title.group(1).decode()
+                        if stream_title != streamdetails.stream_title:
+                            streamdetails.stream_title = stream_title
+                            if queue := mass.players.get_player_queue(
+                                streamdetails.queue_id
+                            ):
+                                queue.signal_update()
+                # Regular HTTP stream
+                else:
+                    async for chunk in resp.content.iter_any():
+                        yield chunk
+        except asyncio.exceptions.TimeoutError as err:
+            LOGGER.debug("Timeout on radio stream %s", streamdetails.uri, exc_info=err)
 
 
 async def get_http_stream(
