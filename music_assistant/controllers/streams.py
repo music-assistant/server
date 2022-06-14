@@ -369,7 +369,7 @@ class QueueStream:
 
             ffmpeg_proc.attach_task(writer())
 
-            # wait max 5 seconds for all client(s) to connect
+            # wait max 10 seconds for all client(s) to connect
             try:
                 await asyncio.wait_for(self.all_clients_connected.wait(), 10)
             except asyncio.exceptions.TimeoutError:
