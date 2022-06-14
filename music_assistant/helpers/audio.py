@@ -476,8 +476,8 @@ async def get_radio_stream(
                 else:
                     async for chunk in resp.content.iter_any():
                         yield chunk
-        except asyncio.exceptions.TimeoutError as err:
-            LOGGER.debug("Timeout on radio stream %s", streamdetails.uri, exc_info=err)
+        except asyncio.exceptions.TimeoutError:
+            pass
 
 
 async def get_http_stream(
