@@ -11,6 +11,7 @@ from time import time
 from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Tuple
 
 import aiofiles
+from aiohttp import ClientError, ClientTimeout
 
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import create_tempfile
@@ -444,11 +445,15 @@ async def get_radio_stream(
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
     headers = {"Icy-MetaData": "1"}
+    timeout = ClientTimeout(total=0, connect=10, sock_read=10)
+    reconnects = 0
     while True:
         # in loop to reconnect on connection failure
         try:
             LOGGER.debug("radio stream (re)connecting to: %s", url)
-            async with mass.http_session.get(url, headers=headers, timeout=60) as resp:
+            async with mass.http_session.get(
+                url, headers=headers, timeout=timeout
+            ) as resp:
                 headers = resp.headers
                 meta_int = int(headers.get("icy-metaint", "0"))
                 # stream with ICY Metadata
@@ -476,8 +481,11 @@ async def get_radio_stream(
                 else:
                     async for chunk in resp.content.iter_any():
                         yield chunk
-        except asyncio.exceptions.TimeoutError:
-            pass
+        except (asyncio.exceptions.TimeoutError, ClientError) as err:
+            # reconnect on http error (max 5 times)
+            if reconnects >= 5:
+                raise err
+            reconnects += 1
 
 
 async def get_http_stream(
