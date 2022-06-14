@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import urllib.parse
+from time import time
 from types import CoroutineType
 from typing import TYPE_CHECKING, AsyncGenerator, Dict, Optional
 from uuid import uuid4
@@ -16,7 +17,6 @@ from music_assistant.helpers.audio import (
     crossfade_pcm_parts,
     fadein_pcm_part,
     get_chunksize,
-    get_ffmpeg_args_for_pcm_stream,
     get_media_stream,
     get_preview_stream,
     get_stream_details,
@@ -265,11 +265,13 @@ class QueueStream:
         self.logger = self.queue.logger.getChild("stream")
         self.expected_clients = expected_clients
         self.connected_clients: Dict[str, CoroutineType[bytes]] = {}
-        self._runner_task: Optional[asyncio.Task] = None
+        self.seconds_streamed = 0
+        self.streaming_started = 0
         self.done = asyncio.Event()
         self.all_clients_connected = asyncio.Event()
         self.index_in_buffer = start_index
         self.signal_next: bool = False
+        self._runner_task: Optional[asyncio.Task] = None
         if autostart:
             self.mass.create_task(self.start())
 
@@ -313,22 +315,55 @@ class QueueStream:
 
     async def _queue_stream_runner(self) -> None:
         """Distribute audio chunks over connected client queues."""
-        ffmpeg_args = await get_ffmpeg_args_for_pcm_stream(
-            self.pcm_sample_rate,
-            self.pcm_bit_depth,
-            self.pcm_channels,
-            output_format=self.output_format,
+        # collect ffmpeg args
+        input_format = ContentType.from_bit_depth(
+            self.pcm_bit_depth, self.pcm_floating_point
         )
+        ffmpeg_args = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ignore_unknown",
+            # pcm input args
+            "-f",
+            input_format.value,
+            "-ac",
+            str(self.pcm_channels),
+            "-ar",
+            str(self.pcm_sample_rate),
+            "-i",
+            "-",
+            # output args
+            "-f",
+            self.output_format.value,
+            "-compression_level",
+            "0",
+            "-",
+        ]
         # get the raw pcm bytes from the queue stream and on the fly encode to wanted format
         # send the compressed/encoded stream to the client(s).
         chunk_size = get_chunksize(self.output_format)
+        sample_size = int(
+            self.pcm_sample_rate * (self.pcm_bit_depth / 8) * self.pcm_channels
+        )
         async with AsyncProcess(ffmpeg_args, True, chunk_size) as ffmpeg_proc:
 
             async def writer():
                 """Task that sends the raw pcm audio to the ffmpeg process."""
                 async for audio_chunk in self._get_queue_stream():
                     await ffmpeg_proc.write(audio_chunk)
+                    self.seconds_streamed += len(audio_chunk) / sample_size
                     del audio_chunk
+                    # allow clients to only buffer max ~30 seconds ahead
+                    seconds_allowed = int(time() - self.streaming_started) + 30
+                    diff = self.seconds_streamed - seconds_allowed
+                    if diff > 1:
+                        self.logger.debug(
+                            "Player is buffering %s seconds ahead, slowing it down",
+                            diff,
+                        )
+                        await asyncio.sleep(10)
                 # write eof when last packet is received
                 ffmpeg_proc.write_eof()
 
@@ -336,14 +371,15 @@ class QueueStream:
 
             # wait max 5 seconds for all client(s) to connect
             try:
-                await asyncio.wait_for(self.all_clients_connected.wait(), 5)
+                await asyncio.wait_for(self.all_clients_connected.wait(), 10)
             except asyncio.exceptions.TimeoutError:
                 self.logger.warning(
-                    "Abort: client(s) did not connect within 5 seconds."
+                    "Abort: client(s) did not connect within 10 seconds."
                 )
                 self.done.set()
                 return
             self.logger.debug("%s clients connected", len(self.connected_clients))
+            self.streaming_started = time()
 
             # Read bytes from final output and send chunk to child callback.
             async for chunk in ffmpeg_proc.iterate_chunks():
@@ -492,21 +528,26 @@ class QueueStream:
             prev_chunk = None
             bytes_written = 0
             # handle incoming audio chunks
-            async for chunk in get_media_stream(
+            async for is_last_chunk, chunk in get_media_stream(
                 self.mass,
                 streamdetails,
-                pcm_fmt,
-                pcm_sample_rate=self.pcm_sample_rate,
+                pcm_fmt=pcm_fmt,
+                sample_rate=self.pcm_sample_rate,
+                channels=self.pcm_channels,
                 chunk_size=buffer_size,
                 seek_position=seek_position,
             ):
                 cur_chunk += 1
-                is_last_chunk = len(chunk) < buffer_size
 
                 # HANDLE FIRST PART OF TRACK
                 if len(chunk) == 0 and bytes_written == 0 and is_last_chunk:
                     # stream error: got empy first chunk ?!
                     self.logger.warning("Stream error on %s", queue_track.uri)
+                elif cur_chunk == 1 and is_last_chunk:
+                    # audio only has one single chunk (alert?)
+                    bytes_written += len(chunk)
+                    yield chunk
+                    del chunk
                 elif cur_chunk == 1 and last_fadeout_data:
                     prev_chunk = chunk
                     del chunk
@@ -563,7 +604,7 @@ class QueueStream:
                     # with the previous chunk and this chunk
                     # and strip off silence
                     last_part = await strip_silence(
-                        prev_chunk + chunk, pcm_fmt, self.pcm_sample_rate, True
+                        prev_chunk + chunk, pcm_fmt, self.pcm_sample_rate, reverse=True
                     )
                     if len(last_part) < buffer_size:
                         # part is too short after the strip action

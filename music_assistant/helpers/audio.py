@@ -37,28 +37,48 @@ async def crossfade_pcm_parts(
     fade_length: int,
     fmt: ContentType,
     sample_rate: int,
+    channels: int = 2,
 ) -> bytes:
     """Crossfade two chunks of pcm/raw audio using ffmpeg."""
     fadeoutfile = create_tempfile()
     async with aiofiles.open(fadeoutfile.name, "wb") as outfile:
         await outfile.write(fade_out_part)
-    # input args
-    args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-    args += [
+    args = [
+        # generic args
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        # fadeout part (as file)
+        "-acodec",
+        fmt.name.lower(),
         "-f",
         fmt.value,
         "-ac",
-        "2",
+        str(channels),
         "-ar",
         str(sample_rate),
         "-i",
         fadeoutfile.name,
+        # fade_in part (stdin)
+        "-acodec",
+        fmt.name.lower(),
+        "-f",
+        fmt.value,
+        "-ac",
+        str(channels),
+        "-ar",
+        str(sample_rate),
+        "-i",
+        "-",
+        # filter args
+        "-filter_complex",
+        f"[0][1]acrossfade=d={fade_length}",
+        # output args
+        "-f",
+        fmt.value,
+        "-",
     ]
-    args += ["-f", fmt.value, "-ac", "2", "-ar", str(sample_rate), "-i", "-"]
-    # filter args
-    args += ["-filter_complex", f"[0][1]acrossfade=d={fade_length}"]
-    # output args
-    args += ["-f", fmt.value, "-"]
     async with AsyncProcess(args, True) as proc:
         crossfade_data, _ = await proc.communicate(fade_in_part)
         LOGGER.debug(
@@ -75,36 +95,61 @@ async def fadein_pcm_part(
     fade_length: int,
     fmt: ContentType,
     sample_rate: int,
+    channels: int = 2,
 ) -> bytes:
     """Fadein chunk of pcm/raw audio using ffmpeg."""
-    # input args
-    args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-    args += [
+    args = [
+        # generic args
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        # fade_in part (stdin)
+        "-acodec",
+        fmt.name.lower(),
         "-f",
         fmt.value,
         "-ac",
-        "2",
+        str(channels),
         "-ar",
         str(sample_rate),
         "-i",
         "-",
+        # filter args
+        "-af",
+        f"afade=type=in:start_time=0:duration={fade_length}",
+        # output args
+        "-f",
+        fmt.value,
+        "-",
     ]
-    # filter args
-    args += ["-af", f"afade=type=in:start_time=0:duration={fade_length}"]
-    # output args
-    args += ["-f", fmt.value, "-"]
     async with AsyncProcess(args, True) as proc:
         result_audio, _ = await proc.communicate(pcm_audio)
         return result_audio
 
 
 async def strip_silence(
-    audio_data: bytes, fmt: ContentType, sample_rate: int, reverse=False
+    audio_data: bytes,
+    fmt: ContentType,
+    sample_rate: int,
+    channels: int = 2,
+    reverse=False,
 ) -> bytes:
     """Strip silence from (a chunk of) pcm audio."""
     # input args
     args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-    args += ["-f", fmt.value, "-ac", "2", "-ar", str(sample_rate), "-i", "-"]
+    args += [
+        "-acodec",
+        fmt.name.lower(),
+        "-f",
+        fmt.value,
+        "-ac",
+        str(channels),
+        "-ar",
+        str(sample_rate),
+        "-i",
+        "-",
+    ]
     # filter args
     if reverse:
         args += ["-af", "areverse,silenceremove=1:0:-50dB:detection=peak,areverse"]
@@ -134,10 +179,10 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
     started = time()
     proc_args = [
         "ffmpeg",
-        "-f",
-        streamdetails.content_type.value,
         "-i",
         "-",
+        "-f",
+        streamdetails.content_type.value,
         "-af",
         "ebur128=framelog=verbose",
         "-f",
@@ -331,83 +376,20 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
     return file.getvalue()
 
 
-async def get_ffmpeg_args(
-    streamdetails: StreamDetails,
-    output_format: Optional[ContentType] = None,
-    pcm_sample_rate: Optional[int] = None,
-    pcm_channels: int = 2,
-) -> List[str]:
-    """Collect all args to send to the ffmpeg process."""
-    input_format = streamdetails.content_type
-    if output_format is None:
-        output_format = input_format
-
-    ffmpeg_present, libsoxr_support = await check_audio_support()
-
-    if not ffmpeg_present:
-        raise AudioError(
-            "FFmpeg binary is missing from system."
-            "Please install ffmpeg on your OS to enable playback.",
-        )
-    # collect input args
-    input_args = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-ignore_unknown",
-    ]
-    if streamdetails.content_type != ContentType.UNKNOWN:
-        input_args += ["-f", input_format.value]
-    input_args += ["-i", "-"]
-    # collect output args
-    if output_format.is_pcm():
-        output_args = [
-            "-acodec",
-            output_format.name.lower(),
-            "-f",
-            output_format.value,
-            "-ac",
-            str(pcm_channels),
-            "-ar",
-            str(pcm_sample_rate),
-            "-",
-        ]
-    else:
-        output_args = ["-f", output_format.value, "-"]
-    # collect extra and filter args
-    extra_args = []
-    filter_params = []
-    if streamdetails.gain_correct:
-        filter_params.append(f"volume={streamdetails.gain_correct}dB")
-    if (
-        pcm_sample_rate is not None
-        and streamdetails.sample_rate != pcm_sample_rate
-        and libsoxr_support
-        and streamdetails.media_type == MediaType.TRACK
-    ):
-        # prefer libsoxr high quality resampler (if present) for sample rate conversions
-        filter_params.append("aresample=resampler=soxr")
-    if filter_params:
-        extra_args += ["-af", ",".join(filter_params)]
-
-    if pcm_sample_rate is not None and not output_format.is_pcm():
-        extra_args += ["-ar", str(pcm_sample_rate)]
-
-    return input_args + extra_args + output_args
-
-
 async def get_media_stream(
     mass: MusicAssistant,
     streamdetails: StreamDetails,
-    output_format: Optional[ContentType] = None,
-    pcm_sample_rate: Optional[int] = None,
+    pcm_fmt: ContentType,
+    sample_rate: int,
+    channels: int = 2,
     chunk_size: Optional[int] = None,
     seek_position: int = 0,
-) -> AsyncGenerator[bytes, None]:
-    """Get the audio stream for the given streamdetails."""
-
-    args = await get_ffmpeg_args(streamdetails, output_format, pcm_sample_rate)
+) -> AsyncGenerator[Tuple[bool, bytes], None]:
+    """Get the PCM audio stream for the given streamdetails."""
+    assert pcm_fmt.is_pcm(), "Output format must be a PCM type"
+    args = await _get_ffmpeg_args(
+        streamdetails, pcm_fmt, pcm_sample_rate=sample_rate, pcm_channels=channels
+    )
     async with AsyncProcess(
         args, enable_write=True, chunk_size=chunk_size
     ) as ffmpeg_proc:
@@ -431,9 +413,15 @@ async def get_media_stream(
         ffmpeg_proc.attach_task(writer())
 
         # yield chunks from stdout
+        # we keep 1 chunk behind to detect end of stream properly
         try:
+            prev_chunk = b""
             async for chunk in ffmpeg_proc.iterate_chunks():
-                yield chunk
+                if prev_chunk:
+                    yield (False, prev_chunk)
+                prev_chunk = chunk
+            # send last chunk
+            yield (True, prev_chunk)
         except (asyncio.CancelledError, GeneratorExit) as err:
             LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
             raise err
@@ -458,35 +446,38 @@ async def get_radio_stream(
     headers = {"Icy-MetaData": "1"}
     while True:
         # in loop to reconnect on connection failure
-        LOGGER.debug("radio stream (re)connecting to: %s", url)
-        async with mass.http_session.get(url, headers=headers) as resp:
-            headers = resp.headers
-            meta_int = int(headers.get("icy-metaint", "0"))
-            # stream with ICY Metadata
-            if meta_int:
-                while True:
-                    audio_chunk = await resp.content.readexactly(meta_int)
-                    yield audio_chunk
-                    meta_byte = await resp.content.readexactly(1)
-                    meta_length = ord(meta_byte) * 16
-                    meta_data = await resp.content.readexactly(meta_length)
-                    if not meta_data:
-                        continue
-                    meta_data = meta_data.rstrip(b"\0")
-                    stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
-                    if not stream_title:
-                        continue
-                    stream_title = stream_title.group(1).decode()
-                    if stream_title != streamdetails.stream_title:
-                        streamdetails.stream_title = stream_title
-                        if queue := mass.players.get_player_queue(
-                            streamdetails.queue_id
-                        ):
-                            queue.signal_update()
-            # Regular HTTP stream
-            else:
-                async for chunk in resp.content.iter_any():
-                    yield chunk
+        try:
+            LOGGER.debug("radio stream (re)connecting to: %s", url)
+            async with mass.http_session.get(url, headers=headers, timeout=60) as resp:
+                headers = resp.headers
+                meta_int = int(headers.get("icy-metaint", "0"))
+                # stream with ICY Metadata
+                if meta_int:
+                    while True:
+                        audio_chunk = await resp.content.readexactly(meta_int)
+                        yield audio_chunk
+                        meta_byte = await resp.content.readexactly(1)
+                        meta_length = ord(meta_byte) * 16
+                        meta_data = await resp.content.readexactly(meta_length)
+                        if not meta_data:
+                            continue
+                        meta_data = meta_data.rstrip(b"\0")
+                        stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
+                        if not stream_title:
+                            continue
+                        stream_title = stream_title.group(1).decode()
+                        if stream_title != streamdetails.stream_title:
+                            streamdetails.stream_title = stream_title
+                            if queue := mass.players.get_player_queue(
+                                streamdetails.queue_id
+                            ):
+                                queue.signal_update()
+                # Regular HTTP stream
+                else:
+                    async for chunk in resp.content.iter_any():
+                        yield chunk
+        except asyncio.exceptions.TimeoutError:
+            pass
 
 
 async def get_http_stream(
@@ -498,7 +489,6 @@ async def get_http_stream(
     """Get audio stream from HTTP."""
     if seek_position:
         assert streamdetails.duration, "Duration required for seek requests"
-    chunk_size = get_chunksize(streamdetails.content_type)
     # try to get filesize with a head request
     if seek_position and not streamdetails.size:
         async with mass.http_session.head(url) as resp:
@@ -518,7 +508,7 @@ async def get_http_stream(
     async with mass.http_session.get(url, headers=headers) as resp:
         is_partial = resp.status == 206
         buffer_all = seek_position and not is_partial
-        async for chunk in resp.content.iter_chunked(chunk_size):
+        async for chunk in resp.content.iter_any():
             bytes_received += len(chunk)
             if buffer_all and not skip_bytes:
                 buffer += chunk
@@ -588,32 +578,6 @@ async def check_audio_support(try_install: bool = False) -> Tuple[bool, bool]:
     return result
 
 
-async def get_ffmpeg_args_for_pcm_stream(
-    sample_rate: int,
-    bit_depth: int,
-    channels: int,
-    floating_point: bool = False,
-    output_format: ContentType = ContentType.FLAC,
-) -> List[str]:
-    """Collect args for ffmpeg when converting from raw pcm to another contenttype."""
-    input_format = ContentType.from_bit_depth(bit_depth, floating_point)
-    # collect input args
-    input_args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ignore_unknown"]
-    input_args += [
-        "-f",
-        input_format.value,
-        "-ac",
-        str(channels),
-        "-ar",
-        str(sample_rate),
-        "-i",
-        "-",
-    ]
-    # collect output args
-    output_args = ["-f", output_format.value, "-"]
-    return input_args + output_args
-
-
 async def get_preview_stream(
     mass: MusicAssistant,
     provider_id: str,
@@ -668,3 +632,61 @@ def get_chunksize(content_type: ContentType) -> int:
     ):
         return 64000
     return 256000
+
+
+async def _get_ffmpeg_args(
+    streamdetails: StreamDetails,
+    pcm_output_format: ContentType,
+    pcm_sample_rate: int,
+    pcm_channels: int = 2,
+) -> List[str]:
+    """Collect all args to send to the ffmpeg process."""
+    input_format = streamdetails.content_type
+    assert pcm_output_format.is_pcm(), "Output format needs to be PCM"
+
+    ffmpeg_present, libsoxr_support = await check_audio_support()
+
+    if not ffmpeg_present:
+        raise AudioError(
+            "FFmpeg binary is missing from system."
+            "Please install ffmpeg on your OS to enable playback.",
+        )
+    # collect input args
+    input_args = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ignore_unknown",
+    ]
+    if streamdetails.content_type != ContentType.UNKNOWN:
+        input_args += ["-f", input_format.value]
+    input_args += ["-i", "-"]
+    # collect output args
+    output_args = [
+        "-acodec",
+        pcm_output_format.name.lower(),
+        "-f",
+        pcm_output_format.value,
+        "-ac",
+        str(pcm_channels),
+        "-ar",
+        str(pcm_sample_rate),
+        "-",
+    ]
+    # collect extra and filter args
+    extra_args = []
+    filter_params = []
+    if streamdetails.gain_correct:
+        filter_params.append(f"volume={streamdetails.gain_correct}dB")
+    if (
+        streamdetails.sample_rate != pcm_sample_rate
+        and libsoxr_support
+        and streamdetails.media_type == MediaType.TRACK
+    ):
+        # prefer libsoxr high quality resampler (if present) for sample rate conversions
+        filter_params.append("aresample=resampler=soxr")
+    if filter_params:
+        extra_args += ["-af", ",".join(filter_params)]
+
+    return input_args + extra_args + output_args

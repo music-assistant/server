@@ -262,14 +262,14 @@ class PlayerQueue:
             await self.append(queue_items)
 
     async def play_alert(
-        self, uri: str, announce: bool = False, volume_adjust: int = 10
+        self, uri: str, announce: bool = False, gain_correct: int = 6
     ) -> str:
         """
         Play given uri as Alert on the queue.
 
         uri: Uri that should be played as announcement, can be Music Assistant URI or plain url.
         announce: Prepend the (TTS) alert with a small announce sound.
-        volume_adjust: Adjust the volume of the player by this percentage (relative).
+        gain_correct: Adjust the gain of the alert sound (in dB).
         """
         if self._snapshot:
             self.logger.debug("Ignore play_alert: already in progress")
@@ -295,37 +295,28 @@ class PlayerQueue:
             if uri.startswith("http") or os.path.isfile(uri):
                 # a plain url was provided
                 queue_item = QueueItem.from_url(uri, "alert")
-                queue_item.streamdetails.gain_correct = 6
+                queue_item.streamdetails.gain_correct = gain_correct
                 queue_items.append(queue_item)
             else:
                 raise MediaNotFoundError(f"Invalid uri: {uri}") from err
-
-        # append silence track, we use this to reliably detect when the alert is ready
-        silence_url = self.mass.streams.get_silence_url(600)
-        queue_item = QueueItem.from_url(silence_url, "alert")
-        queue_items.append(queue_item)
 
         # load queue with alert sound(s)
         await self.load(queue_items)
 
         # wait for the alert to finish playing
+        await self.stream.done.wait()
         alert_done = asyncio.Event()
 
         def handle_event(evt: MassEvent):
-            if (
-                self.current_item
-                and self.current_item.uri == silence_url
-                and self.elapsed_time
-            ):
+            if self.player.state != PlayerState.PLAYING:
                 alert_done.set()
 
         unsub = self.mass.subscribe(
-            handle_event, EventType.QUEUE_TIME_UPDATED, self.queue_id
+            handle_event, EventType.QUEUE_UPDATED, self.queue_id
         )
         try:
-            await asyncio.wait_for(alert_done.wait(), 120)
+            await asyncio.wait_for(alert_done.wait(), 30)
         finally:
-
             unsub()
             # restore queue
             await self.snapshot_restore()
@@ -635,7 +626,7 @@ class PlayerQueue:
 
     async def queue_stream_start(
         self, start_index: int, seek_position: int, fade_in: bool, passive: bool = False
-    ) -> None:
+    ) -> QueueStream:
         """Start the queue stream runner."""
         output_format = self._settings.stream_type
         if self.player.use_multi_stream:
@@ -660,6 +651,7 @@ class PlayerQueue:
         # execute the play command on the player(s)
         if not passive:
             await self.player.play_url(stream.url)
+        return stream
 
     def get_next_index(self, cur_index: Optional[int]) -> int:
         """Return the next index for the queue, accounting for repeat settings."""
