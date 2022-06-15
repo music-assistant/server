@@ -476,9 +476,6 @@ class QueueStream:
                 )
                 continue
 
-            if queue_track.name == "alert":
-                self.pcm_resample = True
-
             # check the PCM samplerate/bitrate
             if not self.pcm_resample and streamdetails.bit_depth > self.pcm_bit_depth:
                 self.signal_next = True
