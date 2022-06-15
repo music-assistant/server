@@ -12,7 +12,7 @@ from music_assistant.helpers.audio import (
 from music_assistant.models.config import MusicProviderConfig
 from music_assistant.models.enums import ContentType, MediaType, ProviderType
 from music_assistant.models.media_items import MediaItemType, StreamDetails
-from music_assistant.models.provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider
 
 PROVIDER_CONFIG = MusicProviderConfig(ProviderType.URL)
 

@@ -21,14 +21,13 @@ from music_assistant.models.config import MusicProviderConfig
 from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.errors import MusicAssistantError, SetupFailedError
 from music_assistant.models.media_items import MediaItem, MediaItemType
-from music_assistant.models.provider import MusicProvider
-
-from .providers.filesystem import FileSystemProvider
-from .providers.qobuz import QobuzProvider
-from .providers.spotify import SpotifyProvider
-from .providers.tunein import TuneInProvider
-from .providers.url import PROVIDER_CONFIG as URL_CONFIG
-from .providers.url import URLProvider
+from music_assistant.models.music_provider import MusicProvider
+from music_assistant.music_providers.filesystem import FileSystemProvider
+from music_assistant.music_providers.qobuz import QobuzProvider
+from music_assistant.music_providers.spotify import SpotifyProvider
+from music_assistant.music_providers.tunein import TuneInProvider
+from music_assistant.music_providers.url import PROVIDER_CONFIG as URL_CONFIG
+from music_assistant.music_providers.url import URLProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant

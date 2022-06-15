@@ -21,7 +21,7 @@ from music_assistant.models.media_items import (
     Radio,
     StreamDetails,
 )
-from music_assistant.models.provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider
 
 
 class TuneInProvider(MusicProvider):
