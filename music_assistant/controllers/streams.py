@@ -169,6 +169,7 @@ class StreamsController:
         seek_position: int,
         fade_in: bool,
         output_format: ContentType,
+        is_alert: bool,
     ) -> QueueStream:
         """Start running a queue stream."""
         # cleanup stale previous queue tasks
@@ -184,7 +185,12 @@ class StreamsController:
         streamdetails = await get_stream_details(self.mass, first_item, queue.queue_id)
 
         # work out pcm details
-        if queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
+        if is_alert:
+            pcm_sample_rate = 41000
+            pcm_bit_depth = 16
+            pcm_channels = 2
+            pcm_resample = True
+        elif queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
             pcm_sample_rate = min(96000, queue.max_sample_rate)
             pcm_bit_depth = 24
             pcm_channels = 2
@@ -212,6 +218,7 @@ class StreamsController:
             pcm_bit_depth=pcm_bit_depth,
             pcm_channels=pcm_channels,
             pcm_resample=pcm_resample,
+            is_alert=is_alert,
             autostart=True,
         )
         self.mass.create_task(self.cleanup_stale)
@@ -244,6 +251,7 @@ class QueueStream:
         pcm_channels: int = 2,
         pcm_floating_point: bool = False,
         pcm_resample: bool = False,
+        is_alert: bool = False,
         autostart: bool = False,
     ):
         """Init QueueStreamJob instance."""
@@ -259,6 +267,7 @@ class QueueStream:
         self.pcm_channels = pcm_channels
         self.pcm_floating_point = pcm_floating_point
         self.pcm_resample = pcm_resample
+        self.is_alert = is_alert
         self.url = queue.mass.streams.get_stream_url(stream_id, output_format)
 
         self.mass = queue.mass
@@ -356,11 +365,11 @@ class QueueStream:
                     self.seconds_streamed += len(audio_chunk) / sample_size
                     del audio_chunk
                     # allow clients to only buffer max ~30 seconds ahead
-                    seconds_allowed = int(time() - self.streaming_started) + 30
+                    seconds_allowed = int(time() - self.streaming_started)
                     diff = self.seconds_streamed - seconds_allowed
-                    if diff > 1:
+                    if diff > 30:
                         self.logger.debug(
-                            "Player is buffering %s seconds ahead, slowing it down",
+                            "Player is buffering %s seconds ahead, slowing it down a bit",
                             diff,
                         )
                         await asyncio.sleep(10)
@@ -525,7 +534,7 @@ class QueueStream:
             queue_track.streamdetails.seconds_skipped = seek_position
             fade_in_part = b""
             cur_chunk = 0
-            prev_chunk = None
+            prev_chunk = b""
             bytes_written = 0
             # handle incoming audio chunks
             async for is_last_chunk, chunk in get_media_stream(
@@ -543,11 +552,6 @@ class QueueStream:
                 if len(chunk) == 0 and bytes_written == 0 and is_last_chunk:
                     # stream error: got empy first chunk ?!
                     self.logger.warning("Stream error on %s", queue_track.uri)
-                elif cur_chunk == 1 and is_last_chunk:
-                    # audio only has one single chunk (alert?)
-                    bytes_written += len(chunk)
-                    yield chunk
-                    del chunk
                 elif cur_chunk == 1 and last_fadeout_data:
                     prev_chunk = chunk
                     del chunk
@@ -597,7 +601,7 @@ class QueueStream:
                     bytes_written += len(remaining_bytes)
                     del remaining_bytes
                     del chunk
-                    prev_chunk = None  # needed to prevent this chunk being sent again
+                    prev_chunk = b""  # needed to prevent this chunk being sent again
                 # HANDLE LAST PART OF TRACK
                 elif prev_chunk and is_last_chunk:
                     # last chunk received so create the last_part
@@ -631,6 +635,10 @@ class QueueStream:
                         del last_part
                         del remaining_bytes
                         del chunk
+                elif is_last_chunk:
+                    # there is only one chunk (e.g. alert sound)
+                    yield chunk
+                    del chunk
                 # MIDDLE PARTS OF TRACK
                 else:
                     # middle part of the track
