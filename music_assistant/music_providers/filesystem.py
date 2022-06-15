@@ -16,7 +16,6 @@ from tinytag.tinytag import TinyTag
 
 from music_assistant.helpers.audio import get_file_stream
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.database import SCHEMA_VERSION
 from music_assistant.helpers.util import (
     create_clean_string,
     parse_title_and_version,
@@ -53,6 +52,7 @@ CONTENT_TYPE_EXT = {
     "ogg": ContentType.OGG,
     "wma": ContentType.WMA,
 }
+SCHEMA_VERSION = 17
 
 
 async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
@@ -145,6 +145,7 @@ class FileSystemProvider(MusicProvider):
         """Run library sync for this provider."""
         cache_key = f"{self.id}.checksums"
         prev_checksums = await self.mass.cache.get(cache_key, SCHEMA_VERSION)
+        save_checksum_interval = 0
         if prev_checksums is None:
             prev_checksums = {}
         # find all music files in the music directory and all subfolders
@@ -197,9 +198,15 @@ class FileSystemProvider(MusicProvider):
                     # we don't want the whole sync to crash on one file so we catch all exceptions here
                     self.logger.exception("Error processing %s", entry.path)
 
-        # save checksums for next sync
-        await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
+                # save checksums every 50 processed items
+                # this allows us to pickup where we leftoff when initial scan gets intterrupted
+                if save_checksum_interval == 50:
+                    await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
+                    save_checksum_interval = 0
+                else:
+                    save_checksum_interval += 1
 
+        await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
         # work out deletions
         deleted_files = set(prev_checksums.keys()) - set(cur_checksums.keys())
         artists: Set[ItemMapping] = set()
