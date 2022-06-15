@@ -180,15 +180,20 @@ class TracksController(MediaControllerBase[Track]):
         """Update Track record in the database, merging data."""
         async with self.mass.database.get_db(db) as db:
             cur_item = await self.get_db_item(item_id, db=db)
-            if overwrite:
-                provider_ids = item.provider_ids
-            else:
-                provider_ids = {*cur_item.provider_ids, *item.provider_ids}
-            metadata = cur_item.metadata.update(item.metadata, overwrite)
 
-            # we store a mapping to artists/albums on the item for easier access/listings
-            track_artists = await self._get_track_artists(cur_item, item, db=db)
-            track_albums = await self._get_track_albums(cur_item, item, db=db)
+            if overwrite:
+                metadata = item.metadata
+                provider_ids = item.provider_ids
+                metadata.last_refresh = None
+                # we store a mapping to artists/albums on the item for easier access/listings
+                track_artists = await self._get_track_artists(item, db=db)
+                track_albums = await self._get_track_albums(item, db=db)
+            else:
+                metadata = cur_item.metadata.update(item.metadata, overwrite)
+                provider_ids = {*cur_item.provider_ids, *item.provider_ids}
+                track_artists = await self._get_track_artists(cur_item, item, db=db)
+                track_albums = await self._get_track_albums(cur_item, item, db=db)
+
             await self.mass.database.update(
                 self.db_table,
                 {"item_id": item_id},

@@ -173,13 +173,16 @@ class AlbumsController(MediaControllerBase[Album]):
         assert item.artist, f"Album {item.name} is missing artist"
         async with self.mass.database.get_db(db) as db:
             cur_item = await self.get_db_item(item_id)
-            album_artists = await self._get_album_artists(item, cur_item, db=db)
+
             if overwrite:
                 metadata = item.metadata
+                metadata.last_refresh = None
                 provider_ids = item.provider_ids
+                album_artists = await self._get_album_artists(cur_item, db=db)
             else:
                 metadata = cur_item.metadata.update(item.metadata)
                 provider_ids = {*cur_item.provider_ids, *item.provider_ids}
+                album_artists = await self._get_album_artists(item, cur_item, db=db)
 
             if item.album_type != AlbumType.UNKNOWN:
                 album_type = item.album_type
