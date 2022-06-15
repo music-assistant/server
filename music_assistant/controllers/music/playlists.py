@@ -162,7 +162,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
         )
 
-    async def add_db_item(self, item: Playlist, db: Optional[Db] = None) -> Playlist:
+    async def add_db_item(
+        self, item: Playlist, overwrite_existing: bool = False, db: Optional[Db] = None
+    ) -> Playlist:
         """Add a new record to the database."""
         async with self.mass.database.get_db(db) as db:
             match = {"name": item.name, "owner": item.owner}
@@ -170,7 +172,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 self.db_table, match, db=db
             ):
                 # update existing
-                return await self.update_db_item(cur_item["item_id"], item, db=db)
+                return await self.update_db_item(
+                    cur_item["item_id"], item, overwrite=overwrite_existing, db=db
+                )
 
             # insert new item
             new_item = await self.mass.database.insert(
