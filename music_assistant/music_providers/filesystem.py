@@ -211,9 +211,10 @@ class FileSystemProvider(MusicProvider):
         deleted_files = set(prev_checksums.keys()) - set(cur_checksums.keys())
         artists: Set[ItemMapping] = set()
         albums: Set[ItemMapping] = set()
-        # process deleted tracks
+        # process deleted tracks/playlists
         for file_path in deleted_files:
             item_id = self._get_item_id(file_path)
+            # try track first
             if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
                 item_id, self.type
             ):
@@ -228,6 +229,13 @@ class FileSystemProvider(MusicProvider):
                     albums.add(db_item.album.item_id)
                     for artist in db_item.album.artists:
                         artists.add(artist.item_id)
+            # fallback to playlist
+            elif db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
+                item_id, self.type
+            ):
+                await self.mass.music.playlists.remove_prov_mapping(
+                    db_item.item_id, self.id
+                )
         # check if albums are deleted
         for album_id in albums:
             album = await self.mass.music.albums.get_db_item(album_id)
