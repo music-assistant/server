@@ -16,7 +16,6 @@ from tinytag.tinytag import TinyTag
 
 from music_assistant.helpers.audio import get_file_stream
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.database import SCHEMA_VERSION
 from music_assistant.helpers.util import (
     create_clean_string,
     parse_title_and_version,
@@ -53,6 +52,7 @@ CONTENT_TYPE_EXT = {
     "ogg": ContentType.OGG,
     "wma": ContentType.WMA,
 }
+SCHEMA_VERSION = 17
 
 
 async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
@@ -145,6 +145,7 @@ class FileSystemProvider(MusicProvider):
         """Run library sync for this provider."""
         cache_key = f"{self.id}.checksums"
         prev_checksums = await self.mass.cache.get(cache_key, SCHEMA_VERSION)
+        save_checksum_interval = 0
         if prev_checksums is None:
             prev_checksums = {}
         # find all music files in the music directory and all subfolders
@@ -166,7 +167,7 @@ class FileSystemProvider(MusicProvider):
                         # process album
                         if track.album:
                             db_album = await self.mass.music.albums.add_db_item(
-                                track.album, db=db
+                                track.album, allow_overwrite=True, db=db
                             )
                             if not db_album.in_library:
                                 await self.mass.music.albums.set_db_library(
@@ -183,7 +184,7 @@ class FileSystemProvider(MusicProvider):
                                     )
                         # add/update track to db
                         db_track = await self.mass.music.tracks.add_db_item(
-                            track, db=db
+                            track, allow_overwrite=True, db=db
                         )
                         if not db_track.in_library:
                             await self.mass.music.tracks.set_db_library(
@@ -197,16 +198,23 @@ class FileSystemProvider(MusicProvider):
                     # we don't want the whole sync to crash on one file so we catch all exceptions here
                     self.logger.exception("Error processing %s", entry.path)
 
-        # save checksums for next sync
-        await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
+                # save checksums every 50 processed items
+                # this allows us to pickup where we leftoff when initial scan gets intterrupted
+                if save_checksum_interval == 50:
+                    await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
+                    save_checksum_interval = 0
+                else:
+                    save_checksum_interval += 1
 
+        await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
         # work out deletions
         deleted_files = set(prev_checksums.keys()) - set(cur_checksums.keys())
         artists: Set[ItemMapping] = set()
         albums: Set[ItemMapping] = set()
-        # process deleted tracks
+        # process deleted tracks/playlists
         for file_path in deleted_files:
             item_id = self._get_item_id(file_path)
+            # try track first
             if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
                 item_id, self.type
             ):
@@ -221,6 +229,13 @@ class FileSystemProvider(MusicProvider):
                     albums.add(db_item.album.item_id)
                     for artist in db_item.album.artists:
                         artists.add(artist.item_id)
+            # fallback to playlist
+            elif db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
+                item_id, self.type
+            ):
+                await self.mass.music.playlists.remove_prov_mapping(
+                    db_item.item_id, self.id
+                )
         # check if albums are deleted
         for album_id in albums:
             album = await self.mass.music.albums.get_db_item(album_id)

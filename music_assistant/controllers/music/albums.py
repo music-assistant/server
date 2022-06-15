@@ -109,7 +109,9 @@ class AlbumsController(MediaControllerBase[Album]):
             return []
         return await prov.get_album_tracks(item_id)
 
-    async def add_db_item(self, item: Album, db: Optional[Db] = None) -> Album:
+    async def add_db_item(
+        self, item: Album, overwrite_existing: bool = False, db: Optional[Db] = None
+    ) -> Album:
         """Add a new record to the database."""
         assert item.provider_ids, f"Album {item.name} is missing provider id(s)"
         assert item.artist, f"Album {item.name} is missing artist"
@@ -134,7 +136,9 @@ class AlbumsController(MediaControllerBase[Album]):
                         break
             if cur_item:
                 # update existing
-                return await self.update_db_item(cur_item.item_id, item, db=db)
+                return await self.update_db_item(
+                    cur_item.item_id, item, overwrite=overwrite_existing, db=db
+                )
 
             # insert new item
             album_artists = await self._get_album_artists(item, cur_item, db=db)
@@ -169,13 +173,16 @@ class AlbumsController(MediaControllerBase[Album]):
         assert item.artist, f"Album {item.name} is missing artist"
         async with self.mass.database.get_db(db) as db:
             cur_item = await self.get_db_item(item_id)
-            album_artists = await self._get_album_artists(item, cur_item, db=db)
+
             if overwrite:
                 metadata = item.metadata
+                metadata.last_refresh = None
                 provider_ids = item.provider_ids
+                album_artists = await self._get_album_artists(cur_item, db=db)
             else:
                 metadata = cur_item.metadata.update(item.metadata)
                 provider_ids = {*cur_item.provider_ids, *item.provider_ids}
+                album_artists = await self._get_album_artists(item, cur_item, db=db)
 
             if item.album_type != AlbumType.UNKNOWN:
                 album_type = item.album_type

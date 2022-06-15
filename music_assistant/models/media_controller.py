@@ -47,7 +47,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
-    async def add_db_item(self, item: ItemCls, db: Optional[Db] = None) -> ItemCls:
+    async def add_db_item(
+        self, item: ItemCls, overwrite_existing: bool = False, db: Optional[Db] = None
+    ) -> ItemCls:
         """Add a new record for this mediatype to the database."""
         raise NotImplementedError
 
