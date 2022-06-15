@@ -115,7 +115,9 @@ class TracksController(MediaControllerBase[Track]):
                     provider.name,
                 )
 
-    async def add_db_item(self, item: Track, db: Optional[Db] = None) -> Track:
+    async def add_db_item(
+        self, item: Track, overwrite_existing: bool = False, db: Optional[Db] = None
+    ) -> Track:
         """Add a new item record to the database."""
         assert item.artists, "Track is missing artist(s)"
         assert item.provider_ids, "Track is missing provider id(s)"
@@ -141,7 +143,9 @@ class TracksController(MediaControllerBase[Track]):
                         break
             if cur_item:
                 # update existing
-                return await self.update_db_item(cur_item.item_id, item, db=db)
+                return await self.update_db_item(
+                    cur_item.item_id, item, overwrite=overwrite_existing, db=db
+                )
 
             # no existing match found: insert new item
             track_artists = await self._get_track_artists(item, db=db)

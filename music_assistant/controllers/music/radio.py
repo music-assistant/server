@@ -31,7 +31,9 @@ class RadioController(MediaControllerBase[Radio]):
         await self.mass.metadata.get_radio_metadata(item)
         return await self.add_db_item(item)
 
-    async def add_db_item(self, item: Radio, db: Optional[Db] = None) -> Radio:
+    async def add_db_item(
+        self, item: Radio, overwrite_existing: bool = False, db: Optional[Db] = None
+    ) -> Radio:
         """Add a new item record to the database."""
         assert item.provider_ids
         async with self.mass.database.get_db(db) as db:
@@ -40,7 +42,9 @@ class RadioController(MediaControllerBase[Radio]):
                 self.db_table, match, db=db
             ):
                 # update existing
-                return await self.update_db_item(cur_item["item_id"], item, db=db)
+                return await self.update_db_item(
+                    cur_item["item_id"], item, overwrite=overwrite_existing, db=db
+                )
 
             # insert new item
             new_item = await self.mass.database.insert(
