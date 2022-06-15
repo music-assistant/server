@@ -167,7 +167,7 @@ class FileSystemProvider(MusicProvider):
                         # process album
                         if track.album:
                             db_album = await self.mass.music.albums.add_db_item(
-                                track.album, allow_overwrite=True, db=db
+                                track.album, overwrite_existing=True, db=db
                             )
                             if not db_album.in_library:
                                 await self.mass.music.albums.set_db_library(
@@ -184,7 +184,7 @@ class FileSystemProvider(MusicProvider):
                                     )
                         # add/update track to db
                         db_track = await self.mass.music.tracks.add_db_item(
-                            track, allow_overwrite=True, db=db
+                            track, overwrite_existing=True, db=db
                         )
                         if not db_track.in_library:
                             await self.mass.music.tracks.set_db_library(
