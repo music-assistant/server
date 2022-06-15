@@ -9,7 +9,13 @@ from asyncio import Task, TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
-from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
+from music_assistant.models.enums import (
+    ContentType,
+    EventType,
+    MediaType,
+    QueueOption,
+    RepeatMode,
+)
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
 
@@ -40,6 +46,8 @@ class QueueSnapShot:
     items: List[QueueItem]
     index: Optional[int]
     position: int
+    repeat: RepeatMode
+    shuffle: bool
 
 
 class PlayerQueue:
@@ -271,9 +279,7 @@ class PlayerQueue:
         announce: Prepend the (TTS) alert with a small announce sound.
         gain_correct: Adjust the gain of the alert sound (in dB).
         """
-        if self._snapshot:
-            self.logger.debug("Ignore play_alert: already in progress")
-            # return
+        assert not self._snapshot, "Alert already in progress"
 
         # create snapshot
         await self.snapshot_create()
@@ -300,11 +306,13 @@ class PlayerQueue:
             else:
                 raise MediaNotFoundError(f"Invalid uri: {uri}") from err
 
-        # load queue with alert sound(s)
-        await self.load(queue_items)
+        # start queue with alert sound(s)
+        self._items = queue_items
+        self._settings.repeat_mode = RepeatMode.OFF
+        self._settings.shuffle_enabled = False
+        await self.queue_stream_start(0, 0, False, is_alert=True)
 
-        # wait for the alert to finish playing
-        await self.stream.done.wait()
+        # wait for the player to finish playing
         alert_done = asyncio.Event()
 
         def handle_event(evt: MassEvent):
@@ -315,7 +323,10 @@ class PlayerQueue:
             handle_event, EventType.QUEUE_UPDATED, self.queue_id
         )
         try:
+            await asyncio.wait_for(self.stream.done.wait(), 30)
             await asyncio.wait_for(alert_done.wait(), 30)
+        except asyncio.TimeoutError:
+            self.logger.warning("Timeout while playing alert")
         finally:
             unsub()
             # restore queue
@@ -397,12 +408,15 @@ class PlayerQueue:
 
     async def snapshot_create(self) -> None:
         """Create snapshot of current Queue state."""
+        self.logger.debug("Creating snapshot...")
         self._snapshot = QueueSnapShot(
             powered=self.player.powered,
             state=self.player.state,
             items=self._items,
             index=self._current_index,
             position=self._current_item_elapsed_time,
+            repeat=self._settings.repeat_mode,
+            shuffle=self._settings.shuffle_enabled,
         )
 
     async def snapshot_restore(self) -> None:
@@ -411,6 +425,8 @@ class PlayerQueue:
         # clear queue first
         await self.clear()
         # restore queue
+        self._settings.repeat_mode = self._snapshot.repeat
+        self._settings.shuffle_enabled = self._snapshot.shuffle
         await self.update(self._snapshot.items)
         self._current_index = self._snapshot.index
         self._current_item_elapsed_time = self._snapshot.position
@@ -421,6 +437,7 @@ class PlayerQueue:
         if not self._snapshot.powered:
             await self.player.power(False)
         # reset snapshot once restored
+        self.logger.debug("Restored snapshot...")
         self._snapshot = None
 
     async def play_index(
@@ -625,10 +642,19 @@ class PlayerQueue:
             )
 
     async def queue_stream_start(
-        self, start_index: int, seek_position: int, fade_in: bool, passive: bool = False
+        self,
+        start_index: int,
+        seek_position: int,
+        fade_in: bool,
+        is_alert: bool = False,
+        passive: bool = False,
     ) -> QueueStream:
         """Start the queue stream runner."""
-        output_format = self._settings.stream_type
+        if is_alert and ContentType.MP3 in self.player.supported_content_types:
+            # force MP3 for alert messages
+            output_format = ContentType.MP3
+        else:
+            output_format = self._settings.stream_type
         if self.player.use_multi_stream:
             # if multi stream is enabled, all child players should receive the same audio stream
             expected_clients = len(get_child_players(self.player, True))
@@ -646,6 +672,7 @@ class PlayerQueue:
             seek_position=seek_position,
             fade_in=fade_in,
             output_format=output_format,
+            is_alert=is_alert,
         )
         self._stream_id = stream.stream_id
         # execute the play command on the player(s)
