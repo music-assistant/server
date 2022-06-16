@@ -20,7 +20,7 @@ from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.enums import ProviderType
-from music_assistant.models.errors import LoginFailed, MediaNotFoundError
+from music_assistant.models.errors import AudioError, LoginFailed, MediaNotFoundError
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -305,9 +305,16 @@ class SpotifyProvider(MusicProvider):
         ]
         if seek_position:
             args += ["--start-position", str(int(seek_position))]
+        bytes_sent = 0
         async with AsyncProcess(args) as librespot_proc:
             async for chunk in librespot_proc.iterate_chunks():
                 yield chunk
+                bytes_sent += len(chunk)
+        # TEMP: diagnose issues with librespot dump details
+        if bytes_sent < 100:
+            async with AsyncProcess(args, use_stderr=True) as librespot_proc:
+                _, stderr = await librespot_proc.communicate()
+            raise AudioError(f"Error getting stream from librespot: {stderr.decode()}")
 
     async def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
