@@ -401,6 +401,9 @@ class PlayerQueue:
             resume_pos = resume_pos if resume_pos > 10 else 0
             fade_in = 5 if resume_pos else 0
             await self.play_index(resume_item.item_id, resume_pos, fade_in)
+        elif len(self._items) > 0:
+            # items available in queue but no previous track, start at 0
+            await self.play_index(0)
         else:
             self.logger.warning(
                 "resume queue requested for %s but queue is empty", self.queue_id
