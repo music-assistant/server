@@ -125,10 +125,11 @@ class StreamsController:
             status=200, reason="OK", headers={"Content-Type": "audio/wav"}
         )
         await resp.prepare(request)
-        # service 60 seconds of silence while player is processing request
-        await resp.write(create_wave_header(duration=60))
-        for _ in range(0, 60):
-            await resp.write(b"\0" * 1764000)
+        if request.method == "GET":
+            # service 60 seconds of silence while player is processing request
+            await resp.write(create_wave_header(duration=60))
+            for _ in range(0, 60):
+                await resp.write(b"\0" * 1764000)
         return resp
 
     async def serve_preview(self, request: web.Request):
@@ -159,10 +160,11 @@ class StreamsController:
             "Connection": "Close",
             "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
         }
-        resp = web.StreamResponse(headers=headers)
-        await resp.prepare(request)
-        client_id = request.remote
-        await queue_stream.subscribe(client_id, resp.write)
+        if request.method == "GET":
+            resp = web.StreamResponse(headers=headers)
+            await resp.prepare(request)
+            client_id = request.remote
+            await queue_stream.subscribe(client_id, resp.write)
 
         return resp
 
