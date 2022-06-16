@@ -220,7 +220,7 @@ class Database:
                 # always create db tables if they don't exist to prevent errors trying to access them later
                 await self.__create_database_tables(db)
 
-                if prev_version < 15:
+                if prev_version < 17:
                     # too many changes, just recreate
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ALBUMS}")
@@ -232,20 +232,6 @@ class Database:
                     await db.execute("DROP TABLE IF EXISTS provider_mappings")
                     # recreate missing tables
                     await self.__create_database_tables(db)
-
-                if prev_version and prev_version < 16:
-                    # album artist --> album artists
-                    await db.execute(f"ALTER TABLE {TABLE_ALBUMS} ADD artists json;")
-                    for db_row in await self.get_rows(TABLE_ALBUMS, db=db):
-                        match = {"item_id": db_row["item_id"]}
-                        new_values = {"artists": f'[{ db_row["artist"]}]'}
-                        await self.update(TABLE_ALBUMS, match, new_values, db=db)
-                    try:
-                        await db.execute(
-                            f"ALTER TABLE {TABLE_ALBUMS} DROP COLUMN artist;"
-                        )
-                    except Exception:  # pylint: disable=broad-except
-                        pass  # old sqlite version
 
             # store current schema version
             await self.set_setting("version", str(SCHEMA_VERSION), db=db)
