@@ -731,6 +731,7 @@ class PlayerQueue:
             "index_in_buffer": self.index_in_buffer,
             "current_item": cur_item,
             "next_item": next_item,
+            "items": len(self._items),
             "settings": self.settings.to_dict(),
         }
 
