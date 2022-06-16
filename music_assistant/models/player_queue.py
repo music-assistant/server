@@ -710,10 +710,10 @@ class PlayerQueue:
                     EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self
                 )
             )
-        else:
-            self.mass.signal_event(
-                MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
-            )
+        # always send the base event
+        self.mass.signal_event(
+            MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Export object to dict."""
