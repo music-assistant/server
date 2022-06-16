@@ -190,7 +190,9 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         "null",
         "-",
     ]
-    async with AsyncProcess(proc_args, True, use_stderr=True) as ffmpeg_proc:
+    async with AsyncProcess(
+        proc_args, True, enable_stdout=False, enable_stderr=True
+    ) as ffmpeg_proc:
 
         async def writer():
             """Task that grabs the source audio and feeds it to ffmpeg."""
@@ -392,7 +394,7 @@ async def get_media_stream(
         streamdetails, pcm_fmt, pcm_sample_rate=sample_rate, pcm_channels=channels
     )
     async with AsyncProcess(
-        args, enable_write=True, chunk_size=chunk_size
+        args, enable_stdin=True, chunk_size=chunk_size
     ) as ffmpeg_proc:
 
         LOGGER.debug(

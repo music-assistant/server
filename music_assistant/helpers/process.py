@@ -24,18 +24,20 @@ class AsyncProcess:
     def __init__(
         self,
         args: Union[List, str],
-        enable_write: bool = False,
+        enable_stdin: bool = False,
         chunk_size: int = DEFAULT_CHUNKSIZE,
-        use_stderr: bool = False,
+        enable_stdout: bool = True,
+        enable_stderr: bool = False,
     ):
         """Initialize."""
         self._proc = None
         self._args = args
-        self._use_stderr = use_stderr
-        self._enable_write = enable_write
+        self._enable_stdin = enable_stdin
+        self.chunk_size = chunk_size or DEFAULT_CHUNKSIZE
+        self._enable_stdout = enable_stdout
+        self._enable_stderr = enable_stderr
         self._attached_task: asyncio.Task = None
         self.closed = False
-        self.chunk_size = chunk_size or DEFAULT_CHUNKSIZE
 
     async def __aenter__(self) -> "AsyncProcess":
         """Enter context manager."""
@@ -47,18 +49,18 @@ class AsyncProcess:
         if isinstance(args, str):
             self._proc = await asyncio.create_subprocess_shell(
                 args,
-                stdin=asyncio.subprocess.PIPE if self._enable_write else None,
-                stdout=asyncio.subprocess.PIPE if not self._use_stderr else None,
-                stderr=asyncio.subprocess.PIPE if self._use_stderr else None,
+                stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
+                stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
+                stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
                 limit=self.chunk_size * 5,
                 close_fds=True,
             )
         else:
             self._proc = await asyncio.create_subprocess_exec(
                 *args,
-                stdin=asyncio.subprocess.PIPE if self._enable_write else None,
-                stdout=asyncio.subprocess.PIPE if not self._use_stderr else None,
-                stderr=asyncio.subprocess.PIPE if self._use_stderr else None,
+                stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
+                stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
+                stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
                 limit=self.chunk_size * 5,
                 close_fds=True,
             )
@@ -76,7 +78,7 @@ class AsyncProcess:
                 pass
         if self._proc.returncode is None:
             # prevent subprocess deadlocking, read remaining bytes
-            await self._proc.communicate(b"" if self._enable_write else None)
+            await self._proc.communicate(b"" if self._enable_stdin else None)
             if self._proc.returncode is None:
                 # just in case?
                 self._proc.kill()

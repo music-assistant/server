@@ -312,9 +312,17 @@ class SpotifyProvider(MusicProvider):
                 bytes_sent += len(chunk)
         # TEMP: diagnose issues with librespot dump details
         if bytes_sent < 100:
-            async with AsyncProcess(args, use_stderr=True) as librespot_proc:
-                _, stderr = await librespot_proc.communicate()
-            raise AudioError(f"Error getting stream from librespot: {stderr.decode()}")
+            async with AsyncProcess(args, enable_stderr=True) as librespot_proc:
+                stdout, stderr = await librespot_proc.communicate()
+                if len(stdout) > 512000:
+                    yield stdout
+                    return
+            raise AudioError(
+                "Error getting stream from librespot: "
+                f"err: {stderr.decode()} - "
+                f"out: {stdout.decode()} - "
+                f"binary: {librespot}"
+            )
 
     async def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
