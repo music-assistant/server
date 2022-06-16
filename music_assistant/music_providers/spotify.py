@@ -555,7 +555,9 @@ class SpotifyProvider(MusicProvider):
             result = json.loads(stdout)
         except JSONDecodeError:
             self.logger.warning(
-                "Error while retrieving Spotify token, details: %s", stdout
+                "Error while retrieving Spotify token, using libraspot: %s details: %s",
+                librespot,
+                stdout,
             )
             return None
         # transform token info to spotipy compatible format
@@ -658,10 +660,14 @@ class SpotifyProvider(MusicProvider):
         async def check_librespot(librespot_path: str) -> str | None:
             try:
                 librespot = await asyncio.create_subprocess_exec(
-                    *[librespot_path, "-V"], stdout=asyncio.subprocess.PIPE
+                    *[librespot_path, "--check"], stdout=asyncio.subprocess.PIPE
                 )
                 stdout, _ = await librespot.communicate()
-                if librespot.returncode == 0 and b"librespot" in stdout:
+                if (
+                    librespot.returncode == 0
+                    and b"ok spotty" in stdout
+                    and b"using librespot" in stdout
+                ):
                     self._librespot_bin = librespot_path
                     return librespot_path
             except OSError:
