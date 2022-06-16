@@ -70,7 +70,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         return [
             self.item_cls.from_db_row(db_row)
             for db_row in await self.mass.database.get_rows(
-                self.db_table, match, limit=limit, offset=offset
+                self.db_table, match, order_by="name", limit=limit, offset=offset
             )
         ]
 

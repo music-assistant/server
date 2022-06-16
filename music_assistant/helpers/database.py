@@ -95,7 +95,8 @@ class Database:
             if match is not None:
                 sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
             if order_by is not None:
-                sql_query += f"ORDER BY {order_by}"
+                sql_query += f" ORDER BY {order_by}"
+            sql_query += f" LIMIT {limit} OFFSET {offset}"
             return await _db.fetch_all(sql_query, match)
 
     async def get_rows_from_query(
@@ -108,6 +109,7 @@ class Database:
     ) -> List[Mapping]:
         """Get all rows for given custom query."""
         async with self.get_db(db) as _db:
+            query = f"{query} LIMIT {limit} OFFSET {offset}"
             return await _db.fetch_all(query, params)
 
     async def iterate_rows(
