@@ -72,16 +72,16 @@ class StreamsController:
         enc_track_id = urllib.parse.quote(track_id)
         return f"{self.base_url}/preview?provider_id={provider.value}&item_id={enc_track_id}"
 
-    def get_silence_url(self, duration: int = 600) -> str:
-        """Return url to silence."""
-        return f"{self.base_url}/silence?duration={duration}"
+    def get_control_url(self, queue_id: str, control: str = "next") -> str:
+        """Return url to control endpoint."""
+        return f"{self.base_url}/{queue_id}/{control}"
 
     async def setup(self) -> None:
         """Async initialize of module."""
         app = web.Application()
 
         app.router.add_get("/preview", self.serve_preview)
-        app.router.add_get("/silence", self.serve_silence)
+        app.router.add_get("/{queue_id}/{control}", self.serve_control)
         app.router.add_get("/{stream_id}.{format}", self.serve_queue_stream)
 
         runner = web.AppRunner(app, access_log=None)
@@ -113,16 +113,21 @@ class StreamsController:
 
         self.logger.info("Started stream server on port %s", self._port)
 
-    @staticmethod
-    async def serve_silence(request: web.Request):
-        """Serve silence."""
+    async def serve_control(self, request: web.Request):
+        """Server player control endpoint."""
+        queue_id = request.match_info["queue_id"]
+        control = request.match_info["control"]
+        if queue := self.mass.players.get_player_queue(queue_id):
+            if control == "next" and not queue.signal_next:
+                await queue.next()
+
         resp = web.StreamResponse(
             status=200, reason="OK", headers={"Content-Type": "audio/wav"}
         )
         await resp.prepare(request)
-        duration = int(request.query.get("duration", 600))
-        await resp.write(create_wave_header(duration=duration))
-        for _ in range(0, duration):
+        # service 60 seconds of silence while player is processing request
+        await resp.write(create_wave_header(duration=60))
+        for _ in range(0, 60):
             await resp.write(b"\0" * 1764000)
         return resp
 
