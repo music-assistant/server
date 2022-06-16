@@ -85,6 +85,8 @@ class Database:
         table: str,
         match: dict = None,
         order_by: str = None,
+        limit: int = 500,
+        offset: int = 0,
         db: Optional[Db] = None,
     ) -> List[Mapping]:
         """Get all rows for given table."""
@@ -97,7 +99,12 @@ class Database:
             return await _db.fetch_all(sql_query, match)
 
     async def get_rows_from_query(
-        self, query: str, params: Optional[dict] = None, db: Optional[Db] = None
+        self,
+        query: str,
+        params: Optional[dict] = None,
+        limit: int = 500,
+        offset: int = 0,
+        db: Optional[Db] = None,
     ) -> List[Mapping]:
         """Get all rows for given custom query."""
         async with self.get_db(db) as _db:
@@ -109,7 +116,7 @@ class Database:
         match: dict = None,
         db: Optional[Db] = None,
     ) -> AsyncGenerator[Mapping, None]:
-        """Iterate rows for given table."""
+        """Iterate (all) rows for given table."""
         async with self.get_db(db) as _db:
             sql_query = f"SELECT * FROM {table}"
             if match is not None:
