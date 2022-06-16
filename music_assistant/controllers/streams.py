@@ -369,15 +369,6 @@ class QueueStream:
                     await ffmpeg_proc.write(audio_chunk)
                     self.seconds_streamed += len(audio_chunk) / sample_size
                     del audio_chunk
-                    # allow clients to only buffer max ~30 seconds ahead
-                    seconds_allowed = int(time() - self.streaming_started)
-                    diff = self.seconds_streamed - seconds_allowed
-                    if diff > 30:
-                        self.logger.debug(
-                            "Player is buffering %s seconds ahead, slowing it down a bit",
-                            diff,
-                        )
-                        await asyncio.sleep(10)
                 # write eof when last packet is received
                 ffmpeg_proc.write_eof()
 
