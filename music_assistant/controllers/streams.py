@@ -160,9 +160,10 @@ class StreamsController:
             "Connection": "Close",
             "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
         }
+        resp = web.StreamResponse(headers=headers)
+        await resp.prepare(request)
+
         if request.method == "GET":
-            resp = web.StreamResponse(headers=headers)
-            await resp.prepare(request)
             client_id = request.remote
             await queue_stream.subscribe(client_id, resp.write)
 
