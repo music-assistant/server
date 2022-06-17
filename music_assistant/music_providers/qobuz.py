@@ -114,28 +114,36 @@ class QobuzProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Qobuz."""
         endpoint = "favorite/getUserFavorites"
-        for item in await self._get_all_items(endpoint, key="artists", type="artists"):
+        for item in await self._get_all_items(
+            endpoint, key="artists", type="artists", skip_cache=True
+        ):
             if item and item["id"]:
                 yield await self._parse_artist(item)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Qobuz."""
         endpoint = "favorite/getUserFavorites"
-        for item in await self._get_all_items(endpoint, key="albums", type="albums"):
+        for item in await self._get_all_items(
+            endpoint, key="albums", type="albums", skip_cache=True
+        ):
             if item and item["id"]:
                 yield await self._parse_album(item)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Qobuz."""
         endpoint = "favorite/getUserFavorites"
-        for item in await self._get_all_items(endpoint, key="tracks", type="tracks"):
+        for item in await self._get_all_items(
+            endpoint, key="tracks", type="tracks", skip_cache=True
+        ):
             if item and item["id"]:
                 yield await self._parse_track(item)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         endpoint = "playlist/getUserPlaylists"
-        for item in await self._get_all_items(endpoint, key="playlists"):
+        for item in await self._get_all_items(
+            endpoint, key="playlists", skip_cache=True
+        ):
             if item and item["id"]:
                 yield await self._parse_playlist(item)
 
