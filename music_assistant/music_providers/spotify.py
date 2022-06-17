@@ -20,7 +20,7 @@ from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.enums import ProviderType
-from music_assistant.models.errors import AudioError, LoginFailed, MediaNotFoundError
+from music_assistant.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -58,6 +58,7 @@ class SpotifyProvider(MusicProvider):
     _librespot_bin = None
     _throttler = Throttler(rate_limit=4, period=1)
     _cache_dir = CACHE_DIR
+    _ap_workaround = False
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
@@ -305,24 +306,23 @@ class SpotifyProvider(MusicProvider):
         ]
         if seek_position:
             args += ["--start-position", str(int(seek_position))]
+        if self._ap_workaround:
+            args += ["--ap-port", "12345"]
         bytes_sent = 0
         async with AsyncProcess(args) as librespot_proc:
             async for chunk in librespot_proc.iterate_chunks():
                 yield chunk
                 bytes_sent += len(chunk)
-        # TEMP: diagnose issues with librespot dump details
-        if bytes_sent < 100:
-            async with AsyncProcess(args, enable_stderr=True) as librespot_proc:
-                stdout, stderr = await librespot_proc.communicate()
-                if len(stdout) > 512000:
-                    yield stdout
-                    return
-            raise AudioError(
-                "Error getting stream from librespot: "
-                f"err: {stderr.decode()} - "
-                f"out: {stdout.decode()} - "
-                f"binary: {librespot}"
-            )
+
+        if bytes_sent == 0 and not self._ap_workaround:
+            # AP resolve failure
+            # https://github.com/librespot-org/librespot/issues/972
+            # retry with ap-port set to invalid value, which will force fallback
+            args += ["--ap-port", "12345"]
+            async with AsyncProcess(args) as librespot_proc:
+                async for chunk in librespot_proc.iterate_chunks():
+                    yield chunk
+            self._ap_workaround = True
 
     async def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
@@ -485,6 +485,9 @@ class SpotifyProvider(MusicProvider):
                 tokeninfo = await asyncio.wait_for(self._get_token(), 5)
                 if tokeninfo:
                     break
+                if retries > 2:
+                    # switch to ap workaround after 2 retries
+                    self._ap_workaround = True
                 retries += 1
                 await asyncio.sleep(2)
             except TimeoutError:
@@ -547,6 +550,8 @@ class SpotifyProvider(MusicProvider):
             "-c",
             self._cache_dir,
         ]
+        if self._ap_workaround:
+            args += ["--ap-port", "12345"]
         librespot = await asyncio.create_subprocess_exec(
             *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
         )
@@ -555,9 +560,8 @@ class SpotifyProvider(MusicProvider):
             result = json.loads(stdout)
         except JSONDecodeError:
             self.logger.warning(
-                "Error while retrieving Spotify token, using libraspot: %s details: %s",
-                librespot,
-                stdout,
+                "Error while retrieving Spotify token, details: %s",
+                stdout.decode(),
             )
             return None
         # transform token info to spotipy compatible format
