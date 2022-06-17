@@ -163,7 +163,10 @@ def get_ip():
 def is_port_in_use(port: int) -> bool:
     """Check if port is in use."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
-        return _sock.connect_ex(("localhost", port)) == 0
+        try:
+            return _sock.connect_ex(("localhost", port)) == 0
+        except socket.gaierror:
+            return True
 
 
 def select_stream_port() -> int:
