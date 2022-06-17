@@ -179,8 +179,6 @@ class StreamsController:
         is_alert: bool,
     ) -> QueueStream:
         """Start running a queue stream."""
-        # cleanup stale previous queue tasks
-
         # generate unique stream url
         stream_id = uuid4().hex
         # determine the pcm details based on the first track we need to stream
@@ -228,6 +226,7 @@ class StreamsController:
             is_alert=is_alert,
             autostart=True,
         )
+        # cleanup stale previous queue tasks
         self.mass.create_task(self.cleanup_stale)
         return stream
 
