@@ -430,7 +430,7 @@ class PlayerQueue:
         # restore queue
         self._settings.repeat_mode = self._snapshot.repeat
         self._settings.shuffle_enabled = self._snapshot.shuffle
-        await self.update(self._snapshot.items)
+        await self._update_items(self._snapshot.items)
         self._current_index = self._snapshot.index
         self._current_item_elapsed_time = self._snapshot.position
         if self._snapshot.state in (PlayerState.PLAYING, PlayerState.PAUSED):
@@ -481,7 +481,7 @@ class PlayerQueue:
             return
         # move the item in the list
         items.insert(new_index, items.pop(item_index))
-        await self.update(items)
+        await self._update_items(items)
 
     async def delete_item(self, queue_item_id: str) -> None:
         """Delete item (by id or index) from the queue."""
@@ -548,25 +548,23 @@ class PlayerQueue:
         for index, item in enumerate(queue_items):
             item.sort_index = len(self.items) + index
         if self.settings.shuffle_enabled:
+            # if shuffle is enabled we shuffle the remaining tracks and the new ones
             played_items = self.items[:cur_index]
             next_items = self.items[cur_index + 1 :] + queue_items
             next_items = random.sample(next_items, len(next_items))
-            items = played_items + [self.current_item] + next_items
-            await self.update(items)
-            return
-        self._items = self._items + queue_items
-        self.signal_update(True)
-
-    async def update(self, queue_items: List[QueueItem]) -> None:
-        """Update the existing queue items, mostly caused by reordering."""
-        self._items = queue_items
-        self.signal_update(True)
+            if self.current_item:
+                queue_items = played_items + [self.current_item] + next_items
+            else:
+                queue_items = played_items + next_items
+        else:
+            queue_items = self._items + queue_items
+        await self._update_items(queue_items)
 
     async def clear(self) -> None:
         """Clear all items in the queue."""
         if self.player.state not in (PlayerState.IDLE, PlayerState.OFF):
             await self.stop()
-        await self.update([])
+        await self._update_items([])
 
     def on_player_update(self) -> None:
         """Call when player updates."""
@@ -734,6 +732,11 @@ class PlayerQueue:
             "items": len(self._items),
             "settings": self.settings.to_dict(),
         }
+
+    async def _update_items(self, queue_items: List[QueueItem]) -> None:
+        """Update the existing queue items, mostly caused by reordering."""
+        self._items = queue_items
+        self.signal_update(True)
 
     def __get_queue_stream_index(self) -> Tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""
