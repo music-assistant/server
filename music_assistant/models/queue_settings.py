@@ -55,7 +55,7 @@ class QueueSettings:
                 # can be extended with some more magic based on last_played and stuff
                 next_items = random.sample(next_items, len(next_items))
                 items = played_items + [self._queue.current_item] + next_items
-                asyncio.create_task(self._queue.update(items))
+                asyncio.create_task(self._queue.load(items))
                 self._on_update("shuffle_enabled")
         elif self._shuffle_enabled and not enabled:
             # unshuffle
@@ -65,7 +65,7 @@ class QueueSettings:
                 next_items = self._queue.items[self._queue.current_index + 1 :]
                 next_items.sort(key=lambda x: x.sort_index, reverse=False)
                 items = played_items + [self._queue.current_item] + next_items
-                asyncio.create_task(self._queue.update(items))
+                asyncio.create_task(self._queue.load(items))
                 self._on_update("shuffle_enabled")
 
     @property

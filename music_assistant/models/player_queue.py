@@ -308,23 +308,23 @@ class PlayerQueue:
 
         # start queue with alert sound(s)
         self._items = queue_items
-        self._settings.repeat_mode = RepeatMode.OFF
-        self._settings.shuffle_enabled = False
         await self.queue_stream_start(0, 0, False, is_alert=True)
 
         # wait for the player to finish playing
-        alert_done = asyncio.Event()
+        play_started = asyncio.Event()
+        play_stopped = asyncio.Event()
 
         def handle_event(evt: MassEvent):
-            if self.player.state != PlayerState.PLAYING:
-                alert_done.set()
+            if self.player.state == PlayerState.PLAYING:
+                play_started.set()
+            elif play_started.is_set():
+                play_stopped.set()
 
         unsub = self.mass.subscribe(
             handle_event, EventType.QUEUE_UPDATED, self.queue_id
         )
         try:
-            await asyncio.wait_for(self.stream.done.wait(), 30)
-            await asyncio.wait_for(alert_done.wait(), 30)
+            await asyncio.wait_for(play_stopped.wait(), 30)
         except asyncio.TimeoutError:
             self.logger.warning("Timeout while playing alert")
         finally:
@@ -683,12 +683,14 @@ class PlayerQueue:
 
     def get_next_index(self, cur_index: Optional[int]) -> int:
         """Return the next index for the queue, accounting for repeat settings."""
+        alert_active = self.stream and self.stream.is_alert
         # handle repeat single track
-        if self.settings.repeat_mode == RepeatMode.ONE:
+        if not alert_active and self.settings.repeat_mode == RepeatMode.ONE:
             return cur_index
         # handle repeat all
         if (
-            self.settings.repeat_mode == RepeatMode.ALL
+            not alert_active
+            and self.settings.repeat_mode == RepeatMode.ALL
             and self._items
             and cur_index == (len(self._items) - 1)
         ):
