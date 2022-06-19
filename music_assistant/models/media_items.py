@@ -299,6 +299,16 @@ class Track(MediaItem):
         """Return custom hash."""
         return hash((self.provider, self.item_id))
 
+    @property
+    def image(self) -> str | None:
+        """Return (first/random) image/thumb from metadata (if any)."""
+        if image := super().image:
+            return image
+        # fallback to album image
+        if self.album:
+            return self.album.image
+        return None
+
 
 @dataclass
 class Playlist(MediaItem):
