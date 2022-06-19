@@ -40,29 +40,24 @@ class PlayerController:
 
     @property
     def players(self) -> Tuple[Player]:
-        """Return all available players."""
-        return tuple(x for x in self._players.values() if x.available)
+        """Return all registered players."""
+        return tuple(self._players.values())
 
     @property
     def player_queues(self) -> Tuple[PlayerQueue]:
         """Return all available PlayerQueue's."""
-        return tuple(x for x in self._player_queues.values() if x.available)
+        return tuple(self._player_queues.values())
 
     def __iter__(self):
         """Iterate over (available) players."""
-        return iter(x for x in self._players.values() if x.available)
+        return iter(self._players.values())
 
-    def get_player(
-        self, player_id: str, include_unavailable: bool = False
-    ) -> Player | None:
-        """Return Player by player_id or None if not found/unavailable."""
-        if player := self._players.get(player_id):
-            if player.available or include_unavailable:
-                return player
-        return None
+    def get_player(self, player_id: str) -> Player | None:
+        """Return Player by player_id or None if not found."""
+        return self._players.get(player_id)
 
     def get_player_queue(self, queue_id: str) -> PlayerQueue | None:
-        """Return PlayerQueue by id or None if not found/unavailable."""
+        """Return PlayerQueue by id or None if not found."""
         return self._player_queues.get(queue_id)
 
     def get_player_by_name(self, name: str) -> Player | None:
