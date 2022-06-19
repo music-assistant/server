@@ -248,7 +248,7 @@ class FileSystemProvider(MusicProvider):
             if album_tracks:
                 continue
             # album has no more tracks attached, delete prov mapping
-            await self.mass.music.albums.remove_prov_mapping(album_id)
+            await self.mass.music.albums.remove_prov_mapping(album_id, self.id)
         # check if artists are deleted
         for artist_id in artists:
             artist = await self.mass.music.artists.get_db_item(artist_id)
@@ -262,7 +262,7 @@ class FileSystemProvider(MusicProvider):
             if artist_albums:
                 continue
             # artist has no more tracks attached, delete prov mapping
-            await self.mass.music.artists.remove_prov_mapping(artist_id)
+            await self.mass.music.artists.remove_prov_mapping(artist_id, self.id)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
