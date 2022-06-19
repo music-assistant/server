@@ -88,7 +88,7 @@ class PlayerQueue:
     @property
     def player(self) -> Player:
         """Return the player attached to this queue."""
-        return self.mass.players.get_player(self.queue_id, include_unavailable=True)
+        return self.mass.players.get_player(self.queue_id)
 
     @property
     def available(self) -> bool:
