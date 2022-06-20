@@ -513,12 +513,12 @@ class QueueStream:
 
             sample_size = int(
                 self.pcm_sample_rate * (self.pcm_bit_depth / 8) * self.pcm_channels
-            )  # 1 second
-            buffer_size = sample_size * (self.queue.settings.crossfade_duration or 2)
+            )
+            buffer_size = sample_size * (self.queue.settings.crossfade_duration or 5)
             # force small buffer for radio to prevent too much lag at start
             if queue_track.media_type != MediaType.TRACK:
                 use_crossfade = False
-                buffer_size = sample_size
+                buffer_size = sample_size * 2
 
             self.logger.info(
                 "Start Streaming queue track: %s (%s) for queue %s",
