@@ -631,6 +631,49 @@ async def get_preview_stream(
             yield chunk
 
 
+async def get_silence(
+    duration: int,
+    output_fmt: ContentType = ContentType.WAV,
+    sample_rate: int = 44100,
+    bit_depth: int = 16,
+    channels: int = 2,
+) -> AsyncGenerator[bytes, None]:
+    """Create stream of silence, encoded to format of choice."""
+
+    # wav silence = just zero's
+    if output_fmt == ContentType.WAV:
+        yield create_wave_header(
+            samplerate=sample_rate,
+            channels=2,
+            bitspersample=bit_depth,
+            duration=duration,
+        )
+        for _ in range(0, duration):
+            yield b"\0" * int(sample_rate * (bit_depth / 8) * channels)
+        return
+
+    # use ffmpeg for all other encodings
+    args = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"anullsrc=r={sample_rate}:cl={'stereo' if channels == 2 else 'mono'}",
+        "-t",
+        str(duration),
+        "-f",
+        output_fmt.value,
+        "-",
+    ]
+    chunk_size = get_chunksize(output_fmt)
+    async with AsyncProcess(args, chunk_size=chunk_size) as ffmpeg_proc:
+        async for chunk in ffmpeg_proc.iterate_chunks():
+            yield chunk
+
+
 def get_chunksize(content_type: ContentType) -> int:
     """Get a default chunksize for given contenttype."""
     if content_type.is_pcm():

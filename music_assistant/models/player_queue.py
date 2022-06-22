@@ -115,7 +115,7 @@ class PlayerQueue:
         if not self.player.current_url:
             return False
         if stream := self.stream:
-            return stream.url == self.player.current_url
+            return stream.stream_id in self.player.current_url
         return False
 
     @property
