@@ -94,6 +94,7 @@ class SpotifyProvider(MusicProvider):
         if MediaType.PLAYLIST in media_types:
             searchtypes.append("playlist")
         searchtype = ",".join(searchtypes)
+        search_query = search_query.replace("'", "")
         if searchresult := await self._get_data(
             "search", q=search_query, type=searchtype, limit=limit
         ):
