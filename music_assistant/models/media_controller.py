@@ -89,6 +89,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         assert provider or provider_id, "provider or provider_id must be supplied"
+        if isinstance(provider, str):
+            provider = ProviderType(provider)
         db_item = await self.get_db_item_by_prov_id(
             provider_item_id=provider_item_id,
             provider=provider,
@@ -280,6 +282,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> ItemCls | None:
         """Get the database item for the given prov_id."""
         assert provider or provider_id, "provider or provider_id must be supplied"
+        if isinstance(provider, str):
+            provider = ProviderType(provider)
         if provider == ProviderType.DATABASE or provider_id == "database":
             return await self.get_db_item(provider_item_id, db=db)
         for item in await self.get_db_items_by_prov_id(
@@ -302,6 +306,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> List[ItemCls]:
         """Fetch all records from database for given provider."""
         assert provider or provider_id, "provider or provider_id must be supplied"
+        if isinstance(provider, str):
+            provider = ProviderType(provider)
         if provider == ProviderType.DATABASE or provider_id == "database":
             return await self.get_db_items(limit=limit, offset=offset, db=db)
 
