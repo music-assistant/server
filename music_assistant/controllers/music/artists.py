@@ -121,7 +121,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if not prov:
             return []
         # prefer cache items (if any)
-        cache_key = f"{prov.type.value}.artist_albums.{item_id}"
+        cache_key = f"{prov.type.value}.artist_toptracks.{item_id}"
         if cache := await self.mass.cache.get(cache_key):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider

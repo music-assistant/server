@@ -144,7 +144,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         limit: int = 25,
     ) -> List[ItemCls]:
         """Search database or provider with given query."""
-        search_query = search_query.replace("/", " ")  # safe search string
+        search_query = search_query.replace("/", " ").replace(
+            "'", ""
+        )  # safe search string
         if provider == ProviderType.DATABASE or provider_id == "database":
             return [
                 self.item_cls.from_db_row(db_row)
@@ -153,14 +155,25 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 )
             ]
 
-        provider = self.mass.music.get_provider(provider_id or provider)
-        if not provider:
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if not prov:
             return {}
-        return await provider.search(
+
+        # prefer cache items (if any)
+        cache_key = f"{prov.type.value}.search.{self.media_type.value}"
+        if cache := await self.mass.cache.get(cache_key):
+            return [self.media_type.from_dict(x) for x in cache]
+        # no items in cache - get listing from provider
+        items = await provider.search(
             search_query,
             [self.media_type],
             limit,
         )
+        # store (serializable items) in cache
+        self.mass.create_task(
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items])
+        )
+        return items
 
     async def add_to_library(
         self,
