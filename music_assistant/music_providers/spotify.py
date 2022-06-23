@@ -70,7 +70,15 @@ class SpotifyProvider(MusicProvider):
         self._cache_dir = os.path.join(CACHE_DIR, self.id)
         token = await self.get_token()
         if not token:
-            raise LoginFailed(f"Login failed for user {self.config.username}")
+            try:
+                # a spotify free/basic account can be recoognized when
+                # the username consists of numbers only - check that here
+                int(self.config.username)
+                # an integer can be parsed of the username, this is a free account
+                raise LoginFailed("Only Spotify Premium accounts are supported")
+            except ValueError:
+                # pylint: disable=raise-missing-from
+                raise LoginFailed(f"Login failed for user {self.config.username}")
         return True
 
     async def search(
