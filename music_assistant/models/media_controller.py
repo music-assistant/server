@@ -19,7 +19,7 @@ from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailabl
 from music_assistant.models.event import MassEvent
 
 from .enums import EventType, MediaType, ProviderType
-from .media_items import MediaItemType
+from .media_items import MediaItemType, media_from_dict
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -163,7 +163,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             f"{prov.type.value}.search.{self.media_type.value}.{search_query}.{limit}"
         )
         if cache := await self.mass.cache.get(cache_key):
-            return [self.media_type.from_dict(x) for x in cache]
+            return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = await prov.search(
             search_query,
