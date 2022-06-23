@@ -38,6 +38,11 @@ class TuneInProvider(MusicProvider):
             return False
         if not self.config.username:
             raise LoginFailed("Username is invalid")
+        if "@" in self.config.username:
+            self.logger.warning(
+                "Emailadress detected instead of username, "
+                "it is advised to use the tunein username instead of email."
+            )
         return True
 
     async def search(
