@@ -160,19 +160,19 @@ class SpotifyProvider(MusicProvider):
             if item and item["id"]:
                 yield await self._parse_playlist(item)
 
-    @use_cache(3600 * 48)
+    @use_cache()
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._get_data(f"artists/{prov_artist_id}")
         return await self._parse_artist(artist_obj) if artist_obj else None
 
-    @use_cache(3600 * 48)
+    @use_cache()
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         album_obj = await self._get_data(f"albums/{prov_album_id}")
         return await self._parse_album(album_obj) if album_obj else None
 
-    @use_cache(3600 * 48)
+    @use_cache()
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         track_obj = await self._get_data(f"tracks/{prov_track_id}")
@@ -183,7 +183,7 @@ class SpotifyProvider(MusicProvider):
         playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
         return await self._parse_playlist(playlist_obj) if playlist_obj else None
 
-    @use_cache(3600 * 48)
+    @use_cache()
     async def get_album_tracks(self, prov_album_id) -> List[Track]:
         """Get all album tracks for given album id."""
         return [
@@ -580,7 +580,6 @@ class SpotifyProvider(MusicProvider):
             return tokeninfo
         return None
 
-    @use_cache(3600 * 24)
     async def _get_all_items(self, endpoint, key="items", **kwargs) -> List[dict]:
         """Get all items from a paged list."""
         limit = 50
@@ -589,7 +588,7 @@ class SpotifyProvider(MusicProvider):
         while True:
             kwargs["limit"] = limit
             kwargs["offset"] = offset
-            result = await self._get_data(endpoint, skip_cache=True, **kwargs)
+            result = await self._get_data(endpoint, **kwargs)
             offset += limit
             if not result or key not in result or not result[key]:
                 break
@@ -600,7 +599,6 @@ class SpotifyProvider(MusicProvider):
                 break
         return all_items
 
-    @use_cache(3600 * 2)
     async def _get_data(self, endpoint, **kwargs):
         """Get data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
