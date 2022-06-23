@@ -34,17 +34,26 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_id: Optional[str] = None,
     ) -> List[Track]:
         """Return playlist tracks for the given provider playlist id."""
-        if provider == ProviderType.DATABASE or provider_id == "database":
-            playlist = await self.get_db_item(item_id)
-            prov = next(x for x in playlist.provider_ids)
-            item_id = prov.item_id
-            provider_id = prov.prov_id
+        playlist = await self.get(item_id, provider, provider_id)
+        prov = next(x for x in playlist.provider_ids)
+        prov_playlist_id = prov.item_id
+        provider_id = prov.prov_id
 
         provider = self.mass.music.get_provider(provider_id or provider)
         if not provider:
             return []
-
-        return await provider.get_playlist_tracks(item_id)
+        # prefer cache for playlist tracks - use checksum from playlist
+        cache_key = f"{provider.value}.playlist_tracks.{prov_playlist_id}"
+        cache_checksum = playlist.metadata.checksum
+        if cache := await self.mass.cache.get(cache_key, cache_checksum):
+            return [Track.from_dict(x) for x in cache]
+        # no items in cache - get listing from provider
+        items = await provider.get_playlist_tracks(prov_playlist_id)
+        # store (serializable items) in cache
+        self.mass.create_task(
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items], cache_checksum)
+        )
+        return items
 
     async def add(self, item: Playlist) -> Playlist:
         """Add playlist to local db and return the new database item."""
