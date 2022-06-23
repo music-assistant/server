@@ -16,7 +16,6 @@ from asyncio_throttle import Throttler
 from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name-in-module
     app_var,
 )
-from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.enums import ProviderType
@@ -160,19 +159,16 @@ class SpotifyProvider(MusicProvider):
             if item and item["id"]:
                 yield await self._parse_playlist(item)
 
-    @use_cache()
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._get_data(f"artists/{prov_artist_id}")
         return await self._parse_artist(artist_obj) if artist_obj else None
 
-    @use_cache()
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         album_obj = await self._get_data(f"albums/{prov_album_id}")
         return await self._parse_album(album_obj) if album_obj else None
 
-    @use_cache()
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         track_obj = await self._get_data(f"tracks/{prov_track_id}")
@@ -183,7 +179,6 @@ class SpotifyProvider(MusicProvider):
         playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
         return await self._parse_playlist(playlist_obj) if playlist_obj else None
 
-    @use_cache()
     async def get_album_tracks(self, prov_album_id) -> List[Track]:
         """Get all album tracks for given album id."""
         return [
@@ -194,17 +189,14 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
-        playlist = await self.get_playlist(prov_playlist_id)
         return [
             await self._parse_track(item["track"])
             for item in await self._get_all_items(
                 f"playlists/{prov_playlist_id}/tracks",
-                cache_checksum=playlist.metadata.checksum,
             )
             if (item and item["track"] and item["track"]["id"])
         ]
 
-    @use_cache(3600 * 48)
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
         """Get a list of all albums for the given artist."""
         return [
@@ -215,7 +207,6 @@ class SpotifyProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    @use_cache(3600 * 48)
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         artist = await self.get_artist(prov_artist_id)

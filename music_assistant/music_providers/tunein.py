@@ -6,7 +6,6 @@ from typing import AsyncGenerator, List, Optional
 from asyncio_throttle import Throttler
 
 from music_assistant.helpers.audio import get_radio_stream
-from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.util import create_clean_string
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import LoginFailed, MediaNotFoundError
@@ -88,7 +87,6 @@ class TuneInProvider(MusicProvider):
             async for item in parse_items(data["body"]):
                 yield item
 
-    @use_cache(3600 * 4)
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
         prov_radio_id, media_type = prov_radio_id.split("--", 1)

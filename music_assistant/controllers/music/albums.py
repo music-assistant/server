@@ -107,7 +107,17 @@ class AlbumsController(MediaControllerBase[Album]):
         prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
-        return await prov.get_album_tracks(item_id)
+        # prefer cache items (if any)
+        cache_key = f"{prov.type.value}.album_tracks.{item_id}"
+        if cache := await self.mass.cache.get(cache_key):
+            return [Track.from_dict(x) for x in cache]
+        # no items in cache - get listing from provider
+        items = await prov.get_album_tracks(item_id)
+        # store (serializable items) in cache
+        self.mass.create_task(
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items])
+        )
+        return items
 
     async def add_db_item(
         self, item: Album, overwrite_existing: bool = False, db: Optional[Db] = None
