@@ -39,16 +39,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
         prov_playlist_id = prov.item_id
         provider_id = prov.prov_id
 
-        provider = self.mass.music.get_provider(provider_id or provider)
-        if not provider:
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if not prov:
             return []
         # prefer cache for playlist tracks - use checksum from playlist
-        cache_key = f"{provider.value}.playlist_tracks.{prov_playlist_id}"
+        cache_key = f"{prov.type.value}.playlist_tracks.{prov_playlist_id}"
         cache_checksum = playlist.metadata.checksum
         if cache := await self.mass.cache.get(cache_key, cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = await provider.get_playlist_tracks(prov_playlist_id)
+        items = await prov.get_playlist_tracks(prov_playlist_id)
         # store (serializable items) in cache
         self.mass.create_task(
             self.mass.cache.set(cache_key, [x.to_dict() for x in items], cache_checksum)
