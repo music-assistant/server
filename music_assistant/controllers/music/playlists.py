@@ -88,7 +88,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = set()
         count = 0
-        for item in await self.tracks(playlist_prov.item_id, playlist_prov.prov_id):
+        for item in await self.tracks(playlist_prov.item_id, playlist_prov.prov_type):
             count += 1
             cur_playlist_track_ids.update(
                 {
@@ -100,7 +100,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # check for duplicates
         for track_prov in track.provider_ids:
             if (
-                track_prov.prov_id == playlist_prov.prov_id
+                track_prov.prov_type == playlist_prov.prov_type
                 and track_prov.item_id in cur_playlist_track_ids
             ):
                 raise InvalidDataError(
@@ -124,7 +124,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     track_version.item_id,
                 )
                 break
-            if track_version.prov_id == playlist_prov.prov_id:
+            if track_version.prov_type == playlist_prov.prov_type:
                 track_id_to_add = track_version.item_id
                 break
         if not track_id_to_add:
@@ -154,7 +154,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for prov in playlist.provider_ids:
             track_ids_to_remove = []
-            for playlist_track in await self.tracks(prov.item_id, prov.prov_id):
+            for playlist_track in await self.tracks(prov.item_id, prov.prov_type):
                 if playlist_track.position not in positions:
                     continue
                 track_ids_to_remove.append(playlist_track.item_id)
