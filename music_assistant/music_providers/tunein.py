@@ -88,6 +88,7 @@ class TuneInProvider(MusicProvider):
             async for item in parse_items(data["body"]):
                 yield item
 
+    @use_cache(3600 * 4)
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
         prov_radio_id, media_type = prov_radio_id.split("--", 1)
@@ -171,7 +172,6 @@ class TuneInProvider(MusicProvider):
         ):
             yield chunk
 
-    @use_cache(3600 * 2)
     async def __get_data(self, endpoint: str, **kwargs):
         """Get data from api."""
         if endpoint.startswith("http"):
