@@ -344,6 +344,21 @@ class Radio(MediaItem):
 MediaItemType = Union[Artist, Album, Track, Radio, Playlist]
 
 
+def media_from_dict(media_item: dict) -> MediaItemType:
+    """Return MediaItem from dict."""
+    if media_item["media_type"] == "artist":
+        return Artist.from_dict(media_item)
+    if media_item["media_type"] == "album":
+        return Album.from_dict(media_item)
+    if media_item["media_type"] == "track":
+        return Track.from_dict(media_item)
+    if media_item["media_type"] == "playlist":
+        return Playlist.from_dict(media_item)
+    if media_item["media_type"] == "radio":
+        return Radio.from_dict(media_item)
+    return MediaItem.from_dict(media_item)
+
+
 @dataclass
 class StreamDetails(DataClassDictMixin):
     """Model for streamdetails."""

@@ -20,7 +20,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.config import MusicProviderConfig
 from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.errors import MusicAssistantError, SetupFailedError
-from music_assistant.models.media_items import MediaItem, MediaItemType
+from music_assistant.models.media_items import MediaItem, MediaItemType, media_from_dict
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.music_providers.filesystem import FileSystemProvider
 from music_assistant.music_providers.qobuz import QobuzProvider
@@ -132,7 +132,7 @@ class MusicController:
             :param limit: number of items to return in the search (per type).
         """
         # include results from all music providers
-        provider_ids = ["database"] + [item.id for item in self.providers]
+        provider_ids = [item.id for item in self.providers]
         # TODO: sort by name and filter out duplicates ?
         return await asyncio.gather(
             *[
@@ -159,19 +159,32 @@ class MusicController:
             :param media_types: A list of media_types to include. All types if None.
             :param limit: number of items to return in the search (per type).
         """
-        if provider == ProviderType.DATABASE or provider_id == "database":
-            # get results from database
-            return (
-                await self.artists.search(search_query, provider, provider_id, limit)
-                + await self.albums.search(search_query, provider, provider_id, limit)
-                + await self.tracks.search(search_query, provider, provider_id, limit)
-                + await self.playlists.search(
-                    search_query, provider, provider_id, limit
-                )
-                + await self.radio.search(search_query, provider, provider_id, limit)
+        assert provider or provider_id, "Provider needs to be supplied"
+        prov = self.get_provider(provider_id or provider)
+        await provider.search(search_query, media_types, limit)
+
+        # create safe search string
+        search_query = search_query.replace("/", " ").replace("'", "")
+
+        # prefer cache items (if any)
+        cache_key = f"{prov.type.value}.search.{search_query}.{limit}"
+        cache_key += "".join(media_types)
+
+        if cache := await self.mass.cache.get(cache_key):
+            return [media_from_dict(x) for x in cache]
+        # no items in cache - get listing from provider
+        items = await prov.search(
+            search_query,
+            media_types,
+            limit,
+        )
+        # store (serializable items) in cache
+        self.mass.create_task(
+            self.mass.cache.set(
+                cache_key, [x.to_dict() for x in items], expiration=86400 * 7
             )
-        provider = self.get_provider(provider_id or provider)
-        return await provider.search(search_query, media_types, limit)
+        )
+        return items
 
     async def get_item_by_uri(
         self, uri: str, force_refresh: bool = False, lazy: bool = True
