@@ -14,7 +14,6 @@ from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-mod
     app_var,
 )
 from music_assistant.helpers.audio import get_http_stream
-from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import LoginFailed, MediaNotFoundError
@@ -114,36 +113,28 @@ class QobuzProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Qobuz."""
         endpoint = "favorite/getUserFavorites"
-        for item in await self._get_all_items(
-            endpoint, key="artists", type="artists", skip_cache=True
-        ):
+        for item in await self._get_all_items(endpoint, key="artists", type="artists"):
             if item and item["id"]:
                 yield await self._parse_artist(item)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Qobuz."""
         endpoint = "favorite/getUserFavorites"
-        for item in await self._get_all_items(
-            endpoint, key="albums", type="albums", skip_cache=True
-        ):
+        for item in await self._get_all_items(endpoint, key="albums", type="albums"):
             if item and item["id"]:
                 yield await self._parse_album(item)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Qobuz."""
         endpoint = "favorite/getUserFavorites"
-        for item in await self._get_all_items(
-            endpoint, key="tracks", type="tracks", skip_cache=True
-        ):
+        for item in await self._get_all_items(endpoint, key="tracks", type="tracks"):
             if item and item["id"]:
                 yield await self._parse_track(item)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         endpoint = "playlist/getUserPlaylists"
-        for item in await self._get_all_items(
-            endpoint, key="playlists", skip_cache=True
-        ):
+        for item in await self._get_all_items(endpoint, key="playlists"):
             if item and item["id"]:
                 yield await self._parse_playlist(item)
 
@@ -198,7 +189,6 @@ class QobuzProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
-        playlist = await self.get_playlist(prov_playlist_id)
         endpoint = "playlist/get"
         return [
             await self._parse_track(item)
@@ -207,7 +197,6 @@ class QobuzProvider(MusicProvider):
                 key="tracks",
                 playlist_id=prov_playlist_id,
                 extra="tracks",
-                cache_checksum=playlist.metadata.checksum,
             )
             if (item and item["id"])
         ]
@@ -333,7 +322,6 @@ class QobuzProvider(MusicProvider):
                 format_id=format_id,
                 track_id=item_id,
                 intent="stream",
-                skip_cache=True,
             )
             if result and result.get("url"):
                 streamdata = result
@@ -638,7 +626,6 @@ class QobuzProvider(MusicProvider):
             self.mass.metadata.preferred_language = details["user"]["country_code"]
             return details["user_auth_token"]
 
-    @use_cache(3600 * 24)
     async def _get_all_items(self, endpoint, key="tracks", **kwargs):
         """Get all items from a paged list."""
         limit = 50
@@ -647,7 +634,7 @@ class QobuzProvider(MusicProvider):
         while True:
             kwargs["limit"] = limit
             kwargs["offset"] = offset
-            result = await self._get_data(endpoint, skip_cache=True, **kwargs)
+            result = await self._get_data(endpoint, **kwargs)
             offset += limit
             if not result:
                 break
@@ -660,7 +647,6 @@ class QobuzProvider(MusicProvider):
                 break
         return all_items
 
-    @use_cache(3600 * 2)
     async def _get_data(self, endpoint, sign_request=False, **kwargs):
         """Get data from api."""
         url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"

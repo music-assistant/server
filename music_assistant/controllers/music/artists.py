@@ -117,19 +117,39 @@ class ArtistsController(MediaControllerBase[Artist]):
         self, item_id: str, provider_id: str
     ) -> List[Track]:
         """Return top tracks for an artist on given provider."""
-        provider = self.mass.music.get_provider(provider_id)
-        if not provider:
+        prov = self.mass.music.get_provider(provider_id)
+        if not prov:
             return []
-        return await provider.get_artist_toptracks(item_id)
+        # prefer cache items (if any)
+        cache_key = f"{prov.type.value}.artist_albums.{item_id}"
+        if cache := await self.mass.cache.get(cache_key):
+            return [Track.from_dict(x) for x in cache]
+        # no items in cache - get listing from provider
+        items = await prov.get_artist_toptracks(item_id)
+        # store (serializable items) in cache
+        self.mass.create_task(
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items])
+        )
+        return items
 
     async def get_provider_artist_albums(
         self, item_id: str, provider_id: str
     ) -> List[Album]:
         """Return albums for an artist on given provider."""
-        provider = self.mass.music.get_provider(provider_id)
-        if not provider:
+        prov = self.mass.music.get_provider(provider_id)
+        if not prov:
             return []
-        return await provider.get_artist_albums(item_id)
+        # prefer cache items (if any)
+        cache_key = f"{prov.type.value}.artist_albums.{item_id}"
+        if cache := await self.mass.cache.get(cache_key):
+            return [Album.from_dict(x) for x in cache]
+        # no items in cache - get listing from provider
+        items = await prov.get_artist_albums(item_id)
+        # store (serializable items) in cache
+        self.mass.create_task(
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items])
+        )
+        return items
 
     async def add_db_item(
         self, item: Artist, overwrite_existing: bool = False, db: Optional[Db] = None

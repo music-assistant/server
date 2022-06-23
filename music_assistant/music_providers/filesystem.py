@@ -325,12 +325,6 @@ class FileSystemProvider(MusicProvider):
         playlist_path = await self.get_filepath(MediaType.PLAYLIST, prov_playlist_id)
         if not await self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
-        getmtime = wrap(os.path.getmtime)
-        mtime = await getmtime(playlist_path)
-        checksum = f"{SCHEMA_VERSION}.{int(mtime)}"
-        cache_key = f"playlist_{self.id}_tracks_{prov_playlist_id}"
-        if cache := await self.mass.cache.get(cache_key, checksum):
-            return [Track.from_dict(x) for x in cache]
         playlist_base_path = Path(playlist_path).parent
         index = 0
         try:
@@ -349,7 +343,6 @@ class FileSystemProvider(MusicProvider):
             self.logger.warning(
                 "Error while parsing playlist %s", playlist_path, exc_info=err
             )
-        await self.mass.cache.set(cache_key, [x.to_dict() for x in result], checksum)
         return result
 
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
@@ -815,6 +808,10 @@ class FileSystemProvider(MusicProvider):
             )
         )
         playlist.owner = self._attr_name
+        getmtime = wrap(os.path.getmtime)
+        mtime = await getmtime(playlist_path)
+        checksum = f"{SCHEMA_VERSION}.{int(mtime)}"
+        playlist.metadata.checksum = checksum
         return playlist
 
     async def exists(self, file_path: str) -> bool:

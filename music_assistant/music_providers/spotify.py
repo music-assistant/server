@@ -16,7 +16,6 @@ from asyncio_throttle import Throttler
 from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name-in-module
     app_var,
 )
-from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.enums import ProviderType
@@ -137,7 +136,9 @@ class SpotifyProvider(MusicProvider):
         endpoint = "me/following"
         while True:
             spotify_artists = await self._get_data(
-                endpoint, type="artist", limit=50, skip_cache=True
+                endpoint,
+                type="artist",
+                limit=50,
             )
             for item in spotify_artists["artists"]["items"]:
                 if item and item["id"]:
@@ -150,19 +151,19 @@ class SpotifyProvider(MusicProvider):
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider."""
-        for item in await self._get_all_items("me/albums", skip_cache=True):
+        for item in await self._get_all_items("me/albums"):
             if item["album"] and item["album"]["id"]:
                 yield await self._parse_album(item["album"])
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        for item in await self._get_all_items("me/tracks", skip_cache=True):
+        for item in await self._get_all_items("me/tracks"):
             if item and item["track"]["id"]:
                 yield await self._parse_track(item["track"])
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from the provider."""
-        for item in await self._get_all_items("me/playlists", skip_cache=True):
+        for item in await self._get_all_items("me/playlists"):
             if item and item["id"]:
                 yield await self._parse_playlist(item)
 
@@ -196,12 +197,10 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
-        playlist = await self.get_playlist(prov_playlist_id)
         return [
             await self._parse_track(item["track"])
             for item in await self._get_all_items(
                 f"playlists/{prov_playlist_id}/tracks",
-                cache_checksum=playlist.metadata.checksum,
             )
             if (item and item["track"] and item["track"]["id"])
         ]
@@ -580,7 +579,6 @@ class SpotifyProvider(MusicProvider):
             return tokeninfo
         return None
 
-    @use_cache(3600 * 24)
     async def _get_all_items(self, endpoint, key="items", **kwargs) -> List[dict]:
         """Get all items from a paged list."""
         limit = 50
@@ -589,7 +587,7 @@ class SpotifyProvider(MusicProvider):
         while True:
             kwargs["limit"] = limit
             kwargs["offset"] = offset
-            result = await self._get_data(endpoint, skip_cache=True, **kwargs)
+            result = await self._get_data(endpoint, **kwargs)
             offset += limit
             if not result or key not in result or not result[key]:
                 break
@@ -600,7 +598,6 @@ class SpotifyProvider(MusicProvider):
                 break
         return all_items
 
-    @use_cache(3600 * 2)
     async def _get_data(self, endpoint, **kwargs):
         """Get data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"

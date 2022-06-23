@@ -6,7 +6,6 @@ from typing import AsyncGenerator, List, Optional
 from asyncio_throttle import Throttler
 
 from music_assistant.helpers.audio import get_radio_stream
-from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.util import create_clean_string
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import LoginFailed, MediaNotFoundError
@@ -176,7 +175,6 @@ class TuneInProvider(MusicProvider):
         ):
             yield chunk
 
-    @use_cache(3600 * 2)
     async def __get_data(self, endpoint: str, **kwargs):
         """Get data from api."""
         if endpoint.startswith("http"):
