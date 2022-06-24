@@ -187,7 +187,10 @@ class StreamsController:
         }
 
         resp = web.StreamResponse(headers=headers)
-        await resp.prepare(request)
+        try:
+            await resp.prepare(request)
+        except ConnectionResetError:
+            return resp
 
         if request.method != "GET":
             # do not start stream on HEAD request
@@ -347,7 +350,7 @@ class QueueStream:
         self.signal_next: bool = False
         self.chunk_size = get_chunksize(output_format)
         self._runner_task: Optional[asyncio.Task] = None
-        self._prev_chunks: Dict[str, bytes] = {}
+        self._prev_chunk: bytes = b""
         if autostart:
             self.mass.create_task(self.start())
 
@@ -365,7 +368,7 @@ class QueueStream:
 
         self._runner_task = None
         self.connected_clients = {}
-        self._prev_chunks = {}
+        self._prev_chunk = b""
 
         # run garbage collection manually due to the high number of
         # processed bytes blocks
@@ -375,18 +378,23 @@ class QueueStream:
 
     async def subscribe(self, client_id: str, callback: CoroutineType[bytes]) -> None:
         """Subscribe callback and wait for completion."""
-        assert client_id not in self.connected_clients, "Client is already connected"
         assert not self.done.is_set(), "Stream task is already finished"
+        if client_id in self.connected_clients:
+            self.logger.warning(
+                "Simultanuous connections detected from %s, playback may be disturbed",
+                client_id,
+            )
+            client_id += uuid4().hex
+
         self.connected_clients[client_id] = callback
         self.logger.debug("client connected: %s", client_id)
         if len(self.connected_clients) == self.expected_clients:
             self.all_clients_connected.set()
 
-        if client_id in self._prev_chunks:
-            self.logger.warning(
-                "Reconnect of player %s detected, playback may be disturbed", client_id
-            )
-            await callback(self._prev_chunks[client_id])
+        # workaround for reconnecting clients (such as kodi)
+        # send the previous chunk if we have one
+        if self._prev_chunk:
+            await callback(self._prev_chunk)
         try:
             await self.done.wait()
         finally:
@@ -465,7 +473,7 @@ class QueueStream:
                     if await self._check_stop():
                         return
                 for client_id in set(self.connected_clients.keys()):
-                    self._prev_chunks[client_id] = chunk
+                    self._prev_chunk = chunk
                     try:
                         callback = self.connected_clients[client_id]
                         await callback(chunk)
