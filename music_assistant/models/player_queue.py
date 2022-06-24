@@ -310,7 +310,11 @@ class PlayerQueue:
 
         # start queue with alert sound(s)
         self._items = queue_items
-        await self.queue_stream_start(0, 0, False, is_alert=True)
+        stream = await self.queue_stream_start(
+            start_index=0, seek_position=0, fade_in=False, is_alert=True
+        )
+        # execute the play command on the player(s)
+        await self.player.play_url(stream.url)
 
         # wait for the player to finish playing
         play_started = asyncio.Event()
@@ -461,7 +465,15 @@ class PlayerQueue:
             return
         self._current_index = index
         # start the queue stream
-        await self.queue_stream_start(index, int(seek_position), fade_in, passive)
+        stream = await self.queue_stream_start(
+            start_index=index,
+            seek_position=int(seek_position),
+            fade_in=fade_in,
+            passive=passive,
+        )
+        # execute the play command on the player(s)
+        if not passive:
+            await self.player.play_url(stream.url)
 
     async def move_item(self, queue_item_id: str, pos_shift: int = 1) -> None:
         """
@@ -682,9 +694,6 @@ class PlayerQueue:
             is_alert=is_alert,
         )
         self._stream_id = stream.stream_id
-        # execute the play command on the player(s)
-        if not passive:
-            await self.player.play_url(stream.url)
         return stream
 
     def get_next_index(self, cur_index: Optional[int]) -> int:
