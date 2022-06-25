@@ -9,6 +9,7 @@ from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.media_items import (
     Album,
     Artist,
+    BrowseFolder,
     MediaItemType,
     Playlist,
     Radio,
@@ -192,6 +193,84 @@ class MusicProvider:
             return await self.get_playlist(prov_item_id)
         if media_type == MediaType.RADIO:
             return await self.get_radio(prov_item_id)
+
+    async def browse(self, uri: Optional[str] = None) -> List[MediaItemType]:
+        """
+        Browse this provider's items.
+
+            :param uri: The path to browse, (e.g. provid://artists) or None for root level.
+        """
+        # this reference implementation can be overridden with provider specific approach
+        if uri is None:
+            # return main listing
+            root_items = []
+            if MediaType.ARTIST in self.supported_mediatypes:
+                root_items.append(
+                    BrowseFolder(
+                        item_id="artists",
+                        provider=self.type,
+                        name="",
+                        label="artists",
+                    )
+                )
+            if MediaType.ALBUM in self.supported_mediatypes:
+                root_items.append(
+                    BrowseFolder(
+                        item_id="albums",
+                        provider=self.type,
+                        name="",
+                        label="albums",
+                    )
+                )
+            if MediaType.TRACK in self.supported_mediatypes:
+                root_items.append(
+                    BrowseFolder(
+                        item_id="tracks",
+                        provider=self.type,
+                        name="",
+                        label="tracks",
+                    )
+                )
+            if MediaType.PLAYLIST in self.supported_mediatypes:
+                root_items.append(
+                    BrowseFolder(
+                        item_id="playlists",
+                        provider=self.type,
+                        name="",
+                        label="playlists",
+                    )
+                )
+            if MediaType.RADIO in self.supported_mediatypes:
+                root_items.append(
+                    BrowseFolder(
+                        item_id="radios",
+                        provider=self.type,
+                        name="",
+                        label="radios",
+                    )
+                )
+            return root_items
+        # sublevel
+        if uri.endswith("artists"):
+            return [x async for x in self.get_library_artists]
+        if uri.endswith("albums"):
+            return [x async for x in self.get_library_albums]
+        if uri.endswith("tracks"):
+            return [x async for x in self.get_library_tracks]
+        if uri.endswith("radios"):
+            return [x async for x in self.get_library_radios]
+        if uri.endswith("playlists"):
+            return [x async for x in self.get_library_playlists]
+
+    @abstractmethod
+    async def recommendations(self) -> List[BrowseFolder]:
+        """
+        Get this provider's recommendations.
+
+            Returns a list of BrowseFolder items with (max 25) mediaitems in the items attribute.
+        """
+        # pylint: disable=no-self-use
+        return []
 
     async def sync_library(
         self, media_types: Optional[Tuple[MediaType]] = None

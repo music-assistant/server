@@ -341,7 +341,18 @@ class Radio(MediaItem):
         return hash((self.provider, self.item_id))
 
 
-MediaItemType = Union[Artist, Album, Track, Radio, Playlist]
+@dataclass
+class BrowseFolder(MediaItem):
+    """Representation of a Folder used in Browse (which contains media items)."""
+
+    media_type: MediaType = MediaType.FOLDER
+    # label: a labelid that needs to be translated by the frontend
+    label: str = ""
+    # items (max 25) to provide in recommendation listings
+    items: Optional[List[MediaItemType]] = None
+
+
+MediaItemType = Union[Artist, Album, Track, Radio, Playlist, BrowseFolder]
 
 
 def media_from_dict(media_item: dict) -> MediaItemType:

@@ -27,6 +27,7 @@ from music_assistant.models.media_items import (
     Album,
     AlbumType,
     Artist,
+    BrowseFolder,
     ContentType,
     ImageType,
     ItemMapping,
@@ -53,6 +54,10 @@ CONTENT_TYPE_EXT = {
     "wma": ContentType.WMA,
 }
 SCHEMA_VERSION = 17
+
+listdir = wrap(os.listdir)
+isdir = wrap(os.path.isdir)
+isfile = wrap(os.path.isfile)
 
 
 async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
@@ -104,8 +109,6 @@ class FileSystemProvider(MusicProvider):
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
 
-        isdir = wrap(os.path.exists)
-
         if not await isdir(self.config.path):
             raise MediaNotFoundError(
                 f"Music Directory {self.config.path} does not exist"
@@ -138,6 +141,29 @@ class FileSystemProvider(MusicProvider):
             playlists = await self.mass.music.playlists.get_db_items(query, params)
             result += playlists
         return result
+
+    async def browse(self, uri: Optional[str] = None) -> List[MediaItemType]:
+        """
+        Browse this provider's items.
+
+            :param uri: The path to browse, (e.g. prov_id://artists) or None for root level.
+        """
+        if uri is None:
+            path = self.config.path
+        else:
+            path = os.path.join(self.config.path, uri.split("://")[1])
+        result = []
+        for filename in await listdir(path):
+            full_path: str = os.path.join(path, filename)
+            rel_path = full_path.replace(self.config.path + os.sep, "")
+            if await wrap(os.path.isdir(full_path)):
+                result.append(
+                    BrowseFolder(
+                        item_id=rel_path,
+                        provider=self.type,
+                        name=filename,
+                    )
+                )
 
     async def sync_library(
         self, media_types: Optional[Tuple[MediaType]] = None

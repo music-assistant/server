@@ -20,7 +20,12 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.config import MusicProviderConfig
 from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.errors import MusicAssistantError, SetupFailedError
-from music_assistant.models.media_items import MediaItem, MediaItemType, media_from_dict
+from music_assistant.models.media_items import (
+    BrowseFolder,
+    MediaItem,
+    MediaItemType,
+    media_from_dict,
+)
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.music_providers.filesystem import FileSystemProvider
 from music_assistant.music_providers.qobuz import QobuzProvider
@@ -185,6 +190,23 @@ class MusicController:
             )
         )
         return items
+
+    async def browse(self, uri: Optional[str] = None) -> List[BrowseFolder]:
+        """Browse Music providers."""
+        # root level; folder per provider
+        if uri is None:
+            return [
+                BrowseFolder(
+                    prov.id,
+                    prov.type,
+                    prov.name,
+                )
+                for prov in self.providers
+            ]
+        # provider level
+        provider_id, _ = uri.split("://", 1)
+        prov = self.get_provider(provider_id)
+        return await prov.browse(uri)
 
     async def get_item_by_uri(
         self, uri: str, force_refresh: bool = False, lazy: bool = True

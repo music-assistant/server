@@ -12,6 +12,7 @@ class MediaType(Enum):
     PLAYLIST = "playlist"
     RADIO = "radio"
     URL = "url"
+    FOLDER = "folder"
     UNKNOWN = "unknown"
 
 
