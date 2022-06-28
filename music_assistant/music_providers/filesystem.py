@@ -748,7 +748,7 @@ class FileSystemProvider(MusicProvider):
                     album.artist.musicbrainz_id = mb_artist_id
             if description := info.get("review"):
                 album.metadata.description = description
-            if year := info.get("label"):
+            if year := info.get("year"):
                 album.year = int(year)
             if genre := info.get("genre"):
                 album.metadata.genres = set(split_items(genre))
