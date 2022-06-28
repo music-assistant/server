@@ -127,8 +127,8 @@ class StreamsController:
         )
         await resp.prepare(request)
         if request.method == "GET":
-            # service 60 seconds of silence while player is processing request
-            async for chunk in get_silence(60, ContentType.WAV):
+            # service 1 second of silence while player is processing request
+            async for chunk in get_silence(1, ContentType.WAV):
                 await resp.write(chunk)
         return resp
 
@@ -524,7 +524,12 @@ class QueueStream:
                 seek_position = self.seek_position
                 fade_in = self.fade_in
             else:
-                queue_index = self.queue.get_next_index(queue_index)
+                next_index = self.queue.get_next_index(queue_index)
+                # break here if repeat is enabled
+                if next_index <= queue_index:
+                    self.signal_next = True
+                    break
+                queue_index = next_index
                 seek_position = 0
                 fade_in = False
             self.index_in_buffer = queue_index
