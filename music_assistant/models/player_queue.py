@@ -9,18 +9,12 @@ from asyncio import Task, TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
-from music_assistant.models.enums import (
-    ContentType,
-    EventType,
-    MediaType,
-    QueueOption,
-    RepeatMode,
-)
+from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import MediaItemType, media_from_dict
 
-from .player import Player, PlayerState, get_child_players
+from .player import Player, PlayerState
 from .queue_item import QueueItem
 from .queue_settings import QueueSettings
 
@@ -125,11 +119,6 @@ class PlayerQueue:
         if not self.active:
             return self.player.elapsed_time
         return self._current_item_elapsed_time
-
-    @property
-    def max_sample_rate(self) -> int:
-        """Return the maximum samplerate supported by this queue(player)."""
-        return max(self.player.supported_sample_rates)
 
     @property
     def items(self) -> List[QueueItem]:
@@ -469,7 +458,6 @@ class PlayerQueue:
             start_index=index,
             seek_position=int(seek_position),
             fade_in=fade_in,
-            passive=passive,
         )
         # execute the play command on the player(s)
         if not passive:
@@ -625,7 +613,7 @@ class PlayerQueue:
 
     def update_state(self) -> None:
         """Update queue details, called when player updates."""
-        if self.player.active_queue.queue_id != self.queue_id:
+        if self.player.active_queue != self:
             return
         new_index = self._current_index
         track_time = self._current_item_elapsed_time
@@ -666,31 +654,18 @@ class PlayerQueue:
         seek_position: int,
         fade_in: bool,
         is_alert: bool = False,
-        passive: bool = False,
     ) -> QueueStream:
         """Start the queue stream runner."""
-        if is_alert and ContentType.MP3 in self.player.supported_content_types:
-            # force MP3 for alert messages
-            output_format = ContentType.MP3
-        else:
-            output_format = self._settings.stream_type
-        if self.player.use_multi_stream:
-            # if multi stream is enabled, all child players should receive the same audio stream
-            expected_clients = len(get_child_players(self.player, True))
-        else:
-            expected_clients = 1
-
         self._current_item_elapsed_time = 0
         self._current_index = start_index
 
         # start the queue stream background task
         stream = await self.mass.streams.start_queue_stream(
             queue=self,
-            expected_clients=expected_clients,
             start_index=start_index,
             seek_position=seek_position,
             fade_in=fade_in,
-            output_format=output_format,
+            output_format=self._settings.stream_type,
             is_alert=is_alert,
         )
         self._stream_id = stream.stream_id

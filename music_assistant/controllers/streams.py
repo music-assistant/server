@@ -233,7 +233,6 @@ class StreamsController:
     async def start_queue_stream(
         self,
         queue: PlayerQueue,
-        expected_clients: int,
         start_index: int,
         seek_position: int,
         fade_in: bool,
@@ -258,12 +257,12 @@ class StreamsController:
             pcm_channels = 2
             pcm_resample = True
         elif queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
-            pcm_sample_rate = min(96000, queue.max_sample_rate)
+            pcm_sample_rate = min(96000, queue.settings.max_sample_rate)
             pcm_bit_depth = 24
             pcm_channels = 2
             pcm_resample = True
-        elif streamdetails.sample_rate > queue.max_sample_rate:
-            pcm_sample_rate = queue.max_sample_rate
+        elif streamdetails.sample_rate > queue.settings.max_sample_rate:
+            pcm_sample_rate = queue.settings.max_sample_rate
             pcm_bit_depth = streamdetails.bit_depth
             pcm_channels = streamdetails.channels
             pcm_resample = True
@@ -276,7 +275,6 @@ class StreamsController:
         self.queue_streams[stream_id] = stream = QueueStream(
             queue=queue,
             stream_id=stream_id,
-            expected_clients=expected_clients,
             start_index=start_index,
             seek_position=seek_position,
             fade_in=fade_in,
@@ -309,7 +307,6 @@ class QueueStream:
         self,
         queue: PlayerQueue,
         stream_id: str,
-        expected_clients: int,
         start_index: int,
         seek_position: int,
         fade_in: bool,
@@ -325,7 +322,6 @@ class QueueStream:
         """Init QueueStreamJob instance."""
         self.queue = queue
         self.stream_id = stream_id
-        self.expected_clients = expected_clients
         self.start_index = start_index
         self.seek_position = seek_position
         self.fade_in = fade_in
@@ -340,7 +336,7 @@ class QueueStream:
 
         self.mass = queue.mass
         self.logger = self.queue.logger.getChild("stream")
-        self.expected_clients = expected_clients
+        self.expected_clients = 1
         self.connected_clients: Dict[str, CoroutineType[bytes]] = {}
         self.seconds_streamed = 0
         self.streaming_started = 0
@@ -565,7 +561,7 @@ class QueueStream:
             if (
                 not self.pcm_resample
                 and streamdetails.sample_rate > self.pcm_sample_rate
-                and streamdetails.sample_rate <= self.queue.max_sample_rate
+                and streamdetails.sample_rate <= self.queue.settings.max_sample_rate
             ):
                 self.logger.debug(
                     "Abort queue stream %s due to sample rate mismatch",

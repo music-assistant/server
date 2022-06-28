@@ -75,7 +75,6 @@ class PlayerController:
 
         # make sure that the mass instance is set on the player
         player.mass = self.mass
-        player._attr_active_queue_id = player_id  # pylint: disable=protected-access
         self._players[player_id] = player
 
         # create playerqueue for this player
@@ -83,6 +82,7 @@ class PlayerController:
             self.mass, player_id
         )
         await player_queue.setup()
+
         self.logger.info(
             "Player registered: %s/%s",
             player_id,
