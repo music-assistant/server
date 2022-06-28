@@ -51,6 +51,7 @@ CONTENT_TYPE_EXT = {
     "wav": ContentType.WAV,
     "ogg": ContentType.OGG,
     "wma": ContentType.WMA,
+    "aiff": ContentType.AIFF,
 }
 SCHEMA_VERSION = 17
 
@@ -153,16 +154,16 @@ class FileSystemProvider(MusicProvider):
         cur_checksums = {}
         async with self.mass.database.get_db() as db:
             async for entry in scantree(self.config.path):
-
-                # mtime is used as file checksum
-                stat = await asyncio.get_running_loop().run_in_executor(
-                    None, entry.stat
-                )
-                checksum = int(stat.st_mtime)
-                cur_checksums[entry.path] = checksum
-                if checksum == prev_checksums.get(entry.path):
-                    continue
                 try:
+                    # mtime is used as file checksum
+                    stat = await asyncio.get_running_loop().run_in_executor(
+                        None, entry.stat
+                    )
+                    checksum = int(stat.st_mtime)
+                    cur_checksums[entry.path] = checksum
+                    if checksum == prev_checksums.get(entry.path):
+                        continue
+
                     if track := await self._parse_track(entry.path):
                         # process album
                         if track.album:
@@ -194,9 +195,11 @@ class FileSystemProvider(MusicProvider):
                         # add/update] playlist to db
                         playlist.metadata.checksum = checksum
                         await self.mass.music.playlists.add_db_item(playlist, db=db)
-                except Exception:  # pylint: disable=broad-except
+                except Exception as err:  # pylint: disable=broad-except
                     # we don't want the whole sync to crash on one file so we catch all exceptions here
-                    self.logger.exception("Error processing %s", entry.path)
+                    self.logger.exception(
+                        "Error processing %s - %s", entry.path, str(err)
+                    )
 
                 # save checksums every 50 processed items
                 # this allows us to pickup where we leftoff when initial scan gets intterrupted
