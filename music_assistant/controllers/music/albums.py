@@ -48,24 +48,28 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_id: Optional[str] = None,
     ) -> List[Track]:
         """Return album tracks for the given provider album id."""
-        album = await self.get(item_id, provider, provider_id)
+        # if provider specific album is requested, return that directly
+        if not (provider == ProviderType.DATABASE or provider_id == "database"):
+            return await self.get_provider_album_tracks(
+                item_id, provider=provider, provider_id=provider_id
+            )
+
         # get results from all providers
+        db_album = await self.get_db_item(item_id)
         coros = [
             self.get_provider_album_tracks(item.item_id, item.prov_id)
-            for item in album.provider_ids
+            for item in db_album.provider_ids
         ]
         tracks = itertools.chain.from_iterable(await asyncio.gather(*coros))
         # merge duplicates using a dict
         final_items: Dict[str, Track] = {}
         for track in tracks:
-            key = f".{track.name}.{track.version}.{track.disc_number}.{track.track_number}"
+            key = f".{track.name.lower()}.{track.version}.{track.disc_number}.{track.track_number}"
             if key in final_items:
                 final_items[key].provider_ids.update(track.provider_ids)
             else:
-                track.album = album
+                track.album = db_album
                 final_items[key] = track
-            if album.in_library:
-                final_items[key].in_library = True
         return list(final_items.values())
 
     async def versions(
