@@ -158,17 +158,16 @@ class Player(ABC):
         return self._attr_group_members
 
     @property
-    def group_leader(self) -> str:
+    def group_leader(self) -> str | None:
         """Return the leader's player_id of this playergroup."""
         if group_members := self.group_members:
             return group_members[0]
-        # fallback to own player id if player does not belong to a group
-        return self.player_id
+        return None
 
     @property
     def is_group_leader(self) -> bool:
         """Return if this player is the leader in a playergroup."""
-        return self.group_leader == self.player_id
+        return self.is_group and self.group_leader == self.player_id
 
     @property
     def is_passive(self) -> bool:
@@ -177,7 +176,10 @@ class Player(ABC):
 
         Usually this means the player is part of a playergroup but not the leader.
         """
-        return not self.is_group_leader
+        if self.is_group and self.player_id not in self.group_members:
+            # special groupplayer (e.g. cast group)
+            return False
+        return self.is_group and not self.is_group_leader
 
     @property
     def group_name(self) -> str:
@@ -347,6 +349,7 @@ class Player(ABC):
             "volume_level": int(self.volume_level),
             "is_group": self.is_group,
             "group_members": self.group_members,
+            "group_leader": self.group_leader,
             "is_passive": self.is_passive,
             "group_name": self.group_name,
             "group_powered": self.group_powered,
@@ -361,7 +364,6 @@ class Player(ABC):
         self,
         only_powered: bool = False,
         only_playing: bool = False,
-        skip_passive: bool = False,
     ) -> List[Player]:
         """Get players attached to a grouped player."""
         if not self.mass:
@@ -372,8 +374,6 @@ class Player(ABC):
                 if not (not only_powered or child_player.powered):
                     continue
                 if not (not only_playing or child_player.state == PlayerState.PLAYING):
-                    continue
-                if skip_passive and child_player.is_passive:
                     continue
                 child_players.append(child_player)
         return child_players
