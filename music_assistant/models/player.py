@@ -177,7 +177,6 @@ class Player(ABC):
         Usually this means the player is part of a playergroup but not the leader.
         """
         if self.is_group and self.player_id not in self.group_members:
-            # special groupplayer (e.g. cast group)
             return False
         return self.is_group and not self.is_group_leader
 
@@ -193,7 +192,7 @@ class Player(ABC):
     @property
     def group_powered(self) -> bool:
         """Calculate a group power state from the grouped members."""
-        if not self.available or not self.is_group:
+        if not self.is_group:
             return self.powered
         for _ in self.get_child_players(True):
             return True
@@ -202,7 +201,7 @@ class Player(ABC):
     @property
     def group_volume_level(self) -> int:
         """Calculate a group volume from the grouped members."""
-        if not self.available or not self.is_group:
+        if not self.is_group:
             return self.volume_level
         group_volume = 0
         active_players = 0
@@ -318,11 +317,13 @@ class Player(ABC):
         if self.is_group:
             # update group player members when parent updates
             for child_player_id in self.group_members:
+                if child_player_id == self.player_id:
+                    continue
                 if player := self.mass.players.get_player(child_player_id):
                     self.mass.create_task(
                         player.on_parent_update, self.player_id, changed_keys
                     )
-            return
+
         # update group player(s) when child updates
         for group_player in self.get_group_parents():
             self.mass.create_task(
@@ -368,12 +369,12 @@ class Player(ABC):
         """Get players attached to a grouped player."""
         if not self.mass:
             return []
-        child_players = []
+        child_players = set()
         for child_id in self.group_members:
             if child_player := self.mass.players.get_player(child_id):
                 if not (not only_powered or child_player.powered):
                     continue
                 if not (not only_playing or child_player.state == PlayerState.PLAYING):
                     continue
-                child_players.append(child_player)
-        return child_players
+                child_players.add(child_player)
+        return list(child_players)
