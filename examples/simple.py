@@ -3,8 +3,12 @@ import argparse
 import asyncio
 import logging
 import os
+from os.path import abspath, dirname
+from sys import path
 
+path.insert(1, dirname(dirname(abspath(__file__))))
 
+# pylint: disable=wrong-import-position
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.config import MassConfig, MusicProviderConfig
 from music_assistant.models.enums import ProviderType
