@@ -5,7 +5,7 @@ import asyncio
 import os
 import pathlib
 import random
-from asyncio import Task, TimerHandle
+from asyncio import TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -62,7 +62,6 @@ class PlayerQueue:
         self._last_state = str
         self._items: List[QueueItem] = []
         self._save_task: TimerHandle = None
-        self._update_task: Task = None
         self._last_player_update: int = 0
         self._last_stream_id: str = ""
         self._snapshot: Optional[QueueSnapShot] = None
@@ -594,20 +593,6 @@ class PlayerQueue:
                 elif self.signal_next:
                     self.signal_next = False
                     self.mass.create_task(self.resume())
-
-            # start poll/updater task if playback starts on player
-            async def updater() -> None:
-                """Update player queue every second while playing."""
-                while True:
-                    await asyncio.sleep(1)
-                    self.update_state()
-
-            if self.player.state == PlayerState.PLAYING and self.active:
-                if not self._update_task or self._update_task.done():
-                    self._update_task = self.mass.create_task(updater)
-            elif self._update_task:
-                self._update_task.cancel()
-                self._update_task = None
 
         self.update_state()
 
