@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from databases import Database as Db
 
@@ -57,14 +57,16 @@ class AlbumsController(MediaControllerBase[Album]):
         # get results from all providers
         db_album = await self.get_db_item(item_id)
         coros = [
-            self.get_provider_album_tracks(item.item_id, item.prov_id)
+            self.get_provider_album_tracks(
+                item.item_id, item.prov_id, cache_checksum=db_album.metadata.checksum
+            )
             for item in db_album.provider_ids
         ]
         tracks = itertools.chain.from_iterable(await asyncio.gather(*coros))
         # merge duplicates using a dict
         final_items: Dict[str, Track] = {}
         for track in tracks:
-            key = f".{track.name.lower()}.{track.version}.{track.disc_number}.{track.track_number}"
+            key = f".{track.name.lower()}.{track.disc_number}.{track.track_number}"
             if key in final_items:
                 final_items[key].provider_ids.update(track.provider_ids)
             else:
@@ -106,20 +108,23 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
+        cache_checksum: Any = None,
     ) -> List[Track]:
         """Return album tracks for the given provider album id."""
         prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
-        # prefer cache items (if any)
+        # prefer cache items (if any) - do not use cache for filesystem
         cache_key = f"{prov.type.value}.album_tracks.{item_id}"
-        if cache := await self.mass.cache.get(cache_key):
+        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = await prov.get_album_tracks(item_id)
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(cache_key, [x.to_dict() for x in items])
+            self.mass.cache.set(
+                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
+            )
         )
         return items
 

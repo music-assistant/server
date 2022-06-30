@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import urllib.parse
 from contextlib import asynccontextmanager
@@ -54,6 +55,7 @@ CONTENT_TYPE_EXT = {
     "aiff": ContentType.AIFF,
 }
 SCHEMA_VERSION = 17
+LOGGER = logging.getLogger(__name__)
 
 
 async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
@@ -63,12 +65,17 @@ async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
         return entry.is_dir(follow_symlinks=False)
 
     loop = asyncio.get_running_loop()
-    for entry in await loop.run_in_executor(None, os.scandir, path):
-        if await loop.run_in_executor(None, is_dir, entry):
-            async for subitem in scantree(entry.path):
-                yield subitem
-        else:
-            yield entry
+    try:
+        entries = await loop.run_in_executor(None, os.scandir, path)
+    except (OSError, PermissionError) as err:
+        LOGGER.warning("Skip folder %s: %s", path, str(err))
+    else:
+        for entry in entries:
+            if await loop.run_in_executor(None, is_dir, entry):
+                async for subitem in scantree(entry.path):
+                    yield subitem
+            else:
+                yield entry
 
 
 def split_items(org_str: str) -> Tuple[str]:
@@ -165,8 +172,12 @@ class FileSystemProvider(MusicProvider):
                         continue
 
                     if track := await self._parse_track(entry.path):
+                        # set checksum on track to invalidate any cached listings
+                        track.metadata.checksum = checksum
                         # process album
                         if track.album:
+                            # set checksum on album to invalidate cached albumtracks listings etc
+                            track.album.metadata.checksum = checksum
                             db_album = await self.mass.music.albums.add_db_item(
                                 track.album, overwrite_existing=True, db=db
                             )
@@ -176,6 +187,8 @@ class FileSystemProvider(MusicProvider):
                                 )
                             # process (album)artist
                             if track.album.artist:
+                                # set checksum on albumartist to invalidate cached artisttracks listings etc
+                                track.album.artist.metadata.checksum = checksum
                                 db_artist = await self.mass.music.artists.add_db_item(
                                     track.album.artist, db=db
                                 )
@@ -780,7 +793,7 @@ class FileSystemProvider(MusicProvider):
             for img_type in ImageType:
                 if img_type.value in _filepath:
                     images.append(MediaItemImage(img_type, _filepath, True))
-                elif _filename == "folder.jpg":
+                elif "folder." in _filepath:
                     images.append(MediaItemImage(ImageType.THUMB, _filepath, True))
         if images:
             album.metadata.images = images
