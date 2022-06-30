@@ -270,6 +270,9 @@ class Player(ABC):
         """Toggle power on player."""
         await self.power(not self.powered)
 
+    def on_update(self) -> None:
+        """Call when player is about to be updated in the player manager."""
+
     def on_child_update(self, player_id: str, changed_keys: set) -> None:
         """Call when one of the child players of a playergroup updates."""
         self.update_state(skip_forward=True)
@@ -296,9 +299,12 @@ class Player(ABC):
         if self.mass is None or self.mass.closed:
             # guard
             return
+        self.on_update()
         # basic throttle: do not send state changed events if player did not change
         cur_state = self.to_dict()
-        changed_keys = get_changed_keys(self._prev_state, cur_state)
+        changed_keys = get_changed_keys(
+            self._prev_state, cur_state, ignore_keys=["elapsed_time"]
+        )
 
         # always update the playerqueue
         self.mass.players.get_player_queue(self.player_id).on_player_update()
@@ -307,10 +313,9 @@ class Player(ABC):
             return
 
         self._prev_state = cur_state
-        if changed_keys != {"elapsed_time"}:
-            self.mass.signal_event(
-                MassEvent(EventType.PLAYER_UPDATED, object_id=self.player_id, data=self)
-            )
+        self.mass.signal_event(
+            MassEvent(EventType.PLAYER_UPDATED, object_id=self.player_id, data=self)
+        )
 
         if skip_forward:
             return

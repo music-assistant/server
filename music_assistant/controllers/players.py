@@ -1,9 +1,10 @@
 """Logic to play music from MusicProviders to supported players."""
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Dict, Tuple
 
-from music_assistant.models.enums import EventType
+from music_assistant.models.enums import EventType, PlayerState
 from music_assistant.models.errors import AlreadyRegisteredError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.player import Player
@@ -11,9 +12,6 @@ from music_assistant.models.player_queue import PlayerQueue
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
-
-
-DB_TABLE = "queue_settings"
 
 
 class PlayerController:
@@ -28,7 +26,7 @@ class PlayerController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        # nothing to setup (yet)
+        self.mass.create_task(self._poll_players())
 
     async def cleanup(self) -> None:
         """Cleanup on exit."""
@@ -91,3 +89,20 @@ class PlayerController:
         self.mass.signal_event(
             MassEvent(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
         )
+
+    async def _poll_players(self) -> None:
+        """Poll players every X interval."""
+        interval = 30
+        cur_tick = 0
+        while True:
+            for player in self.players:
+                if cur_tick == interval or player.state in (
+                    PlayerState.PLAYING,
+                    PlayerState.PAUSED,
+                ):
+                    player.update_state()
+            if cur_tick == interval:
+                cur_tick = 0
+            else:
+                cur_tick += 1
+            await asyncio.sleep(1)
