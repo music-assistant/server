@@ -29,7 +29,6 @@ good-names=id,i,j,k,ex,Run,_,fp,T,ev,db,d
 # fixme - project is in development phase
 disable=
   format,
-  abstract-class-little-used,
   abstract-method,
   cyclic-import,
   duplicate-code,
