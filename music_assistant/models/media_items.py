@@ -396,7 +396,6 @@ class StreamDetails(DataClassDictMixin):
 
     def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
         """Exclude internal fields from dict."""
-        # pylint: disable=no-self-use
         d.pop("data")
         d.pop("expires")
         d.pop("queue_id")
