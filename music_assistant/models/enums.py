@@ -192,6 +192,7 @@ class ProviderType(Enum):
     SPOTIFY = "spotify"
     QOBUZ = "qobuz"
     TUNEIN = "tunein"
+    YTMUSIC = "ytmusic"
     DATABASE = "database"  # internal only
     URL = "url"  # internal only
 
