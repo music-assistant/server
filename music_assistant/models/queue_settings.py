@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .enums import ContentType, CrossFadeMode, RepeatMode
 
@@ -24,6 +24,8 @@ class QueueSettings:
         self._crossfade_duration: int = 6
         self._volume_normalization_enabled: bool = True
         self._volume_normalization_target: int = -14
+        self._stream_type: Optional[ContentType] = None
+        self._sample_rates: Optional[Tuple[int]] = None
 
     @property
     def repeat_mode(self) -> RepeatMode:
@@ -123,8 +125,38 @@ class QueueSettings:
 
     @property
     def stream_type(self) -> ContentType:
-        """Return supported/preferred stream type for playerqueue. Read only."""
-        return self._queue.player.stream_type
+        """Return supported/preferred stream type for this playerqueue."""
+        if self._stream_type is None:
+            # return player's default
+            return self._queue.player.default_stream_type
+        return self._stream_type
+
+    @stream_type.setter
+    def stream_type(self, value: ContentType) -> None:
+        """Set supported/preferred stream type for this playerqueue."""
+        if self._stream_type != value:
+            self._stream_type = value
+            self._on_update("stream_type")
+
+    @property
+    def sample_rates(self) -> Tuple[int]:
+        """Return supported/preferred sample rate(s) for this playerqueue."""
+        if self._sample_rates is None:
+            # return player's default
+            return self._queue.player.default_sample_rates
+        return self._sample_rates
+
+    @sample_rates.setter
+    def sample_rates(self, value: ContentType) -> None:
+        """Set supported/preferred sample rate(s) for this playerqueue."""
+        if self._stream_type != value:
+            self._stream_type = value
+            self._on_update("sample_rates")
+
+    @property
+    def max_sample_rate(self) -> int:
+        """Return the maximum samplerate supported by this playerqueue."""
+        return max(self.sample_rates)
 
     def to_dict(self) -> Dict[str, Any]:
         """Return dict from settings."""
@@ -135,6 +167,8 @@ class QueueSettings:
             "crossfade_duration": self.crossfade_duration,
             "volume_normalization_enabled": self.volume_normalization_enabled,
             "volume_normalization_target": self.volume_normalization_target,
+            "stream_type": self.stream_type.value,
+            "sample_rates": self.sample_rates,
         }
 
     async def restore(self) -> None:
@@ -147,6 +181,8 @@ class QueueSettings:
                 ("crossfade_duration", int),
                 ("volume_normalization_enabled", bool),
                 ("volume_normalization_target", float),
+                ("stream_type", ContentType),
+                ("sample_rates", tuple),
             ):
                 db_key = f"{self._queue.queue_id}_{key}"
                 if db_value := await self.mass.database.get_setting(db_key, db=_db):

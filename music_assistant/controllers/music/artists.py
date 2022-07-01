@@ -2,7 +2,7 @@
 
 import asyncio
 import itertools
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from databases import Database as Db
 
@@ -39,7 +39,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         artist = await self.get(item_id, provider, provider_id)
         # get results from all providers
         coros = [
-            self.get_provider_artist_toptracks(item.item_id, item.prov_id)
+            self.get_provider_artist_toptracks(
+                item.item_id, item.prov_id, cache_checksum=artist.metadata.checksum
+            )
             for item in artist.provider_ids
         ]
         tracks = itertools.chain.from_iterable(await asyncio.gather(*coros))
@@ -114,40 +116,52 @@ class ArtistsController(MediaControllerBase[Artist]):
                 )
 
     async def get_provider_artist_toptracks(
-        self, item_id: str, provider_id: str
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        cache_checksum: Any = None,
     ) -> List[Track]:
         """Return top tracks for an artist on given provider."""
-        prov = self.mass.music.get_provider(provider_id)
+        prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
         # prefer cache items (if any)
         cache_key = f"{prov.type.value}.artist_toptracks.{item_id}"
-        if cache := await self.mass.cache.get(cache_key):
+        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = await prov.get_artist_toptracks(item_id)
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(cache_key, [x.to_dict() for x in items])
+            self.mass.cache.set(
+                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
+            )
         )
         return items
 
     async def get_provider_artist_albums(
-        self, item_id: str, provider_id: str
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        cache_checksum: Any = None,
     ) -> List[Album]:
         """Return albums for an artist on given provider."""
-        prov = self.mass.music.get_provider(provider_id)
+        prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
         # prefer cache items (if any)
         cache_key = f"{prov.type.value}.artist_albums.{item_id}"
-        if cache := await self.mass.cache.get(cache_key):
+        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Album.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = await prov.get_artist_albums(item_id)
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(cache_key, [x.to_dict() for x in items])
+            self.mass.cache.set(
+                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
+            )
         )
         return items
 

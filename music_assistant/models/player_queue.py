@@ -5,22 +5,16 @@ import asyncio
 import os
 import pathlib
 import random
-from asyncio import Task, TimerHandle
+from asyncio import TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
-from music_assistant.models.enums import (
-    ContentType,
-    EventType,
-    MediaType,
-    QueueOption,
-    RepeatMode,
-)
+from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import MediaItemType, media_from_dict
 
-from .player import Player, PlayerState, get_child_players
+from .player import Player, PlayerState
 from .queue_item import QueueItem
 from .queue_settings import QueueSettings
 
@@ -68,7 +62,6 @@ class PlayerQueue:
         self._last_state = str
         self._items: List[QueueItem] = []
         self._save_task: TimerHandle = None
-        self._update_task: Task = None
         self._last_player_update: int = 0
         self._last_stream_id: str = ""
         self._snapshot: Optional[QueueSnapShot] = None
@@ -125,11 +118,6 @@ class PlayerQueue:
         if not self.active:
             return self.player.elapsed_time
         return self._current_item_elapsed_time
-
-    @property
-    def max_sample_rate(self) -> int:
-        """Return the maximum samplerate supported by this queue(player)."""
-        return max(self.player.supported_sample_rates)
 
     @property
     def items(self) -> List[QueueItem]:
@@ -469,7 +457,6 @@ class PlayerQueue:
             start_index=index,
             seek_position=int(seek_position),
             fade_in=fade_in,
-            passive=passive,
         )
         # execute the play command on the player(s)
         if not passive:
@@ -514,7 +501,7 @@ class PlayerQueue:
             item.sort_index = index
         if self.settings.shuffle_enabled and len(queue_items) > 5:
             queue_items = random.sample(queue_items, len(queue_items))
-        self._items = queue_items
+        self._items = [x for x in queue_items if x is not None]  # filter None items
         await self.play_index(0, passive=passive)
         self.signal_update(True)
 
@@ -550,7 +537,7 @@ class PlayerQueue:
                 + queue_items
                 + self._items[insert_at_index:]
             )
-
+        self._items = [x for x in queue_items if x is not None]  # filter None items
         if offset in (0, cur_index):
             await self.play_index(insert_at_index, passive=passive)
 
@@ -607,25 +594,11 @@ class PlayerQueue:
                     self.signal_next = False
                     self.mass.create_task(self.resume())
 
-            # start poll/updater task if playback starts on player
-            async def updater() -> None:
-                """Update player queue every second while playing."""
-                while True:
-                    await asyncio.sleep(1)
-                    self.update_state()
-
-            if self.player.state == PlayerState.PLAYING and self.active:
-                if not self._update_task or self._update_task.done():
-                    self._update_task = self.mass.create_task(updater)
-            elif self._update_task:
-                self._update_task.cancel()
-                self._update_task = None
-
         self.update_state()
 
     def update_state(self) -> None:
         """Update queue details, called when player updates."""
-        if self.player.active_queue.queue_id != self.queue_id:
+        if self.player.active_queue != self:
             return
         new_index = self._current_index
         track_time = self._current_item_elapsed_time
@@ -666,31 +639,18 @@ class PlayerQueue:
         seek_position: int,
         fade_in: bool,
         is_alert: bool = False,
-        passive: bool = False,
     ) -> QueueStream:
         """Start the queue stream runner."""
-        if is_alert and ContentType.MP3 in self.player.supported_content_types:
-            # force MP3 for alert messages
-            output_format = ContentType.MP3
-        else:
-            output_format = self._settings.stream_type
-        if self.player.use_multi_stream:
-            # if multi stream is enabled, all child players should receive the same audio stream
-            expected_clients = len(get_child_players(self.player, True))
-        else:
-            expected_clients = 1
-
         self._current_item_elapsed_time = 0
         self._current_index = start_index
 
         # start the queue stream background task
         stream = await self.mass.streams.start_queue_stream(
             queue=self,
-            expected_clients=expected_clients,
             start_index=start_index,
             seek_position=seek_position,
             fade_in=fade_in,
-            output_format=output_format,
+            output_format=self._settings.stream_type,
             is_alert=is_alert,
         )
         self._stream_id = stream.stream_id
@@ -752,7 +712,7 @@ class PlayerQueue:
 
     async def _update_items(self, queue_items: List[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
-        self._items = queue_items
+        self._items = [x for x in queue_items if x is not None]  # filter None items
         self.signal_update(True)
 
     def __get_queue_stream_index(self) -> Tuple[int, int]:
@@ -795,7 +755,11 @@ class PlayerQueue:
         """Try to load the saved state from cache."""
         if queue_cache := await self.mass.cache.get(f"queue_items.{self.queue_id}"):
             try:
-                self._items = [QueueItem.from_dict(x) for x in queue_cache["items"]]
+                self._items = [
+                    QueueItem.from_dict(x)
+                    for x in queue_cache["items"]
+                    if x is not None
+                ]
                 self._current_index = queue_cache["current_index"]
                 self._current_item_elapsed_time = queue_cache.get(
                     "current_item_elapsed_time", 0

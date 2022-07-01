@@ -149,7 +149,9 @@ class TracksController(MediaControllerBase[Track]):
 
             # no existing match found: insert new item
             track_artists = await self._get_track_artists(item, db=db)
-            track_albums = await self._get_track_albums(item, db=db)
+            track_albums = await self._get_track_albums(
+                item, overwrite=overwrite_existing, db=db
+            )
             new_item = await self.mass.database.insert(
                 self.db_table,
                 {
@@ -187,7 +189,7 @@ class TracksController(MediaControllerBase[Track]):
                 metadata.last_refresh = None
                 # we store a mapping to artists/albums on the item for easier access/listings
                 track_artists = await self._get_track_artists(item, db=db)
-                track_albums = await self._get_track_albums(item, db=db)
+                track_albums = await self._get_track_albums(item, overwrite=True, db=db)
             else:
                 metadata = cur_item.metadata.update(item.metadata, overwrite)
                 provider_ids = {*cur_item.provider_ids, *item.provider_ids}
@@ -237,6 +239,7 @@ class TracksController(MediaControllerBase[Track]):
         self,
         base_track: Track,
         upd_track: Optional[Track] = None,
+        overwrite: bool = False,
         db: Optional[Db] = None,
     ) -> List[TrackAlbumMapping]:
         """Extract all (unique) albums of track as TrackAlbumMapping."""
@@ -248,7 +251,9 @@ class TracksController(MediaControllerBase[Track]):
             track_albums = base_track.albums
         # append update item album if needed
         if upd_track and upd_track.album:
-            mapping = await self._get_album_mapping(upd_track.album, db=db)
+            mapping = await self._get_album_mapping(
+                upd_track.album, overwrite=overwrite, db=db
+            )
             mapping = TrackAlbumMapping.from_dict(
                 {
                     **mapping.to_dict(),
@@ -260,7 +265,9 @@ class TracksController(MediaControllerBase[Track]):
                 track_albums.append(mapping)
         # append base item album if needed
         elif base_track and base_track.album:
-            mapping = await self._get_album_mapping(base_track.album, db=db)
+            mapping = await self._get_album_mapping(
+                base_track.album, overwrite=overwrite, db=db
+            )
             mapping = TrackAlbumMapping.from_dict(
                 {
                     **mapping.to_dict(),
@@ -274,7 +281,10 @@ class TracksController(MediaControllerBase[Track]):
         return track_albums
 
     async def _get_album_mapping(
-        self, album: Union[Album, ItemMapping], db: Optional[Db] = None
+        self,
+        album: Union[Album, ItemMapping],
+        overwrite: bool = False,
+        db: Optional[Db] = None,
     ) -> ItemMapping:
         """Extract (database) album as ItemMapping."""
         if album.provider == ProviderType.DATABASE:
@@ -287,7 +297,9 @@ class TracksController(MediaControllerBase[Track]):
         ):
             return ItemMapping.from_item(db_album)
 
-        db_album = await self.mass.music.albums.add_db_item(album, db=db)
+        db_album = await self.mass.music.albums.add_db_item(
+            album, overwrite_existing=overwrite, db=db
+        )
         return ItemMapping.from_item(db_album)
 
     async def _get_artist_mapping(

@@ -110,7 +110,6 @@ class MetaDataController:
         playlist.metadata.last_refresh = int(time())
 
     async def get_radio_metadata(self, radio: Radio) -> None:
-        # pylint: disable=no-self-use
         """Get/update rich metadata for a radio station."""
         # NOTE: we do not have any metadata for radiso so consider this future proofing ;-)
         radio.metadata.last_refresh = int(time())

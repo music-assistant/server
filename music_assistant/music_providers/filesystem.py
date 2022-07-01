@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import urllib.parse
 from contextlib import asynccontextmanager
@@ -52,8 +53,10 @@ CONTENT_TYPE_EXT = {
     "wav": ContentType.WAV,
     "ogg": ContentType.OGG,
     "wma": ContentType.WMA,
+    "aiff": ContentType.AIFF,
 }
 SCHEMA_VERSION = 17
+LOGGER = logging.getLogger(__name__)
 
 listdir = wrap(os.listdir)
 isdir = wrap(os.path.isdir)
@@ -67,12 +70,17 @@ async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
         return entry.is_dir(follow_symlinks=False)
 
     loop = asyncio.get_running_loop()
-    for entry in await loop.run_in_executor(None, os.scandir, path):
-        if await loop.run_in_executor(None, is_dir, entry):
-            async for subitem in scantree(entry.path):
-                yield subitem
-        else:
-            yield entry
+    try:
+        entries = await loop.run_in_executor(None, os.scandir, path)
+    except (OSError, PermissionError) as err:
+        LOGGER.warning("Skip folder %s: %s", path, str(err))
+    else:
+        for entry in entries:
+            if await loop.run_in_executor(None, is_dir, entry):
+                async for subitem in scantree(entry.path):
+                    yield subitem
+            else:
+                yield entry
 
 
 def split_items(org_str: str) -> Tuple[str]:
@@ -179,19 +187,23 @@ class FileSystemProvider(MusicProvider):
         cur_checksums = {}
         async with self.mass.database.get_db() as db:
             async for entry in scantree(self.config.path):
-
-                # mtime is used as file checksum
-                stat = await asyncio.get_running_loop().run_in_executor(
-                    None, entry.stat
-                )
-                checksum = int(stat.st_mtime)
-                cur_checksums[entry.path] = checksum
-                if checksum == prev_checksums.get(entry.path):
-                    continue
                 try:
+                    # mtime is used as file checksum
+                    stat = await asyncio.get_running_loop().run_in_executor(
+                        None, entry.stat
+                    )
+                    checksum = int(stat.st_mtime)
+                    cur_checksums[entry.path] = checksum
+                    if checksum == prev_checksums.get(entry.path):
+                        continue
+
                     if track := await self._parse_track(entry.path):
+                        # set checksum on track to invalidate any cached listings
+                        track.metadata.checksum = checksum
                         # process album
                         if track.album:
+                            # set checksum on album to invalidate cached albumtracks listings etc
+                            track.album.metadata.checksum = checksum
                             db_album = await self.mass.music.albums.add_db_item(
                                 track.album, overwrite_existing=True, db=db
                             )
@@ -201,6 +213,8 @@ class FileSystemProvider(MusicProvider):
                                 )
                             # process (album)artist
                             if track.album.artist:
+                                # set checksum on albumartist to invalidate cached artisttracks listings etc
+                                track.album.artist.metadata.checksum = checksum
                                 db_artist = await self.mass.music.artists.add_db_item(
                                     track.album.artist, db=db
                                 )
@@ -220,9 +234,11 @@ class FileSystemProvider(MusicProvider):
                         # add/update] playlist to db
                         playlist.metadata.checksum = checksum
                         await self.mass.music.playlists.add_db_item(playlist, db=db)
-                except Exception:  # pylint: disable=broad-except
+                except Exception as err:  # pylint: disable=broad-except
                     # we don't want the whole sync to crash on one file so we catch all exceptions here
-                    self.logger.exception("Error processing %s", entry.path)
+                    self.logger.exception(
+                        "Error processing %s - %s", entry.path, str(err)
+                    )
 
                 # save checksums every 50 processed items
                 # this allows us to pickup where we leftoff when initial scan gets intterrupted
@@ -774,7 +790,7 @@ class FileSystemProvider(MusicProvider):
                     album.artist.musicbrainz_id = mb_artist_id
             if description := info.get("review"):
                 album.metadata.description = description
-            if year := info.get("label"):
+            if year := info.get("year"):
                 album.year = int(year)
             if genre := info.get("genre"):
                 album.metadata.genres = set(split_items(genre))
@@ -803,7 +819,7 @@ class FileSystemProvider(MusicProvider):
             for img_type in ImageType:
                 if img_type.value in _filepath:
                     images.append(MediaItemImage(img_type, _filepath, True))
-                elif _filename == "folder.jpg":
+                elif "folder." in _filepath:
                     images.append(MediaItemImage(ImageType.THUMB, _filepath, True))
         if images:
             album.metadata.images = images

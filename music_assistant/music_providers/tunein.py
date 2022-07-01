@@ -54,7 +54,6 @@ class TuneInProvider(MusicProvider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
-        # pylint: disable=no-self-use
         # TODO: search for radio stations
         return []
 
