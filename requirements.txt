@@ -12,3 +12,4 @@ mashumaro>=3.0,<=3.1
 tinytag>=1.6,<=1.8.1
 xmltodict>=0.12.0,<=0.13.0
 ytmusicapi>=0.22.0,<=0.23.0
+pytube>=12.1.0,<=12.2.0
