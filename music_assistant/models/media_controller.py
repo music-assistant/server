@@ -164,8 +164,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         cache_key = (
             f"{prov.type.value}.search.{self.media_type.value}.{search_query}.{limit}"
         )
-        if cache := await self.mass.cache.get(cache_key):
-            return [media_from_dict(x) for x in cache]
+        if not prov.type.is_file():  # do not cache filesystem results
+            if cache := await self.mass.cache.get(cache_key):
+                return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = await prov.search(
             search_query,

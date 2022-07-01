@@ -176,13 +176,23 @@ def compare_track(left_track: Track, right_track: Track):
     # album is required for track linking
     if left_track.album is None or right_track.album is None:
         return False
-    # track name and version must match
+    # track name must match
     if not left_track.sort_name:
         left_track.sort_name = create_clean_string(left_track.name)
     if not right_track.sort_name:
         right_track.sort_name = create_clean_string(right_track.name)
     if left_track.sort_name != right_track.sort_name:
         return False
+    # exact albumtrack match = 100% match
+    if (
+        compare_album(left_track.album, right_track.album)
+        and left_track.track_number
+        and right_track.track_number
+        and left_track.disc_number == right_track.disc_number
+        and left_track.track_number == right_track.track_number
+    ):
+        return True
+    # track version must match
     if not compare_version(left_track.version, right_track.version):
         return False
     # track artist(s) must match
@@ -192,8 +202,6 @@ def compare_track(left_track: Track, right_track: Track):
     if not compare_explicit(left_track.metadata, right_track.metadata):
         return False
     # exact album match = 100% match
-    if compare_album(left_track.album, right_track.album):
-        return True
     if left_track.albums and right_track.albums:
         for left_album in left_track.albums:
             for right_album in right_track.albums:
@@ -201,7 +209,7 @@ def compare_track(left_track: Track, right_track: Track):
                     return True
     # fallback: both albums are compilations and (near-exact) track duration match
     if (
-        abs(left_track.duration - right_track.duration) <= 1
+        abs(left_track.duration - right_track.duration) <= 2
         and left_track.album.album_type in (AlbumType.UNKNOWN, AlbumType.COMPILATION)
         and right_track.album.album_type in (AlbumType.UNKNOWN, AlbumType.COMPILATION)
     ):
