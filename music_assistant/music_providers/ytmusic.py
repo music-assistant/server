@@ -7,6 +7,11 @@ from typing import AsyncGenerator, Dict, List, Optional
 from urllib.parse import unquote
 
 import ytmusicapi
+from ytmusicapi.navigation import (
+    nav,
+    SINGLE_COLUMN_TAB,
+    SECTION_LIST
+)
 import pytube
 
 from music_assistant.models.enums import ProviderType
@@ -67,6 +72,13 @@ class YTMusic(MusicProvider):
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id"""
+        data = {"browseId": prov_artist_id}
+        artist_obj = await self._post_data(endpoint="browse", data=data)
+        return (
+            await self._parse_artist(artist_obj=artist_obj)
+            if artist_obj
+            else None
+        )
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
@@ -157,44 +169,61 @@ class YTMusic(MusicProvider):
     async def _parse_album(self, album_obj: dict) -> Album:
         """Parses a YT Album response to an Album model object"""
         parsed_album = ytmusicapi.parsers.albums.parse_album_header(album_obj)
-
         album = Album(
             item_id = parsed_album["audioPlaylistId"],
             name = parsed_album["title"],
+            year = parsed_album["year"],
             album_type = AlbumType.ALBUM,
             provider = self.type
         )
-        #TODO Add metadata
+        images = []
+        for thumb in parsed_album["thumbnails"]:
+            images.append(MediaItemImage(ImageType.THUMB, thumb["url"]))
+        album.metadata.images = images
+        album.metadata.description = unquote(parsed_album["description"])
+        artists = []
+        for artist in parsed_album["artists"]:
+            artists.append(await self.get_artist(artist["id"]))
+        album.artists = artists
         return album
 
     async def _parse_artist(self, artist_obj: dict) -> Artist:
         """Parse a YT Artist response to Artist model object"""
-        print(json.dumps(artist_obj))
+        name = artist_obj["header"]["musicImmersiveHeaderRenderer"]["title"]["runs"][0]["text"]
+        id = artist_obj["header"]["musicImmersiveHeaderRenderer"]["subscriptionButton"]["subscribeButtonRenderer"]["channelId"]
+        artist = Artist(
+           item_id=str(id), provider=self.type, name=name
+        )
+        artist.metadata.description = unquote(artist_obj["header"]["musicImmersiveHeaderRenderer"]["description"]["runs"][0]["text"])
+        images = []
+        for thumb in artist_obj["header"]["musicImmersiveHeaderRenderer"]["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"]:
+            images.append(MediaItemImage(ImageType.THUMB, thumb["url"]))
+        artist.metadata.images = images
+        return artist
 
     async def _parse_track(self, track_obj: dict) -> Track:
         """Parses a YT Track response to a Track model object"""
-        keys = ['videoDetails', 'playabilityStatus', 'streamingData', 'microformat']
-        for k in list(track_obj.keys()):
-            if k not in keys:
-                del track_obj[k]
         track = Track(
             item_id=track_obj["videoDetails"]["videoId"],
             provider=self.type,
-            name=track_obj["videoDetails"]["title"]
+            name=track_obj["videoDetails"]["title"],
+            duration=track_obj["videoDetails"]["lengthSeconds"]
         )
+        artist = await self.get_artist(track_obj["microformat"]["microformatDataRenderer"]["pageOwnerDetails"]["externalChannelId"])
+        track.artists = [artist]
+        images = []
+        for thumb in track_obj["microformat"]["microformatDataRenderer"]["thumbnail"]["thumbnails"]:
+            images.append(MediaItemImage(ImageType.THUMB, thumb["url"]))
         return track
 
     async def _parse_stream_format(self, track_obj: dict) -> dict:
         """Grabs the highes available audio stream from available streams"""
         stream_format = None
-
         for format in track_obj["streamingData"]["adaptiveFormats"]:
             if format["mimeType"].startswith("audio") and format["audioQuality"] == "AUDIO_QUALITY_HIGH":
-                stream_format = format
-        
+                stream_format = format        
         if stream_format is None:
             raise MediaNotFoundError("No stream found for this track")
-
         return stream_format
 
     async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
