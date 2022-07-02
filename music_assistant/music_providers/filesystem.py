@@ -150,16 +150,16 @@ class FileSystemProvider(MusicProvider):
             result += playlists
         return result
 
-    async def browse(self, uri: Optional[str] = None) -> List[MediaItemType]:
+    async def browse(self, path: Optional[str] = None) -> List[MediaItemType]:
         """
         Browse this provider's items.
 
-            :param uri: The path to browse, (e.g. prov_id://artists) or None for root level.
+            :param path: The path to browse, (e.g. artists) or None for root level.
         """
-        if uri is None:
+        if not path:
             path = self.config.path
         else:
-            path = os.path.join(self.config.path, uri.split("://")[1])
+            path = os.path.join(self.config.path, path)
         result = []
         for filename in await listdir(path):
             full_path: str = os.path.join(path, filename)

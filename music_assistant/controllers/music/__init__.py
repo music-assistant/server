@@ -194,19 +194,15 @@ class MusicController:
     async def browse(self, uri: Optional[str] = None) -> List[BrowseFolder]:
         """Browse Music providers."""
         # root level; folder per provider
-        if uri is None:
+        if not uri:
             return [
-                BrowseFolder(
-                    prov.id,
-                    prov.type,
-                    prov.name,
-                )
+                BrowseFolder(prov.id, prov.type, prov.name, uri=f"{prov.id}://")
                 for prov in self.providers
             ]
         # provider level
-        provider_id, _ = uri.split("://", 1)
+        provider_id, path = uri.split("://", 1)
         prov = self.get_provider(provider_id)
-        return await prov.browse(uri)
+        return await prov.browse(path)
 
     async def get_item_by_uri(
         self, uri: str, force_refresh: bool = False, lazy: bool = True

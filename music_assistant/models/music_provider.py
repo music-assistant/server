@@ -194,14 +194,14 @@ class MusicProvider:
         if media_type == MediaType.RADIO:
             return await self.get_radio(prov_item_id)
 
-    async def browse(self, uri: Optional[str] = None) -> List[MediaItemType]:
+    async def browse(self, path: Optional[str] = None) -> List[MediaItemType]:
         """
         Browse this provider's items.
 
-            :param uri: The path to browse, (e.g. provid://artists) or None for root level.
+            :param path: The path to browse, (e.g. artists) or None for root level.
         """
         # this reference implementation can be overridden with provider specific approach
-        if uri is None:
+        if not path:
             # return main listing
             root_items = []
             if MediaType.ARTIST in self.supported_mediatypes:
@@ -251,15 +251,15 @@ class MusicProvider:
                 )
             return root_items
         # sublevel
-        if uri.endswith("artists"):
+        if path == "artists":
             return [x async for x in self.get_library_artists]
-        if uri.endswith("albums"):
+        if path == "albums":
             return [x async for x in self.get_library_albums]
-        if uri.endswith("tracks"):
+        if path == "tracks":
             return [x async for x in self.get_library_tracks]
-        if uri.endswith("radios"):
+        if path == "radios":
             return [x async for x in self.get_library_radios]
-        if uri.endswith("playlists"):
+        if path == "playlists":
             return [x async for x in self.get_library_playlists]
 
     @abstractmethod
@@ -269,7 +269,6 @@ class MusicProvider:
 
             Returns a list of BrowseFolder items with (max 25) mediaitems in the items attribute.
         """
-        # pylint: disable=no-self-use
         return []
 
     async def sync_library(
