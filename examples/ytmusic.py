@@ -108,14 +108,7 @@ async def main():
         yt = mass.music.get_provider(ProviderType.YTMUSIC)
         await yt.get_album("MPREb_9nqEki4ZDpp")
         track = await yt.get_track("pE3ju1qS848")
-        
-        test_player1 = TestPlayer("test1")
-        await mass.players.register_player(test_player1)
-        await test_player1.active_queue.play_media(track)
-
-        await asyncio.sleep(3600)
-        
-
+        await yt.get_stream_details("pE3ju1qS848")
 
 if __name__ == "__main__":
     try:

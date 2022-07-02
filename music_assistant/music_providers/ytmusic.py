@@ -1,7 +1,10 @@
 """YT Music support for MusicAssistant"""
 import json
+import requests
+import re
 from requests.structures import CaseInsensitiveDict
 from typing import AsyncGenerator, Dict, List, Optional
+from urllib.parse import unquote
 
 import ytmusicapi
 import pytube
@@ -49,6 +52,7 @@ class YTMusic(MusicProvider):
         """Sets up the YTMusic provider"""
         self._headers = await self._initialize_headers()
         self._context = await self._initialize_context()
+        self._cookies = {'CONSENT': 'YES+1'}
         return True
 
     async def get_album(self, prov_album_id) -> Album:
@@ -80,7 +84,7 @@ class YTMusic(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        signature_timestamp = ytmusicapi.mixins._utils.get_datestamp() - 1
+        signature_timestamp = await self._get_signature_timestamp()
         data = {
             "playbackContext": {
                 "contentPlaybackContext": {
@@ -114,9 +118,15 @@ class YTMusic(MusicProvider):
         data.update(self._context)
 
         async with self.mass.http_session.post(
-            url, headers=self._headers, json=data, verify_ssl=False
+            url, headers=self._headers, json=data, verify_ssl=False, cookies=self._cookies
         ) as response:
             return await response.json()
+
+    async def _get_data(self, url: str, params: Dict = None):
+        async with self.mass.http_session.get(
+            url, headers=self._headers, params=params, cookies=self._cookies
+        ) as response:
+            return await response.text()
 
     async def _initialize_headers(self) -> Dict[str, str]:
         """Returns headers to include in the requests"""
@@ -192,10 +202,11 @@ class YTMusic(MusicProvider):
         cipherParts = dict()
         for part in stream_format["signatureCipher"].split("&"):
             k, v = part.split("=", maxsplit=1)
-            cipherParts[k] = v
+            cipherParts[k] = unquote(v)
 
-        signature = await self._decipher_signature(ciphered_signature=cipherParts["s"], item_id=item_id)
+        signature = await self._decipher_signature(ciphered_signature=cipherParts["s"], item_id=item_id)        
         url = cipherParts["url"] + "&sig=" + signature
+        
         return url        
 
     async def _decipher_signature(self, ciphered_signature: str, item_id: str):
@@ -206,3 +217,18 @@ class YTMusic(MusicProvider):
         js = pytube.request.get(js_url)
         cipher = pytube.cipher.Cipher(js=js)
         return cipher.get_signature(ciphered_signature)
+
+    async def _get_signature_timestamp(self):
+        """Gets a signature timestamp required to generate valid stream URLs"""
+        response = await self._get_data(url=YTM_DOMAIN)
+        match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
+        if match is None:
+            raise Exception("Could not identify the URL for base.js player.")
+
+        url = YTM_DOMAIN + match.group(1)
+        response = await self._get_data(url=url)
+        match = re.search(r"signatureTimestamp[:=](\d+)", response)
+        if match is None:
+            raise Exception("Unable to identify the signatureTimestamp.")
+
+        return int(match.group(1))
