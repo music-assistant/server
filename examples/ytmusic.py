@@ -10,7 +10,7 @@ path.insert(1, dirname(dirname(abspath(__file__))))
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.config import MassConfig, MusicProviderConfig
-from music_assistant.models.enums import ProviderType
+from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.player import Player, PlayerState
 from music_assistant.models.player_queue import RepeatMode
 
@@ -108,7 +108,11 @@ async def main():
         yt = mass.music.get_provider(ProviderType.YTMUSIC)
         track = await yt.get_track("pE3ju1qS848")      
         await yt.get_album("MPREb_AYetWMZunqA")
-        await yt.get_artist("UCU2d6Vg6hp0vJb8K0krR5_g")
+        artist = await yt.get_artist("UC-T-wUsgssr7Vy-BiJD4-2g")
+        #print(artist)
+        for album in await yt.search("dark side of the moon", [MediaType.ALBUM]):
+            print(album)
+            print("**********")
         
         #test_player1 = TestPlayer("test1")
         #await mass.players.register_player(test_player1)
