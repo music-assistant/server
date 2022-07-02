@@ -96,9 +96,15 @@ class PlayerController:
         cur_tick = 0
         while True:
             for player in self.players:
-                if cur_tick == interval or player.state in (
-                    PlayerState.PLAYING,
-                    PlayerState.PAUSED,
+                if not player.available:
+                    continue
+                if cur_tick == interval or (
+                    player.active_queue.active
+                    and player.state
+                    in (
+                        PlayerState.PLAYING,
+                        PlayerState.PAUSED,
+                    )
                 ):
                     player.update_state()
             if cur_tick == interval:

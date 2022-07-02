@@ -696,6 +696,13 @@ class SpotifyProvider(MusicProvider):
             ):
                 return librespot
 
+        if platform.system() == "FreeBSD":
+            # FreeBSD binary is x86_64 intel
+            if librespot := await check_librespot(
+                os.path.join(base_path, "freebsd", "librespot")
+            ):
+                return librespot
+
         if platform.system() == "Linux":
             architecture = platform.machine()
             if architecture in ["AMD64", "x86_64"]:
@@ -721,5 +728,5 @@ class SpotifyProvider(MusicProvider):
                     return librespot
 
         raise RuntimeError(
-            f"Unable to locate Libespot for platform {platform.system()}"
+            f"Unable to locate Libespot for {platform.system()} ({platform.machine()})"
         )
