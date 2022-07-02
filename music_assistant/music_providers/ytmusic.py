@@ -60,6 +60,53 @@ class YTMusic(MusicProvider):
         self._cookies = {'CONSENT': 'YES+1'}
         return True
 
+    async def search(
+        self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
+    ) -> List[MediaItemType]:
+        """
+        Perform search on musicprovider.
+            :param search_query: Search query.
+            :param media_types: A list of media_types to include. All types if None.
+            :param limit: Number of items to return in the search (per type).
+        """
+        data = {'query': search_query}
+        filter = None
+        if len(media_types) == 1:
+            # YTM does not support multiple searchtypes, falls back to all if no type given
+            if media_types[0] == MediaType.ARTIST:
+                filter = "artists"
+            if media_types[0] == MediaType.ALBUM:
+                filter = "albums"
+            if media_types[0] == MediaType.TRACK:
+                filter = "songs"
+            if media_types[0] == MediaType.PLAYLIST:
+                filter = "playlists"
+        params = ytmusicapi.parsers.search_params.get_search_params(filter=filter, scope=None, ignore_spelling=False)
+        data["params"] = params
+        search_results = await self._post_data(endpoint="search", data=data)
+        if 'tabbedSearchResultsRenderer' in search_results['contents']:
+            results = search_results['contents']['tabbedSearchResultsRenderer']['tabs'][0][
+                'tabRenderer']['content']
+        else:
+            results = search_results['contents']
+        parsed_results = []
+        for result in results["sectionListRenderer"]["contents"]:
+            if "musicShelfRenderer" in result:
+                category = result["musicShelfRenderer"]["title"]["runs"][0]["text"]                
+                if category == "Artists":
+                    for artist in result['musicShelfRenderer']['contents']:
+                        artist_id = artist["musicResponsiveListItemRenderer"]["navigationEndpoint"]["browseEndpoint"]["browseId"]
+                        parsed_results.append(await self.get_artist(artist_id))
+                elif category == "Albums":
+                    for album in result['musicShelfRenderer']['contents']:
+                        album_id = album["musicResponsiveListItemRenderer"]["navigationEndpoint"]["browseEndpoint"]["browseId"]
+                        parsed_results.append(await self.get_album(album_id))
+
+                else:
+                    print(category)
+        return parsed_results
+
+
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         data = {"browseId": prov_album_id}
@@ -180,7 +227,8 @@ class YTMusic(MusicProvider):
         for thumb in parsed_album["thumbnails"]:
             images.append(MediaItemImage(ImageType.THUMB, thumb["url"]))
         album.metadata.images = images
-        album.metadata.description = unquote(parsed_album["description"])
+        if "description" in parsed_album:
+            album.metadata.description = unquote(parsed_album["description"])
         artists = []
         for artist in parsed_album["artists"]:
             artists.append(await self.get_artist(artist["id"]))
@@ -189,12 +237,14 @@ class YTMusic(MusicProvider):
 
     async def _parse_artist(self, artist_obj: dict) -> Artist:
         """Parse a YT Artist response to Artist model object"""
+        print(json.dumps(artist_obj))
         name = artist_obj["header"]["musicImmersiveHeaderRenderer"]["title"]["runs"][0]["text"]
         id = artist_obj["header"]["musicImmersiveHeaderRenderer"]["subscriptionButton"]["subscribeButtonRenderer"]["channelId"]
         artist = Artist(
            item_id=str(id), provider=self.type, name=name
         )
-        artist.metadata.description = unquote(artist_obj["header"]["musicImmersiveHeaderRenderer"]["description"]["runs"][0]["text"])
+        if "description" in artist_obj["header"]["musicImmersiveHeaderRenderer"]:
+            artist.metadata.description = unquote(artist_obj["header"]["musicImmersiveHeaderRenderer"]["description"]["runs"][0]["text"])
         images = []
         for thumb in artist_obj["header"]["musicImmersiveHeaderRenderer"]["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"]:
             images.append(MediaItemImage(ImageType.THUMB, thumb["url"]))
