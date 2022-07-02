@@ -105,10 +105,12 @@ class PlayerQueue:
 
     @property
     def active(self) -> bool:
-        """Return bool if the queue is currenty active on the player."""
-        if not self.player.current_url:
-            return False
+        """Return if the queue is currenty active."""
         if stream := self.stream:
+            if not self.stream.done.is_set():
+                return True
+            if not self.player.current_url:
+                return False
             return stream.stream_id in self.player.current_url
         return False
 
