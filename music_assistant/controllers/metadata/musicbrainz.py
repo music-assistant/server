@@ -10,7 +10,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.helpers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.util import create_clean_string
+from music_assistant.helpers.util import create_sort_name
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -96,7 +96,7 @@ class MusicBrainz:
         """Retrieve musicbrainz artist id by providing the artist name and albumname or upc."""
         for searchartist in [
             re.sub(LUCENE_SPECIAL, r"\\\1", artistname),
-            create_clean_string(artistname),
+            create_sort_name(artistname),
             artistname,
         ]:
             if album_upc:

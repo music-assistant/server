@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Union
 
-from music_assistant.helpers.util import create_clean_string
+from music_assistant.helpers.util import create_clean_string, create_sort_name
 from music_assistant.models.enums import AlbumType
 from music_assistant.models.media_items import (
     Album,
@@ -66,9 +66,9 @@ def compare_artist(
 
     # fallback to comparing
     if not left_artist.sort_name:
-        left_artist.sort_name = create_clean_string(left_artist.name)
+        left_artist.sort_name = create_sort_name(left_artist.name)
     if not right_artist.sort_name:
-        right_artist.sort_name = create_clean_string(right_artist.name)
+        right_artist.sort_name = create_sort_name(right_artist.name)
     return left_artist.sort_name == right_artist.sort_name
 
 
@@ -144,9 +144,9 @@ def compare_album(
 
     # fallback to comparing
     if not left_album.sort_name:
-        left_album.sort_name = create_clean_string(left_album.name)
+        left_album.sort_name = create_sort_name(left_album.name)
     if not right_album.sort_name:
-        right_album.sort_name = create_clean_string(right_album.name)
+        right_album.sort_name = create_sort_name(right_album.name)
     if left_album.sort_name != right_album.sort_name:
         return False
     if not compare_version(left_album.version, right_album.version):
@@ -166,9 +166,11 @@ def compare_track(left_track: Track, right_track: Track):
     # return early on exact item_id match
     if compare_item_id(left_track, right_track):
         return True
-    if left_track.isrc and left_track.isrc == right_track.isrc:
-        # ISRC is always 100% accurate match
-        return True
+    for left_isrc in left_track.isrcs:
+        for right_isrc in right_track.isrcs:
+            # ISRC is always 100% accurate match
+            if left_isrc == right_isrc:
+                return True
     if left_track.musicbrainz_id and right_track.musicbrainz_id:
         if left_track.musicbrainz_id == right_track.musicbrainz_id:
             # musicbrainz_id is always 100% accurate match
@@ -178,9 +180,9 @@ def compare_track(left_track: Track, right_track: Track):
         return False
     # track name must match
     if not left_track.sort_name:
-        left_track.sort_name = create_clean_string(left_track.name)
+        left_track.sort_name = create_sort_name(left_track.name)
     if not right_track.sort_name:
-        right_track.sort_name = create_clean_string(right_track.name)
+        right_track.sort_name = create_sort_name(right_track.name)
     if left_track.sort_name != right_track.sort_name:
         return False
     # exact albumtrack match = 100% match
