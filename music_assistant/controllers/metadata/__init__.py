@@ -141,13 +141,12 @@ class MetaDataController:
             artist.item_id, artist.provider
         )
         for ref_track in ref_tracks:
-            if not ref_track.isrc:
-                continue
-            if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
-                artist.name,
-                track_isrc=ref_track.isrc,
-            ):
-                return musicbrainz_id
+            for isrc in ref_track.isrcs:
+                if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
+                    artist.name,
+                    track_isrc=isrc,
+                ):
+                    return musicbrainz_id
 
         # last restort: track matching by name
         for ref_track in ref_tracks:

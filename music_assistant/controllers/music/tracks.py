@@ -128,8 +128,8 @@ class TracksController(MediaControllerBase[Track]):
             if item.musicbrainz_id:
                 match = {"musicbrainz_id": item.musicbrainz_id}
                 cur_item = await self.mass.database.get_row(self.db_table, match, db=db)
-            if not cur_item and item.isrc:
-                match = {"isrc": item.isrc}
+            for isrc in item.isrcs:
+                match = {"isrc": isrc}
                 cur_item = await self.mass.database.get_row(self.db_table, match, db=db)
             if not cur_item:
                 # fallback to matching
