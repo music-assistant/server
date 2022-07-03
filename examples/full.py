@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import logging
 import os
+import webbrowser
 
 from os.path import abspath, dirname
 from sys import path
@@ -127,6 +128,9 @@ class TestPlayer(Player):
         print(f"stream url: {url}")
         self._attr_current_url = url
         self.update_state()
+        # launch stream url in browser so we can hear it playing ;-)
+        # normally this url is sent to the actual player implementation
+        webbrowser.open(url)
 
     async def stop(self) -> None:
         """Send STOP command to player."""
@@ -197,6 +201,10 @@ async def main():
         test_player1.active_queue.settings.shuffle_enabled = True
         test_player1.active_queue.settings.repeat_mode = RepeatMode.ALL
 
+        # we can send a MediaItem object (such as Artist, Album, Track, Playlist)
+        # we can also send an uri, such as spotify://track/abcdfefgh
+        # or database://playlist/1
+        # or a list of items
         await test_player1.active_queue.play_media(artist)
 
         await asyncio.sleep(3600)
