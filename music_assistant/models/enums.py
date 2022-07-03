@@ -22,6 +22,7 @@ class MediaQuality(IntEnum):
     LOSSY_MP3 = 1
     LOSSY_OGG = 2
     LOSSY_AAC = 3
+    LOSSY_M4A = 4
     LOSSLESS = 10  # 44.1/48khz 16 bits
     LOSSLESS_HI_RES_1 = 20  # 44.1/48khz 24 bits HI-RES
     LOSSLESS_HI_RES_2 = 21  # 88.2/96khz 24 bits HI-RES
@@ -101,7 +102,7 @@ class ContentType(Enum):
                 try:
                     return cls(val.strip())
                 except ValueError:
-                    return cls.UNKNOWN
+                    pass
 
         tempstr = tempstr.split("?")[0]
         tempstr = tempstr.split("&")[0]
@@ -110,9 +111,18 @@ class ContentType(Enum):
         except ValueError:
             return cls.UNKNOWN
 
-    def is_pcm(self):
+    def is_pcm(self) -> bool:
         """Return if contentype is PCM."""
         return self.name.startswith("PCM")
+
+    def is_lossless(self) -> bool:
+        """Return if format is lossless."""
+        return self.is_pcm() or self in (
+            ContentType.DSF,
+            ContentType.FLAC,
+            ContentType.AIFF,
+            ContentType.WAV,
+        )
 
     @classmethod
     def from_bit_depth(

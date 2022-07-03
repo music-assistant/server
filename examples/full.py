@@ -195,7 +195,7 @@ async def main():
         await mass.players.register_player(test_player2)
 
         # get some data
-        artist = await mass.music.artists.get("6", ProviderType.DATABASE)
+        artist = await mass.music.artists.get("1", ProviderType.DATABASE)
 
         # try to play some music
         test_player1.active_queue.settings.shuffle_enabled = True

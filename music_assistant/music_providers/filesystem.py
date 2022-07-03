@@ -546,8 +546,16 @@ class FileSystemProvider(MusicProvider):
 
         quality_details = ""
         content_type = ContentType.try_parse(tags.format)
-        if content_type == ContentType.FLAC:
-            # TODO: get bit depth
+        quality_details = f"{int(tags.bit_rate / 1000)} kbps"
+        if content_type == ContentType.MP3:
+            quality = MediaQuality.LOSSY_MP3
+        elif content_type == ContentType.OGG:
+            quality = MediaQuality.LOSSY_OGG
+        elif content_type == ContentType.AAC:
+            quality = MediaQuality.LOSSY_AAC
+        elif content_type == ContentType.M4A:
+            quality = MediaQuality.LOSSY_M4A
+        elif content_type.is_lossless():
             quality = MediaQuality.LOSSLESS
             if tags.sample_rate > 192000:
                 quality = MediaQuality.LOSSLESS_HI_RES_4
@@ -555,16 +563,11 @@ class FileSystemProvider(MusicProvider):
                 quality = MediaQuality.LOSSLESS_HI_RES_3
             elif tags.sample_rate > 48000:
                 quality = MediaQuality.LOSSLESS_HI_RES_2
-            quality_details = f"{tags.sample_rate / 1000} Khz"
-        elif content_type == ContentType.OGG:
-            quality = MediaQuality.LOSSY_OGG
-            quality_details = f"{int(tags.bit_rate / 1000)} kbps"
-        elif content_type in (ContentType.M4A, ContentType.AAC):
-            quality = MediaQuality.LOSSY_AAC
-            quality_details = f"{int(tags.bit_rate / 1000)} kbps"
+            elif tags.bits_per_sample > 16:
+                quality = MediaQuality.LOSSLESS_HI_RES_1
         else:
-            quality = MediaQuality.LOSSY_MP3
-            quality_details = f"{int(tags.bit_rate / 1000)} kbps"
+            quality = MediaQuality.UNKNOWN
+
         track.add_provider_id(
             MediaItemProviderId(
                 item_id=track_item_id,
