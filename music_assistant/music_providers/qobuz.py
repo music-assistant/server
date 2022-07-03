@@ -436,17 +436,17 @@ class QobuzProvider(MusicProvider):
             item_id=str(album_obj["id"]), provider=self.type, name=name, version=version
         )
         if album_obj["maximum_sampling_rate"] > 192:
-            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
+            quality = MediaQuality.LOSSLESS_HI_RES_4
         elif album_obj["maximum_sampling_rate"] > 96:
-            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_3
+            quality = MediaQuality.LOSSLESS_HI_RES_3
         elif album_obj["maximum_sampling_rate"] > 48:
-            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_2
+            quality = MediaQuality.LOSSLESS_HI_RES_2
         elif album_obj["maximum_bit_depth"] > 16:
-            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_1
+            quality = MediaQuality.LOSSLESS_HI_RES_1
         elif album_obj.get("format_id", 0) == 5:
             quality = MediaQuality.LOSSY_AAC
         else:
-            quality = MediaQuality.FLAC_LOSSLESS
+            quality = MediaQuality.LOSSLESS
         album.add_provider_id(
             MediaItemProviderId(
                 item_id=str(album_obj["id"]),
@@ -555,17 +555,17 @@ class QobuzProvider(MusicProvider):
             track.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
         # get track quality
         if track_obj["maximum_sampling_rate"] > 192:
-            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
+            quality = MediaQuality.LOSSLESS_HI_RES_4
         elif track_obj["maximum_sampling_rate"] > 96:
-            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_3
+            quality = MediaQuality.LOSSLESS_HI_RES_3
         elif track_obj["maximum_sampling_rate"] > 48:
-            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_2
+            quality = MediaQuality.LOSSLESS_HI_RES_2
         elif track_obj["maximum_bit_depth"] > 16:
-            quality = MediaQuality.FLAC_LOSSLESS_HI_RES_1
+            quality = MediaQuality.LOSSLESS_HI_RES_1
         elif track_obj.get("format_id", 0) == 5:
             quality = MediaQuality.LOSSY_AAC
         else:
-            quality = MediaQuality.FLAC_LOSSLESS
+            quality = MediaQuality.LOSSLESS
         track.add_provider_id(
             MediaItemProviderId(
                 item_id=str(track_obj["id"]),

@@ -548,13 +548,13 @@ class FileSystemProvider(MusicProvider):
         content_type = ContentType.try_parse(tags.format)
         if content_type == ContentType.FLAC:
             # TODO: get bit depth
-            quality = MediaQuality.FLAC_LOSSLESS
+            quality = MediaQuality.LOSSLESS
             if tags.sample_rate > 192000:
-                quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
+                quality = MediaQuality.LOSSLESS_HI_RES_4
             elif tags.sample_rate > 96000:
-                quality = MediaQuality.FLAC_LOSSLESS_HI_RES_3
+                quality = MediaQuality.LOSSLESS_HI_RES_3
             elif tags.sample_rate > 48000:
-                quality = MediaQuality.FLAC_LOSSLESS_HI_RES_2
+                quality = MediaQuality.LOSSLESS_HI_RES_2
             quality_details = f"{tags.sample_rate / 1000} Khz"
         elif content_type == ContentType.OGG:
             quality = MediaQuality.LOSSY_OGG

@@ -22,11 +22,11 @@ class MediaQuality(IntEnum):
     LOSSY_MP3 = 1
     LOSSY_OGG = 2
     LOSSY_AAC = 3
-    FLAC_LOSSLESS = 10  # 44.1/48khz 16 bits
-    FLAC_LOSSLESS_HI_RES_1 = 20  # 44.1/48khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_2 = 21  # 88.2/96khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_3 = 22  # 176/192khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_4 = 23  # above 192khz 24 bits HI-RES
+    LOSSLESS = 10  # 44.1/48khz 16 bits
+    LOSSLESS_HI_RES_1 = 20  # 44.1/48khz 24 bits HI-RES
+    LOSSLESS_HI_RES_2 = 21  # 88.2/96khz 24 bits HI-RES
+    LOSSLESS_HI_RES_3 = 22  # 176/192khz 24 bits HI-RES
+    LOSSLESS_HI_RES_4 = 23  # above 192khz 24 bits HI-RES
 
 
 class LinkType(Enum):
@@ -82,6 +82,7 @@ class ContentType(Enum):
     AIFF = "aiff"
     WMA = "wma"
     M4A = "m4a"
+    DSF = "dsf"
     PCM_S16LE = "s16le"  # PCM signed 16-bit little-endian
     PCM_S24LE = "s24le"  # PCM signed 24-bit little-endian
     PCM_S32LE = "s32le"  # PCM signed 32-bit little-endian
