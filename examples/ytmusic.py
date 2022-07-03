@@ -38,11 +38,8 @@ mass_conf = MassConfig(
     database_url=f"sqlite:///{db_file}",
 )
 
-mass_conf.providers.append(
-    MusicProviderConfig(
-        ProviderType.YTMUSIC
-    )
-)
+mass_conf.providers.append(MusicProviderConfig(ProviderType.YTMUSIC))
+
 
 class TestPlayer(Player):
     """Demonstatration player implementation."""
@@ -98,6 +95,7 @@ class TestPlayer(Player):
         self._attr_volume_level = volume_level
         self.update_state()
 
+
 async def main():
     """Handle main execution."""
 
@@ -106,20 +104,21 @@ async def main():
     async with MusicAssistant(mass_conf) as mass:
         # get some data
         yt = mass.music.get_provider(ProviderType.YTMUSIC)
-        track = await yt.get_track("pE3ju1qS848")      
-        await yt.get_album("MPREb_AYetWMZunqA")
-        artist = await yt.get_artist("UC-T-wUsgssr7Vy-BiJD4-2g")
-        #print(artist)
-        for album in await yt.search("dark side of the moon", [MediaType.ALBUM]):
-            print(album)
-            print("**********")
         
-        #test_player1 = TestPlayer("test1")
-        #await mass.players.register_player(test_player1)
-        #await test_player1.active_queue.play_media(track)
+        results = await yt.search("dark side of the moon", [MediaType.ALBUM])
+        tracks = await yt.get_album_tracks(results[0].item_id)
 
-        #await asyncio.sleep(3600)
-        
+        stream_details = await yt.get_stream_details(tracks[0].item_id)
+        print(stream_details.data)
+
+        #artist = await yt.get_artist("UC-T-wUsgssr7Vy-BiJD4-2g")
+        # print(artist)
+
+        # test_player1 = TestPlayer("test1")
+        # await mass.players.register_player(test_player1)
+        # await test_player1.active_queue.play_media(track)
+
+        # await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
