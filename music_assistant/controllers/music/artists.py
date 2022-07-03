@@ -177,7 +177,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 match = {"musicbrainz_id": item.musicbrainz_id}
                 cur_item = await self.mass.database.get_row(self.db_table, match, db=db)
             if not cur_item:
-                # fallback to matching
+                # fallback to exact name match
                 # NOTE: we match an artist by name which could theoretically lead to collisions
                 # but the chance is so small it is not worth the additional overhead of grabbing
                 # the musicbrainz id upfront

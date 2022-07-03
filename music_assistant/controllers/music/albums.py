@@ -136,7 +136,7 @@ class AlbumsController(MediaControllerBase[Album]):
         assert item.artist, f"Album {item.name} is missing artist"
         cur_item = None
         async with self.mass.database.get_db(db) as db:
-            # always try to grab existing item by musicbrainz_id
+            # always try to grab existing item by musicbrainz_id/upc
             if item.musicbrainz_id:
                 match = {"musicbrainz_id": item.musicbrainz_id}
                 cur_item = await self.mass.database.get_row(self.db_table, match, db=db)
@@ -144,10 +144,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 match = {"upc": item.upc}
                 cur_item = await self.mass.database.get_row(self.db_table, match, db=db)
             if not cur_item:
-                # fallback to matching
-                match = {"sort_name": item.sort_name}
-                for row in await self.mass.database.get_rows(
-                    self.db_table, match, db=db
+                # fallback to search and match
+                for row in await self.mass.database.search(
+                    self.db_table, item.name, db=db
                 ):
                     row_album = Album.from_db_row(row)
                     if compare_album(row_album, item):

@@ -91,10 +91,17 @@ class ContentType(Enum):
 
     @classmethod
     def try_parse(cls: "ContentType", string: str) -> "ContentType":
-        """Try to parse ContentType from (url)string."""
+        """Try to parse ContentType from (url)string/extension."""
         tempstr = string.lower()
         if "." in tempstr:
             tempstr = tempstr.split(".")[-1]
+        if "," in tempstr:
+            for val in tempstr.split(","):
+                try:
+                    return cls(val.strip())
+                except ValueError:
+                    return cls.UNKNOWN
+
         tempstr = tempstr.split("?")[0]
         tempstr = tempstr.split("&")[0]
         try:

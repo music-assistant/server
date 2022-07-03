@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 TABLE_TRACK_LOUDNESS = "track_loudness"
 TABLE_PLAYLOG = "playlog"
@@ -229,7 +229,7 @@ class Database:
                 # always create db tables if they don't exist to prevent errors trying to access them later
                 await self.__create_database_tables(db)
 
-                if prev_version < 17:
+                if prev_version < 18:
                     # too many changes, just recreate
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ARTISTS}")
                     await db.execute(f"DROP TABLE IF EXISTS {TABLE_ALBUMS}")
@@ -261,7 +261,7 @@ class Database:
             f"""CREATE TABLE IF NOT EXISTS {TABLE_PLAYLOG}(
                 item_id INTEGER NOT NULL,
                 provider TEXT NOT NULL,
-                timestamp REAL,
+                timestamp INTEGER DEFAULT 0,
                 UNIQUE(item_id, provider));"""
         )
         await db.execute(
@@ -277,7 +277,8 @@ class Database:
                     musicbrainz_id TEXT,
                     artists json,
                     metadata json,
-                    provider_ids json
+                    provider_ids json,
+                    timestamp INTEGER DEFAULT 0
                 );"""
         )
         await db.execute(
@@ -288,7 +289,8 @@ class Database:
                     musicbrainz_id TEXT,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
-                    provider_ids json
+                    provider_ids json,
+                    timestamp INTEGER DEFAULT 0
                     );"""
         )
         await db.execute(
@@ -304,7 +306,8 @@ class Database:
                     artists json,
                     albums json,
                     metadata json,
-                    provider_ids json
+                    provider_ids json,
+                    timestamp INTEGER DEFAULT 0
                 );"""
         )
         await db.execute(
@@ -317,6 +320,7 @@ class Database:
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_ids json,
+                    timestamp INTEGER DEFAULT 0,
                     UNIQUE(name, owner)
                 );"""
         )
@@ -327,7 +331,8 @@ class Database:
                     sort_name TEXT NOT NULL,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
-                    provider_ids json
+                    provider_ids json,
+                    timestamp INTEGER DEFAULT 0
                 );"""
         )
         await db.execute(

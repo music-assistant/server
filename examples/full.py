@@ -170,35 +170,34 @@ async def main():
 
     async with MusicAssistant(mass_conf) as mass:
 
-        # start sync
-        await mass.music.start_sync(schedule=3)
+        # run sync
+        await mass.music.start_sync()
 
         # get some data
-        artists = await mass.music.artists.count()
-        print(f"Got {artists} artists in library")
-        albums = await mass.music.albums.count()
-        print(f"Got {albums} albums in library")
-        tracks = await mass.music.tracks.count()
-        print(f"Got {tracks} tracks in library")
-        radios = await mass.music.radio.count()
-        print(f"Got {radios} radio stations in library")
-        playlists = await mass.music.playlists.library()
-        print(f"Got {len(playlists)} playlists in library")
+        artist_count = await mass.music.artists.count()
+        print(f"Got {artist_count} artists in library")
+        album_count = await mass.music.albums.count()
+        print(f"Got {album_count} albums in library")
+        track_count = await mass.music.tracks.count()
+        print(f"Got {track_count} tracks in library")
+        radio_count = await mass.music.radio.count()
+        print(f"Got {radio_count} radio stations in library")
+        playlist_count = await mass.music.playlists.library()
+        print(f"Got {len(playlist_count)} playlists in library")
         # register a player
         test_player1 = TestPlayer("test1")
         test_player2 = TestPlayer("test2")
         await mass.players.register_player(test_player1)
         await mass.players.register_player(test_player2)
-        # get full artist details
-        await mass.music.artists.get("6", ProviderType.DATABASE)
-        await mass.music.artists.albums("6", ProviderType.DATABASE)
-        await mass.music.artists.toptracks("6", ProviderType.DATABASE)
 
-        # try to play some playlist
+        # get some data
+        artist = await mass.music.artists.get("6", ProviderType.DATABASE)
+
+        # try to play some music
         test_player1.active_queue.settings.shuffle_enabled = True
         test_player1.active_queue.settings.repeat_mode = RepeatMode.ALL
-        if len(playlists) > 0:
-            await test_player1.active_queue.play_media(playlists[0].uri)
+
+        await test_player1.active_queue.play_media(artist)
 
         await asyncio.sleep(3600)
 
