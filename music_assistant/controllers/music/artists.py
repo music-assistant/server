@@ -81,11 +81,11 @@ class ArtistsController(MediaControllerBase[Artist]):
                 final_items[key].in_library = True
         return list(final_items.values())
 
-    async def add(self, item: Artist) -> Artist:
+    async def add(self, item: Artist, overwrite_existing: bool = False) -> Artist:
         """Add artist to local db and return the database item."""
         # grab musicbrainz id and additional metadata
         await self.mass.metadata.get_artist_metadata(item)
-        db_item = await self.add_db_item(item)
+        db_item = await self.add_db_item(item, overwrite_existing)
         # also fetch same artist on all providers
         await self.match_artist(db_item)
         db_item = await self.get_db_item(db_item.item_id)

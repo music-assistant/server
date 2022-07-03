@@ -1,4 +1,5 @@
 """Helpers/utilities to parse ID3 tags from audio files with ffmpeg."""
+from __future__ import annotations
 
 import json
 import os

@@ -10,6 +10,7 @@ from databases import Database as Db
 from music_assistant.helpers.compare import compare_album, compare_artist
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
+from music_assistant.helpers.tags import FALLBACK_ARTIST
 from music_assistant.models.enums import EventType, ProviderType
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
@@ -93,11 +94,11 @@ class AlbumsController(MediaControllerBase[Album]):
             and compare_artist(prov_item.artist, album.artist)
         ]
 
-    async def add(self, item: Album) -> Album:
+    async def add(self, item: Album, overwrite_existing: bool = False) -> Album:
         """Add album to local db and return the database item."""
         # grab additional metadata
         await self.mass.metadata.get_album_metadata(item)
-        db_item = await self.add_db_item(item)
+        db_item = await self.add_db_item(item, overwrite_existing)
         # also fetch same album on all providers
         await self._match(db_item)
         db_item = await self.get_db_item(db_item.item_id)
@@ -312,6 +313,9 @@ class AlbumsController(MediaControllerBase[Album]):
             for artist in album.artists:
                 album_artists.add(await self._get_artist_mapping(artist, db=db))
         # use intermediate set to prevent duplicates
+        # filter various artists if multiple artists
+        if len(album_artists) > 1:
+            album_artists = {x for x in album_artists if x.name != FALLBACK_ARTIST}
         return list(album_artists)
 
     async def _get_artist_mapping(

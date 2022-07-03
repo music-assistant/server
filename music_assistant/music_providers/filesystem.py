@@ -146,9 +146,7 @@ class FileSystemProvider(MusicProvider):
 
                     if track := await self._parse_track(entry.path):
                         # add/update track to db
-                        await self.mass.music.tracks.add_db_item(
-                            track, overwrite_existing=True, db=db
-                        )
+                        await self.mass.music.tracks.add_db_item(track, db=db)
                     elif playlist := await self._parse_playlist(entry.path):
                         # add/update] playlist to db
                         playlist.metadata.checksum = checksum
@@ -557,6 +555,7 @@ class FileSystemProvider(MusicProvider):
             quality = MediaQuality.LOSSY_M4A
         elif content_type.is_lossless():
             quality = MediaQuality.LOSSLESS
+            quality_details = f"{tags.sample_rate / 1000} Khz / {tags.bit_rate} bit"
             if tags.sample_rate > 192000:
                 quality = MediaQuality.LOSSLESS_HI_RES_4
             elif tags.sample_rate > 96000:
