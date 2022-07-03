@@ -42,7 +42,7 @@ PROV_MAP = {
     ProviderType.SPOTIFY: SpotifyProvider,
     ProviderType.QOBUZ: QobuzProvider,
     ProviderType.TUNEIN: TuneInProvider,
-    ProviderType.YTMUSIC: YTMusic
+    ProviderType.YTMUSIC: YTMusic,
 }
 
 
