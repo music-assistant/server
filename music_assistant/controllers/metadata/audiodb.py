@@ -166,7 +166,8 @@ class TheAudioDb:
         musicbrainz_id = None
         if data := await self._get_data("searchalbum.php", s=artist.name):
             # NOTE: object is 'null' when no records found instead of empty array
-            for item in data.get("album", []) or []:
+            albums = data.get("album") or []
+            for item in albums:
                 if not compare_strings(item["strArtistStripped"], artist.name):
                     continue
                 for ref_album in ref_albums:

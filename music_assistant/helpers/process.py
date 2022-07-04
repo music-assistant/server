@@ -129,7 +129,9 @@ class AsyncProcess:
         if self._proc.stdin.can_write_eof():
             self._proc.stdin.write_eof()
 
-    async def communicate(self, input_data: Optional[bytes] = None) -> bytes:
+    async def communicate(
+        self, input_data: Optional[bytes] = None
+    ) -> Tuple[bytes, bytes]:
         """Write bytes to process and read back results."""
         return await self._proc.communicate(input_data)
 

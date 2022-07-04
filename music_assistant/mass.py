@@ -95,6 +95,7 @@ class MusicAssistant:
         for task in self._tracked_tasks:
             task.cancel()
         self.signal_event(MassEvent(EventType.SHUTDOWN))
+        await self.database.close()
         self.closed = True
         if self.http_session and not self.http_session_provided:
             await self.http_session.close()

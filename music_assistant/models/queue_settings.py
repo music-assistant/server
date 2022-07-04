@@ -173,21 +173,20 @@ class QueueSettings:
 
     async def restore(self) -> None:
         """Restore state from db."""
-        async with self.mass.database.get_db() as _db:
-            for key, val_type in (
-                ("repeat_mode", RepeatMode),
-                ("crossfade_mode", CrossFadeMode),
-                ("shuffle_enabled", bool),
-                ("crossfade_duration", int),
-                ("volume_normalization_enabled", bool),
-                ("volume_normalization_target", float),
-                ("stream_type", ContentType),
-                ("sample_rates", tuple),
-            ):
-                db_key = f"{self._queue.queue_id}_{key}"
-                if db_value := await self.mass.database.get_setting(db_key, db=_db):
-                    value = val_type(db_value["value"])
-                    setattr(self, f"_{key}", value)
+        for key, val_type in (
+            ("repeat_mode", RepeatMode),
+            ("crossfade_mode", CrossFadeMode),
+            ("shuffle_enabled", bool),
+            ("crossfade_duration", int),
+            ("volume_normalization_enabled", bool),
+            ("volume_normalization_target", float),
+            ("stream_type", ContentType),
+            ("sample_rates", tuple),
+        ):
+            db_key = f"{self._queue.queue_id}_{key}"
+            if db_value := await self.mass.database.get_setting(db_key):
+                value = val_type(db_value["value"])
+                setattr(self, f"_{key}", value)
 
     def _on_update(self, changed_key: Optional[str] = None) -> None:
         """Handle state changed."""
@@ -197,8 +196,7 @@ class QueueSettings:
 
     async def save(self, changed_key: Optional[str] = None) -> None:
         """Save state in db."""
-        async with self.mass.database.get_db() as _db:
-            for key, value in self.to_dict().items():
-                if key == changed_key or changed_key is None:
-                    db_key = f"{self._queue.queue_id}_{key}"
-                    await self.mass.database.set_setting(db_key, value, db=_db)
+        for key, value in self.to_dict().items():
+            if key == changed_key or changed_key is None:
+                db_key = f"{self._queue.queue_id}_{key}"
+                await self.mass.database.set_setting(db_key, value)

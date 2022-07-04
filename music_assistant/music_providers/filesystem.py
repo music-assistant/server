@@ -7,21 +7,18 @@ import os
 import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
+from time import time
 from typing import AsyncGenerator, List, Optional, Set, Tuple
 
 import aiofiles
 import xmltodict
 from aiofiles.os import wrap
 from aiofiles.threadpool.binary import AsyncFileIO
-from tinytag.tinytag import TinyTag
 
 from music_assistant.helpers.audio import get_file_stream
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.util import (
-    create_clean_string,
-    parse_title_and_version,
-    try_parse_int,
-)
+from music_assistant.helpers.tags import FALLBACK_ARTIST, parse_tags, split_items
+from music_assistant.helpers.util import create_safe_string, parse_title_and_version
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.media_items import (
@@ -43,18 +40,7 @@ from music_assistant.models.media_items import (
 )
 from music_assistant.models.music_provider import MusicProvider
 
-FALLBACK_ARTIST = "Various Artists"
-SPLITTERS = (";", ",", "Featuring", " Feat. ", " Feat ", "feat.", " & ", " / ")
-CONTENT_TYPE_EXT = {
-    # map of supported file extensions (mapped to ContentType)
-    "mp3": ContentType.MP3,
-    "m4a": ContentType.M4A,
-    "flac": ContentType.FLAC,
-    "wav": ContentType.WAV,
-    "ogg": ContentType.OGG,
-    "wma": ContentType.WMA,
-    "aiff": ContentType.AIFF,
-}
+VALID_EXTENSIONS = ("mp3", "m4a", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
 SCHEMA_VERSION = 17
 LOGGER = logging.getLogger(__name__)
 
@@ -83,16 +69,15 @@ async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
                 yield entry
 
 
-def split_items(org_str: str) -> Tuple[str]:
-    """Split up a tags string by common splitter."""
-    if isinstance(org_str, list):
-        return org_str
-    if org_str is None:
-        return tuple()
-    for splitter in SPLITTERS:
-        if splitter in org_str:
-            return tuple((x.strip() for x in org_str.split(splitter)))
-    return (org_str,)
+def get_parentdir(base_path: str, name: str) -> str | None:
+    """Look for folder name in path (to find dedicated artist or album folder)."""
+    parentdir = os.path.dirname(base_path)
+    for _ in range(3):
+        dirname = parentdir.rsplit(os.sep)[-1]
+        if compare_strings(name, dirname):
+            return parentdir
+        parentdir = os.path.dirname(parentdir)
+    return None
 
 
 class FileSystemProvider(MusicProvider):
@@ -185,68 +170,35 @@ class FileSystemProvider(MusicProvider):
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_checksums = {}
-        async with self.mass.database.get_db() as db:
-            async for entry in scantree(self.config.path):
-                try:
-                    # mtime is used as file checksum
-                    stat = await asyncio.get_running_loop().run_in_executor(
-                        None, entry.stat
-                    )
-                    checksum = int(stat.st_mtime)
-                    cur_checksums[entry.path] = checksum
-                    if checksum == prev_checksums.get(entry.path):
-                        continue
+        async for entry in scantree(self.config.path):
+            try:
+                # mtime is used as file checksum
+                stat = await asyncio.get_running_loop().run_in_executor(
+                    None, entry.stat
+                )
+                checksum = int(stat.st_mtime)
+                cur_checksums[entry.path] = checksum
+                if checksum == prev_checksums.get(entry.path):
+                    continue
 
-                    if track := await self._parse_track(entry.path):
-                        # set checksum on track to invalidate any cached listings
-                        track.metadata.checksum = checksum
-                        # process album
-                        if track.album:
-                            # set checksum on album to invalidate cached albumtracks listings etc
-                            track.album.metadata.checksum = checksum
-                            db_album = await self.mass.music.albums.add_db_item(
-                                track.album, overwrite_existing=True, db=db
-                            )
-                            if not db_album.in_library:
-                                await self.mass.music.albums.set_db_library(
-                                    db_album.item_id, True, db=db
-                                )
-                            # process (album)artist
-                            if track.album.artist:
-                                # set checksum on albumartist to invalidate cached artisttracks listings etc
-                                track.album.artist.metadata.checksum = checksum
-                                db_artist = await self.mass.music.artists.add_db_item(
-                                    track.album.artist, db=db
-                                )
-                                if not db_artist.in_library:
-                                    await self.mass.music.artists.set_db_library(
-                                        db_artist.item_id, True, db=db
-                                    )
-                        # add/update track to db
-                        db_track = await self.mass.music.tracks.add_db_item(
-                            track, overwrite_existing=True, db=db
-                        )
-                        if not db_track.in_library:
-                            await self.mass.music.tracks.set_db_library(
-                                db_track.item_id, True, db=db
-                            )
-                    elif playlist := await self._parse_playlist(entry.path):
-                        # add/update] playlist to db
-                        playlist.metadata.checksum = checksum
-                        await self.mass.music.playlists.add_db_item(playlist, db=db)
-                except Exception as err:  # pylint: disable=broad-except
-                    # we don't want the whole sync to crash on one file so we catch all exceptions here
-                    self.logger.exception(
-                        "Error processing %s - %s", entry.path, str(err)
-                    )
+                if track := await self._parse_track(entry.path):
+                    # add/update track to db
+                    await self.mass.music.tracks.add_db_item(track)
+                elif playlist := await self._parse_playlist(entry.path):
+                    # add/update] playlist to db
+                    playlist.metadata.checksum = checksum
+                    await self.mass.music.playlists.add_db_item(playlist)
+            except Exception as err:  # pylint: disable=broad-except
+                # we don't want the whole sync to crash on one file so we catch all exceptions here
+                self.logger.exception("Error processing %s - %s", entry.path, str(err))
 
-                # save checksums every 50 processed items
-                # this allows us to pickup where we leftoff when initial scan gets intterrupted
-                if save_checksum_interval == 50:
-                    await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
-                    save_checksum_interval = 0
-                else:
-                    save_checksum_interval += 1
+            # save checksums every 50 processed items
+            # this allows us to pickup where we leftoff when initial scan gets intterrupted
+            if save_checksum_interval == 50:
+                await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
+                save_checksum_interval = 0
+            else:
+                save_checksum_interval += 1
 
         await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
         # work out deletions
@@ -478,24 +430,18 @@ class FileSystemProvider(MusicProvider):
         if not await self.exists(itempath):
             raise MediaNotFoundError(f"Track path does not exist: {itempath}")
 
-        def parse_tag():
-            return TinyTag.get(itempath)
-
-        tags = await self.mass.loop.run_in_executor(None, parse_tag)
-        _, ext = Path(itempath).name.rsplit(".", 1)
-        content_type = CONTENT_TYPE_EXT.get(ext.lower())
-
+        metadata = await parse_tags(itempath)
         stat = await self.mass.loop.run_in_executor(None, os.stat, itempath)
 
         return StreamDetails(
             provider=self.type,
             item_id=item_id,
-            content_type=content_type,
+            content_type=ContentType.try_parse(metadata.format),
             media_type=MediaType.TRACK,
-            duration=tags.duration,
+            duration=metadata.duration,
             size=stat.st_size,
-            sample_rate=tags.samplerate or 44100,
-            bit_depth=16,  # TODO: parse bitdepth
+            sample_rate=metadata.sample_rate,
+            bit_depth=metadata.bits_per_sample,
             data=itempath,
         )
 
@@ -518,32 +464,15 @@ class FileSystemProvider(MusicProvider):
             # skip system files and files without extension
             return None
 
-        filename_base, ext = Path(track_path).name.rsplit(".", 1)
-        content_type = CONTENT_TYPE_EXT.get(ext.lower())
-        if content_type is None:
+        _, ext = track_path.rsplit(".", 1)
+        if ext not in VALID_EXTENSIONS:
             # unsupported file extension
             return None
 
         track_item_id = self._get_item_id(track_path)
 
-        # parse ID3 tags with TinyTag
-        def parse_tags():
-            return TinyTag.get(track_path, image=True, ignore_errors=True)
-
-        tags = await self.mass.loop.run_in_executor(None, parse_tags)
-
-        # prefer title from tags, fallback to filename
-        if not tags.title or not tags.artist:
-            self.logger.warning(
-                "%s is missing ID3 tags, using filename as fallback", track_path
-            )
-            filename_parts = filename_base.split(" - ", 1)
-            if len(filename_parts) == 2:
-                tags.artist = tags.artist or filename_parts[0]
-                tags.title = tags.title or filename_parts[1]
-            else:
-                tags.artist = tags.artist or FALLBACK_ARTIST
-                tags.title = tags.title or filename_base
+        # parse tags
+        tags = await parse_tags(track_path)
 
         name, version = parse_title_and_version(tags.title)
         track = Track(
@@ -551,112 +480,138 @@ class FileSystemProvider(MusicProvider):
             provider=self.type,
             name=name,
             version=version,
-            # a track on disk is always in library
-            in_library=True,
         )
 
         # album
-        # work out if we have an artist/album/track.ext structure
         if tags.album:
-            track_parts = track_path.rsplit(os.sep)
-            album_folder = None
-            artist_folder = None
-            parentdir = os.path.dirname(track_path)
-            for _ in range(len(track_parts)):
-                dirname = parentdir.rsplit(os.sep)[-1]
-                if compare_strings(dirname, tags.albumartist):
-                    artist_folder = parentdir
-                if compare_strings(dirname, tags.album):
-                    album_folder = parentdir
-                parentdir = os.path.dirname(parentdir)
+            # work out if we have an album folder
+            album_dir = get_parentdir(track_path, tags.album)
 
-            # album artist
-            if artist_folder:
-                album_artists = [
-                    await self._parse_artist(
-                        name=tags.albumartist,
-                        artist_path=artist_folder,
-                        in_library=True,
+            # album artist(s)
+            if tags.album_artists:
+                album_artists = []
+                for index, album_artist_str in enumerate(tags.album_artists):
+                    # work out if we have an artist folder
+                    artist_dir = get_parentdir(track_path, album_artist_str)
+                    artist = await self._parse_artist(
+                        album_artist_str, artist_path=artist_dir
                     )
-                ]
-            elif tags.albumartist:
-                album_artists = [
-                    await self._parse_artist(name=item, in_library=True)
-                    for item in split_items(tags.albumartist)
-                ]
-
+                    if not artist.musicbrainz_id:
+                        try:
+                            artist.musicbrainz_id = tags.musicbrainz_artistids[index]
+                        except IndexError:
+                            pass
+                    album_artists.append(artist)
             else:
                 # always fallback to various artists as album artist if user did not tag album artist
                 # ID3 tag properly because we must have an album artist
-                album_artists = [await self._parse_artist(name=FALLBACK_ARTIST)]
                 self.logger.warning(
                     "%s is missing ID3 tag [albumartist], using %s as fallback",
                     track_path,
                     FALLBACK_ARTIST,
                 )
+                album_artists = [await self._parse_artist(name=FALLBACK_ARTIST)]
 
             track.album = await self._parse_album(
                 tags.album,
-                album_folder,
+                album_dir,
                 artists=album_artists,
-                in_library=True,
             )
         else:
             self.logger.warning("%s is missing ID3 tag [album]", track_path)
 
         # track artist(s)
-        if tags.artist == tags.albumartist and track.album:
-            track.artists = track.album.artists
-        else:
-            # Parse track artist(s) from artist string using common splitters used in ID3 tags
-            # NOTE: do not use a '/' or '&' to prevent artists like AC/DC become messed up
-            track_artists_str = tags.artist or FALLBACK_ARTIST
-            track.artists = [
-                await self._parse_artist(item, in_library=False)
-                for item in split_items(track_artists_str)
-            ]
+        for index, track_artist_str in enumerate(tags.artists):
+            # re-use album artist details if possible
+            if track.album:
+                if artist := next(
+                    (x for x in track.album.artists if x.name == track_artist_str), None
+                ):
+                    track.artists.append(artist)
+                    continue
+            artist = await self._parse_artist(track_artist_str)
+            if not artist.musicbrainz_id:
+                try:
+                    artist.musicbrainz_id = tags.musicbrainz_artistids[index]
+                except IndexError:
+                    pass
+            track.artists.append(artist)
 
-        # Check if track has embedded metadata
-        img = await self.mass.loop.run_in_executor(None, tags.get_image)
-        if not track.metadata.images and img:
+        # cover image - prefer album image, fallback to embedded
+        if track.album and track.album.image:
+            track.album.metadata.images = [
+                MediaItemImage(ImageType.THUMB, track.album.image, True)
+            ]
+        elif tags.has_cover_image:
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
             track.metadata.images = [MediaItemImage(ImageType.THUMB, track_path, True)]
-            if track.album and not track.album.metadata.images:
+            if track.album:
+                # set embedded cover on album
                 track.album.metadata.images = track.metadata.images
 
         # parse other info
         track.duration = tags.duration
-        track.metadata.genres = set(split_items(tags.genre))
-        track.disc_number = try_parse_int(tags.disc)
-        track.track_number = try_parse_int(tags.track)
-        track.isrc = tags.extra.get("isrc", "")
-        if "copyright" in tags.extra:
-            track.metadata.copyright = tags.extra["copyright"]
-        if "lyrics" in tags.extra:
-            track.metadata.lyrics = tags.extra["lyrics"]
+        track.metadata.genres = tags.genres
+        track.disc_number = tags.disc
+        track.track_number = tags.track
+        track.isrc = tags.get("isrc")
+        track.metadata.copyright = tags.get("copyright")
+        track.metadata.lyrics = tags.get("lyrics")
+        track.musicbrainz_id = tags.musicbrainz_trackid
+        if track.album:
+            if not track.album.musicbrainz_id:
+                track.album.musicbrainz_id = tags.musicbrainz_releasegroupid
+            if not track.album.year:
+                track.album.year = tags.year
+            if not track.album.upc:
+                track.album.upc = tags.get("barcode")
+        # try to parse albumtype
+        if track.album and track.album.album_type == AlbumType.UNKNOWN:
+            album_type = tags.album_type
+            if album_type and "compilation" in album_type:
+                track.album.album_type = AlbumType.COMPILATION
+            elif album_type and "single" in album_type:
+                track.album.album_type = AlbumType.SINGLE
+            elif album_type and "album" in album_type:
+                track.album.album_type = AlbumType.ALBUM
+            elif track.album.sort_name in track.sort_name:
+                track.album.album_type = AlbumType.SINGLE
+
+        # set checksum to invalidate any cached listings
+        checksum_timestamp = str(int(time()))
+        track.metadata.checksum = checksum_timestamp
+        if track.album:
+            track.album.metadata.checksum = checksum_timestamp
+            for artist in track.album.artists:
+                artist.metadata.checksum = checksum_timestamp
 
         quality_details = ""
-        if content_type == ContentType.FLAC:
-            # TODO: get bit depth
-            quality = MediaQuality.FLAC_LOSSLESS
-            if tags.samplerate > 192000:
-                quality = MediaQuality.FLAC_LOSSLESS_HI_RES_4
-            elif tags.samplerate > 96000:
-                quality = MediaQuality.FLAC_LOSSLESS_HI_RES_3
-            elif tags.samplerate > 48000:
-                quality = MediaQuality.FLAC_LOSSLESS_HI_RES_2
-            quality_details = f"{tags.samplerate / 1000} Khz"
-        elif track_path.endswith(".ogg"):
-            quality = MediaQuality.LOSSY_OGG
-            quality_details = f"{tags.bitrate} kbps"
-        elif track_path.endswith(".m4a"):
-            quality = MediaQuality.LOSSY_AAC
-            quality_details = f"{tags.bitrate} kbps"
-        else:
+        content_type = ContentType.try_parse(tags.format)
+        quality_details = f"{int(tags.bit_rate / 1000)} kbps"
+        if content_type == ContentType.MP3:
             quality = MediaQuality.LOSSY_MP3
-            quality_details = f"{tags.bitrate} kbps"
+        elif content_type == ContentType.OGG:
+            quality = MediaQuality.LOSSY_OGG
+        elif content_type == ContentType.AAC:
+            quality = MediaQuality.LOSSY_AAC
+        elif content_type == ContentType.M4A:
+            quality = MediaQuality.LOSSY_M4A
+        elif content_type.is_lossless():
+            quality = MediaQuality.LOSSLESS
+            quality_details = f"{tags.sample_rate / 1000} Khz / {tags.bit_rate} bit"
+            if tags.sample_rate > 192000:
+                quality = MediaQuality.LOSSLESS_HI_RES_4
+            elif tags.sample_rate > 96000:
+                quality = MediaQuality.LOSSLESS_HI_RES_3
+            elif tags.sample_rate > 48000:
+                quality = MediaQuality.LOSSLESS_HI_RES_2
+            elif tags.bits_per_sample > 16:
+                quality = MediaQuality.LOSSLESS_HI_RES_1
+        else:
+            quality = MediaQuality.UNKNOWN
+
         track.add_provider_id(
             MediaItemProviderId(
                 item_id=track_item_id,
@@ -673,7 +628,6 @@ class FileSystemProvider(MusicProvider):
         self,
         name: Optional[str] = None,
         artist_path: Optional[str] = None,
-        in_library: bool = True,
     ) -> Artist | None:
         """Lookup metadata in Artist folder."""
         assert name or artist_path
@@ -692,15 +646,11 @@ class FileSystemProvider(MusicProvider):
             provider_ids={
                 MediaItemProviderId(artist_item_id, self.type, self.id, url=artist_path)
             },
-            in_library=in_library,
         )
 
         if not await self.exists(artist_path):
             # return basic object if there is no dedicated artist folder
             return artist
-
-        # always mark artist as in-library when it exists as folder on disk
-        artist.in_library = True
 
         nfo_file = os.path.join(artist_path, "artist.nfo")
         if await self.exists(nfo_file):
@@ -721,28 +671,28 @@ class FileSystemProvider(MusicProvider):
                 artist.metadata.genres = set(split_items(genre))
         # find local images
         images = []
-        async for _path in scantree(artist_path):
-            _filename = _path.path
-            ext = _filename.split(".")[-1]
+        for _path in await self.mass.loop.run_in_executor(
+            None, os.scandir, artist_path
+        ):
+            if "." not in _path.path or _path.is_dir():
+                continue
+            filename, ext = _path.path.rsplit(os.sep, 1)[-1].split(".", 1)
             if ext not in ("jpg", "png"):
                 continue
-            _filepath = os.path.join(artist_path, _filename)
-            for img_type in ImageType:
-                if img_type.value in _filepath:
-                    images.append(MediaItemImage(img_type, _filepath, True))
-                elif _filename == "folder.jpg":
-                    images.append(MediaItemImage(ImageType.THUMB, _filepath, True))
+            try:
+                images.append(MediaItemImage(ImageType(filename), _path.path, True))
+            except ValueError:
+                if "folder" in filename:
+                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
+                elif "Artist" in filename:
+                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
         if images:
             artist.metadata.images = images
 
         return artist
 
     async def _parse_album(
-        self,
-        name: Optional[str],
-        album_path: Optional[str],
-        artists: List[Artist],
-        in_library: bool = True,
+        self, name: Optional[str], album_path: Optional[str], artists: List[Artist]
     ) -> Album | None:
         """Lookup metadata in Album folder."""
         assert (name or album_path) and artists
@@ -762,15 +712,11 @@ class FileSystemProvider(MusicProvider):
             provider_ids={
                 MediaItemProviderId(album_item_id, self.type, self.id, url=album_path)
             },
-            in_library=in_library,
         )
 
         if not await self.exists(album_path):
             # return basic object if there is no dedicated album folder
             return album
-
-        # always mark as in-library when it exists as folder on disk
-        album.in_library = True
 
         nfo_file = os.path.join(album_path, "album.nfo")
         if await self.exists(nfo_file):
@@ -797,30 +743,21 @@ class FileSystemProvider(MusicProvider):
         # parse name/version
         album.name, album.version = parse_title_and_version(album.name)
 
-        # try to guess the album type
-        album_tracks = [
-            x async for x in scantree(album_path) if TinyTag.is_supported(x.path)
-        ]
-        if album.artist.sort_name == "variousartists":
-            album.album_type = AlbumType.COMPILATION
-        elif len(album_tracks) <= 5:
-            album.album_type = AlbumType.SINGLE
-        else:
-            album.album_type = AlbumType.ALBUM
-
         # find local images
         images = []
         async for _path in scantree(album_path):
-            _filename = _path.path
-            ext = _filename.split(".")[-1]
+            if "." not in _path.path or _path.is_dir():
+                continue
+            filename, ext = _path.path.rsplit(os.sep, 1)[-1].split(".", 1)
             if ext not in ("jpg", "png"):
                 continue
-            _filepath = os.path.join(album_path, _filename)
-            for img_type in ImageType:
-                if img_type.value in _filepath:
-                    images.append(MediaItemImage(img_type, _filepath, True))
-                elif "folder." in _filepath:
-                    images.append(MediaItemImage(ImageType.THUMB, _filepath, True))
+            try:
+                images.append(MediaItemImage(ImageType(filename), _path.path, True))
+            except ValueError:
+                if "folder" in filename:
+                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
+                elif "AlbumArt" in filename:
+                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
         if images:
             album.metadata.images = images
 
@@ -840,6 +777,7 @@ class FileSystemProvider(MusicProvider):
 
         playlist = Playlist(playlist_item_id, provider=self.type, name=name)
         playlist.is_editable = True
+        # playlist is always in-library
         playlist.in_library = True
         playlist.add_provider_id(
             MediaItemProviderId(
@@ -876,18 +814,6 @@ class FileSystemProvider(MusicProvider):
         async with aiofiles.open(file_path, mode) as _file:
             yield _file
 
-    async def get_embedded_image(self, file_path) -> bytes | None:
-        """Return embedded image data."""
-        if not TinyTag.is_supported(file_path):
-            return None
-
-        # embedded image in music file
-        def _get_data():
-            tags = TinyTag.get(file_path, image=True)
-            return tags.get_image()
-
-        return await self.mass.loop.run_in_executor(None, _get_data)
-
     async def get_filepath(
         self, media_type: MediaType, prov_item_id: str
     ) -> str | None:
@@ -912,4 +838,4 @@ class FileSystemProvider(MusicProvider):
 
     def _get_item_id(self, file_path: str) -> str:
         """Create item id from filename."""
-        return create_clean_string(file_path.replace(self.config.path, ""))
+        return create_safe_string(file_path.replace(self.config.path, ""))

@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Optional
 
 from PIL import Image
 
+from music_assistant.helpers.tags import get_embedded_image
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
@@ -27,7 +29,7 @@ async def create_thumbnail(
             if not await prov.exists(path):
                 continue
             # embedded image in music file
-            img_data = await prov.get_embedded_image(path)
+            img_data = await get_embedded_image(path)
             # regular image file on disk
             if not img_data:
                 async with prov.open_file(path) as _file:

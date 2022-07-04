@@ -57,14 +57,20 @@ def try_parse_bool(possible_bool):
     return possible_bool in ["true", "True", "1", "on", "ON", 1]
 
 
-def create_clean_string(input_str: str) -> str:
+def create_safe_string(input_str: str) -> str:
     """Return clean lowered string for compare actions."""
+    input_str = input_str.lower().strip()
+    unaccented_string = unidecode.unidecode(input_str)
+    return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string)
+
+
+def create_sort_name(input_str: str) -> str:
+    """Create sort name/title from string."""
     input_str = input_str.lower().strip()
     for item in ["the ", "de ", "les "]:
         if input_str.startswith(item):
             input_str = input_str.replace(item, "")
-    unaccented_string = unidecode.unidecode(input_str)
-    return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string)
+    return input_str.strip()
 
 
 def parse_title_and_version(title: str, track_version: str = None):
