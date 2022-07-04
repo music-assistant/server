@@ -53,10 +53,28 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Update record in the database, merging data."""
         raise NotImplementedError
 
-    async def library(self, limit: int = 500, offset: int = 0) -> List[ItemCls]:
-        """Get all in-library items."""
-        match = {"in_library": True}
-        return await self.get_db_items(match=match, limit=limit, offset=offset)
+    async def db_items(
+        self,
+        in_library: Optional[bool] = None,
+        search: Optional[str] = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> List[ItemCls]:
+        """Get in-database items."""
+        sql_query = f"SELECT * FROM {self.db_table}"
+        params = {}
+        query_parts = []
+        if search:
+            params["search"] = f"%{search}%"
+            query_parts.append("name LIKE :search")
+        if in_library is not None:
+            query_parts.append("in_library = :in_library")
+            params["in_library"] = in_library
+        if query_parts:
+            sql_query += " WHERE " + " AND ".join(query_parts)
+        return await self.get_db_items_by_query(
+            sql_query, params, limit=limit, offset=offset
+        )
 
     async def count(self, in_library: bool = False) -> int:
         """Return number of in-library items for this MediaType."""
@@ -238,25 +256,20 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 return (prov.prov_id, prov.item_id)
         return None, None
 
-    async def get_db_items(
+    async def get_db_items_by_query(
         self,
-        query: Optional[str] = None,
+        custom_query: Optional[str] = None,
         query_params: Optional[dict] = None,
-        match: Optional[dict] = None,
         limit: int = 500,
         offset: int = 0,
     ) -> List[ItemCls]:
-        """Fetch all records from database."""
-        assert not (query and match), "query and match are mutually exclusive"
-        if query is not None:
-            func = self.mass.database.get_rows_from_query(
-                query, query_params, limit=limit, offset=offset
+        """Fetch MediaItem records from database given a custom query."""
+        return [
+            self.item_cls.from_db_row(db_row)
+            for db_row in await self.mass.database.get_rows_from_query(
+                custom_query, query_params, limit=limit, offset=offset
             )
-        else:
-            func = self.mass.database.get_rows(
-                self.db_table, match, limit=limit, offset=offset
-            )
-        return [self.item_cls.from_db_row(db_row) for db_row in await func]
+        ]
 
     async def get_db_item(self, item_id: int) -> ItemCls:
         """Get record by id."""
@@ -298,7 +311,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if isinstance(provider, str):
             provider = ProviderType(provider)
         if provider == ProviderType.DATABASE or provider_id == "database":
-            return await self.get_db_items(limit=limit, offset=offset)
+            return await self.get_db_items_by_query(limit=limit, offset=offset)
 
         query = f"SELECT * FROM {self.db_table}, json_each(provider_ids)"
         if provider_id is not None:
@@ -313,7 +326,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 prov_ids = prov_ids.replace(",)", ")")
             query += f" AND json_extract(json_each.value, '$.item_id') in {prov_ids}"
 
-        return await self.get_db_items(query, limit=limit, offset=offset)
+        return await self.get_db_items_by_query(query, limit=limit, offset=offset)
 
     async def set_db_library(self, item_id: int, in_library: bool) -> None:
         """Set the in-library bool on a database item."""

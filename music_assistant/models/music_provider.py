@@ -293,7 +293,7 @@ class MusicProvider:
             # Bottomline this means that we don't do a full 2 way sync if multiple
             # providers are attached to the same media item.
             prev_ids = set()
-            for db_item in await controller.library():
+            for db_item in await controller.db_items(True):
                 prov_types = {x.prov_type for x in db_item.provider_ids}
                 if len(prov_types) > 1:
                     continue

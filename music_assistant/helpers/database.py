@@ -114,9 +114,8 @@ class Database:
         params = {"search": f"%{search}%"}
         return await self._db.fetch_all(sql_query, params)
 
-    async def get_row(self, table: str, match: Dict[str, Any] = None) -> Mapping | None:
+    async def get_row(self, table: str, match: Dict[str, Any]) -> Mapping | None:
         """Get single row for given table where column matches keys/values."""
-        # async with Db(self.url, timeout=360) as db:
         sql_query = f"SELECT * FROM {table} WHERE "
         sql_query += " AND ".join((f"{x} = :{x}" for x in match))
         return await self._db.fetch_one(sql_query, match)

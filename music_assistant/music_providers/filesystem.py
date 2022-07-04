@@ -119,19 +119,21 @@ class FileSystemProvider(MusicProvider):
         params = {"name": f"%{search_query}%", "prov_type": f"%{self.type.value}%"}
         if media_types is None or MediaType.TRACK in media_types:
             query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_ids LIKE :prov_type"
-            tracks = await self.mass.music.tracks.get_db_items(query, params)
+            tracks = await self.mass.music.tracks.get_db_items_by_query(query, params)
             result += tracks
         if media_types is None or MediaType.ALBUM in media_types:
             query = "SELECT * FROM albums WHERE name LIKE :name AND provider_ids LIKE :prov_type"
-            albums = await self.mass.music.albums.get_db_items(query, params)
+            albums = await self.mass.music.albums.get_db_items_by_query(query, params)
             result += albums
         if media_types is None or MediaType.ARTIST in media_types:
             query = "SELECT * FROM artists WHERE name LIKE :name AND provider_ids LIKE :prov_type"
-            artists = await self.mass.music.artists.get_db_items(query, params)
+            artists = await self.mass.music.artists.get_db_items_by_query(query, params)
             result += artists
         if media_types is None or MediaType.PLAYLIST in media_types:
             query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_ids LIKE :prov_type"
-            playlists = await self.mass.music.playlists.get_db_items(query, params)
+            playlists = await self.mass.music.playlists.get_db_items_by_query(
+                query, params
+            )
             result += playlists
         return result
 
@@ -303,7 +305,7 @@ class FileSystemProvider(MusicProvider):
         query = f"SELECT * FROM tracks WHERE albums LIKE '%\"{db_album.item_id}\"%'"
         query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
         result = []
-        for track in await self.mass.music.tracks.get_db_items(query):
+        for track in await self.mass.music.tracks.get_db_items_by_query(query):
             track.album = db_album
             album_mapping = next(
                 (x for x in track.albums if x.item_id == db_album.item_id), None
@@ -369,7 +371,7 @@ class FileSystemProvider(MusicProvider):
         # TODO: adjust to json query instead of text search
         query = f"SELECT * FROM albums WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
         query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
-        return await self.mass.music.albums.get_db_items(query)
+        return await self.mass.music.albums.get_db_items_by_query(query)
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
         """Get a list of all tracks as we have no clue about preference."""
@@ -382,7 +384,7 @@ class FileSystemProvider(MusicProvider):
         # TODO: adjust to json query instead of text search
         query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
         query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
-        return await self.mass.music.tracks.get_db_items(query)
+        return await self.mass.music.tracks.get_db_items_by_query(query)
 
     async def library_add(self, *args, **kwargs) -> bool:
         """Add item to provider's library. Return true on succes."""
