@@ -22,11 +22,12 @@ class MediaQuality(IntEnum):
     LOSSY_MP3 = 1
     LOSSY_OGG = 2
     LOSSY_AAC = 3
-    FLAC_LOSSLESS = 10  # 44.1/48khz 16 bits
-    FLAC_LOSSLESS_HI_RES_1 = 20  # 44.1/48khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_2 = 21  # 88.2/96khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_3 = 22  # 176/192khz 24 bits HI-RES
-    FLAC_LOSSLESS_HI_RES_4 = 23  # above 192khz 24 bits HI-RES
+    LOSSY_M4A = 4
+    LOSSLESS = 10  # 44.1/48khz 16 bits
+    LOSSLESS_HI_RES_1 = 20  # 44.1/48khz 24 bits HI-RES
+    LOSSLESS_HI_RES_2 = 21  # 88.2/96khz 24 bits HI-RES
+    LOSSLESS_HI_RES_3 = 22  # 176/192khz 24 bits HI-RES
+    LOSSLESS_HI_RES_4 = 23  # above 192khz 24 bits HI-RES
 
 
 class LinkType(Enum):
@@ -82,6 +83,7 @@ class ContentType(Enum):
     AIFF = "aiff"
     WMA = "wma"
     M4A = "m4a"
+    DSF = "dsf"
     PCM_S16LE = "s16le"  # PCM signed 16-bit little-endian
     PCM_S24LE = "s24le"  # PCM signed 24-bit little-endian
     PCM_S32LE = "s32le"  # PCM signed 32-bit little-endian
@@ -91,10 +93,17 @@ class ContentType(Enum):
 
     @classmethod
     def try_parse(cls: "ContentType", string: str) -> "ContentType":
-        """Try to parse ContentType from (url)string."""
+        """Try to parse ContentType from (url)string/extension."""
         tempstr = string.lower()
         if "." in tempstr:
             tempstr = tempstr.split(".")[-1]
+        if "," in tempstr:
+            for val in tempstr.split(","):
+                try:
+                    return cls(val.strip())
+                except ValueError:
+                    pass
+
         tempstr = tempstr.split("?")[0]
         tempstr = tempstr.split("&")[0]
         try:
@@ -102,9 +111,18 @@ class ContentType(Enum):
         except ValueError:
             return cls.UNKNOWN
 
-    def is_pcm(self):
+    def is_pcm(self) -> bool:
         """Return if contentype is PCM."""
         return self.name.startswith("PCM")
+
+    def is_lossless(self) -> bool:
+        """Return if format is lossless."""
+        return self.is_pcm() or self in (
+            ContentType.DSF,
+            ContentType.FLAC,
+            ContentType.AIFF,
+            ContentType.WAV,
+        )
 
     @classmethod
     def from_bit_depth(

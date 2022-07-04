@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from time import time
-from typing import Any, Dict, List, Mapping, Optional, Set, Union
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.helpers.json import json
 from music_assistant.helpers.uri import create_uri
-from music_assistant.helpers.util import create_clean_string, merge_lists
+from music_assistant.helpers.util import create_sort_name, merge_lists
 from music_assistant.models.enums import (
     AlbumType,
     ContentType,
@@ -127,16 +127,18 @@ class MediaItem(DataClassDictMixin):
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN
-    # sort_name and uri are auto generated, do not override unless needed
+    # sort_name and uri are auto generated, do not override unless really needed
     sort_name: Optional[str] = None
     uri: Optional[str] = None
+    # timestamp is used to determine when the item was added to the library
+    timestamp: int = 0
 
     def __post_init__(self):
         """Call after init."""
         if not self.uri:
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
-            self.sort_name = create_clean_string(self.name)
+            self.sort_name = create_sort_name(self.name)
 
     @classmethod
     def from_db_row(cls, db_row: Mapping):
@@ -308,6 +310,14 @@ class Track(MediaItem):
         if self.album:
             return self.album.image
         return None
+
+    @property
+    def isrcs(self) -> Tuple[str]:
+        """Split multiple values in isrc field."""
+        # sometimes the isrc contains multiple values, splitted by semicolon
+        if not self.isrc:
+            return tuple()
+        return tuple(self.isrc.split(";"))
 
 
 @dataclass

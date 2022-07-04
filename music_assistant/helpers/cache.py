@@ -104,8 +104,7 @@ class Cache:
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
         # compact db
-        async with self.mass.database.get_db() as _db:
-            await _db.execute("VACUUM")
+        await self.mass.database.execute("VACUUM")
 
     def __schedule_cleanup_task(self):
         """Schedule the cleanup task."""
@@ -136,8 +135,10 @@ def use_cache(expiration=86400 * 30):
             if not skip_cache and cachedata is not None:
                 return cachedata
             result = await func(*args, **kwargs)
-            await method_class.cache.set(
-                cache_key, result, expiration=expiration, checksum=cache_checksum
+            asyncio.create_task(
+                method_class.cache.set(
+                    cache_key, result, expiration=expiration, checksum=cache_checksum
+                )
             )
             return result
 

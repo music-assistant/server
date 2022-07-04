@@ -19,7 +19,11 @@ from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.config import MusicProviderConfig
 from music_assistant.models.enums import MediaType, ProviderType
-from music_assistant.models.errors import MusicAssistantError, SetupFailedError
+from music_assistant.models.errors import (
+    MusicAssistantError,
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 from music_assistant.models.media_items import MediaItem, MediaItemType, media_from_dict
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.music_providers.filesystem import FileSystemProvider
@@ -109,17 +113,14 @@ class MusicController:
         """Return all (available) music providers."""
         return tuple(x for x in self._providers.values() if x.available)
 
-    def get_provider(
-        self, provider_id: Union[str, ProviderType]
-    ) -> MusicProvider | None:
+    def get_provider(self, provider_id: Union[str, ProviderType]) -> MusicProvider:
         """Return Music provider by id (or type)."""
         if prov := self._providers.get(provider_id):
             return prov
         for prov in self._providers.values():
             if provider_id in (prov.type, prov.id, prov.type.value):
                 return prov
-        self.logger.warning("Provider %s is not available", provider_id)
-        return None
+        raise ProviderUnavailableError(f"Provider {provider_id} is not available")
 
     async def search(
         self, search_query, media_types: List[MediaType], limit: int = 10
@@ -395,26 +396,22 @@ class MusicController:
         cur_providers = list(self._providers.keys())
         removed_providers = {x for x in prev_providers if x not in cur_providers}
 
-        async with self.mass.database.get_db() as db:
-            for prov_id in removed_providers:
+        for prov_id in removed_providers:
 
-                # clean cache items from deleted provider(s)
-                await self.mass.database.delete_where_query(
-                    TABLE_CACHE, f"key LIKE '%{prov_id}%'", db=db
-                )
+            # clean cache items from deleted provider(s)
+            await self.mass.database.delete_where_query(
+                TABLE_CACHE, f"key LIKE '%{prov_id}%'"
+            )
 
-                # cleanup media items from db matched to deleted provider
-                for ctrl in (
-                    self.mass.music.artists,
-                    self.mass.music.albums,
-                    self.mass.music.tracks,
-                    self.mass.music.radio,
-                    self.mass.music.playlists,
-                ):
-                    prov_items = await ctrl.get_db_items_by_prov_id(
-                        provider_id=prov_id, db=db
-                    )
-                    for item in prov_items:
-                        await ctrl.remove_prov_mapping(item.item_id, prov_id, db=db)
-
+            # cleanup media items from db matched to deleted provider
+            for ctrl in (
+                self.mass.music.artists,
+                self.mass.music.albums,
+                self.mass.music.tracks,
+                self.mass.music.radio,
+                self.mass.music.playlists,
+            ):
+                prov_items = await ctrl.get_db_items_by_prov_id(provider_id=prov_id)
+                for item in prov_items:
+                    await ctrl.remove_prov_mapping(item.item_id, prov_id)
         await self.mass.cache.set("prov_ids", cur_providers)
