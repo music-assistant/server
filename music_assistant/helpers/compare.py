@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Union
 
-from music_assistant.helpers.util import create_clean_string, create_sort_name
+from music_assistant.helpers.util import create_safe_string, create_sort_name
 from music_assistant.models.enums import AlbumType
 from music_assistant.models.media_items import (
     Album,
@@ -15,13 +15,13 @@ from music_assistant.models.media_items import (
 )
 
 
-def compare_strings(str1, str2, strict=False) -> bool:
+def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     """Compare strings and return True if we have an (almost) perfect match."""
     if str1 is None or str2 is None:
         return False
     if not strict:
-        return create_clean_string(str1) == create_clean_string(str2)
-    return str1.lower().strip() == str2.lower().strip()
+        return create_safe_string(str1) == create_safe_string(str2)
+    return create_sort_name(str1) == create_sort_name(str2)
 
 
 def compare_version(left_version: str, right_version: str) -> bool:

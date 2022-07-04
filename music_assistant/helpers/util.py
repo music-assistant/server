@@ -57,7 +57,7 @@ def try_parse_bool(possible_bool):
     return possible_bool in ["true", "True", "1", "on", "ON", 1]
 
 
-def create_clean_string(input_str: str) -> str:
+def create_safe_string(input_str: str) -> str:
     """Return clean lowered string for compare actions."""
     input_str = input_str.lower().strip()
     unaccented_string = unidecode.unidecode(input_str)

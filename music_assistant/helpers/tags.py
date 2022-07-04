@@ -10,7 +10,7 @@ from music_assistant.helpers.process import AsyncProcess
 
 FALLBACK_ARTIST = "Various Artists"
 
-SPLITTERS = (";", ",", "Featuring", " Feat. ", " Feat ", "feat.", " & ", " / ")
+SPLITTERS = (";", ",", "Featuring", " Feat. ", " Feat ", "feat.", " & ", "/ ")
 
 
 def split_items(org_str: str) -> Tuple[str]:

@@ -18,7 +18,7 @@ from aiofiles.threadpool.binary import AsyncFileIO
 from music_assistant.helpers.audio import get_file_stream
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.tags import FALLBACK_ARTIST, parse_tags, split_items
-from music_assistant.helpers.util import create_clean_string, parse_title_and_version
+from music_assistant.helpers.util import create_safe_string, parse_title_and_version
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.media_items import (
@@ -812,4 +812,4 @@ class FileSystemProvider(MusicProvider):
 
     def _get_item_id(self, file_path: str) -> str:
         """Create item id from filename."""
-        return create_clean_string(file_path.replace(self.config.path, ""))
+        return create_safe_string(file_path.replace(self.config.path, ""))
