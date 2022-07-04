@@ -396,26 +396,22 @@ class MusicController:
         cur_providers = list(self._providers.keys())
         removed_providers = {x for x in prev_providers if x not in cur_providers}
 
-        async with self.mass.database.get_db() as db:
-            for prov_id in removed_providers:
+        for prov_id in removed_providers:
 
-                # clean cache items from deleted provider(s)
-                await self.mass.database.delete_where_query(
-                    TABLE_CACHE, f"key LIKE '%{prov_id}%'", db=db
-                )
+            # clean cache items from deleted provider(s)
+            await self.mass.database.delete_where_query(
+                TABLE_CACHE, f"key LIKE '%{prov_id}%'"
+            )
 
-                # cleanup media items from db matched to deleted provider
-                for ctrl in (
-                    self.mass.music.artists,
-                    self.mass.music.albums,
-                    self.mass.music.tracks,
-                    self.mass.music.radio,
-                    self.mass.music.playlists,
-                ):
-                    prov_items = await ctrl.get_db_items_by_prov_id(
-                        provider_id=prov_id, db=db
-                    )
-                    for item in prov_items:
-                        await ctrl.remove_prov_mapping(item.item_id, prov_id, db=db)
-
+            # cleanup media items from db matched to deleted provider
+            for ctrl in (
+                self.mass.music.artists,
+                self.mass.music.albums,
+                self.mass.music.tracks,
+                self.mass.music.radio,
+                self.mass.music.playlists,
+            ):
+                prov_items = await ctrl.get_db_items_by_prov_id(provider_id=prov_id)
+                for item in prov_items:
+                    await ctrl.remove_prov_mapping(item.item_id, prov_id)
         await self.mass.cache.set("prov_ids", cur_providers)

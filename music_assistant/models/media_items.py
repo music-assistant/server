@@ -130,6 +130,8 @@ class MediaItem(DataClassDictMixin):
     # sort_name and uri are auto generated, do not override unless really needed
     sort_name: Optional[str] = None
     uri: Optional[str] = None
+    # timestamp is used to determine when the item was added to the library
+    timestamp: int = 0
 
     def __post_init__(self):
         """Call after init."""

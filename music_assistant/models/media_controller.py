@@ -3,17 +3,7 @@ from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
 from time import time
-from typing import (
-    TYPE_CHECKING,
-    AsyncGenerator,
-    Generic,
-    List,
-    Optional,
-    Tuple,
-    TypeVar,
-)
-
-from databases import Database as Db
+from typing import TYPE_CHECKING, Generic, List, Optional, Tuple, TypeVar
 
 from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.event import MassEvent
@@ -48,7 +38,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     @abstractmethod
     async def add_db_item(
-        self, item: ItemCls, overwrite_existing: bool = False, db: Optional[Db] = None
+        self, item: ItemCls, overwrite_existing: bool = False
     ) -> ItemCls:
         """Add a new record for this mediatype to the database."""
         raise NotImplementedError
@@ -59,7 +49,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         item_id: int,
         item: ItemCls,
         overwrite: bool = False,
-        db: Optional[Db] = None,
     ) -> ItemCls:
         """Update record in the database, merging data."""
         raise NotImplementedError
@@ -67,16 +56,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def library(self, limit: int = 500, offset: int = 0) -> List[ItemCls]:
         """Get all in-library items."""
         match = {"in_library": True}
-        return [
-            self.item_cls.from_db_row(db_row)
-            for db_row in await self.mass.database.get_rows(
-                self.db_table, match, order_by="name", limit=limit, offset=offset
-            )
-        ]
+        return await self.get_db_items(match=match, limit=limit, offset=offset)
 
-    async def count(self) -> int:
+    async def count(self, in_library: bool = False) -> int:
         """Return number of in-library items for this MediaType."""
-        return await self.mass.database.get_count(self.db_table, {"in_library": 1})
+        return await self.mass.database.get_count(
+            self.db_table, {"in_library": in_library}
+        )
 
     async def get(
         self,
@@ -239,13 +225,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 )
             )
 
-    async def get_provider_id(
-        self, item: ItemCls, db: Optional[Db] = None
-    ) -> Tuple[str, str]:
+    async def get_provider_id(self, item: ItemCls) -> Tuple[str, str]:
         """Return provider and item id."""
         if item.provider == ProviderType.DATABASE:
             # make sure we have a full object
-            item = await self.get_db_item(item.item_id, db=db)
+            item = await self.get_db_item(item.item_id)
         for prov in item.provider_ids:
             # returns the first provider that is available
             if not prov.available:
@@ -258,25 +242,26 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self,
         query: Optional[str] = None,
         query_params: Optional[dict] = None,
+        match: Optional[dict] = None,
         limit: int = 500,
         offset: int = 0,
-        db: Optional[Db] = None,
     ) -> List[ItemCls]:
         """Fetch all records from database."""
+        assert not (query and match), "query and match are mutually exclusive"
         if query is not None:
             func = self.mass.database.get_rows_from_query(
-                query, query_params, limit=limit, offset=offset, db=db
+                query, query_params, limit=limit, offset=offset
             )
         else:
             func = self.mass.database.get_rows(
-                self.db_table, limit=limit, offset=offset, db=db
+                self.db_table, match, limit=limit, offset=offset
             )
         return [self.item_cls.from_db_row(db_row) for db_row in await func]
 
-    async def get_db_item(self, item_id: int, db: Optional[Db] = None) -> ItemCls:
+    async def get_db_item(self, item_id: int) -> ItemCls:
         """Get record by id."""
         match = {"item_id": int(item_id)}
-        if db_row := await self.mass.database.get_row(self.db_table, match, db=db):
+        if db_row := await self.mass.database.get_row(self.db_table, match):
             return self.item_cls.from_db_row(db_row)
         return None
 
@@ -285,19 +270,17 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider_item_id: str,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
-        db: Optional[Db] = None,
     ) -> ItemCls | None:
         """Get the database item for the given prov_id."""
         assert provider or provider_id, "provider or provider_id must be supplied"
         if isinstance(provider, str):
             provider = ProviderType(provider)
         if provider == ProviderType.DATABASE or provider_id == "database":
-            return await self.get_db_item(provider_item_id, db=db)
+            return await self.get_db_item(provider_item_id)
         for item in await self.get_db_items_by_prov_id(
             provider=provider,
             provider_id=provider_id,
             provider_item_ids=(provider_item_id,),
-            db=db,
         ):
             return item
         return None
@@ -309,14 +292,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider_item_ids: Optional[Tuple[str]] = None,
         limit: int = 500,
         offset: int = 0,
-        db: Optional[Db] = None,
     ) -> List[ItemCls]:
         """Fetch all records from database for given provider."""
         assert provider or provider_id, "provider or provider_id must be supplied"
         if isinstance(provider, str):
             provider = ProviderType(provider)
         if provider == ProviderType.DATABASE or provider_id == "database":
-            return await self.get_db_items(limit=limit, offset=offset, db=db)
+            return await self.get_db_items(limit=limit, offset=offset)
 
         query = f"SELECT * FROM {self.db_table}, json_each(provider_ids)"
         if provider_id is not None:
@@ -331,23 +313,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 prov_ids = prov_ids.replace(",)", ")")
             query += f" AND json_extract(json_each.value, '$.item_id') in {prov_ids}"
 
-        return await self.get_db_items(query, limit=limit, offset=offset, db=db)
+        return await self.get_db_items(query, limit=limit, offset=offset)
 
-    async def iterate_db_items(
-        self,
-        db: Optional[Db] = None,
-    ) -> AsyncGenerator[ItemCls, None]:
-        """Iterate all records from database."""
-        async for db_row in self.mass.database.iterate_rows(self.db_table, db=db):
-            yield self.item_cls.from_db_row(db_row)
-
-    async def set_db_library(
-        self, item_id: int, in_library: bool, db: Optional[Db] = None
-    ) -> None:
+    async def set_db_library(self, item_id: int, in_library: bool) -> None:
         """Set the in-library bool on a database item."""
         match = {"item_id": item_id}
         await self.mass.database.update(
-            self.db_table, match, {"in_library": in_library}, db=db
+            self.db_table, match, {"in_library": in_library}
         )
 
     async def get_provider_item(
@@ -367,34 +339,26 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
         return item
 
-    async def remove_prov_mapping(
-        self, item_id: int, prov_id: str, db: Optional[Db] = None
-    ) -> None:
+    async def remove_prov_mapping(self, item_id: int, prov_id: str) -> None:
         """Remove provider id(s) from item."""
-        async with self.mass.database.get_db(db) as db:
-            if db_item := await self.get_db_item(item_id, db=db):
-                db_item.provider_ids = {
-                    x for x in db_item.provider_ids if x.prov_id != prov_id
-                }
-                if not db_item.provider_ids:
-                    # item has no more provider_ids left, it is completely deleted
-                    await self.delete_db_item(db_item.item_id)
-                    return
-                await self.update_db_item(
-                    db_item.item_id, db_item, overwrite=True, db=db
-                )
+        if db_item := await self.get_db_item(item_id):
+            db_item.provider_ids = {
+                x for x in db_item.provider_ids if x.prov_id != prov_id
+            }
+            if not db_item.provider_ids:
+                # item has no more provider_ids left, it is completely deleted
+                await self.delete_db_item(db_item.item_id)
+                return
+            await self.update_db_item(db_item.item_id, db_item, overwrite=True)
 
         self.logger.debug("removed provider %s from item id %s", prov_id, item_id)
 
-    async def delete_db_item(self, item_id: int, db: Optional[Db] = None) -> None:
+    async def delete_db_item(self, item_id: int) -> None:
         """Delete record from the database."""
-        async with self.mass.database.get_db(db) as db:
-
-            # delete item
-            await self.mass.database.delete(
-                self.db_table,
-                {"item_id": int(item_id)},
-                db=db,
-            )
+        # delete item
+        await self.mass.database.delete(
+            self.db_table,
+            {"item_id": int(item_id)},
+        )
         # NOTE: this does not delete any references to this item in other records!
         self.logger.debug("deleted item with id %s from database", item_id)

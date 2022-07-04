@@ -104,8 +104,7 @@ class Cache:
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
         # compact db
-        async with self.mass.database.get_db() as _db:
-            await _db.execute("VACUUM")
+        await self.mass.database.execute("VACUUM")
 
     def __schedule_cleanup_task(self):
         """Schedule the cleanup task."""

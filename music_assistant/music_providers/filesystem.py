@@ -144,38 +144,35 @@ class FileSystemProvider(MusicProvider):
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_checksums = {}
-        async with self.mass.database.get_db() as db:
-            async for entry in scantree(self.config.path):
-                try:
-                    # mtime is used as file checksum
-                    stat = await asyncio.get_running_loop().run_in_executor(
-                        None, entry.stat
-                    )
-                    checksum = int(stat.st_mtime)
-                    cur_checksums[entry.path] = checksum
-                    if checksum == prev_checksums.get(entry.path):
-                        continue
+        async for entry in scantree(self.config.path):
+            try:
+                # mtime is used as file checksum
+                stat = await asyncio.get_running_loop().run_in_executor(
+                    None, entry.stat
+                )
+                checksum = int(stat.st_mtime)
+                cur_checksums[entry.path] = checksum
+                if checksum == prev_checksums.get(entry.path):
+                    continue
 
-                    if track := await self._parse_track(entry.path):
-                        # add/update track to db
-                        await self.mass.music.tracks.add_db_item(track, db=db)
-                    elif playlist := await self._parse_playlist(entry.path):
-                        # add/update] playlist to db
-                        playlist.metadata.checksum = checksum
-                        await self.mass.music.playlists.add_db_item(playlist, db=db)
-                except Exception as err:  # pylint: disable=broad-except
-                    # we don't want the whole sync to crash on one file so we catch all exceptions here
-                    self.logger.exception(
-                        "Error processing %s - %s", entry.path, str(err)
-                    )
+                if track := await self._parse_track(entry.path):
+                    # add/update track to db
+                    await self.mass.music.tracks.add_db_item(track)
+                elif playlist := await self._parse_playlist(entry.path):
+                    # add/update] playlist to db
+                    playlist.metadata.checksum = checksum
+                    await self.mass.music.playlists.add_db_item(playlist)
+            except Exception as err:  # pylint: disable=broad-except
+                # we don't want the whole sync to crash on one file so we catch all exceptions here
+                self.logger.exception("Error processing %s - %s", entry.path, str(err))
 
-                # save checksums every 50 processed items
-                # this allows us to pickup where we leftoff when initial scan gets intterrupted
-                if save_checksum_interval == 50:
-                    await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
-                    save_checksum_interval = 0
-                else:
-                    save_checksum_interval += 1
+            # save checksums every 50 processed items
+            # this allows us to pickup where we leftoff when initial scan gets intterrupted
+            if save_checksum_interval == 50:
+                await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
+                save_checksum_interval = 0
+            else:
+                save_checksum_interval += 1
 
         await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
         # work out deletions
