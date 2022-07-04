@@ -221,6 +221,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     "artists": json_serializer(album_artists) or None,
                     "metadata": json_serializer(metadata),
                     "provider_ids": json_serializer(provider_ids),
+                    "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
                 },
                 db=db,
             )

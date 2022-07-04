@@ -70,15 +70,6 @@ class AudioTags:
         return self.tags.get("album")
 
     @property
-    def album_artist(self) -> str | None:
-        """Return album_artist tag if present."""
-        if tag := self.tags.get("album_artist"):
-            return tag
-        if tag := self.tags.get("albumartist"):
-            return tag
-        return None
-
-    @property
     def artists(self) -> Tuple[str]:
         """Return track artists."""
         return split_items(self.artist)
@@ -86,7 +77,7 @@ class AudioTags:
     @property
     def album_artists(self) -> Tuple[str]:
         """Return (all) album artists (if any)."""
-        return split_items(self.album_artist)
+        return split_items(self.tags.get("albumartist"))
 
     @property
     def genres(self) -> Tuple[str]:
@@ -119,19 +110,33 @@ class AudioTags:
         return None
 
     @property
-    def musicbrainz_albumartistid(self) -> str | None:
+    def musicbrainz_artistids(self) -> Tuple[str]:
+        """Return musicbrainz_artistid tag(s) if present."""
+        return split_items(self.tags.get("musicbrainzartistid"))
+
+    @property
+    def musicbrainz_albumartistids(self) -> Tuple[str]:
         """Return musicbrainz_albumartistid tag if present."""
-        return self.tags.get("musicbrainz_albumartistid")
+        return split_items(self.tags.get("musicbrainzalbumartistid"))
 
     @property
     def musicbrainz_releasegroupid(self) -> str | None:
         """Return musicbrainz_releasegroupid tag if present."""
-        return self.tags.get("musicbrainz_releasegroupid")
+        return self.tags.get("musicbrainzreleasegroupid")
 
     @property
     def musicbrainz_trackid(self) -> str | None:
         """Return musicbrainz_trackid tag if present."""
-        return self.tags.get("musicbrainz_trackid")
+        if tag := self.tags.get("musicbrainztrackid"):
+            return tag
+        return self.tags.get("musicbrainzreleasetrackid")
+
+    @property
+    def album_type(self) -> str | None:
+        """Return albumtype tag if present."""
+        if tag := self.tags.get("musicbrainzalbumtype"):
+            return tag
+        return self.tags.get("releasetype")
 
     @classmethod
     def parse(cls, raw: dict) -> "AudioTags":
@@ -140,8 +145,11 @@ class AudioTags:
         has_cover_image = any(
             x for x in raw["streams"] if x["codec_name"] in ("mjpeg", "png")
         )
-        # convert all tag-keys to lowercase
-        tags = {key.lower(): value for key, value in raw["format"]["tags"].items()}
+        # convert all tag-keys to lowercase without spaces
+        tags = {
+            key.lower().replace(" ", "").replace("_", ""): value
+            for key, value in raw["format"]["tags"].items()
+        }
 
         return AudioTags(
             raw=raw,

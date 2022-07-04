@@ -16,6 +16,7 @@ from aiofiles.os import wrap
 from aiofiles.threadpool.binary import AsyncFileIO
 
 from music_assistant.helpers.audio import get_file_stream
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.tags import FALLBACK_ARTIST, parse_tags, split_items
 from music_assistant.helpers.util import create_clean_string, parse_title_and_version
 from music_assistant.models.enums import ProviderType
@@ -61,6 +62,17 @@ async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
                     yield subitem
             else:
                 yield entry
+
+
+def get_parentdir(base_path: str, name: str) -> str | None:
+    """Look for folder name in path (to find dedicated artist or album folder)."""
+    parentdir = os.path.dirname(base_path)
+    for _ in range(3):
+        dirname = parentdir.rsplit(os.sep)[-1]
+        if compare_strings(name, dirname):
+            return parentdir
+        parentdir = os.path.dirname(parentdir)
+    return None
 
 
 class FileSystemProvider(MusicProvider):
@@ -449,27 +461,24 @@ class FileSystemProvider(MusicProvider):
 
         # album
         if tags.album:
-            # work out if we have an artist/album/track.ext structure
-            parentdir = os.path.dirname(track_path)
-            dirname = parentdir.rsplit(os.sep)[-1]
-            if tags.album.lower() in dirname.lower():
-                album_dir = parentdir
-                artist_dir = os.path.dirname(album_dir)
-            else:
-                album_dir = None
-                artist_dir = parentdir
+            # work out if we have an album folder
+            album_dir = get_parentdir(track_path, tags.album)
 
             # album artist(s)
             if tags.album_artists:
-                album_artists = [
-                    await self._parse_artist(
-                        name=item,
-                        artist_path=artist_dir
-                        if item.lower() in artist_dir.lower()
-                        else None,
+                album_artists = []
+                for index, album_artist_str in enumerate(tags.album_artists):
+                    # work out if we have an artist folder
+                    artist_dir = get_parentdir(track_path, album_artist_str)
+                    artist = await self._parse_artist(
+                        album_artist_str, artist_path=artist_dir
                     )
-                    for item in tags.album_artists
-                ]
+                    if not artist.musicbrainz_id:
+                        try:
+                            artist.musicbrainz_id = tags.musicbrainz_artistids[index]
+                        except IndexError:
+                            pass
+                    album_artists.append(artist)
             else:
                 # always fallback to various artists as album artist if user did not tag album artist
                 # ID3 tag properly because we must have an album artist
@@ -489,7 +498,21 @@ class FileSystemProvider(MusicProvider):
             self.logger.warning("%s is missing ID3 tag [album]", track_path)
 
         # track artist(s)
-        track.artists = [await self._parse_artist(item) for item in tags.artists]
+        for index, track_artist_str in enumerate(tags.artists):
+            # re-use album artist details if possible
+            if track.album:
+                if artist := next(
+                    (x for x in track.album.artists if x.name == track_artist_str), None
+                ):
+                    track.artists.append(artist)
+                    continue
+            artist = await self._parse_artist(track_artist_str)
+            if not artist.musicbrainz_id:
+                try:
+                    artist.musicbrainz_id = tags.musicbrainz_artistids[index]
+                except IndexError:
+                    pass
+            track.artists.append(artist)
 
         # cover image - prefer album image, fallback to embedded
         if track.album and track.album.image:
@@ -515,21 +538,20 @@ class FileSystemProvider(MusicProvider):
         track.metadata.lyrics = tags.get("lyrics")
         track.musicbrainz_id = tags.musicbrainz_trackid
         if track.album:
-            if not track.musicbrainz_id:
+            if not track.album.musicbrainz_id:
                 track.album.musicbrainz_id = tags.musicbrainz_releasegroupid
-            if not track.album.artists[0].musicbrainz_id:
-                track.album.artists[0].musicbrainz_id = tags.musicbrainz_albumartistid
             if not track.album.year:
                 track.album.year = tags.year
             if not track.album.upc:
                 track.album.upc = tags.get("barcode")
         # try to parse albumtype
         if track.album and track.album.album_type == AlbumType.UNKNOWN:
-            if "compilation" in tags.get("releasetype", ""):
+            album_type = tags.album_type
+            if album_type and "compilation" in album_type:
                 track.album.album_type = AlbumType.COMPILATION
-            elif "single" in tags.get("releasetype", ""):
+            elif album_type and "single" in album_type:
                 track.album.album_type = AlbumType.SINGLE
-            elif "album" in tags.get("releasetype", ""):
+            elif album_type and "album" in album_type:
                 track.album.album_type = AlbumType.ALBUM
             elif track.album.sort_name in track.sort_name:
                 track.album.album_type = AlbumType.SINGLE
