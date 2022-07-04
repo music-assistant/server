@@ -34,12 +34,12 @@ class Database:
         self.logger = mass.logger.getChild("db")
         # we maintain one global connection - otherwise we run into (dead)lock issues.
         # https://github.com/encode/databases/issues/456
-        self._db = None
+        self._db = Db(self.url, timeout=360)
 
     async def setup(self) -> None:
         """Perform async initialization."""
-        self._db = Db(self.url, timeout=360)
         await self._db.connect()
+        self.logger.info("Database connected.")
         await self.execute(
             """CREATE TABLE IF NOT EXISTS settings(
                     key TEXT PRIMARY KEY,
@@ -47,6 +47,11 @@ class Database:
                 );"""
         )
         await self._migrate()
+
+    async def close(self) -> None:
+        """Close db connection on exit."""
+        self.logger.info("Database disconnected.")
+        await self._db.disconnect()
 
     async def get_setting(self, key: str) -> str | None:
         """Get setting from settings table."""
