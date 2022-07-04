@@ -111,14 +111,12 @@ class MetaDataController:
 
     async def get_radio_metadata(self, radio: Radio) -> None:
         """Get/update rich metadata for a radio station."""
-        # NOTE: we do not have any metadata for radiso so consider this future proofing ;-)
+        # NOTE: we do not have any metadata for radio so consider this future proofing ;-)
         radio.metadata.last_refresh = int(time())
 
     async def get_artist_musicbrainz_id(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
-        ref_albums = await self.mass.music.artists.get_provider_artist_albums(
-            artist.item_id, artist.provider
-        )
+        ref_albums = await self.mass.music.artists.albums(artist=artist)
         # first try audiodb
         if musicbrainz_id := await self.audiodb.get_musicbrainz_id(artist, ref_albums):
             return musicbrainz_id
@@ -137,9 +135,7 @@ class MetaDataController:
                     return musicbrainz_id
 
         # try again with matching on track isrc
-        ref_tracks = await self.mass.music.artists.toptracks(
-            artist.item_id, artist.provider
-        )
+        ref_tracks = await self.mass.music.artists.toptracks(artist=artist)
         for ref_track in ref_tracks:
             for isrc in ref_track.isrcs:
                 if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(

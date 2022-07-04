@@ -136,8 +136,10 @@ def use_cache(expiration=86400 * 30):
             if not skip_cache and cachedata is not None:
                 return cachedata
             result = await func(*args, **kwargs)
-            await method_class.cache.set(
-                cache_key, result, expiration=expiration, checksum=cache_checksum
+            asyncio.create_task(
+                method_class.cache.set(
+                    cache_key, result, expiration=expiration, checksum=cache_checksum
+                )
             )
             return result
 

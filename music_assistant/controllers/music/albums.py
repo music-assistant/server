@@ -59,7 +59,7 @@ class AlbumsController(MediaControllerBase[Album]):
         db_album = await self.get_db_item(item_id)
         coros = [
             self.get_provider_album_tracks(
-                item.item_id, item.prov_id, cache_checksum=db_album.metadata.checksum
+                item.item_id, item.prov_type, cache_checksum=db_album.metadata.checksum
             )
             for item in db_album.provider_ids
         ]

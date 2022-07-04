@@ -15,7 +15,7 @@ from typing import (
 
 from databases import Database as Db
 
-from music_assistant.models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.event import MassEvent
 
 from .enums import EventType, MediaType, ProviderType
@@ -360,10 +360,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             item = await self.get_db_item(item_id)
         else:
             provider = self.mass.music.get_provider(provider_id)
-            if not provider:
-                raise ProviderUnavailableError(
-                    f"Provider {provider_id} is not available!"
-                )
             item = await provider.get_item(self.media_type, item_id)
         if not item:
             raise MediaNotFoundError(

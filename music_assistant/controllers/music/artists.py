@@ -31,16 +31,21 @@ class ArtistsController(MediaControllerBase[Artist]):
 
     async def toptracks(
         self,
-        item_id: str,
+        item_id: Optional[str] = None,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
+        artist: Optional[Artist] = None,
     ) -> List[Track]:
         """Return top tracks for an artist."""
-        artist = await self.get(item_id, provider, provider_id)
+        if not artist:
+            artist = await self.get(item_id, provider, provider_id)
         # get results from all providers
         coros = [
             self.get_provider_artist_toptracks(
-                item.item_id, item.prov_id, cache_checksum=artist.metadata.checksum
+                item.item_id,
+                provider=item.prov_type,
+                provider_id=item.prov_id,
+                cache_checksum=artist.metadata.checksum,
             )
             for item in artist.provider_ids
         ]
@@ -57,15 +62,19 @@ class ArtistsController(MediaControllerBase[Artist]):
 
     async def albums(
         self,
-        item_id: str,
+        item_id: Optional[str] = None,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
+        artist: Optional[Artist] = None,
     ) -> List[Album]:
         """Return (all/most popular) albums for an artist."""
-        artist = await self.get(item_id, provider, provider_id)
+        if not artist:
+            artist = await self.get(item_id, provider, provider_id)
         # get results from all providers
         coros = [
-            self.get_provider_artist_albums(item.item_id, item.prov_id)
+            self.get_provider_artist_albums(
+                item.item_id, item.prov_type, cache_checksum=artist.metadata.checksum
+            )
             for item in artist.provider_ids
         ]
         albums = itertools.chain.from_iterable(await asyncio.gather(*coros))
@@ -271,7 +280,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             "Trying to match artist %s on provider %s", db_artist.name, provider.name
         )
         # try to get a match with some reference tracks of this artist
-        for ref_track in await self.toptracks(db_artist.item_id, db_artist.provider):
+        for ref_track in await self.toptracks(
+            db_artist.item_id, db_artist.provider, artist=db_artist
+        ):
             # make sure we have a full track
             if isinstance(ref_track.album, ItemMapping):
                 ref_track = await self.mass.music.tracks.get(
@@ -300,7 +311,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                         await self.update_db_item(db_artist.item_id, prov_artist)
                         return True
         # try to get a match with some reference albums of this artist
-        artist_albums = await self.albums(db_artist.item_id, db_artist.provider)
+        artist_albums = await self.albums(
+            db_artist.item_id, db_artist.provider, artist=db_artist
+        )
         for ref_album in artist_albums:
             if ref_album.album_type == AlbumType.COMPILATION:
                 continue
