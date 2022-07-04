@@ -13,9 +13,8 @@ path.insert(1, dirname(dirname(abspath(__file__))))
 # pylint: disable=wrong-import-position
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.config import MassConfig, MusicProviderConfig
-from music_assistant.models.enums import ProviderType
-from music_assistant.models.player import Player, PlayerState
-from music_assistant.models.player_queue import RepeatMode
+from music_assistant.models.enums import ProviderType, RepeatMode, PlayerState
+from music_assistant.models.player import Player
 
 
 parser = argparse.ArgumentParser(description="MusicAssistant")
@@ -66,7 +65,7 @@ logging.basicConfig(
 logging.getLogger("aiorun").setLevel(logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.INFO)
 logging.getLogger("aiosqlite").setLevel(logging.WARNING)
-logging.getLogger("databases").setLevel(logging.WARNING)
+logging.getLogger("databases").setLevel(logging.INFO)
 
 
 # default database based on sqlite
@@ -179,23 +178,23 @@ async def main():
 
         # get some data
         artist_count = await mass.music.artists.count()
-        print(f"Got {artist_count} artists in library")
+        artist_count_lib = await mass.music.artists.count(True)
+        print(f"Got {artist_count} artists ({artist_count_lib} in library)")
         album_count = await mass.music.albums.count()
-        print(f"Got {album_count} albums in library")
+        album_count_lib = await mass.music.albums.count(True)
+        print(f"Got {album_count} albums ({album_count_lib} in library)")
         track_count = await mass.music.tracks.count()
-        print(f"Got {track_count} tracks in library")
-        radio_count = await mass.music.radio.count()
+        track_count_lib = await mass.music.tracks.count(True)
+        print(f"Got {track_count} tracks ({track_count_lib} in library)")
+        radio_count = await mass.music.radio.count(True)
         print(f"Got {radio_count} radio stations in library")
-        playlist_count = await mass.music.playlists.library()
+        playlist_count = await mass.music.playlists.library(True)
         print(f"Got {len(playlist_count)} playlists in library")
         # register a player
         test_player1 = TestPlayer("test1")
         test_player2 = TestPlayer("test2")
         await mass.players.register_player(test_player1)
         await mass.players.register_player(test_player2)
-
-        # get some data
-        artist = await mass.music.artists.get("1", ProviderType.DATABASE)
 
         # try to play some music
         test_player1.active_queue.settings.shuffle_enabled = True
@@ -205,6 +204,7 @@ async def main():
         # we can also send an uri, such as spotify://track/abcdfefgh
         # or database://playlist/1
         # or a list of items
+        artist = await mass.music.artists.get("2", ProviderType.DATABASE)
         await test_player1.active_queue.play_media(artist)
 
         await asyncio.sleep(3600)
