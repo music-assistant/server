@@ -102,10 +102,16 @@ async def main():
 
     async with MusicAssistant(mass_conf) as mass:
         # get some data
-        ytm = mass.music.get_provider(ProviderType.YTMUSIC)
+        # ytm = mass.music.get_provider(ProviderType.YTMUSIC)
         # track = await yt.get_track("pE3ju1qS848")
-        album = await ytm.get_album("MPREb_AYetWMZunqA")
-        print(album)
+        # album = await ytm.get_album("MPREb_AYetWMZunqA")
+        # print(album)
+        # start sync
+        # await mass.music.start_sync(schedule=3)
+        artists = await mass.music.artists.count()
+        print(f"Got {artists} artists in library")
+        albums = await mass.music.albums.count()
+        print(f"Got {albums} albums in library")
         # sd = await yt.get_stream_details(track.item_id)
         # print(sd.data)
 
