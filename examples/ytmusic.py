@@ -1,6 +1,5 @@
-import argparse
+"""Example file to play music from YTM. Might omit later"""
 import asyncio
-from cgi import test
 import logging
 import os
 from os.path import abspath, dirname
@@ -8,11 +7,11 @@ from sys import path
 
 path.insert(1, dirname(dirname(abspath(__file__))))
 
+# pylint: disable=wrong-import-position
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.config import MassConfig, MusicProviderConfig
-from music_assistant.models.enums import MediaType, ProviderType
+from music_assistant.models.enums import ProviderType
 from music_assistant.models.player import Player, PlayerState
-from music_assistant.models.player_queue import RepeatMode
 
 # setup logger
 logging.basicConfig(
@@ -103,22 +102,18 @@ async def main():
 
     async with MusicAssistant(mass_conf) as mass:
         # get some data
-        yt = mass.music.get_provider(ProviderType.YTMUSIC)
-        
-        results = await yt.search("dark side of the moon", [MediaType.ALBUM])
-        tracks = await yt.get_album_tracks(results[0].item_id)
-
-        stream_details = await yt.get_stream_details(tracks[0].item_id)
-        print(stream_details.data)
-
-        #artist = await yt.get_artist("UC-T-wUsgssr7Vy-BiJD4-2g")
-        # print(artist)
+        ytm = mass.music.get_provider(ProviderType.YTMUSIC)
+        # track = await yt.get_track("pE3ju1qS848")
+        album = await ytm.get_album("MPREb_AYetWMZunqA")
+        print(album)
+        # sd = await yt.get_stream_details(track.item_id)
+        # print(sd.data)
 
         # test_player1 = TestPlayer("test1")
         # await mass.players.register_player(test_player1)
-        # await test_player1.active_queue.play_media(track)
+        # await test_player1.active_queue.play_media(track.uri)
 
-        # await asyncio.sleep(3600)
+        await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
