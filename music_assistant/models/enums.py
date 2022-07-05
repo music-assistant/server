@@ -67,6 +67,7 @@ class AlbumType(Enum):
     ALBUM = "album"
     SINGLE = "single"
     COMPILATION = "compilation"
+    EP = "ep"
     UNKNOWN = "unknown"
 
 

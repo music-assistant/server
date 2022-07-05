@@ -112,6 +112,96 @@ class YTMusic(MusicProvider):
                     print(category)
         return parsed_results
 
+    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+        """Retrieve all library artists from Youtube Music."""
+        data = {"browseId": "FEmusic_library_corpus_track_artists"}
+        response = await self._post_data(endpoint="browse", data=data)
+        response_artist = response["contents"]["singleColumnBrowseResultsRenderer"][
+            "tabs"
+        ][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"][1][
+            "itemSectionRenderer"
+        ][
+            "contents"
+        ][
+            0
+        ][
+            "musicShelfRenderer"
+        ][
+            "contents"
+        ]
+        parsed_artists = ytmusicapi.parsers.library.parse_artists(response_artist)
+        for item in parsed_artists:
+            artist = Artist(
+                item_id=item["browseId"], provider=self.type, name=item["artist"]
+            )
+            artist.metadata.images = [
+                MediaItemImage(ImageType.THUMB, thumb["url"])
+                for thumb in item["thumbnails"]
+            ]
+            artist.add_provider_id(
+                MediaItemProviderId(
+                    item_id=str(item["browseId"]), prov_type=self.type, prov_id=self.id
+                )
+            )
+            yield artist
+
+    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+        """Retrieve all library albums from Youtube Music."""
+        data = {"browseId": "FEmusic_liked_albums"}
+        response = await self._post_data(endpoint="browse", data=data)
+        response_albums = response["contents"]["singleColumnBrowseResultsRenderer"][
+            "tabs"
+        ][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"][1][
+            "itemSectionRenderer"
+        ][
+            "contents"
+        ][
+            0
+        ][
+            "gridRenderer"
+        ][
+            "items"
+        ]
+        parsed_albums = ytmusicapi.parsers.library.parse_albums(response_albums)
+        for item in parsed_albums:
+            if item["type"] == "Single":
+                album_type = AlbumType.SINGLE
+            elif item["type"] == "EP":
+                album_type = AlbumType.EP
+            elif item["type"] == "Album":
+                album_type = AlbumType.ALBUM
+            else:
+                album_type = AlbumType.UNKNOWN
+            album = Album(
+                item_id=item["browseId"],
+                name=item["title"],
+                year=item["year"],
+                album_type=album_type,
+                provider=self.type,
+            )
+            artists = []
+            for artist in item["artists"]:
+                album_artist = Artist(
+                    item_id=artist["id"], name=artist["name"], provider=self.type
+                )
+                album_artist.add_provider_id(
+                    MediaItemProviderId(
+                        item_id=str(artist["id"]), prov_type=self.type, prov_id=self.id
+                    )
+                )
+                artists.append(album_artist)
+            album.artists = artists
+            album.metadata.images = [
+                MediaItemImage(ImageType.THUMB, thumb["url"])
+                for thumb in item["thumbnails"]
+            ]
+            album.add_provider_id(
+                MediaItemProviderId(
+                    item_id=str(item["browseId"]), prov_type=self.type, prov_id=self.id
+                )
+            )
+            yield album
+
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         data = {"browseId": prov_album_id}
