@@ -1,4 +1,5 @@
 """Example file to play music from YTM. Might omit later"""
+import argparse
 import asyncio
 import logging
 import os
@@ -12,6 +13,19 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.config import MassConfig, MusicProviderConfig
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.player import Player, PlayerState
+
+parser = argparse.ArgumentParser(description="MusicAssistant")
+parser.add_argument(
+    "--youtubemusic_username",
+    required=False,
+    help="YoutubeMusic username",
+)
+parser.add_argument(
+    "--youtubemusic_cookie",
+    required=False,
+    help="YoutubeMusic cookie",
+)
+args = parser.parse_args()
 
 # setup logger
 logging.basicConfig(
@@ -37,7 +51,14 @@ mass_conf = MassConfig(
     database_url=f"sqlite:///{db_file}",
 )
 
-mass_conf.providers.append(MusicProviderConfig(ProviderType.YTMUSIC))
+if args.youtubemusic_username and args.youtubemusic_cookie:
+    mass_conf.providers.append(
+        MusicProviderConfig(
+            ProviderType.YTMUSIC,
+            username=args.youtubemusic_username,
+            password=args.youtubemusic_cookie,
+        )
+    )
 
 
 class TestPlayer(Player):
@@ -103,7 +124,7 @@ async def main():
     async with MusicAssistant(mass_conf) as mass:
         # get some data
         # ytm = mass.music.get_provider(ProviderType.YTMUSIC)
-        # track = await yt.get_track("pE3ju1qS848")
+        # track = await ytm.get_track("pE3ju1qS848")
         # album = await ytm.get_album("MPREb_AYetWMZunqA")
         # print(album)
         # start sync
