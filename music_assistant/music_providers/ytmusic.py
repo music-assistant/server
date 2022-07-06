@@ -416,7 +416,7 @@ class YTMusic(MusicProvider):
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         return StreamDetails(
-            provider=self.type, item_id=item_id, data=url, content_type=ContentType.AAC
+            provider=self.type, item_id=item_id, data=url, content_type=ContentType.M4A
         )
 
     async def get_audio_stream(
