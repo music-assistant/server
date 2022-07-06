@@ -254,7 +254,7 @@ class YTMusic(MusicProvider):
                 item_id=str(item["videoId"]),
                 provider=self.type,
                 name=item["title"],
-                duration=item["duration"],
+                duration=item["duration_seconds"],
             )
             artists = []
             for artist in item["artists"]:
@@ -272,18 +272,19 @@ class YTMusic(MusicProvider):
                 MediaItemImage(ImageType.THUMB, thumb["url"])
                 for thumb in item["thumbnails"]
             ]
-            album = Album(
-                item_id=str(item["album"]["id"]),
-                name=item["album"]["name"],
-                provider=self.type,
-            )
-            album.add_provider_id(
-                MediaItemProviderId(
-                    item_id=str(item["album"]["id"]),
-                    prov_type=self.type,
-                    prov_id=self.id,
-                )
-            )
+            album = await self.get_album(item["album"]["id"])
+            # album = Album(
+            #     item_id=str(item["album"]["id"]),
+            #     name=item["album"]["name"],
+            #     provider=self.type,
+            # )
+            # album.add_provider_id(
+            #     MediaItemProviderId(
+            #         item_id=str(item["album"]["id"]),
+            #         prov_type=self.type,
+            #         prov_id=self.id,
+            #     )
+            # )
             track.album = album
             track.metadata.explicit = item["isExplicit"]
             track.add_provider_id(
