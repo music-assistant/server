@@ -178,11 +178,11 @@ class YoutubeMusicProvider(MusicProvider):
             album = Album(
                 item_id=item["browseId"],
                 name=item["title"],
-                year=item["year"],
                 album_type=album_type,
                 provider=self.type,
             )
-            print(item)
+            if item["year"].isdigit():
+                album.year = item["year"]
             artists = []
             for artist in item["artists"]:
                 artist_id = artist["id"]
@@ -253,41 +253,8 @@ class YoutubeMusicProvider(MusicProvider):
             "parsed"
         ]
         for item in parsed_tracks:
-            track = Track(
-                item_id=str(item["videoId"]),
-                provider=self.type,
-                name=item["title"],
-                duration=item["duration_seconds"],
-            )
-            artists = []
-            for artist in item["artists"]:
-                album_artist = Artist(
-                    item_id=artist["id"], name=artist["name"], provider=self.type
-                )
-                album_artist.add_provider_id(
-                    MediaItemProviderId(
-                        item_id=str(artist["id"]), prov_type=self.type, prov_id=self.id
-                    )
-                )
-                artists.append(album_artist)
-            track.artists = artists
-            track.metadata.images = [
-                MediaItemImage(ImageType.THUMB, thumb["url"])
-                for thumb in item["thumbnails"]
-            ]
+            track = await self.get_track(item["videoId"])
             album = await self.get_album(item["album"]["id"])
-            # album = Album(
-            #     item_id=str(item["album"]["id"]),
-            #     name=item["album"]["name"],
-            #     provider=self.type,
-            # )
-            # album.add_provider_id(
-            #     MediaItemProviderId(
-            #         item_id=str(item["album"]["id"]),
-            #         prov_type=self.type,
-            #         prov_id=self.id,
-            #     )
-            # )
             track.album = album
             track.metadata.explicit = item["isExplicit"]
             track.add_provider_id(
@@ -295,7 +262,6 @@ class YoutubeMusicProvider(MusicProvider):
                     item_id=str(item["videoId"]),
                     prov_type=self.type,
                     prov_id=self.id,
-                    available=item["isAvailable"],
                 )
             )
             yield track
@@ -322,7 +288,11 @@ class YoutubeMusicProvider(MusicProvider):
         """Get full artist details by id."""
         data = {"browseId": prov_artist_id}
         artist_obj = await self._post_data(endpoint="browse", data=data)
-        return await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
+        return (
+            await self._parse_artist(artist_obj=artist_obj, artist_id=prov_artist_id)
+            if artist_obj
+            else None
+        )
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
@@ -368,6 +338,7 @@ class YoutubeMusicProvider(MusicProvider):
                 track["musicResponsiveListItemRenderer"]["playlistItemData"]["videoId"]
             )
             for track in tracks
+            if "playlistItemData" in track["musicResponsiveListItemRenderer"]
         ]
 
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
@@ -485,10 +456,11 @@ class YoutubeMusicProvider(MusicProvider):
         album = Album(
             item_id=album_id,
             name=parsed_album["title"],
-            year=parsed_album["year"],
             album_type=AlbumType.ALBUM,
             provider=self.type,
         )
+        if parsed_album["year"].isdigit():
+            album.year = parsed_album["year"]
         images = []
         for thumb in parsed_album["thumbnails"]:
             images.append(MediaItemImage(ImageType.THUMB, thumb["url"]))
@@ -522,33 +494,62 @@ class YoutubeMusicProvider(MusicProvider):
         )
         return album
 
-    async def _parse_artist(self, artist_obj: dict) -> Artist:
+    async def _parse_artist(self, artist_obj: dict, artist_id: str) -> Artist:
         """Parse a YT Artist response to Artist model object."""
-        name = artist_obj["header"]["musicImmersiveHeaderRenderer"]["title"]["runs"][0][
-            "text"
-        ]
-        artist_id = artist_obj["header"]["musicImmersiveHeaderRenderer"][
-            "subscriptionButton"
-        ]["subscribeButtonRenderer"]["channelId"]
-        artist = Artist(item_id=str(artist_id), provider=self.type, name=name)
-        if "description" in artist_obj["header"]["musicImmersiveHeaderRenderer"]:
-            artist.metadata.description = unquote(
-                artist_obj["header"]["musicImmersiveHeaderRenderer"]["description"][
-                    "runs"
-                ][0]["text"]
+        if "musicImmersiveHeaderRenderer" in artist_obj["header"]:
+            # Actual artist
+            name = artist_obj["header"]["musicImmersiveHeaderRenderer"]["title"][
+                "runs"
+            ][0]["text"]
+            artist_id = artist_obj["header"]["musicImmersiveHeaderRenderer"][
+                "subscriptionButton"
+            ]["subscribeButtonRenderer"]["channelId"]
+            artist = Artist(item_id=str(artist_id), provider=self.type, name=name)
+            if "description" in artist_obj["header"]["musicImmersiveHeaderRenderer"]:
+                artist.metadata.description = unquote(
+                    artist_obj["header"]["musicImmersiveHeaderRenderer"]["description"][
+                        "runs"
+                    ][0]["text"]
+                )
+            images = []
+            if "thumbnail" in artist_obj["header"]["musicImmersiveHeaderRenderer"]:
+                for thumb in artist_obj["header"]["musicImmersiveHeaderRenderer"][
+                    "thumbnail"
+                ]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"]:
+                    images.append(MediaItemImage(ImageType.THUMB, thumb["url"]))
+                artist.metadata.images = images
+            artist.add_provider_id(
+                MediaItemProviderId(
+                    item_id=str(artist_id), prov_type=self.type, prov_id=self.id
+                )
             )
-        images = []
-        for thumb in artist_obj["header"]["musicImmersiveHeaderRenderer"]["thumbnail"][
-            "musicThumbnailRenderer"
-        ]["thumbnail"]["thumbnails"]:
-            images.append(MediaItemImage(ImageType.THUMB, thumb["url"]))
-        artist.metadata.images = images
-        artist.add_provider_id(
-            MediaItemProviderId(
-                item_id=str(artist_id), prov_type=self.type, prov_id=self.id
+            return artist
+        if "musicVisualHeaderRenderer" in artist_obj["header"]:
+            # Artist that is actually a user
+            name = artist_obj["header"]["musicVisualHeaderRenderer"]["title"]["runs"][
+                0
+            ]["text"]
+            artist = Artist(item_id=str(artist_id), name=name, provider=self.type)
+            if "thumbnail" in artist_obj["header"]["musicVisualHeaderRenderer"]:
+                thumbnails = artist_obj["header"]["musicVisualHeaderRenderer"][
+                    "thumbnail"
+                ]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"]
+            elif (
+                "foregroundThumbnail"
+                in artist_obj["header"]["musicVisualHeaderRenderer"]
+            ):
+                thumbnails = artist_obj["header"]["musicVisualHeaderRenderer"][
+                    "foregroundThumbnail"
+                ]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"]
+            artist.metadata.images = [
+                MediaItemImage(ImageType.THUMB, thumb["url"]) for thumb in thumbnails
+            ]
+            artist.add_provider_id(
+                MediaItemProviderId(
+                    item_id=str(artist_id), prov_type=self.type, prov_id=self.id
+                )
             )
-        )
-        return artist
+            return artist
 
     async def _parse_playlist(self, playlist_response: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
@@ -559,17 +560,24 @@ class YoutubeMusicProvider(MusicProvider):
         ][
             "playlistId"
         ]
+        own_playlist = (
+            "musicEditablePlaylistDetailHeaderRenderer" in playlist_response["header"]
+        )
+        if own_playlist:
+            playlist_response = playlist_response["header"][
+                "musicEditablePlaylistDetailHeaderRenderer"
+            ]
         title = playlist_response["header"]["musicDetailHeaderRenderer"]["title"][
             "runs"
         ][0]["text"]
-        description = playlist_response["header"]["musicDetailHeaderRenderer"][
-            "description"
-        ]["runs"][0]["text"]
         thumbnails = playlist_response["header"]["musicDetailHeaderRenderer"][
             "thumbnail"
         ]["croppedSquareThumbnailRenderer"]["thumbnail"]["thumbnails"]
         playlist = Playlist(item_id=str(playlist_id), provider=self.type, name=title)
-        playlist.metadata.description = description
+        if "description" in playlist_response["header"]["musicDetailHeaderRenderer"]:
+            playlist.metadata.description = playlist_response["header"][
+                "musicDetailHeaderRenderer"
+            ]["description"]["runs"][0]["text"]
         playlist.metadata.images = [
             MediaItemImage(ImageType.THUMB, thumb["url"]) for thumb in thumbnails
         ]
@@ -608,11 +616,15 @@ class YoutubeMusicProvider(MusicProvider):
             "thumbnails"
         ]:
             images.append(MediaItemImage(ImageType.THUMB, thumb["url"]))
+        available = False
+        if track_obj["playabilityStatus"]["status"] == "OK":
+            available = True
         track.add_provider_id(
             MediaItemProviderId(
                 item_id=str(track_obj["videoDetails"]["videoId"]),
                 prov_type=self.type,
                 prov_id=self.id,
+                available=available,
             )
         )
         return track
@@ -645,11 +657,17 @@ class YoutubeMusicProvider(MusicProvider):
     @classmethod
     async def _parse_stream_format(cls, track_obj: dict) -> dict:
         """Grab the highes available audio stream from available streams."""
-        stream_format = None
+        stream_format = {}
+        quality_mapper = {
+            "AUDIO_QUALITY_LOW": 1,
+            "AUDIO_QUALITY_MEDIUM": 2,
+            "AUDIO_QUALITY_HIGH": 3,
+        }
         for adaptive_format in track_obj["streamingData"]["adaptiveFormats"]:
-            if (
-                adaptive_format["mimeType"].startswith("audio")
-                and adaptive_format["audioQuality"] == "AUDIO_QUALITY_HIGH"
+            if adaptive_format["mimeType"].startswith("audio") and (
+                not stream_format
+                or quality_mapper.get(adaptive_format["audioQuality"], 0)
+                > quality_mapper.get(stream_format["audioQuality"], 0)
             ):
                 stream_format = adaptive_format
         if stream_format is None:
