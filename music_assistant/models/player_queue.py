@@ -154,7 +154,7 @@ class PlayerQueue:
         try:
             next_index = self.get_next_index(self._current_index)
             return self._items[next_index]
-        except IndexError:
+        except (IndexError, TypeError):
             return None
 
     def get_item(self, index: int) -> QueueItem | None:
