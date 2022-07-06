@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from time import time
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
@@ -33,22 +33,40 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(item_id, provider, provider_id)
         prov = next(x for x in playlist.provider_ids)
-        prov_playlist_id = prov.item_id
-        provider_id = prov.prov_id
+        return await self.get_provider_playlist_tracks(
+            prov.item_id,
+            provider=prov.prov_type,
+            provider_id=prov.prov_id,
+            cache_checksum=playlist.metadata.checksum,
+        )
 
+    async def get_provider_playlist_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        cache_checksum: Any = None,
+    ) -> List[Track]:
+        """Return album tracks for the given provider album id."""
         prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
-        # prefer cache for playlist tracks - use checksum from playlist
-        cache_key = f"{prov.type.value}.playlist_tracks.{prov_playlist_id}"
-        cache_checksum = playlist.metadata.checksum
-        if cache := await self.mass.cache.get(cache_key, cache_checksum):
+        # prefer cache items (if any) - do not use cache for filesystem
+        cache_key = f"{prov.type.value}.playlist.{item_id}.tracks"
+        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = await prov.get_playlist_tracks(prov_playlist_id)
+        items = []
+        for index, playlist_track in enumerate(await prov.get_playlist_tracks(item_id)):
+            # make sure we have a position set on the track
+            if not playlist_track.position:
+                playlist_track.position = index
+            items.append(playlist_track)
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(cache_key, [x.to_dict() for x in items], cache_checksum)
+            self.mass.cache.set(
+                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
+            )
         )
         return items
 
