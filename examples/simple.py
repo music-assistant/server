@@ -78,9 +78,9 @@ async def main():
     await mass.music.start_sync(schedule=3)
 
     # get some data
-    await mass.music.artists.library()
-    await mass.music.tracks.library()
-    await mass.music.radio.library()
+    await mass.music.artists.db_items()
+    await mass.music.tracks.db_items()
+    await mass.music.radio.db_items()
 
     # run for an hour until someone hits CTRL+C
     await asyncio.sleep(3600)

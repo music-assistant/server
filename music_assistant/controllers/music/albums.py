@@ -9,8 +9,7 @@ from music_assistant.helpers.compare import compare_album, compare_artist
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.tags import FALLBACK_ARTIST
-from music_assistant.models.enums import EventType, ProviderType
-from music_assistant.models.event import MassEvent
+from music_assistant.models.enums import ProviderType
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -154,20 +153,22 @@ class AlbumsController(MediaControllerBase[Album]):
 
         # insert new item
         album_artists = await self._get_album_artists(item, cur_item)
+        if album_artists:
+            sort_artist = album_artists[0].sort_name
+        else:
+            sort_artist = ""
         new_item = await self.mass.database.insert(
             self.db_table,
             {
                 **item.to_db_row(),
                 "artists": json_serializer(album_artists) or None,
+                "sort_artist": sort_artist,
             },
         )
         item_id = new_item["item_id"]
         self.logger.debug("added %s to database", item.name)
         # return created object
         db_item = await self.get_db_item(item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_ADDED, object_id=db_item.uri, data=db_item)
-        )
         return db_item
 
     async def update_db_item(
@@ -196,12 +197,18 @@ class AlbumsController(MediaControllerBase[Album]):
         else:
             album_type = cur_item.album_type
 
+        if album_artists:
+            sort_artist = album_artists[0].sort_name
+        else:
+            sort_artist = ""
+
         await self.mass.database.update(
             self.db_table,
             {"item_id": item_id},
             {
                 "name": item.name if overwrite else cur_item.name,
                 "sort_name": item.sort_name if overwrite else cur_item.sort_name,
+                "sort_artist": sort_artist,
                 "version": item.version if overwrite else cur_item.version,
                 "year": item.year or cur_item.year,
                 "upc": item.upc or cur_item.upc,
@@ -214,9 +221,6 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         db_item = await self.get_db_item(item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item)
-        )
         return db_item
 
     async def delete_db_item(self, item_id: int) -> None:

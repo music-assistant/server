@@ -12,6 +12,7 @@ class MediaType(Enum):
     PLAYLIST = "playlist"
     RADIO = "radio"
     URL = "url"
+    FOLDER = "folder"
     UNKNOWN = "unknown"
 
 
@@ -185,8 +186,6 @@ class EventType(Enum):
     QUEUE_ITEMS_UPDATED = "queue_items_updated"
     QUEUE_TIME_UPDATED = "queue_time_updated"
     SHUTDOWN = "application_shutdown"
-    MEDIA_ITEM_ADDED = "media_item_added"
-    MEDIA_ITEM_UPDATED = "media_item_updated"
     BACKGROUND_JOB_UPDATED = "background_job_updated"
 
 
