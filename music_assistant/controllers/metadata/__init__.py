@@ -104,7 +104,7 @@ class MetaDataController:
         ):
             if track.metadata.genres:
                 playlist.metadata.genres.update(track.metadata.genres)
-            elif track.album.metadata.genres:
+            elif track.album and track.album.metadata.genres:
                 playlist.metadata.genres.update(track.album.metadata.genres)
         # TODO: create mosaic thumb/fanart from playlist tracks
         playlist.metadata.last_refresh = int(time())
