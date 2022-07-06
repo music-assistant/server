@@ -675,12 +675,15 @@ class YoutubeMusicProvider(MusicProvider):
             raise MediaNotFoundError("No stream found for this track")
         return stream_format
 
-    @classmethod
-    async def _decipher_signature(cls, ciphered_signature: str, item_id: str):
+    async def _decipher_signature(self, ciphered_signature: str, item_id: str):
         """Decipher the signature, required to build the Stream URL."""
-        embed_url = f"https://www.youtube.com/embed/{item_id}"
-        embed_html = pytube.request.get(embed_url)
-        js_url = pytube.extract.js_url(embed_html)
-        ytm_js = pytube.request.get(js_url)
-        cipher = pytube.cipher.Cipher(js=ytm_js)
-        return cipher.get_signature(ciphered_signature)
+
+        def _decipher():
+            embed_url = f"https://www.youtube.com/embed/{item_id}"
+            embed_html = pytube.request.get(embed_url)
+            js_url = pytube.extract.js_url(embed_html)
+            ytm_js = pytube.request.get(js_url)
+            cipher = pytube.cipher.Cipher(js=ytm_js)
+            return cipher.get_signature(ciphered_signature)
+
+        return await self.mass.loop.run_in_executor(None, _decipher)
