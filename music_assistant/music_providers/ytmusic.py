@@ -611,11 +611,12 @@ class YoutubeMusicProvider(MusicProvider):
         else:
             artist = await self.get_artist(artist_id)
         track.artists = [artist]
-        images = []
-        for thumb in track_obj["microformat"]["microformatDataRenderer"]["thumbnail"][
-            "thumbnails"
-        ]:
-            images.append(MediaItemImage(ImageType.THUMB, thumb["url"]))
+        track.metadata.images = [
+            MediaItemImage(ImageType.THUMB, thumb["url"])
+            for thumb in track_obj["microformat"]["microformatDataRenderer"][
+                "thumbnail"
+            ]["thumbnails"]
+        ]
         available = False
         if track_obj["playabilityStatus"]["status"] == "OK":
             available = True
