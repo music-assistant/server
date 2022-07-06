@@ -7,8 +7,7 @@ from typing import List, Optional, Union
 from music_assistant.helpers.compare import compare_artists, compare_track
 from music_assistant.helpers.database import TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.models.enums import EventType, MediaType, ProviderType
-from music_assistant.models.event import MassEvent
+from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -143,21 +142,28 @@ class TracksController(MediaControllerBase[Track]):
         # no existing match found: insert new item
         track_artists = await self._get_track_artists(item)
         track_albums = await self._get_track_albums(item, overwrite=overwrite_existing)
+        if track_artists:
+            sort_artist = track_artists[0].sort_name
+        else:
+            sort_artist = ""
+        if track_albums:
+            sort_album = track_albums[0].sort_name
+        else:
+            sort_album = ""
         new_item = await self.mass.database.insert(
             self.db_table,
             {
                 **item.to_db_row(),
                 "artists": json_serializer(track_artists),
                 "albums": json_serializer(track_albums),
+                "sort_artist": sort_artist,
+                "sort_album": sort_album,
             },
         )
         item_id = new_item["item_id"]
         # return created object
         self.logger.debug("added %s to database: %s", item.name, item_id)
         db_item = await self.get_db_item(item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_ADDED, object_id=db_item.uri, data=db_item)
-        )
         return db_item
 
     async def update_db_item(
@@ -199,9 +205,6 @@ class TracksController(MediaControllerBase[Track]):
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         db_item = await self.get_db_item(item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item)
-        )
         return db_item
 
     async def _get_track_artists(

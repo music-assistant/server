@@ -199,6 +199,7 @@ class MusicController:
             return [
                 BrowseFolder(prov.id, prov.type, prov.name, uri=f"{prov.id}://")
                 for prov in self.providers
+                if prov.supports_browse
             ]
         # provider level
         provider_id, path = uri.split("://", 1)

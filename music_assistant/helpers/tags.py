@@ -201,7 +201,21 @@ async def parse_tags(file_path: str) -> AudioTags:
 
 async def get_embedded_image(file_path: str) -> bytes | None:
     """Return embedded image data."""
-    args = ("ffmpeg", "-i", file_path, "-map", "0:v", "-c", "copy", "-f", "mjpeg", "-")
+    args = (
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "fatal",
+        "-i",
+        file_path,
+        "-map",
+        "0:v",
+        "-c",
+        "copy",
+        "-f",
+        "mjpeg",
+        "-",
+    )
 
     async with AsyncProcess(
         args, enable_stdin=False, enable_stdout=True, enable_stderr=False

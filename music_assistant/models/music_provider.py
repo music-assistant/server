@@ -27,6 +27,7 @@ class MusicProvider:
     _attr_name: str = None
     _attr_type: ProviderType = None
     _attr_available: bool = True
+    _attr_supports_browse: bool = True
     _attr_supported_mediatypes: List[MediaType] = []
 
     def __init__(self, mass: MusicAssistant, config: MusicProviderConfig) -> None:
@@ -61,6 +62,11 @@ class MusicProvider:
     def available(self) -> bool:
         """Return boolean if this provider is available/initialized."""
         return self._attr_available
+
+    @property
+    def supports_browse(self) -> bool:
+        """Return boolean if this provider supports browsing."""
+        return self._attr_supports_browse
 
     @property
     def supported_mediatypes(self) -> List[MediaType]:
@@ -211,6 +217,7 @@ class MusicProvider:
                         provider=self.type,
                         name="",
                         label="artists",
+                        uri=f"{self.type.value}://artists",
                     )
                 )
             if MediaType.ALBUM in self.supported_mediatypes:
@@ -220,6 +227,7 @@ class MusicProvider:
                         provider=self.type,
                         name="",
                         label="albums",
+                        uri=f"{self.type.value}://albums",
                     )
                 )
             if MediaType.TRACK in self.supported_mediatypes:
@@ -229,6 +237,7 @@ class MusicProvider:
                         provider=self.type,
                         name="",
                         label="tracks",
+                        uri=f"{self.type.value}://tracks",
                     )
                 )
             if MediaType.PLAYLIST in self.supported_mediatypes:
@@ -238,6 +247,7 @@ class MusicProvider:
                         provider=self.type,
                         name="",
                         label="playlists",
+                        uri=f"{self.type.value}://playlists",
                     )
                 )
             if MediaType.RADIO in self.supported_mediatypes:
@@ -247,20 +257,21 @@ class MusicProvider:
                         provider=self.type,
                         name="",
                         label="radios",
+                        uri=f"{self.type.value}://radios",
                     )
                 )
             return root_items
         # sublevel
         if path == "artists":
-            return [x async for x in self.get_library_artists]
+            return [x async for x in self.get_library_artists()]
         if path == "albums":
-            return [x async for x in self.get_library_albums]
+            return [x async for x in self.get_library_albums()]
         if path == "tracks":
-            return [x async for x in self.get_library_tracks]
+            return [x async for x in self.get_library_tracks()]
         if path == "radios":
-            return [x async for x in self.get_library_radios]
+            return [x async for x in self.get_library_radios()]
         if path == "playlists":
-            return [x async for x in self.get_library_playlists]
+            return [x async for x in self.get_library_playlists()]
 
     @abstractmethod
     async def recommendations(self) -> List[BrowseFolder]:

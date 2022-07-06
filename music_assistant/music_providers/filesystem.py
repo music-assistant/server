@@ -151,14 +151,18 @@ class FileSystemProvider(MusicProvider):
         for filename in await listdir(path):
             full_path: str = os.path.join(path, filename)
             rel_path = full_path.replace(self.config.path + os.sep, "")
-            if await wrap(os.path.isdir(full_path)):
+            if await isdir(full_path):
                 result.append(
                     BrowseFolder(
                         item_id=rel_path,
                         provider=self.type,
                         name=filename,
+                        uri=f"{self.type.value}://{rel_path}",
                     )
                 )
+            elif track := await self._parse_track(full_path):
+                result.append(track)
+        return result
 
     async def sync_library(
         self, media_types: Optional[Tuple[MediaType]] = None

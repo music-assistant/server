@@ -23,6 +23,7 @@ class URLProvider(MusicProvider):
     _attr_name: str = "URL"
     _attr_type: ProviderType = ProviderType.URL
     _attr_available: bool = True
+    _attr_supports_browse: bool = False
     _attr_supported_mediatypes: List[MediaType] = []
 
     async def setup(self) -> bool:
