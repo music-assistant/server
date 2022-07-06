@@ -182,6 +182,7 @@ class YoutubeMusicProvider(MusicProvider):
                 album_type=album_type,
                 provider=self.type,
             )
+            print(item)
             artists = []
             for artist in item["artists"]:
                 artist_id = artist["id"]
