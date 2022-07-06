@@ -49,6 +49,16 @@ parser.add_argument(
     help="Directory on disk for local music library",
 )
 parser.add_argument(
+    "--ytmusic-username",
+    required=False,
+    help="YoutubeMusic username",
+)
+parser.add_argument(
+    "--ytmusic-cookie",
+    required=False,
+    help="YoutubeMusic cookie",
+)
+parser.add_argument(
     "--debug",
     action="store_true",
     help="Enable verbose debug logging",
@@ -100,6 +110,15 @@ if args.tunein_username:
         MusicProviderConfig(
             type=ProviderType.TUNEIN,
             username=args.tunein_username,
+        )
+    )
+
+if args.ytmusic_username and args.ytmusic_cookie:
+    mass_conf.providers.append(
+        MusicProviderConfig(
+            ProviderType.YTMUSIC,
+            username=args.ytmusic_username,
+            password=args.ytmusic_cookie,
         )
     )
 if args.musicdir:
