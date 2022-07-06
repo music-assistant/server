@@ -223,8 +223,9 @@ async def main():
         # we can also send an uri, such as spotify://track/abcdfefgh
         # or database://playlist/1
         # or a list of items
-        artist = await mass.music.artists.get("2", ProviderType.DATABASE)
-        await test_player1.active_queue.play_media(artist)
+        if playlist_count > 0:
+            playlist = await mass.music.playlists.get("1", ProviderType.DATABASE)
+            await test_player1.active_queue.play_media(playlist)
 
         await asyncio.sleep(3600)
 
