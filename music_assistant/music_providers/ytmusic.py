@@ -7,11 +7,10 @@ from urllib.parse import unquote
 
 import pytube
 import ytmusicapi
-from requests.structures import CaseInsensitiveDict
 
 from music_assistant.helpers.audio import get_http_stream
 from music_assistant.models.enums import ProviderType
-from music_assistant.models.errors import MediaNotFoundError
+from music_assistant.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -48,7 +47,11 @@ class YTMusic(MusicProvider):
 
     async def setup(self) -> bool:
         """Set up the YTMusic provider."""
-        await self._initialize_headers()
+        if not self.config.enabled:
+            return False
+        if not self.config.username or not self.config.password:
+            raise LoginFailed("Invalid login credentials")
+        await self._initialize_headers(cookie=self.config.password)
         await self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
         return True
@@ -304,14 +307,17 @@ class YTMusic(MusicProvider):
         ) as response:
             return await response.text()
 
-    async def _initialize_headers(self) -> Dict[str, str]:
+    async def _initialize_headers(self, cookie: str) -> Dict[str, str]:
         """Return headers to include in the requests."""
-        # TODO: Replace with Cookie string from Config
-        path = "../headers_auth.json"
-        headers = None
-        with open(path, mode="r", encoding="utf-8") as json_file:
-            headers = CaseInsensitiveDict(json.load(json_file))
-        cookie = headers.get("cookie")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Content-Type": "application/json",
+            "X-Goog-AuthUser": "0",
+            "x-origin": "https://music.youtube.com",
+            "Cookie": cookie,
+        }
         sapisid = ytmusicapi.helpers.sapisid_from_cookie(cookie)
         origin = headers.get("origin", headers.get("x-origin"))
         headers["Authorization"] = ytmusicapi.helpers.get_authorization(
