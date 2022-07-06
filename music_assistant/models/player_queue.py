@@ -247,7 +247,8 @@ class PlayerQueue:
             self._current_index = None
             self._items = []
 
-        # load items into the queue
+        # load items into the queue, make sure we have valid values
+        queue_items = [x for x in queue_items if isinstance(x, QueueItem)]
         if queue_opt == QueueOption.REPLACE:
             await self.load(queue_items, passive)
         elif (
@@ -518,7 +519,10 @@ class PlayerQueue:
             :param queue_items: a list of QueueItem
             :param offset: offset from current queue position
         """
-        cur_index = self.index_in_buffer or self._current_index
+        if offset == 0:
+            cur_index = self._current_index
+        else:
+            cur_index = self.index_in_buffer or self._current_index
         if not self.items or cur_index is None:
             return await self.load(queue_items, passive)
         insert_at_index = cur_index + offset
@@ -539,7 +543,6 @@ class PlayerQueue:
                 + queue_items
                 + self._items[insert_at_index:]
             )
-        self._items = [x for x in queue_items if x is not None]  # filter None items
         if offset in (0, cur_index):
             await self.play_index(insert_at_index, passive=passive)
 
@@ -714,7 +717,7 @@ class PlayerQueue:
 
     async def _update_items(self, queue_items: List[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
-        self._items = [x for x in queue_items if x is not None]  # filter None items
+        self._items = queue_items
         self.signal_update(True)
 
     def __get_queue_stream_index(self) -> Tuple[int, int]:
@@ -757,11 +760,7 @@ class PlayerQueue:
         """Try to load the saved state from cache."""
         if queue_cache := await self.mass.cache.get(f"queue_items.{self.queue_id}"):
             try:
-                self._items = [
-                    QueueItem.from_dict(x)
-                    for x in queue_cache["items"]
-                    if x is not None
-                ]
+                self._items = [QueueItem.from_dict(x) for x in queue_cache["items"]]
                 self._current_index = queue_cache["current_index"]
                 self._current_item_elapsed_time = queue_cache.get(
                     "current_item_elapsed_time", 0
