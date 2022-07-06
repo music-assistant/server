@@ -123,31 +123,29 @@ async def main():
 
     async with MusicAssistant(mass_conf) as mass:
         # get some data
-        # ytm = mass.music.get_provider(ProviderType.YTMUSIC)
+        ytm = mass.music.get_provider(ProviderType.YTMUSIC)
         # track = await ytm.get_track("pE3ju1qS848")
         # album = await ytm.get_album("MPREb_AYetWMZunqA")
         # await ytm.get_artist_albums("UCFpQsnvFBNlXi7rwQo6IW7g")
-        # albums = await ytm.get_artist_albums("UCFpQsnvFBNlXi7rwQo6IW7g")*")
+        tracks = await ytm.get_album_tracks("MPREb_LbqtMRfZssH")
+        # artist = await ytm.get_artist("UCRwXXG8ovUxqsJe_VwzdnXg")
+        # print(artist)
+        for track in tracks:
+            print(track)
         # start sync
-        await mass.music.start_sync(schedule=3)
-        artists = await mass.music.artists.count()
-        print(f"Got {artists} artists in library")
-        albums = await mass.music.albums.count()
-        print(f"Got {albums} albums in library")
-        tracks = await mass.music.tracks.count()
-        print(f"Got {tracks} tracks in library")
-        playlists = await mass.music.playlists.library()
-        print(f"Got {len(playlists)} playlists in library")
+        # await mass.music.start_sync(schedule=3)
         # artists = await mass.music.artists.count()
         # print(f"Got {artists} artists in library")
         # albums = await mass.music.albums.count()
         # print(f"Got {albums} albums in library")
-        # sd = await yt.get_stream_details(track.item_id)
-        # print(sd.data)
-
-        # test_player1 = TestPlayer("test1")
-        # await mass.players.register_player(test_player1)
-        # await test_player1.active_queue.play_media(track.uri)
+        # tracks = await mass.music.tracks.count()
+        # print(f"Got {tracks} tracks in library")
+        # playlists = await mass.music.playlists.library()
+        # print(f"Got {len(playlists)} playlists in library")
+        # artists = await mass.music.artists.count()
+        # print(f"Got {artists} artists in library")
+        # albums = await mass.music.albums.count()
+        # print(f"Got {albums} albums in library")
 
         await asyncio.sleep(3600)
 

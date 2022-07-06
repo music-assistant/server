@@ -35,9 +35,9 @@ from music_assistant.music_providers.filesystem import FileSystemProvider
 from music_assistant.music_providers.qobuz import QobuzProvider
 from music_assistant.music_providers.spotify import SpotifyProvider
 from music_assistant.music_providers.tunein import TuneInProvider
-from music_assistant.music_providers.ytmusic import YTMusic
 from music_assistant.music_providers.url import PROVIDER_CONFIG as URL_CONFIG
 from music_assistant.music_providers.url import URLProvider
+from music_assistant.music_providers.ytmusic import YoutubeMusicProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -47,7 +47,7 @@ PROV_MAP = {
     ProviderType.SPOTIFY: SpotifyProvider,
     ProviderType.QOBUZ: QobuzProvider,
     ProviderType.TUNEIN: TuneInProvider,
-    ProviderType.YTMUSIC: YTMusic,
+    ProviderType.YTMUSIC: YoutubeMusicProvider,
 }
 
 

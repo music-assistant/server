@@ -1,5 +1,4 @@
-"""YT Music support for MusicAssistant."""
-import json
+"""Youtube Music support for MusicAssistant."""
 import re
 from datetime import date
 from typing import AsyncGenerator, Dict, List, Optional
@@ -31,7 +30,7 @@ YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
 
 
-class YTMusic(MusicProvider):
+class YoutubeMusicProvider(MusicProvider):
     """Provider for Youtube Music."""
 
     _attr_type = ProviderType.YTMUSIC
@@ -185,8 +184,11 @@ class YTMusic(MusicProvider):
             )
             artists = []
             for artist in item["artists"]:
+                artist_id = artist["id"]
+                if not artist_id:
+                    artist_id = "ytm_va"
                 album_artist = Artist(
-                    item_id=artist["id"], name=artist["name"], provider=self.type
+                    item_id=artist_id, name=artist["name"], provider=self.type
                 )
                 album_artist.add_provider_id(
                     MediaItemProviderId(
@@ -492,8 +494,11 @@ class YTMusic(MusicProvider):
         artists = []
         for parsed_artist in parsed_album["artists"]:
             if parsed_artist["id"]:
+                artist_id = parsed_artist["id"]
+                if not artist_id:
+                    artist_id = "ytm_va"
                 artist = Artist(
-                    item_id=parsed_artist["id"],
+                    item_id=artist_id,
                     provider=self.type,
                     name=parsed_artist["name"],
                 )
@@ -579,13 +584,21 @@ class YTMusic(MusicProvider):
             name=track_obj["videoDetails"]["title"],
             duration=track_obj["videoDetails"]["lengthSeconds"],
         )
-        print(json.dumps(track_obj))
-        # artist = await self.get_artist(
-        #     track_obj["microformat"]["microformatDataRenderer"]["pageOwnerDetails"][
-        #         "externalChannelId"
-        #     ]
-        # )
-        # track.artists = [artist]
+        artist_id = track_obj["microformat"]["microformatDataRenderer"][
+            "pageOwnerDetails"
+        ]["externalChannelId"]
+        if artist_id == "UCUTXlgdcKU5vfzFqHOWIvkA":
+            artist = Artist(
+                item_id=artist_id, name="Various Artists", provider=self.type
+            )
+            artist.add_provider_id(
+                MediaItemProviderId(
+                    item_id=str(artist_id), prov_type=self.type, prov_id=self.id
+                )
+            )
+        else:
+            artist = await self.get_artist(artist_id)
+        track.artists = [artist]
         images = []
         for thumb in track_obj["microformat"]["microformatDataRenderer"]["thumbnail"][
             "thumbnails"
