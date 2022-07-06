@@ -28,6 +28,7 @@ class TuneInProvider(MusicProvider):
 
     _attr_type = ProviderType.TUNEIN
     _attr_name = "Tune-in Radio"
+    _attr_supports_browse: bool = False
     _attr_supported_mediatypes = [MediaType.RADIO]
     _throttler = Throttler(rate_limit=1, period=1)
 

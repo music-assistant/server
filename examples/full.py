@@ -188,7 +188,7 @@ async def main():
         print(f"Got {track_count} tracks ({track_count_lib} in library)")
         radio_count = await mass.music.radio.count(True)
         print(f"Got {radio_count} radio stations in library")
-        playlist_count = await mass.music.playlists.library(True)
+        playlist_count = await mass.music.playlists.db_items(True)
         print(f"Got {len(playlist_count)} playlists in library")
         # register a player
         test_player1 = TestPlayer("test1")

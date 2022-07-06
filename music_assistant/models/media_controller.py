@@ -6,9 +6,8 @@ from time import time
 from typing import TYPE_CHECKING, Generic, List, Optional, Tuple, TypeVar
 
 from music_assistant.models.errors import MediaNotFoundError
-from music_assistant.models.event import MassEvent
 
-from .enums import EventType, MediaType, ProviderType
+from .enums import MediaType, ProviderType
 from .media_items import MediaItemType, media_from_dict
 
 if TYPE_CHECKING:
@@ -53,16 +52,38 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Update record in the database, merging data."""
         raise NotImplementedError
 
-    async def library(self, limit: int = 500, offset: int = 0) -> List[ItemCls]:
-        """Get all in-library items."""
-        match = {"in_library": True}
-        return await self.get_db_items(match=match, limit=limit, offset=offset)
-
-    async def count(self, in_library: bool = False) -> int:
-        """Return number of in-library items for this MediaType."""
-        return await self.mass.database.get_count(
-            self.db_table, {"in_library": in_library}
+    async def db_items(
+        self,
+        in_library: Optional[bool] = None,
+        search: Optional[str] = None,
+        limit: int = 500,
+        offset: int = 0,
+        order_by: str = "sort_name",
+    ) -> List[ItemCls]:
+        """Get in-database items."""
+        sql_query = f"SELECT * FROM {self.db_table}"
+        params = {}
+        query_parts = []
+        if search:
+            params["search"] = f"%{search}%"
+            query_parts.append("name LIKE :search")
+        if in_library is not None:
+            query_parts.append("in_library = :in_library")
+            params["in_library"] = in_library
+        if query_parts:
+            sql_query += " WHERE " + " AND ".join(query_parts)
+        sql_query += f" ORDER BY {order_by}"
+        return await self.get_db_items_by_query(
+            sql_query, params, limit=limit, offset=offset
         )
+
+    async def count(self, in_library: Optional[bool] = None) -> int:
+        """Return number of in-library items for this MediaType."""
+        if in_library is not None:
+            match = {"in_library": in_library}
+        else:
+            match = None
+        return await self.mass.database.get_count(self.db_table, match)
 
     async def get(
         self,
@@ -193,11 +214,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not db_item.in_library:
             db_item.in_library = True
             await self.set_db_library(db_item.item_id, True)
-            self.mass.signal_event(
-                MassEvent(
-                    EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item
-                )
-            )
 
     async def remove_from_library(
         self,
@@ -219,11 +235,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if db_item.in_library:
             db_item.in_library = False
             await self.set_db_library(db_item.item_id, False)
-            self.mass.signal_event(
-                MassEvent(
-                    EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item
-                )
-            )
 
     async def get_provider_id(self, item: ItemCls) -> Tuple[str, str]:
         """Return provider and item id."""
@@ -238,25 +249,20 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 return (prov.prov_id, prov.item_id)
         return None, None
 
-    async def get_db_items(
+    async def get_db_items_by_query(
         self,
-        query: Optional[str] = None,
+        custom_query: Optional[str] = None,
         query_params: Optional[dict] = None,
-        match: Optional[dict] = None,
         limit: int = 500,
         offset: int = 0,
     ) -> List[ItemCls]:
-        """Fetch all records from database."""
-        assert not (query and match), "query and match are mutually exclusive"
-        if query is not None:
-            func = self.mass.database.get_rows_from_query(
-                query, query_params, limit=limit, offset=offset
+        """Fetch MediaItem records from database given a custom query."""
+        return [
+            self.item_cls.from_db_row(db_row)
+            for db_row in await self.mass.database.get_rows_from_query(
+                custom_query, query_params, limit=limit, offset=offset
             )
-        else:
-            func = self.mass.database.get_rows(
-                self.db_table, match, limit=limit, offset=offset
-            )
-        return [self.item_cls.from_db_row(db_row) for db_row in await func]
+        ]
 
     async def get_db_item(self, item_id: int) -> ItemCls:
         """Get record by id."""
@@ -298,7 +304,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if isinstance(provider, str):
             provider = ProviderType(provider)
         if provider == ProviderType.DATABASE or provider_id == "database":
-            return await self.get_db_items(limit=limit, offset=offset)
+            return await self.get_db_items_by_query(limit=limit, offset=offset)
 
         query = f"SELECT * FROM {self.db_table}, json_each(provider_ids)"
         if provider_id is not None:
@@ -313,13 +319,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 prov_ids = prov_ids.replace(",)", ")")
             query += f" AND json_extract(json_each.value, '$.item_id') in {prov_ids}"
 
-        return await self.get_db_items(query, limit=limit, offset=offset)
+        return await self.get_db_items_by_query(query, limit=limit, offset=offset)
 
     async def set_db_library(self, item_id: int, in_library: bool) -> None:
         """Set the in-library bool on a database item."""
         match = {"item_id": item_id}
+        timestamp = int(time()) if in_library else 0
         await self.mass.database.update(
-            self.db_table, match, {"in_library": in_library}
+            self.db_table, match, {"in_library": in_library, "timestamp": timestamp}
         )
 
     async def get_provider_item(

@@ -7,9 +7,8 @@ from typing import List, Optional
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.uri import create_uri
-from music_assistant.models.enums import EventType, MediaType, ProviderType
+from music_assistant.models.enums import MediaType, ProviderType
 from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
-from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import Playlist, Track
 
@@ -56,8 +55,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def add(self, item: Playlist, overwrite_existing: bool = False) -> Playlist:
         """Add playlist to local db and return the new database item."""
         item.metadata.last_refresh = int(time())
-        await self.mass.metadata.get_playlist_metadata(item, overwrite_existing)
-        return await self.add_db_item(item)
+        await self.mass.metadata.get_playlist_metadata(item)
+        return await self.add_db_item(item, overwrite_existing)
 
     async def add_playlist_tracks(self, db_playlist_id: str, uris: List[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
@@ -132,14 +131,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # actually add the tracks to the playlist on the provider
         provider = self.mass.music.get_provider(playlist_prov.prov_id)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
-        # update local db entry
-        self.mass.signal_event(
-            MassEvent(
-                type=EventType.MEDIA_ITEM_UPDATED,
-                object_id=db_playlist_id,
-                data=playlist,
-            )
-        )
 
     async def remove_playlist_tracks(
         self, db_playlist_id: str, positions: List[int]
@@ -161,13 +152,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             if track_ids_to_remove:
                 provider = self.mass.music.get_provider(prov.prov_id)
                 await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)
-        self.mass.signal_event(
-            MassEvent(
-                type=EventType.MEDIA_ITEM_UPDATED,
-                object_id=db_playlist_id,
-                data=playlist,
-            )
-        )
 
     async def add_db_item(
         self, item: Playlist, overwrite_existing: bool = False
@@ -186,9 +170,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self.logger.debug("added %s to database", item.name)
         # return created object
         db_item = await self.get_db_item(item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_ADDED, object_id=db_item.uri, data=db_item)
-        )
         return db_item
 
     async def update_db_item(
@@ -219,8 +200,4 @@ class PlaylistController(MediaControllerBase[Playlist]):
             },
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
-        db_item = await self.get_db_item(item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_UPDATED, object_id=db_item.uri, data=db_item)
-        )
-        return db_item
+        return await self.get_db_item(item_id)
