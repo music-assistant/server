@@ -344,7 +344,13 @@ class QueueStream:
         self.all_clients_connected = asyncio.Event()
         self.index_in_buffer = start_index
         self.signal_next: bool = False
-        self.chunk_size = get_chunksize(output_format)
+        self.chunk_size = get_chunksize(
+            output_format,
+            self.pcm_sample_rate,
+            self.pcm_bit_depth,
+            self.pcm_channels,
+            0.1,
+        )
         self._runner_task: Optional[asyncio.Task] = None
         self._prev_chunk: bytes = b""
         if autostart:
@@ -431,16 +437,12 @@ class QueueStream:
         ]
         # get the raw pcm bytes from the queue stream and on the fly encode to wanted format
         # send the compressed/encoded stream to the client(s).
-        sample_size = int(
-            self.pcm_sample_rate * (self.pcm_bit_depth / 8) * self.pcm_channels
-        )
         async with AsyncProcess(ffmpeg_args, True, self.chunk_size) as ffmpeg_proc:
 
             async def writer():
                 """Task that sends the raw pcm audio to the ffmpeg process."""
                 async for audio_chunk in self._get_queue_stream():
                     await ffmpeg_proc.write(audio_chunk)
-                    self.seconds_streamed += len(audio_chunk) / sample_size
                     del audio_chunk
                 # write eof when last packet is received
                 ffmpeg_proc.write_eof()
@@ -592,18 +594,22 @@ class QueueStream:
                     use_crossfade = False
             prev_track = queue_track
 
-            # calculate sample_size based on PCM params for 100ms of audio
-            sample_size = int(
-                self.pcm_sample_rate
-                * (self.pcm_bit_depth / 8)
-                * self.pcm_channels
-                * 0.1
+            # calculate sample_size based on PCM params for 200ms of audio
+            input_format = ContentType.from_bit_depth(
+                self.pcm_bit_depth, self.pcm_floating_point
             )
-            # buffer size is duration of crossfade + 6 seconds
+            sample_size = get_chunksize(
+                input_format,
+                self.pcm_sample_rate,
+                self.pcm_bit_depth,
+                self.pcm_channels,
+                1,
+            )
+            # buffer size is duration of crossfade + 3 seconds
             crossfade_duration = self.queue.settings.crossfade_duration or fade_in or 1
-            crossfade_size = (sample_size * 10) * crossfade_duration
-            buf_size = (sample_size * 10) * (crossfade_duration * 6)
-            total_size = (sample_size * 10) * (queue_track.duration or 0)
+            crossfade_size = (sample_size * 5) * crossfade_duration
+            buf_size = (sample_size * 5) * (crossfade_duration * 3)
+            total_size = (sample_size * 5) * (queue_track.duration or 0)
 
             self.logger.info(
                 "Start Streaming queue track: %s (%s) for queue %s",
@@ -658,7 +664,6 @@ class QueueStream:
 
                 # buffer full for fade-in / crossfade
                 if buffer and (last_fadeout_part or fade_in):
-
                     # strip silence of start and create fade-in part
                     first_part = await strip_silence(
                         buffer + chunk, pcm_fmt, self.pcm_sample_rate
@@ -666,10 +671,10 @@ class QueueStream:
 
                     if last_fadeout_part:
                         # crossfade
-                        first_part = first_part[:crossfade_size]
+                        fadein_part = first_part[:crossfade_size]
                         remaining_bytes = first_part[crossfade_size:]
                         crossfade_part = await crossfade_pcm_parts(
-                            first_part,
+                            fadein_part,
                             last_fadeout_part,
                             crossfade_duration,
                             pcm_fmt,
@@ -679,6 +684,12 @@ class QueueStream:
                         yield crossfade_part
                         bytes_written += len(crossfade_part)
                         del crossfade_part
+                        del fadein_part
+                        # also write the leftover bytes from the strip action
+                        if remaining_bytes:
+                            yield remaining_bytes
+                            bytes_written += len(remaining_bytes)
+                            del remaining_bytes
                     else:
                         # fade-in
                         fadein_part = await fadein_pcm_part(
@@ -689,14 +700,10 @@ class QueueStream:
                         )
                         yield fadein_part
                         bytes_written += len(fadein_part)
+                        del fadein_part
 
                     # clear vars
                     last_fadeout_part = b""
-                    # also write the leftover bytes from the strip action
-                    yield remaining_bytes
-                    bytes_written += len(remaining_bytes)
-                    del remaining_bytes
-                    del fadein_part
                     del first_part
                     del chunk
                     buffer = b""

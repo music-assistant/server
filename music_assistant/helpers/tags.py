@@ -102,7 +102,7 @@ class AudioTags:
     def year(self) -> int | None:
         """Return album's year if present, parsed from date."""
         if tag := self.tags.get("originalyear"):
-            return int(tag)
+            return int(tag.split("-")[0])
         if tag := self.tags.get("otiginaldate"):
             return int(tag.split("-")[0])
         if tag := self.tags.get("date"):

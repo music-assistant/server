@@ -668,20 +668,31 @@ async def get_silence(
             yield chunk
 
 
-def get_chunksize(content_type: ContentType) -> int:
+def get_chunksize(
+    content_type: ContentType,
+    sample_rate: int = 44100,
+    bit_depth: int = 16,
+    channels: int = 2,
+    seconds: float = 1.0,
+) -> int:
     """Get a default chunksize for given contenttype."""
-    if content_type.is_pcm():
-        return 512000
+    pcm_size = int(sample_rate * (bit_depth / 8) * channels * seconds)
+    if content_type.is_pcm() or content_type == ContentType.WAV:
+        return pcm_size
+    if content_type == ContentType.FLAC:
+        return int(pcm_size * 0.61)
+    if content_type == ContentType.WAVPACK:
+        return int(pcm_size * 0.60)
     if content_type in (
         ContentType.AAC,
         ContentType.M4A,
     ):
-        return 32000
+        return int(256000 * seconds)
     if content_type in (
         ContentType.MP3,
         ContentType.OGG,
     ):
-        return 64000
+        return int(320000 * seconds)
     return 256000
 
 

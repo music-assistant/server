@@ -86,6 +86,7 @@ class ContentType(Enum):
     WMA = "wma"
     M4A = "m4a"
     DSF = "dsf"
+    WAVPACK = "wv"
     PCM_S16LE = "s16le"  # PCM signed 16-bit little-endian
     PCM_S24LE = "s24le"  # PCM signed 24-bit little-endian
     PCM_S32LE = "s32le"  # PCM signed 32-bit little-endian
