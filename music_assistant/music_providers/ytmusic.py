@@ -377,6 +377,38 @@ class YoutubeMusicProvider(MusicProvider):
             albums.append(album)
         return albums
 
+    async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
+        """Get a list of 5 most popular tracks for the given artist."""
+        data = {"browseId": prov_artist_id}
+        response = await self._post_data("browse", data=data)
+        # Check if we are dealing with an actual artist with songs, rather than a user
+        if (
+            "musicShelfRenderer"
+            in response["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0][
+                "tabRenderer"
+            ]["content"]["sectionListRenderer"]["contents"][0]
+        ):
+            songs_response = response["contents"]["singleColumnBrowseResultsRenderer"][
+                "tabs"
+            ][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0][
+                "musicShelfRenderer"
+            ][
+                "contents"
+            ]
+            return [
+                await self.get_track(
+                    prov_track_id=song["musicResponsiveListItemRenderer"]["overlay"][
+                        "musicItemThumbnailOverlayRenderer"
+                    ]["content"]["musicPlayButtonRenderer"]["playNavigationEndpoint"][
+                        "watchEndpoint"
+                    ][
+                        "videoId"
+                    ]
+                )
+                for song in songs_response
+            ]
+        return []
+
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         signature_timestamp = await self._get_signature_timestamp()
