@@ -49,6 +49,16 @@ parser.add_argument(
     help="Directory on disk for local music library",
 )
 parser.add_argument(
+    "--ytmusic-username",
+    required=False,
+    help="YoutubeMusic username",
+)
+parser.add_argument(
+    "--ytmusic-cookie",
+    required=False,
+    help="YoutubeMusic cookie",
+)
+parser.add_argument(
     "--debug",
     action="store_true",
     help="Enable verbose debug logging",
@@ -100,6 +110,15 @@ if args.tunein_username:
         MusicProviderConfig(
             type=ProviderType.TUNEIN,
             username=args.tunein_username,
+        )
+    )
+
+if args.ytmusic_username and args.ytmusic_cookie:
+    mass_conf.providers.append(
+        MusicProviderConfig(
+            ProviderType.YTMUSIC,
+            username=args.ytmusic_username,
+            password=args.ytmusic_cookie,
         )
     )
 if args.musicdir:
@@ -188,8 +207,8 @@ async def main():
         print(f"Got {track_count} tracks ({track_count_lib} in library)")
         radio_count = await mass.music.radio.count(True)
         print(f"Got {radio_count} radio stations in library")
-        playlist_count = await mass.music.playlists.db_items(True)
-        print(f"Got {len(playlist_count)} playlists in library")
+        playlists = await mass.music.playlists.db_items(True)
+        print(f"Got {len(playlists)} playlists in library")
         # register a player
         test_player1 = TestPlayer("test1")
         test_player2 = TestPlayer("test2")
@@ -204,8 +223,8 @@ async def main():
         # we can also send an uri, such as spotify://track/abcdfefgh
         # or database://playlist/1
         # or a list of items
-        artist = await mass.music.artists.get("2", ProviderType.DATABASE)
-        await test_player1.active_queue.play_media(artist)
+        if len(playlists) > 0:
+            await test_player1.active_queue.play_media(playlists[0])
 
         await asyncio.sleep(3600)
 

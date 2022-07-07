@@ -176,7 +176,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self, item: Artist, overwrite_existing: bool = False
     ) -> Artist:
         """Add a new item record to the database."""
-        assert item.provider_ids, "Album is missing provider id(s)"
+        assert item.provider_ids, "Artist is missing provider id(s)"
         # always try to grab existing item by musicbrainz_id
         cur_item = None
         if item.musicbrainz_id:

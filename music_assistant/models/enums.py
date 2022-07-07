@@ -68,6 +68,7 @@ class AlbumType(Enum):
     ALBUM = "album"
     SINGLE = "single"
     COMPILATION = "compilation"
+    EP = "ep"
     UNKNOWN = "unknown"
 
 
@@ -96,17 +97,20 @@ class ContentType(Enum):
     def try_parse(cls: "ContentType", string: str) -> "ContentType":
         """Try to parse ContentType from (url)string/extension."""
         tempstr = string.lower()
-        if "." in tempstr:
-            tempstr = tempstr.split(".")[-1]
-        if "," in tempstr:
-            for val in tempstr.split(","):
-                try:
-                    return cls(val.strip())
-                except ValueError:
-                    pass
+        if "audio/" in tempstr:
+            tempstr = tempstr.split("/")[1]
+        for splitter in (".", ","):
+            if splitter in tempstr:
+                for val in tempstr.split(splitter):
+                    try:
+                        return cls(val.strip())
+                    except ValueError:
+                        pass
 
         tempstr = tempstr.split("?")[0]
         tempstr = tempstr.split("&")[0]
+        tempstr = tempstr.split(";")[0]
+        tempstr = tempstr.replace("mp4", "m4a")
         try:
             return cls(tempstr)
         except ValueError:
@@ -209,6 +213,7 @@ class ProviderType(Enum):
     SPOTIFY = "spotify"
     QOBUZ = "qobuz"
     TUNEIN = "tunein"
+    YTMUSIC = "ytmusic"
     DATABASE = "database"  # internal only
     URL = "url"  # internal only
 
