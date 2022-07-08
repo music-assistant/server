@@ -36,11 +36,13 @@ async def get_album(prov_album_id: str) -> Dict[str, str]:
     return await loop.run_in_executor(None, _get_album)
 
 
-async def get_playlist(prov_playlist_id: str) -> Dict[str, str]:
+async def get_playlist(
+    prov_playlist_id: str, headers: Dict[str, str]
+) -> Dict[str, str]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_playlist():
-        ytm = ytmusicapi.YTMusic()
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         return ytm.get_playlist(playlistId=prov_playlist_id)
 
     loop = asyncio.get_running_loop()
@@ -67,6 +69,7 @@ async def get_track(prov_track_id: str) -> Dict[str, str]:
             "thumbnail"
         ]["thumbnails"]
         track["isAvailable"] = track_obj["playabilityStatus"]["status"] == "OK"
+        return track
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_song)

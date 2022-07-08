@@ -321,7 +321,6 @@ class MusicProvider:
                 )
                 if not db_item:
                     # dump the item in the db, rich metadata is lazy loaded later
-                    print(prov_item)
                     db_item = await controller.add_db_item(prov_item)
                 elif (
                     db_item.metadata.checksum and prov_item.metadata.checksum
