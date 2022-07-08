@@ -349,7 +349,6 @@ class QueueStream:
             self.pcm_sample_rate,
             self.pcm_bit_depth,
             self.pcm_channels,
-            0.1,
         )
         self._runner_task: Optional[asyncio.Task] = None
         self._prev_chunk: bytes = b""
@@ -603,7 +602,6 @@ class QueueStream:
                 self.pcm_sample_rate,
                 self.pcm_bit_depth,
                 self.pcm_channels,
-                1,
             )
             # buffer size is duration of crossfade + 3 seconds
             crossfade_duration = self.queue.settings.crossfade_duration or fade_in or 1
@@ -727,8 +725,8 @@ class QueueStream:
 
             if use_crossfade:
                 # crossfade is enabled, save fadeout part to pickup for next track
-                last_part = last_part[-buf_size:]
-                remaining_bytes = last_part[:-buf_size]
+                last_part = last_part[-crossfade_size:]
+                remaining_bytes = last_part[:-crossfade_size]
                 # yield remaining bytes
                 bytes_written += len(remaining_bytes)
                 yield remaining_bytes

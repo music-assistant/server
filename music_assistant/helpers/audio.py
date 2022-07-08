@@ -673,7 +673,7 @@ def get_chunksize(
     sample_rate: int = 44100,
     bit_depth: int = 16,
     channels: int = 2,
-    seconds: float = 1.0,
+    seconds: int = 1,
 ) -> int:
     """Get a default chunksize for given contenttype."""
     pcm_size = int(sample_rate * (bit_depth / 8) * channels * seconds)
