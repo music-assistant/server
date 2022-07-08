@@ -387,7 +387,7 @@ async def get_media_stream(
     channels: int = 2,
     chunk_size: Optional[int] = None,
     seek_position: int = 0,
-) -> AsyncGenerator[Tuple[bool, bytes], None]:
+) -> AsyncGenerator[bytes, None]:
     """Get the PCM audio stream for the given streamdetails."""
     assert pcm_fmt.is_pcm(), "Output format must be a PCM type"
     args = await _get_ffmpeg_args(
@@ -416,15 +416,10 @@ async def get_media_stream(
         ffmpeg_proc.attach_task(writer())
 
         # yield chunks from stdout
-        # we keep 1 chunk behind to detect end of stream properly
         try:
-            prev_chunk = b""
             async for chunk in ffmpeg_proc.iterate_chunks():
-                if prev_chunk:
-                    yield (False, prev_chunk)
-                prev_chunk = chunk
-            # send last chunk
-            yield (True, prev_chunk)
+                yield chunk
+
         except (asyncio.CancelledError, GeneratorExit) as err:
             LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
             raise err
@@ -435,10 +430,9 @@ async def get_media_stream(
             )
         finally:
             # send analyze job to background worker
-            if (
-                streamdetails.loudness is None
-                and prev_chunk
-                and streamdetails.media_type in (MediaType.TRACK, MediaType.RADIO)
+            if streamdetails.loudness is None and streamdetails.media_type in (
+                MediaType.TRACK,
+                MediaType.RADIO,
             ):
                 mass.add_job(
                     analyze_audio(mass, streamdetails),
@@ -674,20 +668,31 @@ async def get_silence(
             yield chunk
 
 
-def get_chunksize(content_type: ContentType) -> int:
+def get_chunksize(
+    content_type: ContentType,
+    sample_rate: int = 44100,
+    bit_depth: int = 16,
+    channels: int = 2,
+    seconds: int = 1,
+) -> int:
     """Get a default chunksize for given contenttype."""
-    if content_type.is_pcm():
-        return 512000
+    pcm_size = int(sample_rate * (bit_depth / 8) * channels * seconds)
+    if content_type.is_pcm() or content_type == ContentType.WAV:
+        return pcm_size
+    if content_type == ContentType.FLAC:
+        return int(pcm_size * 0.61)
+    if content_type == ContentType.WAVPACK:
+        return int(pcm_size * 0.60)
     if content_type in (
         ContentType.AAC,
         ContentType.M4A,
     ):
-        return 32000
+        return int(256000 * seconds)
     if content_type in (
         ContentType.MP3,
         ContentType.OGG,
     ):
-        return 64000
+        return int(320000 * seconds)
     return 256000
 
 

@@ -57,16 +57,15 @@ async def scantree(path: str) -> AsyncGenerator[os.DirEntry, None]:
 
     loop = asyncio.get_running_loop()
     try:
-        entries = await loop.run_in_executor(None, os.scandir, path)
-    except (OSError, PermissionError) as err:
-        LOGGER.warning("Skip folder %s: %s", path, str(err))
-    else:
-        for entry in entries:
+        for entry in await loop.run_in_executor(None, os.scandir, path):
             if await loop.run_in_executor(None, is_dir, entry):
                 async for subitem in scantree(entry.path):
                     yield subitem
             else:
                 yield entry
+    except (OSError, PermissionError) as err:
+        LOGGER.warning("Skip folder %s: %s", path, str(err))
+        return
 
 
 def get_parentdir(base_path: str, name: str) -> str | None:

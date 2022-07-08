@@ -34,7 +34,7 @@ class YoutubeMusicProvider(MusicProvider):
     """Provider for Youtube Music."""
 
     _attr_type = ProviderType.YTMUSIC
-    _attr_name = "YTMusic"
+    _attr_name = "Youtube Music"
     _attr_supported_mediatypes = [
         MediaType.ARTIST,
         MediaType.ALBUM,

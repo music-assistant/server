@@ -13,7 +13,12 @@ path.insert(1, dirname(dirname(abspath(__file__))))
 # pylint: disable=wrong-import-position
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.config import MassConfig, MusicProviderConfig
-from music_assistant.models.enums import ProviderType, RepeatMode, PlayerState
+from music_assistant.models.enums import (
+    CrossFadeMode,
+    ProviderType,
+    RepeatMode,
+    PlayerState,
+)
 from music_assistant.models.player import Player
 
 
@@ -218,6 +223,8 @@ async def main():
         # try to play some music
         test_player1.active_queue.settings.shuffle_enabled = True
         test_player1.active_queue.settings.repeat_mode = RepeatMode.ALL
+        test_player1.active_queue.settings.crossfade_duration = 10
+        test_player1.active_queue.settings.crossfade_mode = CrossFadeMode.SMART
 
         # we can send a MediaItem object (such as Artist, Album, Track, Playlist)
         # we can also send an uri, such as spotify://track/abcdfefgh
