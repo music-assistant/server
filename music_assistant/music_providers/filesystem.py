@@ -74,7 +74,7 @@ def get_parentdir(base_path: str, name: str) -> str | None:
     parentdir = os.path.dirname(base_path)
     for _ in range(3):
         dirname = parentdir.rsplit(os.sep)[-1]
-        if compare_strings(name, dirname):
+        if compare_strings(name, dirname, False):
             return parentdir
         parentdir = os.path.dirname(parentdir)
     return None
