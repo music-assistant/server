@@ -40,12 +40,6 @@ class Database:
         """Perform async initialization."""
         await self._db.connect()
         self.logger.info("Database connected.")
-        await self.execute(
-            """CREATE TABLE IF NOT EXISTS settings(
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                );"""
-        )
         await self._migrate()
 
     async def close(self) -> None:
@@ -179,6 +173,8 @@ class Database:
 
     async def _migrate(self):
         """Perform database migration actions if needed."""
+        # always create db tables if they don't exist to prevent errors trying to access them later
+        await self.__create_database_tables()
         try:
             if prev_version := await self.get_setting("version"):
                 prev_version = int(prev_version["value"])
@@ -193,8 +189,6 @@ class Database:
                 prev_version,
                 SCHEMA_VERSION,
             )
-            # always create db tables if they don't exist to prevent errors trying to access them later
-            await self.__create_database_tables()
 
             if prev_version < 18:
                 # too many changes, just recreate
@@ -214,8 +208,12 @@ class Database:
 
     async def __create_database_tables(self) -> None:
         """Init database tables."""
-        # TODO: create indexes, especially for the json columns
-
+        await self.execute(
+            """CREATE TABLE IF NOT EXISTS settings(
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );"""
+        )
         await self.execute(
             f"""CREATE TABLE IF NOT EXISTS {TABLE_TRACK_LOUDNESS}(
                     item_id INTEGER NOT NULL,
@@ -317,6 +315,7 @@ class Database:
                 UNIQUE(path, size));"""
         )
         # create indexes
+        # TODO: create indexes for the json columns ?
         await self.execute(
             "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(in_library);"
         )
