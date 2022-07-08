@@ -99,7 +99,9 @@ class YoutubeMusicProvider(MusicProvider):
                 parsed_results.append(await self._parse_artist(result))
             elif result["resultType"] == "album":
                 parsed_results.append(
-                    await self._parse_album(result, result["browseId"])
+                    # Search result for albums contain invalid artists
+                    # Use a get_album to get full details
+                    await self.get_album(result["browseId"])
                 )
             elif result["resultType"] == "playlist":
                 parsed_results.append(await self._parse_playlist(result))
