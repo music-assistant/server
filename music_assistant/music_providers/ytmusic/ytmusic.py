@@ -323,7 +323,9 @@ class YoutubeMusicProvider(MusicProvider):
             album.metadata.description = unquote(album_obj["description"])
         if "artists" in album_obj:
             album.artists = [
-                await self._parse_artist(artist) for artist in album_obj["artists"]
+                await self._parse_artist(artist)
+                for artist in album_obj["artists"]
+                if artist.get("id")
             ]
         if "type" in album_obj:
             if album_obj["type"] == "Single":

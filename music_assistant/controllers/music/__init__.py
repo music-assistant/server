@@ -37,7 +37,7 @@ from music_assistant.music_providers.spotify import SpotifyProvider
 from music_assistant.music_providers.tunein import TuneInProvider
 from music_assistant.music_providers.url import PROVIDER_CONFIG as URL_CONFIG
 from music_assistant.music_providers.url import URLProvider
-from music_assistant.music_providers.ytmusic.ytmusic import YoutubeMusicProvider
+from music_assistant.music_providers.ytmusic import YoutubeMusicProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
