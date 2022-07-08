@@ -463,7 +463,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     @classmethod
     async def _parse_stream_format(cls, track_obj: dict) -> dict:
-        """Grab the highes available audio stream from available streams."""
+        """Grab the highest available audio stream from available streams."""
         stream_format = {}
         quality_mapper = {
             "AUDIO_QUALITY_LOW": 1,
