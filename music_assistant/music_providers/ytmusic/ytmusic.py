@@ -415,6 +415,11 @@ class YoutubeMusicProvider(MusicProvider):
             track.metadata.explicit = track_obj["isExplicit"]
         if "duration" in track_obj and track_obj["duration"].isdigit():
             track.duration = track_obj["duration"]
+        elif (
+            "duration_seconds" in track_obj
+            and str(track_obj["duration_seconds"]).isdigit()
+        ):
+            track.duration = track_obj["duration_seconds"]
         available = True
         if "isAvailable" in track_obj:
             available = track_obj["isAvailable"]
@@ -456,12 +461,8 @@ class YoutubeMusicProvider(MusicProvider):
     @classmethod
     async def _parse_thumbnails(cls, thumbnails_obj: dict) -> List[MediaItemImage]:
         """Parse and sort a list of thumbnails and return the highest quality."""
-        thumbnails_sorted = sorted(
-            thumbnails_obj, key=itemgetter("width"), reverse=True
-        )[0]
-        return [
-            MediaItemImage(ImageType.THUMB, thumb["url"]) for thumb in thumbnails_sorted
-        ]
+        thumb = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)[0]
+        return [MediaItemImage(ImageType.THUMB, thumb["url"])]
 
     @classmethod
     async def _parse_stream_format(cls, track_obj: dict) -> dict:
