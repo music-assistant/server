@@ -215,9 +215,10 @@ class StreamsController:
             item_in_buf = queue_stream.queue.get_item(queue_stream.index_in_buffer)
             if item_in_buf and item_in_buf.name:
                 title = item_in_buf.name
+                image = item_in_buf.image or ""
             else:
                 title = "Music Assistant"
-            image = item_in_buf.image or ""
+                image = ""
             metadata = f"StreamTitle='{title}';StreamUrl='&picture={image}';".encode()
             while len(metadata) % 16 != 0:
                 metadata += b"\x00"
