@@ -85,7 +85,7 @@ async def get_library_artists(headers: Dict[str, str]) -> Dict[str, str]:
 
     def _get_library_artists():
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
-        artists = ytm.get_library_artists()
+        artists = ytm.get_library_artists(limit=999)
         # Sync properties with uniformal artist object
         for artist in artists:
             artist["id"] = artist["browseId"]
@@ -103,7 +103,7 @@ async def get_library_albums(headers: Dict[str, str]) -> Dict[str, str]:
 
     def _get_library_albums():
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
-        return ytm.get_library_albums()
+        return ytm.get_library_albums(limit=999)
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_library_albums)
@@ -114,7 +114,7 @@ async def get_library_playlists(headers: Dict[str, str]) -> Dict[str, str]:
 
     def _get_library_playlists():
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
-        playlists = ytm.get_library_playlists()
+        playlists = ytm.get_library_playlists(limit=999)
         # Sync properties with uniformal playlist object
         for playlist in playlists:
             playlist["id"] = playlist["playlistId"]
@@ -130,7 +130,7 @@ async def get_library_tracks(headers: Dict[str, str]) -> Dict[str, str]:
 
     def _get_library_tracks():
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
-        tracks = ytm.get_library_songs()
+        tracks = ytm.get_library_songs(limit=999)
         return tracks
 
     loop = asyncio.get_running_loop()

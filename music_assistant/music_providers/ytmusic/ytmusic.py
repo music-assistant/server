@@ -207,10 +207,14 @@ class YoutubeMusicProvider(MusicProvider):
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id)
         if "albums" in artist_obj and "results" in artist_obj["albums"]:
-            return [
-                await self._parse_album(album, album["browseId"])
-                for album in artist_obj["albums"]["results"]
-            ]
+            albums = []
+            for album_obj in artist_obj["albums"]["results"]:
+                if "artists" not in album_obj:
+                    album_obj["artists"] = [
+                        {"id": artist_obj["channelId"], "name": artist_obj["name"]}
+                    ]
+                albums.append(await self._parse_album(album_obj, album_obj["browseId"]))
+            return albums
         return []
 
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
