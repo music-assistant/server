@@ -19,7 +19,12 @@ async def get_artist(prov_artist_id: str) -> Dict[str, str]:
 
     def _get_artist():
         ytm = ytmusicapi.YTMusic()
-        return ytm.get_artist(channelId=prov_artist_id)
+        try:
+            artist = ytm.get_artist(channelId=prov_artist_id)
+        except KeyError:
+            user = ytm.get_user(channelId=prov_artist_id)
+            artist = {"channelId": prov_artist_id, "name": user["name"]}
+        return artist
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_artist)

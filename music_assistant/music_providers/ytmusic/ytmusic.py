@@ -104,7 +104,16 @@ class YoutubeMusicProvider(MusicProvider):
             elif result["resultType"] == "playlist":
                 parsed_results.append(await self._parse_playlist(result))
             elif result["resultType"] == "song":
-                parsed_results.append(await self._parse_track(result))
+                # Tracks from search results sometimes do not have a valid artist id
+                # In that case, call the API for track details based on track id
+                try:
+                    track = await self._parse_track(result)
+                    if track:
+                        parsed_results.append(track)
+                except InvalidDataError:
+                    track = await self.get_track(result["videoId"])
+                    if track:
+                        parsed_results.append(track)
         return parsed_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
@@ -366,8 +375,6 @@ class YoutubeMusicProvider(MusicProvider):
             playlist.metadata.images = await self._parse_thumbnails(
                 playlist_obj["thumbnails"]
             )
-        if "author" in playlist_obj:
-            playlist.owner = playlist_obj["author"]
         playlist.add_provider_id(
             MediaItemProviderId(
                 item_id=playlist_obj["id"], prov_type=self.type, prov_id=self.id
@@ -413,8 +420,6 @@ class YoutubeMusicProvider(MusicProvider):
                 available=available,
             )
         )
-        if not track.item_id:
-            print("what?")
         return track
 
     async def _get_signature_timestamp(self):
