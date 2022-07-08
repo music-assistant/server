@@ -453,10 +453,10 @@ class YoutubeMusicProvider(MusicProvider):
 
     @classmethod
     async def _parse_thumbnails(cls, thumbnails_obj: dict) -> List[MediaItemImage]:
-        """Parse and sort a list of thumbnails from highest quality to lowest quality."""
+        """Parse and sort a list of thumbnails and return the highest quality."""
         thumbnails_sorted = sorted(
             thumbnails_obj, key=itemgetter("width"), reverse=True
-        )
+        )[0]
         return [
             MediaItemImage(ImageType.THUMB, thumb["url"]) for thumb in thumbnails_sorted
         ]
