@@ -325,7 +325,10 @@ class YoutubeMusicProvider(MusicProvider):
             album.artists = [
                 await self._parse_artist(artist)
                 for artist in album_obj["artists"]
-                if artist.get("id")
+                # artist object may be missing an id
+                # in that case its either a performer (like the composer) OR this
+                # is a Various artists compilation album...
+                if (artist.get("id") or artist["name"] == "Various Artists")
             ]
         if "type" in album_obj:
             if album_obj["type"] == "Single":
