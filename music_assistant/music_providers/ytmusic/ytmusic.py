@@ -224,8 +224,9 @@ class YoutubeMusicProvider(MusicProvider):
         artist_obj = await get_artist(prov_artist_id=prov_artist_id)
         if "songs" in artist_obj and "results" in artist_obj["songs"]:
             return [
-                await self._parse_track(track)
+                await self.get_track(track["videoId"])
                 for track in artist_obj["songs"]["results"]
+                if track.get("videoId")
             ]
         return []
 
