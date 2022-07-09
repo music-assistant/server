@@ -325,7 +325,7 @@ class YoutubeMusicProvider(MusicProvider):
             album.artists = [
                 await self._parse_artist(artist)
                 for artist in album_obj["artists"]
-                if artist.get("id")
+                if artist.get("id") or artist.get("name") == "Various Artists"
             ]
         if "type" in album_obj:
             if album_obj["type"] == "Single":
@@ -450,14 +450,20 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
         """Figure out the stream URL to use based on the YT track object."""
-        cipher_parts = {}
-        for part in stream_format["signatureCipher"].split("&"):
-            key, val = part.split("=", maxsplit=1)
-            cipher_parts[key] = unquote(val)
-        signature = await self._decipher_signature(
-            ciphered_signature=cipher_parts["s"], item_id=item_id
-        )
-        url = cipher_parts["url"] + "&sig=" + signature
+        url = None
+        if stream_format.get("signatureCipher"):
+            # Secured URL
+            cipher_parts = {}
+            for part in stream_format["signatureCipher"].split("&"):
+                key, val = part.split("=", maxsplit=1)
+                cipher_parts[key] = unquote(val)
+            signature = await self._decipher_signature(
+                ciphered_signature=cipher_parts["s"], item_id=item_id
+            )
+            url = cipher_parts["url"] + "&sig=" + signature
+        elif stream_format.get("url"):
+            # Non secured URL
+            url = stream_format.get("url")
         return url
 
     @classmethod
