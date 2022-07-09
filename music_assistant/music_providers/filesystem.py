@@ -162,6 +162,8 @@ class FileSystemProvider(MusicProvider):
                 )
             elif track := await self._parse_track(full_path):
                 result.append(track)
+            elif playlist := await self._parse_playlist(full_path):
+                result.append(playlist)
         return result
 
     async def sync_library(
