@@ -1,4 +1,5 @@
 """Youtube Music support for MusicAssistant."""
+import json
 import re
 from operator import itemgetter
 from typing import AsyncGenerator, Dict, List, Optional
@@ -325,7 +326,10 @@ class YoutubeMusicProvider(MusicProvider):
             album.artists = [
                 await self._parse_artist(artist)
                 for artist in album_obj["artists"]
-                if artist.get("id") or artist.get("name") == "Various Artists"
+                # artist object may be missing an id
+                # in that case its either a performer (like the composer) OR this
+                # is a Various artists compilation album...
+                if (artist.get("id") or artist["name"] == "Various Artists")
             ]
         if "type" in album_obj:
             if album_obj["type"] == "Single":
@@ -490,6 +494,7 @@ class YoutubeMusicProvider(MusicProvider):
                 stream_format = adaptive_format
         if stream_format is None:
             raise MediaNotFoundError("No stream found for this track")
+        print(json.dumps(stream_format))
         return stream_format
 
     async def _decipher_signature(self, ciphered_signature: str, item_id: str):
