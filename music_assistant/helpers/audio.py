@@ -8,7 +8,7 @@ import re
 import struct
 from io import BytesIO
 from time import time
-from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, List, Tuple
 
 import aiofiles
 from aiohttp import ClientError, ClientTimeout
@@ -49,7 +49,7 @@ async def crossfade_pcm_parts(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "error",
+        "quiet",
         # fadeout part (as file)
         "-acodec",
         fmt.name.lower(),
@@ -104,7 +104,7 @@ async def fadein_pcm_part(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "error",
+        "quiet",
         # fade_in part (stdin)
         "-acodec",
         fmt.name.lower(),
@@ -138,7 +138,7 @@ async def strip_silence(
 ) -> bytes:
     """Strip silence from (a chunk of) pcm audio."""
     # input args
-    args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "quiet"]
     args += [
         "-acodec",
         fmt.name.lower(),
@@ -385,7 +385,6 @@ async def get_media_stream(
     pcm_fmt: ContentType,
     sample_rate: int,
     channels: int = 2,
-    chunk_size: Optional[int] = None,
     seek_position: int = 0,
 ) -> AsyncGenerator[bytes, None]:
     """Get the PCM audio stream for the given streamdetails."""
@@ -393,9 +392,7 @@ async def get_media_stream(
     args = await _get_ffmpeg_args(
         streamdetails, pcm_fmt, pcm_sample_rate=sample_rate, pcm_channels=channels
     )
-    async with AsyncProcess(
-        args, enable_stdin=True, chunk_size=chunk_size
-    ) as ffmpeg_proc:
+    async with AsyncProcess(args, enable_stdin=True) as ffmpeg_proc:
 
         LOGGER.debug(
             "start media stream for: %s, using args: %s", streamdetails.uri, str(args)
@@ -416,8 +413,9 @@ async def get_media_stream(
         ffmpeg_proc.attach_task(writer())
 
         # yield chunks from stdout
+        sample_size = get_chunksize(pcm_fmt, sample_rate, 24, channels, 10)
         try:
-            async for chunk in ffmpeg_proc.iterate_chunks():
+            async for chunk in ffmpeg_proc.iter_any(sample_size):
                 yield chunk
 
         except (asyncio.CancelledError, GeneratorExit) as err:
@@ -531,7 +529,6 @@ async def get_http_stream(
     if buffer_all:
         skip_bytes = streamdetails.size / streamdetails.duration * seek_position
         yield buffer[:skip_bytes]
-        del buffer
 
 
 async def get_file_stream(
@@ -600,7 +597,7 @@ async def get_preview_stream(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "error",
+        "quiet",
         "-f",
         streamdetails.content_type.value,
         "-i",
@@ -621,7 +618,7 @@ async def get_preview_stream(
         ffmpeg_proc.attach_task(writer())
 
         # yield chunks from stdout
-        async for chunk in ffmpeg_proc.iterate_chunks():
+        async for chunk in ffmpeg_proc.iter_any():
             yield chunk
 
 
@@ -651,7 +648,7 @@ async def get_silence(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "error",
+        "quiet",
         "-f",
         "lavfi",
         "-i",
@@ -662,9 +659,8 @@ async def get_silence(
         output_fmt.value,
         "-",
     ]
-    chunk_size = get_chunksize(output_fmt)
-    async with AsyncProcess(args, chunk_size=chunk_size) as ffmpeg_proc:
-        async for chunk in ffmpeg_proc.iterate_chunks():
+    async with AsyncProcess(args) as ffmpeg_proc:
+        async for chunk in ffmpeg_proc.iter_any():
             yield chunk
 
 
@@ -679,21 +675,13 @@ def get_chunksize(
     pcm_size = int(sample_rate * (bit_depth / 8) * channels * seconds)
     if content_type.is_pcm() or content_type == ContentType.WAV:
         return pcm_size
-    if content_type == ContentType.FLAC:
-        return int(pcm_size * 0.61)
-    if content_type == ContentType.WAVPACK:
-        return int(pcm_size * 0.60)
-    if content_type in (
-        ContentType.AAC,
-        ContentType.M4A,
-    ):
-        return int(256000 * seconds)
-    if content_type in (
-        ContentType.MP3,
-        ContentType.OGG,
-    ):
-        return int(320000 * seconds)
-    return 256000
+    if content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
+        return pcm_size
+    if content_type in (ContentType.FLAC, ContentType.WAVPACK, ContentType.ALAC):
+        return int(pcm_size * 0.6)
+    if content_type in (ContentType.MP3, ContentType.OGG, ContentType.M4A):
+        return int(640000 * seconds)
+    return 32000 * seconds
 
 
 async def _get_ffmpeg_args(
@@ -718,7 +706,7 @@ async def _get_ffmpeg_args(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "error",
+        "quiet",
         "-ignore_unknown",
     ]
     if streamdetails.content_type != ContentType.UNKNOWN:

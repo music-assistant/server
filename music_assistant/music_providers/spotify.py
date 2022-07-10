@@ -318,7 +318,7 @@ class SpotifyProvider(MusicProvider):
             args += ["--ap-port", "12345"]
         bytes_sent = 0
         async with AsyncProcess(args) as librespot_proc:
-            async for chunk in librespot_proc.iterate_chunks():
+            async for chunk in librespot_proc.iter_any():
                 yield chunk
                 bytes_sent += len(chunk)
 
@@ -328,7 +328,7 @@ class SpotifyProvider(MusicProvider):
             # retry with ap-port set to invalid value, which will force fallback
             args += ["--ap-port", "12345"]
             async with AsyncProcess(args) as librespot_proc:
-                async for chunk in librespot_proc.iterate_chunks():
+                async for chunk in librespot_proc.iter_any(64000):
                     yield chunk
             self._ap_workaround = True
 
