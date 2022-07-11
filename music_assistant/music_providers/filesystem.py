@@ -266,7 +266,7 @@ class FileSystemProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        itempath = await self.get_filepath(MediaType.ARTIST, prov_artist_id)
+        itempath = await self._get_filepath(MediaType.ARTIST, prov_artist_id)
         if await self.exists(itempath):
             # if path exists on disk allow parsing full details to allow refresh of metadata
             return await self._parse_artist(artist_path=itempath)
@@ -281,7 +281,7 @@ class FileSystemProvider(MusicProvider):
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
-        itempath = await self.get_filepath(MediaType.ALBUM, prov_album_id)
+        itempath = await self._get_filepath(MediaType.ALBUM, prov_album_id)
         if await self.exists(itempath):
             # if path exists on disk allow parsing full details to allow refresh of metadata
             return await self._parse_album(None, itempath, db_album.artists)
@@ -289,12 +289,12 @@ class FileSystemProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        itempath = await self.get_filepath(MediaType.TRACK, prov_track_id)
+        itempath = await self._get_filepath(MediaType.TRACK, prov_track_id)
         return await self._parse_track(itempath)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        itempath = await self.get_filepath(MediaType.PLAYLIST, prov_playlist_id)
+        itempath = await self._get_filepath(MediaType.PLAYLIST, prov_playlist_id)
         return await self._parse_playlist(itempath)
 
     async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
@@ -322,7 +322,7 @@ class FileSystemProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
         """Get playlist tracks for given playlist id."""
         result = []
-        playlist_path = await self.get_filepath(MediaType.PLAYLIST, prov_playlist_id)
+        playlist_path = await self._get_filepath(MediaType.PLAYLIST, prov_playlist_id)
         if not await self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
         playlist_base_path = Path(playlist_path).parent
@@ -403,7 +403,7 @@ class FileSystemProvider(MusicProvider):
         self, prov_playlist_id: str, prov_track_ids: List[str]
     ) -> None:
         """Add track(s) to playlist."""
-        itempath = await self.get_filepath(MediaType.PLAYLIST, prov_playlist_id)
+        itempath = await self._get_filepath(MediaType.PLAYLIST, prov_playlist_id)
         if not await self.exists(itempath):
             raise MediaNotFoundError(f"Playlist path does not exist: {itempath}")
         async with self.open_file(itempath, "r") as _file:
@@ -417,7 +417,7 @@ class FileSystemProvider(MusicProvider):
         self, prov_playlist_id: str, prov_track_ids: List[str]
     ) -> None:
         """Remove track(s) from playlist."""
-        itempath = await self.get_filepath(MediaType.PLAYLIST, prov_playlist_id)
+        itempath = await self._get_filepath(MediaType.PLAYLIST, prov_playlist_id)
         if not await self.exists(itempath):
             raise MediaNotFoundError(f"Playlist path does not exist: {itempath}")
         cur_lines = []
@@ -432,7 +432,7 @@ class FileSystemProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        itempath = await self.get_filepath(MediaType.TRACK, item_id)
+        itempath = await self._get_filepath(MediaType.TRACK, item_id)
         if not await self.exists(itempath):
             raise MediaNotFoundError(f"Track path does not exist: {itempath}")
 
@@ -816,11 +816,16 @@ class FileSystemProvider(MusicProvider):
         # ensure we have a full path and not relative
         if self.config.path not in file_path:
             file_path = os.path.join(self.config.path, file_path)
-        # remote file locations should return a tempfile here ?
+        file_path = await self.resolve(file_path)
         async with aiofiles.open(file_path, mode) as _file:
             yield _file
 
-    async def get_filepath(
+    async def resolve(self, file_path: str) -> str:
+        """Resolve local accessible file."""
+        # remote file locations should return a tempfile here so this is future proofing
+        return file_path
+
+    async def _get_filepath(
         self, media_type: MediaType, prov_item_id: str
     ) -> str | None:
         """Get full filepath on disk for item_id."""

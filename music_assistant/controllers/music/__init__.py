@@ -232,6 +232,9 @@ class MusicController:
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         assert provider or provider_id, "provider or provider_id must be supplied"
+        if provider == ProviderType.URL or provider_id == "url":
+            # handle special case of 'URL' MusicProvider which allows us to play regular url's
+            return await self.get_provider(ProviderType.URL).parse_item(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             provider_item_id=item_id,

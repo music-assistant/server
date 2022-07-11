@@ -8,14 +8,13 @@ import re
 import struct
 from io import BytesIO
 from time import time
-from typing import TYPE_CHECKING, AsyncGenerator, List, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Tuple
 
 import aiofiles
 from aiohttp import ClientError, ClientTimeout
 
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import create_tempfile
-from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import (
     AudioError,
     MediaNotFoundError,
@@ -246,38 +245,35 @@ async def get_stream_details(
         param media_item: The MediaItem (track/radio) for which to request the streamdetails for.
         param queue_id: Optionally provide the queue_id which will play this stream.
     """
+    streamdetails = None
     if queue_item.streamdetails and (time() < queue_item.streamdetails.expires):
         # we already have fresh streamdetails, use these
         queue_item.streamdetails.seconds_skipped = 0
         queue_item.streamdetails.seconds_streamed = 0
         streamdetails = queue_item.streamdetails
-    elif queue_item.media_type == MediaType.URL:
-        # handle URL provider items
-        url_prov = mass.music.get_provider(ProviderType.URL)
-        streamdetails = await url_prov.get_stream_details(queue_item.uri)
-    else:
-        # media item: fetch streamdetails from provider
-        # always request the full db track as there might be other qualities available
-        full_item = await mass.music.get_item_by_uri(queue_item.uri)
-        # sort by quality and check track availability
-        for prov_media in sorted(
-            full_item.provider_ids, key=lambda x: x.quality or 0, reverse=True
-        ):
-            if not prov_media.available:
-                continue
-            # get streamdetails from provider
-            music_prov = mass.music.get_provider(prov_media.prov_id)
-            if not music_prov or not music_prov.available:
-                continue  # provider temporary unavailable ?
-            try:
-                streamdetails: StreamDetails = await music_prov.get_stream_details(
-                    prov_media.item_id
-                )
-                streamdetails.content_type = ContentType(streamdetails.content_type)
-            except MusicAssistantError as err:
-                LOGGER.warning(str(err))
-            else:
-                break
+
+    # fetch streamdetails from provider
+    # always request the full item as there might be other qualities available
+    full_item = await mass.music.get_item_by_uri(queue_item.uri)
+    # sort by quality and check track availability
+    for prov_media in sorted(
+        full_item.provider_ids, key=lambda x: x.quality or 0, reverse=True
+    ):
+        if not prov_media.available:
+            continue
+        # get streamdetails from provider
+        music_prov = mass.music.get_provider(prov_media.prov_id)
+        if not music_prov or not music_prov.available:
+            continue  # provider temporary unavailable ?
+        try:
+            streamdetails: StreamDetails = await music_prov.get_stream_details(
+                prov_media.item_id
+            )
+            streamdetails.content_type = ContentType(streamdetails.content_type)
+        except MusicAssistantError as err:
+            LOGGER.warning(str(err))
+        else:
+            break
 
     if not streamdetails:
         raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
@@ -285,7 +281,7 @@ async def get_stream_details(
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_id
     # get gain correct / replaygain
-    if not streamdetails.gain_correct:
+    if streamdetails.gain_correct is None:
         loudness, gain_correct = await get_gain_correct(mass, streamdetails)
         streamdetails.gain_correct = gain_correct
         streamdetails.loudness = loudness
@@ -299,11 +295,11 @@ async def get_stream_details(
 
 async def get_gain_correct(
     mass: MusicAssistant, streamdetails: StreamDetails
-) -> Tuple[float, float]:
+) -> Tuple[Optional[float], Optional[float]]:
     """Get gain correction for given queue / track combination."""
     queue = mass.players.get_player_queue(streamdetails.queue_id)
     if not queue or not queue.settings.volume_normalization_enabled:
-        return (0, 0)
+        return (None, None)
     if streamdetails.gain_correct is not None:
         return (streamdetails.loudness, streamdetails.gain_correct)
     target_gain = queue.settings.volume_normalization_target
@@ -428,10 +424,7 @@ async def get_media_stream(
             )
         finally:
             # send analyze job to background worker
-            if streamdetails.loudness is None and streamdetails.media_type in (
-                MediaType.TRACK,
-                MediaType.RADIO,
-            ):
+            if streamdetails.loudness is None:
                 mass.add_job(
                     analyze_audio(mass, streamdetails),
                     f"Analyze audio for {streamdetails.uri}",
@@ -727,7 +720,7 @@ async def _get_ffmpeg_args(
     # collect extra and filter args
     extra_args = []
     filter_params = []
-    if streamdetails.gain_correct:
+    if streamdetails.gain_correct is not None:
         filter_params.append(f"volume={streamdetails.gain_correct}dB")
     if (
         streamdetails.sample_rate != pcm_sample_rate

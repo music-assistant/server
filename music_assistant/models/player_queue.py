@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import pathlib
 import random
 from asyncio import TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
-from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
+from music_assistant.models.enums import (
+    EventType,
+    MediaType,
+    ProviderType,
+    QueueOption,
+    RepeatMode,
+)
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import MediaItemType, media_from_dict
@@ -204,10 +209,6 @@ class PlayerQueue:
                     media_item = await self.mass.music.get_item_by_uri(item)
                 except MusicAssistantError as err:
                     # invalid MA uri or item not found error
-                    if item.startswith("http") or os.path.isfile(item):
-                        # a plain url (or local file) was provided
-                        queue_items.append(QueueItem.from_url(item))
-                        continue
                     raise MediaNotFoundError(f"Invalid uri: {item}") from err
             elif isinstance(item, dict):
                 media_item = media_from_dict(item)
@@ -231,7 +232,6 @@ class PlayerQueue:
             elif media_item.media_type in (
                 MediaType.RADIO,
                 MediaType.TRACK,
-                MediaType.URL,
             ):
                 # single item
                 tracks = [media_item]
@@ -281,23 +281,18 @@ class PlayerQueue:
 
         # prepend annnounce sound if needed
         if announce:
-            queue_item = QueueItem.from_url(ALERT_ANNOUNCE_FILE, "alert")
-            queue_item.streamdetails.gain_correct = 10
+            url_prov = self.mass.music.get_provider(ProviderType.URL)
+            media_item = await url_prov.parse_item(ALERT_ANNOUNCE_FILE)
+            queue_item = QueueItem.from_media_item(media_item)
             queue_items.append(queue_item)
 
-        # parse provided uri into a MA MediaItem or Basic QueueItem from URL
+        # parse provided uri into a MA MediaItem
         try:
             media_item = await self.mass.music.get_item_by_uri(uri)
             queue_items.append(QueueItem.from_media_item(media_item))
         except MusicAssistantError as err:
             # invalid MA uri or item not found error
-            if uri.startswith("http") or os.path.isfile(uri):
-                # a plain url was provided
-                queue_item = QueueItem.from_url(uri, "alert")
-                queue_item.streamdetails.gain_correct = gain_correct
-                queue_items.append(queue_item)
-            else:
-                raise MediaNotFoundError(f"Invalid uri: {uri}") from err
+            raise MediaNotFoundError(f"Invalid uri: {uri}") from err
 
         # start queue with alert sound(s)
         self._items = queue_items

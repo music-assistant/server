@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
+
+from requests import JSONDecodeError
 
 from music_assistant.helpers.process import AsyncProcess
+from music_assistant.models.errors import InvalidDataError
 
 FALLBACK_ARTIST = "Various Artists"
 
@@ -35,7 +38,7 @@ class AudioTags:
     bits_per_sample: int
     format: str
     bit_rate: int
-    duration: float
+    duration: Optional[float]
     tags: Dict[str, str]
     has_cover_image: bool
     filename: str
@@ -153,17 +156,17 @@ class AudioTags:
 
         return AudioTags(
             raw=raw,
-            sample_rate=int(audio_stream["sample_rate"]),
-            channels=audio_stream["channels"],
+            sample_rate=int(audio_stream.get("sample_rate", 44100)),
+            channels=audio_stream.get("channels", 2),
             bits_per_sample=int(
                 audio_stream.get(
                     "bits_per_raw_sample", audio_stream.get("bits_per_sample")
                 )
-            )
-            or 16,
+                or 16
+            ),
             format=raw["format"]["format_name"],
             bit_rate=int(raw["format"].get("bit_rate", 320)),
-            duration=float(raw["format"]["duration"]),
+            duration=float(raw["format"].get("duration", 0)) or None,
             tags=tags,
             has_cover_image=has_cover_image,
             filename=raw["format"]["filename"],
@@ -195,8 +198,16 @@ async def parse_tags(file_path: str) -> AudioTags:
         args, enable_stdin=False, enable_stdout=True, enable_stderr=False
     ) as proc:
 
-        res, _ = await proc.communicate()
-        return AudioTags.parse(json.loads(res))
+        try:
+            res, _ = await proc.communicate()
+            data = json.loads(res)
+            if error := data.get("error"):
+                raise InvalidDataError(error["string"])
+            return AudioTags.parse(data)
+        except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
+            raise InvalidDataError(
+                f"Unable to retrieve info for {file_path}: {str(err)}"
+            ) from err
 
 
 async def get_embedded_image(file_path: str) -> bytes | None:
