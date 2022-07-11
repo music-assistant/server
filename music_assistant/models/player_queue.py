@@ -46,8 +46,8 @@ class QueueSnapShot:
     items: List[QueueItem]
     index: Optional[int]
     position: int
-    repeat: RepeatMode
-    shuffle: bool
+    settings: dict
+    volume_level: int
 
 
 class PlayerQueue:
@@ -106,7 +106,7 @@ class PlayerQueue:
             return None
         if stream := self.mass.streams.queue_streams.get(self._stream_id):
             return stream.index_in_buffer
-        return None
+        return self.current_index
 
     @property
     def active(self) -> bool:
@@ -262,25 +262,41 @@ class PlayerQueue:
         elif queue_opt == QueueOption.ADD:
             await self.append(queue_items)
 
-    async def play_alert(
-        self, uri: str, announce: bool = False, gain_correct: int = 6
-    ) -> str:
+    async def play_announcement(self, uri: str, prepend_alert: bool = False) -> str:
         """
-        Play given uri as Alert on the queue.
+        Play given uri as Announcement on the queue.
 
         uri: Uri that should be played as announcement, can be Music Assistant URI or plain url.
-        announce: Prepend the (TTS) alert with a small announce sound.
-        gain_correct: Adjust the gain of the alert sound (in dB).
+        prepend_alert: Prepend the (TTS) announcement with an alert bell sound.
         """
-        assert not self._snapshot, "Alert already in progress"
+        assert not self._snapshot, "Announcement already in progress"
 
         # create snapshot
         await self.snapshot_create()
 
+        # stop player if needed
+        if self.active and self.player.state in (
+            PlayerState.PLAYING,
+            PlayerState.PAUSED,
+        ):
+            await self.stop()
+
+        # adjust queue settings for announce playback
+        self._settings.from_dict(
+            {
+                "repeat_mode": "off",
+                "shuffle_enabled": False,
+                "crossfade_mode": "disabled",
+                "volume_normalization_enabled": True,
+                "volume_normalization_target": 0,
+                "max_sample_rate": 44100,
+            }
+        )
+
         queue_items = []
 
-        # prepend annnounce sound if needed
-        if announce:
+        # prepend alert sound if needed
+        if prepend_alert:
             url_prov = self.mass.music.get_provider(ProviderType.URL)
             media_item = await url_prov.parse_item(ALERT_ANNOUNCE_FILE)
             queue_item = QueueItem.from_media_item(media_item)
@@ -294,10 +310,10 @@ class PlayerQueue:
             # invalid MA uri or item not found error
             raise MediaNotFoundError(f"Invalid uri: {uri}") from err
 
-        # start queue with alert sound(s)
+        # start queue with announcement sound(s)
         self._items = queue_items
         stream = await self.queue_stream_start(
-            start_index=0, seek_position=0, fade_in=False, is_alert=True
+            start_index=0, seek_position=0, fade_in=False
         )
         # execute the play command on the player(s)
         await self.player.play_url(stream.url)
@@ -318,7 +334,7 @@ class PlayerQueue:
         try:
             await asyncio.wait_for(play_stopped.wait(), 30)
         except asyncio.TimeoutError:
-            self.logger.warning("Timeout while playing alert")
+            self.logger.warning("Timeout while playing announcement")
         finally:
             unsub()
             # restore queue
@@ -410,8 +426,8 @@ class PlayerQueue:
             items=self._items,
             index=self._current_index,
             position=self._current_item_elapsed_time,
-            repeat=self._settings.repeat_mode,
-            shuffle=self._settings.shuffle_enabled,
+            settings=self._settings.to_dict(),
+            volume_level=self.player.volume_level,
         )
 
     async def snapshot_restore(self) -> None:
@@ -419,10 +435,12 @@ class PlayerQueue:
         assert self._snapshot, "Create snapshot before restoring it."
         # clear queue first
         await self.clear()
+        # restore volume if needed
+        if self._snapshot.volume_level != self.player.volume_level:
+            await self.player.volume_set(self._snapshot.volume_level)
         # restore queue
-        self._settings.repeat_mode = self._snapshot.repeat
-        self._settings.shuffle_enabled = self._snapshot.shuffle
-        await self._update_items(self._snapshot.items)
+        self._settings.from_dict(self._snapshot.settings)
+        await self.update_items(self._snapshot.items)
         self._current_index = self._snapshot.index
         self._current_item_elapsed_time = self._snapshot.position
         if self._snapshot.state in (PlayerState.PLAYING, PlayerState.PAUSED):
@@ -480,7 +498,7 @@ class PlayerQueue:
             return
         # move the item in the list
         items.insert(new_index, items.pop(item_index))
-        await self._update_items(items)
+        await self.update_items(items)
 
     async def delete_item(self, queue_item_id: str) -> None:
         """Delete item (by id or index) from the queue."""
@@ -563,13 +581,13 @@ class PlayerQueue:
             queue_items = played_items + cur_item + next_items
         else:
             queue_items = self._items + queue_items
-        await self._update_items(queue_items)
+        await self.update_items(queue_items)
 
     async def clear(self) -> None:
         """Clear all items in the queue."""
         if self.player.state not in (PlayerState.IDLE, PlayerState.OFF):
             await self.stop()
-        await self._update_items([])
+        await self.update_items([])
 
     def on_player_update(self) -> None:
         """Call when player updates."""
@@ -638,7 +656,6 @@ class PlayerQueue:
         start_index: int,
         seek_position: int,
         fade_in: bool,
-        is_alert: bool = False,
     ) -> QueueStream:
         """Start the queue stream runner."""
         self._current_item_elapsed_time = 0
@@ -651,21 +668,18 @@ class PlayerQueue:
             seek_position=seek_position,
             fade_in=fade_in,
             output_format=self._settings.stream_type,
-            is_alert=is_alert,
         )
         self._stream_id = stream.stream_id
         return stream
 
     def get_next_index(self, cur_index: Optional[int]) -> int:
         """Return the next index for the queue, accounting for repeat settings."""
-        alert_active = self.stream and self.stream.is_alert
         # handle repeat single track
-        if not alert_active and self.settings.repeat_mode == RepeatMode.ONE:
+        if self.settings.repeat_mode == RepeatMode.ONE:
             return cur_index
         # handle repeat all
         if (
-            not alert_active
-            and self.settings.repeat_mode == RepeatMode.ALL
+            self.settings.repeat_mode == RepeatMode.ALL
             and self._items
             and cur_index == (len(self._items) - 1)
         ):
@@ -710,7 +724,7 @@ class PlayerQueue:
             "settings": self.settings.to_dict(),
         }
 
-    async def _update_items(self, queue_items: List[QueueItem]) -> None:
+    async def update_items(self, queue_items: List[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
         self._items = queue_items
         self.signal_update(True)

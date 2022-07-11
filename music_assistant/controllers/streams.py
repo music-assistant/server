@@ -238,7 +238,6 @@ class StreamsController:
         seek_position: int,
         fade_in: bool,
         output_format: ContentType,
-        is_alert: bool,
     ) -> QueueStream:
         """Start running a queue stream."""
         # generate unique stream url
@@ -252,12 +251,7 @@ class StreamsController:
         streamdetails = await get_stream_details(self.mass, first_item, queue.queue_id)
 
         # work out pcm details
-        if is_alert:
-            pcm_sample_rate = 41000
-            pcm_bit_depth = 16
-            pcm_channels = 2
-            allow_resample = True
-        elif queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
+        if queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
             pcm_sample_rate = min(96000, queue.settings.max_sample_rate)
             pcm_bit_depth = 24
             pcm_channels = 2
@@ -284,7 +278,6 @@ class StreamsController:
             pcm_bit_depth=pcm_bit_depth,
             pcm_channels=pcm_channels,
             allow_resample=allow_resample,
-            is_alert=is_alert,
             autostart=True,
         )
         # cleanup stale previous queue tasks
@@ -317,7 +310,6 @@ class QueueStream:
         pcm_channels: int = 2,
         pcm_floating_point: bool = False,
         allow_resample: bool = False,
-        is_alert: bool = False,
         autostart: bool = False,
     ):
         """Init QueueStreamJob instance."""
@@ -332,7 +324,6 @@ class QueueStream:
         self.pcm_channels = pcm_channels
         self.pcm_floating_point = pcm_floating_point
         self.allow_resample = allow_resample
-        self.is_alert = is_alert
         self.url = queue.mass.streams.get_stream_url(stream_id, output_format)
 
         self.mass = queue.mass
