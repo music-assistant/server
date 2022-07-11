@@ -157,11 +157,11 @@ class MusicProvider:
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add item to provider's library. Return true on succes."""
-        raise NotImplementedError
+        return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from provider's library. Return true on succes."""
-        raise NotImplementedError
+        return True
 
     async def add_playlist_tracks(
         self, prov_playlist_id: str, prov_track_ids: List[str]
@@ -193,12 +193,11 @@ class MusicProvider:
             return await self.get_artist(prov_item_id)
         if media_type == MediaType.ALBUM:
             return await self.get_album(prov_item_id)
-        if media_type == MediaType.TRACK:
-            return await self.get_track(prov_item_id)
         if media_type == MediaType.PLAYLIST:
             return await self.get_playlist(prov_item_id)
         if media_type == MediaType.RADIO:
             return await self.get_radio(prov_item_id)
+        return await self.get_track(prov_item_id)
 
     async def browse(self, path: Optional[str] = None) -> List[MediaItemType]:
         """
