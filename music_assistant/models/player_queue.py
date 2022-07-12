@@ -295,6 +295,7 @@ class PlayerQueue:
                     item_id=_url,
                     content_type=ContentType.try_parse(_url),
                     loudness=0,
+                    gain_correct=4,
                     data=_url,
                 ),
                 media_type=MediaType.ANNOUNCEMENT,
@@ -346,8 +347,8 @@ class PlayerQueue:
             # append silence track. we use that as a reliable way to make sure
             # there is enough buffer for the player to start quickly
             # and to detect when we finished playing the alert
-            silence_url = self.mass.streams.get_silence_url()
-            queue_items.append(create_announcement(silence_url))
+            silence_item = create_announcement(self.mass.streams.get_silence_url())
+            queue_items.append(silence_item)
 
             # start queue with announcement sound(s)
             self._items = queue_items
@@ -357,7 +358,7 @@ class PlayerQueue:
 
             # wait for the player to finish playing
             await asyncio.sleep(5)
-            await self._wait_for_state(PlayerState.PLAYING, silence_url)
+            await self._wait_for_state(PlayerState.PLAYING, silence_item.item_id)
 
         except Exception as err:  # pylint: disable=broad-except
             self.logger.exception("Error while playing announcement", exc_info=err)
@@ -839,7 +840,7 @@ class PlayerQueue:
     async def _wait_for_state(
         self,
         state: Union[None, PlayerState, Tuple[PlayerState]],
-        media_item_id: Optional[str] = None,
+        queue_item_id: Optional[str] = None,
         timeout: int = 30,
     ) -> None:
         """Wait for player(queue) to reach a specific state."""
@@ -850,9 +851,9 @@ class PlayerQueue:
         while count < timeout * 10:
 
             if (state is None or self.player.state in state) and (
-                media_item_id is None
+                queue_item_id is None
                 or self.current_item
-                and self.current_item.media_item.item_id == media_item_id
+                and self.current_item.item_id == queue_item_id
             ):
                 return
 
