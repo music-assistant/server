@@ -81,13 +81,21 @@ async def crossfade_pcm_parts(
     ]
     async with AsyncProcess(args, True) as proc:
         crossfade_data, _ = await proc.communicate(fade_in_part)
+        if crossfade_data:
+            LOGGER.debug(
+                "crossfaded 2 pcm chunks. fade_in_part: %s - fade_out_part: %s - result: %s",
+                len(fade_in_part),
+                len(fade_out_part),
+                len(crossfade_data),
+            )
+            return crossfade_data
+        # no crossfade_data, return original data instead
         LOGGER.debug(
-            "crossfaded 2 pcm chunks. fade_in_part: %s - fade_out_part: %s - result: %s",
+            "crossfade of pcm chunks failed: not enough data. fade_in_part: %s - fade_out_part: %s",
             len(fade_in_part),
             len(fade_out_part),
-            len(crossfade_data),
         )
-        return crossfade_data
+        return fade_out_part + fade_in_part
 
 
 async def strip_silence(
@@ -114,9 +122,15 @@ async def strip_silence(
     ]
     # filter args
     if reverse:
-        args += ["-af", "areverse,silenceremove=1:0:-50dB:detection=peak,areverse"]
+        args += [
+            "-af",
+            "areverse,atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02,areverse",
+        ]
     else:
-        args += ["-af", "silenceremove=1:0:-50dB:detection=peak"]
+        args += [
+            "-af",
+            "atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02",
+        ]
     # output args
     args += ["-f", fmt.value, "-"]
     async with AsyncProcess(args, True) as proc:
@@ -344,6 +358,7 @@ async def get_media_stream(
     sample_rate: int,
     channels: int = 2,
     seek_position: int = 0,
+    chunk_size: int = 64000,
 ) -> AsyncGenerator[bytes, None]:
     """Get the PCM audio stream for the given streamdetails."""
     assert pcm_fmt.is_pcm(), "Output format must be a PCM type"
@@ -371,9 +386,8 @@ async def get_media_stream(
         ffmpeg_proc.attach_task(writer())
 
         # yield chunks from stdout
-        sample_size = get_chunksize(pcm_fmt, sample_rate, 24, channels, 10)
         try:
-            async for chunk in ffmpeg_proc.iter_any(sample_size):
+            async for chunk in ffmpeg_proc.iter_any(chunk_size):
                 yield chunk
 
         except (asyncio.CancelledError, GeneratorExit) as err:
@@ -398,7 +412,7 @@ async def get_radio_stream(
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
     headers = {"Icy-MetaData": "1"}
-    timeout = ClientTimeout(total=0, connect=10, sock_read=10)
+    timeout = ClientTimeout(total=0, connect=30, sock_read=120)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         headers = resp.headers
         meta_int = int(headers.get("icy-metaint", "0"))
@@ -452,7 +466,8 @@ async def get_http_stream(
     buffer = b""
     buffer_all = False
     bytes_received = 0
-    async with mass.http_session.get(url, headers=headers) as resp:
+    timeout = ClientTimeout(total=0, connect=30, sock_read=120)
+    async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         is_partial = resp.status == 206
         buffer_all = seek_position and not is_partial
         async for chunk in resp.content.iter_any():
