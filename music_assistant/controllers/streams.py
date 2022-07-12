@@ -595,7 +595,6 @@ class QueueStream:
             input_format = ContentType.from_bit_depth(
                 self.pcm_bit_depth, self.pcm_floating_point
             )
-
             sample_duration = 1  # 1 second
             sample_size = get_chunksize(
                 input_format,
@@ -604,10 +603,11 @@ class QueueStream:
                 self.pcm_channels,
                 sample_duration,
             )
-            # buffer size is duration of crossfade + 5 seconds
+            sample_size_per_second = sample_size * (1 / sample_duration)
             crossfade_duration = self.queue.settings.crossfade_duration or 1
-            crossfade_size = (sample_size * sample_duration) * crossfade_duration
-            buf_size = (sample_size * sample_duration) * (crossfade_duration + 5)
+            crossfade_size = sample_size_per_second * crossfade_duration
+            # buffer size is twice the crossfade size to have some overhead for padded silence
+            buf_size = crossfade_size * 2
             # predict total size to expect for this track from duration
             total_size = (sample_size * sample_duration) * (queue_track.duration or 0)
 
