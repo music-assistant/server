@@ -182,21 +182,23 @@ class QueueSettings:
     def from_dict(self, d: Dict[str, Any]) -> None:
         """Initialize settings from dict."""
         self._repeat_mode = RepeatMode(d.get("repeat_mode", self._repeat_mode.value))
-        self._shuffle_enabled = d.get("shuffle_enabled", self._shuffle_enabled)
+        self._shuffle_enabled = bool(d.get("shuffle_enabled", self._shuffle_enabled))
         self._crossfade_mode = CrossFadeMode(
             d.get("crossfade_mode", self._crossfade_mode.value)
         )
-        self._crossfade_duration = d.get("crossfade_duration", self._crossfade_duration)
-        self._volume_normalization_enabled = d.get(
-            "volume_normalization_enabled", self._volume_normalization_enabled
+        self._crossfade_duration = int(
+            d.get("crossfade_duration", self._crossfade_duration)
         )
-        self._volume_normalization_target = d.get(
-            "volume_normalization_target", self._volume_normalization_target
+        self._volume_normalization_enabled = bool(
+            d.get("volume_normalization_enabled", self._volume_normalization_enabled)
+        )
+        self._volume_normalization_target = float(
+            d.get("volume_normalization_target", self._volume_normalization_target)
         )
         self._stream_type = ContentType(d.get("stream_type", self._stream_type.value))
-        self._max_sample_rate = d.get("max_sample_rate", self._max_sample_rate)
-        self._announce_volume_increase = d.get(
-            "announce_volume_increase", self._announce_volume_increase
+        self._max_sample_rate = int(d.get("max_sample_rate", self._max_sample_rate))
+        self._announce_volume_increase = int(
+            d.get("announce_volume_increase", self._announce_volume_increase)
         )
 
     async def restore(self) -> None:
