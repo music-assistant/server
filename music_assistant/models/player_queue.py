@@ -294,6 +294,7 @@ class PlayerQueue:
                     provider=ProviderType.URL,
                     item_id=_url,
                     content_type=ContentType.try_parse(_url),
+                    media_type=MediaType.ANNOUNCEMENT,
                     loudness=0,
                     gain_correct=4,
                     data=_url,
@@ -332,10 +333,6 @@ class PlayerQueue:
                 {
                     "repeat_mode": "off",
                     "shuffle_enabled": False,
-                    # force resampling
-                    "crossfade_mode": "always",
-                    "crossfade_duration": 0,
-                    "max_sample_rate": 44100,
                 }
             )
 

@@ -387,7 +387,7 @@ async def get_media_stream(
 
         # yield chunks from stdout
         try:
-            async for chunk in ffmpeg_proc.iter_any(chunk_size):
+            async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
                 yield chunk
 
         except (asyncio.CancelledError, GeneratorExit) as err:

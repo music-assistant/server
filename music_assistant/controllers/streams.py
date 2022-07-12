@@ -258,7 +258,12 @@ class StreamsController:
         streamdetails = await get_stream_details(self.mass, first_item, queue.queue_id)
 
         # work out pcm details
-        if queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
+        if streamdetails.media_type == MediaType.ANNOUNCEMENT:
+            pcm_sample_rate = 44100
+            pcm_bit_depth = 16
+            pcm_channels = 2
+            allow_resample = True
+        elif queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
             pcm_sample_rate = min(96000, queue.settings.max_sample_rate)
             pcm_bit_depth = 24
             pcm_channels = 2
@@ -572,6 +577,7 @@ class QueueStream:
             use_crossfade = (
                 self.queue.settings.crossfade_mode != CrossFadeMode.DISABLED
                 and self.queue.settings.crossfade_duration > 0
+                and streamdetails.media_type != MediaType.ANNOUNCEMENT
             )
             # do not crossfade tracks of same album
             if (
@@ -604,16 +610,17 @@ class QueueStream:
             )
             crossfade_duration = self.queue.settings.crossfade_duration
             crossfade_size = sample_size_per_second * crossfade_duration
-            # buffer size is 2 times the crossfade size to have some overhead for padded silence
-            buffer_duration = (crossfade_duration or 5) * 2
+            # buffer_duration has some overhead to account for padded silence
+            buffer_duration = (crossfade_duration or 2) * 2
             # predict total size to expect for this track from duration
             stream_duration = (queue_track.duration or 0) - seek_position
 
             self.logger.info(
-                "Start Streaming queue track: %s (%s) for queue %s",
+                "Start Streaming queue track: %s (%s) for queue %s - crossfade: %s",
                 queue_track.uri,
                 queue_track.name,
                 self.queue.player.name,
+                use_crossfade,
             )
             queue_track.streamdetails.seconds_skipped = seek_position
             buffer = b""
@@ -639,6 +646,15 @@ class QueueStream:
                     self.logger.warning("Stream error on %s", queue_track.uri)
                     queue_track.streamdetails.seconds_streamed = 0
                     break
+
+                # bypass any processing for radiostreams and announcements
+                if (
+                    streamdetails.media_type == MediaType.ANNOUNCEMENT
+                    or not stream_duration
+                ):
+                    yield chunk
+                    bytes_written += len(chunk)
+                    continue
 
                 # buffer full for crossfade
                 if last_fadeout_part and (seconds_in_buffer >= buffer_duration):
