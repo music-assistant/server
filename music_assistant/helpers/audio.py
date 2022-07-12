@@ -11,7 +11,7 @@ from time import time
 from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Tuple
 
 import aiofiles
-from aiohttp import ClientError, ClientTimeout
+from aiohttp import ClientTimeout
 
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import create_tempfile
@@ -88,44 +88,6 @@ async def crossfade_pcm_parts(
             len(crossfade_data),
         )
         return crossfade_data
-
-
-async def fadein_pcm_part(
-    pcm_audio: bytes,
-    fade_length: int,
-    fmt: ContentType,
-    sample_rate: int,
-    channels: int = 2,
-) -> bytes:
-    """Fadein chunk of pcm/raw audio using ffmpeg."""
-    args = [
-        # generic args
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "quiet",
-        # fade_in part (stdin)
-        "-acodec",
-        fmt.name.lower(),
-        "-f",
-        fmt.value,
-        "-ac",
-        str(channels),
-        "-ar",
-        str(sample_rate),
-        "-i",
-        "-",
-        # filter args
-        "-af",
-        f"afade=type=in:start_time=0:duration={fade_length}",
-        # output args
-        "-f",
-        fmt.value,
-        "-",
-    ]
-    async with AsyncProcess(args, True) as proc:
-        result_audio, _ = await proc.communicate(pcm_audio)
-        return result_audio
 
 
 async def strip_silence(
@@ -437,46 +399,32 @@ async def get_radio_stream(
     """Get radio audio stream from HTTP, including metadata retrieval."""
     headers = {"Icy-MetaData": "1"}
     timeout = ClientTimeout(total=0, connect=10, sock_read=10)
-    reconnects = 0
-    while True:
-        # in loop to reconnect on connection failure
-        try:
-            LOGGER.debug("radio stream (re)connecting to: %s", url)
-            async with mass.http_session.get(
-                url, headers=headers, timeout=timeout
-            ) as resp:
-                headers = resp.headers
-                meta_int = int(headers.get("icy-metaint", "0"))
-                # stream with ICY Metadata
-                if meta_int:
-                    while True:
-                        audio_chunk = await resp.content.readexactly(meta_int)
-                        yield audio_chunk
-                        meta_byte = await resp.content.readexactly(1)
-                        meta_length = ord(meta_byte) * 16
-                        meta_data = await resp.content.readexactly(meta_length)
-                        if not meta_data:
-                            continue
-                        meta_data = meta_data.rstrip(b"\0")
-                        stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
-                        if not stream_title:
-                            continue
-                        stream_title = stream_title.group(1).decode()
-                        if stream_title != streamdetails.stream_title:
-                            streamdetails.stream_title = stream_title
-                            if queue := mass.players.get_player_queue(
-                                streamdetails.queue_id
-                            ):
-                                queue.signal_update()
-                # Regular HTTP stream
-                else:
-                    async for chunk in resp.content.iter_any():
-                        yield chunk
-        except (asyncio.exceptions.TimeoutError, ClientError) as err:
-            # reconnect on http error (max 5 times)
-            if reconnects >= 5:
-                raise err
-            reconnects += 1
+    async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
+        headers = resp.headers
+        meta_int = int(headers.get("icy-metaint", "0"))
+        # stream with ICY Metadata
+        if meta_int:
+            while True:
+                audio_chunk = await resp.content.readexactly(meta_int)
+                yield audio_chunk
+                meta_byte = await resp.content.readexactly(1)
+                meta_length = ord(meta_byte) * 16
+                meta_data = await resp.content.readexactly(meta_length)
+                if not meta_data:
+                    continue
+                meta_data = meta_data.rstrip(b"\0")
+                stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
+                if not stream_title:
+                    continue
+                stream_title = stream_title.group(1).decode()
+                if stream_title != streamdetails.stream_title:
+                    streamdetails.stream_title = stream_title
+                    if queue := mass.players.get_player_queue(streamdetails.queue_id):
+                        queue.signal_update()
+        # Regular HTTP stream
+        else:
+            async for chunk in resp.content.iter_any():
+                yield chunk
 
 
 async def get_http_stream(

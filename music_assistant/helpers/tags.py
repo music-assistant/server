@@ -151,7 +151,7 @@ class AudioTags:
         # convert all tag-keys to lowercase without spaces
         tags = {
             key.lower().replace(" ", "").replace("_", ""): value
-            for key, value in raw["format"]["tags"].items()
+            for key, value in raw["format"].get("tags", {}).items()
         }
 
         return AudioTags(
