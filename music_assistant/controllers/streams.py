@@ -573,8 +573,11 @@ class QueueStream:
                 self.queue.settings.crossfade_mode != CrossFadeMode.DISABLED
                 and self.queue.settings.crossfade_duration > 0
             )
+            # do not crossfade tracks of same album
             if (
-                prev_track is not None
+                use_crossfade
+                and self.queue.settings.crossfade_mode != CrossFadeMode.ALWAYS
+                and prev_track is not None
                 and prev_track.media_type == MediaType.TRACK
                 and queue_track.media_type == MediaType.TRACK
             ):
@@ -588,21 +591,25 @@ class QueueStream:
                     use_crossfade = False
             prev_track = queue_track
 
-            # calculate sample_size based on PCM params for 200ms of audio
+            # calculate sample_size based on PCM params for sample_duration seconds of audio
             input_format = ContentType.from_bit_depth(
                 self.pcm_bit_depth, self.pcm_floating_point
             )
+
+            sample_duration = 1  # 1 second
             sample_size = get_chunksize(
                 input_format,
                 self.pcm_sample_rate,
                 self.pcm_bit_depth,
                 self.pcm_channels,
+                sample_duration,
             )
-            # buffer size is duration of crossfade + 3 seconds
+            # buffer size is duration of crossfade + 5 seconds
             crossfade_duration = self.queue.settings.crossfade_duration or 1
-            crossfade_size = (sample_size * 5) * crossfade_duration
-            buf_size = (sample_size * 5) * (crossfade_duration * 3)
-            total_size = (sample_size * 5) * (queue_track.duration or 0)
+            crossfade_size = (sample_size * sample_duration) * crossfade_duration
+            buf_size = (sample_size * sample_duration) * (crossfade_duration + 5)
+            # predict total size to expect for this track from duration
+            total_size = (sample_size * sample_duration) * (queue_track.duration or 0)
 
             self.logger.info(
                 "Start Streaming queue track: %s (%s) for queue %s",
