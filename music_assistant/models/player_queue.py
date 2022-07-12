@@ -275,12 +275,13 @@ class PlayerQueue:
         prepend_alert: Prepend the (TTS) announcement with an alert bell sound.
         """
         if self._announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
+            self.logger.warning(
+                "Ignore queue command: An announcement is (already) in progress"
+            )
             return
 
         try:
             # create snapshot
-            self._announcement_in_progress = True
             await self.snapshot_create()
             # stop player if needed
             if self.active and self.player.state in (
@@ -289,6 +290,19 @@ class PlayerQueue:
             ):
                 await self.stop()
                 await self._wait_for_state((PlayerState.OFF, PlayerState.IDLE))
+                self._announcement_in_progress = True
+
+            # turn on player if needed
+            if not self.player.powered:
+                await self.player.power(True)
+                await self._wait_for_state(PlayerState.IDLE)
+
+            # adjust volume if needed
+            if self._settings.announce_volume:
+                announce_volume = self.player.volume_level * (
+                    1 + self._settings.announce_volume / 100
+                )
+                await self.player.volume_set(announce_volume)
 
             # adjust queue settings for announce playback
             self._settings.from_dict(
@@ -298,9 +312,6 @@ class PlayerQueue:
                     # force resampling
                     "crossfade_mode": "always",
                     "crossfade_duration": 0,
-                    # make sure that announcement is louder
-                    "volume_normalization_enabled": True,
-                    "volume_normalization_target": -10,
                     "max_sample_rate": 44100,
                 }
             )
