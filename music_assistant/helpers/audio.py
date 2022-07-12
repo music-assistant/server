@@ -213,29 +213,29 @@ async def get_stream_details(
         queue_item.streamdetails.seconds_skipped = 0
         queue_item.streamdetails.seconds_streamed = 0
         streamdetails = queue_item.streamdetails
-
-    # fetch streamdetails from provider
-    # always request the full item as there might be other qualities available
-    full_item = await mass.music.get_item_by_uri(queue_item.uri)
-    # sort by quality and check track availability
-    for prov_media in sorted(
-        full_item.provider_ids, key=lambda x: x.quality or 0, reverse=True
-    ):
-        if not prov_media.available:
-            continue
-        # get streamdetails from provider
-        music_prov = mass.music.get_provider(prov_media.prov_id)
-        if not music_prov or not music_prov.available:
-            continue  # provider temporary unavailable ?
-        try:
-            streamdetails: StreamDetails = await music_prov.get_stream_details(
-                prov_media.item_id
-            )
-            streamdetails.content_type = ContentType(streamdetails.content_type)
-        except MusicAssistantError as err:
-            LOGGER.warning(str(err))
-        else:
-            break
+    else:
+        # fetch streamdetails from provider
+        # always request the full item as there might be other qualities available
+        full_item = await mass.music.get_item_by_uri(queue_item.uri)
+        # sort by quality and check track availability
+        for prov_media in sorted(
+            full_item.provider_ids, key=lambda x: x.quality or 0, reverse=True
+        ):
+            if not prov_media.available:
+                continue
+            # get streamdetails from provider
+            music_prov = mass.music.get_provider(prov_media.prov_id)
+            if not music_prov or not music_prov.available:
+                continue  # provider temporary unavailable ?
+            try:
+                streamdetails: StreamDetails = await music_prov.get_stream_details(
+                    prov_media.item_id
+                )
+                streamdetails.content_type = ContentType(streamdetails.content_type)
+            except MusicAssistantError as err:
+                LOGGER.warning(str(err))
+            else:
+                break
 
     if not streamdetails:
         raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
