@@ -70,6 +70,7 @@ class PlayerQueue:
         self._last_player_update: int = 0
         self._last_stream_id: str = ""
         self._snapshot: Optional[QueueSnapShot] = None
+        self._announcement_in_progress: bool = False
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
@@ -199,6 +200,9 @@ class PlayerQueue:
                 QueueOption.ADD -> Append new items at end of the queue
             :param passive: if passive set to true the stream url will not be sent to the player.
         """
+        if self._announcement_in_progress:
+            self.logger.warning("Ignore queue command: An announcement is in progress")
+            return
         # a single item or list of items may be provided
         if not isinstance(media, list):
             media = [media]
@@ -270,13 +274,14 @@ class PlayerQueue:
         uri: Uri that should be played as announcement, can be Music Assistant URI or plain url.
         prepend_alert: Prepend the (TTS) announcement with an alert bell sound.
         """
-        assert not self._snapshot, "Announcement already in progress"
-
-        # create snapshot
-        await self.snapshot_create()
+        if self._announcement_in_progress:
+            self.logger.warning("Ignore queue command: An announcement is in progress")
+            return
 
         try:
-
+            # create snapshot
+            self._announcement_in_progress = True
+            await self.snapshot_create()
             # stop player if needed
             if self.active and self.player.state in (
                 PlayerState.PLAYING,
@@ -301,29 +306,32 @@ class PlayerQueue:
             )
 
             queue_items = []
-
+            total_duration = 0
             # prepend alert sound if needed
             if prepend_alert:
                 url_prov = self.mass.music.get_provider(ProviderType.URL)
                 media_item = await url_prov.parse_item(ALERT_ANNOUNCE_FILE)
-                media_item.duration = 2
+                media_item.name = "announcement"
+                total_duration += media_item.duration or 3
                 queue_items.append(QueueItem.from_media_item(media_item))
 
             # parse provided uri into a MA MediaItem
             try:
                 media_item = await self.mass.music.get_item_by_uri(uri)
-                # we need to set a duration forour state based detection to work
-                if not media_item.duration:
-                    media_item.duration = 120
+                media_item.name = "announcement"
+                total_duration += media_item.duration or 30
                 queue_items.append(QueueItem.from_media_item(media_item))
             except MusicAssistantError as err:
                 # invalid MA uri or item not found error
                 raise MediaNotFoundError(f"Invalid uri: {uri}") from err
 
-            # append silence
+            # append silence track. we use that as a reliable way to make sure
+            # there is enough buffer for the player to start quickly
+            # and to detect when we finished playing the alert
             url_prov = self.mass.music.get_provider(ProviderType.URL)
             silence_url = self.mass.streams.get_silence_url()
             media_item = await url_prov.parse_item(silence_url)
+            media_item.name = "announcement"
             media_item.duration = 3600
             queue_items.append(QueueItem.from_media_item(media_item))
 
@@ -334,23 +342,30 @@ class PlayerQueue:
             await self.player.play_url(stream.url)
 
             # wait for the player to finish playing
-            await asyncio.sleep(4)  # allow some time to update vars
+            await asyncio.sleep(total_duration)
             await self._wait_for_state(PlayerState.PLAYING, silence_url)
 
         except Exception as err:  # pylint: disable=broad-except
             self.logger.exception("Error while playing announcement", exc_info=err)
         finally:
             # restore queue
+            self._announcement_in_progress = False
             await self.snapshot_restore()
 
     async def stop(self) -> None:
         """Stop command on queue player."""
+        if self._announcement_in_progress:
+            self.logger.warning("Ignore queue command: An announcement is in progress")
+            return
         self.signal_next = False
         # redirect to underlying player
         await self.player.stop()
 
     async def play(self) -> None:
         """Play (unpause) command on queue player."""
+        if self._announcement_in_progress:
+            self.logger.warning("Ignore queue command: An announcement is in progress")
+            return
         if self.active and self.player.state == PlayerState.PAUSED:
             await self.player.play()
         else:
@@ -358,6 +373,9 @@ class PlayerQueue:
 
     async def pause(self) -> None:
         """Pause command on queue player."""
+        if self._announcement_in_progress:
+            self.logger.warning("Ignore queue command: An announcement is in progress")
+            return
         # redirect to underlying player
         await self.player.pause()
 
@@ -468,6 +486,9 @@ class PlayerQueue:
         passive: bool = False,
     ) -> None:
         """Play item at index (or item_id) X in queue."""
+        if self._announcement_in_progress:
+            self.logger.warning("Ignore queue command: An announcement is in progress")
+            return
         if not isinstance(index, int):
             index = self.index_by_id(index)
         if index is None:
