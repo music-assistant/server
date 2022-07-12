@@ -11,7 +11,7 @@ from time import time
 from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Tuple
 
 import aiofiles
-from aiohttp import ClientError, ClientTimeout
+from aiohttp import ClientTimeout
 
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import create_tempfile
@@ -81,51 +81,21 @@ async def crossfade_pcm_parts(
     ]
     async with AsyncProcess(args, True) as proc:
         crossfade_data, _ = await proc.communicate(fade_in_part)
+        if crossfade_data:
+            LOGGER.debug(
+                "crossfaded 2 pcm chunks. fade_in_part: %s - fade_out_part: %s - result: %s",
+                len(fade_in_part),
+                len(fade_out_part),
+                len(crossfade_data),
+            )
+            return crossfade_data
+        # no crossfade_data, return original data instead
         LOGGER.debug(
-            "crossfaded 2 pcm chunks. fade_in_part: %s - fade_out_part: %s - result: %s",
+            "crossfade of pcm chunks failed: not enough data. fade_in_part: %s - fade_out_part: %s",
             len(fade_in_part),
             len(fade_out_part),
-            len(crossfade_data),
         )
-        return crossfade_data
-
-
-async def fadein_pcm_part(
-    pcm_audio: bytes,
-    fade_length: int,
-    fmt: ContentType,
-    sample_rate: int,
-    channels: int = 2,
-) -> bytes:
-    """Fadein chunk of pcm/raw audio using ffmpeg."""
-    args = [
-        # generic args
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "quiet",
-        # fade_in part (stdin)
-        "-acodec",
-        fmt.name.lower(),
-        "-f",
-        fmt.value,
-        "-ac",
-        str(channels),
-        "-ar",
-        str(sample_rate),
-        "-i",
-        "-",
-        # filter args
-        "-af",
-        f"afade=type=in:start_time=0:duration={fade_length}",
-        # output args
-        "-f",
-        fmt.value,
-        "-",
-    ]
-    async with AsyncProcess(args, True) as proc:
-        result_audio, _ = await proc.communicate(pcm_audio)
-        return result_audio
+        return fade_out_part + fade_in_part
 
 
 async def strip_silence(
@@ -152,9 +122,15 @@ async def strip_silence(
     ]
     # filter args
     if reverse:
-        args += ["-af", "areverse,silenceremove=1:0:-50dB:detection=peak,areverse"]
+        args += [
+            "-af",
+            "areverse,atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02,areverse",
+        ]
     else:
-        args += ["-af", "silenceremove=1:0:-50dB:detection=peak"]
+        args += [
+            "-af",
+            "atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02",
+        ]
     # output args
     args += ["-f", fmt.value, "-"]
     async with AsyncProcess(args, True) as proc:
@@ -251,29 +227,29 @@ async def get_stream_details(
         queue_item.streamdetails.seconds_skipped = 0
         queue_item.streamdetails.seconds_streamed = 0
         streamdetails = queue_item.streamdetails
-
-    # fetch streamdetails from provider
-    # always request the full item as there might be other qualities available
-    full_item = await mass.music.get_item_by_uri(queue_item.uri)
-    # sort by quality and check track availability
-    for prov_media in sorted(
-        full_item.provider_ids, key=lambda x: x.quality or 0, reverse=True
-    ):
-        if not prov_media.available:
-            continue
-        # get streamdetails from provider
-        music_prov = mass.music.get_provider(prov_media.prov_id)
-        if not music_prov or not music_prov.available:
-            continue  # provider temporary unavailable ?
-        try:
-            streamdetails: StreamDetails = await music_prov.get_stream_details(
-                prov_media.item_id
-            )
-            streamdetails.content_type = ContentType(streamdetails.content_type)
-        except MusicAssistantError as err:
-            LOGGER.warning(str(err))
-        else:
-            break
+    else:
+        # fetch streamdetails from provider
+        # always request the full item as there might be other qualities available
+        full_item = await mass.music.get_item_by_uri(queue_item.uri)
+        # sort by quality and check track availability
+        for prov_media in sorted(
+            full_item.provider_ids, key=lambda x: x.quality or 0, reverse=True
+        ):
+            if not prov_media.available:
+                continue
+            # get streamdetails from provider
+            music_prov = mass.music.get_provider(prov_media.prov_id)
+            if not music_prov or not music_prov.available:
+                continue  # provider temporary unavailable ?
+            try:
+                streamdetails: StreamDetails = await music_prov.get_stream_details(
+                    prov_media.item_id
+                )
+                streamdetails.content_type = ContentType(streamdetails.content_type)
+            except MusicAssistantError as err:
+                LOGGER.warning(str(err))
+            else:
+                break
 
     if not streamdetails:
         raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
@@ -382,6 +358,7 @@ async def get_media_stream(
     sample_rate: int,
     channels: int = 2,
     seek_position: int = 0,
+    chunk_size: int = 64000,
 ) -> AsyncGenerator[bytes, None]:
     """Get the PCM audio stream for the given streamdetails."""
     assert pcm_fmt.is_pcm(), "Output format must be a PCM type"
@@ -409,9 +386,8 @@ async def get_media_stream(
         ffmpeg_proc.attach_task(writer())
 
         # yield chunks from stdout
-        sample_size = get_chunksize(pcm_fmt, sample_rate, 24, channels, 10)
         try:
-            async for chunk in ffmpeg_proc.iter_any(sample_size):
+            async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
                 yield chunk
 
         except (asyncio.CancelledError, GeneratorExit) as err:
@@ -436,47 +412,33 @@ async def get_radio_stream(
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
     headers = {"Icy-MetaData": "1"}
-    timeout = ClientTimeout(total=0, connect=10, sock_read=10)
-    reconnects = 0
-    while True:
-        # in loop to reconnect on connection failure
-        try:
-            LOGGER.debug("radio stream (re)connecting to: %s", url)
-            async with mass.http_session.get(
-                url, headers=headers, timeout=timeout
-            ) as resp:
-                headers = resp.headers
-                meta_int = int(headers.get("icy-metaint", "0"))
-                # stream with ICY Metadata
-                if meta_int:
-                    while True:
-                        audio_chunk = await resp.content.readexactly(meta_int)
-                        yield audio_chunk
-                        meta_byte = await resp.content.readexactly(1)
-                        meta_length = ord(meta_byte) * 16
-                        meta_data = await resp.content.readexactly(meta_length)
-                        if not meta_data:
-                            continue
-                        meta_data = meta_data.rstrip(b"\0")
-                        stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
-                        if not stream_title:
-                            continue
-                        stream_title = stream_title.group(1).decode()
-                        if stream_title != streamdetails.stream_title:
-                            streamdetails.stream_title = stream_title
-                            if queue := mass.players.get_player_queue(
-                                streamdetails.queue_id
-                            ):
-                                queue.signal_update()
-                # Regular HTTP stream
-                else:
-                    async for chunk in resp.content.iter_any():
-                        yield chunk
-        except (asyncio.exceptions.TimeoutError, ClientError) as err:
-            # reconnect on http error (max 5 times)
-            if reconnects >= 5:
-                raise err
-            reconnects += 1
+    timeout = ClientTimeout(total=0, connect=30, sock_read=120)
+    async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
+        headers = resp.headers
+        meta_int = int(headers.get("icy-metaint", "0"))
+        # stream with ICY Metadata
+        if meta_int:
+            while True:
+                audio_chunk = await resp.content.readexactly(meta_int)
+                yield audio_chunk
+                meta_byte = await resp.content.readexactly(1)
+                meta_length = ord(meta_byte) * 16
+                meta_data = await resp.content.readexactly(meta_length)
+                if not meta_data:
+                    continue
+                meta_data = meta_data.rstrip(b"\0")
+                stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
+                if not stream_title:
+                    continue
+                stream_title = stream_title.group(1).decode()
+                if stream_title != streamdetails.stream_title:
+                    streamdetails.stream_title = stream_title
+                    if queue := mass.players.get_player_queue(streamdetails.queue_id):
+                        queue.signal_update()
+        # Regular HTTP stream
+        else:
+            async for chunk in resp.content.iter_any():
+                yield chunk
 
 
 async def get_http_stream(
@@ -504,7 +466,8 @@ async def get_http_stream(
     buffer = b""
     buffer_all = False
     bytes_received = 0
-    async with mass.http_session.get(url, headers=headers) as resp:
+    timeout = ClientTimeout(total=0, connect=30, sock_read=120)
+    async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         is_partial = resp.status == 206
         buffer_all = seek_position and not is_partial
         async for chunk in resp.content.iter_any():

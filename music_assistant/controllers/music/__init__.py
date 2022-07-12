@@ -329,6 +329,9 @@ class MusicController:
     async def get_provider_loudness(self, provider: ProviderType) -> float | None:
         """Get average integrated loudness for tracks of given provider."""
         all_items = []
+        if provider == ProviderType.URL:
+            # this is not a very good idea for random urls
+            return None
         for db_row in await self.mass.database.get_rows(
             TABLE_TRACK_LOUDNESS,
             {

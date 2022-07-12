@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from mashumaro import DataClassDictMixin
 
@@ -42,8 +42,8 @@ class Player(ABC):
     _attr_volume_level: int = 100
     _attr_volume_muted: bool = False
     _attr_device_info: DeviceInfo = DeviceInfo()
-    _attr_default_sample_rates: Tuple[int] = (44100, 48000, 88200, 96000)
-    _attr_default_stream_type: ContentType = ContentType.FLAC
+    _attr_max_sample_rate: int = 96000
+    _attr_stream_type: ContentType = ContentType.FLAC
     # below objects will be set by playermanager at register/update
     mass: MusicAssistant = None  # type: ignore[assignment]
     _prev_state: dict = {}
@@ -125,15 +125,15 @@ class Player(ABC):
     # DEFAULT PLAYER SETTINGS
 
     @property
-    def default_sample_rates(self) -> Tuple[int]:
-        """Return the default supported sample rates."""
+    def max_sample_rate(self) -> int:
+        """Return the (default) max supported sample rate."""
         # if a player does not report/set its supported sample rates, we use a pretty safe default
-        return self._attr_default_sample_rates
+        return self._attr_max_sample_rate
 
     @property
-    def default_stream_type(self) -> ContentType:
-        """Return the default content type to use for streaming."""
-        return self._attr_default_stream_type
+    def stream_type(self) -> ContentType:
+        """Return the default/preferred content type to use for streaming."""
+        return self._attr_stream_type
 
     # GROUP PLAYER ATTRIBUTES AND METHODS (may be overridden if needed)
     # a player can optionally be a group leader (e.g. Sonos)

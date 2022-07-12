@@ -49,7 +49,9 @@ class Database:
 
     async def get_setting(self, key: str) -> str | None:
         """Get setting from settings table."""
-        return await self.get_row(TABLE_SETTINGS, {"key": key})
+        if db_row := await self.get_row(TABLE_SETTINGS, {"key": key}):
+            return db_row["value"]
+        return None
 
     async def set_setting(self, key: str, value: str) -> None:
         """Set setting in settings table."""
@@ -177,7 +179,7 @@ class Database:
         await self.__create_database_tables()
         try:
             if prev_version := await self.get_setting("version"):
-                prev_version = int(prev_version["value"])
+                prev_version = int(prev_version)
             else:
                 prev_version = 0
         except (KeyError, ValueError):
