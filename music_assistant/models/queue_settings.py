@@ -26,7 +26,7 @@ class QueueSettings:
         self._volume_normalization_target: int = -14
         self._stream_type: ContentType = queue.player.stream_type
         self._max_sample_rate: int = queue.player.max_sample_rate
-        self._announce_volume: int = 15
+        self._announce_volume_increase: int = 15
 
     @property
     def repeat_mode(self) -> RepeatMode:
@@ -154,18 +154,16 @@ class QueueSettings:
             self._on_update("max_sample_rate")
 
     @property
-    def announce_volume(self) -> int:
-        """Return announce_volume setting (percentage relative to current)."""
-        return self._announce_volume
+    def announce_volume_increase(self) -> int:
+        """Return announce_volume_increase setting (percentage relative to current)."""
+        return self._announce_volume_increase
 
-    @announce_volume.setter
-    def announce_volume(self, volume: int) -> None:
-        """Set announce_volume setting."""
-        volume = max(0, volume)
-        volume = min(100, volume)
-        if self._announce_volume != volume:
-            self._announce_volume = volume
-            self._on_update("announce_volume")
+    @announce_volume_increase.setter
+    def announce_volume_increase(self, volume_increase: int) -> None:
+        """Set announce_volume_increase setting."""
+        if self._announce_volume_increase != volume_increase:
+            self._announce_volume_increase = volume_increase
+            self._on_update("announce_volume_increase")
 
     def to_dict(self) -> Dict[str, Any]:
         """Return dict from settings."""
@@ -178,7 +176,7 @@ class QueueSettings:
             "volume_normalization_target": self.volume_normalization_target,
             "stream_type": self.stream_type.value,
             "max_sample_rate": self.max_sample_rate,
-            "announce_volume": self.announce_volume,
+            "announce_volume_increase": self.announce_volume_increase,
         }
 
     def from_dict(self, d: Dict[str, Any]) -> None:
@@ -197,7 +195,9 @@ class QueueSettings:
         )
         self._stream_type = ContentType(d.get("stream_type", self._stream_type.value))
         self._max_sample_rate = d.get("max_sample_rate", self._max_sample_rate)
-        self._announce_volume = d.get("announce_volume", self._announce_volume)
+        self._announce_volume_increase = d.get(
+            "announce_volume_increase", self._announce_volume_increase
+        )
 
     async def restore(self) -> None:
         """Restore state from db."""

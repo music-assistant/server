@@ -319,10 +319,12 @@ class PlayerQueue:
                 await self._wait_for_state(PlayerState.IDLE)
 
             # adjust volume if needed
-            if self._settings.announce_volume:
-                announce_volume = self.player.volume_level * (
-                    1 + self._settings.announce_volume / 100
+            if self._settings.announce_volume_increase:
+                announce_volume = (
+                    self.player.volume_level + self._settings.announce_volume_increase
                 )
+                announce_volume = min(announce_volume, 100)
+                announce_volume = max(announce_volume, 0)
                 await self.player.volume_set(announce_volume)
 
             # adjust queue settings for announce playback
