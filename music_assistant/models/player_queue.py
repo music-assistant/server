@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from music_assistant.models.enums import (
+    ContentType,
     EventType,
     MediaType,
     ProviderType,
@@ -17,7 +18,11 @@ from music_assistant.models.enums import (
 )
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
-from music_assistant.models.media_items import MediaItemType, media_from_dict
+from music_assistant.models.media_items import (
+    MediaItemType,
+    StreamDetails,
+    media_from_dict,
+)
 
 from .player import Player, PlayerState
 from .queue_item import QueueItem
@@ -267,11 +272,11 @@ class PlayerQueue:
         elif queue_opt == QueueOption.ADD:
             await self.append(queue_items)
 
-    async def play_announcement(self, uri: str, prepend_alert: bool = False) -> str:
+    async def play_announcement(self, url: str, prepend_alert: bool = False) -> str:
         """
         Play given uri as Announcement on the queue.
 
-        uri: Uri that should be played as announcement, can be Music Assistant URI or plain url.
+        url: URL that should be played as announcement, can only be plain url.
         prepend_alert: Prepend the (TTS) announcement with an alert bell sound.
         """
         if self._announcement_in_progress:
@@ -279,6 +284,21 @@ class PlayerQueue:
                 "Ignore queue command: An announcement is (already) in progress"
             )
             return
+
+        def create_announcement(_url: str):
+            return QueueItem(
+                uri=_url,
+                name="announcement",
+                duration=30,
+                streamdetails=StreamDetails(
+                    provider=ProviderType.URL,
+                    item_id=_url,
+                    content_type=ContentType.try_parse(_url),
+                    loudness=0,
+                    data=_url,
+                ),
+                media_type=MediaType.ANNOUNCEMENT,
+            )
 
         try:
             # create snapshot
@@ -317,34 +337,17 @@ class PlayerQueue:
             )
 
             queue_items = []
-            total_duration = 0
             # prepend alert sound if needed
             if prepend_alert:
-                url_prov = self.mass.music.get_provider(ProviderType.URL)
-                media_item = await url_prov.parse_item(ALERT_ANNOUNCE_FILE)
-                media_item.name = "announcement"
-                total_duration += media_item.duration or 3
-                queue_items.append(QueueItem.from_media_item(media_item))
+                queue_items.append(create_announcement(ALERT_ANNOUNCE_FILE))
 
-            # parse provided uri into a MA MediaItem
-            try:
-                media_item = await self.mass.music.get_item_by_uri(uri)
-                media_item.name = "announcement"
-                total_duration += media_item.duration or 30
-                queue_items.append(QueueItem.from_media_item(media_item))
-            except MusicAssistantError as err:
-                # invalid MA uri or item not found error
-                raise MediaNotFoundError(f"Invalid uri: {uri}") from err
+            queue_items.append(create_announcement(url))
 
             # append silence track. we use that as a reliable way to make sure
             # there is enough buffer for the player to start quickly
             # and to detect when we finished playing the alert
-            url_prov = self.mass.music.get_provider(ProviderType.URL)
             silence_url = self.mass.streams.get_silence_url()
-            media_item = await url_prov.parse_item(silence_url)
-            media_item.name = "announcement"
-            media_item.duration = 3600
-            queue_items.append(QueueItem.from_media_item(media_item))
+            queue_items.append(create_announcement(silence_url))
 
             # start queue with announcement sound(s)
             self._items = queue_items
@@ -353,7 +356,7 @@ class PlayerQueue:
             await self.player.play_url(stream.url)
 
             # wait for the player to finish playing
-            await asyncio.sleep(total_duration)
+            await asyncio.sleep(5)
             await self._wait_for_state(PlayerState.PLAYING, silence_url)
 
         except Exception as err:  # pylint: disable=broad-except
