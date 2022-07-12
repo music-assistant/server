@@ -642,19 +642,17 @@ class QueueStream:
 
                 # track has no duration or duration < 30s: pypass any further processing
                 if queue_track.duration is None or queue_track.duration < 30:
-                    bytes_written += len(chunk)
+                    if last_fadeout_part:
+                        # edge case: we have fadeout part available in next track is too short
+                        yield last_fadeout_part
+                        bytes_written += len(last_fadeout_part)
+                        last_fadeout_part = b""
                     yield chunk
+                    bytes_written += len(chunk)
                     continue
 
                 # first part of track and we need to crossfade: fill buffer
-                if bytes_written < buf_size and last_fadeout_part:
-                    bytes_written += len(chunk)
-                    buffer += chunk
-                    continue
-
-                # last part of track: fill buffer
-                if bytes_written >= (total_size - buf_size):
-                    bytes_written += len(chunk)
+                if len(buffer) < buf_size and last_fadeout_part:
                     buffer += chunk
                     continue
 
@@ -664,7 +662,6 @@ class QueueStream:
                     first_part = await strip_silence(
                         buffer + chunk, pcm_fmt, self.pcm_sample_rate
                     )
-
                     # perform crossfade
                     fadein_part = first_part[:crossfade_size]
                     remaining_bytes = first_part[crossfade_size:]
@@ -686,6 +683,11 @@ class QueueStream:
                     # clear vars
                     last_fadeout_part = b""
                     buffer = b""
+                    continue
+
+                # last part of track: fill buffer
+                if bytes_written >= (total_size - buf_size):
+                    buffer += chunk
                     continue
 
                 # all other: middle of track or no crossfade action, just yield the audio
@@ -717,7 +719,7 @@ class QueueStream:
                     bytes_written += len(last_part)
                     yield last_part
 
-            # end of the track reached
+            # end of the track reached - store accurate duration
             queue_track.streamdetails.seconds_streamed = bytes_written / sample_size
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
