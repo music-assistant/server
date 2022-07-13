@@ -629,7 +629,7 @@ class QueueStream:
             crossfade_duration = self.queue.settings.crossfade_duration
             crossfade_size = sample_size_per_second * crossfade_duration
             # buffer_duration has some overhead to account for padded silence
-            buffer_duration = (crossfade_duration or 2) * 2
+            buffer_duration = (crossfade_duration or 2) + 4
             # predict total size to expect for this track from duration
             stream_duration = (queue_track.duration or 0) - seek_position
 
@@ -672,7 +672,13 @@ class QueueStream:
                 if (
                     streamdetails.media_type == MediaType.ANNOUNCEMENT
                     or not stream_duration
+                    or stream_duration < buffer_duration
                 ):
+                    # handle edge case where we have a previous chunk in buffer
+                    # and the next track is too short
+                    if last_fadeout_part:
+                        yield last_fadeout_part
+                        last_fadeout_part = b""
                     yield chunk
                     bytes_written += len(chunk)
                     continue
