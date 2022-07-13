@@ -15,7 +15,6 @@ import xmltodict
 from aiofiles.os import wrap
 from aiofiles.threadpool.binary import AsyncFileIO
 
-from music_assistant.helpers.audio import get_file_stream
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.tags import FALLBACK_ARTIST, parse_tags, split_items
 from music_assistant.helpers.util import create_safe_string, parse_title_and_version
@@ -448,17 +447,8 @@ class FileSystemProvider(MusicProvider):
             size=stat.st_size,
             sample_rate=metadata.sample_rate,
             bit_depth=metadata.bits_per_sample,
-            data=itempath,
+            direct=itempath,
         )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        async for chunk in get_file_stream(
-            self.mass, streamdetails.data, streamdetails, seek_position
-        ):
-            yield chunk
 
     async def _parse_track(self, track_path: str) -> Track | None:
         """Try to parse a track from a filename by reading its tags."""

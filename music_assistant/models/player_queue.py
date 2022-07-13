@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import random
 from asyncio import TimerHandle
@@ -38,7 +39,11 @@ RESOURCES_DIR = (
     .parent.resolve()
     .joinpath("helpers/resources")
 )
+
 ALERT_ANNOUNCE_FILE = str(RESOURCES_DIR.joinpath("announce.flac"))
+if not os.path.isfile(ALERT_ANNOUNCE_FILE):
+    ALERT_ANNOUNCE_FILE = None
+
 FALLBACK_DURATION = 172800  # if duration is None (e.g. radio stream) = 48 hours
 
 
@@ -297,7 +302,7 @@ class PlayerQueue:
                     media_type=MediaType.ANNOUNCEMENT,
                     loudness=0,
                     gain_correct=4,
-                    data=_url,
+                    direct=_url,
                 ),
                 media_type=MediaType.ANNOUNCEMENT,
             )
@@ -338,7 +343,7 @@ class PlayerQueue:
 
             queue_items = []
             # prepend alert sound if needed
-            if prepend_alert:
+            if prepend_alert and ALERT_ANNOUNCE_FILE:
                 queue_items.append(create_announcement(ALERT_ANNOUNCE_FILE))
 
             queue_items.append(create_announcement(url))
