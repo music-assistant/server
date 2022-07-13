@@ -37,6 +37,8 @@ from music_assistant.models.queue_item import QueueItem
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
+ICY_CHUNKSIZE = 8192
+
 
 class StreamsController:
     """Controller to stream audio to players."""
@@ -201,7 +203,8 @@ class StreamsController:
             # https://cast.readme.io/docs/icy
             headers["icy-name"] = "Music Assistant"
             headers["icy-pub"] = "1"
-            headers["icy-metaint"] = "8192"
+            # use the default/recommended metaint size of 8192
+            headers["icy-metaint"] = str(ICY_CHUNKSIZE)
 
         resp = web.StreamResponse(headers=headers)
         try:
@@ -215,9 +218,6 @@ class StreamsController:
 
         client_id = request.remote
         enable_icy = request.headers.get("Icy-MetaData", "") == "1"
-        if enable_icy:
-            # use the default/recommended metaint size of 8192
-            queue_stream.output_chunk_size = 8192
 
         # regular streaming - each chunk is sent to the callback here
         # this chunk is already encoded to the requested audio format of choice.
@@ -363,12 +363,6 @@ class QueueStream:
         self.signal_next: bool = False
         self._runner_task: Optional[asyncio.Task] = None
         self._prev_chunk: bytes = b""
-        self.output_chunk_size = get_chunksize(
-            output_format,
-            pcm_sample_rate,
-            pcm_bit_depth,
-            pcm_channels,
-        )
         if autostart:
             self.mass.create_task(self.start())
 
@@ -478,11 +472,20 @@ class QueueStream:
 
             # Read bytes from final output and send chunk to child callback.
             chunk_num = 0
-            if self.output_chunk_size == 8192:
-                # icy enabled: we need to have a static chunksize
-                get_chunks = ffmpeg_proc.iter_chunked(self.output_chunk_size)
+            if self.output_format == ContentType.MP3:
+                # use the icy compatible static chunksize (iter_chunks of x size)
+                get_chunks = ffmpeg_proc.iter_chunked(ICY_CHUNKSIZE)
             else:
-                get_chunks = ffmpeg_proc.iter_any(self.output_chunk_size)
+                # all other: prefer chunksize that fits 1 second belonging to output type
+                # but accept less (iter any chunk of max chunk size)
+                get_chunks = ffmpeg_proc.iter_any(
+                    get_chunksize(
+                        self.output_format,
+                        self.pcm_sample_rate,
+                        self.pcm_bit_depth,
+                        self.pcm_channels,
+                    )
+                )
             async for chunk in get_chunks:
                 chunk_num += 1
 
