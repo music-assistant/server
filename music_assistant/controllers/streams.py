@@ -186,12 +186,22 @@ class StreamsController:
         headers = {
             "Content-Type": f"audio/{queue_stream.output_format.value}",
             "transferMode.dlna.org": "Streaming",
-            "icy-name": "Streaming from Music Assistant",
-            "icy-pub": "0",
             "Cache-Control": "no-cache",
-            "icy-metaint": str(queue_stream.output_chunk_size),
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
         }
+
+        # for now, only support icy metadata on MP3 streams to prevent issues
+        # https://github.com/music-assistant/hass-music-assistant/issues/603
+        # in the future we could expand this support:
+        # by making exceptions for players that do also support ICY on other content types
+        # and/or metaint value such as Kodi.
+        # another future expansion is to just get the PCM frames here and encode
+        # for each inidvidual player with or without ICY...
+        if queue_stream.output_format == ContentType.MP3:
+            # use the default/recommended metaint size of 8192
+            # https://cast.readme.io/docs/icy
+            headers["icy-name"] = "Music Assistant"
+            headers["icy-pub"] = "1"
+            headers["icy-metaint"] = "8192"
 
         resp = web.StreamResponse(headers=headers)
         try:
@@ -205,6 +215,9 @@ class StreamsController:
 
         client_id = request.remote
         enable_icy = request.headers.get("Icy-MetaData", "") == "1"
+        if enable_icy:
+            # use the default/recommended metaint size of 8192
+            queue_stream.output_chunk_size = 8192
 
         # regular streaming - each chunk is sent to the callback here
         # this chunk is already encoded to the requested audio format of choice.
@@ -465,7 +478,12 @@ class QueueStream:
 
             # Read bytes from final output and send chunk to child callback.
             chunk_num = 0
-            async for chunk in ffmpeg_proc.iter_chunked(self.output_chunk_size):
+            if self.output_chunk_size == 8192:
+                # icy enabled: we need to have a static chunksize
+                get_chunks = ffmpeg_proc.iter_chunked(self.output_chunk_size)
+            else:
+                get_chunks = ffmpeg_proc.iter_any(self.output_chunk_size)
+            async for chunk in get_chunks:
                 chunk_num += 1
 
                 if len(self.connected_clients) == 0:
