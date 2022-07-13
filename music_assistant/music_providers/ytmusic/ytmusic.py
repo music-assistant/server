@@ -59,6 +59,8 @@ class YoutubeMusicProvider(MusicProvider):
     _headers = None
     _context = None
     _cookies = None
+    _signature_timestamp = 0
+    _cipher = None
 
     async def setup(self) -> bool:
         """Set up the YTMusic provider."""
@@ -69,6 +71,7 @@ class YoutubeMusicProvider(MusicProvider):
         await self._initialize_headers(cookie=self.config.password)
         await self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
+        self._signature_timestamp = await self._get_signature_timestamp()
         return True
 
     async def search(
@@ -232,10 +235,9 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        signature_timestamp = await self._get_signature_timestamp()
         data = {
             "playbackContext": {
-                "contentPlaybackContext": {"signatureTimestamp": signature_timestamp}
+                "contentPlaybackContext": {"signatureTimestamp": self._signature_timestamp}
             },
             "video_id": item_id,
         }
@@ -505,6 +507,8 @@ class YoutubeMusicProvider(MusicProvider):
             js_url = pytube.extract.js_url(embed_html)
             ytm_js = pytube.request.get(js_url)
             cipher = pytube.cipher.Cipher(js=ytm_js)
-            return cipher.get_signature(ciphered_signature)
+            return cipher   
 
-        return await self.mass.loop.run_in_executor(None, _decipher)
+        if not self._cipher:
+            self._cipher = await self.mass.loop.run_in_executor(None, _decipher)        
+        return self._cipher.get_signature(ciphered_signature)
