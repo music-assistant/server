@@ -153,10 +153,11 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
     LOGGER.debug("Start analyzing track %s", streamdetails.uri)
     # calculate BS.1770 R128 integrated loudness with ffmpeg
     started = time()
+    input_file = streamdetails.direct or "-"
     proc_args = [
         "ffmpeg",
         "-i",
-        "-",
+        input_file,
         "-f",
         streamdetails.content_type.value,
         "-af",
@@ -166,7 +167,10 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         "-",
     ]
     async with AsyncProcess(
-        proc_args, True, enable_stdout=False, enable_stderr=True
+        proc_args,
+        enable_stdin=streamdetails.direct is None,
+        enable_stdout=False,
+        enable_stderr=True,
     ) as ffmpeg_proc:
 
         async def writer():
@@ -179,9 +183,10 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
                     break
             ffmpeg_proc.write_eof()
 
-        writer_task = ffmpeg_proc.attach_task(writer())
-        # wait for the writer task to finish
-        await writer_task
+        if streamdetails.direct is None:
+            writer_task = ffmpeg_proc.attach_task(writer())
+            # wait for the writer task to finish
+            await writer_task
 
         _, stderr = await ffmpeg_proc.communicate()
         try:
@@ -363,13 +368,17 @@ async def get_media_stream(
     """Get the PCM audio stream for the given streamdetails."""
     assert pcm_fmt.is_pcm(), "Output format must be a PCM type"
     args = await _get_ffmpeg_args(
-        streamdetails, pcm_fmt, pcm_sample_rate=sample_rate, pcm_channels=channels
+        streamdetails,
+        pcm_fmt,
+        pcm_sample_rate=sample_rate,
+        pcm_channels=channels,
+        seek_position=seek_position,
     )
-    async with AsyncProcess(args, enable_stdin=True) as ffmpeg_proc:
+    async with AsyncProcess(
+        args, enable_stdin=streamdetails.direct is None
+    ) as ffmpeg_proc:
 
-        LOGGER.debug(
-            "start media stream for: %s, using args: %s", streamdetails.uri, str(args)
-        )
+        LOGGER.debug("start media stream for: %s", streamdetails.uri)
 
         async def writer():
             """Task that grabs the source audio and feeds it to ffmpeg."""
@@ -383,7 +392,8 @@ async def get_media_stream(
             ffmpeg_proc.write_eof()
             LOGGER.debug("writer finished for %s", streamdetails.uri)
 
-        ffmpeg_proc.attach_task(writer())
+        if streamdetails.direct is None:
+            ffmpeg_proc.attach_task(writer())
 
         # yield chunks from stdout
         try:
@@ -399,6 +409,9 @@ async def get_media_stream(
                 streamdetails.item_id, streamdetails.provider
             )
         finally:
+            # report playback
+            if streamdetails.callback:
+                mass.create_task(streamdetails.callback, streamdetails)
             # send analyze job to background worker
             if streamdetails.loudness is None:
                 mass.add_job(
@@ -645,6 +658,7 @@ async def _get_ffmpeg_args(
     pcm_output_format: ContentType,
     pcm_sample_rate: int,
     pcm_channels: int = 2,
+    seek_position: int = 0,
 ) -> List[str]:
     """Collect all args to send to the ffmpeg process."""
     input_format = streamdetails.content_type
@@ -665,9 +679,17 @@ async def _get_ffmpeg_args(
         "quiet",
         "-ignore_unknown",
     ]
-    if streamdetails.content_type != ContentType.UNKNOWN:
-        input_args += ["-f", input_format.value]
-    input_args += ["-i", "-"]
+    if streamdetails.direct:
+        # ffmpeg can access the inputfile (or url) directly
+        if seek_position:
+            input_args += ["-ss", str(seek_position)]
+        input_args += ["-i", streamdetails.direct]
+    else:
+        # the input is received from pipe/stdin
+        if streamdetails.content_type != ContentType.UNKNOWN:
+            input_args += ["-f", input_format.value]
+        input_args += ["-i", "-"]
+
     # collect output args
     output_args = [
         "-acodec",

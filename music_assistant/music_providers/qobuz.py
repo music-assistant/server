@@ -13,7 +13,6 @@ from asyncio_throttle import Throttler
 from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-module
     app_var,
 )
-from music_assistant.helpers.audio import get_http_stream
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import LoginFailed, MediaNotFoundError
@@ -334,6 +333,8 @@ class QobuzProvider(MusicProvider):
             content_type = ContentType.FLAC
         else:
             raise MediaNotFoundError(f"Unsupported mime type for {item_id}")
+        # report playback started as soon as the streamdetails are requested
+        self.mass.create_task(self._report_playback_started(item_id, streamdata))
         return StreamDetails(
             item_id=str(item_id),
             provider=self.type,
@@ -343,28 +344,11 @@ class QobuzProvider(MusicProvider):
             bit_depth=streamdata["bit_depth"],
             data=streamdata,  # we need these details for reporting playback
             expires=time.time() + 1800,  # not sure about the real allowed value
+            direct=streamdata["url"],
+            callback=self._report_playback_stopped,
         )
 
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        self.mass.create_task(self._report_playback_started(streamdetails))
-        bytes_sent = 0
-        try:
-            url = streamdetails.data["url"]
-            async for chunk in get_http_stream(
-                self.mass, url, streamdetails, seek_position
-            ):
-                yield chunk
-                bytes_sent += len(chunk)
-        finally:
-            if bytes_sent:
-                self.mass.create_task(
-                    self._report_playback_stopped(streamdetails, bytes_sent)
-                )
-
-    async def _report_playback_started(self, streamdetails: StreamDetails) -> None:
+    async def _report_playback_started(self, item_id: str, streamdata: dict) -> None:
         """Report playback start to qobuz."""
         # TODO: need to figure out if the streamed track is purchased by user
         # https://www.qobuz.com/api.json/0.2/purchase/getUserPurchasesIds?limit=5000&user_id=xxxxxxx
@@ -372,7 +356,7 @@ class QobuzProvider(MusicProvider):
         device_id = self._user_auth_info["user"]["device"]["id"]
         credential_id = self._user_auth_info["user"]["credential"]["id"]
         user_id = self._user_auth_info["user"]["id"]
-        format_id = streamdetails.data["format_id"]
+        format_id = streamdata["format_id"]
         timestamp = int(time.time())
         events = [
             {
@@ -380,7 +364,7 @@ class QobuzProvider(MusicProvider):
                 "sample": False,
                 "intent": "stream",
                 "device_id": device_id,
-                "track_id": str(streamdetails.item_id),
+                "track_id": str(item_id),
                 "purchase": False,
                 "date": timestamp,
                 "credential_id": credential_id,
@@ -391,9 +375,7 @@ class QobuzProvider(MusicProvider):
         ]
         await self._post_data("track/reportStreamingStart", data=events)
 
-    async def _report_playback_stopped(
-        self, streamdetails: StreamDetails, bytes_sent: int
-    ) -> None:
+    async def _report_playback_stopped(self, streamdetails: StreamDetails) -> None:
         """Report playback stop to qobuz."""
         user_id = self._user_auth_info["user"]["id"]
         await self._get_data(

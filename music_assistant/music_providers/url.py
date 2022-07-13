@@ -161,7 +161,7 @@ class URLProvider(MusicProvider):
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
             sample_rate=media_info.sample_rate,
             bit_depth=media_info.bits_per_sample,
-            data=url,
+            direct=None if is_radio else url,
         )
 
     async def get_audio_stream(
