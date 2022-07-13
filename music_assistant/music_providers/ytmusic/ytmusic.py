@@ -412,11 +412,10 @@ class YoutubeMusicProvider(MusicProvider):
                 track_obj["thumbnails"]
             )
         if (
-            "album" in track_obj
-            and track_obj["album"]
-            and "id" in track_obj["album"]
-            and track_obj["album"]["id"]
-            and "artists" in track_obj
+            track_obj.get("album")
+            and track_obj.get("artists")
+            and isinstance(track_obj.get("album"), dict)
+            and track_obj["album"].get("id")
         ):
             album = track_obj["album"]
             album["artists"] = track_obj["artists"]
