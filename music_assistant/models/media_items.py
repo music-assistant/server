@@ -121,9 +121,9 @@ class MediaItem(DataClassDictMixin):
     item_id: str
     provider: ProviderType
     name: str
-    # optional fields below
     provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
 
+    # optional fields below
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN

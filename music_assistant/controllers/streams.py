@@ -530,9 +530,6 @@ class QueueStream:
                     break
                 queue_index = next_index
                 seek_position = 0
-            self.index_in_buffer = queue_index
-            # send signal that we've loaded a new track into the buffer
-            self.queue.signal_update()
             queue_track = self.queue.get_item(queue_index)
             if not queue_track:
                 self.logger.debug(
@@ -623,6 +620,9 @@ class QueueStream:
                 use_crossfade,
             )
             queue_track.streamdetails.seconds_skipped = seek_position
+            # send signal that we've loaded a new track into the buffer
+            self.index_in_buffer = queue_index
+            self.queue.signal_update()
             buffer = b""
             bytes_written = 0
             # handle incoming audio chunks
