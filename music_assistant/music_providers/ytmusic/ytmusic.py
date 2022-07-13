@@ -7,7 +7,6 @@ from urllib.parse import unquote
 import pytube
 import ytmusicapi
 
-from music_assistant.helpers.audio import get_http_stream
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import (
     InvalidDataError,
@@ -245,18 +244,9 @@ class YoutubeMusicProvider(MusicProvider):
         return StreamDetails(
             provider=self.type,
             item_id=item_id,
-            data=url,
             content_type=ContentType.try_parse(stream_format["mimeType"]),
+            direct=url,
         )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        async for chunk in get_http_stream(
-            self.mass, streamdetails.data, streamdetails, seek_position
-        ):
-            yield chunk
 
     async def _post_data(self, endpoint: str, data: Dict[str, str], **kwargs):
         url = f"{YTM_BASE_URL}{endpoint}"
