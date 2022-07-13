@@ -237,7 +237,9 @@ class YoutubeMusicProvider(MusicProvider):
         """Return the content details for the given track when it will be streamed."""
         data = {
             "playbackContext": {
-                "contentPlaybackContext": {"signatureTimestamp": self._signature_timestamp}
+                "contentPlaybackContext": {
+                    "signatureTimestamp": self._signature_timestamp
+                }
             },
             "video_id": item_id,
         }
@@ -507,8 +509,8 @@ class YoutubeMusicProvider(MusicProvider):
             js_url = pytube.extract.js_url(embed_html)
             ytm_js = pytube.request.get(js_url)
             cipher = pytube.cipher.Cipher(js=ytm_js)
-            return cipher   
+            return cipher
 
         if not self._cipher:
-            self._cipher = await self.mass.loop.run_in_executor(None, _decipher)        
+            self._cipher = await self.mass.loop.run_in_executor(None, _decipher)
         return self._cipher.get_signature(ciphered_signature)
