@@ -188,6 +188,7 @@ class StreamsController:
         headers = {
             "Content-Type": f"audio/{queue_stream.output_format.value}",
             "transferMode.dlna.org": "Streaming",
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
             "Cache-Control": "no-cache",
         }
 
