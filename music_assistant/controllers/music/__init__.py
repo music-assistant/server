@@ -73,6 +73,12 @@ class MusicController:
             await self._register_provider(prov_cls(self.mass, prov_conf), prov_conf)
         # always register url provider
         await self._register_provider(URLProvider(self.mass, URL_CONFIG), URL_CONFIG)
+        # add job to cleanup old records from db
+        self.mass.add_job(
+            self._cleanup_library(),
+            "Cleanup removed items from database",
+            allow_duplicate=False,
+        )
 
     async def start_sync(
         self,
@@ -103,12 +109,6 @@ class MusicController:
                 await asyncio.sleep(3600 * schedule)
 
         self.mass.create_task(do_sync())
-        # add job to cleanup old records from db
-        self.mass.add_job(
-            self._cleanup_library(),
-            "Cleanup removed items from database",
-            allow_duplicate=False,
-        )
 
     @property
     def provider_count(self) -> int:
