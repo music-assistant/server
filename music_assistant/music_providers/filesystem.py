@@ -821,6 +821,9 @@ class FileSystemProvider(MusicProvider):
         if not file_path:
             return False  # guard
         file_path = await self.resolve(file_path)
+        if self.config.path not in file_path:
+            # additional guard (needed for files within m3u files)
+            return False
         _exists = wrap(os.path.exists)
         return await _exists(file_path)
 
