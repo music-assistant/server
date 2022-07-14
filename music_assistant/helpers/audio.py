@@ -567,11 +567,16 @@ async def get_preview_stream(
         "-hide_banner",
         "-loglevel",
         "quiet",
-        "-f",
-        streamdetails.content_type.value,
-        "-i",
-        "-",
+        "-ignore_unknown",
     ]
+    if streamdetails.direct:
+        input_args += ["-ss", "30", "-i", streamdetails.direct]
+    else:
+        # the input is received from pipe/stdin
+        if streamdetails.content_type != ContentType.UNKNOWN:
+            input_args += ["-f", streamdetails.content_type.value]
+        input_args += ["-i", "-"]
+
     output_args = ["-to", "30", "-f", "mp3", "-"]
     args = input_args + output_args
     async with AsyncProcess(args, True) as ffmpeg_proc:
@@ -584,7 +589,8 @@ async def get_preview_stream(
             # write eof when last packet is received
             ffmpeg_proc.write_eof()
 
-        ffmpeg_proc.attach_task(writer())
+        if not streamdetails.direct:
+            ffmpeg_proc.attach_task(writer())
 
         # yield chunks from stdout
         async for chunk in ffmpeg_proc.iter_any():

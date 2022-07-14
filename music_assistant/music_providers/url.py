@@ -152,6 +152,8 @@ class URLProvider(MusicProvider):
         else:
             # parse info with ffprobe (and store in cache)
             media_info = await parse_tags(url)
+            if "authSig" in url:
+                media_info.has_cover_image = False
             await self.mass.cache.set(cache_key, media_info.raw)
         return (item_id, url, media_info)
 
