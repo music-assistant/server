@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Tuple
 import aiofiles
 from aiohttp import ClientTimeout
 
+from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import create_tempfile
 from music_assistant.models.errors import (
@@ -424,6 +425,10 @@ async def get_radio_stream(
     mass: MusicAssistant, url: str, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
+    # check if the radio stream is not a playlist
+    if url.endswith("m3u8") or url.endswith("m3u") or url.endswith("pls"):
+        playlist = await fetch_playlist(mass, url)
+        url = playlist[0]
     headers = {"Icy-MetaData": "1"}
     timeout = ClientTimeout(total=0, connect=30, sock_read=120)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:

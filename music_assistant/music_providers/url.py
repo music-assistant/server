@@ -162,6 +162,7 @@ class URLProvider(MusicProvider):
             sample_rate=media_info.sample_rate,
             bit_depth=media_info.bits_per_sample,
             direct=None if is_radio else url,
+            data=url,
         )
 
     async def get_audio_stream(
@@ -181,7 +182,7 @@ class URLProvider(MusicProvider):
             ):
                 yield chunk
         else:
-            # regular stream url (without icy meta and reconnect)
+            # regular stream url (without icy meta)
             async for chunk in get_http_stream(
                 self.mass, streamdetails.data, streamdetails, seek_position
             ):
