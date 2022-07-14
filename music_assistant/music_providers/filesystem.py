@@ -385,22 +385,18 @@ class FileSystemProvider(MusicProvider):
 
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
         """Try to parse a track from a playlist line."""
-        if "://" in line:
-            # track is uri from external provider?
-            try:
-                return await self.mass.music.get_item_by_uri(line)
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Could not parse uri %s to track: %s", line, str(err)
-                )
-                return None
-        # try to treat uri as filename
-        if await self.exists(line):
-            return await self._parse_track(line)
-        rel_path = os.path.join(playlist_path, line)
-        if await self.exists(rel_path):
-            return await self._parse_track(rel_path)
-        return None
+        try:
+            # try to treat uri as filename first
+            if await self.exists(line):
+                file_path = await self.resolve(line)
+                return await self._parse_track(file_path)
+            # fallback to generic uri parsing
+            return await self.mass.music.get_item_by_uri(line)
+        except MusicAssistantError as err:
+            self.logger.warning(
+                "Could not parse uri/file %s to track: %s", line, str(err)
+            )
+            return None
 
     async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
         """Get a list of albums for the given artist."""
@@ -824,9 +820,7 @@ class FileSystemProvider(MusicProvider):
         """Return bool is this FileSystem musicprovider has given file/dir."""
         if not file_path:
             return False  # guard
-        # ensure we have a full path and not relative
-        if self.config.path not in file_path:
-            file_path = os.path.join(self.config.path, file_path)
+        file_path = await self.resolve(file_path)
         _exists = wrap(os.path.exists)
         return await _exists(file_path)
 
@@ -843,6 +837,8 @@ class FileSystemProvider(MusicProvider):
     async def resolve(self, file_path: str) -> str:
         """Resolve local accessible file."""
         # remote file locations should return a tempfile here so this is future proofing
+        if self.config.path not in file_path:
+            file_path = os.path.join(self.config.path, file_path)
         return file_path
 
     async def _get_filepath(
