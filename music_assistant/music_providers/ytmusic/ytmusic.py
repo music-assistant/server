@@ -1,6 +1,7 @@
 """Youtube Music support for MusicAssistant."""
 import re
 from operator import itemgetter
+from time import time
 from typing import AsyncGenerator, Dict, List, Optional
 from urllib.parse import unquote
 
@@ -244,13 +245,23 @@ class YoutubeMusicProvider(MusicProvider):
         }
         track_obj = await self._post_data("player", data=data)
         stream_format = await self._parse_stream_format(track_obj)
+        if stream_format.get("loudnessDb"):
+            print(f"Loudness dB of track: {item_id}: {stream_format.get('loudnessDb')}")
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
-        return StreamDetails(
+        stream_details = StreamDetails(
             provider=self.type,
             item_id=item_id,
             content_type=ContentType.try_parse(stream_format["mimeType"]),
             direct=url,
         )
+        if (
+            track_obj["streamingData"].get("expiresInSeconds")
+            and track_obj["streamingData"].get("expiresInSeconds").isdigit()
+        ):
+            stream_details.expires = time() + int(
+                track_obj["streamingData"].get("expiresInSeconds")
+            )
+        return stream_details
 
     async def _post_data(self, endpoint: str, data: Dict[str, str], **kwargs):
         url = f"{YTM_BASE_URL}{endpoint}"
