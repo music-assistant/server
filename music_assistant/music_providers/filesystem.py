@@ -520,7 +520,9 @@ class FileSystemProvider(MusicProvider):
                     )
                     if not artist.musicbrainz_id:
                         try:
-                            artist.musicbrainz_id = tags.musicbrainz_artistids[index]
+                            artist.musicbrainz_id = tags.musicbrainz_albumartistids[
+                                index
+                            ]
                         except IndexError:
                             pass
                     album_artists.append(artist)
