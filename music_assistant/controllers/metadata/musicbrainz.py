@@ -175,6 +175,6 @@ class MusicBrainz:
                     JSONDecodeError,
                 ) as exc:
                     msg = await response.text()
-                    self.logger.error("%s - %s", str(exc), msg)
+                    self.logger.warning("%s - %s", str(exc), msg)
                     result = None
                 return result

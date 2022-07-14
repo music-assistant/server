@@ -98,10 +98,13 @@ class FanartTv:
                     text_result = await response.text()
                     self.logger.debug(text_result)
                     return None
-                except aiohttp.ClientConnectorError:
-                    self.logger.error("Failed to retrieve %s", endpoint)
+                except (
+                    aiohttp.ClientConnectorError,
+                    aiohttp.client_exceptions.ServerDisconnectedError,
+                ):
+                    self.logger.warning("Failed to retrieve %s", endpoint)
                     return None
                 if "error" in result and "limit" in result["error"]:
-                    self.logger.error(result["error"])
+                    self.logger.warning(result["error"])
                     return None
                 return result
