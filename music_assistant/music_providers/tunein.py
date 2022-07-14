@@ -1,11 +1,13 @@
 """Tune-In musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
+from time import time
 from typing import AsyncGenerator, List, Optional
 
 from asyncio_throttle import Throttler
 
 from music_assistant.helpers.audio import get_radio_stream
+from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.util import create_sort_name
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import LoginFailed, MediaNotFoundError
@@ -183,14 +185,22 @@ class TuneInProvider(MusicProvider):
         item_id, media_type = item_id.split("--", 1)
         stream_info = await self.__get_data("Tune.ashx", id=item_id)
         for stream in stream_info["body"]:
-            if stream["media_type"] == media_type:
-                return StreamDetails(
-                    provider=self.type,
-                    item_id=item_id,
-                    content_type=ContentType(stream["media_type"]),
-                    media_type=MediaType.RADIO,
-                    data=stream["url"],
-                )
+
+            if stream["media_type"] != media_type:
+                continue
+            # check if the radio stream is not a playlist
+            url = stream["url"]
+            if url.endswith("m3u8") or url.endswith("m3u") or url.endswith("pls"):
+                playlist = await fetch_playlist(self.mass, url)
+                url = playlist[0]
+            return StreamDetails(
+                provider=self.type,
+                item_id=item_id,
+                content_type=ContentType(stream["media_type"]),
+                media_type=MediaType.RADIO,
+                data=url,
+                expires=time() + 24 * 3600,
+            )
         raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
 
     async def get_audio_stream(
