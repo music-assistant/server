@@ -271,9 +271,10 @@ class TracksController(MediaControllerBase[Track]):
     ) -> ItemMapping:
         """Extract (database) album as ItemMapping."""
         if overwrite:
-            return await self.mass.music.albums.add_db_item(
+            db_album = await self.mass.music.albums.add_db_item(
                 album, overwrite_existing=True
             )
+
         if album.provider == ProviderType.DATABASE:
             if isinstance(album, ItemMapping):
                 return album
@@ -290,9 +291,13 @@ class TracksController(MediaControllerBase[Track]):
         return ItemMapping.from_item(db_album)
 
     async def _get_artist_mapping(
-        self, artist: Union[Artist, ItemMapping]
+        self, artist: Union[Artist, ItemMapping], overwrite: bool = False
     ) -> ItemMapping:
         """Extract (database) track artist as ItemMapping."""
+        if overwrite:
+            artist = await self.mass.music.artists.add_db_item(
+                artist, overwrite_existing=True
+            )
         if artist.provider == ProviderType.DATABASE:
             if isinstance(artist, ItemMapping):
                 return artist

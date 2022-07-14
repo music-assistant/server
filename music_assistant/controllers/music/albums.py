@@ -186,7 +186,7 @@ class AlbumsController(MediaControllerBase[Album]):
             metadata = item.metadata
             metadata.last_refresh = None
             provider_ids = item.provider_ids
-            album_artists = await self._get_album_artists(item)
+            album_artists = await self._get_album_artists(item, overwrite=True)
         else:
             metadata = cur_item.metadata.update(item.metadata)
             provider_ids = {*cur_item.provider_ids, *item.provider_ids}
@@ -296,6 +296,7 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         db_album: Album,
         updated_album: Optional[Album] = None,
+        overwrite: bool = False,
     ) -> List[ItemMapping]:
         """Extract (database) album artist(s) as ItemMapping."""
         album_artists = set()
@@ -303,7 +304,7 @@ class AlbumsController(MediaControllerBase[Album]):
             if not album:
                 continue
             for artist in album.artists:
-                album_artists.add(await self._get_artist_mapping(artist))
+                album_artists.add(await self._get_artist_mapping(artist, overwrite))
         # use intermediate set to prevent duplicates
         # filter various artists if multiple artists
         if len(album_artists) > 1:
@@ -311,9 +312,13 @@ class AlbumsController(MediaControllerBase[Album]):
         return list(album_artists)
 
     async def _get_artist_mapping(
-        self, artist: Union[Artist, ItemMapping]
+        self, artist: Union[Artist, ItemMapping], overwrite: bool = False
     ) -> ItemMapping:
         """Extract (database) track artist as ItemMapping."""
+        if overwrite:
+            artist = await self.mass.music.artists.add_db_item(
+                artist, overwrite_existing=True
+            )
         if artist.provider == ProviderType.DATABASE:
             if isinstance(artist, ItemMapping):
                 return artist
