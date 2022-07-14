@@ -9,6 +9,7 @@ from music_assistant.helpers.audio import (
     get_http_stream,
     get_radio_stream,
 )
+from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.tags import AudioTags, parse_tags
 from music_assistant.models.config import MusicProviderConfig
 from music_assistant.models.enums import (
@@ -123,7 +124,17 @@ class URLProvider(MusicProvider):
         self, item_id_or_url: str, force_refresh: bool = False
     ) -> Tuple[str, str, AudioTags]:
         """Retrieve (cached) mediainfo for url."""
-        if "?" in item_id_or_url or "&" in item_id_or_url:
+        # check if the radio stream is not a playlist
+        if (
+            item_id_or_url.endswith("m3u8")
+            or item_id_or_url.endswith("m3u")
+            or item_id_or_url.endswith("pls")
+        ):
+            playlist = await fetch_playlist(self.mass, item_id_or_url)
+            url = playlist[0]
+            item_id = item_id_or_url
+            self._full_url[item_id] = url
+        elif "?" in item_id_or_url or "&" in item_id_or_url:
             # store the 'real' full url to be picked up later
             # this makes sure that we're not storing any temporary data like auth keys etc
             # a request for an url mediaitem always passes here first before streamdetails
