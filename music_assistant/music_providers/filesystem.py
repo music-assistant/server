@@ -349,12 +349,12 @@ class FileSystemProvider(MusicProvider):
         result = []
         for track in await self.mass.music.tracks.get_db_items_by_query(query):
             track.album = db_album
-            album_mapping = next(
+            if album_mapping := next(
                 (x for x in track.albums if x.item_id == db_album.item_id), None
-            )
-            track.disc_number = album_mapping.disc_number
-            track.track_number = album_mapping.track_number
-            result.append(track)
+            ):
+                track.disc_number = album_mapping.disc_number
+                track.track_number = album_mapping.track_number
+                result.append(track)
         return sorted(result, key=lambda x: (x.disc_number, x.track_number))
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
