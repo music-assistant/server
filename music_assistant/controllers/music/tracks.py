@@ -270,6 +270,10 @@ class TracksController(MediaControllerBase[Track]):
         overwrite: bool = False,
     ) -> ItemMapping:
         """Extract (database) album as ItemMapping."""
+        if overwrite:
+            return await self.mass.music.albums.add_db_item(
+                album, overwrite_existing=True
+            )
         if album.provider == ProviderType.DATABASE:
             if isinstance(album, ItemMapping):
                 return album
