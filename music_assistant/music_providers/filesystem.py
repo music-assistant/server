@@ -204,7 +204,11 @@ class FileSystemProvider(MusicProvider):
                 if ext in TRACK_EXTENSIONS:
                     # add/update track to db
                     track = await self._parse_track(entry.path)
-                    await self.mass.music.tracks.add_db_item(track)
+                    # if the track was edited on disk, always overwrite existing db details
+                    overwrite_existing = entry.path in prev_checksums
+                    await self.mass.music.tracks.add_db_item(
+                        track, overwrite_existing=overwrite_existing
+                    )
                 elif ext in PLAYLIST_EXTENSIONS:
                     playlist = await self._parse_playlist(entry.path)
                     # add/update] playlist to db
