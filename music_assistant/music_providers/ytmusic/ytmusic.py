@@ -261,6 +261,16 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.expires = time() + int(
                 track_obj["streamingData"].get("expiresInSeconds")
             )
+        if (
+            stream_format.get("audioChannels")
+            and str(stream_format.get("audioChannels")).isdigit()
+        ):
+            stream_details.channels = int(stream_format.get("audioChannels"))
+        if (
+            stream_format.get("audioSampleRate")
+            and stream_format.get("audioSampleRate").isdigit()
+        ):
+            stream_details.sample_rate = int(stream_format.get("audioSampleRate"))
         return stream_details
 
     async def _post_data(self, endpoint: str, data: Dict[str, str], **kwargs):
