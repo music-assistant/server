@@ -1,5 +1,6 @@
 """Helpers for creating/parsing URI's."""
 
+import os
 from typing import Tuple
 
 from music_assistant.models.enums import MediaType, ProviderType
@@ -37,6 +38,11 @@ def parse_uri(uri: str) -> Tuple[MediaType, ProviderType, str]:
             provider, media_type_str, item_id = uri.split(":")
             provider = ProviderType.parse(provider)
             media_type = MediaType(media_type_str)
+        elif os.path.isfile(uri):
+            # Translate a local file (which is not from file provider) to the URL provider
+            provider = ProviderType.URL
+            media_type = MediaType.TRACK
+            item_id = uri
         else:
             raise KeyError
     except (TypeError, AttributeError, ValueError, KeyError) as err:

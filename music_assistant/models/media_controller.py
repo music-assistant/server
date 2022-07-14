@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
 from time import time
-from typing import TYPE_CHECKING, Generic, List, Optional, Tuple, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    AsyncGenerator,
+    Generic,
+    List,
+    Optional,
+    Tuple,
+    TypeVar,
+)
 
 from music_assistant.models.errors import MediaNotFoundError
 
@@ -76,6 +84,29 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         return await self.get_db_items_by_query(
             sql_query, params, limit=limit, offset=offset
         )
+
+    async def iter_db_items(
+        self,
+        in_library: Optional[bool] = None,
+        search: Optional[str] = None,
+        order_by: str = "sort_name",
+    ) -> AsyncGenerator[ItemCls, None]:
+        """Iterate all in-database items."""
+        limit: int = 500
+        offset: int = 0
+        while True:
+            next_items = await self.db_items(
+                in_library=in_library,
+                search=search,
+                limit=limit,
+                offset=offset,
+                order_by=order_by,
+            )
+            for item in next_items:
+                yield item
+            if len(next_items) < limit:
+                break
+            offset += limit
 
     async def count(self, in_library: Optional[bool] = None) -> int:
         """Return number of in-library items for this MediaType."""
@@ -360,7 +391,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         self.logger.debug("removed provider %s from item id %s", prov_id, item_id)
 
-    async def delete_db_item(self, item_id: int) -> None:
+    async def delete_db_item(self, item_id: int, recursive: bool = False) -> None:
         """Delete record from the database."""
         # delete item
         await self.mass.database.delete(

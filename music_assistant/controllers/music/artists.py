@@ -191,7 +191,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             for row in await self.mass.database.get_rows(self.db_table, match):
                 row_artist = Artist.from_db_row(row)
                 if row_artist.sort_name == item.sort_name:
-                    # just to be sure ?!
                     cur_item = row_artist
                     break
         if cur_item:
@@ -240,16 +239,25 @@ class ArtistsController(MediaControllerBase[Artist]):
         db_item = await self.get_db_item(item_id)
         return db_item
 
-    async def delete_db_item(self, item_id: int) -> None:
+    async def delete_db_item(self, item_id: int, recursive: bool = False) -> None:
         """Delete record from the database."""
 
-        # delete tracks/albums connected to this artist
-        await self.mass.database.delete_where_query(
-            TABLE_TRACKS, f"artists LIKE '%\"{item_id}\"%'"
+        # check artist albums
+        db_rows = await self.mass.music.albums.get_db_items_by_query(
+            f"SELECT item_id FROM {TABLE_ALBUMS} WHERE artists LIKE '%\"{item_id}\"%'"
         )
-        await self.mass.database.delete_where_query(
-            TABLE_ALBUMS, f"artists LIKE '%\"{item_id}\"%'"
+        assert not (db_rows and not recursive), "Albums attached to artist"
+        for db_row in db_rows:
+            await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
+
+        # check artist tracks
+        db_rows = await self.mass.music.tracks.get_db_items_by_query(
+            f"SELECT item_id FROM {TABLE_TRACKS} WHERE artists LIKE '%\"{item_id}\"%'"
         )
+        assert not (db_rows and not recursive), "Tracks attached to artist"
+        for db_row in db_rows:
+            await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
+
         # delete the artist itself from db
         await super().delete_db_item(item_id)
 
