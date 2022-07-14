@@ -155,12 +155,12 @@ class MetaDataController:
             ):
                 return musicbrainz_id
         # lookup failed
-        ref_albums_str = "/".join(x.name for x in ref_albums)
-        ref_tracks_str = "/".join(x.name for x in ref_tracks)
+        ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
+        ref_tracks_str = "/".join(x.name for x in ref_tracks) or "none"
         self.logger.info(
-            "Unable to get musicbrainz ID for artist %s"
-            " - using lookup-album(s): %s"
-            " - using lookup-track(s): %s",
+            "Unable to get musicbrainz ID for artist %s\n"
+            " - using lookup-album(s): %s\n"
+            " - using lookup-track(s): %s\n",
             artist.name,
             ref_albums_str,
             ref_tracks_str,
