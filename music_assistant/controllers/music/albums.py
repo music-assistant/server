@@ -223,13 +223,17 @@ class AlbumsController(MediaControllerBase[Album]):
         db_item = await self.get_db_item(item_id)
         return db_item
 
-    async def delete_db_item(self, item_id: int) -> None:
+    async def delete_db_item(self, item_id: int, recursive: bool = False) -> None:
         """Delete record from the database."""
 
-        # delete tracks connected to this album
-        await self.mass.database.delete_where_query(
-            TABLE_TRACKS, f"albums LIKE '%\"{item_id}\"%'"
+        # check album tracks
+        db_rows = await self.mass.music.tracks.get_db_items_by_query(
+            f"SELECT item_id FROM {TABLE_TRACKS} WHERE albums LIKE '%\"{item_id}\"%'"
         )
+        assert not (db_rows and not recursive), "Tracks attached to album"
+        for db_row in db_rows:
+            await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
+
         # delete the album itself from db
         await super().delete_db_item(item_id)
 

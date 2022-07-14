@@ -294,23 +294,7 @@ class MusicProvider:
                 continue
             self.logger.debug("Start sync of %s items.", media_type.value)
             controller = self.mass.music.get_controller(media_type)
-
-            # create a set of all previous and current db id's
-            # note we only store the items in the prev_ids list that are
-            # unique to this provider to avoid getting into a mess where
-            # for example an item still exists on disk (in case of file provider)
-            # and no longer favorite on streaming provider.
-            # Bottomline this means that we don't do a full 2 way sync if multiple
-            # providers are attached to the same media item.
-            prev_ids = set()
-            for db_item in await controller.db_items(True):
-                prov_types = {x.prov_type for x in db_item.provider_ids}
-                if len(prov_types) > 1:
-                    continue
-                for prov_id in db_item.provider_ids:
-                    if prov_id.prov_id == self.id:
-                        prev_ids.add(db_item.item_id)
-            cur_ids = set()
+            cur_db_ids = set()
             async for prov_item in self._get_library_gen(media_type)():
                 prov_item: MediaItemType = prov_item
 
@@ -328,15 +312,22 @@ class MusicProvider:
                     db_item = await controller.update_db_item(
                         db_item.item_id, prov_item
                     )
-                cur_ids.add(db_item.item_id)
+                cur_db_ids.add(db_item.item_id)
                 if not db_item.in_library:
                     await controller.set_db_library(db_item.item_id, True)
 
-            # process deletions
-            for item_id in prev_ids:
-                if item_id not in cur_ids:
+            # process deletions (= no longer in library)
+            async for db_item in controller.iter_db_items(True):
+                if db_item.item_id in cur_db_ids:
+                    continue
+                for prov_id in db_item.provider_ids:
+                    prov_types = {x.prov_type for x in db_item.provider_ids}
+                    if len(prov_types) > 1:
+                        continue
+                    if prov_id.prov_id != self.id:
+                        continue
                     # only mark the item as not in library and leave the metadata in db
-                    await controller.set_db_library(item_id, False)
+                    await controller.set_db_library(db_item.item_id, False)
 
     # DO NOT OVERRIDE BELOW
 
