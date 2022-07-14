@@ -16,24 +16,18 @@ async def create_thumbnail(
     mass: MusicAssistant, path: str, size: Optional[int]
 ) -> bytes:
     """Create thumbnail from image url."""
-    img_data = None
-    if path.startswith("http"):
-        async with mass.http_session.get(path, verify_ssl=False) as response:
-            assert response.status == 200
-            img_data = await response.read()
-    else:
+    # always try ffmpeg first to get the image because it supports
+    # both online and offline image files as well as embedded images in media files
+    img_data = await get_embedded_image(path)
+    if not img_data:
         # assume file from file provider, we need to fetch it here...
         for prov in mass.music.providers:
             if not prov.type.is_file():
                 continue
             if not await prov.exists(path):
                 continue
-            # embedded image in music file
+            path = await prov.resolve(path)
             img_data = await get_embedded_image(path)
-            # regular image file on disk
-            if not img_data:
-                async with prov.open_file(path) as _file:
-                    img_data = await _file.read()
             break
     if not img_data:
         raise FileNotFoundError(f"Image not found: {path}")

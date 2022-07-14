@@ -121,9 +121,9 @@ class MediaItem(DataClassDictMixin):
     item_id: str
     provider: ProviderType
     name: str
-    # optional fields below
     provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
 
+    # optional fields below
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN
@@ -407,6 +407,13 @@ class StreamDetails(DataClassDictMixin):
     expires: float = time() + 3600
     # data: provider specific data (not exposed externally)
     data: Optional[Any] = None
+    # if the url/file is supported by ffmpeg directly, use direct stream
+    direct: Optional[str] = None
+    # callback: optional callback function (or coroutine) to call when the stream completes.
+    # needed for streaming provivders to report what is playing
+    # receives the streamdetails as only argument from which to grab
+    # details such as seconds_streamed.
+    callback: Any = None
 
     # the fields below will be set/controlled by the streamcontroller
     queue_id: Optional[str] = None
@@ -418,8 +425,10 @@ class StreamDetails(DataClassDictMixin):
     def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
         """Exclude internal fields from dict."""
         d.pop("data")
+        d.pop("direct")
         d.pop("expires")
         d.pop("queue_id")
+        d.pop("callback")
         return d
 
     def __str__(self):

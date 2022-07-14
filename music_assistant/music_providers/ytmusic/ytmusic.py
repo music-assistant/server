@@ -1,13 +1,13 @@
 """Youtube Music support for MusicAssistant."""
 import re
 from operator import itemgetter
+from time import time
 from typing import AsyncGenerator, Dict, List, Optional
 from urllib.parse import unquote
 
 import pytube
 import ytmusicapi
 
-from music_assistant.helpers.audio import get_http_stream
 from music_assistant.models.enums import ProviderType
 from music_assistant.models.errors import (
     InvalidDataError,
@@ -59,6 +59,8 @@ class YoutubeMusicProvider(MusicProvider):
     _headers = None
     _context = None
     _cookies = None
+    _signature_timestamp = 0
+    _cipher = None
 
     async def setup(self) -> bool:
         """Set up the YTMusic provider."""
@@ -69,6 +71,7 @@ class YoutubeMusicProvider(MusicProvider):
         await self._initialize_headers(cookie=self.config.password)
         await self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
+        self._signature_timestamp = await self._get_signature_timestamp()
         return True
 
     async def search(
@@ -224,38 +227,49 @@ class YoutubeMusicProvider(MusicProvider):
         artist_obj = await get_artist(prov_artist_id=prov_artist_id)
         if "songs" in artist_obj and "results" in artist_obj["songs"]:
             return [
-                await self._parse_track(track)
+                await self.get_track(track["videoId"])
                 for track in artist_obj["songs"]["results"]
+                if track.get("videoId")
             ]
         return []
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        signature_timestamp = await self._get_signature_timestamp()
         data = {
             "playbackContext": {
-                "contentPlaybackContext": {"signatureTimestamp": signature_timestamp}
+                "contentPlaybackContext": {
+                    "signatureTimestamp": self._signature_timestamp
+                }
             },
             "video_id": item_id,
         }
         track_obj = await self._post_data("player", data=data)
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
-        return StreamDetails(
+        stream_details = StreamDetails(
             provider=self.type,
             item_id=item_id,
-            data=url,
             content_type=ContentType.try_parse(stream_format["mimeType"]),
+            direct=url,
         )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        async for chunk in get_http_stream(
-            self.mass, streamdetails.data, streamdetails, seek_position
+        if (
+            track_obj["streamingData"].get("expiresInSeconds")
+            and track_obj["streamingData"].get("expiresInSeconds").isdigit()
         ):
-            yield chunk
+            stream_details.expires = time() + int(
+                track_obj["streamingData"].get("expiresInSeconds")
+            )
+        if (
+            stream_format.get("audioChannels")
+            and str(stream_format.get("audioChannels")).isdigit()
+        ):
+            stream_details.channels = int(stream_format.get("audioChannels"))
+        if (
+            stream_format.get("audioSampleRate")
+            and stream_format.get("audioSampleRate").isdigit()
+        ):
+            stream_details.sample_rate = int(stream_format.get("audioSampleRate"))
+        return stream_details
 
     async def _post_data(self, endpoint: str, data: Dict[str, str], **kwargs):
         url = f"{YTM_BASE_URL}{endpoint}"
@@ -391,6 +405,8 @@ class YoutubeMusicProvider(MusicProvider):
                 item_id=playlist_obj["id"], prov_type=self.type, prov_id=self.id
             )
         )
+        # use duration_seconds as checksum for now by lack of something better
+        playlist.metadata.checksum = playlist_obj["duration_seconds"]
         return playlist
 
     async def _parse_track(self, track_obj: dict) -> Track:
@@ -407,11 +423,10 @@ class YoutubeMusicProvider(MusicProvider):
                 track_obj["thumbnails"]
             )
         if (
-            "album" in track_obj
-            and track_obj["album"]
-            and "id" in track_obj["album"]
-            and track_obj["album"]["id"]
-            and "artists" in track_obj
+            track_obj.get("album")
+            and track_obj.get("artists")
+            and isinstance(track_obj.get("album"), dict)
+            and track_obj["album"].get("id")
         ):
             album = track_obj["album"]
             album["artists"] = track_obj["artists"]
@@ -453,14 +468,20 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
         """Figure out the stream URL to use based on the YT track object."""
-        cipher_parts = {}
-        for part in stream_format["signatureCipher"].split("&"):
-            key, val = part.split("=", maxsplit=1)
-            cipher_parts[key] = unquote(val)
-        signature = await self._decipher_signature(
-            ciphered_signature=cipher_parts["s"], item_id=item_id
-        )
-        url = cipher_parts["url"] + "&sig=" + signature
+        url = None
+        if stream_format.get("signatureCipher"):
+            # Secured URL
+            cipher_parts = {}
+            for part in stream_format["signatureCipher"].split("&"):
+                key, val = part.split("=", maxsplit=1)
+                cipher_parts[key] = unquote(val)
+            signature = await self._decipher_signature(
+                ciphered_signature=cipher_parts["s"], item_id=item_id
+            )
+            url = cipher_parts["url"] + "&sig=" + signature
+        elif stream_format.get("url"):
+            # Non secured URL
+            url = stream_format.get("url")
         return url
 
     @classmethod
@@ -498,6 +519,8 @@ class YoutubeMusicProvider(MusicProvider):
             js_url = pytube.extract.js_url(embed_html)
             ytm_js = pytube.request.get(js_url)
             cipher = pytube.cipher.Cipher(js=ytm_js)
-            return cipher.get_signature(ciphered_signature)
+            return cipher
 
-        return await self.mass.loop.run_in_executor(None, _decipher)
+        if not self._cipher:
+            self._cipher = await self.mass.loop.run_in_executor(None, _decipher)
+        return self._cipher.get_signature(ciphered_signature)

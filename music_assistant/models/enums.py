@@ -11,8 +11,8 @@ class MediaType(Enum):
     TRACK = "track"
     PLAYLIST = "playlist"
     RADIO = "radio"
-    URL = "url"
     FOLDER = "folder"
+    ANNOUNCEMENT = "announcement"
     UNKNOWN = "unknown"
 
 
@@ -29,6 +29,23 @@ class MediaQuality(IntEnum):
     LOSSLESS_HI_RES_2 = 21  # 88.2/96khz 24 bits HI-RES
     LOSSLESS_HI_RES_3 = 22  # 176/192khz 24 bits HI-RES
     LOSSLESS_HI_RES_4 = 23  # above 192khz 24 bits HI-RES
+
+    @classmethod
+    def from_file_type(cls, file_type: str) -> "MediaQuality":
+        """Try to parse MediaQuality from file type/extension."""
+        if "mp3" in file_type:
+            return MediaQuality.LOSSY_MP3
+        if "ogg" in file_type:
+            return MediaQuality.LOSSY_OGG
+        if "aac" in file_type:
+            return MediaQuality.LOSSY_AAC
+        if "m4a" in file_type:
+            return MediaQuality.LOSSY_M4A
+        if "flac" in file_type:
+            return MediaQuality.LOSSLESS
+        if "wav" in file_type:
+            return MediaQuality.LOSSLESS
+        return MediaQuality.UNKNOWN
 
 
 class LinkType(Enum):

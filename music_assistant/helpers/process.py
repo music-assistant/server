@@ -17,6 +17,8 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_CHUNKSIZE = 128000
 DEFAULT_TIMEOUT = 120
 
+# pylint: disable=invalid-name
+
 
 class AsyncProcess:
     """Implementation of a (truly) non blocking subprocess."""
@@ -25,7 +27,6 @@ class AsyncProcess:
         self,
         args: Union[List, str],
         enable_stdin: bool = False,
-        chunk_size: int = DEFAULT_CHUNKSIZE,
         enable_stdout: bool = True,
         enable_stderr: bool = False,
     ):
@@ -33,7 +34,6 @@ class AsyncProcess:
         self._proc = None
         self._args = args
         self._enable_stdin = enable_stdin
-        self.chunk_size = chunk_size or DEFAULT_CHUNKSIZE
         self._enable_stdout = enable_stdout
         self._enable_stderr = enable_stderr
         self._attached_task: asyncio.Task = None
@@ -52,7 +52,7 @@ class AsyncProcess:
                 stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
                 stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
                 stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-                limit=64000000,
+                limit=32 * 1024 * 1024,
                 close_fds=True,
             )
         else:
@@ -61,7 +61,7 @@ class AsyncProcess:
                 stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
                 stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
                 stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-                limit=64000000,
+                limit=32 * 1024 * 102,
                 close_fds=True,
             )
         return self
@@ -83,25 +83,49 @@ class AsyncProcess:
                 # just in case?
                 self._proc.kill()
 
-    async def iterate_chunks(self) -> AsyncGenerator[bytes, None]:
-        """Yield chunks from the process stdout. Generator."""
+    async def iter_chunked(
+        self, n: int = DEFAULT_CHUNKSIZE
+    ) -> AsyncGenerator[bytes, None]:
+        """Yield chunks of n size from the process stdout."""
         while True:
-            chunk = await self._read_chunk()
+            chunk = await self.readexactly(n)
             yield chunk
-            if len(chunk) < self.chunk_size:
-                del chunk
+            if len(chunk) < n:
                 break
-            del chunk
 
-    async def _read_chunk(self, timeout: int = DEFAULT_TIMEOUT) -> bytes:
-        """Read chunk_size bytes from the process stdout."""
+    async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
+        """Yield chunks as they come in from process stdout."""
+        while True:
+            chunk = await self._proc.stdout.read(n)
+            if chunk == b"":
+                break
+            yield chunk
+
+    async def readexactly(self, n: int, timeout: int = DEFAULT_TIMEOUT) -> bytes:
+        """Read exactly n bytes from the process stdout (or less if eof)."""
         if self.closed:
             return b""
         try:
             async with _timeout(timeout):
-                return await self._proc.stdout.readexactly(self.chunk_size)
+                return await self._proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
             return err.partial
+        except asyncio.TimeoutError:
+            return b""
+
+    async def read(self, n: int, timeout: int = DEFAULT_TIMEOUT) -> bytes:
+        """
+        Read up to n bytes from the stdout stream.
+
+        If n is positive, this function try to read n bytes,
+        and may return less or equal bytes than requested, but at least one byte.
+        If EOF was received before any byte is read, this function returns empty byte object.
+        """
+        if self.closed:
+            return b""
+        try:
+            async with _timeout(timeout):
+                return await self._proc.stdout.read(n)
         except asyncio.TimeoutError:
             return b""
 

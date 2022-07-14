@@ -102,6 +102,9 @@ class MetaDataController:
         for track in await self.mass.music.playlists.tracks(
             playlist.item_id, playlist.provider
         ):
+            if track.media_type != MediaType.TRACK:
+                # filter out radio items
+                continue
             if track.metadata.genres:
                 playlist.metadata.genres.update(track.metadata.genres)
             elif track.album and track.album.metadata.genres:
@@ -221,7 +224,8 @@ class MetaDataController:
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
         # check if we already have this cached in the db
-        match = {"path": path, "size": size}
+        match_path = path.split("?")[0].split("&")[0]
+        match = {"path": match_path, "size": size}
         if result := await self.mass.database.get_row(TABLE_THUMBS, match):
             thumbnail = result["data"]
         else:

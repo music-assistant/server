@@ -232,6 +232,9 @@ class MusicController:
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         assert provider or provider_id, "provider or provider_id must be supplied"
+        if provider == ProviderType.URL or provider_id == "url":
+            # handle special case of 'URL' MusicProvider which allows us to play regular url's
+            return await self.get_provider(ProviderType.URL).parse_item(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             provider_item_id=item_id,
@@ -326,6 +329,9 @@ class MusicController:
     async def get_provider_loudness(self, provider: ProviderType) -> float | None:
         """Get average integrated loudness for tracks of given provider."""
         all_items = []
+        if provider == ProviderType.URL:
+            # this is not a very good idea for random urls
+            return None
         for db_row in await self.mass.database.get_rows(
             TABLE_TRACK_LOUDNESS,
             {
