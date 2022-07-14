@@ -37,7 +37,7 @@ async def create_thumbnail(
         img = Image.open(data)
         if size:
             img.thumbnail((size, size), Image.ANTIALIAS)
-        img.save(data, format="png")
+        img.convert("RGB").save(data, "PNG", optimize=True)
         return data.getvalue()
 
     return await mass.loop.run_in_executor(None, _create_image)
