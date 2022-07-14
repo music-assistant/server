@@ -112,33 +112,31 @@ class MusicProvider:
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        if MediaType.ARTIST in self.supported_mediatypes:
-            raise NotImplementedError
+        raise NotImplementedError
 
     async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
         """Get a list of all albums for the given artist."""
         if MediaType.ALBUM in self.supported_mediatypes:
             raise NotImplementedError
+        return []
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
         """Get a list of most popular tracks for the given artist."""
         if MediaType.TRACK in self.supported_mediatypes:
             raise NotImplementedError
+        return []
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        if MediaType.ALBUM in self.supported_mediatypes:
-            raise NotImplementedError
+        raise NotImplementedError
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        if MediaType.TRACK in self.supported_mediatypes:
-            raise NotImplementedError
+        raise NotImplementedError
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        if MediaType.PLAYLIST in self.supported_mediatypes:
-            raise NotImplementedError
+        raise NotImplementedError
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
@@ -149,11 +147,13 @@ class MusicProvider:
         """Get album tracks for given album id."""
         if MediaType.ALBUM in self.supported_mediatypes:
             raise NotImplementedError
+        return []
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
+        return []
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add item to provider's library. Return true on succes."""
