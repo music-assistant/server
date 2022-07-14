@@ -245,8 +245,6 @@ class YoutubeMusicProvider(MusicProvider):
         }
         track_obj = await self._post_data("player", data=data)
         stream_format = await self._parse_stream_format(track_obj)
-        if stream_format.get("loudnessDb"):
-            print(f"Loudness dB of track: {item_id}: {stream_format.get('loudnessDb')}")
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         stream_details = StreamDetails(
             provider=self.type,
