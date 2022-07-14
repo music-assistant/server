@@ -580,6 +580,7 @@ class FileSystemProvider(MusicProvider):
                 track.album.metadata.images = track.metadata.images
 
         # parse other info
+        assert tags.duration, "Invalid duration"
         track.duration = tags.duration
         track.metadata.genres = tags.genres
         track.disc_number = tags.disc
