@@ -155,7 +155,16 @@ class MetaDataController:
             ):
                 return musicbrainz_id
         # lookup failed
-        self.logger.warning("Unable to get musicbrainz ID for artist %s !", artist.name)
+        ref_albums_str = "/".join(x.name for x in ref_albums)
+        ref_tracks_str = "/".join(x.name for x in ref_tracks)
+        self.logger.info(
+            "Unable to get musicbrainz ID for artist %s"
+            " - using lookup-album(s): %s"
+            " - using lookup-track(s): %s",
+            artist.name,
+            ref_albums_str,
+            ref_tracks_str,
+        )
         return None
 
     async def get_image_data_for_item(

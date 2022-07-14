@@ -191,7 +191,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             for row in await self.mass.database.get_rows(self.db_table, match):
                 row_artist = Artist.from_db_row(row)
                 if row_artist.sort_name == item.sort_name:
-                    # just to be sure ?!
                     cur_item = row_artist
                     break
         if cur_item:
