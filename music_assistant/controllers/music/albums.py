@@ -186,7 +186,7 @@ class AlbumsController(MediaControllerBase[Album]):
             metadata = item.metadata
             metadata.last_refresh = None
             provider_ids = item.provider_ids
-            album_artists = await self._get_album_artists(cur_item)
+            album_artists = await self._get_album_artists(item)
         else:
             metadata = cur_item.metadata.update(item.metadata)
             provider_ids = {*cur_item.provider_ids, *item.provider_ids}
