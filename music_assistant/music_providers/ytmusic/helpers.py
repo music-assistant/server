@@ -83,11 +83,12 @@ async def get_track(prov_track_id: str) -> Dict[str, str]:
     return await loop.run_in_executor(None, _get_song)
 
 
-async def get_library_artists(headers: Dict[str, str]) -> Dict[str, str]:
+async def get_library_artists(headers: Dict[str, str], username: str) -> Dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_artists function."""
 
     def _get_library_artists():
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         artists = ytm.get_library_artists(limit=9999)
         # Sync properties with uniformal artist object
         for artist in artists:
@@ -101,22 +102,26 @@ async def get_library_artists(headers: Dict[str, str]) -> Dict[str, str]:
     return await loop.run_in_executor(None, _get_library_artists)
 
 
-async def get_library_albums(headers: Dict[str, str]) -> Dict[str, str]:
+async def get_library_albums(headers: Dict[str, str], username: str) -> Dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_albums function."""
 
     def _get_library_albums():
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         return ytm.get_library_albums(limit=9999)
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_library_albums)
 
 
-async def get_library_playlists(headers: Dict[str, str]) -> Dict[str, str]:
+async def get_library_playlists(
+    headers: Dict[str, str], username: str
+) -> Dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_playlists function."""
 
     def _get_library_playlists():
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         playlists = ytm.get_library_playlists(limit=9999)
         # Sync properties with uniformal playlist object
         for playlist in playlists:
@@ -129,11 +134,12 @@ async def get_library_playlists(headers: Dict[str, str]) -> Dict[str, str]:
     return await loop.run_in_executor(None, _get_library_playlists)
 
 
-async def get_library_tracks(headers: Dict[str, str]) -> Dict[str, str]:
+async def get_library_tracks(headers: Dict[str, str], username: str) -> Dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_tracks function."""
 
     def _get_library_tracks():
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         tracks = ytm.get_library_songs(limit=9999)
         return tracks
 
@@ -173,3 +179,8 @@ def get_playlist_checksum(playlist_obj: dict) -> str:
         if key in playlist_obj:
             return playlist_obj[key]
     return str(int(time()))
+
+
+def is_brand_account(username: str) -> bool:
+    """Check if the provided username is a brand-account."""
+    return len(username) == 21 and username.isdigit()
