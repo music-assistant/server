@@ -169,6 +169,7 @@ async def search(query: str, ytm_filter: str = None, limit: int = 20) -> List[Di
 
 def get_playlist_checksum(playlist_obj) -> str:
     """Try to calculate a checksum so we can detect changes in a playlist."""
-    return playlist_obj.get(
-        "duration_seconds", playlist_obj.get("trackCount", str(int(time())))
-    )
+    for key in ["duration_seconds", "trackCount"]:
+        if key in playlist_obj:
+            return playlist_obj[key]
+    return str(int(time()))
