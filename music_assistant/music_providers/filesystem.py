@@ -241,23 +241,19 @@ class FileSystemProvider(MusicProvider):
                 continue
 
             _, ext = file_path.rsplit(".", 1)
+            if ext not in SUPPORTED_EXTENSIONS:
+                # unsupported file extension
+                continue
 
-            if ext in TRACK_EXTENSIONS:
-                item_id = self._get_item_id(file_path)
-                if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
-                    item_id, self.type
-                ):
-                    await self.mass.music.tracks.remove_prov_mapping(
-                        db_item.item_id, self.id
-                    )
-            elif ext in PLAYLIST_EXTENSIONS:
-                item_id = self._get_item_id(file_path)
-                if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
-                    item_id, self.type
-                ):
-                    await self.mass.music.playlists.remove_prov_mapping(
-                        db_item.item_id, self.id
-                    )
+            item_id = self._get_item_id(file_path)
+
+            if ext in PLAYLIST_EXTENSIONS:
+                controller = self.mass.music.get_controller(MediaType.PLAYLIST)
+            else:
+                controller = self.mass.music.get_controller(MediaType.TRACK)
+
+            if db_item := await controller.get_db_item_by_prov_id(item_id, self.type):
+                await controller.remove_prov_mapping(db_item.item_id, self.id)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
