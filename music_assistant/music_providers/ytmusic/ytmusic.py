@@ -123,25 +123,33 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Youtube Music."""
-        artists_obj = await get_library_artists(headers=self._headers)
+        artists_obj = await get_library_artists(
+            headers=self._headers, username=self.config.username
+        )
         for artist in artists_obj:
             yield await self._parse_artist(artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Youtube Music."""
-        albums_obj = await get_library_albums(headers=self._headers)
+        albums_obj = await get_library_albums(
+            headers=self._headers, username=self.config.username
+        )
         for album in albums_obj:
             yield await self._parse_album(album, album["browseId"])
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
-        playlists_obj = await get_library_playlists(headers=self._headers)
+        playlists_obj = await get_library_playlists(
+            headers=self._headers, username=self.config.username
+        )
         for playlist in playlists_obj:
             yield await self._parse_playlist(playlist)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Youtube Music."""
-        tracks_obj = await get_library_tracks(headers=self._headers)
+        tracks_obj = await get_library_tracks(
+            headers=self._headers, username=self.config.username
+        )
         for track in tracks_obj:
             # Library tracks sometimes do not have a valid artist id
             # In that case, call the API for track details based on track id
