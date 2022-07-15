@@ -167,7 +167,7 @@ async def search(query: str, ytm_filter: str = None, limit: int = 20) -> List[Di
     return await loop.run_in_executor(None, _search)
 
 
-def get_playlist_checksum(playlist_obj) -> str:
+def get_playlist_checksum(playlist_obj: dict) -> str:
     """Try to calculate a checksum so we can detect changes in a playlist."""
     for key in ("duration_seconds", "trackCount"):
         if key in playlist_obj:
