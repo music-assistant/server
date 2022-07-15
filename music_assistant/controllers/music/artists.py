@@ -138,7 +138,18 @@ class ArtistsController(MediaControllerBase[Artist]):
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = await prov.get_artist_toptracks(item_id)
+        if MusicProviderFeature.ARTIST_TOPTRACKS in prov.supported_features:
+            items = await prov.get_artist_toptracks(item_id)
+        else:
+            # fallback implementation using the db
+            if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
+                item_id, provider=provider, provider_id=provider_id
+            ):
+                prov_id = provider_id or provider.value
+                # TODO: adjust to json query instead of text search?
+                query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
+                query += f" AND provider_ids LIKE '%\"{prov_id}\"%'"
+                items = await self.mass.music.tracks.get_db_items_by_query(query)
         # store (serializable items) in cache
         self.mass.create_task(
             self.mass.cache.set(
@@ -163,7 +174,18 @@ class ArtistsController(MediaControllerBase[Artist]):
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Album.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = await prov.get_artist_albums(item_id)
+        if MusicProviderFeature.ARTIST_ALBUMS in prov.supported_features:
+            items = await prov.get_artist_albums(item_id)
+        else:
+            # fallback implementation using the db
+            if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
+                item_id, provider=provider, provider_id=provider_id
+            ):
+                prov_id = provider_id or provider.value
+                # TODO: adjust to json query instead of text search?
+                query = f"SELECT * FROM albums WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
+                query += f" AND provider_ids LIKE '%\"{prov_id}\"%'"
+                items = await self.mass.music.albums.get_db_items_by_query(query)
         # store (serializable items) in cache
         self.mass.create_task(
             self.mass.cache.set(
