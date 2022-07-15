@@ -89,7 +89,7 @@ async def get_library_artists(headers: Dict[str, str], username: str) -> Dict[st
     def _get_library_artists():
         user = username if is_brand_account(username) else None
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
-        artists = ytm.get_library_artists(limit=9999)
+        artists = ytm.get_library_subscriptions(limit=9999)
         # Sync properties with uniformal artist object
         for artist in artists:
             artist["id"] = artist["browseId"]
@@ -164,12 +164,31 @@ async def library_add_remove_artist(
     return await loop.run_in_executor(None, _library_add_remove_artist)
 
 
-async def library_add_remove_album_or_playlist(
+async def library_add_remove_album(
+    headers: Dict[str, str], prov_item_id: str, add: bool = True, username: str = None
+) -> bool:
+    """Add or remove an album or playlist to the user's library."""
+    album = await get_album(prov_album_id=prov_item_id)
+
+    def _library_add_remove_album():
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        playlist_id = album["audioPlaylistId"]
+        if add:
+            return ytm.rate_playlist(playlist_id, "LIKE")
+        if not add:
+            return ytm.rate_playlist(playlist_id, "INDIFFERENT")
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _library_add_remove_album)
+
+
+async def library_add_remove_playlist(
     headers: Dict[str, str], prov_item_id: str, add: bool = True, username: str = None
 ) -> bool:
     """Add or remove an album or playlist to the user's library."""
 
-    def _library_add_remove_album_or_playlist():
+    def _library_add_remove_playlist():
         user = username if is_brand_account(username) else None
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         if add:
@@ -178,7 +197,7 @@ async def library_add_remove_album_or_playlist(
             return ytm.rate_playlist(prov_item_id, "INDIFFERENT")
 
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _library_add_remove_album_or_playlist)
+    return await loop.run_in_executor(None, _library_add_remove_playlist)
 
 
 async def search(query: str, ytm_filter: str = None, limit: int = 20) -> List[Dict]:

@@ -38,8 +38,9 @@ from music_assistant.music_providers.ytmusic.helpers import (
     get_library_tracks,
     get_playlist,
     get_track,
-    library_add_remove_album_or_playlist,
+    library_add_remove_album,
     library_add_remove_artist,
+    library_add_remove_playlist,
     search,
 )
 
@@ -253,8 +254,15 @@ class YoutubeMusicProvider(MusicProvider):
                 add=True,
                 username=self.config.username,
             )
-        elif media_type in (MediaType.ALBUM, MediaType.PLAYLIST):
-            result = await library_add_remove_album_or_playlist(
+        elif media_type == MediaType.ALBUM:
+            result = await library_add_remove_album(
+                headers=self._headers,
+                prov_item_id=prov_item_id,
+                add=True,
+                username=self.config.username,
+            )
+        elif media_type == MediaType.PLAYLIST:
+            result = await library_add_remove_playlist(
                 headers=self._headers,
                 prov_item_id=prov_item_id,
                 add=True,
@@ -274,8 +282,15 @@ class YoutubeMusicProvider(MusicProvider):
                 add=False,
                 username=self.config.username,
             )
-        elif media_type in (MediaType.ALBUM, MediaType.PLAYLIST):
-            result = await library_add_remove_album_or_playlist(
+        elif media_type == MediaType.ALBUM:
+            result = await library_add_remove_album(
+                headers=self._headers,
+                prov_item_id=prov_item_id,
+                add=False,
+                username=self.config.username,
+            )
+        elif media_type == MediaType.PLAYLIST:
+            result = await library_add_remove_playlist(
                 headers=self._headers,
                 prov_item_id=prov_item_id,
                 add=False,
