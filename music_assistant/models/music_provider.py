@@ -27,7 +27,11 @@ class MusicProvider:
     _attr_name: str = None
     _attr_type: ProviderType = None
     _attr_available: bool = True
+    # capability attributes
     _attr_supports_browse: bool = True
+    _attr_supports_library_edit = True
+    _attr_supports_playlist_tracks_edit = True
+    _attr_supports_playlist_create = False
     _attr_supported_mediatypes: List[MediaType] = []
 
     def __init__(self, mass: MusicAssistant, config: MusicProviderConfig) -> None:
@@ -67,6 +71,21 @@ class MusicProvider:
     def supports_browse(self) -> bool:
         """Return boolean if this provider supports browsing."""
         return self._attr_supports_browse
+
+    @property
+    def supports_library_edit(self) -> bool:
+        """Return boolean if this provider supports adding/removing items to/from the library."""
+        return self._attr_supports_library_edit
+
+    @property
+    def playlist_tracks_edit(self) -> bool:
+        """Return boolean if this provider supports adding/removing tracks to an (editable) playlist."""
+        return self._attr_supports_playlist_tracks_edit
+
+    @property
+    def playlist_create(self) -> bool:
+        """Return boolean if this provider supports creating a new playlist."""
+        return self._attr_supports_playlist_create
 
     @property
     def supported_mediatypes(self) -> List[MediaType]:
