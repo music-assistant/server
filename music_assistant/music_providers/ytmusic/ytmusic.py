@@ -64,7 +64,6 @@ class YoutubeMusicProvider(MusicProvider):
             MusicProviderFeature.LIBRARY_ALBUMS,
             MusicProviderFeature.LIBRARY_TRACKS,
             MusicProviderFeature.LIBRARY_PLAYLISTS,
-            MusicProviderFeature.LIBRARY_RADIOS,
             MusicProviderFeature.BROWSE,
             MusicProviderFeature.SEARCH,
             MusicProviderFeature.ARTIST_ALBUMS,
