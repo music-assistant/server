@@ -30,6 +30,7 @@ from music_assistant.models.media_items import (
 )
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.music_providers.ytmusic.helpers import (
+    add_remove_playlist_tracks,
     get_album,
     get_artist,
     get_library_albums,
@@ -307,6 +308,30 @@ class YoutubeMusicProvider(MusicProvider):
         elif media_type == MediaType.TRACK:
             raise NotImplementedError
         return result
+
+    async def add_playlist_tracks(
+        self, prov_playlist_id: str, prov_track_ids: List[str]
+    ) -> None:
+        """Add track(s) to playlist."""
+        return await add_remove_playlist_tracks(
+            headers=self._headers,
+            prov_playlist_id=prov_playlist_id,
+            prov_track_ids=prov_track_ids,
+            add=True,
+            username=self.config.username,
+        )
+
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, prov_track_ids: List[str]
+    ) -> None:
+        """Remove track(s) from playlist."""
+        return await add_remove_playlist_tracks(
+            headers=self._headers,
+            prov_playlist_id=prov_playlist_id,
+            prov_track_ids=prov_track_ids,
+            add=True,
+            username=self.config.username,
+        )
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""

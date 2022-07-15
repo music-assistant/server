@@ -200,6 +200,31 @@ async def library_add_remove_playlist(
     return await loop.run_in_executor(None, _library_add_remove_playlist)
 
 
+async def add_remove_playlist_tracks(
+    headers: Dict[str, str],
+    prov_playlist_id: str,
+    prov_track_ids: List[str],
+    add: bool,
+    username: str = None,
+) -> bool:
+    """Async wrapper around adding/removing tracks to a playlist."""
+
+    def _add_playlist_tracks():
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        if add:
+            return ytm.add_playlist_items(
+                playlistId=prov_playlist_id, videoIds=prov_track_ids
+            )
+        if not add:
+            return ytm.remove_playlist_items(
+                playlistId=prov_playlist_id, videos=prov_track_ids
+            )
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _add_playlist_tracks)
+
+
 async def search(query: str, ytm_filter: str = None, limit: int = 20) -> List[Dict]:
     """Async wrapper around the ytmusicapi search function."""
 
