@@ -248,11 +248,17 @@ class YoutubeMusicProvider(MusicProvider):
         result = False
         if media_type == MediaType.ARTIST:
             result = await library_add_remove_artist(
-                headers=self._headers, prov_artist_id=prov_item_id, add=True
+                headers=self._headers,
+                prov_artist_id=prov_item_id,
+                add=True,
+                username=self.config.username,
             )
         elif media_type in (MediaType.ALBUM, MediaType.PLAYLIST):
             result = await library_add_remove_album_or_playlist(
-                headers=self._headers, prov_item_id=prov_item_id, add=True
+                headers=self._headers,
+                prov_item_id=prov_item_id,
+                add=True,
+                username=self.config.username,
             )
         elif media_type == MediaType.TRACK:
             raise NotImplementedError
@@ -263,11 +269,17 @@ class YoutubeMusicProvider(MusicProvider):
         result = False
         if media_type == MediaType.ARTIST:
             result = await library_add_remove_artist(
-                headers=self._headers, prov_artist_id=prov_item_id, add=False
+                headers=self._headers,
+                prov_artist_id=prov_item_id,
+                add=False,
+                username=self.config.username,
             )
         elif media_type in (MediaType.ALBUM, MediaType.PLAYLIST):
             result = await library_add_remove_album_or_playlist(
-                headers=self._headers, prov_item_id=prov_item_id, add=False
+                headers=self._headers,
+                prov_item_id=prov_item_id,
+                add=False,
+                username=self.config.username,
             )
         elif media_type == MediaType.TRACK:
             raise NotImplementedError

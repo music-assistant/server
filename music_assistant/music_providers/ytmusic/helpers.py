@@ -148,12 +148,13 @@ async def get_library_tracks(headers: Dict[str, str], username: str) -> Dict[str
 
 
 async def library_add_remove_artist(
-    headers: Dict[str, str], prov_artist_id: str, add: bool = True
+    headers: Dict[str, str], prov_artist_id: str, add: bool = True, username: str = None
 ) -> bool:
     """Add or remove an artist to the user's library."""
 
     def _library_add_remove_artist():
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         if add:
             return ytm.subscribe_artists(channelIds=[prov_artist_id])
         if not add:
@@ -164,12 +165,13 @@ async def library_add_remove_artist(
 
 
 async def library_add_remove_album_or_playlist(
-    headers: Dict[str, str], prov_item_id: str, add: bool = True
+    headers: Dict[str, str], prov_item_id: str, add: bool = True, username: str = None
 ) -> bool:
     """Add or remove an album or playlist to the user's library."""
 
     def _library_add_remove_album_or_playlist():
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         if add:
             return ytm.rate_playlist(prov_item_id, "LIKE")
         if not add:
