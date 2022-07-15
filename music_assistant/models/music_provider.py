@@ -38,20 +38,7 @@ class MusicProvider:
     @property
     def supported_features(self) -> Tuple[MusicProviderFeature]:
         """Return the features supported by this MusicProvider."""
-        return (
-            MusicProviderFeature.LIBRARY_ARTISTS,
-            MusicProviderFeature.LIBRARY_ALBUMS,
-            MusicProviderFeature.LIBRARY_TRACKS,
-            MusicProviderFeature.LIBRARY_PLAYLISTS,
-            MusicProviderFeature.LIBRARY_RADIOS,
-            MusicProviderFeature.LIBRARY_ARTISTS_EDIT,
-            MusicProviderFeature.LIBRARY_ALBUMS_EDIT,
-            MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            MusicProviderFeature.LIBRARY_RADIOS_EDIT,
-            MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
-            MusicProviderFeature.BROWSE,
-            MusicProviderFeature.SEARCH,
-        )
+        return tuple()
 
     @abstractmethod
     async def setup(self) -> bool:
