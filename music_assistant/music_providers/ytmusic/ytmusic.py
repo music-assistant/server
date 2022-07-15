@@ -202,14 +202,18 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         playlist_obj = await get_playlist(
-            prov_playlist_id=prov_playlist_id, headers=self._headers
+            prov_playlist_id=prov_playlist_id,
+            headers=self._headers,
+            username=self.config.username,
         )
         return await self._parse_playlist(playlist_obj)
 
     async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
         playlist_obj = await get_playlist(
-            prov_playlist_id=prov_playlist_id, headers=self._headers
+            prov_playlist_id=prov_playlist_id,
+            headers=self._headers,
+            username=self.config.username,
         )
         if "tracks" in playlist_obj:
             tracks = []
@@ -500,6 +504,10 @@ class YoutubeMusicProvider(MusicProvider):
             playlist.metadata.images = await self._parse_thumbnails(
                 playlist_obj["thumbnails"]
             )
+        is_editable = False
+        if playlist_obj.get("privacy") and playlist_obj.get("privacy") == "PRIVATE":
+            is_editable = True
+        playlist.is_editable = is_editable
         playlist.add_provider_id(
             MediaItemProviderId(
                 item_id=playlist_obj["id"], prov_type=self.type, prov_id=self.id

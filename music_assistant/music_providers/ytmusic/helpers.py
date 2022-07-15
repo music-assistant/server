@@ -43,12 +43,13 @@ async def get_album(prov_album_id: str) -> Dict[str, str]:
 
 
 async def get_playlist(
-    prov_playlist_id: str, headers: Dict[str, str]
+    prov_playlist_id: str, headers: Dict[str, str], username: str
 ) -> Dict[str, str]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_playlist():
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         playlist = ytm.get_playlist(playlistId=prov_playlist_id)
         playlist["checksum"] = get_playlist_checksum(playlist)
         return playlist
