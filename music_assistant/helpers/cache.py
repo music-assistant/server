@@ -7,7 +7,7 @@ import json
 import time
 from collections import OrderedDict
 from collections.abc import MutableMapping
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from music_assistant.helpers.database import TABLE_CACHE
 
@@ -93,6 +93,12 @@ class Cache:
         """Delete data from cache."""
         self._mem_cache.pop(cache_key, None)
         await self.mass.database.delete(TABLE_CACHE, {"key": cache_key})
+
+    async def clear(self, key_filter: Optional[str] = None) -> None:
+        """Clear all/partial items from cache."""
+        self._mem_cache = {}
+        query = f"key LIKE '%{key_filter}%'" if key_filter else None
+        await self.mass.database.delete(TABLE_CACHE, query=query)
 
     async def auto_cleanup(self):
         """Sceduled auto cleanup task."""

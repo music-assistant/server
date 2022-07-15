@@ -156,13 +156,22 @@ class Database:
         # return updated item
         return await self.get_row(table, match)
 
-    async def delete(self, table: str, match: Dict[str, Any]) -> None:
+    async def delete(
+        self, table: str, match: Optional[dict] = None, query: Optional[str] = None
+    ) -> None:
         """Delete data in given table."""
-        sql_query = f"DELETE FROM {table}"
-        sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
+        assert "where" not in query.lower()
+        sql_query = f"DELETE FROM {table} "
+        if match:
+            sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
+        elif query and "query" not in query.lower():
+            sql_query += "WHERE " + query
+        elif query:
+            sql_query += query
+
         await self.execute(sql_query, match)
 
-    async def delete_where_query(self, table: str, query: str) -> None:
+    async def delete_where_query(self, table: str, query: Optional[str] = None) -> None:
         """Delete data in given table using given where clausule."""
         sql_query = f"DELETE FROM {table} WHERE {query}"
         await self.execute(sql_query)
