@@ -10,11 +10,7 @@ from music_assistant.controllers.music.artists import ArtistsController
 from music_assistant.controllers.music.playlists import PlaylistController
 from music_assistant.controllers.music.radio import RadioController
 from music_assistant.controllers.music.tracks import TracksController
-from music_assistant.helpers.database import (
-    TABLE_CACHE,
-    TABLE_PLAYLOG,
-    TABLE_TRACK_LOUDNESS,
-)
+from music_assistant.helpers.database import TABLE_PLAYLOG, TABLE_TRACK_LOUDNESS
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.config import MusicProviderConfig
@@ -426,9 +422,7 @@ class MusicController:
         for prov_id in removed_providers:
 
             # clean cache items from deleted provider(s)
-            await self.mass.database.delete_where_query(
-                TABLE_CACHE, f"key LIKE '%{prov_id}%'"
-            )
+            self.mass.cache.clear(prov_id)
 
             # cleanup media items from db matched to deleted provider
             for ctrl in (
