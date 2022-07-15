@@ -176,16 +176,20 @@ class MusicProvider:
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add item to provider's library. Return true on succes."""
-        return True
+        if self.supports_library_edit:
+            raise NotImplementedError
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from provider's library. Return true on succes."""
-        return True
+        if self.supports_library_edit:
+            raise NotImplementedError
 
     async def add_playlist_tracks(
         self, prov_playlist_id: str, prov_track_ids: List[str]
     ) -> None:
         """Add track(s) to playlist."""
+        if self.supports_playlist_tracks_edit:
+            raise NotImplementedError
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
 
@@ -193,6 +197,8 @@ class MusicProvider:
         self, prov_playlist_id: str, prov_track_ids: List[str]
     ) -> None:
         """Remove track(s) from playlist."""
+        if self.supports_playlist_tracks_edit:
+            raise NotImplementedError
         if MediaType.PLAYLIST in self.supported_mediatypes:
             raise NotImplementedError
 
@@ -224,6 +230,8 @@ class MusicProvider:
 
             :param path: The path to browse, (e.g. artists) or None for root level.
         """
+        if not self.supports_browse:
+            raise NotImplementedError
         # this reference implementation can be overridden with provider specific approach
         if not path:
             # return main listing
