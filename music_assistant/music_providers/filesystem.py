@@ -108,6 +108,7 @@ class FileSystemProvider(MusicProvider):
             MusicProviderFeature.LIBRARY_RADIOS_EDIT,
             MusicProviderFeature.LIBRARY_TRACKS_EDIT,
             MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
+            MusicProviderFeature.PLAYLIST_CREATE,
             MusicProviderFeature.BROWSE,
             MusicProviderFeature.SEARCH,
             MusicProviderFeature.ARTIST_ALBUMS,
@@ -434,6 +435,17 @@ class FileSystemProvider(MusicProvider):
         async with self.open_file(itempath, "w") as _file:
             for uri in cur_lines:
                 await _file.write(f"{uri}\n")
+
+    async def create_playlist(
+        self, name: str, initial_items: Optional[List[Track]] = None
+    ) -> Playlist:
+        """Create a new playlist on provider with given name."""
+        # creating a new playlist on the filesystem is as easy
+        # as creating a new (empty) file with the m3u extension...
+        async with self.open_file(name, "w") as _file:
+            for item in initial_items or []:
+                await _file.write(item.uri + "\n")
+            await _file.write("\n")
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
