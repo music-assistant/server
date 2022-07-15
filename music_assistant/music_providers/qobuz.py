@@ -58,6 +58,8 @@ class QobuzProvider(MusicProvider):
             MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
             MusicProviderFeature.BROWSE,
             MusicProviderFeature.SEARCH,
+            MusicProviderFeature.ARTIST_ALBUMS,
+            MusicProviderFeature.ARTIST_TOPTRACKS,
         )
 
     async def setup(self) -> bool:

@@ -67,6 +67,8 @@ class YoutubeMusicProvider(MusicProvider):
             MusicProviderFeature.LIBRARY_RADIOS,
             MusicProviderFeature.BROWSE,
             MusicProviderFeature.SEARCH,
+            MusicProviderFeature.ARTIST_ALBUMS,
+            MusicProviderFeature.ARTIST_TOPTRACKS,
         )
 
     async def setup(self) -> bool:

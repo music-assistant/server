@@ -47,6 +47,7 @@ class URLProvider(MusicProvider):
     @property
     def supported_features(self) -> Tuple[MusicProviderFeature]:
         """Return the features supported by this MusicProvider."""
+        # return empty tuple because we do not really support features directly here
         return tuple()
 
     async def setup(self) -> bool:
