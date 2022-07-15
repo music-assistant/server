@@ -78,12 +78,12 @@ class MusicProvider:
         return self._attr_supports_library_edit
 
     @property
-    def playlist_tracks_edit(self) -> bool:
+    def supports_playlist_tracks_edit(self) -> bool:
         """Return boolean if this provider supports adding/removing tracks to an (editable) playlist."""
         return self._attr_supports_playlist_tracks_edit
 
     @property
-    def playlist_create(self) -> bool:
+    def supports_playlist_create(self) -> bool:
         """Return boolean if this provider supports creating a new playlist."""
         return self._attr_supports_playlist_create
 
@@ -362,6 +362,10 @@ class MusicProvider:
             "name": self.name,
             "id": self.id,
             "supported_mediatypes": [x.value for x in self.supported_mediatypes],
+            "supports_browse": self.supports_browse,
+            "supports_library_edit": self.supports_library_edit,
+            "supports_playlist_tracks_edit": self.supports_playlist_tracks_edit,
+            "supports_playlist_create": self.supports_playlist_create,
         }
 
     def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType]:
