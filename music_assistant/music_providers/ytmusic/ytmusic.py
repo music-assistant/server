@@ -38,6 +38,8 @@ from music_assistant.music_providers.ytmusic.helpers import (
     get_library_tracks,
     get_playlist,
     get_track,
+    library_add_remove_album_or_playlist,
+    library_add_remove_artist,
     search,
 )
 
@@ -240,6 +242,36 @@ class YoutubeMusicProvider(MusicProvider):
                 if track.get("videoId")
             ]
         return []
+
+    async def library_add(self, prov_item_id, media_type: MediaType):
+        """Add an item to the library."""
+        result = False
+        if media_type == MediaType.ARTIST:
+            result = await library_add_remove_artist(
+                headers=self._headers, prov_artist_id=prov_item_id, add=True
+            )
+        elif media_type in (MediaType.ALBUM, MediaType.PLAYLIST):
+            result = await library_add_remove_album_or_playlist(
+                headers=self._headers, prov_item_id=prov_item_id, add=True
+            )
+        elif media_type == MediaType.TRACK:
+            raise NotImplementedError
+        return result
+
+    async def library_remove(self, prov_item_id, media_type: MediaType):
+        """Remove an item from the library."""
+        result = False
+        if media_type == MediaType.ARTIST:
+            result = await library_add_remove_artist(
+                headers=self._headers, prov_artist_id=prov_item_id, add=False
+            )
+        elif media_type in (MediaType.ALBUM, MediaType.PLAYLIST):
+            result = await library_add_remove_album_or_playlist(
+                headers=self._headers, prov_item_id=prov_item_id, add=False
+            )
+        elif media_type == MediaType.TRACK:
+            raise NotImplementedError
+        return result
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
