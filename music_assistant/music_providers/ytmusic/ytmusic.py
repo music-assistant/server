@@ -405,8 +405,7 @@ class YoutubeMusicProvider(MusicProvider):
                 item_id=playlist_obj["id"], prov_type=self.type, prov_id=self.id
             )
         )
-        # use duration_seconds as checksum for now by lack of something better
-        playlist.metadata.checksum = playlist_obj["duration_seconds"]
+        playlist.metadata.checksum = playlist_obj["checksum"]
         return playlist
 
     async def _parse_track(self, track_obj: dict) -> Track:

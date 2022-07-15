@@ -9,6 +9,7 @@ This also nicely separates the parsing logic from the Youtube Music provider log
 
 import asyncio
 import json
+from time import time
 from typing import Dict, List
 
 import ytmusicapi
@@ -48,7 +49,9 @@ async def get_playlist(
 
     def _get_playlist():
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
-        return ytm.get_playlist(playlistId=prov_playlist_id)
+        playlist = ytm.get_playlist(playlistId=prov_playlist_id)
+        playlist["checksum"] = get_playlist_checksum(playlist)
+        return playlist
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_playlist)
@@ -119,6 +122,7 @@ async def get_library_playlists(headers: Dict[str, str]) -> Dict[str, str]:
         for playlist in playlists:
             playlist["id"] = playlist["playlistId"]
             del playlist["playlistId"]
+            playlist["checksum"] = get_playlist_checksum(playlist)
         return playlists
 
     loop = asyncio.get_running_loop()
@@ -161,3 +165,10 @@ async def search(query: str, ytm_filter: str = None, limit: int = 20) -> List[Di
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _search)
+
+
+def get_playlist_checksum(playlist_obj) -> str:
+    """Try to calculate a checksum so we can detect changes in a playlist."""
+    return playlist_obj.get(
+        "duration_seconds", playlist_obj.get("trackCount", str(int(time())))
+    )
