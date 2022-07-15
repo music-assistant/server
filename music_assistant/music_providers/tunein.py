@@ -2,21 +2,20 @@
 from __future__ import annotations
 
 from time import time
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List, Optional, Tuple
 
 from asyncio_throttle import Throttler
 
 from music_assistant.helpers.audio import get_radio_stream
 from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.util import create_sort_name
-from music_assistant.models.enums import ProviderType
+from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
     MediaItemProviderId,
-    MediaItemType,
     MediaQuality,
     MediaType,
     Radio,
@@ -37,6 +36,14 @@ class TuneInProvider(MusicProvider):
     _attr_supported_mediatypes = [MediaType.RADIO]
     _throttler = Throttler(rate_limit=1, period=1)
 
+    @property
+    def supported_features(self) -> Tuple[MusicProviderFeature]:
+        """Return the features supported by this MusicProvider."""
+        return (
+            MusicProviderFeature.LIBRARY_RADIOS,
+            MusicProviderFeature.BROWSE,
+        )
+
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
         if not self.config.enabled:
@@ -49,19 +56,6 @@ class TuneInProvider(MusicProvider):
                 "it is advised to use the tunein username instead of email."
             )
         return True
-
-    async def search(
-        self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> List[MediaItemType]:
-        """
-        Perform search on musicprovider.
-
-            :param search_query: Search query.
-            :param media_types: A list of media_types to include. All types if None.
-            :param limit: Number of items to return in the search (per type).
-        """
-        # TODO: search for radio stations
-        return []
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""

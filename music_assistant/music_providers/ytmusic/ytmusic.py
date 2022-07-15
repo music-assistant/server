@@ -2,13 +2,13 @@
 import re
 from operator import itemgetter
 from time import time
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 import pytube
 import ytmusicapi
 
-from music_assistant.models.enums import ProviderType
+from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -50,21 +50,24 @@ class YoutubeMusicProvider(MusicProvider):
 
     _attr_type = ProviderType.YTMUSIC
     _attr_name = "Youtube Music"
-    _attr_supports_browse: bool = True
-    _attr_supports_library_edit = False
-    _attr_supports_playlist_tracks_edit = False
-    _attr_supports_playlist_create = False
-    _attr_supported_mediatypes = [
-        MediaType.ARTIST,
-        MediaType.ALBUM,
-        MediaType.TRACK,
-        MediaType.PLAYLIST,
-    ]
     _headers = None
     _context = None
     _cookies = None
     _signature_timestamp = 0
     _cipher = None
+
+    @property
+    def supported_features(self) -> Tuple[MusicProviderFeature]:
+        """Return the features supported by this MusicProvider."""
+        return (
+            MusicProviderFeature.LIBRARY_ARTISTS,
+            MusicProviderFeature.LIBRARY_ALBUMS,
+            MusicProviderFeature.LIBRARY_TRACKS,
+            MusicProviderFeature.LIBRARY_PLAYLISTS,
+            MusicProviderFeature.LIBRARY_RADIOS,
+            MusicProviderFeature.BROWSE,
+            MusicProviderFeature.SEARCH,
+        )
 
     async def setup(self) -> bool:
         """Set up the YTMusic provider."""

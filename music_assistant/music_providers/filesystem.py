@@ -18,7 +18,7 @@ from aiofiles.threadpool.binary import AsyncFileIO
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.tags import FALLBACK_ARTIST, parse_tags, split_items
 from music_assistant.helpers.util import create_safe_string, parse_title_and_version
-from music_assistant.models.enums import ProviderType
+from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.media_items import (
     Album,
@@ -92,16 +92,24 @@ class FileSystemProvider(MusicProvider):
 
     _attr_name = "Filesystem"
     _attr_type = ProviderType.FILESYSTEM_LOCAL
-    _attr_supports_browse: bool = True
-    _attr_supports_library_edit = False
-    _attr_supports_playlist_tracks_edit = True
-    _attr_supports_playlist_create = False
-    _attr_supported_mediatypes = [
-        MediaType.TRACK,
-        MediaType.PLAYLIST,
-        MediaType.ARTIST,
-        MediaType.ALBUM,
-    ]
+
+    @property
+    def supported_features(self) -> Tuple[MusicProviderFeature]:
+        """Return the features supported by this MusicProvider."""
+        return (
+            MusicProviderFeature.LIBRARY_ARTISTS,
+            MusicProviderFeature.LIBRARY_ALBUMS,
+            MusicProviderFeature.LIBRARY_TRACKS,
+            MusicProviderFeature.LIBRARY_PLAYLISTS,
+            MusicProviderFeature.LIBRARY_RADIOS,
+            MusicProviderFeature.LIBRARY_ARTISTS_EDIT,
+            MusicProviderFeature.LIBRARY_ALBUMS_EDIT,
+            MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+            MusicProviderFeature.LIBRARY_RADIOS_EDIT,
+            MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
+            MusicProviderFeature.BROWSE,
+            MusicProviderFeature.SEARCH,
+        )
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import AsyncGenerator, List, Optional, Tuple
+from typing import AsyncGenerator, Tuple
 
 from music_assistant.helpers.audio import (
     get_file_stream,
@@ -17,6 +17,7 @@ from music_assistant.models.enums import (
     ImageType,
     MediaQuality,
     MediaType,
+    MusicProviderFeature,
     ProviderType,
 )
 from music_assistant.models.media_items import (
@@ -41,12 +42,12 @@ class URLProvider(MusicProvider):
     _attr_name: str = "URL"
     _attr_type: ProviderType = ProviderType.URL
     _attr_available: bool = True
-    _attr_supports_browse: bool = False
-    _attr_supports_library_edit = False
-    _attr_supports_playlist_tracks_edit = False
-    _attr_supports_playlist_create = False
-    _attr_supported_mediatypes: List[MediaType] = []
     _full_url = {}
+
+    @property
+    def supported_features(self) -> Tuple[MusicProviderFeature]:
+        """Return the features supported by this MusicProvider."""
+        return tuple()
 
     async def setup(self) -> bool:
         """
@@ -159,12 +160,6 @@ class URLProvider(MusicProvider):
                 media_info.has_cover_image = False
             await self.mass.cache.set(cache_key, media_info.raw)
         return (item_id, url, media_info)
-
-    async def search(
-        self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> List[MediaItemType]:
-        """Perform search on musicprovider."""
-        return []
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Get streamdetails for a track/radio."""

@@ -8,7 +8,7 @@ import platform
 import time
 from json.decoder import JSONDecodeError
 from tempfile import gettempdir
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List, Optional, Tuple
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -18,7 +18,7 @@ from music_assistant.helpers.app_vars import (  # noqa # pylint: disable=no-name
 )
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import parse_title_and_version
-from music_assistant.models.enums import ProviderType
+from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.models.media_items import (
     Album,
@@ -45,23 +45,30 @@ class SpotifyProvider(MusicProvider):
 
     _attr_type = ProviderType.SPOTIFY
     _attr_name = "Spotify"
-    _attr_supports_browse: bool = True
-    _attr_supports_library_edit = True
-    _attr_supports_playlist_tracks_edit = True
-    _attr_supports_playlist_create = False
-    _attr_supported_mediatypes = [
-        MediaType.ARTIST,
-        MediaType.ALBUM,
-        MediaType.TRACK,
-        MediaType.PLAYLIST
-        # TODO: Return spotify radio
-    ]
     _auth_token = None
     _sp_user = None
     _librespot_bin = None
     _throttler = Throttler(rate_limit=4, period=1)
     _cache_dir = CACHE_DIR
     _ap_workaround = False
+
+    @property
+    def supported_features(self) -> Tuple[MusicProviderFeature]:
+        """Return the features supported by this MusicProvider."""
+        return (
+            MusicProviderFeature.LIBRARY_ARTISTS,
+            MusicProviderFeature.LIBRARY_ALBUMS,
+            MusicProviderFeature.LIBRARY_TRACKS,
+            MusicProviderFeature.LIBRARY_PLAYLISTS,
+            MusicProviderFeature.LIBRARY_RADIOS,
+            MusicProviderFeature.LIBRARY_ARTISTS_EDIT,
+            MusicProviderFeature.LIBRARY_ALBUMS_EDIT,
+            MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+            MusicProviderFeature.LIBRARY_RADIOS_EDIT,
+            MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
+            MusicProviderFeature.BROWSE,
+            MusicProviderFeature.SEARCH,
+        )
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""

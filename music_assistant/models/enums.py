@@ -221,6 +221,33 @@ class JobStatus(Enum):
     ERROR = "error"
 
 
+class MusicProviderFeature(Enum):
+    """Enum with features for a MusicProvider."""
+
+    # browse/explore/recommendations
+    BROWSE = "browse"
+    SEARCH = "search"
+    RECOMMENDATIONS = "recommendations"
+    # library feature per mediatype
+    LIBRARY_ARTISTS = "library_artists"
+    LIBRARY_ALBUMS = "library_albums"
+    LIBRARY_TRACKS = "library_tracks"
+    LIBRARY_PLAYLISTS = "library_playlists"
+    LIBRARY_RADIOS = "library_radios"
+    # additional library features
+    ARTIST_ALBUMS = "artist_albums"
+    ARTIST_TOPTRACKS = "artist_toptracks"
+    # library edit (=add/remove) feature per mediatype
+    LIBRARY_ARTISTS_EDIT = "library_artists_edit"
+    LIBRARY_ALBUMS_EDIT = "library_albums_edit"
+    LIBRARY_TRACKS_EDIT = "library_tracks_edit"
+    LIBRARY_PLAYLISTS_EDIT = "library_playlists_edit"
+    LIBRARY_RADIOS_EDIT = "library_radios_edit"
+    # playlist-specific features
+    PLAYLIST_TRACKS_EDIT = "playlist_tracks_edit"
+    PLAYLIST_CREATE = "playlist_create"
+
+
 class ProviderType(Enum):
     """Enum with supported music providers."""
 
