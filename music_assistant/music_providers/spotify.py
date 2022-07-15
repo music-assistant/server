@@ -65,6 +65,7 @@ class SpotifyProvider(MusicProvider):
             MusicProviderFeature.LIBRARY_ALBUMS_EDIT,
             MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT,
             MusicProviderFeature.LIBRARY_RADIOS_EDIT,
+            MusicProviderFeature.LIBRARY_TRACKS_EDIT,
             MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
             MusicProviderFeature.BROWSE,
             MusicProviderFeature.SEARCH,
