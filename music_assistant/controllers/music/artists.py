@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_ARTISTS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.models.enums import ProviderType
+from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -111,7 +111,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         for provider in self.mass.music.providers:
             if provider.type in cur_prov_types:
                 continue
-            if MediaType.ARTIST not in provider.supported_mediatypes:
+            if MusicProviderFeature.SEARCH not in provider.supported_features:
                 continue
             if await self._match(db_artist, provider):
                 cur_prov_types.add(provider.type)

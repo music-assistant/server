@@ -5,7 +5,7 @@ import datetime
 import hashlib
 import time
 from json import JSONDecodeError
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List, Optional, Tuple
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -14,7 +14,7 @@ from music_assistant.helpers.app_vars import (  # pylint: disable=no-name-in-mod
     app_var,
 )
 from music_assistant.helpers.util import parse_title_and_version, try_parse_int
-from music_assistant.models.enums import ProviderType
+from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.models.media_items import (
     Album,
@@ -39,14 +39,29 @@ class QobuzProvider(MusicProvider):
 
     _attr_type = ProviderType.QOBUZ
     _attr_name = "Qobuz"
-    _attr_supported_mediatypes = [
-        MediaType.ARTIST,
-        MediaType.ALBUM,
-        MediaType.TRACK,
-        MediaType.PLAYLIST,
-    ]
     _user_auth_info = None
     _throttler = Throttler(rate_limit=4, period=1)
+
+    @property
+    def supported_features(self) -> Tuple[MusicProviderFeature]:
+        """Return the features supported by this MusicProvider."""
+        return (
+            MusicProviderFeature.LIBRARY_ARTISTS,
+            MusicProviderFeature.LIBRARY_ALBUMS,
+            MusicProviderFeature.LIBRARY_TRACKS,
+            MusicProviderFeature.LIBRARY_PLAYLISTS,
+            MusicProviderFeature.LIBRARY_RADIOS,
+            MusicProviderFeature.LIBRARY_ARTISTS_EDIT,
+            MusicProviderFeature.LIBRARY_ALBUMS_EDIT,
+            MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+            MusicProviderFeature.LIBRARY_RADIOS_EDIT,
+            MusicProviderFeature.LIBRARY_TRACKS_EDIT,
+            MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
+            MusicProviderFeature.BROWSE,
+            MusicProviderFeature.SEARCH,
+            MusicProviderFeature.ARTIST_ALBUMS,
+            MusicProviderFeature.ARTIST_TOPTRACKS,
+        )
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
