@@ -27,7 +27,6 @@ from music_assistant.models.media_items import (
     BrowseFolder,
     ContentType,
     ImageType,
-    ItemMapping,
     MediaItemImage,
     MediaItemProviderId,
     MediaItemType,
@@ -232,72 +231,33 @@ class FileSystemProvider(MusicProvider):
         deleted_files = set(prev_checksums.keys()) - set(cur_checksums.keys())
         await self._process_deletions(deleted_files)
 
-    async def _process_deletions(self, deleted_files: set) -> None:
+    async def _process_deletions(self, deleted_files: Set[str]) -> None:
         """Process all deletions."""
-        artists: Set[ItemMapping] = set()
-        albums: Set[ItemMapping] = set()
         # process deleted tracks/playlists
         for file_path in deleted_files:
 
-            if "." not in file_path.path or file_path.path.startswith("."):
+            if "." not in file_path or file_path.startswith("."):
                 # skip system files and files without extension
                 continue
 
-            _, ext = file_path.path.rsplit(".", 1)
-            if ext not in SUPPORTED_EXTENSIONS:
-                # unsupported file extension
-                continue
+            _, ext = file_path.rsplit(".", 1)
 
-            item_id = self._get_item_id(file_path)
             if ext in TRACK_EXTENSIONS:
+                item_id = self._get_item_id(file_path)
                 if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
                     item_id, self.type
                 ):
                     await self.mass.music.tracks.remove_prov_mapping(
                         db_item.item_id, self.id
                     )
-                    # gather artists(s) attached to this track
-                    for artist in db_item.artists:
-                        artists.add(artist.item_id)
-                    # gather album and albumartist(s) attached to this track
-                    if db_item.album:
-                        albums.add(db_item.album.item_id)
-                        for artist in db_item.album.artists:
-                            artists.add(artist.item_id)
             elif ext in PLAYLIST_EXTENSIONS:
+                item_id = self._get_item_id(file_path)
                 if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
                     item_id, self.type
                 ):
                     await self.mass.music.playlists.remove_prov_mapping(
                         db_item.item_id, self.id
                     )
-        # check if albums are deleted
-        for album_id in albums:
-            album = await self.mass.music.albums.get_db_item(album_id)
-            if not album:
-                continue
-            prov_album_id = next(
-                x.item_id for x in album.provider_ids if x.prov_id == self.id
-            )
-            album_tracks = await self.get_album_tracks(prov_album_id)
-            if album_tracks:
-                continue
-            # album has no more tracks attached, delete prov mapping
-            await self.mass.music.albums.remove_prov_mapping(album_id, self.id)
-        # check if artists are deleted
-        for artist_id in artists:
-            artist = await self.mass.music.artists.get_db_item(artist_id)
-            prov_artist_id = next(
-                x.item_id for x in artist.provider_ids if x.prov_id == self.id
-            )
-            artist_tracks = await self.get_artist_toptracks(prov_artist_id)
-            if artist_tracks:
-                continue
-            artist_albums = await self.get_artist_albums(prov_artist_id)
-            if artist_albums:
-                continue
-            # artist has no more tracks attached, delete prov mapping
-            await self.mass.music.artists.remove_prov_mapping(artist_id, self.id)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
