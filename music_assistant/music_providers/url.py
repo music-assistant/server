@@ -42,6 +42,9 @@ class URLProvider(MusicProvider):
     _attr_type: ProviderType = ProviderType.URL
     _attr_available: bool = True
     _attr_supports_browse: bool = False
+    _attr_supports_library_edit = False
+    _attr_supports_playlist_tracks_edit = False
+    _attr_supports_playlist_create = False
     _attr_supported_mediatypes: List[MediaType] = []
     _full_url = {}
 

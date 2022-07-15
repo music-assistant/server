@@ -45,6 +45,10 @@ class SpotifyProvider(MusicProvider):
 
     _attr_type = ProviderType.SPOTIFY
     _attr_name = "Spotify"
+    _attr_supports_browse: bool = True
+    _attr_supports_library_edit = True
+    _attr_supports_playlist_tracks_edit = True
+    _attr_supports_playlist_create = False
     _attr_supported_mediatypes = [
         MediaType.ARTIST,
         MediaType.ALBUM,

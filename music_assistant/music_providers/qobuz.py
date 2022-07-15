@@ -39,6 +39,10 @@ class QobuzProvider(MusicProvider):
 
     _attr_type = ProviderType.QOBUZ
     _attr_name = "Qobuz"
+    _attr_supports_browse: bool = True
+    _attr_supports_library_edit = True
+    _attr_supports_playlist_tracks_edit = True
+    _attr_supports_playlist_create = False
     _attr_supported_mediatypes = [
         MediaType.ARTIST,
         MediaType.ALBUM,
