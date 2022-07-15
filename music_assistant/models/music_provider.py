@@ -35,6 +35,24 @@ class MusicProvider:
         self.logger = mass.logger
         self.cache = mass.cache
 
+    @property
+    def supported_features(self) -> Tuple[MusicProviderFeature]:
+        """Return the features supported by this MusicProvider."""
+        return (
+            MusicProviderFeature.LIBRARY_ARTISTS,
+            MusicProviderFeature.LIBRARY_ALBUMS,
+            MusicProviderFeature.LIBRARY_TRACKS,
+            MusicProviderFeature.LIBRARY_PLAYLISTS,
+            MusicProviderFeature.LIBRARY_RADIOS,
+            MusicProviderFeature.LIBRARY_ARTISTS_EDIT,
+            MusicProviderFeature.LIBRARY_ALBUMS_EDIT,
+            MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+            MusicProviderFeature.LIBRARY_RADIOS_EDIT,
+            MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
+            MusicProviderFeature.BROWSE,
+            MusicProviderFeature.SEARCH,
+        )
+
     @abstractmethod
     async def setup(self) -> bool:
         """
@@ -60,24 +78,6 @@ class MusicProvider:
     def available(self) -> bool:
         """Return boolean if this provider is available/initialized."""
         return self._attr_available
-
-    @property
-    def supported_features(self) -> Tuple[MusicProviderFeature]:
-        """Return the features supported by this MusicProvider."""
-        return (
-            MusicProviderFeature.LIBRARY_ARTISTS,
-            MusicProviderFeature.LIBRARY_ALBUMS,
-            MusicProviderFeature.LIBRARY_TRACKS,
-            MusicProviderFeature.LIBRARY_PLAYLISTS,
-            MusicProviderFeature.LIBRARY_RADIOS,
-            MusicProviderFeature.LIBRARY_ARTISTS_EDIT,
-            MusicProviderFeature.LIBRARY_ALBUMS_EDIT,
-            MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            MusicProviderFeature.LIBRARY_RADIOS_EDIT,
-            MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
-            MusicProviderFeature.BROWSE,
-            MusicProviderFeature.SEARCH,
-        )
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
