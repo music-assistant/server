@@ -7,7 +7,7 @@ from typing import List, Optional, Union
 from music_assistant.helpers.compare import compare_artists, compare_track
 from music_assistant.helpers.database import TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.models.enums import MediaType, ProviderType
+from music_assistant.models.enums import MediaType, MusicProviderFeature, ProviderType
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -83,7 +83,7 @@ class TracksController(MediaControllerBase[Track]):
             # matching only works if we have a full track object
             db_track = await self.get_db_item(db_track.item_id)
         for provider in self.mass.music.providers:
-            if MediaType.TRACK not in provider.supported_mediatypes:
+            if MusicProviderFeature.SEARCH not in provider.supported_features:
                 continue
             self.logger.debug(
                 "Trying to match track %s on provider %s", db_track.name, provider.name

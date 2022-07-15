@@ -9,7 +9,7 @@ from music_assistant.helpers.compare import compare_album, compare_artist
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.tags import FALLBACK_ARTIST
-from music_assistant.models.enums import ProviderType
+from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -281,7 +281,7 @@ class AlbumsController(MediaControllerBase[Album]):
         for provider in self.mass.music.providers:
             if provider.type in cur_prov_types:
                 continue
-            if MediaType.ALBUM not in provider.supported_mediatypes:
+            if MusicProviderFeature.SEARCH not in provider.supported_features:
                 continue
             if await find_prov_match(provider):
                 cur_prov_types.add(provider.type)
