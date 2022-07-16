@@ -209,6 +209,7 @@ class EventType(Enum):
     QUEUE_TIME_UPDATED = "queue_time_updated"
     SHUTDOWN = "application_shutdown"
     BACKGROUND_JOB_UPDATED = "background_job_updated"
+    BACKGROUND_JOB_FINISHED = "background_job_finished"
 
 
 class JobStatus(Enum):
