@@ -1,6 +1,7 @@
 """Manage MediaItems of type Playlist."""
 from __future__ import annotations
 
+from ctypes import Union
 from time import time
 from typing import Any, List, Optional
 
@@ -80,7 +81,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.mass.metadata.get_playlist_metadata(item)
         return await self.add_db_item(item, overwrite_existing)
 
-    async def create(self, name: str, prov_id: Optional[str] = None) -> Playlist:
+    async def create(
+        self, name: str, prov_id: Union[ProviderType, str, None] = None
+    ) -> Playlist:
         """Create new playlist."""
         # if prov_id is omitted, prefer file
         if prov_id:
