@@ -224,9 +224,7 @@ class MusicProvider:
         if MusicProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
             raise NotImplementedError
 
-    async def create_playlist(
-        self, name: str, initial_items: Optional[List[Track]] = None
-    ) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         raise NotImplementedError
 

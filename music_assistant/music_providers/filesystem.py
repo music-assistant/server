@@ -393,16 +393,13 @@ class FileSystemProvider(MusicProvider):
             for uri in cur_lines:
                 await _file.write(f"{uri}\n")
 
-    async def create_playlist(
-        self, name: str, initial_items: Optional[List[Track]] = None
-    ) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
         async with self.open_file(name, "w") as _file:
-            for item in initial_items or []:
-                await _file.write(item.uri + "\n")
             await _file.write("\n")
+        return await self.get_playlist(name)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""

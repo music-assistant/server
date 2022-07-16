@@ -7,8 +7,12 @@ from typing import Any, List, Optional
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.uri import create_uri
-from music_assistant.models.enums import MediaType, ProviderType
-from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant.models.enums import MediaType, MusicProviderFeature, ProviderType
+from music_assistant.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import Playlist, Track
 
@@ -75,6 +79,30 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item.metadata.last_refresh = int(time())
         await self.mass.metadata.get_playlist_metadata(item)
         return await self.add_db_item(item, overwrite_existing)
+
+    async def create(self, name: str, prov_id: Optional[str] = None) -> Playlist:
+        """Create new playlist."""
+        # if prov_id is omitted, prefer file
+        if prov_id:
+            provider = self.mass.music.get_provider(prov_id)
+        else:
+            try:
+                provider = self.mass.music.get_provider(ProviderType.FILESYSTEM_LOCAL)
+            except ProviderUnavailableError:
+                provider = next(
+                    (
+                        x
+                        for x in self.mass.music.providers
+                        if MusicProviderFeature.PLAYLIST_CREATE in x.supported_features
+                    ),
+                    None,
+                )
+            if provider is None:
+                raise ProviderUnavailableError(
+                    "No provider available which allows playlists creation."
+                )
+
+        return await provider.create_playlist(name)
 
     async def add_playlist_tracks(self, db_playlist_id: str, uris: List[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
