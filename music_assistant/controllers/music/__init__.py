@@ -14,7 +14,7 @@ from music_assistant.helpers.database import TABLE_PLAYLOG, TABLE_TRACK_LOUDNESS
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.config import MusicProviderConfig
-from music_assistant.models.enums import MediaType, ProviderType
+from music_assistant.models.enums import MediaType, MusicProviderFeature, ProviderType
 from music_assistant.models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
@@ -197,7 +197,7 @@ class MusicController:
             return [
                 BrowseFolder(prov.id, prov.type, prov.name, uri=f"{prov.id}://")
                 for prov in self.providers
-                if prov.supports_browse
+                if MusicProviderFeature.BROWSE in prov.supported_features
             ]
         # provider level
         provider_id, path = uri.split("://", 1)
