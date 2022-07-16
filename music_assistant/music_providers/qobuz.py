@@ -347,7 +347,7 @@ class QobuzProvider(MusicProvider):
         else:
             raise MediaNotFoundError(f"Unsupported mime type for {item_id}")
         # report playback started as soon as the streamdetails are requested
-        self.mass.create_task(self._report_playback_started(item_id, streamdata))
+        self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
             item_id=str(item_id),
             provider=self.type,
@@ -361,7 +361,7 @@ class QobuzProvider(MusicProvider):
             callback=self._report_playback_stopped,
         )
 
-    async def _report_playback_started(self, item_id: str, streamdata: dict) -> None:
+    async def _report_playback_started(self, streamdata: dict) -> None:
         """Report playback start to qobuz."""
         # TODO: need to figure out if the streamed track is purchased by user
         # https://www.qobuz.com/api.json/0.2/purchase/getUserPurchasesIds?limit=5000&user_id=xxxxxxx
@@ -377,7 +377,7 @@ class QobuzProvider(MusicProvider):
                 "sample": False,
                 "intent": "stream",
                 "device_id": device_id,
-                "track_id": str(item_id),
+                "track_id": streamdata["track_id"],
                 "purchase": False,
                 "date": timestamp,
                 "credential_id": credential_id,
@@ -670,17 +670,24 @@ class QobuzProvider(MusicProvider):
                 url, headers=headers, params=kwargs, verify_ssl=False
             ) as response:
                 try:
+                    # make sure status is 200
+                    assert response.status == 200
                     result = await response.json()
-                    if "error" in result or (
-                        "status" in result and "error" in result["status"]
-                    ):
-                        self.logger.error("%s - %s", endpoint, result)
-                        return None
+                    # check for error in json
+                    if error := result.get("error"):
+                        raise ValueError(error)
+                    if result.get("status") and "error" in result["status"]:
+                        raise ValueError(result["status"])
                 except (
                     aiohttp.ContentTypeError,
                     JSONDecodeError,
+                    AssertionError,
+                    ValueError,
                 ) as err:
-                    self.logger.error("%s - %s", endpoint, str(err))
+                    text = await response.text()
+                    self.logger.exception(
+                        "Error while processing %s: %s", endpoint, text, exc_info=err
+                    )
                     return None
                 return result
 
@@ -696,11 +703,23 @@ class QobuzProvider(MusicProvider):
         async with self.mass.http_session.post(
             url, params=params, json=data, verify_ssl=False
         ) as response:
-            result = await response.json()
-            if "error" in result or (
-                "status" in result and "error" in result["status"]
-            ):
-                self.logger.error("%s - %s", endpoint, result)
+            try:
+                result = await response.json()
+                # check for error in json
+                if error := result.get("error"):
+                    raise ValueError(error)
+                if result.get("status") and "error" in result["status"]:
+                    raise ValueError(result["status"])
+            except (
+                aiohttp.ContentTypeError,
+                JSONDecodeError,
+                AssertionError,
+                ValueError,
+            ) as err:
+                text = await response.text()
+                self.logger.exception(
+                    "Error while processing %s: %s", endpoint, text, exc_info=err
+                )
                 return None
             return result
 
