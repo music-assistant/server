@@ -257,7 +257,7 @@ class YoutubeMusicProvider(MusicProvider):
             ]
         return []
 
-    async def library_add(self, prov_item_id, media_type: MediaType):
+    async def library_add(self, prov_item_id, media_type: MediaType) -> None:
         """Add an item to the library."""
         result = False
         if media_type == MediaType.ARTIST:
