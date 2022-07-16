@@ -101,17 +101,10 @@ class FileSystemProvider(MusicProvider):
             MusicProviderFeature.LIBRARY_ALBUMS,
             MusicProviderFeature.LIBRARY_TRACKS,
             MusicProviderFeature.LIBRARY_PLAYLISTS,
-            MusicProviderFeature.LIBRARY_RADIOS,
-            MusicProviderFeature.LIBRARY_ARTISTS_EDIT,
-            MusicProviderFeature.LIBRARY_ALBUMS_EDIT,
-            MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            MusicProviderFeature.LIBRARY_RADIOS_EDIT,
-            MusicProviderFeature.LIBRARY_TRACKS_EDIT,
             MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
+            MusicProviderFeature.PLAYLIST_CREATE,
             MusicProviderFeature.BROWSE,
             MusicProviderFeature.SEARCH,
-            MusicProviderFeature.ARTIST_ALBUMS,
-            MusicProviderFeature.ARTIST_TOPTRACKS,
         )
 
     async def setup(self) -> bool:
@@ -369,41 +362,6 @@ class FileSystemProvider(MusicProvider):
             )
             return None
 
-    async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
-        """Get a list of albums for the given artist."""
-        # filesystem items are always stored in db so we can query the database
-        db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
-            prov_artist_id, provider_id=self.id
-        )
-        if db_artist is None:
-            raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
-        # TODO: adjust to json query instead of text search
-        query = f"SELECT * FROM albums WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
-        query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
-        return await self.mass.music.albums.get_db_items_by_query(query)
-
-    async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
-        """Get a list of all tracks as we have no clue about preference."""
-        # filesystem items are always stored in db so we can query the database
-        db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
-            prov_artist_id, provider_id=self.id
-        )
-        if db_artist is None:
-            raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
-        # TODO: adjust to json query instead of text search
-        query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
-        query += f" AND provider_ids LIKE '%\"{self.type.value}\"%'"
-        return await self.mass.music.tracks.get_db_items_by_query(query)
-
-    async def library_add(self, *args, **kwargs) -> bool:
-        """Add item to provider's library. Return true on succes."""
-        # already handled by database
-
-    async def library_remove(self, *args, **kwargs) -> bool:
-        """Remove item from provider's library. Return true on succes."""
-        # already handled by database
-        # TODO: do we want to process/offer deletions here ?
-
     async def add_playlist_tracks(
         self, prov_playlist_id: str, prov_track_ids: List[str]
     ) -> None:
@@ -434,6 +392,17 @@ class FileSystemProvider(MusicProvider):
         async with self.open_file(itempath, "w") as _file:
             for uri in cur_lines:
                 await _file.write(f"{uri}\n")
+
+    async def create_playlist(
+        self, name: str, initial_items: Optional[List[Track]] = None
+    ) -> Playlist:
+        """Create a new playlist on provider with given name."""
+        # creating a new playlist on the filesystem is as easy
+        # as creating a new (empty) file with the m3u extension...
+        async with self.open_file(name, "w") as _file:
+            for item in initial_items or []:
+                await _file.write(item.uri + "\n")
+            await _file.write("\n")
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""

@@ -224,6 +224,12 @@ class MusicProvider:
         if MusicProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
             raise NotImplementedError
 
+    async def create_playlist(
+        self, name: str, initial_items: Optional[List[Track]] = None
+    ) -> Playlist:
+        """Create a new playlist on provider with given name."""
+        raise NotImplementedError
+
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Get streamdetails for a track/radio."""
         raise NotImplementedError

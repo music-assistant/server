@@ -17,7 +17,6 @@ from music_assistant.models.enums import (
     ImageType,
     MediaQuality,
     MediaType,
-    MusicProviderFeature,
     ProviderType,
 )
 from music_assistant.models.media_items import (
@@ -43,12 +42,6 @@ class URLProvider(MusicProvider):
     _attr_type: ProviderType = ProviderType.URL
     _attr_available: bool = True
     _full_url = {}
-
-    @property
-    def supported_features(self) -> Tuple[MusicProviderFeature]:
-        """Return the features supported by this MusicProvider."""
-        # return empty tuple because we do not really support features directly here
-        return tuple()
 
     async def setup(self) -> bool:
         """
