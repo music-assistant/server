@@ -157,9 +157,9 @@ async def library_add_remove_artist(
         user = username if is_brand_account(username) else None
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         if add:
-            return ytm.subscribe_artists(channelIds=[prov_artist_id])
+            return "actions" in ytm.subscribe_artists(channelIds=[prov_artist_id])
         if not add:
-            return ytm.unsubscribe_artists(channelIds=[prov_artist_id])
+            return "actions" in ytm.unsubscribe_artists(channelIds=[prov_artist_id])
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _library_add_remove_artist)
@@ -193,9 +193,9 @@ async def library_add_remove_playlist(
         user = username if is_brand_account(username) else None
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         if add:
-            return ytm.rate_playlist(prov_item_id, "LIKE")
+            return "actions" in ytm.rate_playlist(prov_item_id, "LIKE")
         if not add:
-            return ytm.rate_playlist(prov_item_id, "INDIFFERENT")
+            return "actions" in ytm.rate_playlist(prov_item_id, "INDIFFERENT")
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _library_add_remove_playlist)

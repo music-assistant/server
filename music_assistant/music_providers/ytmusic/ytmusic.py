@@ -329,13 +329,27 @@ class YoutubeMusicProvider(MusicProvider):
         self, prov_playlist_id: str, prov_track_ids: List[str]
     ) -> None:
         """Remove track(s) from playlist."""
-        return await add_remove_playlist_tracks(
-            headers=self._headers,
+        # YT needs both the videoId and de setVideoId in order to remove
+        # the track. Thus, we need to obtain the playlist details and
+        # grab the info from there.
+        playlist_obj = await get_playlist(
             prov_playlist_id=prov_playlist_id,
-            prov_track_ids=prov_track_ids,
-            add=True,
+            headers=self._headers,
             username=self.config.username,
         )
+        if playlist_obj.get("tracks"):
+            tracks_to_delete = [
+                {"videoId": track["videoId"], "setVideoId": track["setVideoId"]}
+                for track in playlist_obj.get("tracks")
+                if track.get("videoId") in prov_track_ids
+            ]
+            return await add_remove_playlist_tracks(
+                headers=self._headers,
+                prov_playlist_id=prov_playlist_id,
+                prov_track_ids=tracks_to_delete,
+                add=False,
+                username=self.config.username,
+            )
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
