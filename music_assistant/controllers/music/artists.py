@@ -199,37 +199,38 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> Artist:
         """Add a new item record to the database."""
         assert item.provider_ids, "Artist is missing provider id(s)"
-        # always try to grab existing item by musicbrainz_id
-        cur_item = None
-        if item.musicbrainz_id:
-            match = {"musicbrainz_id": item.musicbrainz_id}
-            cur_item = await self.mass.database.get_row(self.db_table, match)
-        if not cur_item:
-            # fallback to exact name match
-            # NOTE: we match an artist by name which could theoretically lead to collisions
-            # but the chance is so small it is not worth the additional overhead of grabbing
-            # the musicbrainz id upfront
-            match = {"sort_name": item.sort_name}
-            for row in await self.mass.database.get_rows(self.db_table, match):
-                row_artist = Artist.from_db_row(row)
-                if row_artist.sort_name == item.sort_name:
-                    cur_item = row_artist
-                    break
-        if cur_item:
-            # update existing
-            return await self.update_db_item(
-                cur_item.item_id, item, overwrite=overwrite_existing
-            )
+        async with self._db_add_lock:
+            # always try to grab existing item by musicbrainz_id
+            cur_item = None
+            if item.musicbrainz_id:
+                match = {"musicbrainz_id": item.musicbrainz_id}
+                cur_item = await self.mass.database.get_row(self.db_table, match)
+            if not cur_item:
+                # fallback to exact name match
+                # NOTE: we match an artist by name which could theoretically lead to collisions
+                # but the chance is so small it is not worth the additional overhead of grabbing
+                # the musicbrainz id upfront
+                match = {"sort_name": item.sort_name}
+                for row in await self.mass.database.get_rows(self.db_table, match):
+                    row_artist = Artist.from_db_row(row)
+                    if row_artist.sort_name == item.sort_name:
+                        cur_item = row_artist
+                        break
+            if cur_item:
+                # update existing
+                return await self.update_db_item(
+                    cur_item.item_id, item, overwrite=overwrite_existing
+                )
 
-        # insert item
-        if item.in_library and not item.timestamp:
-            item.timestamp = int(time())
-        new_item = await self.mass.database.insert(self.db_table, item.to_db_row())
-        item_id = new_item["item_id"]
-        self.logger.debug("added %s to database", item.name)
-        # return created object
-        db_item = await self.get_db_item(item_id)
-        return db_item
+            # insert item
+            if item.in_library and not item.timestamp:
+                item.timestamp = int(time())
+            new_item = await self.mass.database.insert(self.db_table, item.to_db_row())
+            item_id = new_item["item_id"]
+            self.logger.debug("added %s to database", item.name)
+            # return created object
+            db_item = await self.get_db_item(item_id)
+            return db_item
 
     async def update_db_item(
         self,

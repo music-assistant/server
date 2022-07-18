@@ -1,6 +1,7 @@
 """Model for a base media_controller."""
 from __future__ import annotations
 
+import asyncio
 from abc import ABCMeta, abstractmethod
 from time import time
 from typing import (
@@ -37,6 +38,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Initialize class."""
         self.mass = mass
         self.logger = mass.logger.getChild(f"music.{self.media_type.value}")
+        self._db_add_lock = asyncio.Lock()
 
     @abstractmethod
     async def add(self, item: ItemCls, overwrite_existing: bool = False) -> ItemCls:

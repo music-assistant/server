@@ -206,20 +206,21 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self, item: Playlist, overwrite_existing: bool = False
     ) -> Playlist:
         """Add a new record to the database."""
-        match = {"name": item.name, "owner": item.owner}
-        if cur_item := await self.mass.database.get_row(self.db_table, match):
-            # update existing
-            return await self.update_db_item(
-                cur_item["item_id"], item, overwrite=overwrite_existing
-            )
+        async with self._db_add_lock:
+            match = {"name": item.name, "owner": item.owner}
+            if cur_item := await self.mass.database.get_row(self.db_table, match):
+                # update existing
+                return await self.update_db_item(
+                    cur_item["item_id"], item, overwrite=overwrite_existing
+                )
 
-        # insert new item
-        new_item = await self.mass.database.insert(self.db_table, item.to_db_row())
-        item_id = new_item["item_id"]
-        self.logger.debug("added %s to database", item.name)
-        # return created object
-        db_item = await self.get_db_item(item_id)
-        return db_item
+            # insert new item
+            new_item = await self.mass.database.insert(self.db_table, item.to_db_row())
+            item_id = new_item["item_id"]
+            self.logger.debug("added %s to database", item.name)
+            # return created object
+            db_item = await self.get_db_item(item_id)
+            return db_item
 
     async def update_db_item(
         self,
