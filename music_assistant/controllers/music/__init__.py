@@ -267,6 +267,13 @@ class MusicController:
             provider_item_id, provider=provider, provider_id=provider_id
         )
 
+    async def delete_db_item(
+        self, media_type: MediaType, db_item_id: str, recursive: bool = False
+    ) -> None:
+        """Remove item from the library."""
+        ctrl = self.get_controller(media_type)
+        await ctrl.delete_db_item(db_item_id, recursive)
+
     async def refresh_items(self, items: List[MediaItem]) -> None:
         """
         Refresh MediaItems to force retrieval of full info and matches.
