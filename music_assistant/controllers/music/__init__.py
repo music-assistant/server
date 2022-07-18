@@ -165,7 +165,8 @@ class MusicController:
         """
         assert provider or provider_id, "Provider needs to be supplied"
         prov = self.get_provider(provider_id or provider)
-        await provider.search(search_query, media_types, limit)
+        if MusicProviderFeature.SEARCH not in prov.supported_features:
+            return []
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")

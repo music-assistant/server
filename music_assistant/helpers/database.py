@@ -160,7 +160,7 @@ class Database:
         self, table: str, match: Optional[dict] = None, query: Optional[str] = None
     ) -> None:
         """Delete data in given table."""
-        assert "where" not in query.lower()
+        assert not (query and "where" in query.lower())
         sql_query = f"DELETE FROM {table} "
         if match:
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
