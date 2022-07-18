@@ -16,7 +16,7 @@ from typing import (
 
 from music_assistant.models.errors import MediaNotFoundError
 
-from .enums import MediaType, ProviderType
+from .enums import MediaType, MusicProviderFeature, ProviderType
 from .media_items import MediaItemType, media_from_dict
 
 if TYPE_CHECKING:
@@ -203,8 +203,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             ]
 
         prov = self.mass.music.get_provider(provider_id or provider)
-        if not prov:
-            return {}
+        if not prov or MusicProviderFeature.SEARCH not in prov.supported_features:
+            return []
 
         # prefer cache items (if any)
         cache_key = (
