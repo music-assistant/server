@@ -234,8 +234,9 @@ class AlbumsController(MediaControllerBase[Album]):
         """Delete record from the database."""
 
         # check album tracks
-        db_rows = await self.mass.music.tracks.get_db_items_by_query(
-            f"SELECT item_id FROM {TABLE_TRACKS} WHERE albums LIKE '%\"{item_id}\"%'"
+        db_rows = await self.mass.database.get_rows_from_query(
+            f"SELECT item_id FROM {TABLE_TRACKS} WHERE albums LIKE '%\"{item_id}\"%'",
+            limit=5000,
         )
         assert not (db_rows and not recursive), "Tracks attached to album"
         for db_row in db_rows:
