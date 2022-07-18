@@ -48,11 +48,16 @@ class AlbumsController(MediaControllerBase[Album]):
         """Return album tracks for the given provider album id."""
         # if provider specific album is requested, return that directly
         if not (provider == ProviderType.DATABASE or provider_id == "database"):
-            return await self.get_provider_album_tracks(
+            prov_album = self.get(item_id, provider=provider, provider_id=provider_id)
+            prov_tracks = await self.get_provider_album_tracks(
                 item_id, provider=provider, provider_id=provider_id
             )
+            # make sure that the album is set on the tracks
+            for prov_track in prov_tracks:
+                prov_track.album = prov_album
+            return prov_tracks
 
-        # get results from all providers
+        # db_album requestes: get results from all providers
         db_album = await self.get_db_item(item_id)
         coros = [
             self.get_provider_album_tracks(
@@ -112,18 +117,19 @@ class AlbumsController(MediaControllerBase[Album]):
         prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
-        # prefer cache items (if any) - do not use cache for filesystem
+        # prefer cache items (if any)
         cache_key = f"{prov.type.value}.album_tracks.{item_id}"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = await prov.get_album_tracks(item_id)
         # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
+        if not prov.type.is_file():  # do not cache filesystem results
+            self.mass.create_task(
+                self.mass.cache.set(
+                    cache_key, [x.to_dict() for x in items], checksum=cache_checksum
+                )
             )
-        )
         return items
 
     async def add_db_item(self, item: Album, overwrite_existing: bool = False) -> Album:

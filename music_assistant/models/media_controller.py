@@ -210,9 +210,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         cache_key = (
             f"{prov.type.value}.search.{self.media_type.value}.{search_query}.{limit}"
         )
-        if not prov.type.is_file():  # do not cache filesystem results
-            if cache := await self.mass.cache.get(cache_key):
-                return [media_from_dict(x) for x in cache]
+        if cache := await self.mass.cache.get(cache_key):
+            return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = await prov.search(
             search_query,
@@ -220,11 +219,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             limit,
         )
         # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], expiration=86400 * 7
+        if not prov.type.is_file():  # do not cache filesystem results
+            self.mass.create_task(
+                self.mass.cache.set(
+                    cache_key, [x.to_dict() for x in items], expiration=86400 * 7
+                )
             )
-        )
         return items
 
     async def add_to_library(
