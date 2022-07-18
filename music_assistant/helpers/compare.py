@@ -42,7 +42,9 @@ def compare_version(left_version: str, right_version: str) -> bool:
 
 def compare_explicit(left: MediaItemMetadata, right: MediaItemMetadata) -> bool:
     """Compare if explicit is same in metadata."""
-    if left.explicit is None and right.explicit is None:
+    if left.explicit is None or right.explicit is None:
+        # explicitness info is not always present in metadata
+        # only strict compare them if both have the info set
         return True
     return left == right
 
@@ -55,7 +57,7 @@ def compare_artist(
     if left_artist is None or right_artist is None:
         return False
     # return early on exact item_id match
-    if compare_item_id(left_artist, right_artist):
+    if compare_item_ids(left_artist, right_artist):
         return True
 
     # prefer match on musicbrainz_id
@@ -85,26 +87,42 @@ def compare_artists(
     return len(left_artists) == matches
 
 
-def compare_item_id(
+def compare_item_ids(
     left_item: Union[MediaItem, ItemMapping], right_item: Union[MediaItem, ItemMapping]
 ) -> bool:
-    """Compare two lists of artist and return True if both lists match."""
+    """Compare item_id(s) of two media items."""
     if (
         left_item.provider == right_item.provider
         and left_item.item_id == right_item.item_id
     ):
         return True
 
-    if not hasattr(left_item, "provider_ids") or not hasattr(
-        right_item, "provider_ids"
-    ):
-        return False
-    for prov_l in left_item.provider_ids:
-        for prov_r in right_item.provider_ids:
-            if prov_l.prov_type != prov_r.prov_type:
-                continue
-            if prov_l.item_id == prov_r.item_id:
+    left_prov_ids = getattr(left_item, "provider_ids", None)
+    right_prov_ids = getattr(right_item, "provider_ids", None)
+
+    if left_prov_ids is not None:
+        for prov_l in left_item.provider_ids:
+            if (
+                prov_l.prov_type == right_item.provider
+                and prov_l.item_id == right_item.item_id
+            ):
                 return True
+
+    if right_prov_ids is not None:
+        for prov_r in right_item.provider_ids:
+            if (
+                prov_r.prov_type == left_item.provider
+                and prov_r.item_id == left_item.item_id
+            ):
+                return True
+
+    if left_prov_ids is not None and right_prov_ids is not None:
+        for prov_l in left_item.provider_ids:
+            for prov_r in right_item.provider_ids:
+                if prov_l.prov_type != prov_r.prov_type:
+                    continue
+                if prov_l.item_id == prov_r.item_id:
+                    return True
     return False
 
 
@@ -128,7 +146,7 @@ def compare_album(
     if left_album is None or right_album is None:
         return False
     # return early on exact item_id match
-    if compare_item_id(left_album, right_album):
+    if compare_item_ids(left_album, right_album):
         return True
 
     # prefer match on UPC
@@ -164,7 +182,7 @@ def compare_track(left_track: Track, right_track: Track):
     if left_track is None or right_track is None:
         return False
     # return early on exact item_id match
-    if compare_item_id(left_track, right_track):
+    if compare_item_ids(left_track, right_track):
         return True
     for left_isrc in left_track.isrcs:
         for right_isrc in right_track.isrcs:
