@@ -57,7 +57,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 prov_track.album = prov_album
             return prov_tracks
 
-        # db_album requestes: get results from all providers
+        # db_album requested: get results from all providers
         db_album = await self.get_db_item(item_id)
         coros = [
             self.get_provider_album_tracks(
