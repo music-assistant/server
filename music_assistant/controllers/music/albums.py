@@ -48,7 +48,9 @@ class AlbumsController(MediaControllerBase[Album]):
         """Return album tracks for the given provider album id."""
         # if provider specific album is requested, return that directly
         if not (provider == ProviderType.DATABASE or provider_id == "database"):
-            prov_album = self.get(item_id, provider=provider, provider_id=provider_id)
+            prov_album = await self.get(
+                item_id, provider=provider, provider_id=provider_id
+            )
             prov_tracks = await self.get_provider_album_tracks(
                 item_id, provider=provider, provider_id=provider_id
             )
