@@ -362,7 +362,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         )
         db_item = await self.get_db_item(item_id)
         self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_UPDATED, self.media_type.value, db_item)
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
         )
 
     async def get_provider_item(
@@ -408,6 +408,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # NOTE: this does not delete any references to this item in other records,
         # this is handled/overridden in the mediatype specific controllers
         self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_DELETED, self.media_type.value, db_item)
+            MassEvent(EventType.MEDIA_ITEM_DELETED, db_item.uri, db_item)
         )
         self.logger.debug("deleted item with id %s from database", item_id)
