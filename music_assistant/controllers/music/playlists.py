@@ -186,6 +186,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # actually add the tracks to the playlist on the provider
         provider = self.mass.music.get_provider(playlist_prov.prov_id)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
+        # invalidate cache by updating the checksum
+        await self.get(
+            db_playlist_id, provider=ProviderType.DATABASE, force_refresh=True
+        )
 
     async def remove_playlist_tracks(
         self, db_playlist_id: str, positions: List[int]
@@ -207,6 +211,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             if track_ids_to_remove:
                 provider = self.mass.music.get_provider(prov.prov_id)
                 await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)
+        # invalidate cache by updating the checksum
+        await self.get(
+            db_playlist_id, provider=ProviderType.DATABASE, force_refresh=True
+        )
 
     async def add_db_item(
         self, item: Playlist, overwrite_existing: bool = False
