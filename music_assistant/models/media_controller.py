@@ -12,6 +12,7 @@ from typing import (
     Optional,
     Tuple,
     TypeVar,
+    Union,
 )
 
 from music_assistant.models.errors import MediaNotFoundError
@@ -233,19 +234,24 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider_id: Optional[str] = None,
     ) -> None:
         """Add an item to the library."""
-        # make sure we have a valid full item
-        # note that we set 'lazy' to False because we need a full db item
-        db_item = await self.get(
-            provider_item_id, provider=provider, provider_id=provider_id, lazy=False
+        prov_item = await self.get_db_item_by_prov_id(
+            provider_item_id, provider=provider, provider_id=provider_id
         )
-        # add to provider libraries
-        for prov_id in db_item.provider_ids:
+        if prov_item is None:
+            prov_item = await self.get_provider_item(
+                provider_item_id, provider_id or provider
+            )
+        if prov_item.in_library is True:
+            return
+        # mark as favorite/library item on provider(s)
+        for prov_id in prov_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
                 await prov.library_add(prov_id.item_id, self.media_type)
-        # mark as library item in internal db
-        if not db_item.in_library:
-            db_item.in_library = True
-            await self.set_db_library(db_item.item_id, True)
+        # mark as library item in internal db if db item
+        if prov_item.provider == ProviderType.DATABASE:
+            if not prov_item.in_library:
+                prov_item.in_library = True
+                await self.set_db_library(prov_item.item_id, True)
 
     async def remove_from_library(
         self,
@@ -254,19 +260,23 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider_id: Optional[str] = None,
     ) -> None:
         """Remove item from the library."""
-        # make sure we have a valid full item
-        # note that we set 'lazy' to False because we need a full db item
-        db_item = await self.get(
-            provider_item_id, provider=provider, provider_id=provider_id, lazy=False
+        prov_item = await self.get_db_item_by_prov_id(
+            provider_item_id, provider=provider, provider_id=provider_id
         )
-        # remove from provider's libraries
-        for prov_id in db_item.provider_ids:
+        if prov_item is None:
+            prov_item = await self.get_provider_item(
+                provider_item_id, provider_id or provider
+            )
+        if prov_item.in_library is False:
+            return
+        # unmark as favorite/library item on provider(s)
+        for prov_id in prov_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
                 await prov.library_remove(prov_id.item_id, self.media_type)
-        # unmark as library item in internal db
-        if db_item.in_library:
-            db_item.in_library = False
-            await self.set_db_library(db_item.item_id, False)
+        # unmark as library item in internal db if db item
+        if prov_item.provider == ProviderType.DATABASE:
+            prov_item.in_library = False
+            await self.set_db_library(prov_item.item_id, False)
 
     async def get_provider_id(self, item: ItemCls) -> Tuple[str, str]:
         """Return provider and item id."""
@@ -368,10 +378,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def get_provider_item(
         self,
         item_id: str,
-        provider_id: str,
+        provider_id: Union[str, ProviderType],
     ) -> ItemCls:
         """Return item details for the given provider item id."""
-        if provider_id == "database":
+        if provider_id in ("database", ProviderType.DATABASE):
             item = await self.get_db_item(item_id)
         else:
             provider = self.mass.music.get_provider(provider_id)
