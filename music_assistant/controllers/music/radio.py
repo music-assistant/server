@@ -5,7 +5,8 @@ from time import time
 
 from music_assistant.helpers.database import TABLE_RADIOS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.models.enums import MediaType
+from music_assistant.models.enums import EventType, MediaType
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import Radio
 
@@ -44,6 +45,9 @@ class RadioController(MediaControllerBase[Radio]):
             self.logger.debug("added %s to database", item.name)
             # return created object
             db_item = await self.get_db_item(item_id)
+            self.mass.signal_event(
+                MassEvent(EventType.MEDIA_ITEM_ADDED, self.media_type.value, db_item)
+            )
             return db_item
 
     async def update_db_item(
@@ -74,4 +78,7 @@ class RadioController(MediaControllerBase[Radio]):
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         db_item = await self.get_db_item(item_id)
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, self.media_type.value, db_item)
+        )
         return db_item

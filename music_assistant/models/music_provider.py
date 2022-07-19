@@ -257,8 +257,9 @@ class MusicProvider:
             :param path: The path to browse, (e.g. artists) or None for root level.
         """
         if MusicProviderFeature.BROWSE not in self.supported_features:
-            # we may NOT use the default implementation if the browser does not support browse
+            # we may NOT use the default implementation if the provider does not support browse
             raise NotImplementedError
+
         # this reference implementation can be overridden with provider specific approach
         if not path:
             # return main listing
@@ -402,7 +403,7 @@ class MusicProvider:
         }
 
     def library_supported(self, media_type: MediaType) -> bool:
-        """Return if Library is upported for given MediaType on this provider."""
+        """Return if Library is supported for given MediaType on this provider."""
         if media_type == MediaType.ARTIST:
             return MusicProviderFeature.LIBRARY_ARTISTS in self.supported_features
         if media_type == MediaType.ALBUM:

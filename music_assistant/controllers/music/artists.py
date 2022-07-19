@@ -7,7 +7,8 @@ from typing import Any, Dict, List, Optional
 
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_ARTISTS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.models.enums import MusicProviderFeature, ProviderType
+from music_assistant.models.enums import EventType, MusicProviderFeature, ProviderType
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -230,6 +231,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.logger.debug("added %s to database", item.name)
             # return created object
             db_item = await self.get_db_item(item_id)
+            self.mass.signal_event(
+                MassEvent(EventType.MEDIA_ITEM_ADDED, self.media_type.value, db_item)
+            )
             return db_item
 
     async def update_db_item(
@@ -260,11 +264,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         db_item = await self.get_db_item(item_id)
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, self.media_type.value, db_item)
+        )
         return db_item
 
     async def delete_db_item(self, item_id: int, recursive: bool = False) -> None:
         """Delete record from the database."""
-
         # check artist albums
         db_rows = await self.mass.database.get_rows_from_query(
             f"SELECT item_id FROM {TABLE_ALBUMS} WHERE artists LIKE '%\"{item_id}\"%'",
@@ -285,8 +291,6 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         # delete the artist itself from db
         await super().delete_db_item(item_id)
-
-        self.logger.debug("deleted item with id %s from database", item_id)
 
     async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""

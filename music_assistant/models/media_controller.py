@@ -15,9 +15,10 @@ from typing import (
 )
 
 from music_assistant.models.errors import MediaNotFoundError
+from music_assistant.models.event import MassEvent
 
-from .enums import MediaType, MusicProviderFeature, ProviderType
-from .media_items import MediaItemType, media_from_dict
+from .enums import EventType, MediaType, MusicProviderFeature, ProviderType
+from .media_items import MediaItemType, PagedItems, media_from_dict
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -69,7 +70,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
-    ) -> List[ItemCls]:
+    ) -> PagedItems:
         """Get in-database items."""
         sql_query = f"SELECT * FROM {self.db_table}"
         params = {}
@@ -83,9 +84,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if query_parts:
             sql_query += " WHERE " + " AND ".join(query_parts)
         sql_query += f" ORDER BY {order_by}"
-        return await self.get_db_items_by_query(
+        items = await self.get_db_items_by_query(
             sql_query, params, limit=limit, offset=offset
         )
+        count = len(items)
+        if count < limit:
+            total = offset + count
+        else:
+            total = await self.mass.database.get_count_from_query(sql_query, params)
+        return PagedItems(items, count, limit, offset, total)
 
     async def iter_db_items(
         self,
@@ -104,19 +111,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 offset=offset,
                 order_by=order_by,
             )
-            for item in next_items:
+            for item in next_items.items:
                 yield item
-            if len(next_items) < limit:
+            if next_items.count < limit:
                 break
             offset += limit
-
-    async def count(self, in_library: Optional[bool] = None) -> int:
-        """Return number of in-library items for this MediaType."""
-        if in_library is not None:
-            match = {"in_library": in_library}
-        else:
-            match = None
-        return await self.mass.database.get_count(self.db_table, match)
 
     async def get(
         self,
@@ -361,6 +360,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         await self.mass.database.update(
             self.db_table, match, {"in_library": in_library, "timestamp": timestamp}
         )
+        db_item = await self.get_db_item(item_id)
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, self.media_type.value, db_item)
+        )
 
     async def get_provider_item(
         self,
@@ -395,10 +398,16 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def delete_db_item(self, item_id: int, recursive: bool = False) -> None:
         """Delete record from the database."""
+        db_item = await self.get_db_item(item_id)
+        assert db_item, f"Item does not exist: {item_id}"
         # delete item
         await self.mass.database.delete(
             self.db_table,
             {"item_id": int(item_id)},
         )
-        # NOTE: this does not delete any references to this item in other records!
+        # NOTE: this does not delete any references to this item in other records,
+        # this is handled/overridden in the mediatype specific controllers
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_DELETED, self.media_type.value, db_item)
+        )
         self.logger.debug("deleted item with id %s from database", item_id)

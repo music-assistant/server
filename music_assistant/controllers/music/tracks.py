@@ -7,7 +7,13 @@ from typing import List, Optional, Union
 from music_assistant.helpers.compare import compare_artists, compare_track
 from music_assistant.helpers.database import TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.models.enums import MediaType, MusicProviderFeature, ProviderType
+from music_assistant.models.enums import (
+    EventType,
+    MediaType,
+    MusicProviderFeature,
+    ProviderType,
+)
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -167,6 +173,9 @@ class TracksController(MediaControllerBase[Track]):
             # return created object
             self.logger.debug("added %s to database: %s", item.name, item_id)
             db_item = await self.get_db_item(item_id)
+            self.mass.signal_event(
+                MassEvent(EventType.MEDIA_ITEM_ADDED, self.media_type.value, db_item)
+            )
             return db_item
 
     async def update_db_item(
@@ -208,6 +217,9 @@ class TracksController(MediaControllerBase[Track]):
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         db_item = await self.get_db_item(item_id)
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, self.media_type.value, db_item)
+        )
         return db_item
 
     async def _get_track_artists(

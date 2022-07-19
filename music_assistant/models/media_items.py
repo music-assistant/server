@@ -365,6 +365,17 @@ class BrowseFolder(MediaItem):
 MediaItemType = Union[Artist, Album, Track, Radio, Playlist, BrowseFolder]
 
 
+@dataclass
+class PagedItems(DataClassDictMixin):
+    """Model for a paged listing."""
+
+    items: List[MediaItemType]
+    count: int
+    limit: int
+    offset: int
+    total: Optional[int] = None
+
+
 def media_from_dict(media_item: dict) -> MediaItemType:
     """Return MediaItem from dict."""
     if media_item["media_type"] == "artist":
