@@ -230,6 +230,12 @@ class MusicProvider:
         """Create a new playlist on provider with given name."""
         raise NotImplementedError
 
+    async def get_radio_tracks(
+        self, prov_item_id, media_type: MediaType, limit=25
+    ) -> List[Track]:
+        """Retrieve a dynamic list of tracks based on the provided item."""
+        raise NotImplementedError
+
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Get streamdetails for a track/radio."""
         raise NotImplementedError

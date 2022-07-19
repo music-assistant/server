@@ -32,12 +32,14 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.music_providers.ytmusic.helpers import (
     add_remove_playlist_tracks,
     get_album,
+    get_album_or_playlist_radio_tracks,
     get_artist,
     get_library_albums,
     get_library_artists,
     get_library_playlists,
     get_library_tracks,
     get_playlist,
+    get_song_radio_tracks,
     get_track,
     library_add_remove_album,
     library_add_remove_artist,
@@ -72,6 +74,9 @@ class YoutubeMusicProvider(MusicProvider):
             MusicProviderFeature.SEARCH,
             MusicProviderFeature.ARTIST_ALBUMS,
             MusicProviderFeature.ARTIST_TOPTRACKS,
+            MusicProviderFeature.RADIO_ALBUMS,
+            MusicProviderFeature.RADIO_TRACKS,
+            MusicProviderFeature.RADIO_PLAYLISTS,
         )
 
     async def setup(self) -> bool:
@@ -350,6 +355,50 @@ class YoutubeMusicProvider(MusicProvider):
                 add=False,
                 username=self.config.username,
             )
+
+    async def get_radio_tracks(
+        self, prov_item_id, media_type: MediaType, limit=25
+    ) -> List[Track]:
+        """Retrieve a dynamic list of tracks based on the provided item."""
+        result = []
+        if media_type == MediaType.ARTIST:
+            raise NotImplementedError
+        if media_type == MediaType.ALBUM:
+            result = await get_album_or_playlist_radio_tracks(
+                headers=self._headers,
+                username=self.config.username,
+                prov_item_id=prov_item_id,
+                limit=limit,
+            )
+        if media_type == MediaType.PLAYLIST:
+            result = await get_album_or_playlist_radio_tracks(
+                headers=self._headers,
+                username=self.config.username,
+                prov_item_id=prov_item_id,
+                limit=limit,
+            )
+        if media_type == MediaType.TRACK:
+            result = await get_song_radio_tracks(
+                headers=self._headers,
+                username=self.config.username,
+                prov_item_id=prov_item_id,
+                limit=limit,
+            )
+        if "tracks" in result:
+            tracks = []
+            for track in result["tracks"]:
+                # Playlist tracks sometimes do not have a valid artist id
+                # In that case, call the API for track details based on track id
+                try:
+                    track = await self._parse_track(track)
+                    if track:
+                        tracks.append(track)
+                except InvalidDataError:
+                    track = await self.get_track(track["videoId"])
+                    if track:
+                        tracks.append(track)
+            return tracks
+        return []
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""

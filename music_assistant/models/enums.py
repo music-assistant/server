@@ -243,6 +243,11 @@ class MusicProviderFeature(Enum):
     LIBRARY_TRACKS_EDIT = "library_tracks_edit"
     LIBRARY_PLAYLISTS_EDIT = "library_playlists_edit"
     LIBRARY_RADIOS_EDIT = "library_radios_edit"
+    # radio feature per mediatype
+    RADIO_ARTISTS = "radio_artists"
+    RADIO_ALBUMS = "radio_albums"
+    RADIO_TRACKS = "radio_playlists"
+    RADIO_PLAYLISTS = "radio_playlists"
     # playlist-specific features
     PLAYLIST_TRACKS_EDIT = "playlist_tracks_edit"
     PLAYLIST_CREATE = "playlist_create"
