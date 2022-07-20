@@ -392,9 +392,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
         return item
 
-    async def remove_prov_mapping(
-        self, item_id: int, prov_id: str, recursive: bool = True
-    ) -> None:
+    async def remove_prov_mapping(self, item_id: int, prov_id: str) -> None:
         """Remove provider id(s) from item."""
         if db_item := await self.get_db_item(item_id):
             db_item.provider_ids = {
@@ -402,7 +400,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             }
             if not db_item.provider_ids:
                 # item has no more provider_ids left, it is completely deleted
-                await self.delete_db_item(db_item.item_id, recursive=recursive)
+                try:
+                    await self.delete_db_item(db_item.item_id)
+                except AssertionError:
+                    self.logger.debug(
+                        "Could not delete %s: it has items attached", db_item.item_id
+                    )
                 return
             await self.update_db_item(db_item.item_id, db_item, overwrite=True)
 
