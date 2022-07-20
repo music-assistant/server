@@ -30,6 +30,7 @@ from music_assistant.models.media_items import (
 )
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.music_providers.ytmusic.helpers import (
+    add_remove_playlist_tracks,
     get_album,
     get_artist,
     get_library_albums,
@@ -38,6 +39,9 @@ from music_assistant.music_providers.ytmusic.helpers import (
     get_library_tracks,
     get_playlist,
     get_track,
+    library_add_remove_album,
+    library_add_remove_artist,
+    library_add_remove_playlist,
     search,
 )
 
@@ -198,14 +202,18 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         playlist_obj = await get_playlist(
-            prov_playlist_id=prov_playlist_id, headers=self._headers
+            prov_playlist_id=prov_playlist_id,
+            headers=self._headers,
+            username=self.config.username,
         )
         return await self._parse_playlist(playlist_obj)
 
     async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
         playlist_obj = await get_playlist(
-            prov_playlist_id=prov_playlist_id, headers=self._headers
+            prov_playlist_id=prov_playlist_id,
+            headers=self._headers,
+            username=self.config.username,
         )
         if "tracks" not in playlist_obj:
             return []
@@ -250,6 +258,100 @@ class YoutubeMusicProvider(MusicProvider):
                 if track.get("videoId")
             ]
         return []
+
+    async def library_add(self, prov_item_id, media_type: MediaType) -> None:
+        """Add an item to the library."""
+        result = False
+        if media_type == MediaType.ARTIST:
+            result = await library_add_remove_artist(
+                headers=self._headers,
+                prov_artist_id=prov_item_id,
+                add=True,
+                username=self.config.username,
+            )
+        elif media_type == MediaType.ALBUM:
+            result = await library_add_remove_album(
+                headers=self._headers,
+                prov_item_id=prov_item_id,
+                add=True,
+                username=self.config.username,
+            )
+        elif media_type == MediaType.PLAYLIST:
+            result = await library_add_remove_playlist(
+                headers=self._headers,
+                prov_item_id=prov_item_id,
+                add=True,
+                username=self.config.username,
+            )
+        elif media_type == MediaType.TRACK:
+            raise NotImplementedError
+        return result
+
+    async def library_remove(self, prov_item_id, media_type: MediaType):
+        """Remove an item from the library."""
+        result = False
+        if media_type == MediaType.ARTIST:
+            result = await library_add_remove_artist(
+                headers=self._headers,
+                prov_artist_id=prov_item_id,
+                add=False,
+                username=self.config.username,
+            )
+        elif media_type == MediaType.ALBUM:
+            result = await library_add_remove_album(
+                headers=self._headers,
+                prov_item_id=prov_item_id,
+                add=False,
+                username=self.config.username,
+            )
+        elif media_type == MediaType.PLAYLIST:
+            result = await library_add_remove_playlist(
+                headers=self._headers,
+                prov_item_id=prov_item_id,
+                add=False,
+                username=self.config.username,
+            )
+        elif media_type == MediaType.TRACK:
+            raise NotImplementedError
+        return result
+
+    async def add_playlist_tracks(
+        self, prov_playlist_id: str, prov_track_ids: List[str]
+    ) -> None:
+        """Add track(s) to playlist."""
+        return await add_remove_playlist_tracks(
+            headers=self._headers,
+            prov_playlist_id=prov_playlist_id,
+            prov_track_ids=prov_track_ids,
+            add=True,
+            username=self.config.username,
+        )
+
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, prov_track_ids: List[str]
+    ) -> None:
+        """Remove track(s) from playlist."""
+        # YT needs both the videoId and de setVideoId in order to remove
+        # the track. Thus, we need to obtain the playlist details and
+        # grab the info from there.
+        playlist_obj = await get_playlist(
+            prov_playlist_id=prov_playlist_id,
+            headers=self._headers,
+            username=self.config.username,
+        )
+        if playlist_obj.get("tracks"):
+            tracks_to_delete = [
+                {"videoId": track["videoId"], "setVideoId": track["setVideoId"]}
+                for track in playlist_obj.get("tracks")
+                if track.get("videoId") in prov_track_ids
+            ]
+            return await add_remove_playlist_tracks(
+                headers=self._headers,
+                prov_playlist_id=prov_playlist_id,
+                prov_track_ids=tracks_to_delete,
+                add=False,
+                username=self.config.username,
+            )
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -418,6 +520,10 @@ class YoutubeMusicProvider(MusicProvider):
             playlist.metadata.images = await self._parse_thumbnails(
                 playlist_obj["thumbnails"]
             )
+        is_editable = False
+        if playlist_obj.get("privacy") and playlist_obj.get("privacy") == "PRIVATE":
+            is_editable = True
+        playlist.is_editable = is_editable
         playlist.add_provider_id(
             MediaItemProviderId(
                 item_id=playlist_obj["id"], prov_type=self.type, prov_id=self.id

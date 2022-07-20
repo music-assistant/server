@@ -43,12 +43,13 @@ async def get_album(prov_album_id: str) -> Dict[str, str]:
 
 
 async def get_playlist(
-    prov_playlist_id: str, headers: Dict[str, str]
+    prov_playlist_id: str, headers: Dict[str, str], username: str
 ) -> Dict[str, str]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_playlist():
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         playlist = ytm.get_playlist(playlistId=prov_playlist_id)
         playlist["checksum"] = get_playlist_checksum(playlist)
         return playlist
@@ -89,7 +90,7 @@ async def get_library_artists(headers: Dict[str, str], username: str) -> Dict[st
     def _get_library_artists():
         user = username if is_brand_account(username) else None
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
-        artists = ytm.get_library_artists(limit=9999)
+        artists = ytm.get_library_subscriptions(limit=9999)
         # Sync properties with uniformal artist object
         for artist in artists:
             artist["id"] = artist["browseId"]
@@ -145,6 +146,84 @@ async def get_library_tracks(headers: Dict[str, str], username: str) -> Dict[str
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_library_tracks)
+
+
+async def library_add_remove_artist(
+    headers: Dict[str, str], prov_artist_id: str, add: bool = True, username: str = None
+) -> bool:
+    """Add or remove an artist to the user's library."""
+
+    def _library_add_remove_artist():
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        if add:
+            return "actions" in ytm.subscribe_artists(channelIds=[prov_artist_id])
+        if not add:
+            return "actions" in ytm.unsubscribe_artists(channelIds=[prov_artist_id])
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _library_add_remove_artist)
+
+
+async def library_add_remove_album(
+    headers: Dict[str, str], prov_item_id: str, add: bool = True, username: str = None
+) -> bool:
+    """Add or remove an album or playlist to the user's library."""
+    album = await get_album(prov_album_id=prov_item_id)
+
+    def _library_add_remove_album():
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        playlist_id = album["audioPlaylistId"]
+        if add:
+            return ytm.rate_playlist(playlist_id, "LIKE")
+        if not add:
+            return ytm.rate_playlist(playlist_id, "INDIFFERENT")
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _library_add_remove_album)
+
+
+async def library_add_remove_playlist(
+    headers: Dict[str, str], prov_item_id: str, add: bool = True, username: str = None
+) -> bool:
+    """Add or remove an album or playlist to the user's library."""
+
+    def _library_add_remove_playlist():
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        if add:
+            return "actions" in ytm.rate_playlist(prov_item_id, "LIKE")
+        if not add:
+            return "actions" in ytm.rate_playlist(prov_item_id, "INDIFFERENT")
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _library_add_remove_playlist)
+
+
+async def add_remove_playlist_tracks(
+    headers: Dict[str, str],
+    prov_playlist_id: str,
+    prov_track_ids: List[str],
+    add: bool,
+    username: str = None,
+) -> bool:
+    """Async wrapper around adding/removing tracks to a playlist."""
+
+    def _add_playlist_tracks():
+        user = username if is_brand_account(username) else None
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        if add:
+            return ytm.add_playlist_items(
+                playlistId=prov_playlist_id, videoIds=prov_track_ids
+            )
+        if not add:
+            return ytm.remove_playlist_items(
+                playlistId=prov_playlist_id, videos=prov_track_ids
+            )
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _add_playlist_tracks)
 
 
 async def search(query: str, ytm_filter: str = None, limit: int = 20) -> List[Dict]:
