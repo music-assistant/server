@@ -207,22 +207,24 @@ class YoutubeMusicProvider(MusicProvider):
         playlist_obj = await get_playlist(
             prov_playlist_id=prov_playlist_id, headers=self._headers
         )
-        if "tracks" in playlist_obj:
-            tracks = []
-            for track in playlist_obj["tracks"]:
-                if track["isAvailable"]:
-                    # Playlist tracks sometimes do not have a valid artist id
-                    # In that case, call the API for track details based on track id
-                    try:
-                        track = await self._parse_track(track)
-                        if track:
-                            tracks.append(track)
-                    except InvalidDataError:
-                        track = await self.get_track(track["videoId"])
-                        if track:
-                            tracks.append(track)
-            return tracks
-        return []
+        if "tracks" not in playlist_obj:
+            return []
+        tracks = []
+        for index, track in enumerate(playlist_obj["tracks"]):
+            if track["isAvailable"]:
+                # Playlist tracks sometimes do not have a valid artist id
+                # In that case, call the API for track details based on track id
+                try:
+                    track = await self._parse_track(track)
+                    if track:
+                        track.position = index
+                        tracks.append(track)
+                except InvalidDataError:
+                    track = await self.get_track(track["videoId"])
+                    if track:
+                        track.position = index
+                        tracks.append(track)
+        return tracks
 
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
         """Get a list of albums for the given artist."""

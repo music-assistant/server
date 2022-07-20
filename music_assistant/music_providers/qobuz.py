@@ -201,17 +201,22 @@ class QobuzProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
-        endpoint = "playlist/get"
-        return [
-            await self._parse_track(item)
-            for item in await self._get_all_items(
-                endpoint,
-                key="tracks",
-                playlist_id=prov_playlist_id,
-                extra="tracks",
-            )
-            if (item and item["id"])
-        ]
+        count = 0
+        result = []
+        for item in await self._get_all_items(
+            "playlist/get",
+            key="tracks",
+            playlist_id=prov_playlist_id,
+            extra="tracks",
+        ):
+            if not (item and item["id"]):
+                continue
+            track = await self._parse_track(item["track"])
+            # use count as position
+            track.position = count
+            result.append(track)
+            count += 1
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
         """Get a list of albums for the given artist."""
@@ -307,15 +312,15 @@ class QobuzProvider(MusicProvider):
         )
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
         playlist_track_ids = set()
-        for track in await self._get_all_items(
-            "playlist/get", key="tracks", playlist_id=prov_playlist_id, extra="tracks"
-        ):
-            if str(track["id"]) in prov_track_ids:
+        for track in await self.get_playlist_tracks(prov_playlist_id):
+            if track.position in positions_to_remove:
                 playlist_track_ids.add(str(track["playlist_track_id"]))
+            if len(playlist_track_ids) == positions_to_remove:
+                break
         return await self._get_data(
             "playlist/deleteTracks",
             playlist_id=prov_playlist_id,

@@ -33,6 +33,7 @@ from music_assistant.models.media_items import (
     MediaQuality,
     MediaType,
     Playlist,
+    Radio,
     StreamDetails,
     Track,
 )
@@ -328,26 +329,27 @@ class FileSystemProvider(MusicProvider):
         if not await self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
         playlist_base_path = Path(playlist_path).parent
-        index = 0
         try:
             async with self.open_file(playlist_path, "r") as _file:
-                for line in await _file.readlines():
+                for line_no, line in enumerate(await _file.readlines()):
                     line = urllib.parse.unquote(line.strip())
                     if line and not line.startswith("#"):
                         # TODO: add support for .pls playlist files
-                        if track := await self._parse_playlist_line(
+                        if media_item := await self._parse_playlist_line(
                             line, playlist_base_path
                         ):
-                            track.position = index
-                            result.append(track)
-                            index += 1
+                            # use the linenumber as position for easier deletions
+                            media_item.position = line_no
+                            result.append(media_item)
         except Exception as err:  # pylint: disable=broad-except
             self.logger.warning(
                 "Error while parsing playlist %s", playlist_path, exc_info=err
             )
         return result
 
-    async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
+    async def _parse_playlist_line(
+        self, line: str, playlist_path: str
+    ) -> Track | Radio | None:
         """Try to parse a track from a playlist line."""
         try:
             # try to treat uri as filename first
@@ -377,7 +379,7 @@ class FileSystemProvider(MusicProvider):
                 await _file.write(f"\n{uri}")
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
         itempath = await self._get_filepath(MediaType.PLAYLIST, prov_playlist_id)
@@ -385,9 +387,9 @@ class FileSystemProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist path does not exist: {itempath}")
         cur_lines = []
         async with self.open_file(itempath, "r") as _file:
-            for line in await _file.readlines():
+            for line_no, line in enumerate(await _file.readlines()):
                 line = urllib.parse.unquote(line.strip())
-                if line not in prov_track_ids:
+                if line_no not in positions_to_remove:
                     cur_lines.append(line)
         async with self.open_file(itempath, "w") as _file:
             for uri in cur_lines:

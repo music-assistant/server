@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from ctypes import Union
 from time import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
@@ -67,12 +67,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = []
-        for index, playlist_track in enumerate(await prov.get_playlist_tracks(item_id)):
-            # make sure we have a position set on the track
-            if not playlist_track.position:
-                playlist_track.position = index
-            items.append(playlist_track)
+        items = await prov.get_playlist_tracks(item_id)
+        # double check if position set
+        if items:
+            assert (
+                items[0].position is not None
+            ), "Playlist items require position to be set"
         # store (serializable items) in cache
         self.mass.create_task(
             self.mass.cache.set(
@@ -192,7 +192,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
 
     async def remove_playlist_tracks(
-        self, db_playlist_id: str, track_ids_or_positions: List[Union[str, int]]
+        self, db_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove multiple tracks from playlist."""
         playlist = await self.get_db_item(db_playlist_id)
@@ -201,23 +201,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist.is_editable:
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for prov in playlist.provider_ids:
-            track_ids_to_remove = []
-            for playlist_track in await self.get_provider_playlist_tracks(
-                prov.item_id,
-                provider=prov.prov_type,
-                provider_id=prov.prov_id,
-                cache_checksum=playlist.metadata.checksum,
+            provider = self.mass.music.get_provider(prov.prov_id)
+            if (
+                MusicProviderFeature.PLAYLIST_TRACKS_EDIT
+                not in provider.supported_features
             ):
-                if (
-                    playlist_track.position in track_ids_or_positions
-                    or playlist_track.item_id in track_ids_or_positions
-                ):
-                    track_ids_to_remove.append(playlist_track.item_id)
-            # actually remove the tracks from the playlist on the provider
-            # TODO: do providers also allow/prefer deleting by position instead of item_id ?
-            if track_ids_to_remove:
-                provider = self.mass.music.get_provider(prov.prov_id)
-                await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)
+                self.logger.warning(
+                    "Provider %s does not support editing playlists",
+                    prov.prov_type.value,
+                )
+                continue
+            await provider.remove_playlist_tracks(prov.item_id, positions_to_remove)
         # invalidate cache by updating the checksum
         await self.get(
             db_playlist_id, provider=ProviderType.DATABASE, force_refresh=True

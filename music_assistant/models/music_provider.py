@@ -218,7 +218,7 @@ class MusicProvider:
             raise NotImplementedError
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
         if MusicProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:

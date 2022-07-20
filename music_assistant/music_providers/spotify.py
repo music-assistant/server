@@ -209,13 +209,19 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
-        return [
-            await self._parse_track(item["track"])
-            for item in await self._get_all_items(
-                f"playlists/{prov_playlist_id}/tracks",
-            )
-            if (item and item["track"] and item["track"]["id"])
-        ]
+        count = 0
+        result = []
+        for item in await self._get_all_items(
+            f"playlists/{prov_playlist_id}/tracks",
+        ):
+            if not (item and item["track"] and item["track"]["id"]):
+                continue
+            track = await self._parse_track(item["track"])
+            # use count as position
+            track.position = count
+            result.append(track)
+            count += 1
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
         """Get a list of all albums for the given artist."""
@@ -281,12 +287,15 @@ class SpotifyProvider(MusicProvider):
         return await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
         track_uris = []
-        for track_id in prov_track_ids:
-            track_uris.append({"uri": f"spotify:track:{track_id}"})
+        for track in await self.get_playlist_tracks(prov_playlist_id):
+            if track.position in positions_to_remove:
+                track_uris.append({"uri": f"spotify:track:{track.item_id}"})
+            if len(track_uris) == positions_to_remove:
+                break
         data = {"tracks": track_uris}
         return await self._delete_data(
             f"playlists/{prov_playlist_id}/tracks", data=data
