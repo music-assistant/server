@@ -306,7 +306,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
         ]
 
-    async def get_db_item(self, item_id: int) -> ItemCls:
+    async def get_db_item(self, item_id: Union[int, str]) -> ItemCls:
         """Get record by id."""
         match = {"item_id": int(item_id)}
         if db_row := await self.mass.database.get_row(self.db_table, match):

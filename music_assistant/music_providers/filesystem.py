@@ -320,7 +320,7 @@ class FileSystemProvider(MusicProvider):
                 track.disc_number = album_mapping.disc_number
                 track.track_number = album_mapping.track_number
                 result.append(track)
-        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
+        return sorted(result, key=lambda x: (x.disc_number or 0, x.track_number or 0))
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
         """Get playlist tracks for given playlist id."""

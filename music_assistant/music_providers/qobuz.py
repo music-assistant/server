@@ -211,7 +211,7 @@ class QobuzProvider(MusicProvider):
         ):
             if not (item and item["id"]):
                 continue
-            track = await self._parse_track(item["track"])
+            track = await self._parse_track(item)
             # use count as position
             track.position = count
             result.append(track)

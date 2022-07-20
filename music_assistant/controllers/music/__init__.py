@@ -430,7 +430,7 @@ class MusicController:
         for prov_id in removed_providers:
 
             # clean cache items from deleted provider(s)
-            self.mass.cache.clear(prov_id)
+            await self.mass.cache.clear(prov_id)
 
             # cleanup media items from db matched to deleted provider
             for ctrl in (

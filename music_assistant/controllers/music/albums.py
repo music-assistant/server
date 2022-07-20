@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
-from typing import Any, Dict, List, Optional, Union
+from typing import List, Optional, Union
 
 from music_assistant.helpers.compare import compare_album, compare_artist
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
@@ -47,36 +46,13 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_id: Optional[str] = None,
     ) -> List[Track]:
         """Return album tracks for the given provider album id."""
-        album = await self.get(item_id, provider=provider, provider_id=provider_id)
-        assert album
-        # if provider specific album is requested, return that directly
-        if not (provider == ProviderType.DATABASE or provider_id == "database"):
-            prov_tracks = await self.get_provider_album_tracks(
-                item_id, provider=provider, provider_id=provider_id
-            )
-            # make sure that the album is set on the tracks
-            for prov_track in prov_tracks:
-                prov_track.album = album
-            return prov_tracks
 
-        # db_album requested: get results from all providers
-        coros = [
-            self.get_provider_album_tracks(
-                item.item_id, item.prov_type, cache_checksum=album.metadata.checksum
-            )
-            for item in album.provider_ids
-        ]
-        tracks = itertools.chain.from_iterable(await asyncio.gather(*coros))
-        # merge duplicates using a dict
-        final_items: Dict[str, Track] = {}
-        for track in tracks:
-            key = f".{track.name.lower()}.{track.disc_number}.{track.track_number}"
-            if key in final_items:
-                final_items[key].provider_ids.update(track.provider_ids)
-            else:
-                track.album = album
-                final_items[key] = track
-        return list(final_items.values())
+        if not (provider == ProviderType.DATABASE or provider_id == "database"):
+            # return provider album tracks
+            return await self._get_provider_album_tracks(item_id, provider, provider_id)
+
+        # db_album requested: get results from first (non-file) provider
+        return await self._get_db_album_tracks(item_id)
 
     async def versions(
         self,
@@ -107,31 +83,68 @@ class AlbumsController(MediaControllerBase[Album]):
         db_item = await self.get_db_item(db_item.item_id)
         return db_item
 
-    async def get_provider_album_tracks(
+    async def _get_provider_album_tracks(
         self,
         item_id: str,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
-        cache_checksum: Any = None,
     ) -> List[Track]:
         """Return album tracks for the given provider album id."""
         prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
+        prov_album = await self.get(item_id, provider, provider_id)
         # prefer cache items (if any)
-        cache_key = f"{prov.type.value}.album_tracks.{item_id}"
+        cache_key = f"{prov.type.value}.albumtracks.{prov_album.item_id}"
+        cache_checksum = prov_album.metadata.checksum
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = await prov.get_album_tracks(item_id)
+        items = []
+        for track in await prov.get_album_tracks(prov_album.item_id):
+            # make sure that the album is stored on the tracks
+            track.album = prov_album
+            items.append(track)
         # store (serializable items) in cache
-        if not prov.type.is_file():  # do not cache filesystem results
-            self.mass.create_task(
-                self.mass.cache.set(
-                    cache_key, [x.to_dict() for x in items], checksum=cache_checksum
-                )
+        self.mass.create_task(
+            self.mass.cache.set(
+                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
             )
+        )
         return items
+
+    async def _get_db_album_tracks(
+        self,
+        item_id: str,
+    ) -> List[Track]:
+        """Return in-database album tracks for the given database album."""
+        album_tracks = []
+        db_album = await self.get_db_item(item_id)
+        # combine the info we have in the db with the full listing from a streaming provider
+        for prov in db_album.provider_ids:
+            prov_album = await self.get_provider_item(prov.item_id, prov.prov_id)
+            for prov_track in await self._get_provider_album_tracks(prov_album):
+
+                if db_track := await self.mass.music.tracks.get_db_item_by_prov_id(
+                    prov_track.item_id, prov_track.provider
+                ):
+                    if album_mapping := next(
+                        (x for x in db_track.albums if x.item_id == db_album.item_id),
+                        None,
+                    ):
+                        db_track.disc_number = album_mapping.disc_number
+                        db_track.track_number = album_mapping.track_number
+                    prov_track = db_track
+                # make sure that the (db) album is stored on the tracks
+                prov_track.album = db_album
+                album_tracks.append(prov_track)
+            # once we have the details from one streaming provider,
+            # there is no need to iterate them all (if there are multiple)
+            # for the same album
+            if not prov.prov_type.is_file():
+                break
+
+        return album_tracks
 
     async def add_db_item(self, item: Album, overwrite_existing: bool = False) -> Album:
         """Add a new record to the database."""
