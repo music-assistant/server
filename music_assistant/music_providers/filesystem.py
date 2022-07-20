@@ -146,34 +146,35 @@ class FileSystemProvider(MusicProvider):
             result += playlists
         return result
 
-    async def browse(self, path: Optional[str] = None) -> List[MediaItemType]:
+    async def browse(self, path: str) -> BrowseFolder:
         """
         Browse this provider's items.
 
-            :param path: The path to browse, (e.g. artists) or None for root level.
+            :param path: The path to browse, (e.g. provid://artists).
         """
-        if not path:
-            path = self.config.path
+        is_root = len(path.split("://")) == 1
+        if is_root:
+            item_path = self.config.path
         else:
-            path = os.path.join(self.config.path, path)
-        result = []
-        for filename in await listdir(path):
+            sub_path = path.split("://", 1)[1]
+            item_path = os.path.join(self.config.path, sub_path)
+        subitems = []
+        for filename in await listdir(item_path):
             full_path: str = os.path.join(path, filename)
             rel_path = full_path.replace(self.config.path + os.sep, "")
             if await isdir(full_path):
-                result.append(
+                subitems.append(
                     BrowseFolder(
-                        item_id=rel_path,
-                        provider=self.type,
+                        path=f"{self.id}://{rel_path}",
                         name=filename,
-                        uri=f"{self.type.value}://{rel_path}",
                     )
                 )
             elif track := await self._parse_track(full_path):
-                result.append(track)
+                subitems.append(track)
             elif playlist := await self._parse_playlist(full_path):
-                result.append(playlist)
-        return result
+                subitems.append(playlist)
+
+        return BrowseFolder(path=path, name=path.split("://", 1)[-1], items=subitems)
 
     async def sync_library(
         self, media_types: Optional[Tuple[MediaType]] = None

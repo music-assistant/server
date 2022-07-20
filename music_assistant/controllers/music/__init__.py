@@ -191,17 +191,21 @@ class MusicController:
         )
         return items
 
-    async def browse(self, uri: Optional[str] = None) -> List[BrowseFolder]:
+    async def browse(self, path: Optional[str] = None) -> BrowseFolder:
         """Browse Music providers."""
         # root level; folder per provider
-        if not uri:
-            return [
-                BrowseFolder(prov.id, prov.type, prov.name, uri=f"{prov.id}://")
-                for prov in self.providers
-                if MusicProviderFeature.BROWSE in prov.supported_features
-            ]
+        if not path or path == "root":
+            return BrowseFolder(
+                path="root",
+                label="browse",
+                items=[
+                    BrowseFolder(path=f"{prov.id}://", name=prov.name)
+                    for prov in self.providers
+                    if MusicProviderFeature.BROWSE in prov.supported_features
+                ],
+            )
         # provider level
-        provider_id, path = uri.split("://", 1)
+        provider_id = path.split("://", 1)[0]
         prov = self.get_provider(provider_id)
         return await prov.browse(path)
 

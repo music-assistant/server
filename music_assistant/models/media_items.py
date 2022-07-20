@@ -352,17 +352,21 @@ class Radio(MediaItem):
 
 
 @dataclass
-class BrowseFolder(MediaItem):
+class BrowseFolder(DataClassDictMixin):
     """Representation of a Folder used in Browse (which contains media items)."""
 
     media_type: MediaType = MediaType.FOLDER
+    # path: the path (in uri style) to/for this browse folder
+    path: str = ""
+    # name: a name/title which should not be translated
+    name: str = ""
     # label: a labelid that needs to be translated by the frontend
     label: str = ""
-    # items (max 25) to provide in recommendation listings
-    items: Optional[List[MediaItemType]] = None
+    # subitems of this folder when expanding
+    items: Optional[List[Union[MediaItemType, BrowseFolder]]] = None
 
 
-MediaItemType = Union[Artist, Album, Track, Radio, Playlist, BrowseFolder]
+MediaItemType = Union[Artist, Album, Track, Radio, Playlist]
 
 
 @dataclass
