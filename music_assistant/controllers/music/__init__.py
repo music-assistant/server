@@ -196,10 +196,18 @@ class MusicController:
         # root level; folder per provider
         if not path or path == "root":
             return BrowseFolder(
+                item_id="root",
+                provider=ProviderType.DATABASE,
                 path="root",
                 label="browse",
+                name="",
                 items=[
-                    BrowseFolder(path=f"{prov.id}://", name=prov.name)
+                    BrowseFolder(
+                        item_id="root",
+                        provider=prov.type,
+                        path=f"{prov.id}://",
+                        name=prov.name,
+                    )
                     for prov in self.providers
                     if MusicProviderFeature.BROWSE in prov.supported_features
                 ],

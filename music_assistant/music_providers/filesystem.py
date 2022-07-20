@@ -152,29 +152,48 @@ class FileSystemProvider(MusicProvider):
 
             :param path: The path to browse, (e.g. provid://artists).
         """
-        is_root = len(path.split("://")) == 1
-        if is_root:
+        _, sub_path = path.split("://")
+        if not sub_path:
             item_path = self.config.path
         else:
-            sub_path = path.split("://", 1)[1]
             item_path = os.path.join(self.config.path, sub_path)
         subitems = []
         for filename in await listdir(item_path):
-            full_path: str = os.path.join(path, filename)
+            full_path: str = os.path.join(item_path, filename)
             rel_path = full_path.replace(self.config.path + os.sep, "")
             if await isdir(full_path):
                 subitems.append(
                     BrowseFolder(
+                        item_id=rel_path,
+                        provider=self.type,
                         path=f"{self.id}://{rel_path}",
                         name=filename,
                     )
                 )
-            elif track := await self._parse_track(full_path):
-                subitems.append(track)
-            elif playlist := await self._parse_playlist(full_path):
-                subitems.append(playlist)
+                continue
 
-        return BrowseFolder(path=path, name=path.split("://", 1)[-1], items=subitems)
+            if "." not in filename or filename.startswith("."):
+                # skip system files and files without extension
+                continue
+
+            _, ext = filename.rsplit(".", 1)
+
+            if ext in TRACK_EXTENSIONS:
+                if track := await self._parse_track(full_path):
+                    subitems.append(track)
+                continue
+            if ext in PLAYLIST_EXTENSIONS:
+                if playlist := await self._parse_playlist(full_path):
+                    subitems.append(playlist)
+                continue
+
+        return BrowseFolder(
+            item_id=sub_path,
+            provider=self.type,
+            path=path,
+            name=path.split("://", 1)[-1],
+            items=subitems,
+        )
 
     async def sync_library(
         self, media_types: Optional[Tuple[MediaType]] = None

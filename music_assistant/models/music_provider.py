@@ -260,82 +260,112 @@ class MusicProvider:
             # we may NOT use the default implementation if the provider does not support browse
             raise NotImplementedError
 
-        is_root = len(path.split("://")) == 1
+        _, subpath = path.split("://")
 
         # this reference implementation can be overridden with provider specific approach
-        if is_root:
+        if not subpath:
             # return main listing
             root_items = []
             if MusicProviderFeature.LIBRARY_ARTISTS in self.supported_features:
                 root_items.append(
                     BrowseFolder(
+                        item_id="artists",
+                        provider=self.type,
                         path=path + "artists",
+                        name="",
                         label="artists",
                     )
                 )
             if MusicProviderFeature.LIBRARY_ALBUMS in self.supported_features:
                 root_items.append(
                     BrowseFolder(
+                        item_id="albums",
+                        provider=self.type,
                         path=path + "albums",
+                        name="",
                         label="albums",
                     )
                 )
             if MusicProviderFeature.LIBRARY_TRACKS in self.supported_features:
                 root_items.append(
                     BrowseFolder(
+                        item_id="tracks",
+                        provider=self.type,
                         path=path + "tracks",
+                        name="",
                         label="tracks",
                     )
                 )
             if MusicProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
                 root_items.append(
                     BrowseFolder(
+                        item_id="playlists",
+                        provider=self.type,
                         path=path + "playlists",
+                        name="",
                         label="playlists",
                     )
                 )
             if MusicProviderFeature.LIBRARY_RADIOS in self.supported_features:
                 root_items.append(
                     BrowseFolder(
+                        item_id="radios",
+                        provider=self.type,
                         path=path + "radios",
+                        name="",
                         label="radios",
                     )
                 )
-            return BrowseFolder(path=path, name=self.name, items=root_items)
+            return BrowseFolder(
+                item_id="root",
+                provider=self.type,
+                path=path,
+                name="",
+                items=root_items,
+            )
         # sublevel
-        subpath = path.split("://", 1)[1]
         if subpath == "artists":
             return BrowseFolder(
+                item_id="artists",
+                provider=self.type,
                 path=path,
-                name=self.name,
+                name="",
                 label="artists",
                 items=[x async for x in self.get_library_artists()],
             )
         if subpath == "albums":
             return BrowseFolder(
+                item_id="albums",
+                provider=self.type,
                 path=path,
-                name=self.name,
+                name="",
                 label="albums",
                 items=[x async for x in self.get_library_albums()],
             )
         if subpath == "tracks":
             return BrowseFolder(
+                item_id="tracks",
+                provider=self.type,
                 path=path,
-                name=self.name,
+                name="",
                 label="tracks",
                 items=[x async for x in self.get_library_tracks()],
             )
         if subpath == "radios":
             return BrowseFolder(
+                item_id="radios",
+                provider=self.type,
                 path=path,
-                name=self.name,
+                name="",
                 label="radios",
                 items=[x async for x in self.get_library_radios()],
             )
         if subpath == "playlists":
             return BrowseFolder(
+                item_id="playlists",
+                provider=self.type,
                 path=path,
-                name=self.name,
+                name="",
                 label="playlists",
                 items=[x async for x in self.get_library_playlists()],
             )

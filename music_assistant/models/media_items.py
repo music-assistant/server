@@ -352,21 +352,25 @@ class Radio(MediaItem):
 
 
 @dataclass
-class BrowseFolder(DataClassDictMixin):
+class BrowseFolder(MediaItem):
     """Representation of a Folder used in Browse (which contains media items)."""
 
     media_type: MediaType = MediaType.FOLDER
     # path: the path (in uri style) to/for this browse folder
     path: str = ""
-    # name: a name/title which should not be translated
-    name: str = ""
     # label: a labelid that needs to be translated by the frontend
     label: str = ""
     # subitems of this folder when expanding
     items: Optional[List[Union[MediaItemType, BrowseFolder]]] = None
 
+    def __post_init__(self):
+        """Call after init."""
+        super().__post_init__()
+        if not self.path:
+            self.path = f"{self.provider}://{self.item_id}"
 
-MediaItemType = Union[Artist, Album, Track, Radio, Playlist]
+
+MediaItemType = Union[Artist, Album, Track, Radio, Playlist, BrowseFolder]
 
 
 @dataclass
