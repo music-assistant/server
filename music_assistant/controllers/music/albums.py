@@ -122,9 +122,9 @@ class AlbumsController(MediaControllerBase[Album]):
         db_album = await self.get_db_item(item_id)
         # combine the info we have in the db with the full listing from a streaming provider
         for prov in db_album.provider_ids:
-            prov_album = await self.get_provider_item(prov.item_id, prov.prov_id)
-            for prov_track in await self._get_provider_album_tracks(prov_album):
-
+            for prov_track in await self._get_provider_album_tracks(
+                prov.item_id, prov.prov_type, prov.prov_id
+            ):
                 if db_track := await self.mass.music.tracks.get_db_item_by_prov_id(
                     prov_track.item_id, prov_track.provider
                 ):
