@@ -213,9 +213,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     or playlist_track.item_id in track_ids_or_positions
                 ):
                     track_ids_to_remove.append(playlist_track.item_id)
-                track_ids_to_remove.append(playlist_track.item_id)
             # actually remove the tracks from the playlist on the provider
-            # TODO: do providers also allow/prefer deleting py position instead of item_id ?
+            # TODO: do providers also allow/prefer deleting by position instead of item_id ?
             if track_ids_to_remove:
                 provider = self.mass.music.get_provider(prov.prov_id)
                 await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)
