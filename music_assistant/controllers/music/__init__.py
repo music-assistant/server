@@ -434,11 +434,12 @@ class MusicController:
 
             # cleanup media items from db matched to deleted provider
             for ctrl in (
-                self.mass.music.artists,
-                self.mass.music.albums,
-                self.mass.music.tracks,
+                # order is important here to recursively cleanup bottom up
                 self.mass.music.radio,
                 self.mass.music.playlists,
+                self.mass.music.tracks,
+                self.mass.music.albums,
+                self.mass.music.artists,
             ):
                 prov_items = await ctrl.get_db_items_by_prov_id(provider_id=prov_id)
                 for item in prov_items:
