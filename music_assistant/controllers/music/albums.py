@@ -93,17 +93,19 @@ class AlbumsController(MediaControllerBase[Album]):
         prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
-        prov_album = await self.get(item_id, provider, provider_id)
+        full_album = await self.get(item_id, provider, provider_id)
         # prefer cache items (if any)
-        cache_key = f"{prov.type.value}.albumtracks.{prov_album.item_id}"
-        cache_checksum = prov_album.metadata.checksum
+        cache_key = f"{prov.type.value}.albumtracks.{item_id}"
+        cache_checksum = full_album.metadata.checksum
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = []
-        for track in await prov.get_album_tracks(prov_album.item_id):
-            # make sure that the album is stored on the tracks
-            track.album = prov_album
+        for track in await prov.get_album_tracks(item_id):
+            # make sure that the (full) album is stored on the tracks
+            track.album = full_album
+            if full_album.metadata.images:
+                track.metadata.images = full_album.metadata.images
             items.append(track)
         # store (serializable items) in cache
         self.mass.create_task(
@@ -137,6 +139,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     prov_track = db_track
                 # make sure that the (db) album is stored on the tracks
                 prov_track.album = db_album
+                prov_track.metadata.images = db_album.metadata.images
                 album_tracks.append(prov_track)
             # once we have the details from one streaming provider,
             # there is no need to iterate them all (if there are multiple)
