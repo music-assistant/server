@@ -62,8 +62,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
-        # prefer cache items (if any) - do not use cache for filesystem
-        cache_key = f"{prov.type.value}.playlist.{item_id}.tracks"
+        # prefer cache items (if any)
+        cache_key = f"{prov.id}.playlist.{item_id}.tracks"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -192,7 +192,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
 
     async def remove_playlist_tracks(
-        self, db_playlist_id: str, positions: List[int]
+        self, db_playlist_id: str, track_ids_or_positions: List[Union[str, int]]
     ) -> None:
         """Remove multiple tracks from playlist."""
         playlist = await self.get_db_item(db_playlist_id)
@@ -202,12 +202,20 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for prov in playlist.provider_ids:
             track_ids_to_remove = []
-            for playlist_track in await self.tracks(prov.item_id, prov.prov_type):
-                if playlist_track.position not in positions:
-                    continue
+            for playlist_track in await self.get_provider_playlist_tracks(
+                prov.item_id,
+                provider=prov.prov_type,
+                provider_id=prov.prov_id,
+                cache_checksum=playlist.metadata.checksum,
+            ):
+                if (
+                    playlist_track.position in track_ids_or_positions
+                    or playlist_track.item_id in track_ids_or_positions
+                ):
+                    track_ids_to_remove.append(playlist_track.item_id)
                 track_ids_to_remove.append(playlist_track.item_id)
             # actually remove the tracks from the playlist on the provider
-            # TODO: send positions to provider to delete
+            # TODO: do providers also allow/prefer deleting py position instead of item_id ?
             if track_ids_to_remove:
                 provider = self.mass.music.get_provider(prov.prov_id)
                 await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)

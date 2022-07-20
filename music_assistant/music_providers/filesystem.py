@@ -397,9 +397,12 @@ class FileSystemProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
-        async with self.open_file(name, "w") as _file:
+        filename = await self.resolve(f"{name}.m3u")
+        async with self.open_file(filename, "w") as _file:
             await _file.write("\n")
-        return await self.get_playlist(name)
+        playlist = await self._parse_playlist(filename)
+        db_playlist = await self.mass.music.playlists.add_db_item(playlist)
+        return db_playlist
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
