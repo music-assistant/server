@@ -13,7 +13,10 @@ from music_assistant.models.errors import InvalidDataError
 
 FALLBACK_ARTIST = "Various Artists"
 
-SPLITTERS = (";", ",", "Featuring", " Feat. ", " Feat ", "feat.", " & ", "/ ")
+# allowed splitters for titles and artists strings
+# NOTE: do not use '&' or '/' as splitter here as it will cause issues with artists
+# actually having that in the name
+SPLITTERS = (";", ",", "Featuring", " Feat. ", " Feat ", "feat.")
 
 
 def split_items(org_str: str) -> Tuple[str]:
