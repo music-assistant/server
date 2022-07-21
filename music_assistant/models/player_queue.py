@@ -622,7 +622,10 @@ class PlayerQueue:
             else:
                 played_items = self.items[:cur_index] if cur_index is not None else []
                 next_items = self.items[cur_index + 1 :] + queue_items
-                cur_item = [self.get_item(cur_index)]
+                if cur_item := self.get_item(cur_index):
+                    cur_item = [cur_item]
+                else:
+                    cur_item = []
             # do the shuffle
             next_items = random.sample(next_items, len(next_items))
             queue_items = played_items + cur_item + next_items
