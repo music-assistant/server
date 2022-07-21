@@ -189,7 +189,7 @@ class QueueSettings:
             "stream_type": self.stream_type.value,
             "max_sample_rate": self.max_sample_rate,
             "announce_volume_increase": self.announce_volume_increase,
-            "metadata_mode": self.metadata_mode,
+            "metadata_mode": self.metadata_mode.value,
         }
 
     def from_dict(self, d: Dict[str, Any]) -> None:

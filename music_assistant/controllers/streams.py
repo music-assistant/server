@@ -198,7 +198,7 @@ class StreamsController:
         if metadata_mode != MetadataMode.DISABLED:
             headers["icy-name"] = "Music Assistant"
             headers["icy-pub"] = "1"
-            headers["icy-metaint"] = queue_stream.output_chunksize
+            headers["icy-metaint"] = str(queue_stream.output_chunksize)
 
         resp = web.StreamResponse(headers=headers)
         try:
@@ -616,7 +616,7 @@ class QueueStream:
             crossfade_duration = self.queue.settings.crossfade_duration
             crossfade_size = sample_size_per_second * crossfade_duration
             # buffer_duration has some overhead to account for padded silence
-            buffer_duration = (crossfade_duration or 2) * 2 if track_count > 1 else 1
+            buffer_duration = (crossfade_duration or 1) + 4
             # predict total size to expect for this track from duration
             stream_duration = (queue_track.duration or 0) - seek_position
 
@@ -633,6 +633,7 @@ class QueueStream:
             self.queue.signal_update()
             buffer = b""
             bytes_written = 0
+            seconds_streamed = 0
             # handle incoming audio chunks
             async for chunk in get_media_stream(
                 self.mass,
@@ -644,9 +645,13 @@ class QueueStream:
                 chunk_size=sample_size_per_second,
             ):
 
-                seconds_streamed = bytes_written / sample_size_per_second
+                seconds_streamed += 1
+                self.seconds_streamed += 1
                 seconds_in_buffer = len(buffer) / sample_size_per_second
-                queue_track.streamdetails.seconds_streamed = seconds_streamed
+                # try to make a rough assumption of how many seconds the player has in buffer
+                player_in_buffer = self.seconds_streamed - (
+                    time() - self.streaming_started
+                )
 
                 ####  HANDLE FIRST PART OF TRACK
 
@@ -661,6 +666,7 @@ class QueueStream:
                     streamdetails.media_type == MediaType.ANNOUNCEMENT
                     or not stream_duration
                     or stream_duration < buffer_duration
+                    or player_in_buffer < buffer_duration
                 ):
                     # handle edge case where we have a previous chunk in buffer
                     # and the next track is too short
