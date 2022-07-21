@@ -618,14 +618,17 @@ class PlayerQueue:
             if cur_index is None:
                 played_items = []
                 next_items = self.items + queue_items
-                cur_item = []
+                cur_items = []
             else:
                 played_items = self.items[:cur_index] if cur_index is not None else []
                 next_items = self.items[cur_index + 1 :] + queue_items
-                cur_item = [self.get_item(cur_index)]
+                if cur_item := self.get_item(cur_index):
+                    cur_items = [cur_item]
+                else:
+                    cur_items = []
             # do the shuffle
             next_items = random.sample(next_items, len(next_items))
-            queue_items = played_items + cur_item + next_items
+            queue_items = played_items + cur_items + next_items
         else:
             queue_items = self._items + queue_items
         await self.update_items(queue_items)
@@ -647,16 +650,10 @@ class PlayerQueue:
             self.signal_update()
             if self.player.state == PlayerState.IDLE:
 
-                # handle end of queue
-                if self._current_index is not None and self._current_index >= (
-                    len(self._items) - 1
-                ):
-                    self._current_index += 1
-                    self._current_item_elapsed_time = 0
-
                 # handle case where stream stopped on purpose and we need to restart it
-                elif self.signal_next:
+                if self.signal_next:
                     self.signal_next = False
+                    self._current_item_elapsed_time = 0
                     self.mass.create_task(self.resume())
 
         self.update_state()
