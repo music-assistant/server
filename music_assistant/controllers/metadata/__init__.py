@@ -63,6 +63,9 @@ class MetaDataController:
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
+        # set timestamp, used to determine when this function was last called
+        artist.metadata.last_refresh = int(time())
+
         if not artist.musicbrainz_id:
             artist.musicbrainz_id = await self.get_artist_musicbrainz_id(artist)
 
@@ -72,10 +75,11 @@ class MetaDataController:
             if metadata := await self.audiodb.get_artist_metadata(artist):
                 artist.metadata.update(metadata)
 
-        artist.metadata.last_refresh = int(time())
-
     async def get_album_metadata(self, album: Album) -> None:
         """Get/update rich metadata for an album."""
+        # set timestamp, used to determine when this function was last called
+        album.metadata.last_refresh = int(time())
+
         if not (album.musicbrainz_id or album.artist):
             return
         if metadata := await self.audiodb.get_album_metadata(album):
@@ -83,19 +87,20 @@ class MetaDataController:
         if metadata := await self.fanarttv.get_album_metadata(album):
             album.metadata.update(metadata)
 
-        album.metadata.last_refresh = int(time())
-
     async def get_track_metadata(self, track: Track) -> None:
         """Get/update rich metadata for a track."""
+        # set timestamp, used to determine when this function was last called
+        track.metadata.last_refresh = int(time())
+
         if not (track.album and track.artists):
             return
         if metadata := await self.audiodb.get_track_metadata(track):
             track.metadata.update(metadata)
 
-        track.metadata.last_refresh = int(time())
-
     async def get_playlist_metadata(self, playlist: Playlist) -> None:
         """Get/update rich metadata for a playlist."""
+        # set timestamp, used to determine when this function was last called
+        playlist.metadata.last_refresh = int(time())
         # retrieve genres from tracks
         # TODO: retrieve style/mood ?
         playlist.metadata.genres = set()
@@ -110,7 +115,6 @@ class MetaDataController:
             elif track.album and track.album.metadata.genres:
                 playlist.metadata.genres.update(track.album.metadata.genres)
         # TODO: create mosaic thumb/fanart from playlist tracks
-        playlist.metadata.last_refresh = int(time())
 
     async def get_radio_metadata(self, radio: Radio) -> None:
         """Get/update rich metadata for a radio station."""

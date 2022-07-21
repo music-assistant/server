@@ -77,12 +77,15 @@ def compare_artist(
 def compare_artists(
     left_artists: List[Union[Artist, ItemMapping]],
     right_artists: List[Union[Artist, ItemMapping]],
+    any_match: bool = False,
 ) -> bool:
     """Compare two lists of artist and return True if both lists match (exactly)."""
     matches = 0
     for left_artist in left_artists:
         for right_artist in right_artists:
             if compare_artist(left_artist, right_artist):
+                if any_match:
+                    return True
                 matches += 1
     return len(left_artists) == matches
 
