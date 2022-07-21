@@ -27,6 +27,7 @@ from music_assistant.models.enums import (
     CrossFadeMode,
     EventType,
     MediaType,
+    MetadataMode,
     ProviderType,
 )
 from music_assistant.models.errors import MediaNotFoundError, QueueEmpty
@@ -192,20 +193,12 @@ class StreamsController:
             "Cache-Control": "no-cache",
         }
 
-        # for now, only support icy metadata on MP3 streams to prevent issues
-        # https://github.com/music-assistant/hass-music-assistant/issues/603
-        # in the future we could expand this support:
-        # by making exceptions for players that do also support ICY on other content types
-        # and/or metaint value such as Kodi.
-        # another future expansion is to just get the PCM frames here and encode
-        # for each inidvidual player with or without ICY...
-        if queue_stream.output_format == ContentType.MP3:
-            # use the default/recommended metaint size of 8192
-            # https://cast.readme.io/docs/icy
+        # ICY-metadata headers depend on settings
+        metadata_mode = queue_stream.queue.settings.metadata_mode
+        if metadata_mode != MetadataMode.DISABLED:
             headers["icy-name"] = "Music Assistant"
             headers["icy-pub"] = "1"
-            # use the default/recommended metaint size of 8192
-            headers["icy-metaint"] = str(ICY_CHUNKSIZE)
+            headers["icy-metaint"] = queue_stream.output_chunksize
 
         resp = web.StreamResponse(headers=headers)
         try:
@@ -364,6 +357,13 @@ class QueueStream:
         self.signal_next: bool = False
         self._runner_task: Optional[asyncio.Task] = None
         self._prev_chunk: bytes = b""
+        if queue.settings.metadata_mode == MetadataMode.LEGACY:
+            # use the legacy/recommended metaint size of 8192 bytes
+            self.output_chunksize = ICY_CHUNKSIZE
+        else:
+            self.output_chunksize = get_chunksize(
+                output_format, pcm_sample_rate, pcm_bit_depth
+            )
         if autostart:
             self.mass.create_task(self.start())
 
@@ -473,21 +473,7 @@ class QueueStream:
 
             # Read bytes from final output and send chunk to child callback.
             chunk_num = 0
-            if self.output_format == ContentType.MP3:
-                # use the icy compatible static chunksize (iter_chunks of x size)
-                get_chunks = ffmpeg_proc.iter_chunked(ICY_CHUNKSIZE)
-            else:
-                # all other: prefer chunksize that fits 1 second belonging to output type
-                # but accept less (iter any chunk of max chunk size)
-                get_chunks = ffmpeg_proc.iter_any(
-                    get_chunksize(
-                        self.output_format,
-                        self.pcm_sample_rate,
-                        self.pcm_bit_depth,
-                        self.pcm_channels,
-                    )
-                )
-            async for chunk in get_chunks:
+            async for chunk in ffmpeg_proc.iter_chunked(self.output_chunksize):
                 chunk_num += 1
 
                 if len(self.connected_clients) == 0:
