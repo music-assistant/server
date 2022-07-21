@@ -189,6 +189,14 @@ class RepeatMode(Enum):
     ALL = "all"  # repeat entire queue
 
 
+class MetadataMode(Enum):
+    """Enum with stream metadata modes."""
+
+    DISABLED = "disabled"  # do not notify icy support
+    DEFAULT = "default"  # enable icy if player requests it, default chunksize
+    LEGACY = "legacy"  # enable icy but with legacy 8kb chunksize, requires mp3
+
+
 class PlayerState(Enum):
     """Enum for the (playback)state of a player."""
 

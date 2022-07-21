@@ -425,7 +425,7 @@ async def get_radio_stream(
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
     headers = {"Icy-MetaData": "1"}
-    timeout = ClientTimeout(total=0, connect=30, sock_read=120)
+    timeout = ClientTimeout(total=0, connect=30, sock_read=600)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         headers = resp.headers
         meta_int = int(headers.get("icy-metaint", "0"))
@@ -479,7 +479,7 @@ async def get_http_stream(
     buffer = b""
     buffer_all = False
     bytes_received = 0
-    timeout = ClientTimeout(total=0, connect=30, sock_read=120)
+    timeout = ClientTimeout(total=0, connect=30, sock_read=600)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         is_partial = resp.status == 206
         buffer_all = seek_position and not is_partial
