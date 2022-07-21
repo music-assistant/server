@@ -319,6 +319,18 @@ class Track(MediaItem):
             return tuple()
         return tuple(self.isrc.split(";"))
 
+    @property
+    def artist(self) -> Artist | ItemMapping | None:
+        """Return (first) artist of track."""
+        if self.artists:
+            return self.artists[0]
+        return None
+
+    @artist.setter
+    def artist(self, artist: Union[Artist, ItemMapping]) -> None:
+        """Set (first/only) artist of track."""
+        self.artists = [artist]
+
 
 @dataclass
 class Playlist(MediaItem):

@@ -8,7 +8,11 @@ from urllib.parse import unquote
 import pytube
 import ytmusicapi
 
-from music_assistant.models.enums import MusicProviderFeature, ProviderType
+from music_assistant.models.enums import (
+    MediaQuality,
+    MusicProviderFeature,
+    ProviderType,
+)
 from music_assistant.models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -575,6 +579,7 @@ class YoutubeMusicProvider(MusicProvider):
                 prov_type=self.type,
                 prov_id=self.id,
                 available=available,
+                quality=MediaQuality.LOSSY_M4A,
             )
         )
         return track

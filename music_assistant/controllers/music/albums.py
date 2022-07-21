@@ -61,17 +61,35 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_id: Optional[str] = None,
     ) -> List[Album]:
         """Return all versions of an album we can find on all providers."""
+        assert provider or provider_id, "Provider type or ID must be specified"
         album = await self.get(item_id, provider, provider_id)
+        # perform a search on all provider(types) to collect all versions/variants
         prov_types = {item.type for item in self.mass.music.providers}
-        return [
-            prov_item
+        search_query = f"{album.artist.name} - {album.name}"
+        all_versions = {
+            prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(
-                *[self.search(album.name, prov_type) for prov_type in prov_types]
+                *[self.search(search_query, prov_type) for prov_type in prov_types]
             )
             for prov_item in prov_items
-            if prov_item.sort_name == album.sort_name
+            if (
+                (prov_item.sort_name in album.sort_name)
+                or (album.sort_name in prov_item.sort_name)
+            )
             and compare_artist(prov_item.artist, album.artist)
-        ]
+        }
+        # make sure that the 'base' version is included
+        for prov_version in album.provider_ids:
+            if prov_version.item_id in all_versions:
+                continue
+            album_copy = Album.from_dict(album.to_dict())
+            album_copy.item_id = prov_version.item_id
+            album_copy.provider = prov_version.prov_type
+            album_copy.provider_ids = {prov_version}
+            all_versions[prov_version.item_id] = album_copy
+
+        # return the aggregated result
+        return all_versions.values()
 
     async def add(self, item: Album, overwrite_existing: bool = False) -> Album:
         """Add album to local db and return the database item."""
@@ -81,6 +99,12 @@ class AlbumsController(MediaControllerBase[Album]):
         # also fetch same album on all providers
         await self._match(db_item)
         db_item = await self.get_db_item(db_item.item_id)
+        # add the album's tracks to the db
+        for prov in item.provider_ids:
+            for track in await self._get_provider_album_tracks(
+                prov.item_id, prov.prov_type, prov.prov_id
+            ):
+                await self.mass.music.tracks.add_db_item(track)
         return db_item
 
     async def _get_provider_album_tracks(
@@ -93,7 +117,7 @@ class AlbumsController(MediaControllerBase[Album]):
         prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
-        full_album = await self.get(item_id, provider, provider_id)
+        full_album = await self.get_provider_item(item_id, provider_id or provider)
         # prefer cache items (if any)
         cache_key = f"{prov.type.value}.albumtracks.{item_id}"
         cache_checksum = full_album.metadata.checksum
@@ -120,38 +144,27 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
     ) -> List[Track]:
         """Return in-database album tracks for the given database album."""
-        album_tracks = []
         db_album = await self.get_db_item(item_id)
-        # combine the info we have in the db with the full listing from a streaming provider
-        for prov in db_album.provider_ids:
-            for prov_track in await self._get_provider_album_tracks(
-                prov.item_id, prov.prov_type, prov.prov_id
+        # simply grab all tracks in the db that are linked to this album
+        # TODO: adjust to json query instead of text search?
+        query = f"SELECT * FROM tracks WHERE albums LIKE '%\"{item_id}\"%'"
+        result = []
+        for track in await self.mass.music.tracks.get_db_items_by_query(query):
+            if album_mapping := next(
+                (x for x in track.albums if x.item_id == db_album.item_id), None
             ):
-                if db_track := await self.mass.music.tracks.get_db_item_by_prov_id(
-                    prov_track.item_id, prov_track.provider
-                ):
-                    if album_mapping := next(
-                        (x for x in db_track.albums if x.item_id == db_album.item_id),
-                        None,
-                    ):
-                        db_track.disc_number = album_mapping.disc_number
-                        db_track.track_number = album_mapping.track_number
-                    prov_track = db_track
-                # make sure that the (db) album is stored on the tracks
-                prov_track.album = db_album
-                prov_track.metadata.images = db_album.metadata.images
-                album_tracks.append(prov_track)
-            # once we have the details from one streaming provider,
-            # there is no need to iterate them all (if there are multiple)
-            # for the same album
-            if not prov.prov_type.is_file():
-                break
-
-        return album_tracks
+                # make sure that the full album is set on the track and prefer the album's images
+                track.album = db_album
+                if db_album.metadata.images:
+                    track.metadata.images = db_album.metadata.images
+                # apply the disc and track number from the mapping
+                track.disc_number = album_mapping.disc_number
+                track.track_number = album_mapping.track_number
+                result.append(track)
+        return sorted(result, key=lambda x: (x.disc_number or 0, x.track_number or 0))
 
     async def add_db_item(self, item: Album, overwrite_existing: bool = False) -> Album:
         """Add a new record to the database."""
-        assert isinstance(item, Album), "Not a full Album object"
         assert item.provider_ids, f"Album {item.name} is missing provider id(s)"
         assert item.artist, f"Album {item.name} is missing artist"
         async with self._db_add_lock:
@@ -344,16 +357,14 @@ class AlbumsController(MediaControllerBase[Album]):
         self, artist: Union[Artist, ItemMapping], overwrite: bool = False
     ) -> ItemMapping:
         """Extract (database) track artist as ItemMapping."""
-
-        if artist.provider == ProviderType.DATABASE:
-            if isinstance(artist, ItemMapping):
-                return artist
-            return ItemMapping.from_item(artist)
-
         if overwrite:
             artist = await self.mass.music.artists.add_db_item(
                 artist, overwrite_existing=True
             )
+        if artist.provider == ProviderType.DATABASE:
+            if isinstance(artist, ItemMapping):
+                return artist
+            return ItemMapping.from_item(artist)
 
         if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
             artist.item_id, provider=artist.provider

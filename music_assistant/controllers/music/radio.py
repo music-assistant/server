@@ -1,11 +1,13 @@
 """Manage MediaItems of type Radio."""
 from __future__ import annotations
 
+import asyncio
 from time import time
+from typing import List, Optional
 
 from music_assistant.helpers.database import TABLE_RADIOS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.models.enums import EventType, MediaType
+from music_assistant.models.enums import EventType, MediaType, ProviderType
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import Radio
@@ -21,6 +23,43 @@ class RadioController(MediaControllerBase[Radio]):
     async def get_radio_by_name(self, name: str) -> Radio | None:
         """Get in-library radio by name."""
         return await self.mass.database.get_row(self.db_table, {"name": name})
+
+    async def versions(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+    ) -> List[Radio]:
+        """Return all versions of a radio station we can find on all providers."""
+        assert provider or provider_id, "Provider type or ID must be specified"
+        radio = await self.get(item_id, provider, provider_id)
+        # perform a search on all provider(types) to collect all versions/variants
+        prov_types = {item.type for item in self.mass.music.providers}
+        all_versions = {
+            prov_item.item_id: prov_item
+            for prov_items in await asyncio.gather(
+                *[self.search(radio.name, prov_type) for prov_type in prov_types]
+            )
+            for prov_item in prov_items
+            if (
+                (prov_item.name in radio.name)
+                or (radio.name in prov_item.name)
+                or (prov_item.sort_name in radio.sort_name)
+                or (radio.sort_name in prov_item.sort_name)
+            )
+        }
+        # make sure that the 'base' version is included
+        for prov_version in radio.provider_ids:
+            if prov_version.item_id in all_versions:
+                continue
+            radio_copy = Radio.from_dict(radio.to_dict())
+            radio_copy.item_id = prov_version.item_id
+            radio_copy.provider = prov_version.prov_type
+            radio_copy.provider_ids = {prov_version}
+            all_versions[prov_version.item_id] = radio_copy
+
+        # return the aggregated result
+        return all_versions.values()
 
     async def add(self, item: Radio, overwrite_existing: bool = False) -> Radio:
         """Add radio to local db and return the new database item."""

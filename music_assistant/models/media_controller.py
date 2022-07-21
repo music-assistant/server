@@ -205,6 +205,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         prov = self.mass.music.get_provider(provider_id or provider)
         if not prov or MusicProviderFeature.SEARCH not in prov.supported_features:
             return []
+        if not prov.library_supported(self.media_type):
+            # assume library supported also means that this mediatype is supported
+            return []
 
         # prefer cache items (if any)
         cache_key = (
@@ -279,7 +282,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             await self.set_db_library(prov_item.item_id, False)
 
     async def get_provider_id(self, item: ItemCls) -> Tuple[str, str]:
-        """Return provider and item id."""
+        """Return (first) provider and item id."""
         if item.provider == ProviderType.DATABASE:
             # make sure we have a full object
             item = await self.get_db_item(item.item_id)
@@ -311,7 +314,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         match = {"item_id": int(item_id)}
         if db_row := await self.mass.database.get_row(self.db_table, match):
             return self.item_cls.from_db_row(db_row)
-        return None
+        raise MediaNotFoundError(f"Album not found in database: {item_id}")
 
     async def get_db_item_by_prov_id(
         self,

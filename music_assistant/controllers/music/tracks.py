@@ -66,16 +66,35 @@ class TracksController(MediaControllerBase[Track]):
         provider_id: Optional[str] = None,
     ) -> List[Track]:
         """Return all versions of a track we can find on all providers."""
+        assert provider or provider_id, "Provider type or ID must be specified"
         track = await self.get(item_id, provider, provider_id)
+        # perform a search on all provider(types) to collect all versions/variants
         prov_types = {item.type for item in self.mass.music.providers}
-        return [
-            prov_item
+        search_query = f"{track.artist.name} - {track.name}"
+        all_versions = {
+            prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(
-                *[self.search(track.name, prov_type) for prov_type in prov_types]
+                *[self.search(search_query, prov_type) for prov_type in prov_types]
             )
             for prov_item in prov_items
-            if compare_artists(prov_item.artists, track.artists)
-        ]
+            if (
+                (prov_item.sort_name in track.sort_name)
+                or (track.sort_name in prov_item.sort_name)
+            )
+            and compare_artists(prov_item.artists, track.artists, any_match=True)
+        }
+        # make sure that the 'base' version is included
+        for prov_version in track.provider_ids:
+            if prov_version.item_id in all_versions:
+                continue
+            track_copy = Track.from_dict(track.to_dict())
+            track_copy.item_id = prov_version.item_id
+            track_copy.provider = prov_version.prov_type
+            track_copy.provider_ids = {prov_version}
+            all_versions[prov_version.item_id] = track_copy
+
+        # return the aggregated result
+        return all_versions.values()
 
     async def _match(self, db_track: Track) -> None:
         """
