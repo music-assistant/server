@@ -616,7 +616,7 @@ class QueueStream:
             crossfade_duration = self.queue.settings.crossfade_duration
             crossfade_size = sample_size_per_second * crossfade_duration
             # buffer_duration has some overhead to account for padded silence
-            buffer_duration = (crossfade_duration or 1) + 4
+            buffer_duration = (crossfade_duration or 1) * 2
             # predict total size to expect for this track from duration
             stream_duration = (queue_track.duration or 0) - seek_position
 
