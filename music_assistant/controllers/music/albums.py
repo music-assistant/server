@@ -151,6 +151,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def add_db_item(self, item: Album, overwrite_existing: bool = False) -> Album:
         """Add a new record to the database."""
+        assert isinstance(item, Album), "Not a full Album object"
         assert item.provider_ids, f"Album {item.name} is missing provider id(s)"
         assert item.artist, f"Album {item.name} is missing artist"
         async with self._db_add_lock:
@@ -343,14 +344,16 @@ class AlbumsController(MediaControllerBase[Album]):
         self, artist: Union[Artist, ItemMapping], overwrite: bool = False
     ) -> ItemMapping:
         """Extract (database) track artist as ItemMapping."""
-        if overwrite:
-            artist = await self.mass.music.artists.add_db_item(
-                artist, overwrite_existing=True
-            )
+
         if artist.provider == ProviderType.DATABASE:
             if isinstance(artist, ItemMapping):
                 return artist
             return ItemMapping.from_item(artist)
+
+        if overwrite:
+            artist = await self.mass.music.artists.add_db_item(
+                artist, overwrite_existing=True
+            )
 
         if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
             artist.item_id, provider=artist.provider

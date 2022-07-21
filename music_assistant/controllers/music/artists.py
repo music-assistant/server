@@ -199,6 +199,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self, item: Artist, overwrite_existing: bool = False
     ) -> Artist:
         """Add a new item record to the database."""
+        assert isinstance(item, Artist), "Not a full Artist object"
         assert item.provider_ids, "Artist is missing provider id(s)"
         async with self._db_add_lock:
             # always try to grab existing item by musicbrainz_id
