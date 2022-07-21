@@ -1,6 +1,7 @@
 """Model for a base media_controller."""
 from __future__ import annotations
 
+import asyncio
 from abc import ABCMeta, abstractmethod
 from time import time
 from typing import (
@@ -11,12 +12,14 @@ from typing import (
     Optional,
     Tuple,
     TypeVar,
+    Union,
 )
 
 from music_assistant.models.errors import MediaNotFoundError
+from music_assistant.models.event import MassEvent
 
-from .enums import MediaType, ProviderType
-from .media_items import MediaItemType, media_from_dict
+from .enums import EventType, MediaType, MusicProviderFeature, ProviderType
+from .media_items import MediaItemType, PagedItems, media_from_dict
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -37,6 +40,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Initialize class."""
         self.mass = mass
         self.logger = mass.logger.getChild(f"music.{self.media_type.value}")
+        self._db_add_lock = asyncio.Lock()
 
     @abstractmethod
     async def add(self, item: ItemCls, overwrite_existing: bool = False) -> ItemCls:
@@ -67,7 +71,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
-    ) -> List[ItemCls]:
+    ) -> PagedItems:
         """Get in-database items."""
         sql_query = f"SELECT * FROM {self.db_table}"
         params = {}
@@ -81,9 +85,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if query_parts:
             sql_query += " WHERE " + " AND ".join(query_parts)
         sql_query += f" ORDER BY {order_by}"
-        return await self.get_db_items_by_query(
+        items = await self.get_db_items_by_query(
             sql_query, params, limit=limit, offset=offset
         )
+        count = len(items)
+        if count < limit:
+            total = offset + count
+        else:
+            total = await self.mass.database.get_count_from_query(sql_query, params)
+        return PagedItems(items, count, limit, offset, total)
 
     async def iter_db_items(
         self,
@@ -102,19 +112,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 offset=offset,
                 order_by=order_by,
             )
-            for item in next_items:
+            for item in next_items.items:
                 yield item
-            if len(next_items) < limit:
+            if next_items.count < limit:
                 break
             offset += limit
-
-    async def count(self, in_library: Optional[bool] = None) -> int:
-        """Return number of in-library items for this MediaType."""
-        if in_library is not None:
-            match = {"in_library": in_library}
-        else:
-            match = None
-        return await self.mass.database.get_count(self.db_table, match)
 
     async def get(
         self,
@@ -201,16 +203,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             ]
 
         prov = self.mass.music.get_provider(provider_id or provider)
-        if not prov:
-            return {}
+        if not prov or MusicProviderFeature.SEARCH not in prov.supported_features:
+            return []
 
         # prefer cache items (if any)
         cache_key = (
             f"{prov.type.value}.search.{self.media_type.value}.{search_query}.{limit}"
         )
-        if not prov.type.is_file():  # do not cache filesystem results
-            if cache := await self.mass.cache.get(cache_key):
-                return [media_from_dict(x) for x in cache]
+        if cache := await self.mass.cache.get(cache_key):
+            return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = await prov.search(
             search_query,
@@ -218,11 +219,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             limit,
         )
         # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], expiration=86400 * 7
+        if not prov.type.is_file():  # do not cache filesystem results
+            self.mass.create_task(
+                self.mass.cache.set(
+                    cache_key, [x.to_dict() for x in items], expiration=86400 * 7
+                )
             )
-        )
         return items
 
     async def add_to_library(
@@ -232,19 +234,24 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider_id: Optional[str] = None,
     ) -> None:
         """Add an item to the library."""
-        # make sure we have a valid full item
-        # note that we set 'lazy' to False because we need a full db item
-        db_item = await self.get(
-            provider_item_id, provider=provider, provider_id=provider_id, lazy=False
+        prov_item = await self.get_db_item_by_prov_id(
+            provider_item_id, provider=provider, provider_id=provider_id
         )
-        # add to provider libraries
-        for prov_id in db_item.provider_ids:
+        if prov_item is None:
+            prov_item = await self.get_provider_item(
+                provider_item_id, provider_id or provider
+            )
+        if prov_item.in_library is True:
+            return
+        # mark as favorite/library item on provider(s)
+        for prov_id in prov_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
                 await prov.library_add(prov_id.item_id, self.media_type)
-        # mark as library item in internal db
-        if not db_item.in_library:
-            db_item.in_library = True
-            await self.set_db_library(db_item.item_id, True)
+        # mark as library item in internal db if db item
+        if prov_item.provider == ProviderType.DATABASE:
+            if not prov_item.in_library:
+                prov_item.in_library = True
+                await self.set_db_library(prov_item.item_id, True)
 
     async def remove_from_library(
         self,
@@ -253,19 +260,23 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider_id: Optional[str] = None,
     ) -> None:
         """Remove item from the library."""
-        # make sure we have a valid full item
-        # note that we set 'lazy' to False because we need a full db item
-        db_item = await self.get(
-            provider_item_id, provider=provider, provider_id=provider_id, lazy=False
+        prov_item = await self.get_db_item_by_prov_id(
+            provider_item_id, provider=provider, provider_id=provider_id
         )
-        # remove from provider's libraries
-        for prov_id in db_item.provider_ids:
+        if prov_item is None:
+            prov_item = await self.get_provider_item(
+                provider_item_id, provider_id or provider
+            )
+        if prov_item.in_library is False:
+            return
+        # unmark as favorite/library item on provider(s)
+        for prov_id in prov_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
                 await prov.library_remove(prov_id.item_id, self.media_type)
-        # unmark as library item in internal db
-        if db_item.in_library:
-            db_item.in_library = False
-            await self.set_db_library(db_item.item_id, False)
+        # unmark as library item in internal db if db item
+        if prov_item.provider == ProviderType.DATABASE:
+            prov_item.in_library = False
+            await self.set_db_library(prov_item.item_id, False)
 
     async def get_provider_id(self, item: ItemCls) -> Tuple[str, str]:
         """Return provider and item id."""
@@ -295,7 +306,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
         ]
 
-    async def get_db_item(self, item_id: int) -> ItemCls:
+    async def get_db_item(self, item_id: Union[int, str]) -> ItemCls:
         """Get record by id."""
         match = {"item_id": int(item_id)}
         if db_row := await self.mass.database.get_row(self.db_table, match):
@@ -359,14 +370,18 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         await self.mass.database.update(
             self.db_table, match, {"in_library": in_library, "timestamp": timestamp}
         )
+        db_item = await self.get_db_item(item_id)
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
+        )
 
     async def get_provider_item(
         self,
         item_id: str,
-        provider_id: str,
+        provider_id: Union[str, ProviderType],
     ) -> ItemCls:
         """Return item details for the given provider item id."""
-        if provider_id == "database":
+        if provider_id in ("database", ProviderType.DATABASE):
             item = await self.get_db_item(item_id)
         else:
             provider = self.mass.music.get_provider(provider_id)
@@ -385,7 +400,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             }
             if not db_item.provider_ids:
                 # item has no more provider_ids left, it is completely deleted
-                await self.delete_db_item(db_item.item_id)
+                try:
+                    await self.delete_db_item(db_item.item_id)
+                except AssertionError:
+                    self.logger.debug(
+                        "Could not delete %s: it has items attached", db_item.item_id
+                    )
                 return
             await self.update_db_item(db_item.item_id, db_item, overwrite=True)
 
@@ -393,10 +413,16 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def delete_db_item(self, item_id: int, recursive: bool = False) -> None:
         """Delete record from the database."""
+        db_item = await self.get_db_item(item_id)
+        assert db_item, f"Item does not exist: {item_id}"
         # delete item
         await self.mass.database.delete(
             self.db_table,
             {"item_id": int(item_id)},
         )
-        # NOTE: this does not delete any references to this item in other records!
+        # NOTE: this does not delete any references to this item in other records,
+        # this is handled/overridden in the mediatype specific controllers
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_DELETED, db_item.uri, db_item)
+        )
         self.logger.debug("deleted item with id %s from database", item_id)

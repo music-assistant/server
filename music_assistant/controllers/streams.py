@@ -660,6 +660,7 @@ class QueueStream:
 
                 seconds_streamed = bytes_written / sample_size_per_second
                 seconds_in_buffer = len(buffer) / sample_size_per_second
+                queue_track.streamdetails.seconds_streamed = seconds_streamed
 
                 ####  HANDLE FIRST PART OF TRACK
 

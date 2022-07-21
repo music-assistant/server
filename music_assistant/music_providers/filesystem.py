@@ -33,6 +33,7 @@ from music_assistant.models.media_items import (
     MediaQuality,
     MediaType,
     Playlist,
+    Radio,
     StreamDetails,
     Track,
 )
@@ -145,34 +146,54 @@ class FileSystemProvider(MusicProvider):
             result += playlists
         return result
 
-    async def browse(self, path: Optional[str] = None) -> List[MediaItemType]:
+    async def browse(self, path: str) -> BrowseFolder:
         """
         Browse this provider's items.
 
-            :param path: The path to browse, (e.g. artists) or None for root level.
+            :param path: The path to browse, (e.g. provid://artists).
         """
-        if not path:
-            path = self.config.path
+        _, sub_path = path.split("://")
+        if not sub_path:
+            item_path = self.config.path
         else:
-            path = os.path.join(self.config.path, path)
-        result = []
-        for filename in await listdir(path):
-            full_path: str = os.path.join(path, filename)
+            item_path = os.path.join(self.config.path, sub_path)
+        subitems = []
+        for filename in await listdir(item_path):
+            full_path: str = os.path.join(item_path, filename)
             rel_path = full_path.replace(self.config.path + os.sep, "")
             if await isdir(full_path):
-                result.append(
+                subitems.append(
                     BrowseFolder(
                         item_id=rel_path,
                         provider=self.type,
+                        path=f"{self.id}://{rel_path}",
                         name=filename,
-                        uri=f"{self.type.value}://{rel_path}",
                     )
                 )
-            elif track := await self._parse_track(full_path):
-                result.append(track)
-            elif playlist := await self._parse_playlist(full_path):
-                result.append(playlist)
-        return result
+                continue
+
+            if "." not in filename or filename.startswith("."):
+                # skip system files and files without extension
+                continue
+
+            _, ext = filename.rsplit(".", 1)
+
+            if ext in TRACK_EXTENSIONS:
+                if track := await self._parse_track(full_path):
+                    subitems.append(track)
+                continue
+            if ext in PLAYLIST_EXTENSIONS:
+                if playlist := await self._parse_playlist(full_path):
+                    subitems.append(playlist)
+                continue
+
+        return BrowseFolder(
+            item_id=sub_path,
+            provider=self.type,
+            path=path,
+            name=path.split("://", 1)[-1],
+            items=subitems,
+        )
 
     async def sync_library(
         self, media_types: Optional[Tuple[MediaType]] = None
@@ -319,7 +340,7 @@ class FileSystemProvider(MusicProvider):
                 track.disc_number = album_mapping.disc_number
                 track.track_number = album_mapping.track_number
                 result.append(track)
-        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
+        return sorted(result, key=lambda x: (x.disc_number or 0, x.track_number or 0))
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
         """Get playlist tracks for given playlist id."""
@@ -328,26 +349,27 @@ class FileSystemProvider(MusicProvider):
         if not await self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
         playlist_base_path = Path(playlist_path).parent
-        index = 0
         try:
             async with self.open_file(playlist_path, "r") as _file:
-                for line in await _file.readlines():
+                for line_no, line in enumerate(await _file.readlines()):
                     line = urllib.parse.unquote(line.strip())
                     if line and not line.startswith("#"):
                         # TODO: add support for .pls playlist files
-                        if track := await self._parse_playlist_line(
+                        if media_item := await self._parse_playlist_line(
                             line, playlist_base_path
                         ):
-                            track.position = index
-                            result.append(track)
-                            index += 1
+                            # use the linenumber as position for easier deletions
+                            media_item.position = line_no
+                            result.append(media_item)
         except Exception as err:  # pylint: disable=broad-except
             self.logger.warning(
                 "Error while parsing playlist %s", playlist_path, exc_info=err
             )
         return result
 
-    async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
+    async def _parse_playlist_line(
+        self, line: str, playlist_path: str
+    ) -> Track | Radio | None:
         """Try to parse a track from a playlist line."""
         try:
             # try to treat uri as filename first
@@ -377,7 +399,7 @@ class FileSystemProvider(MusicProvider):
                 await _file.write(f"\n{uri}")
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
         itempath = await self._get_filepath(MediaType.PLAYLIST, prov_playlist_id)
@@ -385,24 +407,24 @@ class FileSystemProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist path does not exist: {itempath}")
         cur_lines = []
         async with self.open_file(itempath, "r") as _file:
-            for line in await _file.readlines():
+            for line_no, line in enumerate(await _file.readlines()):
                 line = urllib.parse.unquote(line.strip())
-                if line not in prov_track_ids:
+                if line_no not in positions_to_remove:
                     cur_lines.append(line)
         async with self.open_file(itempath, "w") as _file:
             for uri in cur_lines:
                 await _file.write(f"{uri}\n")
 
-    async def create_playlist(
-        self, name: str, initial_items: Optional[List[Track]] = None
-    ) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
-        async with self.open_file(name, "w") as _file:
-            for item in initial_items or []:
-                await _file.write(item.uri + "\n")
+        filename = await self.resolve(f"{name}.m3u")
+        async with self.open_file(filename, "w") as _file:
             await _file.write("\n")
+        playlist = await self._parse_playlist(filename)
+        db_playlist = await self.mass.music.playlists.add_db_item(playlist)
+        return db_playlist
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""

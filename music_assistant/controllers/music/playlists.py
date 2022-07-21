@@ -1,14 +1,25 @@
 """Manage MediaItems of type Playlist."""
 from __future__ import annotations
 
+from ctypes import Union
 from time import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.uri import create_uri
-from music_assistant.models.enums import MediaType, ProviderType
-from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant.models.enums import (
+    EventType,
+    MediaType,
+    MusicProviderFeature,
+    ProviderType,
+)
+from music_assistant.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import Playlist, Track
 
@@ -51,17 +62,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         prov = self.mass.music.get_provider(provider_id or provider)
         if not prov:
             return []
-        # prefer cache items (if any) - do not use cache for filesystem
-        cache_key = f"{prov.type.value}.playlist.{item_id}.tracks"
+        # prefer cache items (if any)
+        cache_key = f"{prov.id}.playlist.{item_id}.tracks"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = []
-        for index, playlist_track in enumerate(await prov.get_playlist_tracks(item_id)):
-            # make sure we have a position set on the track
-            if not playlist_track.position:
-                playlist_track.position = index
-            items.append(playlist_track)
+        items = await prov.get_playlist_tracks(item_id)
+        # double check if position set
+        if items:
+            assert (
+                items[0].position is not None
+            ), "Playlist items require position to be set"
         # store (serializable items) in cache
         self.mass.create_task(
             self.mass.cache.set(
@@ -75,6 +86,32 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item.metadata.last_refresh = int(time())
         await self.mass.metadata.get_playlist_metadata(item)
         return await self.add_db_item(item, overwrite_existing)
+
+    async def create(
+        self, name: str, prov_id: Union[ProviderType, str, None] = None
+    ) -> Playlist:
+        """Create new playlist."""
+        # if prov_id is omitted, prefer file
+        if prov_id:
+            provider = self.mass.music.get_provider(prov_id)
+        else:
+            try:
+                provider = self.mass.music.get_provider(ProviderType.FILESYSTEM_LOCAL)
+            except ProviderUnavailableError:
+                provider = next(
+                    (
+                        x
+                        for x in self.mass.music.providers
+                        if MusicProviderFeature.PLAYLIST_CREATE in x.supported_features
+                    ),
+                    None,
+                )
+            if provider is None:
+                raise ProviderUnavailableError(
+                    "No provider available which allows playlists creation."
+                )
+
+        return await provider.create_playlist(name)
 
     async def add_playlist_tracks(self, db_playlist_id: str, uris: List[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
@@ -149,9 +186,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # actually add the tracks to the playlist on the provider
         provider = self.mass.music.get_provider(playlist_prov.prov_id)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
+        # invalidate cache by updating the checksum
+        await self.get(
+            db_playlist_id, provider=ProviderType.DATABASE, force_refresh=True
+        )
 
     async def remove_playlist_tracks(
-        self, db_playlist_id: str, positions: List[int]
+        self, db_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove multiple tracks from playlist."""
         playlist = await self.get_db_item(db_playlist_id)
@@ -160,35 +201,44 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist.is_editable:
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for prov in playlist.provider_ids:
-            track_ids_to_remove = []
-            for playlist_track in await self.tracks(prov.item_id, prov.prov_type):
-                if playlist_track.position not in positions:
-                    continue
-                track_ids_to_remove.append(playlist_track.item_id)
-            # actually remove the tracks from the playlist on the provider
-            # TODO: send positions to provider to delete
-            if track_ids_to_remove:
-                provider = self.mass.music.get_provider(prov.prov_id)
-                await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)
+            provider = self.mass.music.get_provider(prov.prov_id)
+            if (
+                MusicProviderFeature.PLAYLIST_TRACKS_EDIT
+                not in provider.supported_features
+            ):
+                self.logger.warning(
+                    "Provider %s does not support editing playlists",
+                    prov.prov_type.value,
+                )
+                continue
+            await provider.remove_playlist_tracks(prov.item_id, positions_to_remove)
+        # invalidate cache by updating the checksum
+        await self.get(
+            db_playlist_id, provider=ProviderType.DATABASE, force_refresh=True
+        )
 
     async def add_db_item(
         self, item: Playlist, overwrite_existing: bool = False
     ) -> Playlist:
         """Add a new record to the database."""
-        match = {"name": item.name, "owner": item.owner}
-        if cur_item := await self.mass.database.get_row(self.db_table, match):
-            # update existing
-            return await self.update_db_item(
-                cur_item["item_id"], item, overwrite=overwrite_existing
-            )
+        async with self._db_add_lock:
+            match = {"name": item.name, "owner": item.owner}
+            if cur_item := await self.mass.database.get_row(self.db_table, match):
+                # update existing
+                return await self.update_db_item(
+                    cur_item["item_id"], item, overwrite=overwrite_existing
+                )
 
-        # insert new item
-        new_item = await self.mass.database.insert(self.db_table, item.to_db_row())
-        item_id = new_item["item_id"]
-        self.logger.debug("added %s to database", item.name)
-        # return created object
-        db_item = await self.get_db_item(item_id)
-        return db_item
+            # insert new item
+            new_item = await self.mass.database.insert(self.db_table, item.to_db_row())
+            item_id = new_item["item_id"]
+            self.logger.debug("added %s to database", item.name)
+            # return created object
+            db_item = await self.get_db_item(item_id)
+            self.mass.signal_event(
+                MassEvent(EventType.MEDIA_ITEM_ADDED, db_item.uri, db_item)
+            )
+            return db_item
 
     async def update_db_item(
         self,
@@ -218,4 +268,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             },
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
-        return await self.get_db_item(item_id)
+        db_item = await self.get_db_item(item_id)
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
+        )
+        return db_item

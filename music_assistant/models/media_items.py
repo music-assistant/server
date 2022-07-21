@@ -356,13 +356,32 @@ class BrowseFolder(MediaItem):
     """Representation of a Folder used in Browse (which contains media items)."""
 
     media_type: MediaType = MediaType.FOLDER
+    # path: the path (in uri style) to/for this browse folder
+    path: str = ""
     # label: a labelid that needs to be translated by the frontend
     label: str = ""
-    # items (max 25) to provide in recommendation listings
-    items: Optional[List[MediaItemType]] = None
+    # subitems of this folder when expanding
+    items: Optional[List[Union[MediaItemType, BrowseFolder]]] = None
+
+    def __post_init__(self):
+        """Call after init."""
+        super().__post_init__()
+        if not self.path:
+            self.path = f"{self.provider}://{self.item_id}"
 
 
 MediaItemType = Union[Artist, Album, Track, Radio, Playlist, BrowseFolder]
+
+
+@dataclass
+class PagedItems(DataClassDictMixin):
+    """Model for a paged listing."""
+
+    items: List[MediaItemType]
+    count: int
+    limit: int
+    offset: int
+    total: Optional[int] = None
 
 
 def media_from_dict(media_item: dict) -> MediaItemType:

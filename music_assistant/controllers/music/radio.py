@@ -5,7 +5,8 @@ from time import time
 
 from music_assistant.helpers.database import TABLE_RADIOS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.models.enums import MediaType
+from music_assistant.models.enums import EventType, MediaType
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import Radio
 
@@ -30,20 +31,24 @@ class RadioController(MediaControllerBase[Radio]):
     async def add_db_item(self, item: Radio, overwrite_existing: bool = False) -> Radio:
         """Add a new item record to the database."""
         assert item.provider_ids
-        match = {"name": item.name}
-        if cur_item := await self.mass.database.get_row(self.db_table, match):
-            # update existing
-            return await self.update_db_item(
-                cur_item["item_id"], item, overwrite=overwrite_existing
-            )
+        async with self._db_add_lock:
+            match = {"name": item.name}
+            if cur_item := await self.mass.database.get_row(self.db_table, match):
+                # update existing
+                return await self.update_db_item(
+                    cur_item["item_id"], item, overwrite=overwrite_existing
+                )
 
-        # insert new item
-        new_item = await self.mass.database.insert(self.db_table, item.to_db_row())
-        item_id = new_item["item_id"]
-        self.logger.debug("added %s to database", item.name)
-        # return created object
-        db_item = await self.get_db_item(item_id)
-        return db_item
+            # insert new item
+            new_item = await self.mass.database.insert(self.db_table, item.to_db_row())
+            item_id = new_item["item_id"]
+            self.logger.debug("added %s to database", item.name)
+            # return created object
+            db_item = await self.get_db_item(item_id)
+            self.mass.signal_event(
+                MassEvent(EventType.MEDIA_ITEM_ADDED, db_item.uri, db_item)
+            )
+            return db_item
 
     async def update_db_item(
         self,
@@ -73,4 +78,7 @@ class RadioController(MediaControllerBase[Radio]):
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         db_item = await self.get_db_item(item_id)
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
+        )
         return db_item

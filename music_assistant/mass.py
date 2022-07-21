@@ -230,7 +230,9 @@ class MusicAssistant:
                 task.set_name(next_job.name)
                 task.add_done_callback(partial(self.__job_done_cb, job=next_job))
                 self.signal_event(
-                    MassEvent(EventType.BACKGROUND_JOB_UPDATED, data=next_job)
+                    MassEvent(
+                        EventType.BACKGROUND_JOB_UPDATED, next_job.name, data=next_job
+                    )
                 )
 
     def __job_done_cb(self, task: asyncio.Task, job: BackgroundJob):
@@ -258,7 +260,9 @@ class MusicAssistant:
         self._jobs_event.set()
         # mark job as done
         job.done()
-        self.signal_event(MassEvent(EventType.BACKGROUND_JOB_UPDATED, data=job))
+        self.signal_event(
+            MassEvent(EventType.BACKGROUND_JOB_FINISHED, job.name, data=job)
+        )
 
     async def __aenter__(self) -> "MusicAssistant":
         """Return Context manager."""

@@ -218,15 +218,13 @@ class MusicProvider:
             raise NotImplementedError
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
         if MusicProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
             raise NotImplementedError
 
-    async def create_playlist(
-        self, name: str, initial_items: Optional[List[Track]] = None
-    ) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         raise NotImplementedError
 
@@ -252,17 +250,20 @@ class MusicProvider:
             return await self.get_radio(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: Optional[str] = None) -> List[MediaItemType]:
+    async def browse(self, path: str) -> BrowseFolder:
         """
         Browse this provider's items.
 
-            :param path: The path to browse, (e.g. artists) or None for root level.
+            :param path: The path to browse, (e.g. provid://artists).
         """
         if MusicProviderFeature.BROWSE not in self.supported_features:
-            # we may NOT use the default implementation if the browser does not support browse
+            # we may NOT use the default implementation if the provider does not support browse
             raise NotImplementedError
+
+        _, subpath = path.split("://")
+
         # this reference implementation can be overridden with provider specific approach
-        if not path:
+        if not subpath:
             # return main listing
             root_items = []
             if MusicProviderFeature.LIBRARY_ARTISTS in self.supported_features:
@@ -270,9 +271,9 @@ class MusicProvider:
                     BrowseFolder(
                         item_id="artists",
                         provider=self.type,
+                        path=path + "artists",
                         name="",
                         label="artists",
-                        uri=f"{self.type.value}://artists",
                     )
                 )
             if MusicProviderFeature.LIBRARY_ALBUMS in self.supported_features:
@@ -280,9 +281,9 @@ class MusicProvider:
                     BrowseFolder(
                         item_id="albums",
                         provider=self.type,
+                        path=path + "albums",
                         name="",
                         label="albums",
-                        uri=f"{self.type.value}://albums",
                     )
                 )
             if MusicProviderFeature.LIBRARY_TRACKS in self.supported_features:
@@ -290,9 +291,9 @@ class MusicProvider:
                     BrowseFolder(
                         item_id="tracks",
                         provider=self.type,
+                        path=path + "tracks",
                         name="",
                         label="tracks",
-                        uri=f"{self.type.value}://tracks",
                     )
                 )
             if MusicProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
@@ -300,9 +301,9 @@ class MusicProvider:
                     BrowseFolder(
                         item_id="playlists",
                         provider=self.type,
+                        path=path + "playlists",
                         name="",
                         label="playlists",
-                        uri=f"{self.type.value}://playlists",
                     )
                 )
             if MusicProviderFeature.LIBRARY_RADIOS in self.supported_features:
@@ -310,23 +311,64 @@ class MusicProvider:
                     BrowseFolder(
                         item_id="radios",
                         provider=self.type,
+                        path=path + "radios",
                         name="",
                         label="radios",
-                        uri=f"{self.type.value}://radios",
                     )
                 )
-            return root_items
+            return BrowseFolder(
+                item_id="root",
+                provider=self.type,
+                path=path,
+                name="",
+                items=root_items,
+            )
         # sublevel
-        if path == "artists":
-            return [x async for x in self.get_library_artists()]
-        if path == "albums":
-            return [x async for x in self.get_library_albums()]
-        if path == "tracks":
-            return [x async for x in self.get_library_tracks()]
-        if path == "radios":
-            return [x async for x in self.get_library_radios()]
-        if path == "playlists":
-            return [x async for x in self.get_library_playlists()]
+        if subpath == "artists":
+            return BrowseFolder(
+                item_id="artists",
+                provider=self.type,
+                path=path,
+                name="",
+                label="artists",
+                items=[x async for x in self.get_library_artists()],
+            )
+        if subpath == "albums":
+            return BrowseFolder(
+                item_id="albums",
+                provider=self.type,
+                path=path,
+                name="",
+                label="albums",
+                items=[x async for x in self.get_library_albums()],
+            )
+        if subpath == "tracks":
+            return BrowseFolder(
+                item_id="tracks",
+                provider=self.type,
+                path=path,
+                name="",
+                label="tracks",
+                items=[x async for x in self.get_library_tracks()],
+            )
+        if subpath == "radios":
+            return BrowseFolder(
+                item_id="radios",
+                provider=self.type,
+                path=path,
+                name="",
+                label="radios",
+                items=[x async for x in self.get_library_radios()],
+            )
+        if subpath == "playlists":
+            return BrowseFolder(
+                item_id="playlists",
+                provider=self.type,
+                path=path,
+                name="",
+                label="playlists",
+                items=[x async for x in self.get_library_playlists()],
+            )
 
     async def recommendations(self) -> List[BrowseFolder]:
         """
@@ -363,6 +405,7 @@ class MusicProvider:
                 if not db_item:
                     # dump the item in the db, rich metadata is lazy loaded later
                     db_item = await controller.add_db_item(prov_item)
+
                 elif (
                     db_item.metadata.checksum and prov_item.metadata.checksum
                 ) and db_item.metadata.checksum != prov_item.metadata.checksum:
@@ -370,6 +413,12 @@ class MusicProvider:
                     db_item = await controller.update_db_item(
                         db_item.item_id, prov_item
                     )
+                    # preload album/playlist tracks
+                    if prov_item.media_type == (MediaType.ALBUM, MediaType.PLAYLIST):
+                        for track in controller.tracks(
+                            prov_item.item_id, prov_item.provider
+                        ):
+                            await self.mass.music.tracks.add_db_item(track)
                 cur_db_ids.add(db_item.item_id)
                 if not db_item.in_library:
                     await controller.set_db_library(db_item.item_id, True)
@@ -404,7 +453,7 @@ class MusicProvider:
         }
 
     def library_supported(self, media_type: MediaType) -> bool:
-        """Return if Library is upported for given MediaType on this provider."""
+        """Return if Library is supported for given MediaType on this provider."""
         if media_type == MediaType.ARTIST:
             return MusicProviderFeature.LIBRARY_ARTISTS in self.supported_features
         if media_type == MediaType.ALBUM:

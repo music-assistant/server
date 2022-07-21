@@ -7,7 +7,13 @@ from typing import List, Optional, Union
 from music_assistant.helpers.compare import compare_artists, compare_track
 from music_assistant.helpers.database import TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.models.enums import MediaType, MusicProviderFeature, ProviderType
+from music_assistant.models.enums import (
+    EventType,
+    MediaType,
+    MusicProviderFeature,
+    ProviderType,
+)
+from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -116,55 +122,61 @@ class TracksController(MediaControllerBase[Track]):
         """Add a new item record to the database."""
         assert item.artists, "Track is missing artist(s)"
         assert item.provider_ids, "Track is missing provider id(s)"
-        cur_item = None
+        async with self._db_add_lock:
+            cur_item = None
 
-        # always try to grab existing item by external_id
-        if item.musicbrainz_id:
-            match = {"musicbrainz_id": item.musicbrainz_id}
-            cur_item = await self.mass.database.get_row(self.db_table, match)
-        for isrc in item.isrcs:
-            match = {"isrc": isrc}
-            cur_item = await self.mass.database.get_row(self.db_table, match)
-        if not cur_item:
-            # fallback to matching
-            match = {"sort_name": item.sort_name}
-            for row in await self.mass.database.get_rows(self.db_table, match):
-                row_track = Track.from_db_row(row)
-                if compare_track(row_track, item):
-                    cur_item = row_track
-                    break
-        if cur_item:
-            # update existing
-            return await self.update_db_item(
-                cur_item.item_id, item, overwrite=overwrite_existing
+            # always try to grab existing item by external_id
+            if item.musicbrainz_id:
+                match = {"musicbrainz_id": item.musicbrainz_id}
+                cur_item = await self.mass.database.get_row(self.db_table, match)
+            for isrc in item.isrcs:
+                match = {"isrc": isrc}
+                cur_item = await self.mass.database.get_row(self.db_table, match)
+            if not cur_item:
+                # fallback to matching
+                match = {"sort_name": item.sort_name}
+                for row in await self.mass.database.get_rows(self.db_table, match):
+                    row_track = Track.from_db_row(row)
+                    if compare_track(row_track, item):
+                        cur_item = row_track
+                        break
+            if cur_item:
+                # update existing
+                return await self.update_db_item(
+                    cur_item.item_id, item, overwrite=overwrite_existing
+                )
+
+            # no existing match found: insert new item
+            track_artists = await self._get_track_artists(item)
+            track_albums = await self._get_track_albums(
+                item, overwrite=overwrite_existing
             )
-
-        # no existing match found: insert new item
-        track_artists = await self._get_track_artists(item)
-        track_albums = await self._get_track_albums(item, overwrite=overwrite_existing)
-        if track_artists:
-            sort_artist = track_artists[0].sort_name
-        else:
-            sort_artist = ""
-        if track_albums:
-            sort_album = track_albums[0].sort_name
-        else:
-            sort_album = ""
-        new_item = await self.mass.database.insert(
-            self.db_table,
-            {
-                **item.to_db_row(),
-                "artists": json_serializer(track_artists),
-                "albums": json_serializer(track_albums),
-                "sort_artist": sort_artist,
-                "sort_album": sort_album,
-            },
-        )
-        item_id = new_item["item_id"]
-        # return created object
-        self.logger.debug("added %s to database: %s", item.name, item_id)
-        db_item = await self.get_db_item(item_id)
-        return db_item
+            if track_artists:
+                sort_artist = track_artists[0].sort_name
+            else:
+                sort_artist = ""
+            if track_albums:
+                sort_album = track_albums[0].sort_name
+            else:
+                sort_album = ""
+            new_item = await self.mass.database.insert(
+                self.db_table,
+                {
+                    **item.to_db_row(),
+                    "artists": json_serializer(track_artists),
+                    "albums": json_serializer(track_albums),
+                    "sort_artist": sort_artist,
+                    "sort_album": sort_album,
+                },
+            )
+            item_id = new_item["item_id"]
+            # return created object
+            self.logger.debug("added %s to database: %s", item.name, item_id)
+            db_item = await self.get_db_item(item_id)
+            self.mass.signal_event(
+                MassEvent(EventType.MEDIA_ITEM_ADDED, db_item.uri, db_item)
+            )
+            return db_item
 
     async def update_db_item(
         self,
@@ -205,6 +217,9 @@ class TracksController(MediaControllerBase[Track]):
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         db_item = await self.get_db_item(item_id)
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
+        )
         return db_item
 
     async def _get_track_artists(

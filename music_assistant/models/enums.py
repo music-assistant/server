@@ -209,6 +209,10 @@ class EventType(Enum):
     QUEUE_TIME_UPDATED = "queue_time_updated"
     SHUTDOWN = "application_shutdown"
     BACKGROUND_JOB_UPDATED = "background_job_updated"
+    BACKGROUND_JOB_FINISHED = "background_job_finished"
+    MEDIA_ITEM_ADDED = "media_item_added"
+    MEDIA_ITEM_UPDATED = "media_item_updated"
+    MEDIA_ITEM_DELETED = "media_item_deleted"
 
 
 class JobStatus(Enum):
