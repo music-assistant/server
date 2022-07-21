@@ -647,16 +647,10 @@ class PlayerQueue:
             self.signal_update()
             if self.player.state == PlayerState.IDLE:
 
-                # handle end of queue
-                if self._current_index is not None and self._current_index >= (
-                    len(self._items) - 1
-                ):
-                    self._current_index += 1
-                    self._current_item_elapsed_time = 0
-
                 # handle case where stream stopped on purpose and we need to restart it
-                elif self.signal_next:
+                if self.signal_next:
                     self.signal_next = False
+                    self._current_item_elapsed_time = 0
                     self.mass.create_task(self.resume())
 
         self.update_state()
