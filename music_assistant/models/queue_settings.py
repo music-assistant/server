@@ -213,7 +213,7 @@ class QueueSettings:
         self._announce_volume_increase = int(
             d.get("announce_volume_increase", self._announce_volume_increase)
         )
-        self._repeat_mode = MetadataMode(
+        self._metadata_mode = MetadataMode(
             d.get("metadata_mode", self._metadata_mode.value)
         )
 
