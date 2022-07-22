@@ -88,11 +88,11 @@ class TracksController(MediaControllerBase[Track]):
         for prov_version in track.provider_ids:
             if prov_version.item_id in all_versions:
                 continue
-            track_copy = Track.from_dict(track.to_dict())
-            track_copy.item_id = prov_version.item_id
-            track_copy.provider = prov_version.prov_type
-            track_copy.provider_ids = {prov_version}
-            all_versions[prov_version.item_id] = track_copy
+            # grab full item here including album details etc
+            prov_track = await self.get_provider_item(
+                prov_version.item_id, prov_version.prov_id
+            )
+            all_versions[prov_version.item_id] = prov_track
 
         # return the aggregated result
         return all_versions.values()
@@ -268,10 +268,10 @@ class TracksController(MediaControllerBase[Track]):
         """Extract all (unique) albums of track as TrackAlbumMapping."""
         track_albums: List[TrackAlbumMapping] = []
         # existing TrackAlbumMappings are starting point
-        if upd_track and upd_track.albums:
-            track_albums = upd_track.albums
-        elif base_track.albums:
+        if base_track.albums:
             track_albums = base_track.albums
+        elif upd_track and upd_track.albums:
+            track_albums = upd_track.albums
         # append update item album if needed
         if upd_track and upd_track.album:
             mapping = await self._get_album_mapping(
