@@ -78,7 +78,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         query_parts = []
         if search:
             params["search"] = f"%{search}%"
-            query_parts.append("name LIKE :search")
+            if self.media_type in (MediaType.ALBUM or MediaType.TRACK):
+                query_parts.append("name LIKE :search or artists LIKE :search")
+            else:
+                query_parts.append("name LIKE :search")
         if in_library is not None:
             query_parts.append("in_library = :in_library")
             params["in_library"] = in_library
