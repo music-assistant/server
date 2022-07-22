@@ -4,7 +4,11 @@ from __future__ import annotations
 import asyncio
 from typing import List, Optional, Union
 
-from music_assistant.helpers.compare import compare_artists, compare_track
+from music_assistant.helpers.compare import (
+    compare_artists,
+    compare_track,
+    loose_compare_strings,
+)
 from music_assistant.helpers.database import TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import (
@@ -77,10 +81,7 @@ class TracksController(MediaControllerBase[Track]):
                 *[self.search(search_query, prov_type) for prov_type in prov_types]
             )
             for prov_item in prov_items
-            if (
-                (prov_item.sort_name in track.sort_name)
-                or (track.sort_name in prov_item.sort_name)
-            )
+            if loose_compare_strings(track.name, prov_item.name)
             and compare_artists(prov_item.artists, track.artists, any_match=True)
         }
         # make sure that the 'base' version is included
