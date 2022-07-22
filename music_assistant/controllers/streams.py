@@ -129,7 +129,7 @@ class StreamsController:
         queue_id = request.match_info["queue_id"]
         control = request.match_info["control"]
         if queue := self.mass.players.get_player_queue(queue_id):
-            if control == "next" and not queue.signal_next:
+            if control == "next" and queue.signal_next is None:
                 await queue.next()
 
         resp = web.StreamResponse(
@@ -493,11 +493,11 @@ class QueueStream:
                         self.connected_clients.pop(client_id, None)
 
             # complete queue streamed
-            if self.signal_next and not self.queue.announcement_in_progress:
+            if self.signal_next is not None and not self.queue.announcement_in_progress:
                 # the queue stream was aborted (e.g. because of sample rate mismatch)
                 # tell the queue to load the next track (restart stream) as soon
                 # as the player finished playing and returns to idle
-                self.queue.signal_next = True
+                self.queue.signal_next = self.signal_next
 
         # all queue data has been streamed. Either because the queue is exhausted
         # or we need to restart the stream due to decoder/sample rate mismatch
@@ -532,9 +532,9 @@ class QueueStream:
                 seek_position = self.seek_position
             else:
                 next_index = self.queue.get_next_index(queue_index)
-                # break here if repeat is enabled
+                # break here if next index does not match (e.g. when repeat enabled)!
                 if next_index <= queue_index:
-                    self.signal_next = True
+                    self.signal_next = next_index
                     break
                 queue_index = next_index
                 seek_position = 0
@@ -560,7 +560,7 @@ class QueueStream:
 
             # check the PCM samplerate/bitrate
             if not self.allow_resample and streamdetails.bit_depth > self.pcm_bit_depth:
-                self.signal_next = True
+                self.signal_next = queue_index
                 self.logger.debug(
                     "Abort queue stream %s due to bit depth mismatch",
                     self.queue.player.name,
@@ -575,7 +575,7 @@ class QueueStream:
                     "Abort queue stream %s due to sample rate mismatch",
                     self.queue.player.name,
                 )
-                self.signal_next = True
+                self.signal_next = queue_index
                 break
 
             # check crossfade ability

@@ -69,7 +69,7 @@ class PlayerQueue:
         self.mass = mass
         self.logger = mass.players.logger
         self.queue_id = player_id
-        self.signal_next: bool = False
+        self.signal_next: Optional[int] = 0
         self._stream_id: str = ""
         self._settings = QueueSettings(self)
         self._current_index: Optional[int] = None
@@ -377,7 +377,7 @@ class PlayerQueue:
         if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
-        self.signal_next = False
+        self.signal_next = None
         # redirect to underlying player
         await self.player.stop()
 
@@ -671,10 +671,11 @@ class PlayerQueue:
             if self.player.state == PlayerState.IDLE:
 
                 # handle case where stream stopped on purpose and we need to restart it
-                if self.signal_next:
-                    self.signal_next = False
+                if self.signal_next is not None:
                     self._current_item_elapsed_time = 0
-                    self.mass.create_task(self.resume())
+                    next_idx = self.signal_next
+                    self.signal_next = None
+                    self.mass.create_task(self.play_index(next_idx))
 
         self.update_state()
 
