@@ -493,7 +493,7 @@ class QueueStream:
                         self.connected_clients.pop(client_id, None)
 
             # complete queue streamed
-            if self.signal_next:
+            if self.signal_next and not self.queue.announcement_in_progress:
                 # the queue stream was aborted (e.g. because of sample rate mismatch)
                 # tell the queue to load the next track (restart stream) as soon
                 # as the player finished playing and returns to idle

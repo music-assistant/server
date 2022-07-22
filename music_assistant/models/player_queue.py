@@ -81,7 +81,7 @@ class PlayerQueue:
         self._last_player_update: int = 0
         self._last_stream_id: str = ""
         self._snapshot: Optional[QueueSnapShot] = None
-        self._announcement_in_progress: bool = False
+        self.announcement_in_progress: bool = False
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
@@ -211,7 +211,7 @@ class PlayerQueue:
                 QueueOption.ADD -> Append new items at end of the queue
             :param passive: if passive set to true the stream url will not be sent to the player.
         """
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         # a single item or list of items may be provided
@@ -285,7 +285,7 @@ class PlayerQueue:
         url: URL that should be played as announcement, can only be plain url.
         prepend_alert: Prepend the (TTS) announcement with an alert bell sound.
         """
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning(
                 "Ignore queue command: An announcement is (already) in progress"
             )
@@ -317,7 +317,7 @@ class PlayerQueue:
                 PlayerState.PAUSED,
             ):
                 await self.stop()
-                self._announcement_in_progress = True
+                self.announcement_in_progress = True
                 await self._wait_for_state((PlayerState.OFF, PlayerState.IDLE))
 
             # turn on player if needed
@@ -369,12 +369,12 @@ class PlayerQueue:
             self.logger.exception("Error while playing announcement", exc_info=err)
         finally:
             # restore queue
-            self._announcement_in_progress = False
+            self.announcement_in_progress = False
             await self.snapshot_restore()
 
     async def stop(self) -> None:
         """Stop command on queue player."""
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         self.signal_next = False
@@ -383,7 +383,7 @@ class PlayerQueue:
 
     async def play(self) -> None:
         """Play (unpause) command on queue player."""
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         if self.player.state == PlayerState.PAUSED:
@@ -393,7 +393,7 @@ class PlayerQueue:
 
     async def pause(self) -> None:
         """Pause command on queue player."""
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         # redirect to underlying player
@@ -516,7 +516,7 @@ class PlayerQueue:
         passive: bool = False,
     ) -> None:
         """Play item at index (or item_id) X in queue."""
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         if not isinstance(index, int):
@@ -655,7 +655,7 @@ class PlayerQueue:
         cur_player_state = (self.player.state.value, self.player.current_url)
         if self._last_player_state != cur_player_state:
             # playback state changed
-            if self._announcement_in_progress:
+            if self.announcement_in_progress:
                 # while announcement in progress dont update the last url
                 # to allow us to resume from 3rd party sources
                 # https://github.com/music-assistant/hass-music-assistant/issues/697
