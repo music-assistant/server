@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import statistics
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
@@ -126,7 +127,10 @@ class MusicController:
         raise ProviderUnavailableError(f"Provider {provider_id} is not available")
 
     async def search(
-        self, search_query, media_types: List[MediaType], limit: int = 10
+        self,
+        search_query,
+        media_types: List[MediaType] = MediaType.ALL,
+        limit: int = 10,
     ) -> List[MediaItemType]:
         """
         Perform global search for media items on all providers.
@@ -138,19 +142,21 @@ class MusicController:
         # include results from all music providers
         provider_ids = [item.id for item in self.providers]
         # TODO: sort by name and filter out duplicates ?
-        return await asyncio.gather(
-            *[
-                self.search_provider(
-                    search_query, media_types, provider_id=prov_id, limit=limit
-                )
-                for prov_id in provider_ids
-            ]
+        return itertools.chain.from_iterable(
+            await asyncio.gather(
+                *[
+                    self.search_provider(
+                        search_query, media_types, provider_id=prov_id, limit=limit
+                    )
+                    for prov_id in provider_ids
+                ]
+            )
         )
 
     async def search_provider(
         self,
         search_query: str,
-        media_types: List[MediaType],
+        media_types: List[MediaType] = MediaType.ALL,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         limit: int = 10,
@@ -173,7 +179,7 @@ class MusicController:
 
         # prefer cache items (if any)
         cache_key = f"{prov.type.value}.search.{search_query}.{limit}"
-        cache_key += "".join(media_types)
+        cache_key += "".join((x.value for x in media_types))
 
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]

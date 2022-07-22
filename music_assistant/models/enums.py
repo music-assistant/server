@@ -1,6 +1,7 @@
 """All enums used by the Music Assistant models."""
 
 from enum import Enum, IntEnum
+from typing import List
 
 
 class MediaType(Enum):
@@ -14,6 +15,18 @@ class MediaType(Enum):
     FOLDER = "folder"
     ANNOUNCEMENT = "announcement"
     UNKNOWN = "unknown"
+
+    @classmethod
+    @property
+    def ALL(cls) -> List["MediaType"]:  # pylint: disable=invalid-name
+        """Return all (default) MediaTypes as list."""
+        return [
+            MediaType.ARTIST,
+            MediaType.ALBUM,
+            MediaType.TRACK,
+            MediaType.PLAYLIST,
+            MediaType.RADIO,
+        ]
 
 
 class MediaQuality(IntEnum):

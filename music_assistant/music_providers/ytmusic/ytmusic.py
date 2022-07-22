@@ -536,7 +536,7 @@ class YoutubeMusicProvider(MusicProvider):
                 item_id=playlist_obj["id"], prov_type=self.type, prov_id=self.id
             )
         )
-        playlist.metadata.checksum = playlist_obj["checksum"]
+        playlist.metadata.checksum = playlist_obj.get("checksum")
         return playlist
 
     async def _parse_track(self, track_obj: dict) -> Track:
