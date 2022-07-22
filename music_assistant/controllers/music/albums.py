@@ -88,11 +88,11 @@ class AlbumsController(MediaControllerBase[Album]):
         # return the aggregated result
         return all_versions.values()
 
-    async def add(self, item: Album, overwrite_existing: bool = False) -> Album:
+    async def add(self, item: Album) -> Album:
         """Add album to local db and return the database item."""
         # grab additional metadata
         await self.mass.metadata.get_album_metadata(item)
-        db_item = await self.add_db_item(item, overwrite_existing)
+        db_item = await self.add_db_item(item)
         # also fetch same album on all providers
         await self._match(db_item)
         db_item = await self.get_db_item(db_item.item_id)

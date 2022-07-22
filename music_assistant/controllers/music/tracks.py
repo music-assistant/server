@@ -52,13 +52,13 @@ class TracksController(MediaControllerBase[Track]):
         track.artists = full_artists
         return track
 
-    async def add(self, item: Track, overwrite_existing: bool = False) -> Track:
+    async def add(self, item: Track) -> Track:
         """Add track to local db and return the new database item."""
         # make sure we have artists
         assert item.artists
         # grab additional metadata
         await self.mass.metadata.get_track_metadata(item)
-        db_item = await self.add_db_item(item, overwrite_existing)
+        db_item = await self.add_db_item(item)
         # also fetch same track on all providers (will also get other quality versions)
         await self._match(db_item)
         return await self.get_db_item(db_item.item_id)

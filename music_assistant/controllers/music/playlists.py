@@ -81,11 +81,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
         return items
 
-    async def add(self, item: Playlist, overwrite_existing: bool = False) -> Playlist:
+    async def add(self, item: Playlist) -> Playlist:
         """Add playlist to local db and return the new database item."""
         item.metadata.last_refresh = int(time())
         await self.mass.metadata.get_playlist_metadata(item)
-        return await self.add_db_item(item, overwrite_existing)
+        return await self.add_db_item(item)
 
     async def create(
         self, name: str, prov_id: Union[ProviderType, str, None] = None

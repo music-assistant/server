@@ -57,11 +57,11 @@ class RadioController(MediaControllerBase[Radio]):
         # return the aggregated result
         return all_versions.values()
 
-    async def add(self, item: Radio, overwrite_existing: bool = False) -> Radio:
+    async def add(self, item: Radio) -> Radio:
         """Add radio to local db and return the new database item."""
         item.metadata.last_refresh = int(time())
         await self.mass.metadata.get_radio_metadata(item)
-        return await self.add_db_item(item, overwrite_existing)
+        return await self.add_db_item(item)
 
     async def add_db_item(self, item: Radio, overwrite_existing: bool = False) -> Radio:
         """Add a new item record to the database."""

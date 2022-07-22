@@ -43,7 +43,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self._db_add_lock = asyncio.Lock()
 
     @abstractmethod
-    async def add(self, item: ItemCls, overwrite_existing: bool = False) -> ItemCls:
+    async def add(self, item: ItemCls) -> ItemCls:
         """Add item to local db and return the database item."""
         raise NotImplementedError
 
@@ -126,7 +126,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         force_refresh: bool = False,
         lazy: bool = True,
         details: ItemCls = None,
-        overwrite_existing: bool = None,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         assert provider or provider_id, "provider or provider_id must be supplied"
@@ -137,8 +136,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             provider=provider,
             provider_id=provider_id,
         )
-        if overwrite_existing is None:
-            overwrite_existing = force_refresh
         if db_item and (time() - db_item.last_refresh) > REFRESH_INTERVAL:
             # it's been too long since the full metadata was last retrieved (or never at all)
             force_refresh = True
@@ -175,7 +172,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # only if we really need to wait for the result (e.g. to prevent race conditions), we
         # can set lazy to false and we await to job to complete.
         add_job = self.mass.add_job(
-            self.add(details, overwrite_existing=overwrite_existing),
+            self.add(details),
             f"Add {details.uri} to database",
         )
         if not lazy:
