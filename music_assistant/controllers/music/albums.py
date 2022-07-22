@@ -9,6 +9,7 @@ from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.tags import FALLBACK_ARTIST
 from music_assistant.models.enums import EventType, MusicProviderFeature, ProviderType
+from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
@@ -272,7 +273,12 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         assert not (db_rows and not recursive), "Tracks attached to album"
         for db_row in db_rows:
-            await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
+            try:
+                await self.mass.music.albums.delete_db_item(
+                    db_row["item_id"], recursive
+                )
+            except MediaNotFoundError:
+                pass
 
         # delete the album itself from db
         await super().delete_db_item(item_id)
