@@ -58,6 +58,7 @@ class QueueSnapShot:
     position: int
     settings: dict
     volume_level: int
+    player_url: str
 
 
 class PlayerQueue:
@@ -473,6 +474,7 @@ class PlayerQueue:
             position=self._current_item_elapsed_time,
             settings=self._settings.to_dict(),
             volume_level=self.player.volume_level,
+            player_url=self.player.current_url,
         )
 
     async def snapshot_restore(self) -> None:
@@ -489,6 +491,10 @@ class PlayerQueue:
             await self.update_items(self._snapshot.items)
             self._current_index = self._snapshot.index
             self._current_item_elapsed_time = self._snapshot.position
+            self._last_player_state = (
+                self._snapshot.state.value,
+                self._snapshot.player_url,
+            )
             if self._snapshot.state in (PlayerState.PLAYING, PlayerState.PAUSED):
                 await self.resume()
             if self._snapshot.state == PlayerState.PAUSED:
