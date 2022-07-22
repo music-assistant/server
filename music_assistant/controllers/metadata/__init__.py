@@ -6,12 +6,13 @@ from time import time
 from typing import TYPE_CHECKING, Optional
 
 from music_assistant.helpers.database import TABLE_THUMBS
-from music_assistant.helpers.images import create_thumbnail
+from music_assistant.helpers.images import create_collage, create_thumbnail
 from music_assistant.models.enums import ImageType, MediaType
 from music_assistant.models.media_items import (
     Album,
     Artist,
     ItemMapping,
+    MediaItemImage,
     MediaItemType,
     Playlist,
     Radio,
@@ -104,9 +105,12 @@ class MetaDataController:
         # retrieve genres from tracks
         # TODO: retrieve style/mood ?
         playlist.metadata.genres = set()
+        images = set()
         for track in await self.mass.music.playlists.tracks(
             playlist.item_id, playlist.provider
         ):
+            if not playlist.image and track.image:
+                images.add(track.image)
             if track.media_type != MediaType.TRACK:
                 # filter out radio items
                 continue
@@ -114,7 +118,17 @@ class MetaDataController:
                 playlist.metadata.genres.update(track.metadata.genres)
             elif track.album and track.album.metadata.genres:
                 playlist.metadata.genres.update(track.album.metadata.genres)
-        # TODO: create mosaic thumb/fanart from playlist tracks
+        # create collage thumb/fanart from playlist tracks
+        if images:
+            fake_path = f"playlist_collage.{playlist.provider.value}.{playlist.item_id}"
+            collage = await create_collage(self.mass, list(images))
+            match = {"path": fake_path, "size": 0}
+            await self.mass.database.insert(
+                TABLE_THUMBS, {**match, "data": collage}, allow_replace=True
+            )
+            playlist.metadata.images = [
+                MediaItemImage(ImageType.THUMB, fake_path, True)
+            ]
 
     async def get_radio_metadata(self, radio: Radio) -> None:
         """Get/update rich metadata for a radio station."""
