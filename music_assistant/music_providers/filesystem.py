@@ -191,7 +191,7 @@ class FileSystemProvider(MusicProvider):
             item_id=sub_path,
             provider=self.type,
             path=path,
-            name=path.split("://", 1)[-1],
+            name=sub_path or self.name,
             items=subitems,
         )
 

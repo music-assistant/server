@@ -320,7 +320,7 @@ class MusicProvider:
                 item_id="root",
                 provider=self.type,
                 path=path,
-                name="",
+                name=self.name,
                 items=root_items,
             )
         # sublevel
