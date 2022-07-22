@@ -169,7 +169,7 @@ class AudioTags:
             ),
             format=raw["format"]["format_name"],
             bit_rate=int(raw["format"].get("bit_rate", 320)),
-            duration=int(raw["format"].get("duration", 0)) or None,
+            duration=int(float(raw["format"].get("duration", 0))) or None,
             tags=tags,
             has_cover_image=has_cover_image,
             filename=raw["format"]["filename"],
