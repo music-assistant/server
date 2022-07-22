@@ -283,12 +283,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if item.provider == ProviderType.DATABASE:
             # make sure we have a full object
             item = await self.get_db_item(item.item_id)
-        for prov in item.provider_ids:
-            # returns the first provider that is available
-            if not prov.available:
-                continue
-            if self.mass.music.get_provider(prov.prov_id):
-                return (prov.prov_id, prov.item_id)
+        for prefer_file in (True, False):
+            for prov in item.provider_ids:
+                # returns the first provider that is available
+                if not prov.available:
+                    continue
+                if prefer_file and not prov.prov_type.is_file():
+                    continue
+                if self.mass.music.get_provider(prov.prov_id):
+                    return (prov.prov_id, prov.item_id)
         return None, None
 
     async def get_db_items_by_query(
