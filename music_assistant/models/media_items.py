@@ -95,7 +95,7 @@ class MediaItemMetadata(DataClassDictMixin):
     def update(
         self,
         new_values: "MediaItemMetadata",
-        allow_overwrite: bool = True,
+        allow_overwrite: bool = False,
     ) -> "MediaItemMetadata":
         """Update metadata (in-place) with new values."""
         for fld in fields(self):

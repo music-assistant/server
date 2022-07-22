@@ -226,7 +226,7 @@ class AlbumsController(MediaControllerBase[Album]):
             provider_ids = item.provider_ids
             album_artists = await self._get_album_artists(item, overwrite=True)
         else:
-            metadata = cur_item.metadata.update(item.metadata)
+            metadata = cur_item.metadata.update(item.metadata, item.provider.is_file())
             provider_ids = {*cur_item.provider_ids, *item.provider_ids}
             album_artists = await self._get_album_artists(item, cur_item)
 

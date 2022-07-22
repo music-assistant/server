@@ -250,7 +250,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             metadata = item.metadata
             provider_ids = item.provider_ids
         else:
-            metadata = cur_item.metadata.update(item.metadata)
+            metadata = cur_item.metadata.update(item.metadata, item.provider.is_file())
             provider_ids = {*cur_item.provider_ids, *item.provider_ids}
 
         await self.mass.database.update(
