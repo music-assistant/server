@@ -41,7 +41,7 @@ class AudioTags:
     bits_per_sample: int
     format: str
     bit_rate: int
-    duration: Optional[float]
+    duration: Optional[int]
     tags: Dict[str, str]
     has_cover_image: bool
     filename: str
@@ -169,7 +169,7 @@ class AudioTags:
             ),
             format=raw["format"]["format_name"],
             bit_rate=int(raw["format"].get("bit_rate", 320)),
-            duration=float(raw["format"].get("duration", 0)) or None,
+            duration=int(raw["format"].get("duration", 0)) or None,
             tags=tags,
             has_cover_image=has_cover_image,
             filename=raw["format"]["filename"],
