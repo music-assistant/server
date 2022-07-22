@@ -316,8 +316,8 @@ class PlayerQueue:
                 PlayerState.PAUSED,
             ):
                 await self.stop()
-                await self._wait_for_state((PlayerState.OFF, PlayerState.IDLE))
                 self._announcement_in_progress = True
+                await self._wait_for_state((PlayerState.OFF, PlayerState.IDLE))
 
             # turn on player if needed
             if not self.player.powered:
