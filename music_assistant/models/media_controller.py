@@ -182,7 +182,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             await add_job.wait()
             return add_job.result
 
-        return db_item if db_item else details
+        return details
 
     async def search(
         self,
