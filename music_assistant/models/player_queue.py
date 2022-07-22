@@ -74,7 +74,7 @@ class PlayerQueue:
         self._current_index: Optional[int] = None
         self._current_item_elapsed_time: int = 0
         self._prev_item: Optional[QueueItem] = None
-        self._last_state = str
+        self._last_player_state: Tuple[str, str] = ("", "")
         self._items: List[QueueItem] = []
         self._save_task: TimerHandle = None
         self._last_player_update: int = 0
@@ -385,7 +385,7 @@ class PlayerQueue:
         if self._announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
-        if self.active and self.player.state == PlayerState.PAUSED:
+        if self.player.state == PlayerState.PAUSED:
             await self.player.play()
         else:
             await self.resume()
@@ -434,6 +434,11 @@ class PlayerQueue:
 
     async def resume(self) -> None:
         """Resume previous queue."""
+        last_player_url = self._last_player_state[1]
+        if last_player_url and self.mass.streams.base_url not in last_player_url:
+            self.logger.info("Trying to resume non-MA content %s...", last_player_url)
+            await self.player.play_url(last_player_url)
+            return
         resume_item = self.current_item
         resume_pos = self._current_item_elapsed_time
         if (
@@ -641,10 +646,19 @@ class PlayerQueue:
 
     def on_player_update(self) -> None:
         """Call when player updates."""
-        player_state_str = f"{self.player.state.value}.{self.player.current_url}"
-        if self._last_state != player_state_str:
+        cur_player_state = (self.player.state.value, self.player.current_url)
+        if self._last_player_state != cur_player_state:
             # playback state changed
-            self._last_state = player_state_str
+            if self._announcement_in_progress:
+                # while announcement in progress dont update the last url
+                # to allow us to resume from 3rd party sources
+                # https://github.com/music-assistant/hass-music-assistant/issues/697
+                self._last_player_state = (
+                    cur_player_state[0],
+                    self._last_player_state[1],
+                )
+            else:
+                self._last_player_state = cur_player_state
 
             # always signal update if playback state changed
             self.signal_update()
