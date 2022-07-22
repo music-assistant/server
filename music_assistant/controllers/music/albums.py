@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 from typing import List, Optional, Union
 
-from music_assistant.helpers.compare import compare_album, compare_artist
+from music_assistant.helpers.compare import compare_album, loose_compare_strings
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.tags import FALLBACK_ARTIST
 from music_assistant.models.enums import EventType, MusicProviderFeature, ProviderType
+from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
@@ -72,11 +73,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 *[self.search(search_query, prov_type) for prov_type in prov_types]
             )
             for prov_item in prov_items
-            if (
-                (prov_item.sort_name in album.sort_name)
-                or (album.sort_name in prov_item.sort_name)
-            )
-            and compare_artist(prov_item.artist, album.artist)
+            if loose_compare_strings(album.name, prov_item.name)
         }
         # make sure that the 'base' version is included
         for prov_version in album.provider_ids:
@@ -91,11 +88,11 @@ class AlbumsController(MediaControllerBase[Album]):
         # return the aggregated result
         return all_versions.values()
 
-    async def add(self, item: Album, overwrite_existing: bool = False) -> Album:
+    async def add(self, item: Album) -> Album:
         """Add album to local db and return the database item."""
         # grab additional metadata
         await self.mass.metadata.get_album_metadata(item)
-        db_item = await self.add_db_item(item, overwrite_existing)
+        db_item = await self.add_db_item(item)
         # also fetch same album on all providers
         await self._match(db_item)
         db_item = await self.get_db_item(db_item.item_id)
@@ -229,7 +226,7 @@ class AlbumsController(MediaControllerBase[Album]):
             provider_ids = item.provider_ids
             album_artists = await self._get_album_artists(item, overwrite=True)
         else:
-            metadata = cur_item.metadata.update(item.metadata)
+            metadata = cur_item.metadata.update(item.metadata, item.provider.is_file())
             provider_ids = {*cur_item.provider_ids, *item.provider_ids}
             album_artists = await self._get_album_artists(item, cur_item)
 
@@ -276,7 +273,12 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         assert not (db_rows and not recursive), "Tracks attached to album"
         for db_row in db_rows:
-            await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
+            try:
+                await self.mass.music.albums.delete_db_item(
+                    db_row["item_id"], recursive
+                )
+            except MediaNotFoundError:
+                pass
 
         # delete the album itself from db
         await super().delete_db_item(item_id)

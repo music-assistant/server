@@ -15,6 +15,22 @@ from music_assistant.models.media_items import (
 )
 
 
+def loose_compare_strings(base: str, alt: str) -> bool:
+    """Compare strings and return True even on partial match."""
+    # this is used to display 'versions' of the same track/album
+    # where we account for other spelling or some additional wording in the title
+    word_count = len(base.split(" "))
+    if word_count == 1 and len(base) < 10:
+        return compare_strings(base, alt, False)
+    base_comp = create_safe_string(base)
+    alt_comp = create_safe_string(alt)
+    if base_comp in alt_comp:
+        return True
+    if alt_comp in base_comp:
+        return True
+    return False
+
+
 def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     """Compare strings and return True if we have an (almost) perfect match."""
     if str1 is None or str2 is None:

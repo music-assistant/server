@@ -5,6 +5,7 @@ import asyncio
 from time import time
 from typing import List, Optional
 
+from music_assistant.helpers.compare import loose_compare_strings
 from music_assistant.helpers.database import TABLE_RADIOS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MediaType, ProviderType
@@ -41,12 +42,7 @@ class RadioController(MediaControllerBase[Radio]):
                 *[self.search(radio.name, prov_type) for prov_type in prov_types]
             )
             for prov_item in prov_items
-            if (
-                (prov_item.name in radio.name)
-                or (radio.name in prov_item.name)
-                or (prov_item.sort_name in radio.sort_name)
-                or (radio.sort_name in prov_item.sort_name)
-            )
+            if loose_compare_strings(radio.name, prov_item.name)
         }
         # make sure that the 'base' version is included
         for prov_version in radio.provider_ids:
@@ -61,11 +57,11 @@ class RadioController(MediaControllerBase[Radio]):
         # return the aggregated result
         return all_versions.values()
 
-    async def add(self, item: Radio, overwrite_existing: bool = False) -> Radio:
+    async def add(self, item: Radio) -> Radio:
         """Add radio to local db and return the new database item."""
         item.metadata.last_refresh = int(time())
         await self.mass.metadata.get_radio_metadata(item)
-        return await self.add_db_item(item, overwrite_existing)
+        return await self.add_db_item(item)
 
     async def add_db_item(self, item: Radio, overwrite_existing: bool = False) -> Radio:
         """Add a new item record to the database."""

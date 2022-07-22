@@ -4,7 +4,11 @@ from __future__ import annotations
 import asyncio
 from typing import List, Optional, Union
 
-from music_assistant.helpers.compare import compare_artists, compare_track
+from music_assistant.helpers.compare import (
+    compare_artists,
+    compare_track,
+    loose_compare_strings,
+)
 from music_assistant.helpers.database import TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import (
@@ -48,13 +52,13 @@ class TracksController(MediaControllerBase[Track]):
         track.artists = full_artists
         return track
 
-    async def add(self, item: Track, overwrite_existing: bool = False) -> Track:
+    async def add(self, item: Track) -> Track:
         """Add track to local db and return the new database item."""
         # make sure we have artists
         assert item.artists
         # grab additional metadata
         await self.mass.metadata.get_track_metadata(item)
-        db_item = await self.add_db_item(item, overwrite_existing)
+        db_item = await self.add_db_item(item)
         # also fetch same track on all providers (will also get other quality versions)
         await self._match(db_item)
         return await self.get_db_item(db_item.item_id)
@@ -77,10 +81,7 @@ class TracksController(MediaControllerBase[Track]):
                 *[self.search(search_query, prov_type) for prov_type in prov_types]
             )
             for prov_item in prov_items
-            if (
-                (prov_item.sort_name in track.sort_name)
-                or (track.sort_name in prov_item.sort_name)
-            )
+            if loose_compare_strings(track.name, prov_item.name)
             and compare_artists(prov_item.artists, track.artists, any_match=True)
         }
         # make sure that the 'base' version is included
@@ -215,7 +216,7 @@ class TracksController(MediaControllerBase[Track]):
             track_artists = await self._get_track_artists(item, overwrite=True)
             track_albums = await self._get_track_albums(item, overwrite=True)
         else:
-            metadata = cur_item.metadata.update(item.metadata, overwrite)
+            metadata = cur_item.metadata.update(item.metadata, item.provider.is_file())
             provider_ids = {*cur_item.provider_ids, *item.provider_ids}
             track_artists = await self._get_track_artists(cur_item, item)
             track_albums = await self._get_track_albums(cur_item, item)

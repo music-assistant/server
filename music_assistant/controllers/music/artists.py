@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_ARTISTS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MusicProviderFeature, ProviderType
+from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
@@ -89,11 +90,11 @@ class ArtistsController(MediaControllerBase[Artist]):
                 final_items[key].in_library = True
         return list(final_items.values())
 
-    async def add(self, item: Artist, overwrite_existing: bool = False) -> Artist:
+    async def add(self, item: Artist) -> Artist:
         """Add artist to local db and return the database item."""
         # grab musicbrainz id and additional metadata
         await self.mass.metadata.get_artist_metadata(item)
-        db_item = await self.add_db_item(item, overwrite_existing)
+        db_item = await self.add_db_item(item)
         # also fetch same artist on all providers
         await self.match_artist(db_item)
         db_item = await self.get_db_item(db_item.item_id)
@@ -249,7 +250,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             metadata = item.metadata
             provider_ids = item.provider_ids
         else:
-            metadata = cur_item.metadata.update(item.metadata)
+            metadata = cur_item.metadata.update(item.metadata, item.provider.is_file())
             provider_ids = {*cur_item.provider_ids, *item.provider_ids}
 
         await self.mass.database.update(
@@ -279,7 +280,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         assert not (db_rows and not recursive), "Albums attached to artist"
         for db_row in db_rows:
-            await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
+            try:
+                await self.mass.music.albums.delete_db_item(
+                    db_row["item_id"], recursive
+                )
+            except MediaNotFoundError:
+                pass
 
         # check artist tracks
         db_rows = await self.mass.database.get_rows_from_query(
@@ -288,7 +294,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         assert not (db_rows and not recursive), "Tracks attached to artist"
         for db_row in db_rows:
-            await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
+            try:
+                await self.mass.music.albums.delete_db_item(
+                    db_row["item_id"], recursive
+                )
+            except MediaNotFoundError:
+                pass
 
         # delete the artist itself from db
         await super().delete_db_item(item_id)
