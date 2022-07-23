@@ -95,8 +95,7 @@ class Database:
         params: Optional[dict] = None,
     ) -> int:
         """Get row count for given custom query."""
-        query = query.split("from", 1)[-1].split("FROM", 1)[-1]
-        query = f"SELECT count() FROM {query}"
+        query = f"SELECT count() FROM ({query})"
         if result := await self._db.fetch_one(query, params):
             return result[0]
         return 0

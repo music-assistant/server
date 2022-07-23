@@ -17,6 +17,7 @@ from music_assistant.models.media_items import (
     Artist,
     ItemMapping,
     MediaType,
+    PagedItems,
     Track,
 )
 from music_assistant.models.music_provider import MusicProvider
@@ -28,6 +29,26 @@ class ArtistsController(MediaControllerBase[Artist]):
     db_table = TABLE_ARTISTS
     media_type = MediaType.ARTIST
     item_cls = Artist
+
+    async def album_artists(
+        self,
+        in_library: Optional[bool] = None,
+        search: Optional[str] = None,
+        limit: int = 500,
+        offset: int = 0,
+        order_by: str = "sort_name",
+    ) -> PagedItems:
+        """Get in-database album artists."""
+        return await self.db_items(
+            in_library=in_library,
+            search=search,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            query_parts=[
+                "artists.sort_name in (select albums.sort_artist from albums)"
+            ],
+        )
 
     async def toptracks(
         self,
