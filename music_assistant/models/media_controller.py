@@ -71,15 +71,16 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
+        query_parts: Optional[List[str]] = None,
     ) -> PagedItems:
         """Get in-database items."""
         sql_query = f"SELECT * FROM {self.db_table}"
         params = {}
-        query_parts = []
+        query_parts = query_parts or []
         if search:
             params["search"] = f"%{search}%"
-            if self.media_type in (MediaType.ALBUM or MediaType.TRACK):
-                query_parts.append("name LIKE :search or artists LIKE :search")
+            if self.media_type in (MediaType.ALBUM, MediaType.TRACK):
+                query_parts.append("(name LIKE :search or artists LIKE :search)")
             else:
                 query_parts.append("name LIKE :search")
         if in_library is not None:
