@@ -15,8 +15,9 @@ import xmltodict
 from aiofiles.os import wrap
 from aiofiles.threadpool.binary import AsyncFileIO
 
+from music_assistant.constants import VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.tags import FALLBACK_ARTIST, parse_tags, split_items
+from music_assistant.helpers.tags import parse_tags, split_items
 from music_assistant.helpers.util import create_safe_string, parse_title_and_version
 from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
@@ -494,9 +495,9 @@ class FileSystemProvider(MusicProvider):
                 self.logger.warning(
                     "%s is missing ID3 tag [albumartist], using %s as fallback",
                     track_path,
-                    FALLBACK_ARTIST,
+                    VARIOUS_ARTISTS,
                 )
-                album_artists = [await self._parse_artist(name=FALLBACK_ARTIST)]
+                album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS)]
 
             track.album = await self._parse_album(
                 tags.album,
@@ -633,6 +634,9 @@ class FileSystemProvider(MusicProvider):
             provider_ids={
                 MediaItemProviderId(artist_item_id, self.type, self.id, url=artist_path)
             },
+            musicbrainz_id=VARIOUS_ARTISTS_ID
+            if compare_strings(name, VARIOUS_ARTISTS)
+            else None,
         )
 
         if not await self.exists(artist_path):

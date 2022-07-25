@@ -5,6 +5,8 @@ import itertools
 from time import time
 from typing import Any, Dict, List, Optional
 
+from music_assistant.constants import VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_ARTISTS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MusicProviderFeature, ProviderType
@@ -223,6 +225,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Add a new item record to the database."""
         assert isinstance(item, Artist), "Not a full Artist object"
         assert item.provider_ids, "Artist is missing provider id(s)"
+        # enforce various artists name + id
+        if compare_strings(item.name, VARIOUS_ARTISTS):
+            item.musicbrainz_id = VARIOUS_ARTISTS_ID
+        if item.musicbrainz_id == VARIOUS_ARTISTS_ID:
+            item.name = VARIOUS_ARTISTS
+
         async with self._db_add_lock:
             # always try to grab existing item by musicbrainz_id
             cur_item = None
@@ -273,6 +281,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         else:
             metadata = cur_item.metadata.update(item.metadata, item.provider.is_file())
             provider_ids = {*cur_item.provider_ids, *item.provider_ids}
+
+        # enforce various artists name + id
+        if compare_strings(item.name, VARIOUS_ARTISTS):
+            item.musicbrainz_id = VARIOUS_ARTISTS_ID
+        if item.musicbrainz_id == VARIOUS_ARTISTS_ID:
+            item.name = VARIOUS_ARTISTS
 
         await self.mass.database.update(
             self.db_table,

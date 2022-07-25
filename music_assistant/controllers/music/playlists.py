@@ -259,6 +259,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             self.db_table,
             {"item_id": item_id},
             {
+                # always prefer name/owner from updated item here
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "owner": item.owner,
