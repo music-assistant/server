@@ -159,7 +159,7 @@ class FileSystemProvider(MusicProvider):
         else:
             item_path = os.path.join(self.config.path, sub_path)
         subitems = []
-        for filename in sorted(await listdir(item_path)):
+        for filename in await listdir(item_path):
             full_path: str = os.path.join(item_path, filename)
             rel_path = full_path.replace(self.config.path + os.sep, "")
             if await isdir(full_path):
@@ -180,11 +180,29 @@ class FileSystemProvider(MusicProvider):
             _, ext = filename.rsplit(".", 1)
 
             if ext in TRACK_EXTENSIONS:
+                item_id = self._get_item_id(full_path)
+                if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
+                    item_id, provider_id=self.id
+                ):
+                    subitems.append(db_item)
                 if track := await self._parse_track(full_path):
+                    # make sure that the item exists
+                    # https://github.com/music-assistant/hass-music-assistant/issues/707
+                    self.mass.create_task(self.mass.music.tracks.add_db_item(track))
                     subitems.append(track)
                 continue
             if ext in PLAYLIST_EXTENSIONS:
+                if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
+                    item_id, provider_id=self.id
+                ):
+                    subitems.append(db_item)
                 if playlist := await self._parse_playlist(full_path):
+                    # make sure that the item exists
+                    # https://github.com/music-assistant/hass-music-assistant/issues/707
+                    self.mass.create_task(
+                        self.mass.music.playlists.add_db_item(playlist)
+                    )
+                    playlist.item_id = full_path
                     subitems.append(playlist)
                 continue
 
@@ -193,7 +211,8 @@ class FileSystemProvider(MusicProvider):
             provider=self.type,
             path=path,
             name=sub_path or self.name,
-            items=subitems,
+            # make sure to sort the resulting listing
+            items=sorted(subitems, key=lambda x: x.name),
         )
 
     async def sync_library(
@@ -242,13 +261,15 @@ class FileSystemProvider(MusicProvider):
                     playlist = await self._parse_playlist(entry.path)
                     # add/update] playlist to db
                     playlist.metadata.checksum = checksum
+                    # playlist is always in-library
+                    playlist.in_library = True
                     await self.mass.music.playlists.add_db_item(playlist)
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", entry.path, str(err))
 
             # save checksums every 100 processed items
-            # this allows us to pickup where we leftoff when initial scan gets intterrupted
+            # this allows us to pickup where we leftoff when initial scan gets interrupted
             if save_checksum_interval == 100:
                 await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
                 save_checksum_interval = 0
@@ -765,8 +786,7 @@ class FileSystemProvider(MusicProvider):
 
         playlist = Playlist(playlist_item_id, provider=self.type, name=name)
         playlist.is_editable = True
-        # playlist is always in-library
-        playlist.in_library = True
+
         playlist.add_provider_id(
             MediaItemProviderId(
                 item_id=playlist_item_id,
@@ -787,9 +807,6 @@ class FileSystemProvider(MusicProvider):
         if not file_path:
             return False  # guard
         file_path = await self.resolve(file_path)
-        if self.config.path not in file_path:
-            # additional guard (needed for files within m3u files)
-            return False
         _exists = wrap(os.path.exists)
         return await _exists(file_path)
 

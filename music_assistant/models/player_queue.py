@@ -687,9 +687,8 @@ class PlayerQueue:
                 return
 
             # queue exhausted or player turned off/stopped
-            if (
-                self.stream
-                and new_state[0] in (PlayerState.IDLE, PlayerState.OFF)
+            if self.stream and (
+                new_state[0] in (PlayerState.IDLE, PlayerState.OFF)
                 or not self.player.available
             ):
                 self.stream.signal_next = None
