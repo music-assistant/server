@@ -159,7 +159,7 @@ class FileSystemProvider(MusicProvider):
         else:
             item_path = os.path.join(self.config.path, sub_path)
         subitems = []
-        for filename in await listdir(item_path):
+        for filename in sorted(await listdir(item_path)):
             full_path: str = os.path.join(item_path, filename)
             rel_path = full_path.replace(self.config.path + os.sep, "")
             if await isdir(full_path):
