@@ -105,6 +105,7 @@ class RadioController(MediaControllerBase[Radio]):
             self.db_table,
             match,
             {
+                # always prefer name from updated item here
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "metadata": json_serializer(metadata),
