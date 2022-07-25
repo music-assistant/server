@@ -188,16 +188,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
         # Grab a random track from the playlist that we use to obtain similar tracks for
         track = choice(playlist_tracks)
-        similar_tracks = prov.get_similar_tracks(
+        similar_tracks = await prov.get_similar_tracks(
             prov_track_id=track.item_id, limit=limit
         )
         # Merge playlist content with similar tracks
         total_no_of_tracks = limit + limit % 2
-        tracks_per_list = total_no_of_tracks / 2
-        return zip(
-            sorted(playlist_tracks, key=lambda n: random())[:tracks_per_list],
-            sorted(similar_tracks, key=lambda n: random())[:tracks_per_list],
-        )
+        tracks_per_list = int(total_no_of_tracks / 2)
+        dynamic_playlist = [
+            *sorted(playlist_tracks, key=lambda n: random())[:tracks_per_list],
+            *sorted(similar_tracks, key=lambda n: random())[:tracks_per_list],
+        ]
+        return sorted(dynamic_playlist, key=lambda n: random())
 
     async def add_db_item(
         self, item: Playlist, overwrite_existing: bool = False
