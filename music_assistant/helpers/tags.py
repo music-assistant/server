@@ -4,31 +4,43 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 from requests import JSONDecodeError
 
+from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.errors import InvalidDataError
 
-FALLBACK_ARTIST = "Various Artists"
-
-# allowed splitters for titles and artists strings
-# NOTE: do not use '&' or '/' as splitter here as it will cause issues with artists
-# actually having that in the name
-SPLITTERS = (";", ",", "Featuring", " Feat. ", " Feat ", "feat.")
+# the only multi-item splitter we accept is the semicolon,
+# which is also the default in Musicbrainz Picard.
+# the slash is also a common splitter but causes colissions with
+# artists actually containing a slash in the name, such as ACDC
+TAG_SPLITTER = ";"
 
 
 def split_items(org_str: str) -> Tuple[str]:
     """Split up a tags string by common splitter."""
-    if isinstance(org_str, list):
-        return org_str
     if not org_str:
         return tuple()
-    for splitter in SPLITTERS:
-        if splitter in org_str:
-            return tuple((x.strip() for x in org_str.split(splitter)))
-    return (org_str,)
+    if isinstance(org_str, list):
+        return org_str
+    return tuple(x.strip() for x in org_str.split(TAG_SPLITTER))
+
+
+def split_artists(org_artists: Union[str, Tuple[str]]) -> Tuple[str]:
+    """Parse all artists from a string."""
+    final_artists = set()
+    # when not using the multi artist tag, the artist string may contain
+    # multiple artistsin freeform, even featuring artists may be included in this
+    # string. Try to parse the featuring artists and seperate them.
+    splitters = ("featuring", " feat. ", " feat ", "feat.")
+    for item in split_items(org_artists):
+        for splitter in splitters:
+            for subitem in item.split(splitter):
+                final_artists.add(subitem.strip())
+    return tuple(final_artists)
 
 
 @dataclass
@@ -47,27 +59,16 @@ class AudioTags:
     filename: str
 
     @property
-    def artist(self) -> str:
-        """Return artist tag (as-is)."""
-        if tag := self.tags.get("artist"):
-            return tag
-        # fallback to parsing from filename
-        title = self.filename.rsplit(os.sep, 1)[-1].split(".")[0]
-        title_parts = title.split(" - ")
-        if len(title_parts) >= 2:
-            return title_parts[0].strip()
-        return FALLBACK_ARTIST
-
-    @property
     def title(self) -> str:
         """Return title tag (as-is)."""
         if tag := self.tags.get("title"):
             return tag
         # fallback to parsing from filename
         title = self.filename.rsplit(os.sep, 1)[-1].split(".")[0]
-        title_parts = title.split(" - ")
-        if len(title_parts) >= 2:
-            return title_parts[1].strip()
+        if " - " in title:
+            title_parts = title.split(" - ")
+            if len(title_parts) >= 2:
+                return title_parts[1].strip()
         return title
 
     @property
@@ -78,41 +79,63 @@ class AudioTags:
     @property
     def artists(self) -> Tuple[str]:
         """Return track artists."""
-        return split_items(self.artist)
+        # prefer multi-artist tag
+        if tag := self.tags.get("artists"):
+            return split_items(tag)
+        # fallback to regular artist string
+        if tag := self.tags.get("artist"):
+            if ";" in tag:
+                return split_items(tag)
+            return split_artists(tag)
+        # fallback to parsing from filename
+        title = self.filename.rsplit(os.sep, 1)[-1].split(".")[0]
+        if " - " in title:
+            title_parts = title.split(" - ")
+            if len(title_parts) >= 2:
+                return split_artists(title_parts[0])
+        return (UNKNOWN_ARTIST,)
 
     @property
     def album_artists(self) -> Tuple[str]:
         """Return (all) album artists (if any)."""
-        return split_items(self.tags.get("albumartist"))
+        # prefer multi-artist tag
+        if tag := self.tags.get("albumartists"):
+            return split_items(tag)
+        # fallback to regular artist string
+        if tag := self.tags.get("albumartist"):
+            if ";" in tag:
+                return split_items(tag)
+            return split_artists(tag)
+        return tuple()
 
     @property
     def genres(self) -> Tuple[str]:
         """Return (all) genres, if any."""
-        return split_items(self.tags.get("genre", ""))
+        return split_items(self.tags.get("genre"))
 
     @property
     def disc(self) -> int | None:
         """Return disc tag if present."""
         if tag := self.tags.get("disc"):
-            return int(tag.split("/")[0])
+            return try_parse_int(tag.split("/")[0], None)
         return None
 
     @property
     def track(self) -> int | None:
         """Return track tag if present."""
         if tag := self.tags.get("track"):
-            return int(tag.split("/")[0])
+            return try_parse_int(tag.split("/")[0], None)
         return None
 
     @property
     def year(self) -> int | None:
         """Return album's year if present, parsed from date."""
         if tag := self.tags.get("originalyear"):
-            return int(tag.split("-")[0])
-        if tag := self.tags.get("otiginaldate"):
-            return int(tag.split("-")[0])
+            return try_parse_int(tag.split("-")[0], None)
+        if tag := self.tags.get("originaldate"):
+            return try_parse_int(tag.split("-")[0], None)
         if tag := self.tags.get("date"):
-            return int(tag.split("-")[0])
+            return try_parse_int(tag.split("-")[0], None)
         return None
 
     @property

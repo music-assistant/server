@@ -4,10 +4,10 @@ from __future__ import annotations
 import asyncio
 from typing import List, Optional, Union
 
+from music_assistant.constants import VARIOUS_ARTISTS
 from music_assistant.helpers.compare import compare_album, loose_compare_strings
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
-from music_assistant.helpers.tags import FALLBACK_ARTIST
 from music_assistant.models.enums import EventType, MusicProviderFeature, ProviderType
 from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.event import MassEvent
@@ -352,7 +352,7 @@ class AlbumsController(MediaControllerBase[Album]):
         # use intermediate set to prevent duplicates
         # filter various artists if multiple artists
         if len(album_artists) > 1:
-            album_artists = {x for x in album_artists if x.name != FALLBACK_ARTIST}
+            album_artists = {x for x in album_artists if (x.name != VARIOUS_ARTISTS)}
         return list(album_artists)
 
     async def _get_artist_mapping(

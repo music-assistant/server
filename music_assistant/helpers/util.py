@@ -19,38 +19,31 @@ CALLBACK_TYPE = Callable[[], None]
 # pylint: enable=invalid-name
 
 
-def filename_from_string(string):
+def filename_from_string(string: str) -> str:
     """Create filename from unsafe string."""
     keepcharacters = (" ", ".", "_")
     return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
 
 
-def try_parse_int(possible_int):
+def try_parse_int(possible_int: Any, default: Optional[int] = 0) -> Optional[int]:
     """Try to parse an int."""
     try:
         return int(possible_int)
     except (TypeError, ValueError):
-        return 0
+        return default
 
 
-async def iter_items(items):
-    """Fake async iterator for compatability reasons."""
-    if not isinstance(items, list):
-        yield items
-    else:
-        for item in items:
-            yield item
-
-
-def try_parse_float(possible_float):
+def try_parse_float(
+    possible_float: Any, default: Optional[float] = 0.0
+) -> Optional[float]:
     """Try to parse a float."""
     try:
         return float(possible_float)
     except (TypeError, ValueError):
-        return 0.0
+        return default
 
 
-def try_parse_bool(possible_bool):
+def try_parse_bool(possible_bool: Any) -> str:
     """Try to parse a bool."""
     if isinstance(possible_bool, bool):
         return possible_bool
