@@ -1,6 +1,7 @@
 """Manage MediaItems of type Playlist."""
 from __future__ import annotations
 
+from random import choice, random
 from time import time
 from typing import Any, List, Optional
 
@@ -170,6 +171,33 @@ class PlaylistController(MediaControllerBase[Playlist]):
             if track_ids_to_remove:
                 provider = self.mass.music.get_provider(prov.prov_id)
                 await provider.remove_playlist_tracks(prov.item_id, track_ids_to_remove)
+
+    async def get_provider_dynamic_playlist_tracks(
+        self,
+        item_id: str,
+        limit=25,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+    ):
+        """Generate a dynamic list of tracks based on the MediaItemType."""
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if not prov:
+            return []
+        playlist_tracks = await self.get_provider_playlist_tracks(
+            item_id=item_id, provider=provider, provider_id=provider_id
+        )
+        # Grab a random track from the playlist that we use to obtain similar tracks for
+        track = choice(playlist_tracks)
+        similar_tracks = prov.get_similar_tracks(
+            prov_track_id=track.item_id, limit=limit
+        )
+        # Merge playlist content with similar tracks
+        total_no_of_tracks = limit + limit % 2
+        tracks_per_list = total_no_of_tracks / 2
+        return zip(
+            sorted(playlist_tracks, key=lambda n: random())[0:tracks_per_list],
+            sorted(similar_tracks, key=lambda n: random())[0:tracks_per_list],
+        )
 
     async def add_db_item(
         self, item: Playlist, overwrite_existing: bool = False

@@ -226,20 +226,6 @@ async def add_remove_playlist_tracks(
     return await loop.run_in_executor(None, _add_playlist_tracks)
 
 
-async def get_album_or_playlist_radio_tracks(
-    headers: Dict[str, str], username: str, prov_item_id: str, limit=25
-) -> Dict[str, str]:
-    """Async wrapper around the ytmusicapi radio function."""
-    user = username if is_brand_account(username) else None
-    ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
-
-    def _get_album_or_playlist_radio_tracks():
-        return ytm.get_watch_playlist(playlistId=prov_item_id, limit=limit)
-
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _get_album_or_playlist_radio_tracks)
-
-
 async def get_song_radio_tracks(
     headers: Dict[str, str], username: str, prov_item_id: str, limit=25
 ) -> Dict[str, str]:
