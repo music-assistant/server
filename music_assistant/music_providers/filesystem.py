@@ -185,7 +185,7 @@ class FileSystemProvider(MusicProvider):
                     item_id, provider_id=self.id
                 ):
                     subitems.append(db_item)
-                if track := await self._parse_track(full_path):
+                elif track := await self._parse_track(full_path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
                     self.mass.create_task(self.mass.music.tracks.add_db_item(track))
@@ -196,7 +196,7 @@ class FileSystemProvider(MusicProvider):
                     item_id, provider_id=self.id
                 ):
                     subitems.append(db_item)
-                if playlist := await self._parse_playlist(full_path):
+                elif playlist := await self._parse_playlist(full_path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
                     self.mass.create_task(
