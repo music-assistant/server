@@ -74,10 +74,6 @@ class StreamsController:
         enc_track_id = urllib.parse.quote(track_id)
         return f"{self.base_url}/preview?provider_id={provider.value}&item_id={enc_track_id}"
 
-    def get_control_url(self, queue_id: str, control: str = "next") -> str:
-        """Return url to control endpoint."""
-        return f"{self.base_url}/{queue_id}/{control}"
-
     def get_silence_url(
         self,
         content_type: ContentType = ContentType.WAV,
@@ -92,7 +88,6 @@ class StreamsController:
 
         app.router.add_get("/preview", self.serve_preview)
         app.router.add_get("/silence.{fmt}", self.serve_silence)
-        app.router.add_get("/{queue_id}/{control}", self.serve_control)
         app.router.add_get("/{stream_id}.{fmt}", self.serve_queue_stream)
 
         runner = web.AppRunner(app, access_log=None)
@@ -123,24 +118,6 @@ class StreamsController:
             )
 
         self.logger.info("Started stream server on port %s", self._port)
-
-    async def serve_control(self, request: web.Request):
-        """Server player control endpoint."""
-        queue_id = request.match_info["queue_id"]
-        control = request.match_info["control"]
-        if queue := self.mass.players.get_player_queue(queue_id):
-            if control == "next" and queue.signal_next is None:
-                await queue.next()
-
-        resp = web.StreamResponse(
-            status=200, reason="OK", headers={"Content-Type": "audio/wav"}
-        )
-        await resp.prepare(request)
-        if request.method == "GET":
-            # service 1 second of silence while player is processing request
-            async for chunk in get_silence(1, ContentType.WAV):
-                await resp.write(chunk)
-        return resp
 
     async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""
@@ -354,7 +331,7 @@ class QueueStream:
         self.done = asyncio.Event()
         self.all_clients_connected = asyncio.Event()
         self.index_in_buffer = start_index
-        self.signal_next: bool = False
+        self.signal_next: Optional[int] = None
         self._runner_task: Optional[asyncio.Task] = None
         self._prev_chunk: bytes = b""
         if queue.settings.metadata_mode == MetadataMode.LEGACY:
