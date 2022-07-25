@@ -195,8 +195,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         total_no_of_tracks = limit + limit % 2
         tracks_per_list = total_no_of_tracks / 2
         return zip(
-            sorted(playlist_tracks, key=lambda n: random())[0:tracks_per_list],
-            sorted(similar_tracks, key=lambda n: random())[0:tracks_per_list],
+            sorted(playlist_tracks, key=lambda n: random())[:tracks_per_list],
+            sorted(similar_tracks, key=lambda n: random())[:tracks_per_list],
         )
 
     async def add_db_item(
