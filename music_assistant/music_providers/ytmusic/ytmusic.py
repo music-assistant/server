@@ -356,7 +356,7 @@ class YoutubeMusicProvider(MusicProvider):
                 username=self.config.username,
             )
 
-    async def get_radio_tracks(
+    async def get_dynamic_playlist(
         self, prov_item_id, media_type: MediaType, limit=25
     ) -> List[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""

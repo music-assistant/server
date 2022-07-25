@@ -170,6 +170,7 @@ class QueueOption(Enum):
     REPLACE = "replace"
     NEXT = "next"
     ADD = "add"
+    RADIO = "radio"
 
 
 class CrossFadeMode(Enum):
