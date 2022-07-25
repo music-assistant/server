@@ -188,8 +188,8 @@ class FileSystemProvider(MusicProvider):
                 elif track := await self._parse_track(full_path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    self.mass.create_task(self.mass.music.tracks.add_db_item(track))
-                    subitems.append(track)
+                    db_item = await self.mass.music.tracks.add_db_item(track)
+                    subitems.append(db_item)
                 continue
             if ext in PLAYLIST_EXTENSIONS:
                 if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
@@ -199,11 +199,8 @@ class FileSystemProvider(MusicProvider):
                 elif playlist := await self._parse_playlist(full_path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    self.mass.create_task(
-                        self.mass.music.playlists.add_db_item(playlist)
-                    )
-                    playlist.item_id = full_path
-                    subitems.append(playlist)
+                    db_item = await self.mass.music.playlists.add_db_item(playlist)
+                    subitems.append(db_item)
                 continue
 
         return BrowseFolder(
