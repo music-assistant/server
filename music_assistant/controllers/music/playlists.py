@@ -9,7 +9,11 @@ from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.uri import create_uri
 from music_assistant.models.enums import MediaType, MusicProviderFeature, ProviderType
-from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    UnsupportedFeaturedException,
+)
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import Playlist, Track
 
@@ -51,12 +55,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Return a dynamic list of tracks based on the playlist content."""
         playlist = await self.get(item_id, provider, provider_id)
         provider = None
-        for prov_id in playlist.provider_ids:
-            prov = self.mass.music.get_provider(prov_id)
+        for prov in playlist.provider_ids:
+            prov = self.mass.music.get_provider(prov.prov_id)
             if MusicProviderFeature.SIMILAR_TRACKS in prov.supported_features:
                 provider = prov
+                break
         if not provider:
-            return []
+            raise UnsupportedFeaturedException(
+                "No Music Provider found that supports requesting similar tracks."
+            )
         return await self.get_provider_dynamic_playlist_tracks(
             item_id=item_id,
             limit=limit,

@@ -35,3 +35,7 @@ class AudioError(MusicAssistantError):
 
 class QueueEmpty(MusicAssistantError):
     """Error raised when trying to start queue stream while queue is empty."""
+
+
+class UnsupportedFeaturedException(MusicAssistantError):
+    """Error raised when a feature is not supported."""
