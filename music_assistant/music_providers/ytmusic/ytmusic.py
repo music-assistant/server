@@ -73,9 +73,7 @@ class YoutubeMusicProvider(MusicProvider):
             MusicProviderFeature.SEARCH,
             MusicProviderFeature.ARTIST_ALBUMS,
             MusicProviderFeature.ARTIST_TOPTRACKS,
-            MusicProviderFeature.DYNAMIC_ALBUMS_PLAYLIST,
-            MusicProviderFeature.DYNAMIC_TRACKS_PLAYLIST,
-            MusicProviderFeature.DYNAMIC_PLAYLISTS_PLAYLIST,
+            MusicProviderFeature.SIMILAR_TRACKS,
         )
 
     async def setup(self) -> bool:

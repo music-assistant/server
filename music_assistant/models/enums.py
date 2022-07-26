@@ -244,11 +244,9 @@ class MusicProviderFeature(Enum):
     LIBRARY_TRACKS_EDIT = "library_tracks_edit"
     LIBRARY_PLAYLISTS_EDIT = "library_playlists_edit"
     LIBRARY_RADIOS_EDIT = "library_radios_edit"
-    # radio feature per mediatype
-    DYNAMIC_ARTISTS_PLAYLIST = "dynamic_artists_playlist"
-    DYNAMIC_ALBUMS_PLAYLIST = "dynamic_albums_playlist"
-    DYNAMIC_TRACKS_PLAYLIST = "dynamic_tracks_playlist"
-    DYNAMIC_PLAYLISTS_PLAYLIST = "dynamic_playlists_playlist"
+    # if we can grab 'similar tracks' from the music provider
+    # used to generate dynamic playlists
+    SIMILAR_TRACKS = "similar_tracks"
     # playlist-specific features
     PLAYLIST_TRACKS_EDIT = "playlist_tracks_edit"
     PLAYLIST_CREATE = "playlist_create"

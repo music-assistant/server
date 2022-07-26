@@ -8,7 +8,7 @@ from typing import Any, List, Optional
 from music_assistant.helpers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.uri import create_uri
-from music_assistant.models.enums import MediaType, ProviderType
+from music_assistant.models.enums import MediaType, MusicProviderFeature, ProviderType
 from music_assistant.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import Playlist, Track
@@ -39,6 +39,29 @@ class PlaylistController(MediaControllerBase[Playlist]):
             provider=prov.prov_type,
             provider_id=prov.prov_id,
             cache_checksum=playlist.metadata.checksum,
+        )
+
+    async def dynamic_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
+    ) -> List[Track]:
+        """Return a dynamic list of tracks based on the playlist content."""
+        playlist = await self.get(item_id, provider, provider_id)
+        provider = None
+        for prov_id in playlist.provider_ids:
+            prov = self.mass.music.get_provider(prov_id)
+            if MusicProviderFeature.SIMILAR_TRACKS in prov.supported_features:
+                provider = prov
+        if not provider:
+            return []
+        return await self.get_provider_dynamic_playlist_tracks(
+            item_id=item_id,
+            limit=limit,
+            provider=provider.prov_type,
+            provider_id=provider.prov_id,
         )
 
     async def get_provider_playlist_tracks(
@@ -181,19 +204,24 @@ class PlaylistController(MediaControllerBase[Playlist]):
     ):
         """Generate a dynamic list of tracks based on the MediaItemType."""
         prov = self.mass.music.get_provider(provider_id or provider)
-        if not prov:
+        if (
+            not prov
+            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
+        ):
             return []
         playlist_tracks = await self.get_provider_playlist_tracks(
             item_id=item_id, provider=provider, provider_id=provider_id
         )
         # Grab a random track from the playlist that we use to obtain similar tracks for
         track = choice(playlist_tracks)
-        similar_tracks = await prov.get_similar_tracks(
-            prov_track_id=track.item_id, limit=limit
-        )
-        # Merge playlist content with similar tracks
+        # Calculate no of songs to grab from each list at a 50/50 ratio
         total_no_of_tracks = limit + limit % 2
         tracks_per_list = int(total_no_of_tracks / 2)
+        # Grab similar tracks from the music provider
+        similar_tracks = await prov.get_similar_tracks(
+            prov_track_id=track.item_id, limit=tracks_per_list
+        )
+        # Merge playlist content with similar tracks
         dynamic_playlist = [
             *sorted(playlist_tracks, key=lambda n: random())[:tracks_per_list],
             *sorted(similar_tracks, key=lambda n: random())[:tracks_per_list],
