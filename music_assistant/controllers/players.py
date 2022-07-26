@@ -98,15 +98,14 @@ class PlayerController:
             for player in self.players:
                 if not player.available:
                     continue
-                if cur_tick == interval or (
-                    player.active_queue.active
-                    and player.state
-                    in (
-                        PlayerState.PLAYING,
-                        PlayerState.PAUSED,
-                    )
-                ):
+                if cur_tick == interval:
                     self.mass.loop.call_soon(player.update_state)
+                elif (
+                    player.active_queue.queue_id == player.player_id
+                    and player.active_queue.active
+                    and player.state == PlayerState.PLAYING
+                ):
+                    self.mass.loop.call_soon(player.active_queue.on_player_update)
             if cur_tick == interval:
                 cur_tick = 0
             else:
