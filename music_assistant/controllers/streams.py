@@ -274,13 +274,12 @@ class StreamsController:
             pcm_bit_depth=pcm_bit_depth,
             pcm_channels=pcm_channels,
             allow_resample=allow_resample,
-            autostart=True,
         )
         # cleanup stale previous queue tasks
-        self.mass.create_task(self.cleanup_stale)
+        asyncio.create_task(self.cleanup_stale())
         return stream
 
-    def cleanup_stale(self) -> None:
+    async def cleanup_stale(self) -> None:
         """Cleanup stale/done stream tasks."""
         stale = set()
         for stream_id, stream in self.queue_streams.items():
@@ -306,7 +305,6 @@ class QueueStream:
         pcm_channels: int = 2,
         pcm_floating_point: bool = False,
         allow_resample: bool = False,
-        autostart: bool = False,
     ):
         """Init QueueStreamJob instance."""
         self.queue = queue
@@ -347,11 +345,6 @@ class QueueStream:
             pcm_bit_depth,
             pcm_channels,
         )
-        if autostart:
-            self.mass.create_task(self.start())
-
-    async def start(self) -> None:
-        """Start running queue stream."""
         self._runner_task = self.mass.create_task(self._queue_stream_runner())
 
     async def stop(self) -> None:
@@ -753,5 +746,5 @@ class QueueStream:
             if len(self.connected_clients) > 0:
                 return False
             await asyncio.sleep(0.5)
-        self.mass.create_task(self.stop())
+        asyncio.create_task(self.stop())
         return True

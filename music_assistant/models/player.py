@@ -325,13 +325,13 @@ class Player(ABC):
                 if child_player_id == self.player_id:
                     continue
                 if player := self.mass.players.get_player(child_player_id):
-                    self.mass.create_task(
+                    self.mass.loop.call_soon_threadsafe(
                         player.on_parent_update, self.player_id, changed_keys
                     )
 
         # update group player(s) when child updates
         for group_player in self.get_group_parents():
-            self.mass.create_task(
+            self.mass.loop.call_soon_threadsafe(
                 group_player.on_child_update, self.player_id, changed_keys
             )
 
