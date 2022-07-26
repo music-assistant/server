@@ -54,21 +54,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
     ) -> List[Track]:
         """Return a dynamic list of tracks based on the playlist content."""
         playlist = await self.get(item_id, provider, provider_id)
-        provider = None
         for prov in playlist.provider_ids:
-            prov = self.mass.music.get_provider(prov.prov_id)
-            if MusicProviderFeature.SIMILAR_TRACKS in prov.supported_features:
-                provider = prov
-                break
-        if not provider:
-            raise UnsupportedFeaturedException(
-                "No Music Provider found that supports requesting similar tracks."
-            )
-        return await self.get_provider_dynamic_playlist_tracks(
-            item_id=item_id,
-            limit=limit,
-            provider=provider.prov_type,
-            provider_id=provider.prov_id,
+            provider = self.mass.music.get_provider(prov.prov_id)
+            if MusicProviderFeature.SIMILAR_TRACKS in provider.supported_features:
+                return await self.get_provider_dynamic_playlist_tracks(
+                    item_id=item_id,
+                    limit=limit,
+                    provider=provider.type,
+                )
+        raise UnsupportedFeaturedException(
+            "No Music Provider found that supports requesting similar tracks."
         )
 
     async def get_provider_playlist_tracks(
@@ -209,7 +204,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
     ):
-        """Generate a dynamic list of tracks based on the MediaItemType."""
+        """Generate a dynamic list of tracks based on the playlist content."""
         prov = self.mass.music.get_provider(provider_id or provider)
         if (
             not prov

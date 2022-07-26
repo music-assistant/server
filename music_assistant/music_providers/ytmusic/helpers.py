@@ -234,7 +234,10 @@ async def get_song_radio_tracks(
     ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
 
     def _get_song_radio_tracks():
-        return ytm.get_watch_playlist(videoId=prov_item_id, limit=limit)
+        playlist_id = f"RDAMVM{prov_item_id}"
+        return ytm.get_watch_playlist(
+            videoId=prov_item_id, playlistId=playlist_id, limit=limit
+        )
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_song_radio_tracks)

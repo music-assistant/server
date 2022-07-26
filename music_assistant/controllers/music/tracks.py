@@ -8,6 +8,7 @@ from music_assistant.helpers.compare import compare_artists, compare_track
 from music_assistant.helpers.database import TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import MediaType, MusicProviderFeature, ProviderType
+from music_assistant.models.errors import UnsupportedFeaturedException
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -41,6 +42,27 @@ class TracksController(MediaControllerBase[Track]):
             )
         track.artists = full_artists
         return track
+
+    async def dynamic_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
+    ) -> List[Track]:
+        """Return a dynamic list of tracks based on the playlist content."""
+        track = await self.get(item_id, provider, provider_id)
+        for prov in track.provider_ids:
+            provider = self.mass.music.get_provider(prov.prov_id)
+            if MusicProviderFeature.SIMILAR_TRACKS in provider.supported_features:
+                return await self.get_provider_dynamic_playlist_tracks(
+                    item_id=item_id,
+                    limit=limit,
+                    provider=provider.type,
+                )
+        raise UnsupportedFeaturedException(
+            "No Music Provider found that supports requesting similar tracks."
+        )
 
     async def add(self, item: Track, overwrite_existing: bool = False) -> Track:
         """Add track to local db and return the new database item."""
@@ -111,6 +133,26 @@ class TracksController(MediaControllerBase[Track]):
                     db_track.name,
                     provider.name,
                 )
+
+    async def get_provider_dynamic_playlist_tracks(
+        self,
+        item_id: str,
+        limit=25,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+    ):
+        """Generate a dynamic list of tracks based on the track."""
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if (
+            not prov
+            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
+        ):
+            return []
+        # Grab similar tracks from the music provider
+        similar_tracks = await prov.get_similar_tracks(
+            prov_track_id=item_id, limit=limit
+        )
+        return similar_tracks
 
     async def add_db_item(self, item: Track, overwrite_existing: bool = False) -> Track:
         """Add a new item record to the database."""

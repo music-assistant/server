@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+from random import choice, random
 from typing import Any, Dict, List, Optional, Union
 
 from music_assistant.helpers.compare import compare_album, compare_artist
@@ -10,6 +11,7 @@ from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.tags import FALLBACK_ARTIST
 from music_assistant.models.enums import MusicProviderFeature, ProviderType
+from music_assistant.models.errors import UnsupportedFeaturedException
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
@@ -72,6 +74,25 @@ class AlbumsController(MediaControllerBase[Album]):
                 final_items[key] = track
         return list(final_items.values())
 
+    async def dynamic_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
+    ) -> List[Track]:
+        """Return a dynamic list of tracks based on the playlist content."""
+        album = await self.get(item_id, provider, provider_id)
+        for prov in album.provider_ids:
+            provider = self.mass.music.get_provider(prov.prov_id)
+            if MusicProviderFeature.SIMILAR_TRACKS in provider.supported_features:
+                return await self.get_provider_dynamic_playlist_tracks(
+                    item_id=item_id, limit=limit, provider=provider.type
+                )
+        raise UnsupportedFeaturedException(
+            "No Music Provider found that supports requesting similar tracks."
+        )
+
     async def versions(
         self,
         item_id: str,
@@ -125,6 +146,40 @@ class AlbumsController(MediaControllerBase[Album]):
             )
         )
         return items
+
+    async def get_provider_dynamic_playlist_tracks(
+        self,
+        item_id: str,
+        limit=25,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+    ):
+        """Generate a dynamic list of tracks based on the album content."""
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if (
+            not prov
+            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
+        ):
+            return []
+        album_tracks = await self.get_provider_album_tracks(
+            item_id=item_id, provider=provider, provider_id=provider_id
+        )
+        # Grab a random track from the album that we use to obtain similar tracks for
+        track = choice(album_tracks)
+        # Calculate no of songs to grab from each list at a 10/90 ratio
+        total_no_of_tracks = limit + limit % 2
+        no_of_album_tracks = int(total_no_of_tracks * 10 / 100)
+        no_of_similar_tracks = int(total_no_of_tracks * 90 / 100)
+        # Grab similar tracks from the music provider
+        similar_tracks = await prov.get_similar_tracks(
+            prov_track_id=track.item_id, limit=no_of_similar_tracks
+        )
+        # Merge album content with similar tracks
+        dynamic_playlist = [
+            *sorted(album_tracks, key=lambda n: random())[:no_of_album_tracks],
+            *sorted(similar_tracks, key=lambda n: random())[:no_of_similar_tracks],
+        ]
+        return sorted(dynamic_playlist, key=lambda n: random())
 
     async def add_db_item(self, item: Album, overwrite_existing: bool = False) -> Album:
         """Add a new record to the database."""
