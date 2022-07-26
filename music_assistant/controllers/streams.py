@@ -585,11 +585,12 @@ class QueueStream:
 
             # set some basic vars
             if last_fadeout_part:
-                crossfade_size = len(last_fadeout_part)
-                crossfade_duration = crossfade_size / self.sample_size_per_second
+                crossfade_duration = (
+                    len(last_fadeout_part) / self.sample_size_per_second
+                )
             else:
                 crossfade_duration = self.queue.settings.crossfade_duration
-                crossfade_size = self.sample_size_per_second * crossfade_duration
+            crossfade_size = self.sample_size_per_second * crossfade_duration
             queue_track.streamdetails.seconds_skipped = seek_position
             # predict total size to expect for this track from duration
             stream_duration = (queue_track.duration or 0) - seek_position
@@ -621,10 +622,10 @@ class QueueStream:
                 )
                 # use dynamic buffer size to account for slow connections (or throttling providers, like YT)
                 # buffer_duration has some overhead to account for padded silence
-                if use_crossfade and buffered_ahead > 60:
+                if use_crossfade and buffered_ahead > (crossfade_duration * 4):
                     buffer_duration = crossfade_duration + 6
-                elif use_crossfade and buffered_ahead > (crossfade_duration + 10):
-                    buffer_duration = crossfade_duration + 2
+                elif use_crossfade and buffered_ahead > (crossfade_duration * 2):
+                    buffer_duration = crossfade_duration + 4
                 else:
                     buffer_duration = 2
 
