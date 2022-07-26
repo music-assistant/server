@@ -9,6 +9,7 @@ from asyncio import TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
+from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.enums import (
     ContentType,
     EventType,
@@ -361,7 +362,6 @@ class PlayerQueue:
             await self.player.play_url(stream.url)
 
             # wait for the player to finish playing
-            await asyncio.sleep(5)
             await self._wait_for_state(PlayerState.PLAYING, silence_item.item_id)
 
         except Exception as err:  # pylint: disable=broad-except
@@ -884,10 +884,10 @@ class PlayerQueue:
                 # restore state too
                 db_key = f"queue.{self.queue_id}.current_index"
                 if db_value := await self.mass.database.get_setting(db_key):
-                    self._current_index = int(db_value)
+                    self._current_index = try_parse_int(db_value)
                 db_key = f"queue.{self.queue_id}.current_item_elapsed_time"
                 if db_value := await self.mass.database.get_setting(db_key):
-                    self._current_item_elapsed_time = int(db_value)
+                    self._current_item_elapsed_time = try_parse_int(db_value)
 
         await self.settings.restore()
 

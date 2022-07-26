@@ -106,7 +106,7 @@ class PlayerController:
                         PlayerState.PAUSED,
                     )
                 ):
-                    player.update_state()
+                    self.mass.loop.call_soon(player.update_state)
             if cur_tick == interval:
                 cur_tick = 0
             else:

@@ -134,7 +134,7 @@ class StreamsController:
     @staticmethod
     async def serve_silence(request: web.Request):
         """Serve some nice silence."""
-        duration = int(request.query.get("duration", 3600))
+        duration = int(request.query.get("duration", 60))
         fmt = ContentType.try_parse(request.match_info["fmt"])
 
         resp = web.StreamResponse(
