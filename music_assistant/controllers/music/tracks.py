@@ -110,9 +110,6 @@ class TracksController(MediaControllerBase[Track]):
         """
         if db_track.provider != ProviderType.DATABASE:
             return  # Matching only supported for database items
-        if isinstance(db_track.album, ItemMapping):
-            # matching only works if we have a full track object
-            db_track = await self.get_db_item(db_track.item_id)
         for provider in self.mass.music.providers:
             if MusicProviderFeature.SEARCH not in provider.supported_features:
                 continue
