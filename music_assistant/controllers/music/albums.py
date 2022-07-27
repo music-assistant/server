@@ -92,16 +92,24 @@ class AlbumsController(MediaControllerBase[Album]):
         """Add album to local db and return the database item."""
         # grab additional metadata
         await self.mass.metadata.get_album_metadata(item)
-        db_item = await self.add_db_item(item)
+        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        if existing:
+            db_item = await self.update_db_item(existing.item_id, item)
+        else:
+            db_item = await self.add_db_item(item)
         # also fetch same album on all providers
         await self._match(db_item)
+        # return final db_item after all match/metadata actions
         db_item = await self.get_db_item(db_item.item_id)
-        # add the album's tracks to the db
-        for prov in item.provider_ids:
-            for track in await self._get_provider_album_tracks(
-                prov.item_id, prov.prov_type, prov.prov_id
-            ):
-                await self.mass.music.tracks.add_db_item(track)
+        self.mass.signal_event(
+            MassEvent(
+                EventType.MEDIA_ITEM_UPDATED
+                if existing
+                else EventType.MEDIA_ITEM_ADDED,
+                db_item.uri,
+                db_item,
+            )
+        )
         return db_item
 
     async def _get_provider_album_tracks(
@@ -203,11 +211,7 @@ class AlbumsController(MediaControllerBase[Album]):
             item_id = new_item["item_id"]
             self.logger.debug("added %s to database", item.name)
             # return created object
-            db_item = await self.get_db_item(item_id)
-            self.mass.signal_event(
-                MassEvent(EventType.MEDIA_ITEM_ADDED, db_item.uri, db_item)
-            )
-            return db_item
+            return await self.get_db_item(item_id)
 
     async def update_db_item(
         self,

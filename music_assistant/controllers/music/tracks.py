@@ -63,10 +63,25 @@ class TracksController(MediaControllerBase[Track]):
         assert item.artists
         # grab additional metadata
         await self.mass.metadata.get_track_metadata(item)
-        db_item = await self.add_db_item(item)
+        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        if existing:
+            db_item = await self.update_db_item(existing.item_id, item)
+        else:
+            db_item = await self.add_db_item(item)
         # also fetch same track on all providers (will also get other quality versions)
         await self._match(db_item)
-        return await self.get_db_item(db_item.item_id)
+        # return final db_item after all match/metadata actions
+        db_item = await self.get_db_item(db_item.item_id)
+        self.mass.signal_event(
+            MassEvent(
+                EventType.MEDIA_ITEM_UPDATED
+                if existing
+                else EventType.MEDIA_ITEM_ADDED,
+                db_item.uri,
+                db_item,
+            )
+        )
+        return db_item
 
     async def versions(
         self,
@@ -195,11 +210,7 @@ class TracksController(MediaControllerBase[Track]):
             item_id = new_item["item_id"]
             # return created object
             self.logger.debug("added %s to database: %s", item.name, item_id)
-            db_item = await self.get_db_item(item_id)
-            self.mass.signal_event(
-                MassEvent(EventType.MEDIA_ITEM_ADDED, db_item.uri, db_item)
-            )
-            return db_item
+            return await self.get_db_item(item_id)
 
     async def update_db_item(
         self,

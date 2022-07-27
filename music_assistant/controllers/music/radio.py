@@ -61,7 +61,21 @@ class RadioController(MediaControllerBase[Radio]):
         """Add radio to local db and return the new database item."""
         item.metadata.last_refresh = int(time())
         await self.mass.metadata.get_radio_metadata(item)
-        return await self.add_db_item(item)
+        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        if existing:
+            db_item = await self.update_db_item(existing.item_id, item)
+        else:
+            db_item = await self.add_db_item(item)
+        self.mass.signal_event(
+            MassEvent(
+                EventType.MEDIA_ITEM_UPDATED
+                if existing
+                else EventType.MEDIA_ITEM_ADDED,
+                db_item.uri,
+                db_item,
+            )
+        )
+        return db_item
 
     async def add_db_item(self, item: Radio, overwrite_existing: bool = False) -> Radio:
         """Add a new item record to the database."""
@@ -79,11 +93,7 @@ class RadioController(MediaControllerBase[Radio]):
             item_id = new_item["item_id"]
             self.logger.debug("added %s to database", item.name)
             # return created object
-            db_item = await self.get_db_item(item_id)
-            self.mass.signal_event(
-                MassEvent(EventType.MEDIA_ITEM_ADDED, db_item.uri, db_item)
-            )
-            return db_item
+            return await self.get_db_item(item_id)
 
     async def update_db_item(
         self,

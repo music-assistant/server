@@ -102,6 +102,10 @@ class MusicAssistant:
         """Signal event to subscribers."""
         if self.closed:
             return
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.getChild("event").debug(
+                "%s %s", event.type.value, event.object_id or ""
+            )
         for cb_func, event_filter, id_filter in self._listeners:
             if not (event_filter is None or event.type in event_filter):
                 continue
