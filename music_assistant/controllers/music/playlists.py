@@ -46,63 +46,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(item_id, provider, provider_id)
         prov = next(x for x in playlist.provider_ids)
-        return await self.get_provider_playlist_tracks(
+        return await self._get_provider_playlist_tracks(
             prov.item_id,
             provider=prov.prov_type,
             provider_id=prov.prov_id,
             cache_checksum=playlist.metadata.checksum,
         )
-
-    async def dynamic_tracks(
-        self,
-        item_id: str,
-        provider: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
-        limit: int = 25,
-    ) -> List[Track]:
-        """Return a dynamic list of tracks based on the playlist content."""
-        playlist = await self.get(item_id, provider, provider_id)
-        for prov in playlist.provider_ids:
-            provider = self.mass.music.get_provider(prov.prov_id)
-            if MusicProviderFeature.SIMILAR_TRACKS in provider.supported_features:
-                return await self.get_provider_dynamic_playlist_tracks(
-                    item_id=item_id,
-                    limit=limit,
-                    provider=provider.type,
-                )
-        raise UnsupportedFeaturedException(
-            "No Music Provider found that supports requesting similar tracks."
-        )
-
-    async def get_provider_playlist_tracks(
-        self,
-        item_id: str,
-        provider: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
-        cache_checksum: Any = None,
-    ) -> List[Track]:
-        """Return album tracks for the given provider album id."""
-        prov = self.mass.music.get_provider(provider_id or provider)
-        if not prov:
-            return []
-        # prefer cache items (if any)
-        cache_key = f"{prov.id}.playlist.{item_id}.tracks"
-        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
-            return [Track.from_dict(x) for x in cache]
-        # no items in cache - get listing from provider
-        items = await prov.get_playlist_tracks(item_id)
-        # double check if position set
-        if items:
-            assert (
-                items[0].position is not None
-            ), "Playlist items require position to be set"
-        # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
-            )
-        )
-        return items
 
     async def add(self, item: Playlist) -> Playlist:
         """Add playlist to local db and return the new database item."""
@@ -254,39 +203,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             db_playlist_id, provider=ProviderType.DATABASE, force_refresh=True
         )
 
-    async def get_provider_dynamic_playlist_tracks(
-        self,
-        item_id: str,
-        limit=25,
-        provider: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
-    ):
-        """Generate a dynamic list of tracks based on the playlist content."""
-        prov = self.mass.music.get_provider(provider_id or provider)
-        if (
-            not prov
-            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
-        ):
-            return []
-        playlist_tracks = await self.get_provider_playlist_tracks(
-            item_id=item_id, provider=provider, provider_id=provider_id
-        )
-        # Grab a random track from the playlist that we use to obtain similar tracks for
-        track = choice(playlist_tracks)
-        # Calculate no of songs to grab from each list at a 50/50 ratio
-        total_no_of_tracks = limit + limit % 2
-        tracks_per_list = int(total_no_of_tracks / 2)
-        # Grab similar tracks from the music provider
-        similar_tracks = await prov.get_similar_tracks(
-            prov_track_id=track.item_id, limit=tracks_per_list
-        )
-        # Merge playlist content with similar tracks
-        dynamic_playlist = [
-            *sorted(playlist_tracks, key=lambda n: random())[:tracks_per_list],
-            *sorted(similar_tracks, key=lambda n: random())[:tracks_per_list],
-        ]
-        return sorted(dynamic_playlist, key=lambda n: random())
-
     async def add_db_item(
         self, item: Playlist, overwrite_existing: bool = False
     ) -> Playlist:
@@ -340,3 +256,73 @@ class PlaylistController(MediaControllerBase[Playlist]):
             MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
         )
         return db_item
+
+    async def _get_provider_playlist_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        cache_checksum: Any = None,
+    ) -> List[Track]:
+        """Return album tracks for the given provider album id."""
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if not prov:
+            return []
+        # prefer cache items (if any)
+        cache_key = f"{prov.id}.playlist.{item_id}.tracks"
+        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
+            return [Track.from_dict(x) for x in cache]
+        # no items in cache - get listing from provider
+        items = await prov.get_playlist_tracks(item_id)
+        # double check if position set
+        if items:
+            assert (
+                items[0].position is not None
+            ), "Playlist items require position to be set"
+        # store (serializable items) in cache
+        self.mass.create_task(
+            self.mass.cache.set(
+                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
+            )
+        )
+        return items
+
+    async def _get_provider_dynamic_tracks(
+        self,
+        item_id: str,
+        limit=25,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+    ):
+        """Generate a dynamic list of tracks based on the playlist content."""
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if (
+            not prov
+            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
+        ):
+            return []
+        playlist_tracks = await self._get_provider_playlist_tracks(
+            item_id=item_id, provider=provider, provider_id=provider_id
+        )
+        # Grab a random track from the playlist that we use to obtain similar tracks for
+        track = choice(playlist_tracks)
+        # Calculate no of songs to grab from each list at a 50/50 ratio
+        total_no_of_tracks = limit + limit % 2
+        tracks_per_list = int(total_no_of_tracks / 2)
+        # Grab similar tracks from the music provider
+        similar_tracks = await prov.get_similar_tracks(
+            prov_track_id=track.item_id, limit=tracks_per_list
+        )
+        # Merge playlist content with similar tracks
+        dynamic_playlist = [
+            *sorted(playlist_tracks, key=lambda n: random())[:tracks_per_list],
+            *sorted(similar_tracks, key=lambda n: random())[:tracks_per_list],
+        ]
+        return sorted(dynamic_playlist, key=lambda n: random())
+
+    async def _get_dynamic_tracks(self, media_item: Playlist, limit=25) -> List[Track]:
+        """Get dynamic list of tracks for given item, fallback/default implementation."""
+        # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
+        raise UnsupportedFeaturedException(
+            "No Music Provider found that supports requesting similar tracks."
+        )

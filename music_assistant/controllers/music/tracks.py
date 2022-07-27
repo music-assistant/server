@@ -60,27 +60,6 @@ class TracksController(MediaControllerBase[Track]):
         track.artists = full_artists
         return track
 
-    async def dynamic_tracks(
-        self,
-        item_id: str,
-        provider: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
-        limit: int = 25,
-    ) -> List[Track]:
-        """Return a dynamic list of tracks based on the playlist content."""
-        track = await self.get(item_id, provider, provider_id)
-        for prov in track.provider_ids:
-            provider = self.mass.music.get_provider(prov.prov_id)
-            if MusicProviderFeature.SIMILAR_TRACKS in provider.supported_features:
-                return await self.get_provider_dynamic_playlist_tracks(
-                    item_id=item_id,
-                    limit=limit,
-                    provider=provider.type,
-                )
-        raise UnsupportedFeaturedException(
-            "No Music Provider found that supports requesting similar tracks."
-        )
-
     async def add(self, item: Track) -> Track:
         """Add track to local db and return the new database item."""
         # make sure we have artists
@@ -179,7 +158,7 @@ class TracksController(MediaControllerBase[Track]):
                     provider.name,
                 )
 
-    async def get_provider_dynamic_playlist_tracks(
+    async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
         limit=25,
@@ -198,6 +177,13 @@ class TracksController(MediaControllerBase[Track]):
             prov_track_id=item_id, limit=limit
         )
         return similar_tracks
+
+    async def _get_dynamic_tracks(self, media_item: Track, limit=25) -> List[Track]:
+        """Get dynamic list of tracks for given item, fallback/default implementation."""
+        # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
+        raise UnsupportedFeaturedException(
+            "No Music Provider found that supports requesting similar tracks."
+        )
 
     async def add_db_item(self, item: Track, overwrite_existing: bool = False) -> Track:
         """Add a new item record to the database."""
