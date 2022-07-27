@@ -554,9 +554,7 @@ class FileSystemProvider(MusicProvider):
 
         # cover image - prefer album image, fallback to embedded
         if track.album and track.album.image:
-            track.metadata.images = [
-                MediaItemImage(ImageType.THUMB, track.album.image, True)
-            ]
+            track.metadata.images = [track.album.image]
         elif tags.has_cover_image:
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can

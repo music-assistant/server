@@ -7,7 +7,13 @@ from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.models.media_items import Radio, StreamDetails, Track
+from music_assistant.models.media_items import (
+    ItemMapping,
+    MediaItemImage,
+    Radio,
+    StreamDetails,
+    Track,
+)
 
 
 @dataclass
@@ -20,6 +26,7 @@ class QueueItem(DataClassDictMixin):
     sort_index: int = 0
     streamdetails: Optional[StreamDetails] = None
     media_item: Union[Track, Radio, None] = None
+    image: Optional[MediaItemImage] = None
 
     def __post_init__(self):
         """Set default values."""
@@ -49,10 +56,14 @@ class QueueItem(DataClassDictMixin):
         if isinstance(media_item, Track):
             artists = "/".join((x.name for x in media_item.artists))
             name = f"{artists} - {media_item.name}"
+            # save a lot of data/bandwidth by simplifying nested objects
+            media_item.artists = [ItemMapping.from_item(x) for x in media_item.artists]
+            media_item.album = ItemMapping.from_item(media_item.album)
         else:
             name = media_item.name
         return cls(
             name=name,
             duration=media_item.duration,
             media_item=media_item,
+            image=media_item.image,
         )

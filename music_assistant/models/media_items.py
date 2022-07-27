@@ -184,12 +184,12 @@ class MediaItem(DataClassDictMixin):
         return any(x.available for x in self.provider_ids)
 
     @property
-    def image(self) -> str | None:
+    def image(self) -> MediaItemImage | None:
         """Return (first/random) image/thumb from metadata (if any)."""
         if self.metadata is None or self.metadata.images is None:
             return None
         return next(
-            (x.url for x in self.metadata.images if x.type == ImageType.THUMB), None
+            (x for x in self.metadata.images if x.type == ImageType.THUMB), None
         )
 
     def add_provider_id(self, prov_id: MediaItemProviderId) -> None:
@@ -305,7 +305,7 @@ class Track(MediaItem):
         return hash((self.provider, self.item_id))
 
     @property
-    def image(self) -> str | None:
+    def image(self) -> MediaItemImage | None:
         """Return (first/random) image/thumb from metadata (if any)."""
         if image := super().image:
             return image

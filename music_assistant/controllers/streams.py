@@ -206,7 +206,11 @@ class StreamsController:
             item_in_buf = queue_stream.queue.get_item(queue_stream.index_in_buffer)
             if item_in_buf and item_in_buf.name:
                 title = item_in_buf.name
-                if item_in_buf.media_item and item_in_buf.media_item.image:
+                if (
+                    item_in_buf.media_item
+                    and item_in_buf.media_item.image
+                    and not item_in_buf.media_item.image.is_file
+                ):
                     image = item_in_buf.media_item.image
                 else:
                     image = ""
