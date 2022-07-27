@@ -637,7 +637,9 @@ class QueueStream:
                 )
                 # use dynamic buffer size to account for slow connections (or throttling providers, like YT)
                 # buffer_duration has some overhead to account for padded silence
-                if use_crossfade and buffered_ahead > (crossfade_duration * 4):
+                if streamdetails.provider == ProviderType.YTMUSIC:
+                    buffer_duration = min(crossfade_duration, 8)
+                elif use_crossfade and buffered_ahead > (crossfade_duration * 4):
                     buffer_duration = crossfade_duration + 6
                 elif use_crossfade and buffered_ahead > (crossfade_duration * 2):
                     buffer_duration = crossfade_duration + 4
