@@ -509,9 +509,9 @@ class SpotifyProvider(MusicProvider):
             return tokeninfo
         # retrieve token with librespot
         retries = 0
-        while retries < 4:
+        while retries < 8:
             try:
-                tokeninfo = await asyncio.wait_for(self._get_token(), 5)
+                tokeninfo = await asyncio.wait_for(self._get_token(), 10)
                 if tokeninfo:
                     break
                 if retries > 2:
