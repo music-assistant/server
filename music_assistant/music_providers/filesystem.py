@@ -43,6 +43,7 @@ from music_assistant.models.music_provider import MusicProvider
 TRACK_EXTENSIONS = ("mp3", "m4a", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
 PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
+IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
 SCHEMA_VERSION = 17
 LOGGER = logging.getLogger(__name__)
 
@@ -688,24 +689,7 @@ class FileSystemProvider(MusicProvider):
             if genre := info.get("genre"):
                 artist.metadata.genres = set(split_items(genre))
         # find local images
-        images = []
-        for _path in await self.mass.loop.run_in_executor(
-            None, os.scandir, artist_path
-        ):
-            if "." not in _path.path or _path.is_dir():
-                continue
-            filename, ext = _path.path.rsplit(os.sep, 1)[-1].split(".", 1)
-            if ext not in ("jpg", "png"):
-                continue
-            try:
-                images.append(MediaItemImage(ImageType(filename), _path.path, True))
-            except ValueError:
-                if "folder" in filename:
-                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
-                elif "Artist" in filename:
-                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
-        if images:
-            artist.metadata.images = images
+        artist.metadata.images = await self._get_local_images(artist_path) or None
 
         return artist
 
@@ -762,22 +746,7 @@ class FileSystemProvider(MusicProvider):
         album.name, album.version = parse_title_and_version(album.name)
 
         # find local images
-        images = []
-        async for _path in scantree(album_path):
-            if "." not in _path.path or _path.is_dir():
-                continue
-            filename, ext = _path.path.rsplit(os.sep, 1)[-1].split(".", 1)
-            if ext not in ("jpg", "png"):
-                continue
-            try:
-                images.append(MediaItemImage(ImageType(filename), _path.path, True))
-            except ValueError:
-                if "folder" in filename:
-                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
-                elif "AlbumArt" in filename:
-                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
-        if images:
-            album.metadata.images = images
+        album.metadata.images = await self._get_local_images(album_path) or None
 
         return album
 
@@ -859,3 +828,24 @@ class FileSystemProvider(MusicProvider):
     def _get_item_id(self, file_path: str) -> str:
         """Create item id from filename."""
         return create_safe_string(file_path.replace(self.config.path, ""))
+
+    async def _get_local_images(self, folder: str) -> List[MediaItemImage]:
+        """Return local images found in a given folderpath."""
+        images = []
+        async for _path in scantree(folder):
+            if "." not in _path.path or _path.is_dir():
+                continue
+            for ext in IMAGE_EXTENSIONS:
+                if not _path.path.endswith(f".{ext}"):
+                    continue
+                filename = _path.path.rsplit(os.sep, 1)[-1].replace(f".{ext}", "")
+                try:
+                    images.append(MediaItemImage(ImageType(filename), _path.path, True))
+                except ValueError:
+                    if "folder" in filename:
+                        images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
+                    elif "AlbumArt" in filename:
+                        images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
+                    elif "Artist" in filename:
+                        images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
+        return images
