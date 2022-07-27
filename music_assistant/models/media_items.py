@@ -111,6 +111,9 @@ class MediaItemMetadata(DataClassDictMixin):
                 setattr(self, fld.name, new_val)
             elif cur_val is None or allow_overwrite:
                 setattr(self, fld.name, new_val)
+            elif new_val and fld.name in ("checksum", "popularity", "last_refresh"):
+                # some fields are always allowed to be overwritten (such as checksum and last_refresh)
+                setattr(self, fld.name, new_val)
         return self
 
 
