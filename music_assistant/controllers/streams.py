@@ -596,7 +596,7 @@ class QueueStream:
                 )
             else:
                 crossfade_duration = self.queue.settings.crossfade_duration
-            crossfade_size = self.sample_size_per_second * crossfade_duration
+            crossfade_size = int(self.sample_size_per_second * crossfade_duration)
             queue_track.streamdetails.seconds_skipped = seek_position
             # predict total size to expect for this track from duration
             stream_duration = (queue_track.duration or 0) - seek_position
@@ -621,6 +621,15 @@ class QueueStream:
             ):
 
                 chunk_num += 1
+
+                # handle last/empty chunk
+                if not chunk:
+                    if bytes_written == 0:
+                        # stream error: got empy first chunk ?!
+                        self.logger.warning("Stream error on %s", queue_track.uri)
+                        queue_track.streamdetails.seconds_streamed = 0
+                    break
+
                 seconds_in_buffer = len(buffer) / self.sample_size_per_second
                 # try to make a rough assumption of how many seconds is buffered ahead by the player(s)
                 buffered_ahead = (
@@ -645,12 +654,6 @@ class QueueStream:
                     buffer_duration = 2
 
                 ####  HANDLE FIRST PART OF TRACK
-
-                if len(chunk) == 0 and bytes_written == 0:
-                    # stream error: got empy first chunk ?!
-                    self.logger.warning("Stream error on %s", queue_track.uri)
-                    queue_track.streamdetails.seconds_streamed = 0
-                    break
 
                 # buffer full for crossfade
                 if last_fadeout_part and (seconds_in_buffer >= buffer_duration):
