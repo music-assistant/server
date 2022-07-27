@@ -13,7 +13,6 @@ class MediaType(Enum):
     PLAYLIST = "playlist"
     RADIO = "radio"
     FOLDER = "folder"
-    ANNOUNCEMENT = "announcement"
     UNKNOWN = "unknown"
 
     @classmethod

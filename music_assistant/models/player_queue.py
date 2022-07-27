@@ -2,29 +2,18 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import pathlib
 import random
 from asyncio import TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
+from music_assistant.helpers.tags import parse_tags
 from music_assistant.helpers.util import try_parse_int
-from music_assistant.models.enums import (
-    ContentType,
-    EventType,
-    MediaType,
-    ProviderType,
-    QueueOption,
-    RepeatMode,
-)
+from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
-from music_assistant.models.media_items import (
-    MediaItemType,
-    StreamDetails,
-    media_from_dict,
-)
+from music_assistant.models.media_items import MediaItemType, media_from_dict
 
 from .player import Player, PlayerState
 from .queue_item import QueueItem
@@ -41,9 +30,7 @@ RESOURCES_DIR = (
     .joinpath("helpers/resources")
 )
 
-ALERT_ANNOUNCE_FILE = str(RESOURCES_DIR.joinpath("announce.flac"))
-if not os.path.isfile(ALERT_ANNOUNCE_FILE):
-    ALERT_ANNOUNCE_FILE = None
+ANNOUNCE_ALERT_FILE = str(RESOURCES_DIR.joinpath("announce.flac"))
 
 FALLBACK_DURATION = 172800  # if duration is None (e.g. radio stream) = 48 hours
 
@@ -291,39 +278,15 @@ class PlayerQueue:
             )
             return
 
-        def create_announcement(_url: str):
-            return QueueItem(
-                uri=_url,
-                name="announcement",
-                duration=30,
-                streamdetails=StreamDetails(
-                    provider=ProviderType.URL,
-                    item_id=_url,
-                    content_type=ContentType.try_parse(_url),
-                    media_type=MediaType.ANNOUNCEMENT,
-                    loudness=0,
-                    gain_correct=4,
-                    direct=_url,
-                ),
-                media_type=MediaType.ANNOUNCEMENT,
-            )
-
         try:
             # create snapshot
             await self.snapshot_create()
+            wait_time = 2
             # stop player if needed
-            if self.active and self.player.state in (
-                PlayerState.PLAYING,
-                PlayerState.PAUSED,
-            ):
+            if self.active and self.player.state == PlayerState.PLAYING:
                 await self.stop()
                 self.announcement_in_progress = True
-                await self._wait_for_state((PlayerState.OFF, PlayerState.IDLE))
-
-            # turn on player if needed
-            if not self.player.powered:
-                await self.player.power(True)
-                await self._wait_for_state(PlayerState.IDLE)
+                await asyncio.sleep(0.1)
 
             # adjust volume if needed
             if self._settings.announce_volume_increase:
@@ -332,37 +295,29 @@ class PlayerQueue:
                 )
                 announce_volume = min(announce_volume, 100)
                 announce_volume = max(announce_volume, 0)
+                # turn on player if needed (might be needed before adjusting the volume)
+                if not self.player.powered:
+                    await self.player.power(True)
+                    wait_time += 2
                 await self.player.volume_set(announce_volume)
 
-            # adjust queue settings for announce playback
-            self._settings.from_dict(
-                {
-                    "repeat_mode": "off",
-                    "shuffle_enabled": False,
-                }
-            )
-
-            queue_items = []
             # prepend alert sound if needed
-            if prepend_alert and ALERT_ANNOUNCE_FILE:
-                queue_items.append(create_announcement(ALERT_ANNOUNCE_FILE))
+            if prepend_alert:
+                announce_urls = (ANNOUNCE_ALERT_FILE, url)
+                wait_time += 2
+            else:
+                announce_urls = (url,)
 
-            queue_items.append(create_announcement(url))
-
-            # append silence track. we use that as a reliable way to make sure
-            # there is enough buffer for the player to start quickly
-            # and to detect when we finished playing the alert
-            silence_item = create_announcement(self.mass.streams.get_silence_url())
-            queue_items.append(silence_item)
-
-            # start queue with announcement sound(s)
-            self._items = queue_items
-            stream = await self.queue_stream_start(start_index=0, seek_position=0)
-            # execute the play command on the player(s)
-            await self.player.play_url(stream.url)
+            # send announcement stream to player
+            announce_stream_url = self.mass.streams.get_announcement_url(
+                self.queue_id, announce_urls, self._settings.stream_type
+            )
+            await self.player.play_url(announce_stream_url)
 
             # wait for the player to finish playing
-            await self._wait_for_state(PlayerState.PLAYING, silence_item.item_id)
+            info = await parse_tags(url)
+            wait_time += info.duration or 10
+            await asyncio.sleep(wait_time)
 
         except Exception as err:  # pylint: disable=broad-except
             self.logger.exception("Error while playing announcement", exc_info=err)
@@ -895,7 +850,7 @@ class PlayerQueue:
         self,
         state: Union[None, PlayerState, Tuple[PlayerState]],
         queue_item_id: Optional[str] = None,
-        timeout: int = 30,
+        timeout: int = 120,
     ) -> None:
         """Wait for player(queue) to reach a specific state."""
         if state is not None and not isinstance(state, tuple):

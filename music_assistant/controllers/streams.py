@@ -6,7 +6,7 @@ import gc
 import urllib.parse
 from time import time
 from types import CoroutineType
-from typing import TYPE_CHECKING, AsyncGenerator, Dict, Optional
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, Optional, Tuple
 from uuid import uuid4
 
 from aiohttp import web
@@ -17,7 +17,6 @@ from music_assistant.helpers.audio import (
     get_chunksize,
     get_media_stream,
     get_preview_stream,
-    get_silence,
     get_stream_details,
     strip_silence,
 )
@@ -51,6 +50,7 @@ class StreamsController:
         self._port = mass.config.stream_port
         self._ip = mass.config.stream_ip
         self.queue_streams: Dict[str, QueueStream] = {}
+        self.announcements: Dict[str, Tuple[str]] = {}
 
     @property
     def base_url(self) -> str:
@@ -66,6 +66,17 @@ class StreamsController:
         ext = content_type.value
         return f"{self.base_url}/{stream_id}.{ext}"
 
+    def get_announcement_url(
+        self,
+        queue_id: str,
+        urls: Tuple[str],
+        content_type: ContentType,
+    ) -> str:
+        """Start running a queue stream."""
+        self.announcements[queue_id] = urls
+        ext = content_type.value
+        return f"{self.base_url}/announce/{queue_id}.{ext}"
+
     async def get_preview_url(self, provider: ProviderType, track_id: str) -> str:
         """Return url to short preview sample."""
         track = await self.mass.music.tracks.get_provider_item(track_id, provider)
@@ -74,20 +85,12 @@ class StreamsController:
         enc_track_id = urllib.parse.quote(track_id)
         return f"{self.base_url}/preview?provider_id={provider.value}&item_id={enc_track_id}"
 
-    def get_silence_url(
-        self,
-        content_type: ContentType = ContentType.WAV,
-    ) -> str:
-        """Generate stream url for a silence Stream."""
-        ext = content_type.value
-        return f"{self.base_url}/silence.{ext}"
-
     async def setup(self) -> None:
         """Async initialize of module."""
         app = web.Application()
 
         app.router.add_get("/preview", self.serve_preview)
-        app.router.add_get("/silence.{fmt}", self.serve_silence)
+        app.router.add_get("/announce/{queue_id}.{fmt}", self.serve_announcement)
         app.router.add_get("/{stream_id}.{fmt}", self.serve_queue_stream)
 
         runner = web.AppRunner(app, access_log=None)
@@ -131,20 +134,26 @@ class StreamsController:
             await resp.write(chunk)
         return resp
 
-    @staticmethod
-    async def serve_silence(request: web.Request):
-        """Serve some nice silence."""
-        duration = int(request.query.get("duration", 60))
+    async def serve_announcement(self, request: web.Request):
+        """Serve announcement broadcast."""
+        queue_id = request.match_info["queue_id"]
         fmt = ContentType.try_parse(request.match_info["fmt"])
+        urls = self.announcements[queue_id]
 
-        resp = web.StreamResponse(
-            status=200, reason="OK", headers={"Content-Type": f"audio/{fmt.value}"}
-        )
-        await resp.prepare(request)
-        if request.method == "GET":
-            async for chunk in get_silence(duration, fmt):
-                await resp.write(chunk)
-        return resp
+        ffmpeg_args = ["ffmpeg", "-hide_banner", "-loglevel", "quiet"]
+        for url in urls:
+            ffmpeg_args += ["-i", url]
+        if len(urls) > 1:
+            ffmpeg_args += [
+                "-filter_complex",
+                f"[0:a][1:a]concat=n={len(urls)}:v=0:a=1",
+            ]
+        ffmpeg_args += ["-f", fmt.value, "-"]
+
+        async with AsyncProcess(ffmpeg_args) as ffmpeg_proc:
+            output, _ = await ffmpeg_proc.communicate()
+
+        return web.Response(body=output, headers={"Content-Type": f"audio/{fmt.value}"})
 
     async def serve_queue_stream(self, request: web.Request):
         """Serve queue audio stream to a single player."""
@@ -242,12 +251,7 @@ class StreamsController:
         streamdetails = await get_stream_details(self.mass, first_item, queue.queue_id)
 
         # work out pcm details
-        if streamdetails.media_type == MediaType.ANNOUNCEMENT:
-            pcm_sample_rate = 44100
-            pcm_bit_depth = 16
-            pcm_channels = 2
-            allow_resample = True
-        elif queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
+        if queue.settings.crossfade_mode == CrossFadeMode.ALWAYS:
             pcm_sample_rate = min(96000, queue.settings.max_sample_rate)
             pcm_bit_depth = 24
             pcm_channels = 2
@@ -554,7 +558,6 @@ class QueueStream:
             use_crossfade = (
                 self.queue.settings.crossfade_mode != CrossFadeMode.DISABLED
                 and self.queue.settings.crossfade_duration > 0
-                and streamdetails.media_type != MediaType.ANNOUNCEMENT
             )
             # do not crossfade tracks of same album
             if (
@@ -620,6 +623,7 @@ class QueueStream:
                 buffered_ahead = (
                     self.total_seconds_streamed - self.queue.player.elapsed_time or 0
                 )
+
                 # use dynamic buffer size to account for slow connections (or throttling providers, like YT)
                 # buffer_duration has some overhead to account for padded silence
                 if use_crossfade and buffered_ahead > (crossfade_duration * 4):
