@@ -208,6 +208,7 @@ class PlayerQueue:
                 QueueOption.REPLACE -> Replace queue contents with these items
                 QueueOption.NEXT -> Play item(s) after current playing item
                 QueueOption.ADD -> Append new items at end of the queue
+                QueueOption.RADIO -> Replace the queue contents with a dynamic playlist based on the item
             :param passive: if passive set to true the stream url will not be sent to the player.
         """
         if self._announcement_in_progress:
@@ -232,7 +233,35 @@ class PlayerQueue:
 
             # collect tracks to play
             tracks = []
-            if media_item.media_type == MediaType.ARTIST:
+            if (
+                queue_opt == QueueOption.RADIO
+                and media_item.media_type == MediaType.ARTIST
+            ):
+                tracks = await self.mass.music.artists.dynamic_tracks(
+                    item_id=media_item.item_id, provider=media_item.provider
+                )
+            elif (
+                queue_opt == QueueOption.RADIO
+                and media_item.media_type == MediaType.ALBUM
+            ):
+                tracks = await self.mass.music.albums.dynamic_tracks(
+                    item_id=media_item.item_id, provider=media_item.provider
+                )
+            elif (
+                queue_opt == QueueOption.RADIO
+                and media_item.media_type == MediaType.PLAYLIST
+            ):
+                tracks = await self.mass.music.playlists.dynamic_tracks(
+                    item_id=media_item.item_id, provider=media_item.provider
+                )
+            elif (
+                queue_opt == QueueOption.RADIO
+                and media_item.media_type == MediaType.TRACK
+            ):
+                tracks = await self.mass.music.tracks.dynamic_tracks(
+                    item_id=media_item.item_id, provider=media_item.provider
+                )
+            elif media_item.media_type == MediaType.ARTIST:
                 tracks = await self.mass.music.artists.toptracks(
                     media_item.item_id, provider=media_item.provider
                 )
@@ -264,7 +293,7 @@ class PlayerQueue:
 
         # load items into the queue, make sure we have valid values
         queue_items = [x for x in queue_items if isinstance(x, QueueItem)]
-        if queue_opt == QueueOption.REPLACE:
+        if queue_opt in (QueueOption.REPLACE, QueueOption.RADIO):
             await self.load(queue_items, passive)
         elif (
             queue_opt in [QueueOption.PLAY, QueueOption.NEXT] and len(queue_items) > 100
