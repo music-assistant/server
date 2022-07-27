@@ -93,7 +93,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             sql_query, params, limit=limit, offset=offset
         )
         count = len(items)
-        if count < limit:
+        if 0 < count < limit:
             total = offset + count
         else:
             total = await self.mass.database.get_count_from_query(sql_query, params)
