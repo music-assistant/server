@@ -250,6 +250,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # mark as favorite/library item on provider(s)
         for prov_id in prov_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
+                if not prov.library_edit_supported(self.media_type):
+                    continue
                 await prov.library_add(prov_id.item_id, self.media_type)
         # mark as library item in internal db if db item
         if prov_item.provider == ProviderType.DATABASE:
@@ -276,6 +278,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # unmark as favorite/library item on provider(s)
         for prov_id in prov_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
+                if not prov.library_edit_supported(self.media_type):
+                    continue
                 await prov.library_remove(prov_id.item_id, self.media_type)
         # unmark as library item in internal db if db item
         if prov_item.provider == ProviderType.DATABASE:
