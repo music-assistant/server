@@ -813,6 +813,7 @@ class PlayerQueue:
         """Export object to dict."""
         cur_item = self.current_item.to_dict() if self.current_item else None
         next_item = self.next_item.to_dict() if self.next_item else None
+
         return {
             "queue_id": self.queue_id,
             "player": self.player.player_id,
@@ -827,6 +828,7 @@ class PlayerQueue:
             "next_item": next_item,
             "items": len(self._items),
             "settings": self.settings.to_dict(),
+            "radio_source": [x.to_dict() for x in self._radio_source[:5]],
         }
 
     async def update_items(self, queue_items: List[QueueItem]) -> None:
