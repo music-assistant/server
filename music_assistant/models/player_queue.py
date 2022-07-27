@@ -197,7 +197,7 @@ class PlayerQueue:
                 QueueOption.REPLACE -> Replace queue contents with these items
                 QueueOption.NEXT -> Play item(s) after current playing item
                 QueueOption.ADD -> Append new items at end of the queue
-                QueueOption.RADIO -> Replace the queue contents with a dynamic playlist based on the item
+                QueueOption.RADIO -> Fill the queue contents with dynamic content based on the item(s)
             :param passive: if passive set to true the stream url will not be sent to the player.
         """
         if self.announcement_in_progress:
