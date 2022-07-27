@@ -105,12 +105,12 @@ class MetaDataController:
         # retrieve genres from tracks
         # TODO: retrieve style/mood ?
         playlist.metadata.genres = set()
-        images = set()
+        image_urls = set()
         for track in await self.mass.music.playlists.tracks(
             playlist.item_id, playlist.provider
         ):
             if not playlist.image and track.image:
-                images.add(track.image)
+                image_urls.add(track.image.url)
             if track.media_type != MediaType.TRACK:
                 # filter out radio items
                 continue
@@ -119,9 +119,9 @@ class MetaDataController:
             elif track.album and track.album.metadata.genres:
                 playlist.metadata.genres.update(track.album.metadata.genres)
         # create collage thumb/fanart from playlist tracks
-        if images:
+        if image_urls:
             fake_path = f"playlist_collage.{playlist.provider.value}.{playlist.item_id}"
-            collage = await create_collage(self.mass, list(images))
+            collage = await create_collage(self.mass, list(image_urls))
             match = {"path": fake_path, "size": 0}
             await self.mass.database.insert(
                 TABLE_THUMBS, {**match, "data": collage}, allow_replace=True

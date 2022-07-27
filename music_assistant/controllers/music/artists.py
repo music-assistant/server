@@ -211,6 +211,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 query = f"SELECT * FROM albums WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
                 query += f" AND provider_ids LIKE '%\"{prov_id}\"%'"
                 items = await self.mass.music.albums.get_db_items_by_query(query)
+            else:
+                # edge case
+                items = []
         # store (serializable items) in cache
         self.mass.create_task(
             self.mass.cache.set(

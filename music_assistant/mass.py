@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
-import threading
 from collections import deque
 from functools import partial
 from time import time
@@ -71,7 +69,7 @@ class MusicAssistant:
     async def setup(self) -> None:
         """Async setup of music assistant."""
         # initialize loop
-        self.loop = asyncio.get_event_loop()
+        self.loop = asyncio.get_running_loop()
         # create shared aiohttp ClientSession
         if not self.http_session:
             self.http_session = aiohttp.ClientSession(
@@ -109,7 +107,10 @@ class MusicAssistant:
                 continue
             if not (id_filter is None or event.object_id in id_filter):
                 continue
-            self.create_task(cb_func, event)
+            if asyncio.iscoroutinefunction(cb_func):
+                asyncio.run_coroutine_threadsafe(cb_func(event), self.loop)
+            else:
+                self.loop.call_soon_threadsafe(cb_func, event)
 
     def subscribe(
         self,
@@ -156,7 +157,7 @@ class MusicAssistant:
 
     def create_task(
         self,
-        target: Callable[..., Any],
+        target: Coroutine,
         *args: Any,
         **kwargs: Any,
     ) -> Union[asyncio.Task, asyncio.Future]:
@@ -168,31 +169,10 @@ class MusicAssistant:
         if self.closed:
             return
 
-        # Check for partials to properly determine if coroutine function
-        check_target = target
-        while isinstance(check_target, functools.partial):
-            check_target = check_target.func
-
-        async def executor_wrapper(_target: Callable, *_args, **_kwargs):
-            return await self.loop.run_in_executor(None, _target, *_args, **_kwargs)
-
-        # called from other thread
-        if threading.current_thread() is not threading.main_thread():
-            if asyncio.iscoroutine(check_target):
-                task = asyncio.run_coroutine_threadsafe(target, self.loop)
-            elif asyncio.iscoroutinefunction(check_target):
-                task = asyncio.run_coroutine_threadsafe(target(*args), self.loop)
-            else:
-                task = asyncio.run_coroutine_threadsafe(
-                    executor_wrapper(target, *args, **kwargs), self.loop
-                )
+        if asyncio.iscoroutinefunction(target):
+            task = self.loop.create_task(target(*args, **kwargs))
         else:
-            if asyncio.iscoroutine(check_target):
-                task = self.loop.create_task(target)
-            elif asyncio.iscoroutinefunction(check_target):
-                task = self.loop.create_task(target(*args))
-            else:
-                task = self.loop.create_task(executor_wrapper(target, *args, **kwargs))
+            task = self.loop.create_task(target)
 
         def task_done_callback(*args, **kwargs):
             self._tracked_tasks.remove(task)

@@ -9,6 +9,7 @@ from asyncio import TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
+from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.enums import (
     ContentType,
     EventType,
@@ -292,7 +293,6 @@ class PlayerQueue:
 
         def create_announcement(_url: str):
             return QueueItem(
-                uri=_url,
                 name="announcement",
                 duration=30,
                 streamdetails=StreamDetails(
@@ -304,7 +304,6 @@ class PlayerQueue:
                     gain_correct=4,
                     direct=_url,
                 ),
-                media_type=MediaType.ANNOUNCEMENT,
             )
 
         try:
@@ -361,7 +360,6 @@ class PlayerQueue:
             await self.player.play_url(stream.url)
 
             # wait for the player to finish playing
-            await asyncio.sleep(5)
             await self._wait_for_state(PlayerState.PLAYING, silence_item.item_id)
 
         except Exception as err:  # pylint: disable=broad-except
@@ -786,7 +784,7 @@ class PlayerQueue:
             # save items
             self.mass.create_task(
                 self.mass.cache.set(
-                    f"queue.{self.queue_id}.items",
+                    f"queue.items.{self.queue_id}",
                     [x.to_dict() for x in self._items],
                 )
             )
@@ -871,7 +869,7 @@ class PlayerQueue:
 
     async def _restore_items(self) -> None:
         """Try to load the saved state from cache."""
-        if queue_cache := await self.mass.cache.get(f"queue.{self.queue_id}.items"):
+        if queue_cache := await self.mass.cache.get(f"queue.items.{self.queue_id}"):
             try:
                 self._items = [QueueItem.from_dict(x) for x in queue_cache]
             except (KeyError, AttributeError, TypeError) as err:
@@ -884,10 +882,10 @@ class PlayerQueue:
                 # restore state too
                 db_key = f"queue.{self.queue_id}.current_index"
                 if db_value := await self.mass.database.get_setting(db_key):
-                    self._current_index = int(db_value)
+                    self._current_index = try_parse_int(db_value)
                 db_key = f"queue.{self.queue_id}.current_item_elapsed_time"
                 if db_value := await self.mass.database.get_setting(db_key):
-                    self._current_item_elapsed_time = int(db_value)
+                    self._current_item_elapsed_time = try_parse_int(db_value)
 
         await self.settings.restore()
 

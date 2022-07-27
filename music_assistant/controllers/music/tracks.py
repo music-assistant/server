@@ -17,6 +17,7 @@ from music_assistant.models.enums import (
     MusicProviderFeature,
     ProviderType,
 )
+from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
@@ -40,9 +41,13 @@ class TracksController(MediaControllerBase[Track]):
         track = await super().get(*args, **kwargs)
         # append full album details to full track item
         if track.album:
-            track.album = await self.mass.music.albums.get(
-                track.album.item_id, track.album.provider
-            )
+            try:
+                track.album = await self.mass.music.albums.get(
+                    track.album.item_id, track.album.provider
+                )
+            except MediaNotFoundError:
+                # edge case where playlist track has invalid albumdetails
+                self.logger.warning("Unable to fetch album details %s", track.album.uri)
         # append full artist details to full track item
         full_artists = []
         for artist in track.artists:
@@ -105,9 +110,6 @@ class TracksController(MediaControllerBase[Track]):
         """
         if db_track.provider != ProviderType.DATABASE:
             return  # Matching only supported for database items
-        if isinstance(db_track.album, ItemMapping):
-            # matching only works if we have a full track object
-            db_track = await self.get_db_item(db_track.item_id)
         for provider in self.mass.music.providers:
             if MusicProviderFeature.SEARCH not in provider.supported_features:
                 continue
