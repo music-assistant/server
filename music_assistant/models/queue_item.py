@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
 
+from music_assistant.models.enums import MediaType
 from music_assistant.models.media_items import (
     ItemMapping,
     MediaItemImage,
@@ -50,6 +51,13 @@ class QueueItem(DataClassDictMixin):
             return self.media_item.uri
         return self.item_id
 
+    @property
+    def media_type(self) -> MediaType:
+        """Return MediaType for this QueueItem (for convenience purposes)."""
+        if self.media_item:
+            return self.media_item.media_type
+        return MediaType.UNKNOWN
+
     @classmethod
     def from_media_item(cls, media_item: Track | Radio):
         """Construct QueueItem from track/radio item."""
@@ -58,7 +66,9 @@ class QueueItem(DataClassDictMixin):
             name = f"{artists} - {media_item.name}"
             # save a lot of data/bandwidth by simplifying nested objects
             media_item.artists = [ItemMapping.from_item(x) for x in media_item.artists]
-            media_item.album = ItemMapping.from_item(media_item.album)
+            if media_item.album:
+                media_item.album = ItemMapping.from_item(media_item.album)
+            media_item.albums = []
         else:
             name = media_item.name
         return cls(

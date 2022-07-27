@@ -192,6 +192,7 @@ class FileSystemProvider(MusicProvider):
                     subitems.append(db_item)
                 continue
             if ext in PLAYLIST_EXTENSIONS:
+                item_id = self._get_item_id(full_path)
                 if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
                     item_id, provider_id=self.id
                 ):
