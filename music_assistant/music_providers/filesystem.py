@@ -403,7 +403,7 @@ class FileSystemProvider(MusicProvider):
                 for filename in (line, os.path.join(playlist_path, line)):
                     if not await self.exists(filename):
                         continue
-                    file_path = await self.resolve(line)
+                    file_path = await self.resolve(filename)
                     return await self._parse_track(file_path)
             # fallback to generic uri parsing
             return await self.mass.music.get_item_by_uri(line)
