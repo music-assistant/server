@@ -185,11 +185,15 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
         """Get album tracks for given album id."""
         album_obj = await get_album(prov_album_id=prov_album_id)
-        return [
-            await self._parse_track(track)
-            for track in album_obj["tracks"]
-            if "tracks" in album_obj
-        ]
+        if not album_obj.get("tracks"):
+            return []
+        tracks = []
+        for idx, track_obj in enumerate(album_obj["tracks"], 1):
+            track = await self._parse_track(track_obj=track_obj)
+            track.disc_number = 0
+            track.track_number = idx
+            tracks.append(track)
+        return tracks
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
