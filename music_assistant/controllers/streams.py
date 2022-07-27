@@ -215,7 +215,10 @@ class StreamsController:
             item_in_buf = queue_stream.queue.get_item(queue_stream.index_in_buffer)
             if item_in_buf and item_in_buf.name:
                 title = item_in_buf.name
-                image = item_in_buf.image or ""
+                if item_in_buf.image and not item_in_buf.image.is_file:
+                    image = item_in_buf.media_item.image.url
+                else:
+                    image = ""
             else:
                 title = "Music Assistant"
                 image = ""
@@ -563,7 +566,7 @@ class QueueStream:
             if (
                 use_crossfade
                 and self.queue.settings.crossfade_mode != CrossFadeMode.ALWAYS
-                and prev_track is not None
+                and prev_track
                 and prev_track.media_type == MediaType.TRACK
                 and queue_track.media_type == MediaType.TRACK
             ):
@@ -623,6 +626,14 @@ class QueueStream:
                 buffered_ahead = (
                     self.total_seconds_streamed - self.queue.player.elapsed_time or 0
                 )
+                # use dynamic buffer size to account for slow connections (or throttling providers, like YT)
+                # buffer_duration has some overhead to account for padded silence
+                if use_crossfade and buffered_ahead > (crossfade_duration * 4):
+                    buffer_duration = crossfade_duration + 6
+                elif use_crossfade and buffered_ahead > (crossfade_duration * 2):
+                    buffer_duration = crossfade_duration + 4
+                else:
+                    buffer_duration = 2
 
                 # use dynamic buffer size to account for slow connections (or throttling providers, like YT)
                 # buffer_duration has some overhead to account for padded silence

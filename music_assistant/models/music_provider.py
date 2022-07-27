@@ -465,6 +465,21 @@ class MusicProvider:
         if media_type == MediaType.RADIO:
             return MusicProviderFeature.LIBRARY_RADIOS in self.supported_features
 
+    def library_edit_supported(self, media_type: MediaType) -> bool:
+        """Return if Library add/remove is supported for given MediaType on this provider."""
+        if media_type == MediaType.ARTIST:
+            return MusicProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
+        if media_type == MediaType.ALBUM:
+            return MusicProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
+        if media_type == MediaType.TRACK:
+            return MusicProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
+        if media_type == MediaType.PLAYLIST:
+            return (
+                MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
+            )
+        if media_type == MediaType.RADIO:
+            return MusicProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
+
     def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType]:
         """Return library generator for given media_type."""
         if media_type == MediaType.ARTIST:

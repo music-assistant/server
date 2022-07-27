@@ -93,7 +93,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             sql_query, params, limit=limit, offset=offset
         )
         count = len(items)
-        if count < limit:
+        if 0 < count < limit:
             total = offset + count
         else:
             total = await self.mass.database.get_count_from_query(sql_query, params)
@@ -250,6 +250,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # mark as favorite/library item on provider(s)
         for prov_id in prov_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
+                if not prov.library_edit_supported(self.media_type):
+                    continue
                 await prov.library_add(prov_id.item_id, self.media_type)
         # mark as library item in internal db if db item
         if prov_item.provider == ProviderType.DATABASE:
@@ -276,6 +278,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # unmark as favorite/library item on provider(s)
         for prov_id in prov_item.provider_ids:
             if prov := self.mass.music.get_provider(prov_id.prov_id):
+                if not prov.library_edit_supported(self.media_type):
+                    continue
                 await prov.library_remove(prov_id.item_id, self.media_type)
         # unmark as library item in internal db if db item
         if prov_item.provider == ProviderType.DATABASE:
@@ -401,20 +405,23 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def remove_prov_mapping(self, item_id: int, prov_id: str) -> None:
         """Remove provider id(s) from item."""
-        if db_item := await self.get_db_item(item_id):
-            db_item.provider_ids = {
-                x for x in db_item.provider_ids if x.prov_id != prov_id
-            }
-            if not db_item.provider_ids:
-                # item has no more provider_ids left, it is completely deleted
-                try:
-                    await self.delete_db_item(db_item.item_id)
-                except AssertionError:
-                    self.logger.debug(
-                        "Could not delete %s: it has items attached", db_item.item_id
-                    )
-                return
-            await self.update_db_item(db_item.item_id, db_item, overwrite=True)
+        try:
+            db_item = await self.get_db_item(item_id)
+        except MediaNotFoundError:
+            # edge case: already deleted / race condition
+            return
+
+        db_item.provider_ids = {x for x in db_item.provider_ids if x.prov_id != prov_id}
+        if not db_item.provider_ids:
+            # item has no more provider_ids left, it is completely deleted
+            try:
+                await self.delete_db_item(db_item.item_id)
+            except AssertionError:
+                self.logger.debug(
+                    "Could not delete %s: it has items attached", db_item.item_id
+                )
+            return
+        await self.update_db_item(db_item.item_id, db_item, overwrite=True)
 
         self.logger.debug("removed provider %s from item id %s", prov_id, item_id)
 

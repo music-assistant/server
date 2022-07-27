@@ -741,7 +741,7 @@ class PlayerQueue:
             # save items
             self.mass.create_task(
                 self.mass.cache.set(
-                    f"queue.{self.queue_id}.items",
+                    f"queue.items.{self.queue_id}",
                     [x.to_dict() for x in self._items],
                 )
             )
@@ -826,7 +826,7 @@ class PlayerQueue:
 
     async def _restore_items(self) -> None:
         """Try to load the saved state from cache."""
-        if queue_cache := await self.mass.cache.get(f"queue.{self.queue_id}.items"):
+        if queue_cache := await self.mass.cache.get(f"queue.items.{self.queue_id}"):
             try:
                 self._items = [QueueItem.from_dict(x) for x in queue_cache]
             except (KeyError, AttributeError, TypeError) as err:
