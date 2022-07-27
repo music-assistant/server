@@ -591,7 +591,7 @@ class QueueStream:
 
             # set some basic vars
             if last_fadeout_part:
-                crossfade_duration = (
+                crossfade_duration = int(
                     len(last_fadeout_part) / self.sample_size_per_second
                 )
             else:
@@ -600,6 +600,14 @@ class QueueStream:
             queue_track.streamdetails.seconds_skipped = seek_position
             # predict total size to expect for this track from duration
             stream_duration = (queue_track.duration or 0) - seek_position
+            # calculate allowed buffer duration
+            if use_crossfade:
+                # buffer_duration has some overhead to account for padded silence
+                # except for YTMusic for which we need to keep the buffer as small as possible
+                padding = 0 if streamdetails.provider == ProviderType.YTMUSIC else 4
+                buffer_duration = crossfade_duration + padding
+            else:
+                buffer_duration = 2
             # send signal that we've loaded a new track into the buffer
             self.index_in_buffer = queue_index
             self.queue.signal_update()
@@ -631,17 +639,6 @@ class QueueStream:
                     break
 
                 seconds_in_buffer = len(buffer) / self.sample_size_per_second
-                # try to make a rough assumption of how many seconds is buffered ahead by the player(s)
-                buffered_ahead = (
-                    self.total_seconds_streamed - self.queue.player.elapsed_time or 0
-                )
-                # use dynamic buffer size to account for slow connections (or throttling providers, like YT)
-                # buffer_duration has some overhead to account for padded silence
-                padding = 0 if streamdetails.provider == ProviderType.YTMUSIC else 5
-                if use_crossfade and buffered_ahead > (crossfade_duration * 4):
-                    buffer_duration = crossfade_duration + padding
-                else:
-                    buffer_duration = 1
 
                 ####  HANDLE FIRST PART OF TRACK
 
@@ -689,12 +686,17 @@ class QueueStream:
                 continue
 
             #### HANDLE END OF TRACK
+
+            # try to make a rough assumption of how many seconds is buffered ahead by the player(s)
+            player_buffered = (
+                self.total_seconds_streamed - self.queue.player.elapsed_time or 0
+            )
             self.logger.debug(
-                "end of track reached - chunk_num: %s - stream_buffer: %s - stream_duration: %s - player_buffer: %s",
+                "end of track reached - chunk_num: %s - crossfade_buffer: %s - stream_duration: %s - player_buffer: %s",
                 chunk_num,
                 seconds_in_buffer,
                 stream_duration,
-                buffered_ahead,
+                player_buffered,
             )
 
             if buffer:
