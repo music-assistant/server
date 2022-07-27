@@ -356,6 +356,7 @@ class Player(ABC):
             "is_group": self.is_group,
             "group_members": self.group_members,
             "group_leader": self.group_leader,
+            "is_group_leader": self.is_group_leader,
             "is_passive": self.is_passive,
             "group_name": self.group_name,
             "group_powered": self.group_powered,
