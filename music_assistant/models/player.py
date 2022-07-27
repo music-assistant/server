@@ -306,11 +306,11 @@ class Player(ABC):
             self._prev_state, cur_state, ignore_keys=["elapsed_time"]
         )
 
-        # always update the playerqueue
-        self.mass.players.get_player_queue(self.player_id).on_player_update()
-
         if len(changed_keys) == 0:
             return
+
+        # update the playerqueue
+        self.mass.players.get_player_queue(self.player_id).on_player_update()
 
         self._prev_state = cur_state
         self.mass.signal_event(
