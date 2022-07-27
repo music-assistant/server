@@ -267,7 +267,6 @@ class PlayerQueue:
 
         # load the items into the queue
         if queue_opt == QueueOption.REPLACE:
-            self._radio_source = []
             await self.load(queue_items, passive)
         elif queue_opt == QueueOption.NEXT:
             await self.insert(queue_items, 1, passive)
@@ -573,6 +572,8 @@ class PlayerQueue:
 
     async def load(self, queue_items: List[QueueItem], passive: bool = False) -> None:
         """Load (overwrite) queue with new items."""
+        # reset radio source if a queue load is executed
+        self._radio_source = []
         for index, item in enumerate(queue_items):
             item.sort_index = index
         if self.settings.shuffle_enabled and len(queue_items) > 5:
