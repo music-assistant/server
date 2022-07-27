@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 from random import choice, random
-from typing import Any, Dict, List, Optional, Union
+from typing import List, Optional, Union
 
 from music_assistant.constants import VARIOUS_ARTISTS
 from music_assistant.helpers.compare import compare_album, loose_compare_strings
@@ -182,7 +181,7 @@ class AlbumsController(MediaControllerBase[Album]):
             or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
         ):
             return []
-        album_tracks = await self.get_provider_album_tracks(
+        album_tracks = await self._get_provider_album_tracks(
             item_id=item_id, provider=provider, provider_id=provider_id
         )
         # Grab a random track from the album that we use to obtain similar tracks for
@@ -201,7 +200,7 @@ class AlbumsController(MediaControllerBase[Album]):
             *sorted(similar_tracks, key=lambda n: random())[:no_of_similar_tracks],
         ]
         return sorted(dynamic_playlist, key=lambda n: random())
-    
+
     async def _get_db_album_tracks(
         self,
         item_id: str,
