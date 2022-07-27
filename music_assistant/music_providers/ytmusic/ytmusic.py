@@ -249,14 +249,14 @@ class YoutubeMusicProvider(MusicProvider):
         return []
 
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
-        """Get a list of 5 most popular tracks for the given artist."""
+        """Get a list of 25 most popular tracks for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id)
-        if "songs" in artist_obj and "results" in artist_obj["songs"]:
-            return [
-                await self.get_track(track["videoId"])
-                for track in artist_obj["songs"]["results"]
-                if track.get("videoId")
-            ]
+        if "songs" in artist_obj and "browseId" in artist_obj["songs"]:
+            prov_playlist_id = artist_obj["songs"]["browseId"]
+            playlist_tracks = await self.get_playlist_tracks(
+                prov_playlist_id=prov_playlist_id
+            )
+            return playlist_tracks[:25]
         return []
 
     async def library_add(self, prov_item_id, media_type: MediaType) -> None:
