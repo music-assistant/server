@@ -208,7 +208,7 @@ class PlayerQueue:
         if not isinstance(media, list):
             media = [media]
 
-        queue_items = []
+        tracks: List[MediaItemType] = []
         for item in media:
             # parse provided uri into a MA MediaItem or Basic QueueItem from URL
             if isinstance(item, str):
@@ -225,26 +225,36 @@ class PlayerQueue:
             # collect tracks to play
             if QueueOption.RADIO:
                 # For dynamic/radio mode, the source items are stored and unpacked dynamically
-                self._radio_source.append(item)
-                continue
-            if media_item.media_type == MediaType.ARTIST:
-                tracks = await self.mass.music.artists.toptracks(
+                tracks += [media_item]
+            elif media_item.media_type == MediaType.ARTIST:
+                tracks += await self.mass.music.artists.toptracks(
                     media_item.item_id, provider=media_item.provider
                 )
             elif media_item.media_type == MediaType.ALBUM:
-                tracks = await self.mass.music.albums.tracks(
+                tracks += await self.mass.music.albums.tracks(
                     media_item.item_id, provider=media_item.provider
                 )
             elif media_item.media_type == MediaType.PLAYLIST:
-                tracks = await self.mass.music.playlists.tracks(
+                tracks += await self.mass.music.playlists.tracks(
                     media_item.item_id, provider=media_item.provider
                 )
             else:
                 # single track or radio item
-                tracks = [media_item]
+                tracks += [media_item]
 
-            # only add available items
-            queue_items += [QueueItem.from_media_item(x) for x in tracks if x.available]
+        # Handle Radio playback: clear queue and request first batch
+        if QueueOption.RADIO:
+            # clear existing items if we're not playing any radio now
+            if not self._radio_source:
+                await self.clear()
+            # load the first batch
+            await self._load_radio_tracks(tracks)
+            if not passive and not self._radio_source:
+                await self.play_index(0)
+            self._radio_source += tracks
+
+        # only add available items
+        queue_items = [QueueItem.from_media_item(x) for x in tracks if x.available]
 
         # clear queue first if it was finished
         if self._current_index and self._current_index >= (len(self._items) - 1):
@@ -256,12 +266,7 @@ class PlayerQueue:
             queue_opt = QueueOption.REPLACE
 
         # load the items into the queue
-        if QueueOption.RADIO:
-            # handle radio playback, clear queue and request first batch
-            await self._add_radio_tracks()
-            if not passive:
-                await self.play_index(0)
-        elif queue_opt == QueueOption.REPLACE:
+        if queue_opt == QueueOption.REPLACE:
             self._radio_source = []
             await self.load(queue_items, passive)
         elif queue_opt == QueueOption.NEXT:
@@ -271,14 +276,13 @@ class PlayerQueue:
         elif queue_opt == QueueOption.ADD:
             await self.append(queue_items)
 
-    async def _add_radio_tracks(self) -> None:
+    async def _load_radio_tracks(self, radio_items: List[MediaItemType]) -> None:
         """Fill the Queue with (additional) Radio tracks."""
-        assert self._radio_source, "No Radio item(s) loaded/active!"
-
+        assert radio_items, "No Radio item(s) loaded/active!"
         # shuffle the source items, just in case
-        random.shuffle(self._radio_source)
+        random.shuffle(radio_items)
         tracks: List[MediaItemType] = []
-        for radio_item in self._radio_source:
+        for radio_item in radio_items:
             if radio_item.media_type == MediaType.ARTIST:
                 tracks += await self.mass.music.artists.dynamic_tracks(
                     item_id=radio_item.item_id, provider=radio_item.provider
@@ -769,7 +773,7 @@ class PlayerQueue:
         next_index = cur_index + 1
         # watch dynamic radio items refill if needed
         if self._radio_source and next_index == (len(self._items) - 2):
-            self.mass.create_task(self._add_radio_tracks())
+            self.mass.create_task(self._load_radio_tracks(self._radio_source))
         return next_index
 
     def signal_update(self, items_changed: bool = False) -> None:
