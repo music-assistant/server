@@ -6,7 +6,6 @@ import logging
 import os
 import urllib.parse
 from contextlib import asynccontextmanager
-from pathlib import Path
 from time import time
 from typing import AsyncGenerator, List, Optional, Set, Tuple
 
@@ -17,6 +16,7 @@ from aiofiles.threadpool.binary import AsyncFileIO
 
 from music_assistant.constants import VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import parse_tags, split_items
 from music_assistant.helpers.util import create_safe_string, parse_title_and_version
 from music_assistant.models.enums import MusicProviderFeature, ProviderType
@@ -41,7 +41,7 @@ from music_assistant.models.media_items import (
 from music_assistant.models.music_provider import MusicProvider
 
 TRACK_EXTENSIONS = ("mp3", "m4a", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
-PLAYLIST_EXTENSIONS = ("m3u",)
+PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 SCHEMA_VERSION = 17
 LOGGER = logging.getLogger(__name__)
@@ -367,19 +367,26 @@ class FileSystemProvider(MusicProvider):
         playlist_path = await self._get_filepath(MediaType.PLAYLIST, prov_playlist_id)
         if not await self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
-        playlist_base_path = Path(playlist_path).parent
+        parentdir = os.path.dirname(playlist_path)
+        _, ext = playlist_path.rsplit(".", 1)
         try:
             async with self.open_file(playlist_path, "r") as _file:
-                for line_no, line in enumerate(await _file.readlines()):
-                    line = urllib.parse.unquote(line.strip())
-                    if line and not line.startswith("#"):
-                        # TODO: add support for .pls playlist files
-                        if media_item := await self._parse_playlist_line(
-                            line, playlist_base_path
-                        ):
-                            # use the linenumber as position for easier deletions
-                            media_item.position = line_no
-                            result.append(media_item)
+                playlist_data = await _file.read()
+
+            if ext in ("m3u", "m3u8"):
+                playlist_lines = await parse_m3u(playlist_data)
+            else:
+                playlist_lines = await parse_pls(playlist_data)
+
+            for line_no, playlist_line in enumerate(playlist_lines):
+
+                if media_item := await self._parse_playlist_line(
+                    playlist_line, parentdir
+                ):
+                    # use the linenumber as position for easier deletions
+                    media_item.position = line_no
+                    result.append(media_item)
+
         except Exception as err:  # pylint: disable=broad-except
             self.logger.warning(
                 "Error while parsing playlist %s", playlist_path, exc_info=err
@@ -391,10 +398,13 @@ class FileSystemProvider(MusicProvider):
     ) -> Track | Radio | None:
         """Try to parse a track from a playlist line."""
         try:
-            # try to treat uri as filename first
-            if await self.exists(line):
-                file_path = await self.resolve(line)
-                return await self._parse_track(file_path)
+            # try to treat uri as (relative) filename
+            if "://" not in line:
+                for filename in (line, os.path.join(playlist_path, line)):
+                    if not await self.exists(filename):
+                        continue
+                    file_path = await self.resolve(line)
+                    return await self._parse_track(file_path)
             # fallback to generic uri parsing
             return await self.mass.music.get_item_by_uri(line)
         except MusicAssistantError as err:
@@ -779,10 +789,11 @@ class FileSystemProvider(MusicProvider):
         if not await self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
 
-        name = playlist_path.split(os.sep)[-1].replace(".m3u", "")
+        playlist_path_base, ext = playlist_path.rsplit(".", 1)
+        name = playlist_path_base.split(os.sep)[-1]
 
         playlist = Playlist(playlist_item_id, provider=self.type, name=name)
-        playlist.is_editable = True
+        playlist.is_editable = ext != "pls"  # can only edit m3u playlists
 
         playlist.add_provider_id(
             MediaItemProviderId(
