@@ -563,6 +563,7 @@ class QueueStream:
             if (
                 use_crossfade
                 and self.queue.settings.crossfade_mode != CrossFadeMode.ALWAYS
+                and prev_track
                 and prev_track.media_type == MediaType.TRACK
                 and queue_track.media_type == MediaType.TRACK
             ):
