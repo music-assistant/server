@@ -95,7 +95,7 @@ class MediaItemMetadata(DataClassDictMixin):
     def update(
         self,
         new_values: "MediaItemMetadata",
-        allow_overwrite: bool = True,
+        allow_overwrite: bool = False,
     ) -> "MediaItemMetadata":
         """Update metadata (in-place) with new values."""
         for fld in fields(self):
@@ -110,6 +110,9 @@ class MediaItemMetadata(DataClassDictMixin):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
             elif cur_val is None or allow_overwrite:
+                setattr(self, fld.name, new_val)
+            elif new_val and fld.name in ("checksum", "popularity", "last_refresh"):
+                # some fields are always allowed to be overwritten (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
         return self
 
@@ -181,12 +184,12 @@ class MediaItem(DataClassDictMixin):
         return any(x.available for x in self.provider_ids)
 
     @property
-    def image(self) -> str | None:
+    def image(self) -> MediaItemImage | None:
         """Return (first/random) image/thumb from metadata (if any)."""
         if self.metadata is None or self.metadata.images is None:
             return None
         return next(
-            (x.url for x in self.metadata.images if x.type == ImageType.THUMB), None
+            (x for x in self.metadata.images if x.type == ImageType.THUMB), None
         )
 
     def add_provider_id(self, prov_id: MediaItemProviderId) -> None:
@@ -302,7 +305,7 @@ class Track(MediaItem):
         return hash((self.provider, self.item_id))
 
     @property
-    def image(self) -> str | None:
+    def image(self) -> MediaItemImage | None:
         """Return (first/random) image/thumb from metadata (if any)."""
         if image := super().image:
             return image
@@ -318,6 +321,18 @@ class Track(MediaItem):
         if not self.isrc:
             return tuple()
         return tuple(self.isrc.split(";"))
+
+    @property
+    def artist(self) -> Artist | ItemMapping | None:
+        """Return (first) artist of track."""
+        if self.artists:
+            return self.artists[0]
+        return None
+
+    @artist.setter
+    def artist(self, artist: Union[Artist, ItemMapping]) -> None:
+        """Set (first/only) artist of track."""
+        self.artists = [artist]
 
 
 @dataclass
@@ -356,13 +371,32 @@ class BrowseFolder(MediaItem):
     """Representation of a Folder used in Browse (which contains media items)."""
 
     media_type: MediaType = MediaType.FOLDER
+    # path: the path (in uri style) to/for this browse folder
+    path: str = ""
     # label: a labelid that needs to be translated by the frontend
     label: str = ""
-    # items (max 25) to provide in recommendation listings
-    items: Optional[List[MediaItemType]] = None
+    # subitems of this folder when expanding
+    items: Optional[List[Union[MediaItemType, BrowseFolder]]] = None
+
+    def __post_init__(self):
+        """Call after init."""
+        super().__post_init__()
+        if not self.path:
+            self.path = f"{self.provider}://{self.item_id}"
 
 
 MediaItemType = Union[Artist, Album, Track, Radio, Playlist, BrowseFolder]
+
+
+@dataclass
+class PagedItems(DataClassDictMixin):
+    """Model for a paged listing."""
+
+    items: List[MediaItemType]
+    count: int
+    limit: int
+    offset: int
+    total: Optional[int] = None
 
 
 def media_from_dict(media_item: dict) -> MediaItemType:

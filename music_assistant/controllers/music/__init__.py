@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import statistics
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
@@ -14,7 +15,7 @@ from music_assistant.helpers.database import TABLE_PLAYLOG, TABLE_TRACK_LOUDNESS
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.config import MusicProviderConfig
-from music_assistant.models.enums import MediaType, ProviderType
+from music_assistant.models.enums import MediaType, MusicProviderFeature, ProviderType
 from music_assistant.models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
@@ -126,7 +127,10 @@ class MusicController:
         raise ProviderUnavailableError(f"Provider {provider_id} is not available")
 
     async def search(
-        self, search_query, media_types: List[MediaType], limit: int = 10
+        self,
+        search_query,
+        media_types: List[MediaType] = MediaType.ALL,
+        limit: int = 10,
     ) -> List[MediaItemType]:
         """
         Perform global search for media items on all providers.
@@ -138,19 +142,21 @@ class MusicController:
         # include results from all music providers
         provider_ids = [item.id for item in self.providers]
         # TODO: sort by name and filter out duplicates ?
-        return await asyncio.gather(
-            *[
-                self.search_provider(
-                    search_query, media_types, provider_id=prov_id, limit=limit
-                )
-                for prov_id in provider_ids
-            ]
+        return itertools.chain.from_iterable(
+            await asyncio.gather(
+                *[
+                    self.search_provider(
+                        search_query, media_types, provider_id=prov_id, limit=limit
+                    )
+                    for prov_id in provider_ids
+                ]
+            )
         )
 
     async def search_provider(
         self,
         search_query: str,
-        media_types: List[MediaType],
+        media_types: List[MediaType] = MediaType.ALL,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         limit: int = 10,
@@ -165,14 +171,15 @@ class MusicController:
         """
         assert provider or provider_id, "Provider needs to be supplied"
         prov = self.get_provider(provider_id or provider)
-        await provider.search(search_query, media_types, limit)
+        if MusicProviderFeature.SEARCH not in prov.supported_features:
+            return []
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
 
         # prefer cache items (if any)
         cache_key = f"{prov.type.value}.search.{search_query}.{limit}"
-        cache_key += "".join(media_types)
+        cache_key += "".join((x.value for x in media_types))
 
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]
@@ -190,17 +197,29 @@ class MusicController:
         )
         return items
 
-    async def browse(self, uri: Optional[str] = None) -> List[BrowseFolder]:
+    async def browse(self, path: Optional[str] = None) -> BrowseFolder:
         """Browse Music providers."""
         # root level; folder per provider
-        if not uri:
-            return [
-                BrowseFolder(prov.id, prov.type, prov.name, uri=f"{prov.id}://")
-                for prov in self.providers
-                if prov.supports_browse
-            ]
+        if not path or path == "root":
+            return BrowseFolder(
+                item_id="root",
+                provider=ProviderType.DATABASE,
+                path="root",
+                label="browse",
+                name="",
+                items=[
+                    BrowseFolder(
+                        item_id="root",
+                        provider=prov.type,
+                        path=f"{prov.id}://",
+                        name=prov.name,
+                    )
+                    for prov in self.providers
+                    if MusicProviderFeature.BROWSE in prov.supported_features
+                ],
+            )
         # provider level
-        provider_id, path = uri.split("://", 1)
+        provider_id = path.split("://", 1)[0]
         prov = self.get_provider(provider_id)
         return await prov.browse(path)
 
@@ -265,6 +284,13 @@ class MusicController:
         await ctrl.remove_from_library(
             provider_item_id, provider=provider, provider_id=provider_id
         )
+
+    async def delete_db_item(
+        self, media_type: MediaType, db_item_id: str, recursive: bool = False
+    ) -> None:
+        """Remove item from the library."""
+        ctrl = self.get_controller(media_type)
+        await ctrl.delete_db_item(db_item_id, recursive)
 
     async def refresh_items(self, items: List[MediaItem]) -> None:
         """
@@ -422,15 +448,16 @@ class MusicController:
         for prov_id in removed_providers:
 
             # clean cache items from deleted provider(s)
-            self.mass.cache.clear(prov_id)
+            await self.mass.cache.clear(prov_id)
 
             # cleanup media items from db matched to deleted provider
             for ctrl in (
-                self.mass.music.artists,
-                self.mass.music.albums,
-                self.mass.music.tracks,
+                # order is important here to recursively cleanup bottom up
                 self.mass.music.radio,
                 self.mass.music.playlists,
+                self.mass.music.tracks,
+                self.mass.music.albums,
+                self.mass.music.artists,
             ):
                 prov_items = await ctrl.get_db_items_by_prov_id(provider_id=prov_id)
                 for item in prov_items:

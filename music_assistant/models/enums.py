@@ -1,6 +1,7 @@
 """All enums used by the Music Assistant models."""
 
 from enum import Enum, IntEnum
+from typing import List
 
 
 class MediaType(Enum):
@@ -12,8 +13,19 @@ class MediaType(Enum):
     PLAYLIST = "playlist"
     RADIO = "radio"
     FOLDER = "folder"
-    ANNOUNCEMENT = "announcement"
     UNKNOWN = "unknown"
+
+    @classmethod
+    @property
+    def ALL(cls) -> List["MediaType"]:  # pylint: disable=invalid-name
+        """Return all (default) MediaTypes as list."""
+        return [
+            MediaType.ARTIST,
+            MediaType.ALBUM,
+            MediaType.TRACK,
+            MediaType.PLAYLIST,
+            MediaType.RADIO,
+        ]
 
 
 class MediaQuality(IntEnum):
@@ -190,6 +202,14 @@ class RepeatMode(Enum):
     ALL = "all"  # repeat entire queue
 
 
+class MetadataMode(Enum):
+    """Enum with stream metadata modes."""
+
+    DISABLED = "disabled"  # do not notify icy support
+    DEFAULT = "default"  # enable icy if player requests it, default chunksize
+    LEGACY = "legacy"  # enable icy but with legacy 8kb chunksize, requires mp3
+
+
 class PlayerState(Enum):
     """Enum for the (playback)state of a player."""
 
@@ -210,6 +230,10 @@ class EventType(Enum):
     QUEUE_TIME_UPDATED = "queue_time_updated"
     SHUTDOWN = "application_shutdown"
     BACKGROUND_JOB_UPDATED = "background_job_updated"
+    BACKGROUND_JOB_FINISHED = "background_job_finished"
+    MEDIA_ITEM_ADDED = "media_item_added"
+    MEDIA_ITEM_UPDATED = "media_item_updated"
+    MEDIA_ITEM_DELETED = "media_item_deleted"
 
 
 class JobStatus(Enum):

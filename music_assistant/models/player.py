@@ -306,11 +306,11 @@ class Player(ABC):
             self._prev_state, cur_state, ignore_keys=["elapsed_time"]
         )
 
-        # always update the playerqueue
-        self.mass.players.get_player_queue(self.player_id).on_player_update()
-
         if len(changed_keys) == 0:
             return
+
+        # update the playerqueue
+        self.mass.players.get_player_queue(self.player_id).on_player_update()
 
         self._prev_state = cur_state
         self.mass.signal_event(
@@ -325,13 +325,13 @@ class Player(ABC):
                 if child_player_id == self.player_id:
                     continue
                 if player := self.mass.players.get_player(child_player_id):
-                    self.mass.create_task(
+                    self.mass.loop.call_soon_threadsafe(
                         player.on_parent_update, self.player_id, changed_keys
                     )
 
         # update group player(s) when child updates
         for group_player in self.get_group_parents():
-            self.mass.create_task(
+            self.mass.loop.call_soon_threadsafe(
                 group_player.on_child_update, self.player_id, changed_keys
             )
 
@@ -356,6 +356,7 @@ class Player(ABC):
             "is_group": self.is_group,
             "group_members": self.group_members,
             "group_leader": self.group_leader,
+            "is_group_leader": self.is_group_leader,
             "is_passive": self.is_passive,
             "group_name": self.group_name,
             "group_powered": self.group_powered,

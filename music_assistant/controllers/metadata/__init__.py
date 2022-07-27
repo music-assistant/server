@@ -6,12 +6,13 @@ from time import time
 from typing import TYPE_CHECKING, Optional
 
 from music_assistant.helpers.database import TABLE_THUMBS
-from music_assistant.helpers.images import create_thumbnail
+from music_assistant.helpers.images import create_collage, create_thumbnail
 from music_assistant.models.enums import ImageType, MediaType
 from music_assistant.models.media_items import (
     Album,
     Artist,
     ItemMapping,
+    MediaItemImage,
     MediaItemType,
     Playlist,
     Radio,
@@ -63,6 +64,9 @@ class MetaDataController:
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
+        # set timestamp, used to determine when this function was last called
+        artist.metadata.last_refresh = int(time())
+
         if not artist.musicbrainz_id:
             artist.musicbrainz_id = await self.get_artist_musicbrainz_id(artist)
 
@@ -72,10 +76,11 @@ class MetaDataController:
             if metadata := await self.audiodb.get_artist_metadata(artist):
                 artist.metadata.update(metadata)
 
-        artist.metadata.last_refresh = int(time())
-
     async def get_album_metadata(self, album: Album) -> None:
         """Get/update rich metadata for an album."""
+        # set timestamp, used to determine when this function was last called
+        album.metadata.last_refresh = int(time())
+
         if not (album.musicbrainz_id or album.artist):
             return
         if metadata := await self.audiodb.get_album_metadata(album):
@@ -83,25 +88,29 @@ class MetaDataController:
         if metadata := await self.fanarttv.get_album_metadata(album):
             album.metadata.update(metadata)
 
-        album.metadata.last_refresh = int(time())
-
     async def get_track_metadata(self, track: Track) -> None:
         """Get/update rich metadata for a track."""
+        # set timestamp, used to determine when this function was last called
+        track.metadata.last_refresh = int(time())
+
         if not (track.album and track.artists):
             return
         if metadata := await self.audiodb.get_track_metadata(track):
             track.metadata.update(metadata)
 
-        track.metadata.last_refresh = int(time())
-
     async def get_playlist_metadata(self, playlist: Playlist) -> None:
         """Get/update rich metadata for a playlist."""
+        # set timestamp, used to determine when this function was last called
+        playlist.metadata.last_refresh = int(time())
         # retrieve genres from tracks
         # TODO: retrieve style/mood ?
         playlist.metadata.genres = set()
+        image_urls = set()
         for track in await self.mass.music.playlists.tracks(
             playlist.item_id, playlist.provider
         ):
+            if not playlist.image and track.image:
+                image_urls.add(track.image.url)
             if track.media_type != MediaType.TRACK:
                 # filter out radio items
                 continue
@@ -109,8 +118,17 @@ class MetaDataController:
                 playlist.metadata.genres.update(track.metadata.genres)
             elif track.album and track.album.metadata.genres:
                 playlist.metadata.genres.update(track.album.metadata.genres)
-        # TODO: create mosaic thumb/fanart from playlist tracks
-        playlist.metadata.last_refresh = int(time())
+        # create collage thumb/fanart from playlist tracks
+        if image_urls:
+            fake_path = f"playlist_collage.{playlist.provider.value}.{playlist.item_id}"
+            collage = await create_collage(self.mass, list(image_urls))
+            match = {"path": fake_path, "size": 0}
+            await self.mass.database.insert(
+                TABLE_THUMBS, {**match, "data": collage}, allow_replace=True
+            )
+            playlist.metadata.images = [
+                MediaItemImage(ImageType.THUMB, fake_path, True)
+            ]
 
     async def get_radio_metadata(self, radio: Radio) -> None:
         """Get/update rich metadata for a radio station."""

@@ -2,28 +2,18 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import pathlib
 import random
 from asyncio import TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
-from music_assistant.models.enums import (
-    ContentType,
-    EventType,
-    MediaType,
-    ProviderType,
-    QueueOption,
-    RepeatMode,
-)
+from music_assistant.helpers.tags import parse_tags
+from music_assistant.helpers.util import try_parse_int
+from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
-from music_assistant.models.media_items import (
-    MediaItemType,
-    StreamDetails,
-    media_from_dict,
-)
+from music_assistant.models.media_items import MediaItemType, media_from_dict
 
 from .player import Player, PlayerState
 from .queue_item import QueueItem
@@ -40,9 +30,7 @@ RESOURCES_DIR = (
     .joinpath("helpers/resources")
 )
 
-ALERT_ANNOUNCE_FILE = str(RESOURCES_DIR.joinpath("announce.flac"))
-if not os.path.isfile(ALERT_ANNOUNCE_FILE):
-    ALERT_ANNOUNCE_FILE = None
+ANNOUNCE_ALERT_FILE = str(RESOURCES_DIR.joinpath("announce.flac"))
 
 FALLBACK_DURATION = 172800  # if duration is None (e.g. radio stream) = 48 hours
 
@@ -58,6 +46,7 @@ class QueueSnapShot:
     position: int
     settings: dict
     volume_level: int
+    player_url: str
 
 
 class PlayerQueue:
@@ -68,19 +57,18 @@ class PlayerQueue:
         self.mass = mass
         self.logger = mass.players.logger
         self.queue_id = player_id
-        self.signal_next: bool = False
         self._stream_id: str = ""
         self._settings = QueueSettings(self)
         self._current_index: Optional[int] = None
         self._current_item_elapsed_time: int = 0
         self._prev_item: Optional[QueueItem] = None
-        self._last_state = str
+        self._last_player_state: Tuple[PlayerState, str] = (PlayerState.OFF, "")
         self._items: List[QueueItem] = []
         self._save_task: TimerHandle = None
         self._last_player_update: int = 0
         self._last_stream_id: str = ""
         self._snapshot: Optional[QueueSnapShot] = None
-        self._announcement_in_progress: bool = False
+        self.announcement_in_progress: bool = False
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
@@ -211,7 +199,7 @@ class PlayerQueue:
                 QueueOption.RADIO -> Replace the queue contents with a dynamic playlist based on the item
             :param passive: if passive set to true the stream url will not be sent to the player.
         """
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         # a single item or list of items may be provided
@@ -313,45 +301,21 @@ class PlayerQueue:
         url: URL that should be played as announcement, can only be plain url.
         prepend_alert: Prepend the (TTS) announcement with an alert bell sound.
         """
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning(
                 "Ignore queue command: An announcement is (already) in progress"
             )
             return
 
-        def create_announcement(_url: str):
-            return QueueItem(
-                uri=_url,
-                name="announcement",
-                duration=30,
-                streamdetails=StreamDetails(
-                    provider=ProviderType.URL,
-                    item_id=_url,
-                    content_type=ContentType.try_parse(_url),
-                    media_type=MediaType.ANNOUNCEMENT,
-                    loudness=0,
-                    gain_correct=4,
-                    direct=_url,
-                ),
-                media_type=MediaType.ANNOUNCEMENT,
-            )
-
         try:
             # create snapshot
             await self.snapshot_create()
+            wait_time = 2
             # stop player if needed
-            if self.active and self.player.state in (
-                PlayerState.PLAYING,
-                PlayerState.PAUSED,
-            ):
+            if self.active and self.player.state == PlayerState.PLAYING:
                 await self.stop()
-                await self._wait_for_state((PlayerState.OFF, PlayerState.IDLE))
-                self._announcement_in_progress = True
-
-            # turn on player if needed
-            if not self.player.powered:
-                await self.player.power(True)
-                await self._wait_for_state(PlayerState.IDLE)
+                self.announcement_in_progress = True
+                await asyncio.sleep(0.1)
 
             # adjust volume if needed
             if self._settings.announce_volume_increase:
@@ -360,68 +324,60 @@ class PlayerQueue:
                 )
                 announce_volume = min(announce_volume, 100)
                 announce_volume = max(announce_volume, 0)
+                # turn on player if needed (might be needed before adjusting the volume)
+                if not self.player.powered:
+                    await self.player.power(True)
+                    wait_time += 2
                 await self.player.volume_set(announce_volume)
 
-            # adjust queue settings for announce playback
-            self._settings.from_dict(
-                {
-                    "repeat_mode": "off",
-                    "shuffle_enabled": False,
-                }
-            )
-
-            queue_items = []
             # prepend alert sound if needed
-            if prepend_alert and ALERT_ANNOUNCE_FILE:
-                queue_items.append(create_announcement(ALERT_ANNOUNCE_FILE))
+            if prepend_alert:
+                announce_urls = (ANNOUNCE_ALERT_FILE, url)
+                wait_time += 2
+            else:
+                announce_urls = (url,)
 
-            queue_items.append(create_announcement(url))
-
-            # append silence track. we use that as a reliable way to make sure
-            # there is enough buffer for the player to start quickly
-            # and to detect when we finished playing the alert
-            silence_item = create_announcement(self.mass.streams.get_silence_url())
-            queue_items.append(silence_item)
-
-            # start queue with announcement sound(s)
-            self._items = queue_items
-            stream = await self.queue_stream_start(start_index=0, seek_position=0)
-            # execute the play command on the player(s)
-            await self.player.play_url(stream.url)
+            # send announcement stream to player
+            announce_stream_url = self.mass.streams.get_announcement_url(
+                self.queue_id, announce_urls, self._settings.stream_type
+            )
+            await self.player.play_url(announce_stream_url)
 
             # wait for the player to finish playing
-            await asyncio.sleep(5)
-            await self._wait_for_state(PlayerState.PLAYING, silence_item.item_id)
+            info = await parse_tags(url)
+            wait_time += info.duration or 10
+            await asyncio.sleep(wait_time)
 
         except Exception as err:  # pylint: disable=broad-except
             self.logger.exception("Error while playing announcement", exc_info=err)
         finally:
             # restore queue
-            self._announcement_in_progress = False
+            self.announcement_in_progress = False
             await self.snapshot_restore()
 
     async def stop(self) -> None:
         """Stop command on queue player."""
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
-        self.signal_next = False
+        if stream := self.stream:
+            stream.signal_next = None
         # redirect to underlying player
         await self.player.stop()
 
     async def play(self) -> None:
         """Play (unpause) command on queue player."""
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
-        if self.active and self.player.state == PlayerState.PAUSED:
+        if self.player.state == PlayerState.PAUSED:
             await self.player.play()
         else:
             await self.resume()
 
     async def pause(self) -> None:
         """Pause command on queue player."""
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         # redirect to underlying player
@@ -436,7 +392,7 @@ class PlayerQueue:
 
     async def next(self) -> None:
         """Play the next track in the queue."""
-        next_index = self.get_next_index(self._current_index)
+        next_index = self.get_next_index(self._current_index, True)
         if next_index is None:
             return None
         await self.play_index(next_index)
@@ -463,24 +419,32 @@ class PlayerQueue:
 
     async def resume(self) -> None:
         """Resume previous queue."""
+        last_player_url = self._last_player_state[1]
+        if last_player_url and self.mass.streams.base_url not in last_player_url:
+            self.logger.info("Trying to resume non-MA content %s...", last_player_url)
+            await self.player.play_url(last_player_url)
+            return
         resume_item = self.current_item
+        next_item = self.next_item
         resume_pos = self._current_item_elapsed_time
         if (
             resume_item
+            and next_item
             and resume_item.duration
             and resume_pos > (resume_item.duration * 0.9)
         ):
             # track is already played for > 90% - skip to next
-            resume_item = self.next_item
+            resume_item = next_item
+            resume_pos = 0
+        elif self._current_index is None and len(self._items) > 0:
+            # items available in queue but no previous track, start at 0
+            resume_item = self.get_item(0)
             resume_pos = 0
 
         if resume_item is not None:
             resume_pos = resume_pos if resume_pos > 10 else 0
             fade_in = resume_pos > 0
             await self.play_index(resume_item.item_id, resume_pos, fade_in)
-        elif len(self._items) > 0:
-            # items available in queue but no previous track, start at 0
-            await self.play_index(0)
         else:
             self.logger.warning(
                 "resume queue requested for %s but queue is empty", self.queue_id
@@ -497,6 +461,7 @@ class PlayerQueue:
             position=self._current_item_elapsed_time,
             settings=self._settings.to_dict(),
             volume_level=self.player.volume_level,
+            player_url=self.player.current_url,
         )
 
     async def snapshot_restore(self) -> None:
@@ -513,6 +478,10 @@ class PlayerQueue:
             await self.update_items(self._snapshot.items)
             self._current_index = self._snapshot.index
             self._current_item_elapsed_time = self._snapshot.position
+            self._last_player_state = (
+                self._snapshot.state,
+                self._snapshot.player_url,
+            )
             if self._snapshot.state in (PlayerState.PLAYING, PlayerState.PAUSED):
                 await self.resume()
             if self._snapshot.state == PlayerState.PAUSED:
@@ -534,9 +503,12 @@ class PlayerQueue:
         passive: bool = False,
     ) -> None:
         """Play item at index (or item_id) X in queue."""
-        if self._announcement_in_progress:
+        if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
+        if stream := self.stream:
+            # make sure that the previous stream is not auto restarted (race condition)
+            stream.signal_next = None
         if not isinstance(index, int):
             index = self.index_by_id(index)
         if index is None:
@@ -647,14 +619,17 @@ class PlayerQueue:
             if cur_index is None:
                 played_items = []
                 next_items = self.items + queue_items
-                cur_item = []
+                cur_items = []
             else:
                 played_items = self.items[:cur_index] if cur_index is not None else []
                 next_items = self.items[cur_index + 1 :] + queue_items
-                cur_item = [self.get_item(cur_index)]
+                if cur_item := self.get_item(cur_index):
+                    cur_items = [cur_item]
+                else:
+                    cur_items = []
             # do the shuffle
             next_items = random.sample(next_items, len(next_items))
-            queue_items = played_items + cur_item + next_items
+            queue_items = played_items + cur_items + next_items
         else:
             queue_items = self._items + queue_items
         await self.update_items(queue_items)
@@ -667,35 +642,52 @@ class PlayerQueue:
 
     def on_player_update(self) -> None:
         """Call when player updates."""
-        player_state_str = f"{self.player.state.value}.{self.player.current_url}"
-        if self._last_state != player_state_str:
-            # playback state changed
-            self._last_state = player_state_str
+        prev_state = self._last_player_state
+        new_state = (self.player.state, self.player.current_url)
 
-            # always signal update if playback state changed
-            self.signal_update()
-            if self.player.state == PlayerState.IDLE:
+        # handle PlayerState changed
+        if new_state[0] != prev_state[0]:
 
-                # handle end of queue
-                if self._current_index is not None and self._current_index >= (
-                    len(self._items) - 1
-                ):
+            # store previous state
+            if self.announcement_in_progress:
+                # while announcement in progress dont update the last url
+                # to allow us to resume from 3rd party sources
+                # https://github.com/music-assistant/hass-music-assistant/issues/697
+                self._last_player_state = (new_state[0], prev_state[1])
+            else:
+                self._last_player_state = new_state
+
+            # the queue stream was aborted on purpose and needs to restart
+            if (
+                prev_state[0] == PlayerState.PLAYING
+                and new_state[0] == PlayerState.IDLE
+                and self.stream
+                and self.stream.signal_next is not None
+            ):
+                # the queue stream was aborted on purpose (e.g. because of sample rate mismatch)
+                # we need to restart the stream with the next index
+                self._current_item_elapsed_time = 0
+                self.mass.create_task(self.play_index(self.stream.signal_next))
+                return
+
+            # queue exhausted or player turned off/stopped
+            if self.stream and (
+                new_state[0] in (PlayerState.IDLE, PlayerState.OFF)
+                or not self.player.available
+            ):
+                self.stream.signal_next = None
+                # handle last track of the queue, set the index to index that is out of range
+                if self._current_index >= (len(self._items) - 1):
                     self._current_index += 1
-                    self._current_item_elapsed_time = 0
 
-                # handle case where stream stopped on purpose and we need to restart it
-                elif self.signal_next:
-                    self.signal_next = False
-                    self.mass.create_task(self.resume())
+        # always signal update if the PlayerState changed
+        if new_state != prev_state:
+            self.signal_update()
 
-        self.update_state()
-
-    def update_state(self) -> None:
-        """Update queue details, called when player updates."""
-        if self.player.active_queue != self:
+        # update queue details if we're the active queue for the attached player
+        if self.player.active_queue != self or not self.active:
             return
-        if not self.active:
-            return
+
         new_index = self._current_index
         track_time = self._current_item_elapsed_time
         new_item_loaded = False
@@ -749,10 +741,10 @@ class PlayerQueue:
         self._current_index = start_index
         return stream
 
-    def get_next_index(self, cur_index: Optional[int]) -> int:
+    def get_next_index(self, cur_index: Optional[int], is_skip: bool = False) -> int:
         """Return the next index for the queue, accounting for repeat settings."""
         # handle repeat single track
-        if self.settings.repeat_mode == RepeatMode.ONE:
+        if self.settings.repeat_mode == RepeatMode.ONE and not is_skip:
             return cur_index
         # handle repeat all
         if (
@@ -770,15 +762,34 @@ class PlayerQueue:
     def signal_update(self, items_changed: bool = False) -> None:
         """Signal state changed of this queue."""
         if items_changed:
-            self.mass.create_task(self._save_items())
             self.mass.signal_event(
                 MassEvent(
                     EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self
                 )
             )
+            # save items
+            self.mass.create_task(
+                self.mass.cache.set(
+                    f"queue.items.{self.queue_id}",
+                    [x.to_dict() for x in self._items],
+                )
+            )
+
         # always send the base event
         self.mass.signal_event(
             MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
+        )
+        # save state
+        self.mass.create_task(
+            self.mass.database.set_setting(
+                f"queue.{self.queue_id}.current_index", self._current_index
+            )
+        )
+        self.mass.create_task(
+            self.mass.database.set_setting(
+                f"queue.{self.queue_id}.current_item_elapsed_time",
+                self._current_item_elapsed_time,
+            )
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -844,37 +855,31 @@ class PlayerQueue:
 
     async def _restore_items(self) -> None:
         """Try to load the saved state from cache."""
-        if queue_cache := await self.mass.cache.get(f"queue_items.{self.queue_id}"):
+        if queue_cache := await self.mass.cache.get(f"queue.items.{self.queue_id}"):
             try:
-                self._items = [QueueItem.from_dict(x) for x in queue_cache["items"]]
-                self._current_index = queue_cache["current_index"]
-                self._current_item_elapsed_time = queue_cache.get(
-                    "current_item_elapsed_time", 0
-                )
+                self._items = [QueueItem.from_dict(x) for x in queue_cache]
             except (KeyError, AttributeError, TypeError) as err:
                 self.logger.warning(
                     "Unable to restore queue state for queue %s",
                     self.queue_id,
                     exc_info=err,
                 )
-        await self.settings.restore()
+            else:
+                # restore state too
+                db_key = f"queue.{self.queue_id}.current_index"
+                if db_value := await self.mass.database.get_setting(db_key):
+                    self._current_index = try_parse_int(db_value)
+                db_key = f"queue.{self.queue_id}.current_item_elapsed_time"
+                if db_value := await self.mass.database.get_setting(db_key):
+                    self._current_item_elapsed_time = try_parse_int(db_value)
 
-    async def _save_items(self) -> None:
-        """Save current queue items/state in cache."""
-        await self.mass.cache.set(
-            f"queue_items.{self.queue_id}",
-            {
-                "items": [x.to_dict() for x in self._items],
-                "current_index": self._current_index,
-                "current_item_elapsed_time": self._current_item_elapsed_time,
-            },
-        )
+        await self.settings.restore()
 
     async def _wait_for_state(
         self,
         state: Union[None, PlayerState, Tuple[PlayerState]],
         queue_item_id: Optional[str] = None,
-        timeout: int = 30,
+        timeout: int = 120,
     ) -> None:
         """Wait for player(queue) to reach a specific state."""
         if state is not None and not isinstance(state, tuple):

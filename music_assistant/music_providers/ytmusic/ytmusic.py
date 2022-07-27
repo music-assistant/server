@@ -8,7 +8,11 @@ from urllib.parse import unquote
 import pytube
 import ytmusicapi
 
-from music_assistant.models.enums import MusicProviderFeature, ProviderType
+from music_assistant.models.enums import (
+    MediaQuality,
+    MusicProviderFeature,
+    ProviderType,
+)
 from music_assistant.models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -221,22 +225,24 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers,
             username=self.config.username,
         )
-        if "tracks" in playlist_obj:
-            tracks = []
-            for track in playlist_obj["tracks"]:
-                if track["isAvailable"]:
-                    # Playlist tracks sometimes do not have a valid artist id
-                    # In that case, call the API for track details based on track id
-                    try:
-                        track = await self._parse_track(track)
-                        if track:
-                            tracks.append(track)
-                    except InvalidDataError:
-                        track = await self.get_track(track["videoId"])
-                        if track:
-                            tracks.append(track)
-            return tracks
-        return []
+        if "tracks" not in playlist_obj:
+            return []
+        tracks = []
+        for index, track in enumerate(playlist_obj["tracks"]):
+            if track["isAvailable"]:
+                # Playlist tracks sometimes do not have a valid artist id
+                # In that case, call the API for track details based on track id
+                try:
+                    track = await self._parse_track(track)
+                    if track:
+                        track.position = index
+                        tracks.append(track)
+                except InvalidDataError:
+                    track = await self.get_track(track["videoId"])
+                    if track:
+                        track.position = index
+                        tracks.append(track)
+        return tracks
 
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
         """Get a list of albums for the given artist."""
@@ -332,30 +338,33 @@ class YoutubeMusicProvider(MusicProvider):
         )
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
-        # YT needs both the videoId and de setVideoId in order to remove
-        # the track. Thus, we need to obtain the playlist details and
-        # grab the info from there.
         playlist_obj = await get_playlist(
             prov_playlist_id=prov_playlist_id,
             headers=self._headers,
             username=self.config.username,
         )
-        if playlist_obj.get("tracks"):
-            tracks_to_delete = [
-                {"videoId": track["videoId"], "setVideoId": track["setVideoId"]}
-                for track in playlist_obj.get("tracks")
-                if track.get("videoId") in prov_track_ids
-            ]
-            return await add_remove_playlist_tracks(
-                headers=self._headers,
-                prov_playlist_id=prov_playlist_id,
-                prov_track_ids=tracks_to_delete,
-                add=False,
-                username=self.config.username,
-            )
+        if "tracks" not in playlist_obj:
+            return
+        tracks_to_delete = []
+        for index, track in enumerate(playlist_obj["tracks"]):
+            if index in positions_to_remove:
+                # YT needs both the videoId and the setVideoId in order to remove
+                # the track. Thus, we need to obtain the playlist details and
+                # grab the info from there.
+                tracks_to_delete.append(
+                    {"videoId": track["videoId"], "setVideoId": track["setVideoId"]}
+                )
+
+        return await add_remove_playlist_tracks(
+            headers=self._headers,
+            prov_playlist_id=prov_playlist_id,
+            prov_track_ids=tracks_to_delete,
+            add=False,
+            username=self.config.username,
+        )
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> List[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
@@ -558,7 +567,7 @@ class YoutubeMusicProvider(MusicProvider):
                 item_id=playlist_obj["id"], prov_type=self.type, prov_id=self.id
             )
         )
-        playlist.metadata.checksum = playlist_obj["checksum"]
+        playlist.metadata.checksum = playlist_obj.get("checksum")
         return playlist
 
     async def _parse_track(self, track_obj: dict) -> Track:
@@ -601,6 +610,7 @@ class YoutubeMusicProvider(MusicProvider):
                 prov_type=self.type,
                 prov_id=self.id,
                 available=available,
+                quality=MediaQuality.LOSSY_M4A,
             )
         )
         return track

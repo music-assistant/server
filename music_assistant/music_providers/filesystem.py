@@ -6,7 +6,6 @@ import logging
 import os
 import urllib.parse
 from contextlib import asynccontextmanager
-from pathlib import Path
 from time import time
 from typing import AsyncGenerator, List, Optional, Set, Tuple
 
@@ -15,8 +14,10 @@ import xmltodict
 from aiofiles.os import wrap
 from aiofiles.threadpool.binary import AsyncFileIO
 
+from music_assistant.constants import VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.tags import FALLBACK_ARTIST, parse_tags, split_items
+from music_assistant.helpers.playlists import parse_m3u, parse_pls
+from music_assistant.helpers.tags import parse_tags, split_items
 from music_assistant.helpers.util import create_safe_string, parse_title_and_version
 from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
@@ -33,14 +34,16 @@ from music_assistant.models.media_items import (
     MediaQuality,
     MediaType,
     Playlist,
+    Radio,
     StreamDetails,
     Track,
 )
 from music_assistant.models.music_provider import MusicProvider
 
 TRACK_EXTENSIONS = ("mp3", "m4a", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
-PLAYLIST_EXTENSIONS = ("m3u",)
+PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
+IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
 SCHEMA_VERSION = 17
 LOGGER = logging.getLogger(__name__)
 
@@ -145,34 +148,71 @@ class FileSystemProvider(MusicProvider):
             result += playlists
         return result
 
-    async def browse(self, path: Optional[str] = None) -> List[MediaItemType]:
+    async def browse(self, path: str) -> BrowseFolder:
         """
         Browse this provider's items.
 
-            :param path: The path to browse, (e.g. artists) or None for root level.
+            :param path: The path to browse, (e.g. provid://artists).
         """
-        if not path:
-            path = self.config.path
+        _, sub_path = path.split("://")
+        if not sub_path:
+            item_path = self.config.path
         else:
-            path = os.path.join(self.config.path, path)
-        result = []
-        for filename in await listdir(path):
-            full_path: str = os.path.join(path, filename)
+            item_path = os.path.join(self.config.path, sub_path)
+        subitems = []
+        for filename in await listdir(item_path):
+            full_path: str = os.path.join(item_path, filename)
             rel_path = full_path.replace(self.config.path + os.sep, "")
             if await isdir(full_path):
-                result.append(
+                subitems.append(
                     BrowseFolder(
                         item_id=rel_path,
                         provider=self.type,
+                        path=f"{self.id}://{rel_path}",
                         name=filename,
-                        uri=f"{self.type.value}://{rel_path}",
                     )
                 )
-            elif track := await self._parse_track(full_path):
-                result.append(track)
-            elif playlist := await self._parse_playlist(full_path):
-                result.append(playlist)
-        return result
+                continue
+
+            if "." not in filename or filename.startswith("."):
+                # skip system files and files without extension
+                continue
+
+            _, ext = filename.rsplit(".", 1)
+
+            if ext in TRACK_EXTENSIONS:
+                item_id = self._get_item_id(full_path)
+                if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
+                    item_id, provider_id=self.id
+                ):
+                    subitems.append(db_item)
+                elif track := await self._parse_track(full_path):
+                    # make sure that the item exists
+                    # https://github.com/music-assistant/hass-music-assistant/issues/707
+                    db_item = await self.mass.music.tracks.add_db_item(track)
+                    subitems.append(db_item)
+                continue
+            if ext in PLAYLIST_EXTENSIONS:
+                item_id = self._get_item_id(full_path)
+                if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
+                    item_id, provider_id=self.id
+                ):
+                    subitems.append(db_item)
+                elif playlist := await self._parse_playlist(full_path):
+                    # make sure that the item exists
+                    # https://github.com/music-assistant/hass-music-assistant/issues/707
+                    db_item = await self.mass.music.playlists.add_db_item(playlist)
+                    subitems.append(db_item)
+                continue
+
+        return BrowseFolder(
+            item_id=sub_path,
+            provider=self.type,
+            path=path,
+            name=sub_path or self.name,
+            # make sure to sort the resulting listing
+            items=sorted(subitems, key=lambda x: x.name),
+        )
 
     async def sync_library(
         self, media_types: Optional[Tuple[MediaType]] = None
@@ -220,13 +260,15 @@ class FileSystemProvider(MusicProvider):
                     playlist = await self._parse_playlist(entry.path)
                     # add/update] playlist to db
                     playlist.metadata.checksum = checksum
+                    # playlist is always in-library
+                    playlist.in_library = True
                     await self.mass.music.playlists.add_db_item(playlist)
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", entry.path, str(err))
 
             # save checksums every 100 processed items
-            # this allows us to pickup where we leftoff when initial scan gets intterrupted
+            # this allows us to pickup where we leftoff when initial scan gets interrupted
             if save_checksum_interval == 100:
                 await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
                 save_checksum_interval = 0
@@ -319,7 +361,7 @@ class FileSystemProvider(MusicProvider):
                 track.disc_number = album_mapping.disc_number
                 track.track_number = album_mapping.track_number
                 result.append(track)
-        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
+        return sorted(result, key=lambda x: (x.disc_number or 0, x.track_number or 0))
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
         """Get playlist tracks for given playlist id."""
@@ -327,33 +369,44 @@ class FileSystemProvider(MusicProvider):
         playlist_path = await self._get_filepath(MediaType.PLAYLIST, prov_playlist_id)
         if not await self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
-        playlist_base_path = Path(playlist_path).parent
-        index = 0
+        parentdir = os.path.dirname(playlist_path)
+        _, ext = playlist_path.rsplit(".", 1)
         try:
             async with self.open_file(playlist_path, "r") as _file:
-                for line in await _file.readlines():
-                    line = urllib.parse.unquote(line.strip())
-                    if line and not line.startswith("#"):
-                        # TODO: add support for .pls playlist files
-                        if track := await self._parse_playlist_line(
-                            line, playlist_base_path
-                        ):
-                            track.position = index
-                            result.append(track)
-                            index += 1
+                playlist_data = await _file.read()
+
+            if ext in ("m3u", "m3u8"):
+                playlist_lines = await parse_m3u(playlist_data)
+            else:
+                playlist_lines = await parse_pls(playlist_data)
+
+            for line_no, playlist_line in enumerate(playlist_lines):
+
+                if media_item := await self._parse_playlist_line(
+                    playlist_line, parentdir
+                ):
+                    # use the linenumber as position for easier deletions
+                    media_item.position = line_no
+                    result.append(media_item)
+
         except Exception as err:  # pylint: disable=broad-except
             self.logger.warning(
                 "Error while parsing playlist %s", playlist_path, exc_info=err
             )
         return result
 
-    async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
+    async def _parse_playlist_line(
+        self, line: str, playlist_path: str
+    ) -> Track | Radio | None:
         """Try to parse a track from a playlist line."""
         try:
-            # try to treat uri as filename first
-            if await self.exists(line):
-                file_path = await self.resolve(line)
-                return await self._parse_track(file_path)
+            # try to treat uri as (relative) filename
+            if "://" not in line:
+                for filename in (line, os.path.join(playlist_path, line)):
+                    if not await self.exists(filename):
+                        continue
+                    file_path = await self.resolve(filename)
+                    return await self._parse_track(file_path)
             # fallback to generic uri parsing
             return await self.mass.music.get_item_by_uri(line)
         except MusicAssistantError as err:
@@ -377,7 +430,7 @@ class FileSystemProvider(MusicProvider):
                 await _file.write(f"\n{uri}")
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
         itempath = await self._get_filepath(MediaType.PLAYLIST, prov_playlist_id)
@@ -385,24 +438,24 @@ class FileSystemProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist path does not exist: {itempath}")
         cur_lines = []
         async with self.open_file(itempath, "r") as _file:
-            for line in await _file.readlines():
+            for line_no, line in enumerate(await _file.readlines()):
                 line = urllib.parse.unquote(line.strip())
-                if line not in prov_track_ids:
+                if line_no not in positions_to_remove:
                     cur_lines.append(line)
         async with self.open_file(itempath, "w") as _file:
             for uri in cur_lines:
                 await _file.write(f"{uri}\n")
 
-    async def create_playlist(
-        self, name: str, initial_items: Optional[List[Track]] = None
-    ) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
-        async with self.open_file(name, "w") as _file:
-            for item in initial_items or []:
-                await _file.write(item.uri + "\n")
+        filename = await self.resolve(f"{name}.m3u")
+        async with self.open_file(filename, "w") as _file:
             await _file.write("\n")
+        playlist = await self._parse_playlist(filename)
+        db_playlist = await self.mass.music.playlists.add_db_item(playlist)
+        return db_playlist
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -472,9 +525,9 @@ class FileSystemProvider(MusicProvider):
                 self.logger.warning(
                     "%s is missing ID3 tag [albumartist], using %s as fallback",
                     track_path,
-                    FALLBACK_ARTIST,
+                    VARIOUS_ARTISTS,
                 )
-                album_artists = [await self._parse_artist(name=FALLBACK_ARTIST)]
+                album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS)]
 
             track.album = await self._parse_album(
                 tags.album,
@@ -503,9 +556,7 @@ class FileSystemProvider(MusicProvider):
 
         # cover image - prefer album image, fallback to embedded
         if track.album and track.album.image:
-            track.metadata.images = [
-                MediaItemImage(ImageType.THUMB, track.album.image, True)
-            ]
+            track.metadata.images = [track.album.image]
         elif tags.has_cover_image:
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can
@@ -611,6 +662,9 @@ class FileSystemProvider(MusicProvider):
             provider_ids={
                 MediaItemProviderId(artist_item_id, self.type, self.id, url=artist_path)
             },
+            musicbrainz_id=VARIOUS_ARTISTS_ID
+            if compare_strings(name, VARIOUS_ARTISTS)
+            else None,
         )
 
         if not await self.exists(artist_path):
@@ -635,24 +689,7 @@ class FileSystemProvider(MusicProvider):
             if genre := info.get("genre"):
                 artist.metadata.genres = set(split_items(genre))
         # find local images
-        images = []
-        for _path in await self.mass.loop.run_in_executor(
-            None, os.scandir, artist_path
-        ):
-            if "." not in _path.path or _path.is_dir():
-                continue
-            filename, ext = _path.path.rsplit(os.sep, 1)[-1].split(".", 1)
-            if ext not in ("jpg", "png"):
-                continue
-            try:
-                images.append(MediaItemImage(ImageType(filename), _path.path, True))
-            except ValueError:
-                if "folder" in filename:
-                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
-                elif "Artist" in filename:
-                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
-        if images:
-            artist.metadata.images = images
+        artist.metadata.images = await self._get_local_images(artist_path) or None
 
         return artist
 
@@ -709,22 +746,7 @@ class FileSystemProvider(MusicProvider):
         album.name, album.version = parse_title_and_version(album.name)
 
         # find local images
-        images = []
-        async for _path in scantree(album_path):
-            if "." not in _path.path or _path.is_dir():
-                continue
-            filename, ext = _path.path.rsplit(os.sep, 1)[-1].split(".", 1)
-            if ext not in ("jpg", "png"):
-                continue
-            try:
-                images.append(MediaItemImage(ImageType(filename), _path.path, True))
-            except ValueError:
-                if "folder" in filename:
-                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
-                elif "AlbumArt" in filename:
-                    images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
-        if images:
-            album.metadata.images = images
+        album.metadata.images = await self._get_local_images(album_path) or None
 
         return album
 
@@ -735,12 +757,12 @@ class FileSystemProvider(MusicProvider):
         if not await self.exists(playlist_path):
             raise MediaNotFoundError(f"Playlist path does not exist: {playlist_path}")
 
-        name = playlist_path.split(os.sep)[-1].replace(".m3u", "")
+        playlist_path_base, ext = playlist_path.rsplit(".", 1)
+        name = playlist_path_base.split(os.sep)[-1]
 
         playlist = Playlist(playlist_item_id, provider=self.type, name=name)
-        playlist.is_editable = True
-        # playlist is always in-library
-        playlist.in_library = True
+        playlist.is_editable = ext != "pls"  # can only edit m3u playlists
+
         playlist.add_provider_id(
             MediaItemProviderId(
                 item_id=playlist_item_id,
@@ -761,9 +783,6 @@ class FileSystemProvider(MusicProvider):
         if not file_path:
             return False  # guard
         file_path = await self.resolve(file_path)
-        if self.config.path not in file_path:
-            # additional guard (needed for files within m3u files)
-            return False
         _exists = wrap(os.path.exists)
         return await _exists(file_path)
 
@@ -809,3 +828,24 @@ class FileSystemProvider(MusicProvider):
     def _get_item_id(self, file_path: str) -> str:
         """Create item id from filename."""
         return create_safe_string(file_path.replace(self.config.path, ""))
+
+    async def _get_local_images(self, folder: str) -> List[MediaItemImage]:
+        """Return local images found in a given folderpath."""
+        images = []
+        async for _path in scantree(folder):
+            if "." not in _path.path or _path.is_dir():
+                continue
+            for ext in IMAGE_EXTENSIONS:
+                if not _path.path.endswith(f".{ext}"):
+                    continue
+                filename = _path.path.rsplit(os.sep, 1)[-1].replace(f".{ext}", "")
+                try:
+                    images.append(MediaItemImage(ImageType(filename), _path.path, True))
+                except ValueError:
+                    if "folder" in filename:
+                        images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
+                    elif "AlbumArt" in filename:
+                        images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
+                    elif "Artist" in filename:
+                        images.append(MediaItemImage(ImageType.THUMB, _path.path, True))
+        return images

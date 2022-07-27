@@ -201,17 +201,22 @@ class QobuzProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
-        endpoint = "playlist/get"
-        return [
-            await self._parse_track(item)
-            for item in await self._get_all_items(
-                endpoint,
-                key="tracks",
-                playlist_id=prov_playlist_id,
-                extra="tracks",
-            )
-            if (item and item["id"])
-        ]
+        count = 0
+        result = []
+        for item in await self._get_all_items(
+            "playlist/get",
+            key="tracks",
+            playlist_id=prov_playlist_id,
+            extra="tracks",
+        ):
+            if not (item and item["id"]):
+                continue
+            track = await self._parse_track(item)
+            # use count as position
+            track.position = count
+            result.append(track)
+            count += 1
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
         """Get a list of albums for the given artist."""
@@ -307,15 +312,15 @@ class QobuzProvider(MusicProvider):
         )
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
         playlist_track_ids = set()
-        for track in await self._get_all_items(
-            "playlist/get", key="tracks", playlist_id=prov_playlist_id, extra="tracks"
-        ):
-            if str(track["id"]) in prov_track_ids:
+        for track in await self.get_playlist_tracks(prov_playlist_id):
+            if track.position in positions_to_remove:
                 playlist_track_ids.add(str(track["playlist_track_id"]))
+            if len(playlist_track_ids) == positions_to_remove:
+                break
         return await self._get_data(
             "playlist/deleteTracks",
             playlist_id=prov_playlist_id,
@@ -347,7 +352,7 @@ class QobuzProvider(MusicProvider):
         else:
             raise MediaNotFoundError(f"Unsupported mime type for {item_id}")
         # report playback started as soon as the streamdetails are requested
-        self.mass.create_task(self._report_playback_started(item_id, streamdata))
+        self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
             item_id=str(item_id),
             provider=self.type,
@@ -361,7 +366,7 @@ class QobuzProvider(MusicProvider):
             callback=self._report_playback_stopped,
         )
 
-    async def _report_playback_started(self, item_id: str, streamdata: dict) -> None:
+    async def _report_playback_started(self, streamdata: dict) -> None:
         """Report playback start to qobuz."""
         # TODO: need to figure out if the streamed track is purchased by user
         # https://www.qobuz.com/api.json/0.2/purchase/getUserPurchasesIds?limit=5000&user_id=xxxxxxx
@@ -377,7 +382,7 @@ class QobuzProvider(MusicProvider):
                 "sample": False,
                 "intent": "stream",
                 "device_id": device_id,
-                "track_id": str(item_id),
+                "track_id": streamdata["track_id"],
                 "purchase": False,
                 "date": timestamp,
                 "credential_id": credential_id,
@@ -670,17 +675,24 @@ class QobuzProvider(MusicProvider):
                 url, headers=headers, params=kwargs, verify_ssl=False
             ) as response:
                 try:
+                    # make sure status is 200
+                    assert response.status == 200
                     result = await response.json()
-                    if "error" in result or (
-                        "status" in result and "error" in result["status"]
-                    ):
-                        self.logger.error("%s - %s", endpoint, result)
-                        return None
+                    # check for error in json
+                    if error := result.get("error"):
+                        raise ValueError(error)
+                    if result.get("status") and "error" in result["status"]:
+                        raise ValueError(result["status"])
                 except (
                     aiohttp.ContentTypeError,
                     JSONDecodeError,
+                    AssertionError,
+                    ValueError,
                 ) as err:
-                    self.logger.error("%s - %s", endpoint, str(err))
+                    text = await response.text()
+                    self.logger.exception(
+                        "Error while processing %s: %s", endpoint, text, exc_info=err
+                    )
                     return None
                 return result
 
@@ -696,11 +708,23 @@ class QobuzProvider(MusicProvider):
         async with self.mass.http_session.post(
             url, params=params, json=data, verify_ssl=False
         ) as response:
-            result = await response.json()
-            if "error" in result or (
-                "status" in result and "error" in result["status"]
-            ):
-                self.logger.error("%s - %s", endpoint, result)
+            try:
+                result = await response.json()
+                # check for error in json
+                if error := result.get("error"):
+                    raise ValueError(error)
+                if result.get("status") and "error" in result["status"]:
+                    raise ValueError(result["status"])
+            except (
+                aiohttp.ContentTypeError,
+                JSONDecodeError,
+                AssertionError,
+                ValueError,
+            ) as err:
+                text = await response.text()
+                self.logger.exception(
+                    "Error while processing %s: %s", endpoint, text, exc_info=err
+                )
                 return None
             return result
 

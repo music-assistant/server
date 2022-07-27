@@ -34,12 +34,15 @@ LOGGER = logging.getLogger(__name__)
 async def crossfade_pcm_parts(
     fade_in_part: bytes,
     fade_out_part: bytes,
-    fade_length: int,
-    fmt: ContentType,
+    bit_depth: int,
     sample_rate: int,
     channels: int = 2,
 ) -> bytes:
     """Crossfade two chunks of pcm/raw audio using ffmpeg."""
+    sample_size = int(sample_rate * (bit_depth / 8) * channels)
+    fmt = ContentType.from_bit_depth(bit_depth)
+    # calculate the fade_length from the smallest chunk
+    fade_length = min(len(fade_in_part), len(fade_out_part)) / sample_size
     fadeoutfile = create_tempfile()
     async with aiofiles.open(fadeoutfile.name, "wb") as outfile:
         await outfile.write(fade_out_part)
@@ -83,15 +86,15 @@ async def crossfade_pcm_parts(
         crossfade_data, _ = await proc.communicate(fade_in_part)
         if crossfade_data:
             LOGGER.debug(
-                "crossfaded 2 pcm chunks. fade_in_part: %s - fade_out_part: %s - result: %s",
+                "crossfaded 2 pcm chunks. fade_in_part: %s - fade_out_part: %s - fade_length: %s seconds",
                 len(fade_in_part),
                 len(fade_out_part),
-                len(crossfade_data),
+                fade_length,
             )
             return crossfade_data
         # no crossfade_data, return original data instead
         LOGGER.debug(
-            "crossfade of pcm chunks failed: not enough data. fade_in_part: %s - fade_out_part: %s",
+            "crossfade of pcm chunks failed: not enough data? fade_in_part: %s - fade_out_part: %s",
             len(fade_in_part),
             len(fade_out_part),
         )
@@ -425,7 +428,7 @@ async def get_radio_stream(
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
     headers = {"Icy-MetaData": "1"}
-    timeout = ClientTimeout(total=0, connect=30, sock_read=120)
+    timeout = ClientTimeout(total=0, connect=30, sock_read=600)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         headers = resp.headers
         meta_int = int(headers.get("icy-metaint", "0"))
@@ -479,7 +482,7 @@ async def get_http_stream(
     buffer = b""
     buffer_all = False
     bytes_received = 0
-    timeout = ClientTimeout(total=0, connect=30, sock_read=120)
+    timeout = ClientTimeout(total=0, connect=30, sock_read=600)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         is_partial = resp.status == 206
         buffer_all = seek_position and not is_partial

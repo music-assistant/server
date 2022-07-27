@@ -5,7 +5,7 @@ import asyncio
 import random
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
-from .enums import ContentType, CrossFadeMode, RepeatMode
+from .enums import ContentType, CrossFadeMode, MetadataMode, RepeatMode
 
 if TYPE_CHECKING:
     from .player_queue import PlayerQueue
@@ -27,6 +27,7 @@ class QueueSettings:
         self._stream_type: ContentType = queue.player.stream_type
         self._max_sample_rate: int = queue.player.max_sample_rate
         self._announce_volume_increase: int = 15
+        self._metadata_mode: MetadataMode = MetadataMode.DEFAULT
 
     @property
     def repeat_mode(self) -> RepeatMode:
@@ -34,10 +35,10 @@ class QueueSettings:
         return self._repeat_mode
 
     @repeat_mode.setter
-    def repeat_mode(self, enabled: bool) -> None:
+    def repeat_mode(self, mode: RepeatMode) -> None:
         """Set repeat enabled setting."""
-        if self._repeat_mode != enabled:
-            self._repeat_mode = enabled
+        if self._repeat_mode != mode:
+            self._repeat_mode = mode
             self._on_update("repeat_mode")
 
     @property
@@ -59,7 +60,6 @@ class QueueSettings:
                 # for now we use default python random function
                 # can be extended with some more magic based on last_played and stuff
                 next_items = random.sample(next_items, len(next_items))
-
                 items = played_items + [cur_item] + next_items
                 asyncio.create_task(self._queue.update_items(items))
                 self._on_update("shuffle_enabled")
@@ -165,6 +165,18 @@ class QueueSettings:
             self._announce_volume_increase = volume_increase
             self._on_update("announce_volume_increase")
 
+    @property
+    def metadata_mode(self) -> MetadataMode:
+        """Return metadata mode setting."""
+        return self._metadata_mode
+
+    @metadata_mode.setter
+    def metadata_mode(self, mode: MetadataMode) -> None:
+        """Set metadata mode setting."""
+        if self._metadata_mode != mode:
+            self._metadata_mode = mode
+            self._on_update("metadata_mode")
+
     def to_dict(self) -> Dict[str, Any]:
         """Return dict from settings."""
         return {
@@ -177,6 +189,7 @@ class QueueSettings:
             "stream_type": self.stream_type.value,
             "max_sample_rate": self.max_sample_rate,
             "announce_volume_increase": self.announce_volume_increase,
+            "metadata_mode": self.metadata_mode.value,
         }
 
     def from_dict(self, d: Dict[str, Any]) -> None:
@@ -199,6 +212,9 @@ class QueueSettings:
         self._max_sample_rate = int(d.get("max_sample_rate", self._max_sample_rate))
         self._announce_volume_increase = int(
             d.get("announce_volume_increase", self._announce_volume_increase)
+        )
+        self._metadata_mode = MetadataMode(
+            d.get("metadata_mode", self._metadata_mode.value)
         )
 
     async def restore(self) -> None:

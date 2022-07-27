@@ -75,21 +75,10 @@ class SpotifyProvider(MusicProvider):
         """Handle async initialization of the provider."""
         if not self.config.enabled:
             return False
-        if not self.config.username or not self.config.password:
-            raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails
         self._cache_dir = os.path.join(CACHE_DIR, self.id)
-        token = await self.get_token()
-        if not token:
-            try:
-                # a spotify free/basic account can be recoognized when
-                # the username consists of numbers only - check that here
-                int(self.config.username)
-                # an integer can be parsed of the username, this is a free account
-                raise LoginFailed("Only Spotify Premium accounts are supported")
-            except ValueError:
-                # pylint: disable=raise-missing-from
-                raise LoginFailed(f"Login failed for user {self.config.username}")
+        # try login which will raise if it fails
+        await self.login()
         return True
 
     async def search(
@@ -209,13 +198,19 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id) -> List[Track]:
         """Get all playlist tracks for given playlist id."""
-        return [
-            await self._parse_track(item["track"])
-            for item in await self._get_all_items(
-                f"playlists/{prov_playlist_id}/tracks",
-            )
-            if (item and item["track"] and item["track"]["id"])
-        ]
+        count = 0
+        result = []
+        for item in await self._get_all_items(
+            f"playlists/{prov_playlist_id}/tracks",
+        ):
+            if not (item and item["track"] and item["track"]["id"]):
+                continue
+            track = await self._parse_track(item["track"])
+            # use count as position
+            track.position = count
+            result.append(track)
+            count += 1
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> List[Album]:
         """Get a list of all albums for the given artist."""
@@ -281,12 +276,15 @@ class SpotifyProvider(MusicProvider):
         return await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
         track_uris = []
-        for track_id in prov_track_ids:
-            track_uris.append({"uri": f"spotify:track:{track_id}"})
+        for track in await self.get_playlist_tracks(prov_playlist_id):
+            if track.position in positions_to_remove:
+                track_uris.append({"uri": f"spotify:track:{track.item_id}"})
+            if len(track_uris) == positions_to_remove:
+                break
         data = {"tracks": track_uris}
         return await self._delete_data(
             f"playlists/{prov_playlist_id}/tracks", data=data
@@ -299,7 +297,7 @@ class SpotifyProvider(MusicProvider):
         if not track:
             raise MediaNotFoundError(f"track {item_id} not found")
         # make sure that the token is still valid by just requesting it
-        await self.get_token()
+        await self.login()
         return StreamDetails(
             item_id=track.item_id,
             provider=self.type,
@@ -312,7 +310,7 @@ class SpotifyProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         # make sure that the token is still valid by just requesting it
-        await self.get_token()
+        await self.login()
         librespot = await self.get_librespot_binary()
         args = [
             librespot,
@@ -486,8 +484,8 @@ class SpotifyProvider(MusicProvider):
         playlist.metadata.checksum = str(playlist_obj["snapshot_id"])
         return playlist
 
-    async def get_token(self):
-        """Get auth token on spotify."""
+    async def login(self) -> dict:
+        """Log-in Spotify and return tokeninfo."""
         # return existing token if we have one in memory
         if (
             self._auth_token
@@ -495,37 +493,49 @@ class SpotifyProvider(MusicProvider):
             and (self._auth_token["expiresAt"] > int(time.time()) + 20)
         ):
             return self._auth_token
-        tokeninfo = {}
+        tokeninfo, userinfo = None, self._sp_user
         if not self.config.username or not self.config.password:
-            return tokeninfo
+            raise LoginFailed("Invalid login credentials")
         # retrieve token with librespot
         retries = 0
-        while retries < 4:
+        while retries < 20:
             try:
-                tokeninfo = await asyncio.wait_for(self._get_token(), 5)
-                if tokeninfo:
+                retries += 1
+                if not tokeninfo:
+                    tokeninfo = await asyncio.wait_for(self._get_token(), 5)
+                if tokeninfo and not userinfo:
+                    userinfo = await asyncio.wait_for(
+                        self._get_data("me", tokeninfo=tokeninfo), 5
+                    )
+                if tokeninfo and userinfo:
+                    # we have all info we need!
                     break
                 if retries > 2:
                     # switch to ap workaround after 2 retries
                     self._ap_workaround = True
-                retries += 1
+            except asyncio.exceptions.TimeoutError:
                 await asyncio.sleep(2)
-            except TimeoutError:
-                pass
-        if tokeninfo:
+        if tokeninfo and userinfo:
             self._auth_token = tokeninfo
-            self._sp_user = await self._get_data("me")
-            self.mass.metadata.preferred_language = self._sp_user["country"]
-            self.logger.info(
-                "Succesfully logged in to Spotify as %s", self._sp_user["id"]
+            self._sp_user = userinfo
+            self.mass.metadata.preferred_language = userinfo["country"]
+            self.logger.info("Succesfully logged in to Spotify as %s", userinfo["id"])
+            self._auth_token = tokeninfo
+            return tokeninfo
+        if tokeninfo and not userinfo:
+            raise LoginFailed(
+                "Unable to retrieve userdetails from Spotify API - probably just a temporary error"
             )
-            self._auth_token = tokeninfo
-        else:
-            self.logger.error("Login failed for user %s", self.config.username)
-        return tokeninfo
+        if self.config.username.isnumeric():
+            # a spotify free/basic account can be recognized when
+            # the username consists of numbers only - check that here
+            # an integer can be parsed of the username, this is a free account
+            raise LoginFailed("Only Spotify Premium accounts are supported")
+        raise LoginFailed(f"Login failed for user {self.config.username}")
 
     async def _get_token(self):
         """Get spotify auth token with librespot bin."""
+        time_start = time.time()
         # authorize with username and password (NOTE: this can also be Spotify Connect)
         args = [
             await self.get_librespot_binary(),
@@ -576,14 +586,20 @@ class SpotifyProvider(MusicProvider):
             *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
         )
         stdout, _ = await librespot.communicate()
+        duration = round(time.time() - time_start, 2)
         try:
             result = json.loads(stdout)
         except JSONDecodeError:
             self.logger.warning(
-                "Error while retrieving Spotify token, details: %s",
+                "Error while retrieving Spotify token after %s seconds, details: %s",
+                duration,
                 stdout.decode(),
             )
             return None
+        self.logger.debug(
+            "Retrieved Spotify token using librespot in %s seconds",
+            duration,
+        )
         # transform token info to spotipy compatible format
         if result and "accessToken" in result:
             tokeninfo = result
@@ -610,38 +626,44 @@ class SpotifyProvider(MusicProvider):
                 break
         return all_items
 
-    async def _get_data(self, endpoint, **kwargs):
+    async def _get_data(self, endpoint, tokeninfo: Optional[dict] = None, **kwargs):
         """Get data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         kwargs["market"] = "from_token"
         kwargs["country"] = "from_token"
-        token = await self.get_token()
-        if not token:
-            return None
-        headers = {"Authorization": f'Bearer {token["accessToken"]}'}
+        if tokeninfo is None:
+            tokeninfo = await self.login()
+        headers = {"Authorization": f'Bearer {tokeninfo["accessToken"]}'}
         async with self._throttler:
-            async with self.mass.http_session.get(
-                url, headers=headers, params=kwargs, verify_ssl=False
-            ) as response:
-                try:
+            time_start = time.time()
+            try:
+                async with self.mass.http_session.get(
+                    url, headers=headers, params=kwargs, verify_ssl=False, timeout=120
+                ) as response:
                     result = await response.json()
                     if "error" in result or (
                         "status" in result and "error" in result["status"]
                     ):
                         self.logger.error("%s - %s", endpoint, result)
                         return None
-                except (
-                    aiohttp.ContentTypeError,
-                    JSONDecodeError,
-                ) as err:
-                    self.logger.error("%s - %s", endpoint, str(err))
-                    return None
-                return result
+            except (
+                aiohttp.ContentTypeError,
+                JSONDecodeError,
+            ) as err:
+                self.logger.error("%s - %s", endpoint, str(err))
+                return None
+            finally:
+                self.logger.debug(
+                    "Processing GET/%s took %s seconds",
+                    endpoint,
+                    round(time.time() - time_start, 2),
+                )
+            return result
 
     async def _delete_data(self, endpoint, data=None, **kwargs):
         """Delete data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
-        token = await self.get_token()
+        token = await self.login()
         if not token:
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
@@ -653,7 +675,7 @@ class SpotifyProvider(MusicProvider):
     async def _put_data(self, endpoint, data=None, **kwargs):
         """Put data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
-        token = await self.get_token()
+        token = await self.login()
         if not token:
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
@@ -665,7 +687,7 @@ class SpotifyProvider(MusicProvider):
     async def _post_data(self, endpoint, data=None, **kwargs):
         """Post data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
-        token = await self.get_token()
+        token = await self.login()
         if not token:
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}

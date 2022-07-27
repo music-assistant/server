@@ -61,19 +61,6 @@ class Database:
             TABLE_SETTINGS, {"key": key, "value": value}, allow_replace=True
         )
 
-    async def get_count(
-        self,
-        table: str,
-        match: dict = None,
-    ) -> int:
-        """Get row count for given table/query."""
-        sql_query = f"SELECT count() FROM {table}"
-        if match is not None:
-            sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
-        if res := await self._db.fetch_one(sql_query, match):
-            return res["count()"]
-        return 0
-
     async def get_rows(
         self,
         table: str,
@@ -101,6 +88,17 @@ class Database:
         """Get all rows for given custom query."""
         query = f"{query} LIMIT {limit} OFFSET {offset}"
         return await self._db.fetch_all(query, params)
+
+    async def get_count_from_query(
+        self,
+        query: str,
+        params: Optional[dict] = None,
+    ) -> int:
+        """Get row count for given custom query."""
+        query = f"SELECT count() FROM ({query})"
+        if result := await self._db.fetch_one(query, params):
+            return result[0]
+        return 0
 
     async def search(
         self, table: str, search: str, column: str = "name"
@@ -160,7 +158,7 @@ class Database:
         self, table: str, match: Optional[dict] = None, query: Optional[str] = None
     ) -> None:
         """Delete data in given table."""
-        assert "where" not in query.lower()
+        assert not (query and "where" in query.lower())
         sql_query = f"DELETE FROM {table} "
         if match:
             sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
