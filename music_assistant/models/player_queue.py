@@ -212,7 +212,7 @@ class PlayerQueue:
                 media_item = item
 
             # collect tracks to play
-            if QueueOption.RADIO:
+            if queue_opt == QueueOption.RADIO:
                 # For dynamic/radio mode, the source items are stored and unpacked dynamically
                 tracks += [media_item]
             elif media_item.media_type == MediaType.ARTIST:
