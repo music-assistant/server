@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-import pathlib
 import random
 from asyncio import TimerHandle
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
+from music_assistant.constants import ANNOUNCE_ALERT_FILE, FALLBACK_DURATION
 from music_assistant.helpers.tags import parse_tags
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
@@ -22,17 +22,6 @@ from .queue_settings import QueueSettings
 if TYPE_CHECKING:
     from music_assistant.controllers.streams import QueueStream
     from music_assistant.mass import MusicAssistant
-
-RESOURCES_DIR = (
-    pathlib.Path(__file__)
-    .parent.resolve()
-    .parent.resolve()
-    .joinpath("helpers/resources")
-)
-
-ANNOUNCE_ALERT_FILE = str(RESOURCES_DIR.joinpath("announce.flac"))
-
-FALLBACK_DURATION = 172800  # if duration is None (e.g. radio stream) = 48 hours
 
 
 @dataclass
@@ -385,7 +374,9 @@ class PlayerQueue:
     async def seek(self, position: int) -> None:
         """Seek to a specific position in the track (given in seconds)."""
         assert self.current_item, "No item loaded"
-        assert position < self.current_item.duration, "Position exceeds track duration"
+        assert self.current_item.media_item.media_type == MediaType.TRACK
+        assert self.current_item.duration
+        assert position < self.current_item.duration
         await self.play_index(self._current_index, position)
 
     async def resume(self) -> None:
@@ -809,7 +800,7 @@ class PlayerQueue:
                 duration = (
                     queue_track.streamdetails.seconds_streamed
                     or queue_track.duration
-                    or 48 * 3600
+                    or FALLBACK_DURATION
                 )
                 if duration is not None and elapsed_time_queue > (
                     duration + total_time
@@ -847,28 +838,3 @@ class PlayerQueue:
                     self._current_item_elapsed_time = try_parse_int(db_value)
 
         await self.settings.restore()
-
-    async def _wait_for_state(
-        self,
-        state: Union[None, PlayerState, Tuple[PlayerState]],
-        queue_item_id: Optional[str] = None,
-        timeout: int = 120,
-    ) -> None:
-        """Wait for player(queue) to reach a specific state."""
-        if state is not None and not isinstance(state, tuple):
-            state = (state,)
-
-        count = 0
-        while count < timeout * 10:
-
-            if (state is None or self.player.state in state) and (
-                queue_item_id is None
-                or self.current_item
-                and self.current_item.item_id == queue_item_id
-            ):
-                return
-
-            count += 1
-            await asyncio.sleep(0.1)
-
-        raise TimeoutError(f"Timeout while waiting on state(s) {state}")

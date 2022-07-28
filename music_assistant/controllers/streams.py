@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from aiohttp import web
 
+from music_assistant.constants import FALLBACK_DURATION, SILENCE_FILE
 from music_assistant.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
@@ -164,12 +165,44 @@ class StreamsController:
             request.remote,
             request.headers,
         )
+        client_id = request.match_info.get("player_id", request.remote)
         stream_id = request.match_info["stream_id"]
         queue_stream = self.queue_streams.get(stream_id)
 
+        # try to recover from the situation where the player itself requests
+        # a stream that is already done
         if queue_stream is None:
-            self.logger.warning("Got stream request for unknown id: %s", stream_id)
+            self.logger.warning(
+                "Got stream request for unknown or finished id: %s, trying resume",
+                stream_id,
+            )
+            if player := self.mass.players.get_player(client_id):
+                self.mass.create_task(player.active_queue.resume())
+                return web.FileResponse(SILENCE_FILE)
             return web.Response(status=404)
+        if queue_stream.done.is_set():
+            self.logger.warning(
+                "Got stream request for finished stream: %s, assuming resume", stream_id
+            )
+            self.mass.create_task(queue_stream.queue.resume())
+            return web.FileResponse(SILENCE_FILE)
+
+        # handle a second connection for the same player
+        # this means either that the player itself want to skip to the next track
+        # or a misbehaving client which reconnects multiple times (e.g. Kodi)
+        if queue_stream.all_clients_connected.is_set():
+            self.logger.warning(
+                "Got stream request for running stream: %s, assuming next", stream_id
+            )
+            self.mass.create_task(queue_stream.queue.next())
+            return web.FileResponse(SILENCE_FILE)
+
+        if client_id in queue_stream.connected_clients:
+            self.logger.warning(
+                "Simultanuous connections detected from %s, playback may be disturbed",
+                client_id,
+            )
+            client_id += uuid4().hex
 
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
@@ -196,7 +229,6 @@ class StreamsController:
             # do not start stream on HEAD request
             return resp
 
-        client_id = request.remote
         enable_icy = request.headers.get("Icy-MetaData", "") == "1"
 
         # regular streaming - each chunk is sent to the callback here
@@ -609,7 +641,9 @@ class QueueStream:
             crossfade_size = int(self.sample_size_per_second * crossfade_duration)
             queue_track.streamdetails.seconds_skipped = seek_position
             # predict total size to expect for this track from duration
-            stream_duration = (queue_track.duration or 48 * 3600) - seek_position
+            stream_duration = (
+                queue_track.duration or FALLBACK_DURATION
+            ) - seek_position
             # buffer_duration has some overhead to account for padded silence
             buffer_duration = (crossfade_duration + 4) if use_crossfade else 4
             # send signal that we've loaded a new track into the buffer
