@@ -231,9 +231,9 @@ async def get_song_radio_tracks(
 ) -> Dict[str, str]:
     """Async wrapper around the ytmusicapi radio function."""
     user = username if is_brand_account(username) else None
-    ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
 
     def _get_song_radio_tracks():
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         playlist_id = f"RDAMVM{prov_item_id}"
         return ytm.get_watch_playlist(
             videoId=prov_item_id, playlistId=playlist_id, limit=limit
