@@ -478,6 +478,21 @@ class QueueStream:
                     ):
                         self.connected_clients.pop(client_id, None)
 
+                ### Workaround alert ###
+                # some players want to buffer too fast ahead (e.g. Sonos) but this
+                # does not play well with throttling streaming providers (e.g. YT Music)
+                # or the fact that we build a small buffer at the end of the track to do
+                # the silence stripping and crossfade.
+                # so we throttle the player itself so we have enough backpressure to make up
+                # for small internet slowness or above mentioned situations.
+                # if we do not do this the player (we saw this with sonos at least) will disconnect
+                # due to a socket timeout as it takes too long between the next chunk.
+                player_buffered = (
+                    self.total_seconds_streamed - self.queue.player.elapsed_time or 0
+                )
+                if player_buffered > 30:
+                    await asyncio.sleep(1)
+
         # all queue data has been streamed. Either because the queue is exhausted
         # or we need to restart the stream due to decoder/sample rate mismatch
         # set event that this stream task is finished
@@ -590,24 +605,13 @@ class QueueStream:
             )
 
             # set some basic vars
-            if last_fadeout_part:
-                crossfade_duration = int(
-                    len(last_fadeout_part) / self.sample_size_per_second
-                )
-            else:
-                crossfade_duration = self.queue.settings.crossfade_duration
+            crossfade_duration = self.queue.settings.crossfade_duration
             crossfade_size = int(self.sample_size_per_second * crossfade_duration)
             queue_track.streamdetails.seconds_skipped = seek_position
             # predict total size to expect for this track from duration
-            stream_duration = (queue_track.duration or 0) - seek_position
-            # calculate allowed buffer duration
-            if use_crossfade:
-                # buffer_duration has some overhead to account for padded silence
-                # except for YTMusic for which we need to keep the buffer as small as possible
-                padding = 0 if streamdetails.provider == ProviderType.YTMUSIC else 4
-                buffer_duration = crossfade_duration + padding
-            else:
-                buffer_duration = 2
+            stream_duration = (queue_track.duration or 48 * 3600) - seek_position
+            # buffer_duration has some overhead to account for padded silence
+            buffer_duration = (crossfade_duration + 4) if use_crossfade else 4
             # send signal that we've loaded a new track into the buffer
             self.index_in_buffer = queue_index
             self.queue.signal_update()
