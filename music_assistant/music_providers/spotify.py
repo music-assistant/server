@@ -293,7 +293,7 @@ class SpotifyProvider(MusicProvider):
     async def get_similar_tracks(self, prov_track_id, limit=25) -> List[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         endpoint = "recommendations"
-        items = await self._get_data(endpoint, seed_track=prov_track_id, limit=limit)
+        items = await self._get_data(endpoint, seed_tracks=prov_track_id, limit=limit)
         return [
             await self._parse_track(item)
             for item in items["tracks"]
