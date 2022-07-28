@@ -165,7 +165,7 @@ class StreamsController:
             request.remote,
             request.headers,
         )
-        client_id = request.match_info.get("player_id", request.remote)
+        client_id = request.query.get("player_id", request.remote)
         stream_id = request.match_info["stream_id"]
         queue_stream = self.queue_streams.get(stream_id)
 
