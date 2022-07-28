@@ -695,6 +695,7 @@ class QueueStream:
             player_buffered = (
                 self.total_seconds_streamed - self.queue.player.elapsed_time or 0
             )
+            seconds_in_buffer = len(buffer) / self.sample_size_per_second
             self.logger.debug(
                 "end of track reached - chunk_num: %s - crossfade_buffer: %s - stream_duration: %s - player_buffer: %s",
                 chunk_num,
