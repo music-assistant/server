@@ -652,10 +652,10 @@ class PlayerQueue:
                     self._current_index += 1
 
         # always signal update if the PlayerState changed
-        if new_state != prev_state:
+        if new_state[0] != prev_state[0]:
             self.signal_update()
 
-        # update queue details if we're the active queue for the attached player
+        # update queue details only if we're the active queue for the attached player
         if self.player.active_queue != self or not self.active:
             return
 
@@ -807,7 +807,9 @@ class PlayerQueue:
                     track_time = elapsed_time_queue - total_time
                     break
                 duration = (
-                    queue_track.streamdetails.seconds_streamed or queue_track.duration
+                    queue_track.streamdetails.seconds_streamed
+                    or queue_track.duration
+                    or 48 * 3600
                 )
                 if duration is not None and elapsed_time_queue > (
                     duration + total_time
