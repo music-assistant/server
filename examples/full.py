@@ -201,19 +201,30 @@ async def main():
         await mass.music.start_sync()
 
         # get some data
-        artist_count = await mass.music.artists.count()
-        artist_count_lib = await mass.music.artists.count(True)
-        print(f"Got {artist_count} artists ({artist_count_lib} in library)")
-        album_count = await mass.music.albums.count()
-        album_count_lib = await mass.music.albums.count(True)
-        print(f"Got {album_count} albums ({album_count_lib} in library)")
-        track_count = await mass.music.tracks.count()
-        track_count_lib = await mass.music.tracks.count(True)
-        print(f"Got {track_count} tracks ({track_count_lib} in library)")
-        radio_count = await mass.music.radio.count(True)
-        print(f"Got {radio_count} radio stations in library")
-        playlists = await mass.music.playlists.db_items(True)
-        print(f"Got {len(playlists)} playlists in library")
+        artists = await mass.music.artists.db_items()
+        artists_lib = await mass.music.artists.db_items(True)
+        print(
+            f"Got {artists_lib.total} artists  in library (of {artists.total} total in db)"
+        )
+
+        albums = await mass.music.albums.db_items()
+        albums_lib = await mass.music.albums.db_items(True)
+        print(
+            f"Got {albums_lib.total} albums  in library (of {albums.total} total in db)"
+        )
+
+        tracks = await mass.music.tracks.db_items()
+        tracks_lib = await mass.music.tracks.db_items(True)
+        print(
+            f"Got {tracks_lib.total} tracks  in library (of {tracks.total} total in db)"
+        )
+
+        playlists = await mass.music.playlists.db_items()
+        playlists_lib = await mass.music.playlists.db_items(True)
+        print(
+            f"Got {playlists_lib.total} tracks  in library (of {playlists.total} total in db)"
+        )
+
         # register a player
         test_player1 = TestPlayer("test1")
         test_player2 = TestPlayer("test2")
@@ -230,8 +241,8 @@ async def main():
         # we can also send an uri, such as spotify://track/abcdfefgh
         # or database://playlist/1
         # or a list of items
-        if len(playlists) > 0:
-            await test_player1.active_queue.play_media(playlists[0])
+        if playlists.count > 0:
+            await test_player1.active_queue.play_media(playlists.items[0])
 
         await asyncio.sleep(3600)
 
