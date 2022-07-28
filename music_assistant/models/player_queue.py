@@ -232,7 +232,7 @@ class PlayerQueue:
                 tracks += [media_item]
 
         # Handle Radio playback: clear queue and request first batch
-        if QueueOption.RADIO:
+        if queue_opt == QueueOption.RADIO:
             # clear existing items before we start radio
             await self.clear()
             # load the first batch
