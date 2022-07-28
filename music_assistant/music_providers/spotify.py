@@ -69,6 +69,7 @@ class SpotifyProvider(MusicProvider):
             MusicProviderFeature.SEARCH,
             MusicProviderFeature.ARTIST_ALBUMS,
             MusicProviderFeature.ARTIST_TOPTRACKS,
+            MusicProviderFeature.SIMILAR_TRACKS,
         )
 
     async def setup(self) -> bool:

@@ -595,12 +595,12 @@ class YoutubeMusicProvider(MusicProvider):
         if "isExplicit" in track_obj:
             track.metadata.explicit = track_obj["isExplicit"]
         if "duration" in track_obj and track_obj["duration"].isdigit():
-            track.duration = track_obj["duration"]
+            track.duration = int(track_obj["duration"])
         elif (
             "duration_seconds" in track_obj
             and str(track_obj["duration_seconds"]).isdigit()
         ):
-            track.duration = track_obj["duration_seconds"]
+            track.duration = int(track_obj["duration_seconds"])
         available = True
         if "isAvailable" in track_obj:
             available = track_obj["isAvailable"]
