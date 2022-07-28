@@ -103,9 +103,11 @@ class MusicAssistant:
         if self.closed:
             return
         if self.logger.isEnabledFor(logging.DEBUG):
-            self.logger.getChild("event").debug(
-                "%s %s", event.type.value, event.object_id or ""
-            )
+            # do not log queue time updated events because that is too chatty
+            if event.type != EventType.QUEUE_TIME_UPDATED:
+                self.logger.getChild("event").debug(
+                    "%s %s", event.type.value, event.object_id or ""
+                )
         for cb_func, event_filter, id_filter in self._listeners:
             if not (event_filter is None or event.type in event_filter):
                 continue
@@ -209,7 +211,6 @@ class MusicAssistant:
                 # create task from coroutine and attach task_done callback
                 next_job.timestamp = time()
                 next_job.status = JobStatus.RUNNING
-                self.logger.debug("Start processing job [%s].", next_job.name)
                 task = self.create_task(next_job.coro)
                 task.set_name(next_job.name)
                 task.add_done_callback(partial(self.__job_done_cb, job=next_job))
@@ -225,7 +226,6 @@ class MusicAssistant:
         job.timestamp = execution_time
         if task.cancelled():
             job.status = JobStatus.CANCELLED
-            self.logger.debug("Job [%s] is cancelled.", job.name)
         elif err := task.exception():
             job.status = JobStatus.ERROR
             self.logger.error(

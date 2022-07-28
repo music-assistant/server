@@ -171,38 +171,32 @@ class StreamsController:
 
         # try to recover from the situation where the player itself requests
         # a stream that is already done
-        if queue_stream is None:
+        if queue_stream is None or queue_stream.done.is_set():
             self.logger.warning(
-                "Got stream request for unknown or finished id: %s, trying resume",
+                "Got stream request for unknown or finished stream: %s",
                 stream_id,
             )
             if player := self.mass.players.get_player(client_id):
                 self.mass.create_task(player.active_queue.resume())
                 return web.FileResponse(SILENCE_FILE)
             return web.Response(status=404)
-        if queue_stream.done.is_set():
-            self.logger.warning(
-                "Got stream request for finished stream: %s, assuming resume", stream_id
-            )
-            self.mass.create_task(queue_stream.queue.resume())
-            return web.FileResponse(SILENCE_FILE)
 
         # handle a second connection for the same player
         # this means either that the player itself want to skip to the next track
         # or a misbehaving client which reconnects multiple times (e.g. Kodi)
-        if queue_stream.all_clients_connected.is_set():
-            self.logger.warning(
-                "Got stream request for running stream: %s, assuming next", stream_id
-            )
-            self.mass.create_task(queue_stream.queue.next())
-            return web.FileResponse(SILENCE_FILE)
-
         if client_id in queue_stream.connected_clients:
             self.logger.warning(
-                "Simultanuous connections detected from %s, playback may be disturbed",
+                "Simultanuous connections detected from %s, playback may be disturbed!",
                 client_id,
             )
             client_id += uuid4().hex
+        elif queue_stream.all_clients_connected.is_set():
+            self.logger.info(
+                "Got stream request for running stream: %s, assuming next", stream_id
+            )
+            if not queue_stream.signal_next and queue_stream.queue.items:
+                self.mass.create_task(queue_stream.queue.next())
+            return web.FileResponse(SILENCE_FILE)
 
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
