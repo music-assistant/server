@@ -309,9 +309,9 @@ class Track(MediaItem):
         """Return (first/random) image/thumb from metadata (if any)."""
         if image := super().image:
             return image
-        # fallback to album image
+        # fallback to album image (use getattr to guard for ItemMapping)
         if self.album:
-            return self.album.image
+            return getattr(self.album, "image", None)
         return None
 
     @property
