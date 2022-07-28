@@ -703,6 +703,9 @@ class PlayerQueue:
         if self._current_index != new_index:
             # queue track updated
             self._current_index = new_index
+            # watch dynamic radio items refill if needed
+            if self._radio_source and new_index == (len(self._items) - 2):
+                self.mass.create_task(self._load_radio_tracks())
         # check if a new track is loaded, wait for the streamdetails
         if (
             self.current_item
@@ -764,9 +767,6 @@ class PlayerQueue:
         if cur_index is None:
             return 0
         next_index = cur_index + 1
-        # watch dynamic radio items refill if needed
-        if self._radio_source and next_index == (len(self._items) - 2):
-            self.mass.create_task(self._load_radio_tracks())
         return next_index
 
     def signal_update(self, items_changed: bool = False) -> None:
