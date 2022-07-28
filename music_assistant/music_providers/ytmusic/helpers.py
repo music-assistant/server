@@ -22,6 +22,8 @@ async def get_artist(prov_artist_id: str) -> Dict[str, str]:
         ytm = ytmusicapi.YTMusic()
         try:
             artist = ytm.get_artist(channelId=prov_artist_id)
+            # ChannelId can sometimes be different and original ID is not part of the response
+            artist["channelId"] = prov_artist_id
         except KeyError:
             user = ytm.get_user(channelId=prov_artist_id)
             artist = {"channelId": prov_artist_id, "name": user["name"]}
