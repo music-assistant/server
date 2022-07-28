@@ -172,8 +172,8 @@ class StreamsController:
         # try to recover from the situation where the player itself requests
         # a stream that is already done
         if queue_stream is None or queue_stream.done.is_set():
-            self.logger.warning(
-                "Got stream request for unknown or finished stream: %s",
+            self.logger.debug(
+                "Got stream request for unknown or finished stream: %s - assuming resume",
                 stream_id,
             )
             if player := self.mass.players.get_player(client_id):
@@ -191,7 +191,7 @@ class StreamsController:
             )
             client_id += uuid4().hex
         elif queue_stream.all_clients_connected.is_set():
-            self.logger.info(
+            self.logger.debug(
                 "Got stream request for running stream: %s, assuming next", stream_id
             )
             if not queue_stream.signal_next and queue_stream.queue.items:
