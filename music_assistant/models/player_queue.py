@@ -685,20 +685,20 @@ class PlayerQueue:
         if self.player.active_queue != self or not self.active:
             return
 
-        new_index = self._current_index
         track_time = self._current_item_elapsed_time
         new_item_loaded = False
         if self.player.state == PlayerState.PLAYING and self.player.elapsed_time > 0:
             new_index, track_time = self.__get_queue_stream_index()
-        # process new index
-        if self._current_index != new_index:
-            # queue track updated
-            self._current_index = new_index
-            # watch dynamic radio items refill if needed
-            fill_index = len(self._items) - 3
-            cur_idx = self._current_index or 0
-            if self._radio_source and (cur_idx >= fill_index):
-                self.mass.create_task(self._load_radio_tracks())
+
+            # process new index
+            if self._current_index != new_index:
+                # queue index updated
+                self._current_index = new_index
+                # watch dynamic radio items refill if needed
+                fill_index = len(self._items) - 5
+                if self._radio_source and (new_index >= fill_index):
+                    self.mass.create_task(self._load_radio_tracks())
+
         # check if a new track is loaded, wait for the streamdetails
         if (
             self.current_item
