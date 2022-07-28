@@ -270,9 +270,9 @@ class AlbumsController(MediaControllerBase[Album]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        limit=25,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
+        limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the album content."""
         prov = self.mass.music.get_provider(provider_id or provider)

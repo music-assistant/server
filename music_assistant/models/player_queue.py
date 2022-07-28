@@ -244,12 +244,11 @@ class PlayerQueue:
 
         # Handle Radio playback: clear queue and request first batch
         if QueueOption.RADIO:
-            # clear existing items if we're not playing any radio now
-            if not self._radio_source:
-                await self.clear()
+            # clear existing items before we start radio
+            await self.clear()
             # load the first batch
             await self._load_radio_tracks(tracks)
-            if not passive and not self._radio_source:
+            if not passive:
                 await self.play_index(0)
             self._radio_source += tracks
 
@@ -275,29 +274,22 @@ class PlayerQueue:
         elif queue_opt == QueueOption.ADD:
             await self.append(queue_items)
 
-    async def _load_radio_tracks(self, radio_items: List[MediaItemType]) -> None:
+    async def _load_radio_tracks(
+        self, radio_items: Optional[List[MediaItemType]] = None
+    ) -> None:
         """Fill the Queue with (additional) Radio tracks."""
-        assert radio_items, "No Radio item(s) loaded/active!"
-        # shuffle the source items, just in case
-        random.shuffle(radio_items)
+        if radio_items:
+            self._radio_source = radio_items
+        assert self._radio_source, "No Radio item(s) loaded/active!"
+
         tracks: List[MediaItemType] = []
-        for radio_item in radio_items:
-            if radio_item.media_type == MediaType.ARTIST:
-                tracks += await self.mass.music.artists.dynamic_tracks(
-                    item_id=radio_item.item_id, provider=radio_item.provider
-                )
-            elif radio_item.media_type == MediaType.ALBUM:
-                tracks += await self.mass.music.albums.dynamic_tracks(
-                    item_id=radio_item.item_id, provider=radio_item.provider
-                )
-            elif radio_item.media_type == MediaType.PLAYLIST:
-                tracks += await self.mass.music.playlists.dynamic_tracks(
-                    item_id=radio_item.item_id, provider=radio_item.provider
-                )
-            elif radio_item.media_type == MediaType.TRACK:
-                tracks += await self.mass.music.tracks.dynamic_tracks(
-                    item_id=radio_item.item_id, provider=radio_item.provider
-                )
+        # grab dynamic tracks for (all) source items
+        # shuffle the source items, just in case
+        for radio_item in random.sample(self._radio_source, len(self._radio_source)):
+            ctrl = self.mass.music.get_controller(radio_item.media_type)
+            tracks += await ctrl.dynamic_tracks(
+                item_id=radio_item.item_id, provider=radio_item.provider
+            )
             # make sure we do not grab too much items
             if len(tracks) >= 50:
                 break
@@ -774,7 +766,7 @@ class PlayerQueue:
         next_index = cur_index + 1
         # watch dynamic radio items refill if needed
         if self._radio_source and next_index == (len(self._items) - 2):
-            self.mass.create_task(self._load_radio_tracks(self._radio_source))
+            self.mass.create_task(self._load_radio_tracks())
         return next_index
 
     def signal_update(self, items_changed: bool = False) -> None:

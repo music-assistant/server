@@ -458,9 +458,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 continue
             return await self._get_provider_dynamic_tracks(
                 item_id=prov_id.item_id,
-                limit=limit,
                 provider=prov_id.prov_type,
                 provider_id=prov_id.prov_id,
+                limit=limit,
             )
         # Fallback to the default implementation
         return await self._get_dynamic_tracks(ref_item)
@@ -469,16 +469,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        limit=25,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
+        limit: int = 25,
     ) -> List[Track]:
         """Generate a dynamic list of tracks based on the item's content."""
 
     @abstractmethod
     async def _get_dynamic_tracks(
-        self,
-        media_item: ItemCls,
-        limit=25,
+        self, media_item: ItemCls, limit: int = 25
     ) -> List[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""

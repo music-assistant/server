@@ -161,9 +161,9 @@ class TracksController(MediaControllerBase[Track]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        limit=25,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
+        limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the track."""
         prov = self.mass.music.get_provider(provider_id or provider)
@@ -178,7 +178,9 @@ class TracksController(MediaControllerBase[Track]):
         )
         return similar_tracks
 
-    async def _get_dynamic_tracks(self, media_item: Track, limit=25) -> List[Track]:
+    async def _get_dynamic_tracks(
+        self, media_item: Track, limit: int = 25
+    ) -> List[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
         raise UnsupportedFeaturedException(

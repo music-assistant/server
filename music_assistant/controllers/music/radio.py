@@ -132,17 +132,15 @@ class RadioController(MediaControllerBase[Radio]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        limit=25,
         provider: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
+        limit: int = 25,
     ) -> List[Track]:
         """Generate a dynamic list of tracks based on the item's content."""
         raise NotImplementedError("Dynamic tracks not supported for Radio MediaItem")
 
     async def _get_dynamic_tracks(
-        self,
-        media_item: Radio,
-        limit=25,
+        self, media_item: Radio, limit: int = 25
     ) -> List[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         raise NotImplementedError("Dynamic tracks not supported for Radio MediaItem")
