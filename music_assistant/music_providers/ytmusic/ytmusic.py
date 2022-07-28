@@ -594,7 +594,7 @@ class YoutubeMusicProvider(MusicProvider):
             track.album = await self._parse_album(album, album["id"])
         if "isExplicit" in track_obj:
             track.metadata.explicit = track_obj["isExplicit"]
-        if "duration" in track_obj and track_obj["duration"].isdigit():
+        if "duration" in track_obj and str(track_obj["duration"]).isdigit():
             track.duration = int(track_obj["duration"])
         elif (
             "duration_seconds" in track_obj

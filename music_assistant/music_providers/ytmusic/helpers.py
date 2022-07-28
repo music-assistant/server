@@ -235,9 +235,17 @@ async def get_song_radio_tracks(
     def _get_song_radio_tracks():
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         playlist_id = f"RDAMVM{prov_item_id}"
-        return ytm.get_watch_playlist(
+        result = ytm.get_watch_playlist(
             videoId=prov_item_id, playlistId=playlist_id, limit=limit
         )
+        # Replace inconsistensies for easier parsing
+        for track in result["tracks"]:
+            if track.get("thumbnail"):
+                track["thumbnails"] = track["thumbnail"]
+                del track["thumbnail"]
+            if track.get("length"):
+                track["duration"] = get_sec(track["length"])
+        return result
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_song_radio_tracks)
@@ -280,3 +288,13 @@ def get_playlist_checksum(playlist_obj: dict) -> str:
 def is_brand_account(username: str) -> bool:
     """Check if the provided username is a brand-account."""
     return len(username) == 21 and username.isdigit()
+
+
+def get_sec(time_str):
+    """Get seconds from time."""
+    parts = time_str.split(":")
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + int(parts[1])
+    return 0
