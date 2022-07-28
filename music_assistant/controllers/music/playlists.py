@@ -324,4 +324,3 @@ class PlaylistController(MediaControllerBase[Playlist]):
         raise UnsupportedFeaturedException(
             "No Music Provider found that supports requesting similar tracks."
         )
-        return await self.get_db_item(item_id)

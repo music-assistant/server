@@ -140,4 +140,3 @@ class RadioController(MediaControllerBase[Radio]):
     ) -> List[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         raise NotImplementedError("Dynamic tracks not supported for Radio MediaItem")
-        return await self.get_db_item(item_id)
