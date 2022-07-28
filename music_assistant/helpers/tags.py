@@ -174,11 +174,12 @@ class AudioTags:
         has_cover_image = any(
             x for x in raw["streams"] if x["codec_name"] in ("mjpeg", "png")
         )
-        # convert all tag-keys to lowercase without spaces
-        tags = {
-            key.lower().replace(" ", "").replace("_", ""): value
-            for key, value in raw["format"].get("tags", {}).items()
-        }
+        # convert all tag-keys (gathered from all streams) to lowercase without spaces
+        tags = {}
+        for stream in raw["streams"] + [raw["format"]]:
+            for key, value in stream.get("tags", {}).items():
+                key = key.lower().replace(" ", "").replace("_", "")
+                tags[key] = value
 
         return AudioTags(
             raw=raw,

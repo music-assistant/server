@@ -123,11 +123,7 @@ class RadioController(MediaControllerBase[Radio]):
             },
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
-        db_item = await self.get_db_item(item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
-        )
-        return db_item
+        return await self.get_db_item(item_id)
 
     async def _get_provider_dynamic_tracks(
         self,
@@ -144,3 +140,4 @@ class RadioController(MediaControllerBase[Radio]):
     ) -> List[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         raise NotImplementedError("Dynamic tracks not supported for Radio MediaItem")
+        return await self.get_db_item(item_id)

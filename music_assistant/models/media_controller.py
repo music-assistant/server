@@ -15,6 +15,7 @@ from typing import (
     Union,
 )
 
+from music_assistant.helpers.json import json_serializer
 from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.event import MassEvent
 
@@ -421,7 +422,17 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     "Could not delete %s: it has items attached", db_item.item_id
                 )
             return
-        await self.update_db_item(db_item.item_id, db_item, overwrite=True)
+
+        # update the item in db (provider_ids column only)
+        match = {"item_id": item_id}
+        await self.mass.database.update(
+            self.db_table,
+            match,
+            {"provider_ids": json_serializer(db_item.provider_ids)},
+        )
+        self.mass.signal_event(
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
+        )
 
         self.logger.debug("removed provider %s from item id %s", prov_id, item_id)
 

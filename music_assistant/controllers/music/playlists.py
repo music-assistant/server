@@ -251,11 +251,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             },
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
-        db_item = await self.get_db_item(item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
-        )
-        return db_item
+        return await self.get_db_item(item_id)
 
     async def _get_provider_playlist_tracks(
         self,
@@ -328,3 +324,4 @@ class PlaylistController(MediaControllerBase[Playlist]):
         raise UnsupportedFeaturedException(
             "No Music Provider found that supports requesting similar tracks."
         )
+        return await self.get_db_item(item_id)
