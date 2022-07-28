@@ -250,7 +250,7 @@ class PlayerQueue:
             await self._load_radio_tracks(tracks)
             if not passive:
                 await self.play_index(0)
-            self._radio_source += tracks
+            return
 
         # only add available items
         queue_items = [QueueItem.from_media_item(x) for x in tracks if x.available]
