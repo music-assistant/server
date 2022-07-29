@@ -192,7 +192,7 @@ class StreamsController:
             client_id += uuid4().hex
         elif (
             queue_stream.all_clients_connected.is_set()
-            and queue_stream.total_seconds_streamed
+            and queue_stream.queue.player.elapsed_time > 2
         ):
             self.logger.debug(
                 "Got stream request for running stream: %s, assuming next", stream_id
@@ -478,9 +478,6 @@ class QueueStream:
                 self.done.set()
                 return
             self.logger.debug("%s clients connected", len(self.connected_clients))
-            # TEMP fix - to remove in stream refactor
-            # some clients connect twice (browser, vlc, kodi) and we are not prepared for that
-            await asyncio.sleep(0.2)
             self.streaming_started = time()
 
             # Read bytes from final output and send chunk to child callback.
