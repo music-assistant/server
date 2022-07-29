@@ -73,10 +73,14 @@ class StreamsController:
         urls: Tuple[str],
         content_type: ContentType,
     ) -> str:
-        """Start running a queue stream."""
+        """Get url to announcement stream."""
         self.announcements[queue_id] = urls
         ext = content_type.value
         return f"{self.base_url}/announce/{queue_id}.{ext}"
+
+    def get_control_url(self, player_id: str, cmd: str) -> str:
+        """Get url to special control stream."""
+        return f"{self.base_url}/control/{player_id}/{cmd}.mp3"
 
     async def get_preview_url(self, provider: ProviderType, track_id: str) -> str:
         """Return url to short preview sample."""
@@ -92,6 +96,7 @@ class StreamsController:
 
         app.router.add_get("/preview", self.serve_preview)
         app.router.add_get("/announce/{queue_id}.{fmt}", self.serve_announcement)
+        app.router.add_get("/control/{player_id}/{cmd}.mp3", self.serve_control)
         app.router.add_get("/{stream_id}.{fmt}", self.serve_queue_stream)
 
         runner = web.AppRunner(app, access_log=None)
@@ -156,6 +161,28 @@ class StreamsController:
 
         return web.Response(body=output, headers={"Content-Type": f"audio/{fmt.value}"})
 
+    async def serve_control(self, request: web.Request):
+        """Serve special control stream."""
+        player_id = request.match_info["player_id"]
+        cmd = request.match_info["cmd"]
+
+        player = self.mass.players.get_player(player_id)
+        if not player:
+            return web.Response(status=404)
+
+        queue = player.active_queue
+
+        # handle next
+        if cmd == "next":
+            # ignore if signal_next active
+            if not (queue.stream and queue.stream.signal_next):
+                self.mass.create_task(queue.stream.queue.next())
+        elif cmd == "previous":
+            self.mass.create_task(queue.stream.queue.previous())
+
+        # always respond with silence just to prevent errors
+        return web.FileResponse(SILENCE_FILE)
+
     async def serve_queue_stream(self, request: web.Request):
         """Serve queue audio stream to a single player."""
         self.logger.debug(
@@ -172,34 +199,25 @@ class StreamsController:
         # try to recover from the situation where the player itself requests
         # a stream that is already done
         if queue_stream is None or queue_stream.done.is_set():
-            self.logger.debug(
-                "Got stream request for unknown or finished stream: %s - assuming resume",
+            self.logger.warning(
+                "Got stream request for unknown or finished stream: %s",
                 stream_id,
             )
-            if player := self.mass.players.get_player(client_id):
-                self.mass.create_task(player.active_queue.resume())
-                return web.FileResponse(SILENCE_FILE)
-            return web.Response(status=404)
+            return web.FileResponse(SILENCE_FILE)
 
         # handle a second connection for the same player
-        # this means either that the player itself want to skip to the next track
-        # or a misbehaving client which reconnects multiple times (e.g. Kodi, Vlc)
+        # this probably means a client which does multiple GET requests (e.g. Kodi, Vlc)
         if client_id in queue_stream.connected_clients:
             self.logger.warning(
                 "Simultanuous connections detected from %s, playback may be disturbed!",
                 client_id,
             )
             client_id += uuid4().hex
-        elif (
-            queue_stream.all_clients_connected.is_set()
-            and queue_stream.queue.player.elapsed_time > 2
-        ):
-            self.logger.debug(
-                "Got stream request for running stream: %s, assuming next", stream_id
+        elif queue_stream.all_clients_connected.is_set():
+            self.logger.warning(
+                "Got stream request for already running stream: %s, playback may be disturbed!",
+                stream_id,
             )
-            if not queue_stream.signal_next and queue_stream.queue.items:
-                self.mass.create_task(queue_stream.queue.next())
-            return web.FileResponse(SILENCE_FILE)
 
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
