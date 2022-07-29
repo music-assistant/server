@@ -1,1 +1,1 @@
-"""Package with Music Providers."""
+"""Package with Music Provider controllers."""

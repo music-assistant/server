@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import asyncio
 from random import choice, random
-from typing import List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union
 
 from music_assistant.constants import VARIOUS_ARTISTS
+from music_assistant.controllers.database import TABLE_ALBUMS, TABLE_TRACKS
+from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.helpers.compare import compare_album, loose_compare_strings
-from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MusicProviderFeature, ProviderType
 from music_assistant.models.errors import (
@@ -15,7 +16,6 @@ from music_assistant.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.models.event import MassEvent
-from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -24,7 +24,9 @@ from music_assistant.models.media_items import (
     MediaType,
     Track,
 )
-from music_assistant.models.music_provider import MusicProvider
+
+if TYPE_CHECKING:
+    from music_assistant.models.music_provider import MusicProvider
 
 
 class AlbumsController(MediaControllerBase[Album]):

@@ -5,13 +5,14 @@ import asyncio
 from time import time
 from typing import List, Optional
 
+from music_assistant.controllers.database import TABLE_RADIOS
 from music_assistant.helpers.compare import loose_compare_strings
-from music_assistant.helpers.database import TABLE_RADIOS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MediaType, ProviderType
 from music_assistant.models.event import MassEvent
-from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import Radio, Track
+
+from .base import MediaControllerBase
 
 
 class RadioController(MediaControllerBase[Radio]):

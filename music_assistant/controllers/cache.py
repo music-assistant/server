@@ -9,14 +9,14 @@ from collections import OrderedDict
 from collections.abc import MutableMapping
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
-from music_assistant.helpers.database import TABLE_CACHE
+from music_assistant.controllers.database import TABLE_CACHE
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-class Cache:
-    """Basic cache using both memory and database."""
+class CacheController:
+    """Basic cache controller using both memory and database."""
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize our caching class."""

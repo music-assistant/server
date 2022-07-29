@@ -6,12 +6,12 @@ import itertools
 import statistics
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
-from music_assistant.controllers.music.albums import AlbumsController
-from music_assistant.controllers.music.artists import ArtistsController
-from music_assistant.controllers.music.playlists import PlaylistController
-from music_assistant.controllers.music.radio import RadioController
-from music_assistant.controllers.music.tracks import TracksController
-from music_assistant.helpers.database import TABLE_PLAYLOG, TABLE_TRACK_LOUDNESS
+from music_assistant.controllers.database import TABLE_PLAYLOG, TABLE_TRACK_LOUDNESS
+from music_assistant.controllers.media.albums import AlbumsController
+from music_assistant.controllers.media.artists import ArtistsController
+from music_assistant.controllers.media.playlists import PlaylistController
+from music_assistant.controllers.media.radio import RadioController
+from music_assistant.controllers.media.tracks import TracksController
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.config import MusicProviderConfig
@@ -28,12 +28,12 @@ from music_assistant.models.media_items import (
     media_from_dict,
 )
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.music_providers.filesystem import FileSystemProvider
-from music_assistant.music_providers.qobuz import QobuzProvider
+from music_assistant.music_providers.filesystem.filesystem import FileSystemProvider
+from music_assistant.music_providers.qobuz.qobuz import QobuzProvider
 from music_assistant.music_providers.spotify import SpotifyProvider
-from music_assistant.music_providers.tunein import TuneInProvider
-from music_assistant.music_providers.url import PROVIDER_CONFIG as URL_CONFIG
-from music_assistant.music_providers.url import URLProvider
+from music_assistant.music_providers.tunein.tunein import TuneInProvider
+from music_assistant.music_providers.url.url import PROVIDER_CONFIG as URL_CONFIG
+from music_assistant.music_providers.url.url import URLProvider
 from music_assistant.music_providers.ytmusic import YoutubeMusicProvider
 
 if TYPE_CHECKING:

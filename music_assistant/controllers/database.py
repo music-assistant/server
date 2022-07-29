@@ -24,8 +24,8 @@ TABLE_SETTINGS = "settings"
 TABLE_THUMBS = "thumbnails"
 
 
-class Database:
-    """Class that holds the (logic to the) database."""
+class DatabaseController:
+    """Controller that holds the (connection to the) database."""
 
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""

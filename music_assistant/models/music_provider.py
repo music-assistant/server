@@ -1,4 +1,4 @@
-"""Model for a Music Providers."""
+"""Model/base for a Music Provider implementation."""
 from __future__ import annotations
 
 from abc import abstractmethod
