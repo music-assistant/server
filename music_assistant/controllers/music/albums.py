@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from random import choice, random
 from typing import List, Optional, Union
 
 from music_assistant.constants import VARIOUS_ARTISTS
@@ -9,7 +10,10 @@ from music_assistant.helpers.compare import compare_album, loose_compare_strings
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MusicProviderFeature, ProviderType
-from music_assistant.models.errors import MediaNotFoundError
+from music_assistant.models.errors import (
+    MediaNotFoundError,
+    UnsupportedFeaturedException,
+)
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
@@ -111,62 +115,6 @@ class AlbumsController(MediaControllerBase[Album]):
             )
         )
         return db_item
-
-    async def _get_provider_album_tracks(
-        self,
-        item_id: str,
-        provider: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
-    ) -> List[Track]:
-        """Return album tracks for the given provider album id."""
-        prov = self.mass.music.get_provider(provider_id or provider)
-        if not prov:
-            return []
-        full_album = await self.get_provider_item(item_id, provider_id or provider)
-        # prefer cache items (if any)
-        cache_key = f"{prov.type.value}.albumtracks.{item_id}"
-        cache_checksum = full_album.metadata.checksum
-        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
-            return [Track.from_dict(x) for x in cache]
-        # no items in cache - get listing from provider
-        items = []
-        for track in await prov.get_album_tracks(item_id):
-            # make sure that the (full) album is stored on the tracks
-            track.album = full_album
-            if full_album.metadata.images:
-                track.metadata.images = full_album.metadata.images
-            items.append(track)
-        # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
-            )
-        )
-        return items
-
-    async def _get_db_album_tracks(
-        self,
-        item_id: str,
-    ) -> List[Track]:
-        """Return in-database album tracks for the given database album."""
-        db_album = await self.get_db_item(item_id)
-        # simply grab all tracks in the db that are linked to this album
-        # TODO: adjust to json query instead of text search?
-        query = f"SELECT * FROM tracks WHERE albums LIKE '%\"{item_id}\"%'"
-        result = []
-        for track in await self.mass.music.tracks.get_db_items_by_query(query):
-            if album_mapping := next(
-                (x for x in track.albums if x.item_id == db_album.item_id), None
-            ):
-                # make sure that the full album is set on the track and prefer the album's images
-                track.album = db_album
-                if db_album.metadata.images:
-                    track.metadata.images = db_album.metadata.images
-                # apply the disc and track number from the mapping
-                track.disc_number = album_mapping.disc_number
-                track.track_number = album_mapping.track_number
-                result.append(track)
-        return sorted(result, key=lambda x: (x.disc_number or 0, x.track_number or 0))
 
     async def add_db_item(self, item: Album, overwrite_existing: bool = False) -> Album:
         """Add a new record to the database."""
@@ -282,6 +230,103 @@ class AlbumsController(MediaControllerBase[Album]):
 
         # delete the album itself from db
         await super().delete_db_item(item_id)
+
+    async def _get_provider_album_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+    ) -> List[Track]:
+        """Return album tracks for the given provider album id."""
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if not prov:
+            return []
+        full_album = await self.get_provider_item(item_id, provider_id or provider)
+        # prefer cache items (if any)
+        cache_key = f"{prov.type.value}.albumtracks.{item_id}"
+        cache_checksum = full_album.metadata.checksum
+        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
+            return [Track.from_dict(x) for x in cache]
+        # no items in cache - get listing from provider
+        items = []
+        for track in await prov.get_album_tracks(item_id):
+            # make sure that the (full) album is stored on the tracks
+            track.album = full_album
+            if full_album.metadata.images:
+                track.metadata.images = full_album.metadata.images
+            items.append(track)
+        # store (serializable items) in cache
+        self.mass.create_task(
+            self.mass.cache.set(
+                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
+            )
+        )
+        return items
+
+    async def _get_provider_dynamic_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
+    ):
+        """Generate a dynamic list of tracks based on the album content."""
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if (
+            not prov
+            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
+        ):
+            return []
+        album_tracks = await self._get_provider_album_tracks(
+            item_id=item_id, provider=provider, provider_id=provider_id
+        )
+        # Grab a random track from the album that we use to obtain similar tracks for
+        track = choice(album_tracks)
+        # Calculate no of songs to grab from each list at a 10/90 ratio
+        total_no_of_tracks = limit + limit % 2
+        no_of_album_tracks = int(total_no_of_tracks * 10 / 100)
+        no_of_similar_tracks = int(total_no_of_tracks * 90 / 100)
+        # Grab similar tracks from the music provider
+        similar_tracks = await prov.get_similar_tracks(
+            prov_track_id=track.item_id, limit=no_of_similar_tracks
+        )
+        # Merge album content with similar tracks
+        dynamic_playlist = [
+            *sorted(album_tracks, key=lambda n: random())[:no_of_album_tracks],
+            *sorted(similar_tracks, key=lambda n: random())[:no_of_similar_tracks],
+        ]
+        return sorted(dynamic_playlist, key=lambda n: random())
+
+    async def _get_dynamic_tracks(self, media_item: Album, limit=25) -> List[Track]:
+        """Get dynamic list of tracks for given item, fallback/default implementation."""
+        # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
+        raise UnsupportedFeaturedException(
+            "No Music Provider found that supports requesting similar tracks."
+        )
+
+    async def _get_db_album_tracks(
+        self,
+        item_id: str,
+    ) -> List[Track]:
+        """Return in-database album tracks for the given database album."""
+        db_album = await self.get_db_item(item_id)
+        # simply grab all tracks in the db that are linked to this album
+        # TODO: adjust to json query instead of text search?
+        query = f"SELECT * FROM tracks WHERE albums LIKE '%\"{item_id}\"%'"
+        result = []
+        for track in await self.mass.music.tracks.get_db_items_by_query(query):
+            if album_mapping := next(
+                (x for x in track.albums if x.item_id == db_album.item_id), None
+            ):
+                # make sure that the full album is set on the track and prefer the album's images
+                track.album = db_album
+                if db_album.metadata.images:
+                    track.metadata.images = db_album.metadata.images
+                # apply the disc and track number from the mapping
+                track.disc_number = album_mapping.disc_number
+                track.track_number = album_mapping.track_number
+                result.append(track)
+        return sorted(result, key=lambda x: (x.disc_number or 0, x.track_number or 0))
 
     async def _match(self, db_album: Album) -> None:
         """

@@ -28,7 +28,7 @@ class Cache:
         """Async initialize of cache module."""
         self.__schedule_cleanup_task()
 
-    async def get(self, cache_key, checksum="", default=None):
+    async def get(self, cache_key: str, checksum: Optional[str] = None, default=None):
         """
         Get object from cache and return the results.
 
@@ -37,7 +37,7 @@ class Cache:
                     cacheobject matches the checkum provided
         """
         cur_time = int(time.time())
-        if not isinstance(checksum, str):
+        if checksum is not None and not isinstance(checksum, str):
             checksum = str(checksum)
 
         # try memory cache first

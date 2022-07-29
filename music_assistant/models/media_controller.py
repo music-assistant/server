@@ -20,7 +20,7 @@ from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.event import MassEvent
 
 from .enums import EventType, MediaType, MusicProviderFeature, ProviderType
-from .media_items import MediaItemType, PagedItems, media_from_dict
+from .media_items import MediaItemType, PagedItems, Track, media_from_dict
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -451,3 +451,43 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             MassEvent(EventType.MEDIA_ITEM_DELETED, db_item.uri, db_item)
         )
         self.logger.debug("deleted item with id %s from database", item_id)
+
+    async def dynamic_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
+    ) -> List[Track]:
+        """Return a dynamic list of tracks based on the given item."""
+        ref_item = await self.get(item_id, provider, provider_id)
+        for prov_id in ref_item.provider_ids:
+            prov = self.mass.music.get_provider(prov_id.prov_id)
+            if not prov.available:
+                continue
+            if MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
+                continue
+            return await self._get_provider_dynamic_tracks(
+                item_id=prov_id.item_id,
+                provider=prov_id.prov_type,
+                provider_id=prov_id.prov_id,
+                limit=limit,
+            )
+        # Fallback to the default implementation
+        return await self._get_dynamic_tracks(ref_item)
+
+    @abstractmethod
+    async def _get_provider_dynamic_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
+    ) -> List[Track]:
+        """Generate a dynamic list of tracks based on the item's content."""
+
+    @abstractmethod
+    async def _get_dynamic_tracks(
+        self, media_item: ItemCls, limit: int = 25
+    ) -> List[Track]:
+        """Get dynamic list of tracks for given item, fallback/default implementation."""

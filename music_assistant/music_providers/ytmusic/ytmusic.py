@@ -42,6 +42,7 @@ from music_assistant.music_providers.ytmusic.helpers import (
     get_library_playlists,
     get_library_tracks,
     get_playlist,
+    get_song_radio_tracks,
     get_track,
     library_add_remove_album,
     library_add_remove_artist,
@@ -76,6 +77,7 @@ class YoutubeMusicProvider(MusicProvider):
             MusicProviderFeature.SEARCH,
             MusicProviderFeature.ARTIST_ALBUMS,
             MusicProviderFeature.ARTIST_TOPTRACKS,
+            MusicProviderFeature.SIMILAR_TRACKS,
         )
 
     async def setup(self) -> bool:
@@ -187,11 +189,15 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
         """Get album tracks for given album id."""
         album_obj = await get_album(prov_album_id=prov_album_id)
-        return [
-            await self._parse_track(track)
-            for track in album_obj["tracks"]
-            if "tracks" in album_obj
-        ]
+        if not album_obj.get("tracks"):
+            return []
+        tracks = []
+        for idx, track_obj in enumerate(album_obj["tracks"], 1):
+            track = await self._parse_track(track_obj=track_obj)
+            track.disc_number = 0
+            track.track_number = idx
+            tracks.append(track)
+        return tracks
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
@@ -253,14 +259,14 @@ class YoutubeMusicProvider(MusicProvider):
         return []
 
     async def get_artist_toptracks(self, prov_artist_id) -> List[Track]:
-        """Get a list of 5 most popular tracks for the given artist."""
+        """Get a list of 25 most popular tracks for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id)
-        if "songs" in artist_obj and "results" in artist_obj["songs"]:
-            return [
-                await self.get_track(track["videoId"])
-                for track in artist_obj["songs"]["results"]
-                if track.get("videoId")
-            ]
+        if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
+            prov_playlist_id = artist_obj["songs"]["browseId"]
+            playlist_tracks = await self.get_playlist_tracks(
+                prov_playlist_id=prov_playlist_id
+            )
+            return playlist_tracks[:25]
         return []
 
     async def library_add(self, prov_item_id, media_type: MediaType) -> None:
@@ -359,6 +365,31 @@ class YoutubeMusicProvider(MusicProvider):
             add=False,
             username=self.config.username,
         )
+
+    async def get_similar_tracks(self, prov_track_id, limit=25) -> List[Track]:
+        """Retrieve a dynamic list of tracks based on the provided item."""
+        result = []
+        result = await get_song_radio_tracks(
+            headers=self._headers,
+            username=self.config.username,
+            prov_item_id=prov_track_id,
+            limit=limit,
+        )
+        if "tracks" in result:
+            tracks = []
+            for track in result["tracks"]:
+                # Playlist tracks sometimes do not have a valid artist id
+                # In that case, call the API for track details based on track id
+                try:
+                    track = await self._parse_track(track)
+                    if track:
+                        tracks.append(track)
+                except InvalidDataError:
+                    track = await self.get_track(track["videoId"])
+                    if track:
+                        tracks.append(track)
+            return tracks
+        return []
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -563,13 +594,13 @@ class YoutubeMusicProvider(MusicProvider):
             track.album = await self._parse_album(album, album["id"])
         if "isExplicit" in track_obj:
             track.metadata.explicit = track_obj["isExplicit"]
-        if "duration" in track_obj and track_obj["duration"].isdigit():
-            track.duration = track_obj["duration"]
+        if "duration" in track_obj and str(track_obj["duration"]).isdigit():
+            track.duration = int(track_obj["duration"])
         elif (
             "duration_seconds" in track_obj
             and str(track_obj["duration_seconds"]).isdigit()
         ):
-            track.duration = track_obj["duration_seconds"]
+            track.duration = int(track_obj["duration_seconds"])
         available = True
         if "isAvailable" in track_obj:
             available = track_obj["isAvailable"]

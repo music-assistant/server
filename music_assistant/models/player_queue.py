@@ -57,6 +57,7 @@ class PlayerQueue:
         self._last_player_update: int = 0
         self._last_stream_id: str = ""
         self._snapshot: Optional[QueueSnapShot] = None
+        self._radio_source: List[MediaItemType] = []
         self.announcement_in_progress: bool = False
 
     async def setup(self) -> None:
@@ -185,15 +186,18 @@ class PlayerQueue:
                 QueueOption.REPLACE -> Replace queue contents with these items
                 QueueOption.NEXT -> Play item(s) after current playing item
                 QueueOption.ADD -> Append new items at end of the queue
+                QueueOption.RADIO -> Fill the queue contents with dynamic content based on the item(s)
             :param passive: if passive set to true the stream url will not be sent to the player.
         """
         if self.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
+
         # a single item or list of items may be provided
         if not isinstance(media, list):
             media = [media]
-        queue_items = []
+
+        tracks: List[MediaItemType] = []
         for item in media:
             # parse provided uri into a MA MediaItem or Basic QueueItem from URL
             if isinstance(item, str):
@@ -208,44 +212,49 @@ class PlayerQueue:
                 media_item = item
 
             # collect tracks to play
-            tracks = []
-            if media_item.media_type == MediaType.ARTIST:
-                tracks = await self.mass.music.artists.toptracks(
+            if queue_opt == QueueOption.RADIO:
+                # For dynamic/radio mode, the source items are stored and unpacked dynamically
+                tracks += [media_item]
+            elif media_item.media_type == MediaType.ARTIST:
+                tracks += await self.mass.music.artists.toptracks(
                     media_item.item_id, provider=media_item.provider
                 )
             elif media_item.media_type == MediaType.ALBUM:
-                tracks = await self.mass.music.albums.tracks(
+                tracks += await self.mass.music.albums.tracks(
                     media_item.item_id, provider=media_item.provider
                 )
             elif media_item.media_type == MediaType.PLAYLIST:
-                tracks = await self.mass.music.playlists.tracks(
+                tracks += await self.mass.music.playlists.tracks(
                     media_item.item_id, provider=media_item.provider
                 )
-            elif media_item.media_type in (
-                MediaType.RADIO,
-                MediaType.TRACK,
-            ):
-                # single item
-                tracks = [media_item]
+            else:
+                # single track or radio item
+                tracks += [media_item]
 
-            # only add available items
-            for track in tracks:
-                if not track.available:
-                    continue
-                queue_items.append(QueueItem.from_media_item(track))
+        # Handle Radio playback: clear queue and request first batch
+        if queue_opt == QueueOption.RADIO:
+            # clear existing items before we start radio
+            await self.clear()
+            # load the first batch
+            await self._load_radio_tracks(tracks)
+            if not passive:
+                await self.play_index(0)
+            return
+
+        # only add available items
+        queue_items = [QueueItem.from_media_item(x) for x in tracks if x.available]
 
         # clear queue first if it was finished
         if self._current_index and self._current_index >= (len(self._items) - 1):
             self._current_index = None
             self._items = []
 
-        # load items into the queue, make sure we have valid values
-        queue_items = [x for x in queue_items if isinstance(x, QueueItem)]
+        # if adding more than 50 items in play/next mode, treat as replace
+        if len(queue_items) > 50 and queue_opt in (QueueOption.PLAY, QueueOption.NEXT):
+            queue_opt = QueueOption.REPLACE
+
+        # load the items into the queue
         if queue_opt == QueueOption.REPLACE:
-            await self.load(queue_items, passive)
-        elif (
-            queue_opt in [QueueOption.PLAY, QueueOption.NEXT] and len(queue_items) > 100
-        ):
             await self.load(queue_items, passive)
         elif queue_opt == QueueOption.NEXT:
             await self.insert(queue_items, 1, passive)
@@ -253,6 +262,29 @@ class PlayerQueue:
             await self.insert(queue_items, 0, passive)
         elif queue_opt == QueueOption.ADD:
             await self.append(queue_items)
+
+    async def _load_radio_tracks(
+        self, radio_items: Optional[List[MediaItemType]] = None
+    ) -> None:
+        """Fill the Queue with (additional) Radio tracks."""
+        if radio_items:
+            self._radio_source = radio_items
+        assert self._radio_source, "No Radio item(s) loaded/active!"
+
+        tracks: List[MediaItemType] = []
+        # grab dynamic tracks for (all) source items
+        # shuffle the source items, just in case
+        for radio_item in random.sample(self._radio_source, len(self._radio_source)):
+            ctrl = self.mass.music.get_controller(radio_item.media_type)
+            tracks += await ctrl.dynamic_tracks(
+                item_id=radio_item.item_id, provider=radio_item.provider
+            )
+            # make sure we do not grab too much items
+            if len(tracks) >= 50:
+                break
+        # fill queue - filter out unavailable items
+        queue_items = [QueueItem.from_media_item(x) for x in tracks if x.available]
+        await self.append(queue_items)
 
     async def play_announcement(self, url: str, prepend_alert: bool = False) -> str:
         """
@@ -523,6 +555,8 @@ class PlayerQueue:
 
     async def load(self, queue_items: List[QueueItem], passive: bool = False) -> None:
         """Load (overwrite) queue with new items."""
+        # reset radio source if a queue load is executed
+        self._radio_source = []
         for index, item in enumerate(queue_items):
             item.sort_index = index
         if self.settings.shuffle_enabled and len(queue_items) > 5:
@@ -598,6 +632,7 @@ class PlayerQueue:
 
     async def clear(self) -> None:
         """Clear all items in the queue."""
+        self._radio_source = []
         if self.player.state not in (PlayerState.IDLE, PlayerState.OFF):
             await self.stop()
         await self.update_items([])
@@ -650,15 +685,20 @@ class PlayerQueue:
         if self.player.active_queue != self or not self.active:
             return
 
-        new_index = self._current_index
         track_time = self._current_item_elapsed_time
         new_item_loaded = False
         if self.player.state == PlayerState.PLAYING and self.player.elapsed_time > 0:
             new_index, track_time = self.__get_queue_stream_index()
-        # process new index
-        if self._current_index != new_index:
-            # queue track updated
-            self._current_index = new_index
+
+            # process new index
+            if self._current_index != new_index:
+                # queue index updated
+                self._current_index = new_index
+                # watch dynamic radio items refill if needed
+                fill_index = len(self._items) - 5
+                if self._radio_source and (new_index >= fill_index):
+                    self.mass.create_task(self._load_radio_tracks())
+
         # check if a new track is loaded, wait for the streamdetails
         if (
             self.current_item
@@ -719,7 +759,8 @@ class PlayerQueue:
         # being higher than the number of items to detect end of queue and/or handle repeat.
         if cur_index is None:
             return 0
-        return cur_index + 1
+        next_index = cur_index + 1
+        return next_index
 
     def signal_update(self, items_changed: bool = False) -> None:
         """Signal state changed of this queue."""
@@ -758,6 +799,7 @@ class PlayerQueue:
         """Export object to dict."""
         cur_item = self.current_item.to_dict() if self.current_item else None
         next_item = self.next_item.to_dict() if self.next_item else None
+
         return {
             "queue_id": self.queue_id,
             "player": self.player.player_id,
@@ -772,6 +814,7 @@ class PlayerQueue:
             "next_item": next_item,
             "items": len(self._items),
             "settings": self.settings.to_dict(),
+            "radio_source": [x.to_dict() for x in self._radio_source[:5]],
         }
 
     async def update_items(self, queue_items: List[QueueItem]) -> None:

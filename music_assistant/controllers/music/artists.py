@@ -2,6 +2,7 @@
 
 import asyncio
 import itertools
+from random import choice, random
 from time import time
 from typing import Any, Dict, List, Optional
 
@@ -10,7 +11,10 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_ARTISTS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MusicProviderFeature, ProviderType
-from music_assistant.models.errors import MediaNotFoundError
+from music_assistant.models.errors import (
+    MediaNotFoundError,
+    UnsupportedFeaturedException,
+)
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
@@ -347,6 +351,49 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         # delete the artist itself from db
         await super().delete_db_item(item_id)
+
+    async def _get_provider_dynamic_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
+    ):
+        """Generate a dynamic list of tracks based on the artist's top tracks."""
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if (
+            not prov
+            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
+        ):
+            return []
+        top_tracks = await self.get_provider_artist_toptracks(
+            item_id=item_id, provider=provider, provider_id=provider_id
+        )
+        # Grab a random track from the album that we use to obtain similar tracks for
+        track = choice(top_tracks)
+        # Calculate no of songs to grab from each list at a 10/90 ratio
+        total_no_of_tracks = limit + limit % 2
+        no_of_artist_tracks = int(total_no_of_tracks * 10 / 100)
+        no_of_similar_tracks = int(total_no_of_tracks * 90 / 100)
+        # Grab similar tracks from the music provider
+        similar_tracks = await prov.get_similar_tracks(
+            prov_track_id=track.item_id, limit=no_of_similar_tracks
+        )
+        # Merge album content with similar tracks
+        dynamic_playlist = [
+            *sorted(top_tracks, key=lambda n: random())[:no_of_artist_tracks],
+            *sorted(similar_tracks, key=lambda n: random())[:no_of_similar_tracks],
+        ]
+        return sorted(dynamic_playlist, key=lambda n: random())
+
+    async def _get_dynamic_tracks(
+        self, media_item: Artist, limit: int = 25
+    ) -> List[Track]:
+        """Get dynamic list of tracks for given item, fallback/default implementation."""
+        # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
+        raise UnsupportedFeaturedException(
+            "No Music Provider found that supports requesting similar tracks."
+        )
 
     async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""

@@ -22,6 +22,8 @@ async def get_artist(prov_artist_id: str) -> Dict[str, str]:
         ytm = ytmusicapi.YTMusic()
         try:
             artist = ytm.get_artist(channelId=prov_artist_id)
+            # ChannelId can sometimes be different and original ID is not part of the response
+            artist["channelId"] = prov_artist_id
         except KeyError:
             user = ytm.get_user(channelId=prov_artist_id)
             artist = {"channelId": prov_artist_id, "name": user["name"]}
@@ -226,6 +228,31 @@ async def add_remove_playlist_tracks(
     return await loop.run_in_executor(None, _add_playlist_tracks)
 
 
+async def get_song_radio_tracks(
+    headers: Dict[str, str], username: str, prov_item_id: str, limit=25
+) -> Dict[str, str]:
+    """Async wrapper around the ytmusicapi radio function."""
+    user = username if is_brand_account(username) else None
+
+    def _get_song_radio_tracks():
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        playlist_id = f"RDAMVM{prov_item_id}"
+        result = ytm.get_watch_playlist(
+            videoId=prov_item_id, playlistId=playlist_id, limit=limit
+        )
+        # Replace inconsistensies for easier parsing
+        for track in result["tracks"]:
+            if track.get("thumbnail"):
+                track["thumbnails"] = track["thumbnail"]
+                del track["thumbnail"]
+            if track.get("length"):
+                track["duration"] = get_sec(track["length"])
+        return result
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _get_song_radio_tracks)
+
+
 async def search(query: str, ytm_filter: str = None, limit: int = 20) -> List[Dict]:
     """Async wrapper around the ytmusicapi search function."""
 
@@ -263,3 +290,13 @@ def get_playlist_checksum(playlist_obj: dict) -> str:
 def is_brand_account(username: str) -> bool:
     """Check if the provided username is a brand-account."""
     return len(username) == 21 and username.isdigit()
+
+
+def get_sec(time_str):
+    """Get seconds from time."""
+    parts = time_str.split(":")
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + int(parts[1])
+    return 0

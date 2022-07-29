@@ -11,7 +11,7 @@ from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MediaType, ProviderType
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
-from music_assistant.models.media_items import Radio
+from music_assistant.models.media_items import Radio, Track
 
 
 class RadioController(MediaControllerBase[Radio]):
@@ -124,3 +124,19 @@ class RadioController(MediaControllerBase[Radio]):
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         return await self.get_db_item(item_id)
+
+    async def _get_provider_dynamic_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
+    ) -> List[Track]:
+        """Generate a dynamic list of tracks based on the item's content."""
+        raise NotImplementedError("Dynamic tracks not supported for Radio MediaItem")
+
+    async def _get_dynamic_tracks(
+        self, media_item: Radio, limit: int = 25
+    ) -> List[Track]:
+        """Get dynamic list of tracks for given item, fallback/default implementation."""
+        raise NotImplementedError("Dynamic tracks not supported for Radio MediaItem")

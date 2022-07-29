@@ -182,6 +182,7 @@ class QueueOption(Enum):
     REPLACE = "replace"
     NEXT = "next"
     ADD = "add"
+    RADIO = "radio"
 
 
 class CrossFadeMode(Enum):
@@ -267,6 +268,9 @@ class MusicProviderFeature(Enum):
     LIBRARY_TRACKS_EDIT = "library_tracks_edit"
     LIBRARY_PLAYLISTS_EDIT = "library_playlists_edit"
     LIBRARY_RADIOS_EDIT = "library_radios_edit"
+    # if we can grab 'similar tracks' from the music provider
+    # used to generate dynamic playlists
+    SIMILAR_TRACKS = "similar_tracks"
     # playlist-specific features
     PLAYLIST_TRACKS_EDIT = "playlist_tracks_edit"
     PLAYLIST_CREATE = "playlist_create"

@@ -17,7 +17,10 @@ from music_assistant.models.enums import (
     MusicProviderFeature,
     ProviderType,
 )
-from music_assistant.models.errors import MediaNotFoundError
+from music_assistant.models.errors import (
+    MediaNotFoundError,
+    UnsupportedFeaturedException,
+)
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
@@ -154,6 +157,35 @@ class TracksController(MediaControllerBase[Track]):
                     db_track.name,
                     provider.name,
                 )
+
+    async def _get_provider_dynamic_tracks(
+        self,
+        item_id: str,
+        provider: Optional[ProviderType] = None,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
+    ):
+        """Generate a dynamic list of tracks based on the track."""
+        prov = self.mass.music.get_provider(provider_id or provider)
+        if (
+            not prov
+            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
+        ):
+            return []
+        # Grab similar tracks from the music provider
+        similar_tracks = await prov.get_similar_tracks(
+            prov_track_id=item_id, limit=limit
+        )
+        return similar_tracks
+
+    async def _get_dynamic_tracks(
+        self, media_item: Track, limit: int = 25
+    ) -> List[Track]:
+        """Get dynamic list of tracks for given item, fallback/default implementation."""
+        # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
+        raise UnsupportedFeaturedException(
+            "No Music Provider found that supports requesting similar tracks."
+        )
 
     async def add_db_item(self, item: Track, overwrite_existing: bool = False) -> Track:
         """Add a new item record to the database."""

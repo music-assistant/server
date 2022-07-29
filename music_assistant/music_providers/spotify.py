@@ -69,6 +69,7 @@ class SpotifyProvider(MusicProvider):
             MusicProviderFeature.SEARCH,
             MusicProviderFeature.ARTIST_ALBUMS,
             MusicProviderFeature.ARTIST_TOPTRACKS,
+            MusicProviderFeature.SIMILAR_TRACKS,
         )
 
     async def setup(self) -> bool:
@@ -289,6 +290,16 @@ class SpotifyProvider(MusicProvider):
         return await self._delete_data(
             f"playlists/{prov_playlist_id}/tracks", data=data
         )
+
+    async def get_similar_tracks(self, prov_track_id, limit=25) -> List[Track]:
+        """Retrieve a dynamic list of tracks based on the provided item."""
+        endpoint = "recommendations"
+        items = await self._get_data(endpoint, seed_tracks=prov_track_id, limit=limit)
+        return [
+            await self._parse_track(item)
+            for item in items["tracks"]
+            if (item and item["id"])
+        ]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
