@@ -107,6 +107,12 @@ class AlbumsController(MediaControllerBase[Album]):
         await self._match(db_item)
         # return final db_item after all match/metadata actions
         db_item = await self.get_db_item(db_item.item_id)
+        # dump album tracks in db
+        for prov in db_item.provider_ids:
+            for track in await self._get_provider_album_tracks(
+                prov.item_id, prov.prov_id
+            ):
+                await self.mass.music.tracks.add_db_item(track)
         self.mass.signal_event(
             MassEvent(
                 EventType.MEDIA_ITEM_UPDATED
