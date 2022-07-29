@@ -41,8 +41,7 @@ class MusicAssistant:
         """
         Create an instance of MusicAssistant.
 
-            conf: Music Assistant runtimestartup Config
-            stream_port: TCP port used for streaming audio.
+            config: Music Assistant runtimestartup Config
             session: Optionally provide an aiohttp clientsession
         """
 
@@ -103,8 +102,8 @@ class MusicAssistant:
         if self.closed:
             return
         if self.logger.isEnabledFor(logging.DEBUG):
-            # do not log queue time updated events because that is too chatty
             if event.type != EventType.QUEUE_TIME_UPDATED:
+                # do not log queue time updated events because that is too chatty
                 self.logger.getChild("event").debug(
                     "%s %s", event.type.value, event.object_id or ""
                 )
