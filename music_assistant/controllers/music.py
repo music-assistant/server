@@ -28,12 +28,12 @@ from music_assistant.models.media_items import (
     media_from_dict,
 )
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.music_providers.filesystem.filesystem import FileSystemProvider
-from music_assistant.music_providers.qobuz.qobuz import QobuzProvider
+from music_assistant.music_providers.filesystem import FileSystemProvider
+from music_assistant.music_providers.qobuz import QobuzProvider
 from music_assistant.music_providers.spotify import SpotifyProvider
-from music_assistant.music_providers.tunein.tunein import TuneInProvider
+from music_assistant.music_providers.tunein import TuneInProvider
+from music_assistant.music_providers.url import URLProvider
 from music_assistant.music_providers.url.url import PROVIDER_CONFIG as URL_CONFIG
-from music_assistant.music_providers.url.url import URLProvider
 from music_assistant.music_providers.ytmusic import YoutubeMusicProvider
 
 if TYPE_CHECKING:
