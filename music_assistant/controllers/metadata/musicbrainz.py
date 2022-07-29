@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 from asyncio_throttle import Throttler
 
-from music_assistant.helpers.cache import use_cache
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.util import create_sort_name
 

@@ -13,12 +13,12 @@ from uuid import uuid4
 import aiohttp
 
 from music_assistant.constants import ROOT_LOGGER_NAME
-from music_assistant.controllers.metadata import MetaDataController
+from music_assistant.controllers.cache import CacheController
+from music_assistant.controllers.database import DatabaseController
+from music_assistant.controllers.metadata.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.streams import StreamsController
-from music_assistant.helpers.cache import Cache
-from music_assistant.helpers.database import Database
 from music_assistant.models.background_job import BackgroundJob
 from music_assistant.models.config import MassConfig
 from music_assistant.models.enums import EventType, JobStatus
@@ -57,8 +57,8 @@ class MusicAssistant:
         self._jobs_event = asyncio.Event()
 
         # init core controllers
-        self.database = Database(self)
-        self.cache = Cache(self)
+        self.database = DatabaseController(self)
+        self.cache = CacheController(self)
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
         self.players = PlayerController(self)

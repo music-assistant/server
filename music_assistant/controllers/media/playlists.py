@@ -6,7 +6,7 @@ from random import choice, random
 from time import time
 from typing import Any, List, Optional, Tuple
 
-from music_assistant.helpers.database import TABLE_PLAYLISTS
+from music_assistant.controllers.database import TABLE_PLAYLISTS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.helpers.uri import create_uri
 from music_assistant.models.enums import (
@@ -22,8 +22,9 @@ from music_assistant.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.models.event import MassEvent
-from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import Playlist, Track
+
+from .base import MediaControllerBase
 
 
 class PlaylistController(MediaControllerBase[Playlist]):

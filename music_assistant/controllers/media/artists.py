@@ -4,11 +4,16 @@ import asyncio
 import itertools
 from random import choice, random
 from time import time
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from music_assistant.constants import VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID
+from music_assistant.controllers.database import (
+    TABLE_ALBUMS,
+    TABLE_ARTISTS,
+    TABLE_TRACKS,
+)
+from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.database import TABLE_ALBUMS, TABLE_ARTISTS, TABLE_TRACKS
 from music_assistant.helpers.json import json_serializer
 from music_assistant.models.enums import EventType, MusicProviderFeature, ProviderType
 from music_assistant.models.errors import (
@@ -16,7 +21,6 @@ from music_assistant.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.models.event import MassEvent
-from music_assistant.models.media_controller import MediaControllerBase
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -26,7 +30,9 @@ from music_assistant.models.media_items import (
     PagedItems,
     Track,
 )
-from music_assistant.models.music_provider import MusicProvider
+
+if TYPE_CHECKING:
+    from music_assistant.models.music_provider import MusicProvider
 
 
 class ArtistsController(MediaControllerBase[Artist]):
@@ -395,7 +401,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             "No Music Provider found that supports requesting similar tracks."
         )
 
-    async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
+    async def _match(self, db_artist: Artist, provider: "MusicProvider") -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""
         self.logger.debug(
             "Trying to match artist %s on provider %s", db_artist.name, provider.name

@@ -1,4 +1,4 @@
-"""Model for a base media_controller."""
+"""Base (ABC) MediaType specific controller."""
 from __future__ import annotations
 
 import asyncio
@@ -16,11 +16,20 @@ from typing import (
 )
 
 from music_assistant.helpers.json import json_serializer
+from music_assistant.models.enums import (
+    EventType,
+    MediaType,
+    MusicProviderFeature,
+    ProviderType,
+)
 from music_assistant.models.errors import MediaNotFoundError
 from music_assistant.models.event import MassEvent
-
-from .enums import EventType, MediaType, MusicProviderFeature, ProviderType
-from .media_items import MediaItemType, PagedItems, Track, media_from_dict
+from music_assistant.models.media_items import (
+    MediaItemType,
+    PagedItems,
+    Track,
+    media_from_dict,
+)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant

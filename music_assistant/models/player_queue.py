@@ -1,4 +1,4 @@
-"""Model and helpders for a PlayerQueue."""
+"""Model for a PlayerQueue."""
 from __future__ import annotations
 
 import asyncio

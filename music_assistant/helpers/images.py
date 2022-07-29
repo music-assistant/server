@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 from PIL import Image
 
-from music_assistant.helpers.database import TABLE_THUMBS
+from music_assistant.controllers.database import TABLE_THUMBS
 from music_assistant.helpers.tags import get_embedded_image
 
 if TYPE_CHECKING:
