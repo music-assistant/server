@@ -335,14 +335,6 @@ class Player(ABC):
                 group_player.on_child_update, self.player_id, changed_keys
             )
 
-    def get_group_parents(self) -> List[Player]:
-        """Get any/all group player id's this player belongs to."""
-        return [
-            x
-            for x in self.mass.players
-            if x.is_group and self.player_id in x.group_members and x != self
-        ]
-
     def to_dict(self) -> Dict[str, Any]:
         """Export object to dict."""
         return {
@@ -384,3 +376,24 @@ class Player(ABC):
                     continue
                 child_players.add(child_player)
         return list(child_players)
+
+    def get_group_parents(
+        self,
+        only_powered: bool = False,
+        only_playing: bool = False,
+    ) -> List[Player]:
+        """Get players which have this player as child in a group."""
+        if not self.mass:
+            return []
+        parent_players = set()
+        for player in self.mass.players:
+            if player.player_id == self.player_id:
+                continue
+            if self.player_id not in player.group_members:
+                continue
+            if not (not only_powered or player.powered):
+                continue
+            if not (not only_playing or player.state == PlayerState.PLAYING):
+                continue
+            parent_players.add(player)
+        return list(parent_players)
