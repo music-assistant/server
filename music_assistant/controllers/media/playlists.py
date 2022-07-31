@@ -34,10 +34,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
     media_type = MediaType.PLAYLIST
     item_cls = Playlist
 
-    async def get_playlist_by_name(self, name: str) -> Playlist | None:
-        """Get in-library playlist by name."""
-        return await self.mass.database.get_row(self.db_table, {"name": name})
-
     async def tracks(
         self,
         item_id: str,
