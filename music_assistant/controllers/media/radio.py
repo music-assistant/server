@@ -22,10 +22,6 @@ class RadioController(MediaControllerBase[Radio]):
     media_type = MediaType.RADIO
     item_cls = Radio
 
-    async def get_radio_by_name(self, name: str) -> Radio | None:
-        """Get in-library radio by name."""
-        return await self.mass.database.get_row(self.db_table, {"name": name})
-
     async def versions(
         self,
         item_id: str,
