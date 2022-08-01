@@ -163,6 +163,13 @@ class StreamsController:
 
     async def serve_control(self, request: web.Request):
         """Serve special control stream."""
+        self.logger.debug(
+            "Got %s request to %s from %s\nheaders: %s\n",
+            request.method,
+            request.path,
+            request.remote,
+            request.headers,
+        )
         player_id = request.match_info["player_id"]
         cmd = request.match_info["cmd"]
 
@@ -172,13 +179,13 @@ class StreamsController:
 
         queue = player.active_queue
 
-        # handle next
-        if cmd == "next":
-            # ignore if signal_next active
-            if not (queue.stream and queue.stream.signal_next):
+        if queue and queue.stream:
+            # handle next (ignore if signal_next active)
+            if cmd == "next" and not queue.stream.signal_next:
                 self.mass.create_task(queue.stream.queue.next())
-        elif cmd == "previous":
-            self.mass.create_task(queue.stream.queue.previous())
+            # handle previous
+            elif cmd == "previous":
+                self.mass.create_task(queue.stream.queue.previous())
 
         # always respond with silence just to prevent errors
         return web.FileResponse(SILENCE_FILE)
