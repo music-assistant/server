@@ -563,8 +563,6 @@ class PlayerQueue:
         insert_at_index: insert the item(s) at this index
         keep_remaining: keep the remaining items after the insert
         """
-        if not self.items:
-            return await self.load(queue_items)
 
         # keep previous/played items, append the new ones
         all_items = self._items[:insert_at_index] + queue_items
@@ -572,7 +570,7 @@ class PlayerQueue:
         # if keep_remaining, append the old previous items
         if keep_remaining:
             cur_index = self.index_in_buffer or self._current_index or 0
-            if insert_at_index == cur_index and len(self._items) > insert_at_index:
+            if insert_at_index == cur_index:
                 # current item is replaced with new
                 all_items += self._items[insert_at_index + 1 :]
             else:
