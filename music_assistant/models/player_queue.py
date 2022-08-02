@@ -174,7 +174,7 @@ class PlayerQueue:
     async def play_media(
         self,
         media: str | List[str] | MediaItemType | List[MediaItemType],
-        queue_opt: QueueOption = QueueOption.PLAY,
+        option: QueueOption = QueueOption.PLAY,
         radio_mode: bool = False,
         passive: bool = False,
     ) -> str:
@@ -239,23 +239,23 @@ class PlayerQueue:
 
         # load the items into the queue
         cur_index = self.index_in_buffer or self._current_index or 0
-        if queue_opt == QueueOption.REPLACE:
+        if option == QueueOption.REPLACE:
             # replace: clear all items and replace with the new items
             await self.clear()
             await self.load(queue_items)
             if not passive:
                 await self.play_index(0)
-        elif queue_opt == QueueOption.NEXT:
+        elif option == QueueOption.NEXT:
             await self.load(queue_items, insert_at_index=cur_index + 1)
-        elif queue_opt == QueueOption.REPLACE_NEXT:
+        elif option == QueueOption.REPLACE_NEXT:
             await self.load(
                 queue_items, insert_at_index=cur_index + 1, keep_remaining=False
             )
-        elif queue_opt == QueueOption.PLAY:
+        elif option == QueueOption.PLAY:
             await self.load(queue_items, insert_at_index=cur_index)
             if not passive:
                 await self.play_index(0)
-        elif queue_opt == QueueOption.ADD:
+        elif option == QueueOption.ADD:
             await self.load(
                 queue_items,
                 insert_at_index=len(self._items) - 1,
