@@ -1,8 +1,0 @@
-.github
-.mypy_cache
-.tox
-.git
-build
-dist
-venv
-**/__pycache__
