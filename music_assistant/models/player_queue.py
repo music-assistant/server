@@ -840,17 +840,14 @@ class PlayerQueue:
                 if not queue_track.streamdetails:
                     track_time = elapsed_time_queue - total_time
                     break
-                duration = (
-                    queue_track.streamdetails.seconds_streamed
-                    or queue_track.duration
-                    or FALLBACK_DURATION
-                )
-                if duration is not None and elapsed_time_queue > (
-                    duration + total_time
-                ):
+                if queue_track.streamdetails.seconds_streamed is not None:
+                    track_duration = queue_track.streamdetails.seconds_streamed
+                else:
+                    track_duration = queue_track.duration or FALLBACK_DURATION
+                if elapsed_time_queue > (track_duration + total_time):
                     # total elapsed time is more than (streamed) track duration
                     # move index one up
-                    total_time += duration
+                    total_time += track_duration
                     queue_index += 1
                 else:
                     # no more seconds left to divide, this is our track

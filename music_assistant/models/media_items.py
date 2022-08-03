@@ -451,8 +451,8 @@ class StreamDetails(DataClassDictMixin):
 
     # the fields below will be set/controlled by the streamcontroller
     queue_id: Optional[str] = None
-    seconds_streamed: int = 0
-    seconds_skipped: int = 0
+    seconds_streamed: Optional[float] = None
+    seconds_skipped: Optional[float] = None
     gain_correct: Optional[float] = None
     loudness: Optional[float] = None
 

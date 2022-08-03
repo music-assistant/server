@@ -232,8 +232,8 @@ async def get_stream_details(
     streamdetails = None
     if queue_item.streamdetails and (time() < queue_item.streamdetails.expires):
         # we already have fresh streamdetails, use these
-        queue_item.streamdetails.seconds_skipped = 0
-        queue_item.streamdetails.seconds_streamed = 0
+        queue_item.streamdetails.seconds_skipped = None
+        queue_item.streamdetails.seconds_streamed = None
         streamdetails = queue_item.streamdetails
     else:
         # fetch streamdetails from provider
