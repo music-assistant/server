@@ -62,7 +62,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             ],
         )
 
-    async def toptracks(
+    async def tracks(
         self,
         item_id: Optional[str] = None,
         provider: Optional[ProviderType] = None,
@@ -407,7 +407,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             "Trying to match artist %s on provider %s", db_artist.name, provider.name
         )
         # try to get a match with some reference tracks of this artist
-        for ref_track in await self.toptracks(
+        for ref_track in await self.tracks(
             db_artist.item_id, db_artist.provider, artist=db_artist
         ):
             # make sure we have a full track

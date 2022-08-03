@@ -176,22 +176,37 @@ class ContentType(Enum):
 
 
 class QueueOption(Enum):
-    """Enum representation of the queue (play) options."""
+    """
+    Enum representation of the queue (play) options.
+
+    - PLAY -> Insert new item(s) in queue at the current position and start playing.
+    - REPLACE -> Replace entire queue contents with the new items and start playing from index 0.
+    - NEXT -> Insert item(s) after current playing/buffered item.
+    - REPLACE_NEXT -> Replace item(s) after current playing/buffered item.
+    - ADD -> Add new item(s) to the queue (at the end if shuffle is not enabled).
+    """
 
     PLAY = "play"
     REPLACE = "replace"
     NEXT = "next"
+    REPLACE_NEXT = "replace_next"
     ADD = "add"
-    RADIO = "radio"
 
 
 class CrossFadeMode(Enum):
-    """Enum with crossfade modes."""
+    """
+    Enum with crossfade modes.
 
-    DISABLED = "disabled"  # no crossfading at all
-    STRICT = "strict"  # do not crossfade tracks of same album
-    SMART = "smart"  # crossfade if possible (do not crossfade different sample rates)
-    ALWAYS = "always"  # all tracks - resample to fixed sample rate
+    - DISABLED: no crossfading at all
+    - STRICT: do not crossfade tracks of same album
+    - SMART: crossfade if possible (do not crossfade different sample rates)
+    - ALWAYS: all tracks - resample to fixed sample rate
+    """
+
+    DISABLED = "disabled"
+    STRICT = "strict"
+    SMART = "smart"
+    ALWAYS = "always"
 
 
 class RepeatMode(Enum):
