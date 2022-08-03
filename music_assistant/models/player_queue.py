@@ -239,26 +239,36 @@ class PlayerQueue:
 
         # load the items into the queue
         cur_index = self.index_in_buffer or self._current_index or 0
+        shuffle = self.settings.shuffle_enabled and len(queue_items) >= 5
+
         if option == QueueOption.REPLACE:
             # replace: clear all items and replace with the new items
             await self.clear()
-            await self.load(queue_items)
+            await self.load(queue_items, shuffle=shuffle)
             if not passive:
                 await self.play_index(0)
         elif option == QueueOption.NEXT:
-            await self.load(queue_items, insert_at_index=cur_index + 1)
+            await self.load(queue_items, insert_at_index=cur_index + 1, shuffle=shuffle)
         elif option == QueueOption.REPLACE_NEXT:
             await self.load(
-                queue_items, insert_at_index=cur_index + 1, keep_remaining=False
+                queue_items,
+                insert_at_index=cur_index + 1,
+                keep_remaining=False,
+                shuffle=shuffle,
             )
         elif option == QueueOption.PLAY:
-            await self.load(queue_items, insert_at_index=cur_index)
+            await self.load(queue_items, insert_at_index=cur_index, shuffle=shuffle)
             if not passive:
-                await self.play_index(0)
+                await self.play_index(cur_index)
         elif option == QueueOption.ADD:
+            if shuffle:
+                # shuffle the new items with remaining queue items
+                insert_at_index = cur_index + 1
+            else:
+                # just append at the end
+                insert_at_index = len(self._items)
             await self.load(
-                queue_items,
-                insert_at_index=len(self._items) - 1,
+                queue_items, insert_at_index=insert_at_index, shuffle=shuffle
             )
 
     async def _fill_radio_tracks(self) -> None:
@@ -555,6 +565,7 @@ class PlayerQueue:
         queue_items: List[QueueItem],
         insert_at_index: int = 0,
         keep_remaining: bool = True,
+        shuffle: bool = False,
     ) -> None:
         """
         Load new items at index.
@@ -562,6 +573,7 @@ class PlayerQueue:
         queue_items: a list of QueueItem
         insert_at_index: insert the item(s) at this index
         keep_remaining: keep the remaining items after the insert
+        shuffle: (re)shuffle the items after insert index
         """
 
         # keep previous/played items, append the new ones
@@ -569,18 +581,13 @@ class PlayerQueue:
 
         # if keep_remaining, append the old previous items
         if keep_remaining:
-            cur_index = self.index_in_buffer or self._current_index or 0
-            if insert_at_index == cur_index:
-                # current item is replaced with new
-                all_items += self._items[insert_at_index + 1 :]
-            else:
-                all_items += self._items[insert_at_index:]
+            all_items += self._items[insert_at_index:]
 
         # we set the original insert order as attribute so we can un-shuffle
         for index, item in enumerate(all_items):
             item.sort_index += insert_at_index + index
         # (re)shuffle the final batch if needed
-        if self.settings.shuffle_enabled and len(queue_items) > 5:
+        if shuffle:
             all_items = random.sample(all_items, len(all_items))
         await self.update_items(all_items)
 
