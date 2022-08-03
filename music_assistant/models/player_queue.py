@@ -10,7 +10,13 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 from music_assistant.constants import ANNOUNCE_ALERT_FILE, FALLBACK_DURATION
 from music_assistant.helpers.tags import parse_tags
 from music_assistant.helpers.util import try_parse_int
-from music_assistant.models.enums import EventType, MediaType, QueueOption, RepeatMode
+from music_assistant.models.enums import (
+    EventType,
+    MediaType,
+    ProviderType,
+    QueueOption,
+    RepeatMode,
+)
 from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import MediaItemType, media_from_dict
@@ -685,6 +691,7 @@ class PlayerQueue:
 
         if new_item_loaded:
             self.signal_update()
+            self.mass.create_task(self._fetch_full_details(self._current_index))
         if abs(prev_item_time - self._current_item_elapsed_time) >= 1:
             self.mass.signal_event(
                 MassEvent(
@@ -849,3 +856,28 @@ class PlayerQueue:
                     self._current_item_elapsed_time = try_parse_int(db_value)
 
         await self.settings.restore()
+
+    async def _fetch_full_details(self, index: int) -> None:
+        """Background task that fetches the full details of an item in the queue."""
+        if not self._items or len(self._items) < (index + 1):
+            return
+
+        item_before = self._items[index]
+
+        # check if the details are already fetched
+        if item_before.media_item.provider == ProviderType.DATABASE:
+            return
+
+        # fetch full details here to prevent all clients do this on their own
+        full_details = await self.mass.music.get_item_by_uri(
+            self.current_item.media_item.uri, lazy=False
+        )
+        # convert to queueitem in between to minimize data
+        temp_queue_item = QueueItem.from_media_item(full_details)
+
+        # safe guard: check that item still matches
+        # prevents race condition where items changes just while we were waiting for data
+        if self._items[index].item_id != item_before.item_id:
+            return
+        self._items[index].media_item = temp_queue_item.media_item
+        self.signal_update()
