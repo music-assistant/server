@@ -525,21 +525,6 @@ class QueueStream:
                     ):
                         self.connected_clients.pop(client_id, None)
 
-                ### Workaround alert ###
-                # some players want to buffer too fast ahead (e.g. Sonos) but this
-                # does not play well with throttling streaming providers (e.g. YT Music)
-                # or the fact that we build a small buffer at the end of the track to do
-                # the silence stripping and crossfade.
-                # so we throttle the player itself so we have enough backpressure to make up
-                # for small internet slowness or above mentioned situations.
-                # if we do not do this the player (we saw this with sonos at least) will disconnect
-                # due to a socket timeout as it takes too long between the next chunk.
-                player_buffered = (
-                    self.total_seconds_streamed - self.queue.player.elapsed_time or 0
-                )
-                if player_buffered > 30:
-                    await asyncio.sleep(0.5)
-
         # all queue data has been streamed. Either because the queue is exhausted
         # or we need to restart the stream due to decoder/sample rate mismatch
         # set event that this stream task is finished
