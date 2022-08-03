@@ -15,7 +15,7 @@ from async_timeout import timeout as _timeout
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHUNKSIZE = 128000
-DEFAULT_TIMEOUT = 120
+DEFAULT_TIMEOUT = 600
 
 # pylint: disable=invalid-name
 
@@ -110,8 +110,6 @@ class AsyncProcess:
                 return await self._proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
             return err.partial
-        except asyncio.TimeoutError:
-            return b""
 
     async def read(self, n: int, timeout: int = DEFAULT_TIMEOUT) -> bytes:
         """
@@ -123,11 +121,8 @@ class AsyncProcess:
         """
         if self.closed:
             return b""
-        try:
-            async with _timeout(timeout):
-                return await self._proc.stdout.read(n)
-        except asyncio.TimeoutError:
-            return b""
+        async with _timeout(timeout):
+            return await self._proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
