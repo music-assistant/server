@@ -674,7 +674,7 @@ class PlayerQueue:
             ):
                 self.stream.signal_next = None
                 # handle last track of the queue, set the index to index that is out of range
-                if self._current_index >= (len(self._items) - 1):
+                if (self._current_index or 0) >= (len(self._items) - 1):
                     self._current_index += 1
 
         # always signal update if the PlayerState changed
