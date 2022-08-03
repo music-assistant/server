@@ -194,6 +194,15 @@ class PlayerQueue:
         if not isinstance(media, list):
             media = [media]
 
+        # clear queue first if it was finished
+        if self._current_index and self._current_index >= (len(self._items) - 1):
+            self._current_index = None
+            self._items = []
+
+        # clear radio source items if needed
+        if option not in (QueueOption.ADD, QueueOption.PLAY, QueueOption.NEXT):
+            self._radio_source = []
+
         tracks: List[MediaItemType] = []
         for item in media:
             # parse provided uri into a MA MediaItem or Basic QueueItem from URL
@@ -211,6 +220,7 @@ class PlayerQueue:
             # collect tracks to play
             ctrl = self.mass.music.get_controller(media_item.media_type)
             if radio_mode:
+                self._radio_source.append(media_item)
                 # if radio mode enabled, grab the first batch of tracks here
                 tracks += await ctrl.dynamic_tracks(
                     item_id=media_item.item_id, provider=media_item.provider
@@ -232,21 +242,17 @@ class PlayerQueue:
             QueueItem.from_media_item(x) for x in tracks if x and x.available
         ]
 
-        # clear queue first if it was finished
-        if self._current_index and self._current_index >= (len(self._items) - 1):
-            self._current_index = None
-            self._items = []
-
         # load the items into the queue
         cur_index = self.index_in_buffer or self._current_index or 0
         shuffle = self.settings.shuffle_enabled and len(queue_items) >= 5
 
+        # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            # replace: clear all items and replace with the new items
             await self.clear()
             await self.load(queue_items, shuffle=shuffle)
             if not passive:
                 await self.play_index(0)
+        # handle next: add item(s) in the index next to the playing/loaded/buffered index
         elif option == QueueOption.NEXT:
             await self.load(queue_items, insert_at_index=cur_index + 1, shuffle=shuffle)
         elif option == QueueOption.REPLACE_NEXT:
@@ -256,11 +262,14 @@ class PlayerQueue:
                 keep_remaining=False,
                 shuffle=shuffle,
             )
+        # handle play: replace current loaded/playing index with new item(s)
         elif option == QueueOption.PLAY:
             await self.load(queue_items, insert_at_index=cur_index, shuffle=shuffle)
             if not passive:
                 await self.play_index(cur_index)
+        # handle add: add/append item(s) to the remaining queue items
         elif option == QueueOption.ADD:
+            shuffle = self.settings.shuffle_enabled
             if shuffle:
                 # shuffle the new items with remaining queue items
                 insert_at_index = cur_index + 1
@@ -577,19 +586,20 @@ class PlayerQueue:
         """
 
         # keep previous/played items, append the new ones
-        all_items = self._items[:insert_at_index] + queue_items
+        prev_items = self._items[:insert_at_index]
+        next_items = queue_items
 
         # if keep_remaining, append the old previous items
         if keep_remaining:
-            all_items += self._items[insert_at_index:]
+            next_items += self._items[insert_at_index:]
 
         # we set the original insert order as attribute so we can un-shuffle
-        for index, item in enumerate(all_items):
+        for index, item in enumerate(next_items):
             item.sort_index += insert_at_index + index
         # (re)shuffle the final batch if needed
         if shuffle:
-            all_items = random.sample(all_items, len(all_items))
-        await self.update_items(all_items)
+            next_items = random.sample(next_items, len(next_items))
+        await self.update_items(prev_items + next_items)
 
     async def clear(self) -> None:
         """Clear all items in the queue."""
