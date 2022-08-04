@@ -665,15 +665,6 @@ class QueueStream:
             ):
 
                 chunk_num += 1
-
-                # handle last/empty chunk
-                if not chunk:
-                    if bytes_written == 0:
-                        # stream error: got empy first chunk ?!
-                        self.logger.warning("Stream error on %s", queue_track.uri)
-                        queue_track.streamdetails.seconds_streamed = 0
-                    break
-
                 seconds_in_buffer = len(buffer) / self.sample_size_per_second
 
                 ####  HANDLE FIRST PART OF TRACK
@@ -723,11 +714,24 @@ class QueueStream:
 
             #### HANDLE END OF TRACK
 
+            if bytes_written == 0:
+                # stream error: got empy first chunk ?!
+                self.logger.warning("Stream error on %s", queue_track.uri)
+                queue_track.streamdetails.seconds_streamed = 0
+                continue
+
             # try to make a rough assumption of how many seconds is buffered ahead by the player(s)
             player_buffered = (
                 self.total_seconds_streamed - self.queue.player.elapsed_time or 0
             )
             seconds_in_buffer = len(buffer) / self.sample_size_per_second
+            # log warning if received seconds are a lot less than expected
+            if (stream_duration - chunk_num) > 20:
+                self.logger.warning(
+                    "Unexpected number of chunks received for track: %s/%s",
+                    chunk_num,
+                    stream_duration,
+                )
             self.logger.debug(
                 "end of track reached - chunk_num: %s - crossfade_buffer: %s - stream_duration: %s - player_buffer: %s",
                 chunk_num,
