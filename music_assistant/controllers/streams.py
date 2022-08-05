@@ -728,7 +728,8 @@ class QueueStream:
             # log warning if received seconds are a lot less than expected
             if (stream_duration - chunk_num) > 20:
                 self.logger.warning(
-                    "Unexpected number of chunks received for track: %s/%s",
+                    "Unexpected number of chunks received for track %s: %s/%s",
+                    queue_track.uri,
                     chunk_num,
                     stream_duration,
                 )
