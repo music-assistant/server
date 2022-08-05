@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import os
 import urllib.parse
 from time import time
 from types import CoroutineType
@@ -11,7 +12,7 @@ from uuid import uuid4
 
 from aiohttp import web
 
-from music_assistant.constants import FALLBACK_DURATION, SILENCE_FILE
+from music_assistant.constants import FALLBACK_DURATION, SILENCE_FILE, BASE_URL_OVERRIDE_ENVNAME
 from music_assistant.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
@@ -56,6 +57,18 @@ class StreamsController:
     @property
     def base_url(self) -> str:
         """Return the base url for the stream engine."""
+
+        """
+        This is a purpously undocumented feature to override the automatic
+        generated base_url used by the streaming-devices.
+
+        If you need this, you know it, but you should probably try to not set it!
+        Also see https://github.com/music-assistant/hass-music-assistant/issues/802
+        and https://github.com/music-assistant/hass-music-assistant/discussions/794#discussioncomment-3331209
+        """
+        if BASE_URL_OVERRIDE_ENVNAME in os.environ:
+            return os.environ[BASE_URL_OVERRIDE_ENVNAME]
+
         return f"http://{self._ip}:{self._port}"
 
     def get_stream_url(
