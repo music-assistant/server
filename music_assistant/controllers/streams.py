@@ -58,15 +58,13 @@ class StreamsController:
     def base_url(self) -> str:
         """Return the base url for the stream engine."""
 
-        """
-        This is a purpously undocumented feature to override the automatic
-        generated base_url used by the streaming-devices.
-
-        If you need this, you know it, but you should probably try to not set it!
-        Also see https://github.com/music-assistant/hass-music-assistant/issues/802
-        and https://github.com/music-assistant/hass-music-assistant/discussions/794#discussioncomment-3331209
-        """
         if BASE_URL_OVERRIDE_ENVNAME in os.environ:
+            # This is a purpously undocumented feature to override the automatic
+            # generated base_url used by the streaming-devices.
+            #
+            # If you need this, you know it, but you should probably try to not set it!
+            # Also see https://github.com/music-assistant/hass-music-assistant/issues/802
+            # and https://github.com/music-assistant/hass-music-assistant/discussions/794#discussioncomment-3331209
             return os.environ[BASE_URL_OVERRIDE_ENVNAME]
 
         return f"http://{self._ip}:{self._port}"
