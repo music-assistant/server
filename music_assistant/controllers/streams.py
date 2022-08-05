@@ -61,7 +61,6 @@ class StreamsController:
         if BASE_URL_OVERRIDE_ENVNAME in os.environ:
             # This is a purpously undocumented feature to override the automatic
             # generated base_url used by the streaming-devices.
-            #
             # If you need this, you know it, but you should probably try to not set it!
             # Also see https://github.com/music-assistant/hass-music-assistant/issues/802
             # and https://github.com/music-assistant/hass-music-assistant/discussions/794#discussioncomment-3331209
