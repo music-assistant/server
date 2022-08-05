@@ -12,7 +12,11 @@ from uuid import uuid4
 
 from aiohttp import web
 
-from music_assistant.constants import FALLBACK_DURATION, SILENCE_FILE, BASE_URL_OVERRIDE_ENVNAME
+from music_assistant.constants import (
+    BASE_URL_OVERRIDE_ENVNAME,
+    FALLBACK_DURATION,
+    SILENCE_FILE,
+)
 from music_assistant.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
