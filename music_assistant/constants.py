@@ -18,4 +18,4 @@ SILENCE_FILE = str(RESOURCES_DIR.joinpath("silence.mp3"))
 FALLBACK_DURATION = 172800
 
 # Name of the environment-variable to override base_url
-BASE_URL_OVERRIDE_ENVNAME = 'MASS_BASE_URL'
+BASE_URL_OVERRIDE_ENVNAME = "MASS_BASE_URL"
