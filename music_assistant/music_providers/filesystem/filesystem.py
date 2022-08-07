@@ -211,7 +211,7 @@ class FileSystemProvider(MusicProvider):
             path=path,
             name=sub_path or self.name,
             # make sure to sort the resulting listing
-            items=sorted(subitems, key=lambda x: x.name),
+            items=sorted(subitems, key=lambda x: (x.name.casefold(), x.name)),
         )
 
     async def sync_library(
