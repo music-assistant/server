@@ -121,6 +121,7 @@ class ContentType(Enum):
     PCM_S32LE = "s32le"  # PCM signed 32-bit little-endian
     PCM_F32LE = "f32le"  # PCM 32-bit floating-point little-endian
     PCM_F64LE = "f64le"  # PCM 64-bit floating-point little-endian
+    MPEG_DASH = "dash"
     UNKNOWN = "?"
 
     @classmethod
@@ -141,6 +142,7 @@ class ContentType(Enum):
         tempstr = tempstr.split("&")[0]
         tempstr = tempstr.split(";")[0]
         tempstr = tempstr.replace("mp4", "m4a")
+        tempstr = tempstr.replace("mpd", "dash")
         try:
             return cls(tempstr)
         except ValueError:
