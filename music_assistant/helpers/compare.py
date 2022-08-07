@@ -35,6 +35,9 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     """Compare strings and return True if we have an (almost) perfect match."""
     if str1 is None or str2 is None:
         return False
+    # return early if total length mismatch
+    if abs(len(str1) - len(str2)) > 2:
+        return False
     if not strict:
         return create_safe_string(str1) == create_safe_string(str2)
     return create_sort_name(str1) == create_sort_name(str2)
@@ -83,11 +86,7 @@ def compare_artist(
         return left_artist.musicbrainz_id == right_artist.musicbrainz_id
 
     # fallback to comparing
-    if not left_artist.sort_name:
-        left_artist.sort_name = create_sort_name(left_artist.name)
-    if not right_artist.sort_name:
-        right_artist.sort_name = create_sort_name(right_artist.name)
-    return left_artist.sort_name == right_artist.sort_name
+    return compare_strings(left_artist.name, right_artist.name, False)
 
 
 def compare_artists(
@@ -180,11 +179,7 @@ def compare_album(
         return left_album.musicbrainz_id == right_album.musicbrainz_id
 
     # fallback to comparing
-    if not left_album.sort_name:
-        left_album.sort_name = create_sort_name(left_album.name)
-    if not right_album.sort_name:
-        right_album.sort_name = create_sort_name(right_album.name)
-    if left_album.sort_name != right_album.sort_name:
+    if not compare_strings(left_album.name, right_album.name, False):
         return False
     if not compare_version(left_album.version, right_album.version):
         return False
@@ -216,11 +211,7 @@ def compare_track(left_track: Track, right_track: Track):
     if left_track.album is None or right_track.album is None:
         return False
     # track name must match
-    if not left_track.sort_name:
-        left_track.sort_name = create_sort_name(left_track.name)
-    if not right_track.sort_name:
-        right_track.sort_name = create_sort_name(right_track.name)
-    if left_track.sort_name != right_track.sort_name:
+    if not compare_strings(left_track.name, right_track.name, False):
         return False
     # exact albumtrack match = 100% match
     if (
