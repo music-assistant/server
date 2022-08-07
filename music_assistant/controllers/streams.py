@@ -119,7 +119,7 @@ class StreamsController:
         http_site = web.TCPSite(runner, host=None, port=self._port)
         await http_site.start()
 
-        async def on_shutdown_event(*event: MassEvent):
+        async def on_shutdown_event(event: MassEvent):
             """Handle shutdown event."""
             await http_site.stop()
             await runner.cleanup()
@@ -668,6 +668,7 @@ class QueueStream:
             bytes_written = 0
             chunk_num = 0
             # handle incoming audio chunks
+            track_time_start = time()
             async for chunk in get_media_stream(
                 self.mass,
                 streamdetails,
@@ -739,20 +740,24 @@ class QueueStream:
                 self.total_seconds_streamed - self.queue.player.elapsed_time or 0
             )
             seconds_in_buffer = len(buffer) / self.sample_size_per_second
+            process_time = round(time() - track_time_start, 2)
             # log warning if received seconds are a lot less than expected
             if (stream_duration - chunk_num) > 20:
                 self.logger.warning(
-                    "Unexpected number of chunks received for track %s: %s/%s",
+                    "Unexpected number of chunks received for track %s: %s/%s - process_time: %s",
                     queue_track.uri,
                     chunk_num,
                     stream_duration,
+                    process_time,
                 )
             self.logger.debug(
-                "end of track reached - chunk_num: %s - crossfade_buffer: %s - stream_duration: %s - player_buffer: %s",
+                "end of track reached - chunk_num: %s - crossfade_buffer: %s - "
+                "stream_duration: %s - player_buffer: %s - process_time: %s",
                 chunk_num,
                 seconds_in_buffer,
                 stream_duration,
                 player_buffered,
+                process_time,
             )
 
             if buffer:
