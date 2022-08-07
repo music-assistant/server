@@ -271,6 +271,13 @@ async def get_stream_details(
         streamdetails.loudness = loudness
     if not streamdetails.duration:
         streamdetails.duration = queue_item.duration
+    # make sure that ffmpeg handles mpeg dash streams directly
+    if (
+        streamdetails.content_type == ContentType.MPEG_DASH
+        and streamdetails.data
+        and streamdetails.data.startswith("http")
+    ):
+        streamdetails.direct = streamdetails.data
     # set streamdetails as attribute on the media_item
     # this way the app knows what content is playing
     queue_item.streamdetails = streamdetails
