@@ -52,7 +52,7 @@ class AsyncProcess:
                 stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
                 stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
                 stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-                limit=32 * 1024 * 1024,
+                limit=64 * 1024 * 1024,
                 close_fds=True,
             )
         else:
@@ -61,7 +61,7 @@ class AsyncProcess:
                 stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
                 stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
                 stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-                limit=32 * 1024 * 102,
+                limit=64 * 1024 * 102,
                 close_fds=True,
             )
         return self
