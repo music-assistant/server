@@ -618,11 +618,12 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _get_signature_timestamp(self):
         """Get a signature timestamp required to generate valid stream URLs."""
-        try:
-            response = await self._get_data(url=YTM_DOMAIN)
-        except:
-            response = await self._get_data(url=YT_DOMAIN)
+        response = await self._get_data(url=YTM_DOMAIN)
         match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
+        if match is None:
+            # retry with youtube domain
+            response = await self._get_data(url=YT_DOMAIN)
+            match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
         if match is None:
             raise Exception("Could not identify the URL for base.js player.")
         url = YTM_DOMAIN + match.group(1)
