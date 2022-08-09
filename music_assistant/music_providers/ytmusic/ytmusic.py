@@ -50,6 +50,7 @@ from music_assistant.music_providers.ytmusic.helpers import (
     search,
 )
 
+YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
 
@@ -617,7 +618,10 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _get_signature_timestamp(self):
         """Get a signature timestamp required to generate valid stream URLs."""
-        response = await self._get_data(url=YTM_DOMAIN)
+        try:
+            response = await self._get_data(url=YTM_DOMAIN)
+        except:
+            response = await self._get_data(url=YT_DOMAIN)
         match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
         if match is None:
             raise Exception("Could not identify the URL for base.js player.")
