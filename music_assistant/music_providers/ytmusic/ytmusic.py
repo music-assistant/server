@@ -119,9 +119,7 @@ class YoutubeMusicProvider(MusicProvider):
             if result["resultType"] == "artist":
                 parsed_results.append(await self._parse_artist(result))
             elif result["resultType"] == "album":
-                parsed_results.append(
-                    await self._parse_album(result)
-                )
+                parsed_results.append(await self._parse_album(result))
             elif result["resultType"] == "playlist":
                 parsed_results.append(await self._parse_playlist(result))
             elif result["resultType"] == "song":
@@ -568,9 +566,11 @@ class YoutubeMusicProvider(MusicProvider):
         )
         if "artists" in track_obj:
             track.artists = [
-                await self._parse_artist(artist) 
+                await self._parse_artist(artist)
                 for artist in track_obj["artists"]
-                if artist.get("id") or artist.get("channelId") or artist.get("name") == "Various Artists"
+                if artist.get("id")
+                or artist.get("channelId")
+                or artist.get("name") == "Various Artists"
             ]
         if "thumbnails" in track_obj and track_obj["thumbnails"]:
             track.metadata.images = await self._parse_thumbnails(
