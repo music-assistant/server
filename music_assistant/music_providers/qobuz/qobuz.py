@@ -361,7 +361,7 @@ class QobuzProvider(MusicProvider):
             sample_rate=int(streamdata["sampling_rate"] * 1000),
             bit_depth=streamdata["bit_depth"],
             data=streamdata,  # we need these details for reporting playback
-            expires=time.time() + 600,  # not sure about the real allowed value
+            expires=time.time() + 3600,  # not sure about the real allowed value
             direct=streamdata["url"],
             callback=self._report_playback_stopped,
         )
