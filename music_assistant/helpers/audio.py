@@ -230,7 +230,7 @@ async def get_stream_details(
         param queue_id: Optionally provide the queue_id which will play this stream.
     """
     streamdetails = None
-    if queue_item.streamdetails and (time() < queue_item.streamdetails.expires):
+    if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 60)):
         # we already have fresh streamdetails, use these
         queue_item.streamdetails.seconds_skipped = None
         queue_item.streamdetails.seconds_streamed = None
@@ -697,6 +697,18 @@ async def _get_ffmpeg_args(
     ]
     if streamdetails.direct:
         # ffmpeg can access the inputfile (or url) directly
+        input_args += [
+            "-reconnect",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_on_network_error",
+            "1",
+            "-reconnect_on_http_error",
+            "5xx",
+            "-reconnect_delay_max",
+            "10",
+        ]
         if seek_position:
             input_args += ["-ss", str(seek_position)]
         input_args += ["-i", streamdetails.direct]

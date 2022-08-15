@@ -224,7 +224,7 @@ class StreamsController:
                 "Got stream request for unknown or finished stream: %s",
                 stream_id,
             )
-            return web.FileResponse(SILENCE_FILE)
+            return web.Response(status=404)
 
         # handle a second connection for the same player
         # this probably means a client which does multiple GET requests (e.g. Kodi, Vlc)
@@ -631,12 +631,10 @@ class QueueStream:
                 and prev_track.media_type == MediaType.TRACK
                 and queue_track.media_type == MediaType.TRACK
             ):
-                prev_item = await self.mass.music.get_item_by_uri(prev_track.uri)
-                new_item = await self.mass.music.get_item_by_uri(queue_track.uri)
                 if (
-                    prev_item.album is not None
-                    and new_item.album is not None
-                    and prev_item.album == new_item.album
+                    prev_track.media_item.album is not None
+                    and queue_track.media_item.album is not None
+                    and prev_track.media_item.album == queue_track.media_item.album
                 ):
                     self.logger.debug("Skipping crossfade: Tracks are from same album")
                     use_crossfade = False
@@ -644,7 +642,7 @@ class QueueStream:
 
             self.logger.info(
                 "Start Streaming queue track: %s (%s) for queue %s - crossfade: %s",
-                queue_track.uri,
+                streamdetails.uri,
                 queue_track.name,
                 self.queue.player.name,
                 use_crossfade,
@@ -731,7 +729,7 @@ class QueueStream:
 
             if bytes_written == 0:
                 # stream error: got empy first chunk ?!
-                self.logger.warning("Stream error on %s", queue_track.uri)
+                self.logger.warning("Stream error on %s", streamdetails.uri)
                 queue_track.streamdetails.seconds_streamed = 0
                 continue
 
@@ -744,11 +742,13 @@ class QueueStream:
             # log warning if received seconds are a lot less than expected
             if (stream_duration - chunk_num) > 20:
                 self.logger.warning(
-                    "Unexpected number of chunks received for track %s: %s/%s - process_time: %s",
-                    queue_track.uri,
+                    "Unexpected number of chunks received for track %s: %s/%s - "
+                    "process_time: %s - player_buffered: %s",
+                    streamdetails.uri,
                     chunk_num,
                     stream_duration,
                     process_time,
+                    player_buffered,
                 )
             self.logger.debug(
                 "end of track reached - chunk_num: %s - crossfade_buffer: %s - "
@@ -791,7 +791,7 @@ class QueueStream:
             )
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
-                queue_track.uri,
+                queue_track.streamdetails.uri,
                 queue_track.name,
                 self.queue.player.name,
             )

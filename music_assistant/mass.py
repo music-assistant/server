@@ -157,7 +157,9 @@ class MusicAssistant:
         job = BackgroundJob(str(uuid4()), name=name, coro=coro)
         self._jobs.append(job)
         self._jobs_event.set()
-        self.signal_event(MassEvent(EventType.BACKGROUND_JOB_UPDATED, data=job))
+        self.signal_event(
+            MassEvent(EventType.BACKGROUND_JOB_UPDATED, job.name, data=job)
+        )
         return job
 
     def create_task(
