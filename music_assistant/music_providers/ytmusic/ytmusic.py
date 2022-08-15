@@ -119,24 +119,12 @@ class YoutubeMusicProvider(MusicProvider):
             if result["resultType"] == "artist":
                 parsed_results.append(await self._parse_artist(result))
             elif result["resultType"] == "album":
-                parsed_results.append(
-                    # Search result for albums contain invalid artists
-                    # Use a get_album to get full details
-                    await self.get_album(result["browseId"])
-                )
+                parsed_results.append(await self._parse_album(result))
             elif result["resultType"] == "playlist":
                 parsed_results.append(await self._parse_playlist(result))
             elif result["resultType"] == "song":
-                # Tracks from search results sometimes do not have a valid artist id
-                # In that case, call the API for track details based on track id
-                try:
-                    track = await self._parse_track(result)
-                    if track:
-                        parsed_results.append(track)
-                except InvalidDataError:
-                    track = await self.get_track(result["videoId"])
-                    if track:
-                        parsed_results.append(track)
+                if track := await self._parse_track(result):
+                    parsed_results.append(track)
         return parsed_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
@@ -474,8 +462,9 @@ class YoutubeMusicProvider(MusicProvider):
             }
         }
 
-    async def _parse_album(self, album_obj: dict, album_id: str) -> Album:
+    async def _parse_album(self, album_obj: dict, album_id: str = None) -> Album:
         """Parse a YT Album response to an Album model object."""
+        album_id = album_id or album_obj.get("id") or album_obj.get("browseId")
         if "title" in album_obj:
             name = album_obj["title"]
         elif "name" in album_obj:
@@ -485,7 +474,7 @@ class YoutubeMusicProvider(MusicProvider):
             name=name,
             provider=self.type,
         )
-        if "year" in album_obj and album_obj["year"].isdigit():
+        if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
         if "thumbnails" in album_obj:
             album.metadata.images = await self._parse_thumbnails(
@@ -577,7 +566,11 @@ class YoutubeMusicProvider(MusicProvider):
         )
         if "artists" in track_obj:
             track.artists = [
-                await self._parse_artist(artist) for artist in track_obj["artists"]
+                await self._parse_artist(artist)
+                for artist in track_obj["artists"]
+                if artist.get("id")
+                or artist.get("channelId")
+                or artist.get("name") == "Various Artists"
             ]
         if "thumbnails" in track_obj and track_obj["thumbnails"]:
             track.metadata.images = await self._parse_thumbnails(
