@@ -697,18 +697,20 @@ async def _get_ffmpeg_args(
     ]
     if streamdetails.direct:
         # ffmpeg can access the inputfile (or url) directly
-        input_args += [
-            "-reconnect",
-            "1",
-            "-reconnect_streamed",
-            "1",
-            "-reconnect_on_network_error",
-            "1",
-            "-reconnect_on_http_error",
-            "5xx",
-            "-reconnect_delay_max",
-            "10",
-        ]
+        if streamdetails.direct.startswith("http"):
+            # append reconnect options for direct stream from http
+            input_args += [
+                "-reconnect",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-reconnect_on_network_error",
+                "1",
+                "-reconnect_on_http_error",
+                "5xx",
+                "-reconnect_delay_max",
+                "10",
+            ]
         if seek_position:
             input_args += ["-ss", str(seek_position)]
         input_args += ["-i", streamdetails.direct]
