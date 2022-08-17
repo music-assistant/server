@@ -4,14 +4,15 @@ from __future__ import annotations
 import asyncio
 from abc import ABC
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.helpers.util import get_changed_keys
-from music_assistant.models.enums import EventType, PlayerState
-from music_assistant.models.event import MassEvent
-from music_assistant.models.media_items import ContentType
+
+from .enums import EventType, PlayerFeature, PlayerState, PlayerType
+from .event import MassEvent
+from .player_settings import PlayerSettings
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -28,11 +29,16 @@ class DeviceInfo(DataClassDictMixin):
     manufacturer: str = "unknown"
 
 
+DEFAULT_FEATURES = (PlayerFeature.POWER, PlayerFeature.MUTE)
+
+
 class Player(ABC):
     """Model for a music player."""
 
     player_id: str
-    _attr_group_members: List[str] = []
+    platform: str  # e.g. cast or sonos etc.
+
+    _attr_type: PlayerType = PlayerType.STANDARD
     _attr_name: str = ""
     _attr_powered: bool = False
     _attr_elapsed_time: float = 0
@@ -42,11 +48,18 @@ class Player(ABC):
     _attr_volume_level: int = 100
     _attr_volume_muted: bool = False
     _attr_device_info: DeviceInfo = DeviceInfo()
-    _attr_max_sample_rate: int = 96000
-    _attr_stream_type: ContentType = ContentType.FLAC
+    _attr_supported_features: Tuple[PlayerFeature] = DEFAULT_FEATURES
+    _attr_group_members: List[str] = []
+
     # below objects will be set by playermanager at register/update
     mass: MusicAssistant = None  # type: ignore[assignment]
+    settings: PlayerSettings = None  # type: ignore[assignment]
     _prev_state: dict = {}
+
+    @property
+    def type(self) -> bool:
+        """Return player type."""
+        return self._attr_type
 
     @property
     def name(self) -> bool:
@@ -98,6 +111,13 @@ class Player(ABC):
         """Return basic device/provider info for this player."""
         return self._attr_device_info
 
+    @property
+    def supported_features(self) -> Tuple[PlayerFeature]:
+        """Return features supported by this player."""
+        return self._attr_supported_features
+
+    # SERVICE CALLS BELOW
+
     async def play_url(self, url: str) -> None:
         """Play the specified url on the player."""
         raise NotImplementedError
@@ -121,19 +141,6 @@ class Player(ABC):
     async def volume_set(self, volume_level: int) -> None:
         """Send volume level (0..100) command to player."""
         raise NotImplementedError
-
-    # DEFAULT PLAYER SETTINGS
-
-    @property
-    def max_sample_rate(self) -> int:
-        """Return the (default) max supported sample rate."""
-        # if a player does not report/set its supported sample rates, we use a pretty safe default
-        return self._attr_max_sample_rate
-
-    @property
-    def stream_type(self) -> ContentType:
-        """Return the default/preferred content type to use for streaming."""
-        return self._attr_stream_type
 
     # GROUP PLAYER ATTRIBUTES AND METHODS (may be overridden if needed)
     # a player can optionally be a group leader (e.g. Sonos)

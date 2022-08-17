@@ -236,6 +236,38 @@ class PlayerState(Enum):
     OFF = "off"
 
 
+class PlayerType(Enum):
+    """
+    Enum with possible Player Types.
+
+    standard: A standard player not synced with other players from the same platform.
+    grouped: Player that is grouped with other (platform-specific) players.
+    group: Dedicated platform-specific group player (e.g. cast).
+    universal_group: Universal multi-platform player group (sync maintained by MA).
+    """
+
+    STANDARD = "standard"
+    GROUPED = "grouped"
+    GROUP = "group"
+    UNIVERSAL_GROUP = "universal_group"
+
+
+class PlayerFeature(Enum):
+    """
+    Enum with possible Player features.
+
+    power: The player has a dedicated power control.
+    mute: The player supports muting the volume.
+    grouping: The player supports grouping with other players (of the same platform).
+    accurate_time: The player provides millisecond accurate timing information.
+    """
+
+    POWER = "power"
+    MUTE = "mute"
+    GROUPING = "grouping"
+    ACCURATE_TIME = "accurate_time"
+
+
 class EventType(Enum):
     """Enum with possible Events."""
 

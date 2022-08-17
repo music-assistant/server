@@ -18,6 +18,7 @@ from music_assistant.controllers.database import DatabaseController
 from music_assistant.controllers.metadata.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.settings import SettingsController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.models.background_job import BackgroundJob
 from music_assistant.models.config import MassConfig
@@ -57,6 +58,7 @@ class MusicAssistant:
 
         # init core controllers
         self.database = DatabaseController(self)
+        self.settings = SettingsController(self)
         self.cache = CacheController(self)
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
@@ -77,6 +79,7 @@ class MusicAssistant:
             )
         # setup core controllers
         await self.database.setup()
+        await self.settings.setup()
         await self.cache.setup()
         await self.music.setup()
         await self.metadata.setup()

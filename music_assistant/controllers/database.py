@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 TABLE_TRACK_LOUDNESS = "track_loudness"
 TABLE_PLAYLOG = "playlog"
@@ -46,20 +46,6 @@ class DatabaseController:
         """Close db connection on exit."""
         self.logger.info("Database disconnected.")
         await self._db.disconnect()
-
-    async def get_setting(self, key: str) -> str | None:
-        """Get setting from settings table."""
-        if db_row := await self.get_row(TABLE_SETTINGS, {"key": key}):
-            return db_row["value"]
-        return None
-
-    async def set_setting(self, key: str, value: str) -> None:
-        """Set setting in settings table."""
-        if not isinstance(value, str):
-            value = str(value)
-        return await self.insert(
-            TABLE_SETTINGS, {"key": key, "value": value}, allow_replace=True
-        )
 
     async def get_rows(
         self,
@@ -185,8 +171,8 @@ class DatabaseController:
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
         try:
-            if prev_version := await self.get_setting("version"):
-                prev_version = int(prev_version)
+            if db_row := await self.get_row(TABLE_SETTINGS, {"key": "version"}):
+                prev_version = int(db_row["value"])
             else:
                 prev_version = 0
         except (KeyError, ValueError):
@@ -208,19 +194,27 @@ class DatabaseController:
                 await self.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
                 await self.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
                 await self.execute(f"DROP TABLE IF EXISTS {TABLE_THUMBS}")
-                await self.execute("DROP TABLE IF EXISTS provider_mappings")
                 # recreate missing tables
                 await self.__create_database_tables()
 
+            if prev_version < 19:
+                # recreate settings table
+                await self.execute(f"DROP TABLE IF EXISTS {TABLE_SETTINGS}")
+                await self.__create_database_tables()
+
         # store current schema version
-        await self.set_setting("version", str(SCHEMA_VERSION))
+        await self.insert_or_replace(
+            TABLE_SETTINGS,
+            {"key": "version", "value": str(SCHEMA_VERSION), "type": "str"},
+        )
 
     async def __create_database_tables(self) -> None:
         """Init database tables."""
         await self.execute(
             """CREATE TABLE IF NOT EXISTS settings(
                     key TEXT PRIMARY KEY,
-                    value TEXT
+                    value TEXT,
+                    type TEXT
                 );"""
         )
         await self.execute(
