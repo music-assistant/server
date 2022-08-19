@@ -64,6 +64,31 @@ parser.add_argument(
     help="YoutubeMusic cookie",
 )
 parser.add_argument(
+    "--smb-username",
+    required=False,
+    help="SMB username",
+)
+parser.add_argument(
+    "--smb-password",
+    required=False,
+    help="SMB password",
+)
+parser.add_argument(
+    "--smb-target-name",
+    required=False,
+    help="The NetBIOS machine name of the remote server.",
+)
+parser.add_argument(
+    "--smb-ip",
+    required=False,
+    help="The IP of the remote server",
+)
+parser.add_argument(
+    "--smb-share",
+    required=False,
+    help="The share on the remote server to connect to.",
+)
+parser.add_argument(
     "--debug",
     action="store_true",
     help="Enable verbose debug logging",
@@ -126,9 +151,22 @@ if args.ytmusic_username and args.ytmusic_cookie:
             password=args.ytmusic_cookie,
         )
     )
+
 if args.musicdir:
     mass_conf.providers.append(
         MusicProviderConfig(type=ProviderType.FILESYSTEM_LOCAL, path=args.musicdir)
+    )
+
+if args.smb_share and args.smb_target_name:
+    mass_conf.providers.append(
+        MusicProviderConfig(
+            ProviderType.FILESYSTEM_SMB,
+            username=args.smb_username,
+            password=args.smb_password,
+            path=args.smb_share,
+            target_name=args.smb_target_name,
+            target_ip=args.smb_ip,
+        )
     )
 
 
@@ -200,7 +238,7 @@ async def main():
         # run sync
         await mass.music.start_sync()
 
-        # get some data
+        # # get some data
         artists = await mass.music.artists.db_items()
         artists_lib = await mass.music.artists.db_items(True)
         print(

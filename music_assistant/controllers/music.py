@@ -28,7 +28,10 @@ from music_assistant.models.media_items import (
     media_from_dict,
 )
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.music_providers.filesystem import FileSystemProvider
+from music_assistant.music_providers.filesystem import (
+    FileSystemProvider,
+    SMBFileSystemProvider,
+)
 from music_assistant.music_providers.qobuz import QobuzProvider
 from music_assistant.music_providers.spotify import SpotifyProvider
 from music_assistant.music_providers.tunein import TuneInProvider
@@ -41,6 +44,7 @@ if TYPE_CHECKING:
 
 PROV_MAP = {
     ProviderType.FILESYSTEM_LOCAL: FileSystemProvider,
+    ProviderType.FILESYSTEM_SMB: SMBFileSystemProvider,
     ProviderType.SPOTIFY: SpotifyProvider,
     ProviderType.QOBUZ: QobuzProvider,
     ProviderType.TUNEIN: TuneInProvider,
