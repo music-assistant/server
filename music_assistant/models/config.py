@@ -18,8 +18,10 @@ class MusicProviderConfig:
     username: Optional[str] = None
     password: Optional[str] = None
     path: Optional[str] = None
+    # smb specific config
     target_name: Optional[str] = None
     target_ip: Optional[str] = None
+    share_name: Optional[str] = None
     # if id is omitted, an id is generated/derived from the other params
     id: Optional[str] = None
 

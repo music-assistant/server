@@ -70,7 +70,7 @@ class SMBFileSystemProvider(FileSystemProvider):
         # we work bottom up, as-in we derive all info from the tracks
         cur_checksums = {}
         async for entry in scantree(
-            share=self.config.path, smb_connection=self._smb_connection
+            share=self.config.share_name, smb_connection=self._smb_connection, path=self.config.path or "/"
         ):
 
             if "." not in entry.filename or entry.filename.startswith("."):
@@ -91,8 +91,13 @@ class SMBFileSystemProvider(FileSystemProvider):
                     continue
 
                 if ext in TRACK_EXTENSIONS:
-                    # add/update track to db
-                    track = await self._parse_track(entry.full_path)
+                    # Retrieve file from smb share
+                    with tempfile.NamedTemporaryFile() as file_obj:
+                        _, _ = self._smb_connection.retrieveFile(
+                            self.config.path, entry.full_path, file_obj
+                        )
+                        # add/update track to db
+                        track = await self._parse_track(file_obj.name)
                     # if the track was edited on disk, always overwrite existing db details
                     overwrite_existing = entry.path in prev_checksums
                     await self.mass.music.tracks.add_db_item(

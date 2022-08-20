@@ -89,6 +89,11 @@ parser.add_argument(
     help="The share on the remote server to connect to.",
 )
 parser.add_argument(
+    "--path",
+    required=False,
+    help="The path on the share to connect to.",
+)
+parser.add_argument(
     "--debug",
     action="store_true",
     help="Enable verbose debug logging",
@@ -163,9 +168,10 @@ if args.smb_share and args.smb_target_name:
             ProviderType.FILESYSTEM_SMB,
             username=args.smb_username,
             password=args.smb_password,
-            path=args.smb_share,
             target_name=args.smb_target_name,
             target_ip=args.smb_ip,
+            share_name=args.smb_share,
+            path=args.smb_share            
         )
     )
 
