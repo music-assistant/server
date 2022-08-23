@@ -29,7 +29,7 @@ from music_assistant.models.media_items import (
 )
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.music_providers.filesystem import (
-    FileSystemProvider,
+    LocalFileSystemProvider,
     SMBFileSystemProvider,
 )
 from music_assistant.music_providers.qobuz import QobuzProvider
@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 PROV_MAP = {
-    ProviderType.FILESYSTEM_LOCAL: FileSystemProvider,
+    ProviderType.FILESYSTEM_LOCAL: LocalFileSystemProvider,
     ProviderType.FILESYSTEM_SMB: SMBFileSystemProvider,
     ProviderType.SPOTIFY: SpotifyProvider,
     ProviderType.QOBUZ: QobuzProvider,

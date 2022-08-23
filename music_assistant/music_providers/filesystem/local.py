@@ -36,7 +36,7 @@ async def create_item(base_path: str, entry: os.DirEntry) -> FileSystemItem:
             checksum=str(int(stat.st_mtime)),
             file_size=stat.st_size,
             # local filesystem is always local resolvable
-            local_path=absolute_path,
+            # local_path=absolute_path,
         )
 
     # run in executor because strictly taken this may be blocking IO
@@ -111,7 +111,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
                 checksum=str(int(stat.st_mtime)),
                 file_size=stat.st_size,
                 # local filesystem is always local resolvable
-                local_path=absolute_path,
+                # local_path=absolute_path,
             )
 
         # run in executor because strictly taken this may be blocking IO
@@ -122,19 +122,21 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         """Return bool is this FileSystem musicprovider has given file/dir."""
         if not file_path:
             return False  # guard
-        absolute_path = get_absolute_path(self.config.path, file_path)
-        return await exists(absolute_path)
+        abs_path = get_absolute_path(self.config.path, file_path)
+        return await exists(abs_path)
 
     async def read_file_content(self, file_path: str) -> bytes:
         """Read entire file content as bytes."""
-        async with aiofiles.open(file_path, "rb") as _file:
+        abs_path = get_absolute_path(self.config.path, file_path)
+        async with aiofiles.open(abs_path, "rb") as _file:
             return await _file.read()
 
     async def iter_file_content(
         self, file_path: str, seek: int = 0, chunk_size: int = 64000
     ) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
-        async with aiofiles.open(file_path, "rb") as _file:
+        abs_path = get_absolute_path(self.config.path, file_path)
+        async with aiofiles.open(abs_path, "rb") as _file:
             if seek:
                 await _file.seek(seek)
             # yield chunks of data from file
@@ -146,5 +148,6 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
     async def write_file_content(self, file_path: str, data: bytes) -> None:
         """Write entire file content as bytes (e.g. for playlists)."""
-        async with aiofiles.open(file_path, "wb") as _file:
+        abs_path = get_absolute_path(self.config.path, file_path)
+        async with aiofiles.open(abs_path, "wb") as _file:
             await _file.write(data)
