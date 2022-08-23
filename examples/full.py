@@ -171,7 +171,7 @@ if args.smb_share and args.smb_target_name:
             target_name=args.smb_target_name,
             target_ip=args.smb_ip,
             share_name=args.smb_share,
-            path=args.smb_share            
+            path=args.path,
         )
     )
 

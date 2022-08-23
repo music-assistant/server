@@ -1,19 +1,15 @@
 """SMB filesystem provider for Music Assistant."""
 
-import json
 import tempfile
 from typing import AsyncGenerator, Optional, Tuple
 
 from smb.base import SharedFile
 from smb.SMBConnection import SMBConnection
 
-from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.enums import ProviderType
-from music_assistant.models.errors import InvalidDataError
-from music_assistant.models.media_items import MediaType, Track
+from music_assistant.models.media_items import MediaType
 from music_assistant.music_providers.filesystem import FileSystemProvider
 
-from ...helpers.tags import AudioTags
 from .filesystem import (
     PLAYLIST_EXTENSIONS,
     SCHEMA_VERSION,
@@ -69,8 +65,11 @@ class SMBFileSystemProvider(FileSystemProvider):
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_checksums = {}
+        # TODO: Include scantree in class so we can override it and reuse sync_library()?
         async for entry in scantree(
-            share=self.config.share_name, smb_connection=self._smb_connection, path=self.config.path or "/"
+            share=self.config.share_name,
+            smb_connection=self._smb_connection,
+            path=self.config.path or "/",
         ):
 
             if "." not in entry.filename or entry.filename.startswith("."):
@@ -91,20 +90,20 @@ class SMBFileSystemProvider(FileSystemProvider):
                     continue
 
                 if ext in TRACK_EXTENSIONS:
-                    # Retrieve file from smb share
-                    with tempfile.NamedTemporaryFile() as file_obj:
-                        _, _ = self._smb_connection.retrieveFile(
-                            self.config.path, entry.full_path, file_obj
-                        )
-                        # add/update track to db
-                        track = await self._parse_track(file_obj.name)
+                    # add/update track to db
+                    track_path = self._get_smb_url(entry.full_path)
+                    track = await self._parse_track(track_path)
                     # if the track was edited on disk, always overwrite existing db details
-                    overwrite_existing = entry.path in prev_checksums
+                    overwrite_existing = entry.full_path in prev_checksums
                     await self.mass.music.tracks.add_db_item(
                         track, overwrite_existing=overwrite_existing
                     )
                 elif ext in PLAYLIST_EXTENSIONS:
-                    playlist = await self._parse_playlist(entry.full_path)
+                    with tempfile.NamedTemporaryFile() as file_obj:
+                        _, _ = self._smb_connection.retrieveFile(
+                            self.config.share_name, entry.full_path, file_obj
+                        )
+                        playlist = await self._parse_playlist(file_obj.name)
                     # add/update] playlist to db
                     playlist.metadata.checksum = checksum
                     # playlist is always in-library
@@ -130,61 +129,41 @@ class SMBFileSystemProvider(FileSystemProvider):
         deleted_files = set(prev_checksums.keys()) - set(cur_checksums.keys())
         await self._process_deletions(deleted_files)
 
-    async def _parse_track(self, track_path: str) -> Track:
-        """Try to parse a track from a filename by reading its tags."""
+    # async def _parse_track(self, file_path: str) -> Track:
+    #     """Try to parse a track from a filename by reading its tags."""
+    #     # Retrieve file from smb share
+    #     with tempfile.NamedTemporaryFile() as file_obj:
+    #         _, _ = self._smb_connection.retrieveFile(
+    #             self.config.share_name, file_path, file_obj
+    #         )
+    #         track = await super()._parse_track(file_obj.name)
+    #         # set the id to the relative path on the share
+    #         track.item_id = file_path
+    #         # update the uri
+    #         track.uri = create_uri(MediaType.TRACK, self._attr_type, file_path)
+    #         return track
 
-        # if not await self.exists(track_path):
-        #     raise MediaNotFoundError(f"Track path does not exist: {track_path}")
+    # async def get_stream_details(self, item_id: str) -> StreamDetails:
+    #     """Return the content details for the given track when it will be streamed."""
+    #     itempath = self._get_smb_url(item_id)
 
-        # track_item_id = self._get_item_id(track_path)
+    #     metadata = await parse_tags(itempath)
+    #     stat = await self.mass.loop.run_in_executor(None, os.stat, itempath)
 
-        # parse tags
-        tags = await self.parse_tags(track_path)
-        print(f"pre commit doesn't like an used {tags}")
+    #     return StreamDetails(
+    #         provider=self.type,
+    #         item_id=item_id,
+    #         content_type=ContentType.try_parse(metadata.format),
+    #         media_type=MediaType.TRACK,
+    #         duration=metadata.duration,
+    #         size=stat.st_size,
+    #         sample_rate=metadata.sample_rate,
+    #         bit_depth=metadata.bits_per_sample,
+    #         direct=itempath,
+    #     )
 
-    async def parse_tags(self, file_path: str) -> AudioTags:
-        """Parse tags from a media file."""
-
-        with tempfile.NamedTemporaryFile() as file_obj:
-            _, _ = self._smb_connection.retrieveFile(
-                self.config.path, file_path, file_obj
-            )
-
-            args = (
-                "ffprobe",
-                "-hide_banner",
-                "-loglevel",
-                "fatal",
-                "-show_error",
-                "-show_format",
-                "-show_streams",
-                "-print_format",
-                "json",
-                "-i",
-                "-",
-            )
-
-            async with AsyncProcess(
-                args, enable_stdin=True, enable_stdout=True, enable_stderr=False
-            ) as proc:
-
-                try:
-                    file_obj.seek(0, 0)
-                    await proc.write(file_obj.read())
-                    res, _ = await proc.communicate()
-                    data = json.loads(res)
-                    if error := data.get("error"):
-                        raise InvalidDataError(error["string"])
-                    return AudioTags.parse(data)
-                except (
-                    KeyError,
-                    ValueError,
-                    json.JSONDecodeError,
-                    InvalidDataError,
-                ) as err:
-                    raise InvalidDataError(
-                        f"Unable to retrieve info for {file_path}: {str(err)}"
-                    ) from err
+    def _get_smb_url(self, prov_track_id):
+        return f"smb://{self.config.username}:{self.config.password}@{self.config.target_ip}/{self.config.share_name}{prov_track_id}"
 
     async def _setup_smb_connection(self):
         self._smb_connection = SMBConnection(
