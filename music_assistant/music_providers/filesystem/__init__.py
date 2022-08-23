@@ -1,4 +1,5 @@
 """Package with FileSystem Music provider(s)."""
 
-from .filesystem import FileSystemProvider  # noqa
+from .base import FileSystemProviderBase  # noqa
+from .local import LocalFileSystemProvider  # noqa
 from .smb import SMBFileSystemProvider  # noqa
