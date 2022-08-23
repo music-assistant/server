@@ -562,7 +562,7 @@ class FileSystemProviderBase(MusicProvider):
         try:
             # get playlist file contents
             playlist_data = await self.read_file_content(prov_playlist_id)
-            playlist_data.decode("utf-8")
+            playlist_data = playlist_data.decode("utf-8")
 
             if ext in ("m3u", "m3u8"):
                 playlist_lines = await parse_m3u(playlist_data)
