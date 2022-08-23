@@ -36,7 +36,7 @@ async def create_item(base_path: str, entry: os.DirEntry) -> FileSystemItem:
             checksum=str(int(stat.st_mtime)),
             file_size=stat.st_size,
             # local filesystem is always local resolvable
-            # local_path=absolute_path,
+            local_path=absolute_path,
         )
 
     # run in executor because strictly taken this may be blocking IO
@@ -111,7 +111,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
                 checksum=str(int(stat.st_mtime)),
                 file_size=stat.st_size,
                 # local filesystem is always local resolvable
-                # local_path=absolute_path,
+                local_path=absolute_path,
             )
 
         # run in executor because strictly taken this may be blocking IO
