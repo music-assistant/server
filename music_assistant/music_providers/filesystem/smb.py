@@ -76,7 +76,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             None, self._smb_connection.listPath, self.config.share_name, rel_path
         )
         for entry in path_result:
-            item = await create_item(self.config.path, entry)
+            item = await create_item(self._get_base_path(), entry)
             if recursive and item.is_dir:
                 try:
                     async for subitem in self.listdir(item.absolute_path, True):
