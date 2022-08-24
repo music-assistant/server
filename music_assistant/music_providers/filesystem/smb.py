@@ -132,31 +132,30 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         await loop.run_in_executor(None, _read_file)
 
     async def iter_file_content(
-        self, file_path: str, seek: int = 0, chunk_size: int = 64000
+        self, file_path: str, seek: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
         file_item: FileSystemItem = await self.resolve(file_path)
 
-        def _read_chunks(offset: int, max_length: int):
-            chunks = BytesIO()
-            _, _ = self._smb_connection.retrieveFileFromOffset(
+        def _read_chunks(offset: int):
+            data = BytesIO()
+            self._smb_connection.retrieveFileFromOffset(
                 self.config.share_name,
                 file_item.absolute_path,
-                file_obj=chunks,
+                file_obj=data,
                 offset=offset,
-                max_length=max_length,
+                max_length=512000,
             )
-            chunks.seek(0)
-            return chunks.read()
+            data.seek(0)
+            return data.read()
 
         offset = seek
         while True:
-            loop = asyncio.get_running_loop()
-            data = await loop.run_in_executor(None, _read_chunks, offset, chunk_size)
+            data = await self.mass.loop.run_in_executor(None, _read_chunks, offset)
             if not data:
                 break
             yield data
-            offset += chunk_size
+            offset += len(data)
 
     async def write_file_content(self, file_path: str, data: bytes) -> None:
         """Write entire file content as bytes (e.g. for playlists)."""

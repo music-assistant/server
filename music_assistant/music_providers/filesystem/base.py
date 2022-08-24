@@ -123,7 +123,7 @@ class FileSystemProviderBase(MusicProvider):
 
     @abstractmethod
     async def iter_file_content(
-        self, file_path: str, seek: int = 0, chunk_size: int = 64000
+        self, file_path: str, seek: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
         yield
