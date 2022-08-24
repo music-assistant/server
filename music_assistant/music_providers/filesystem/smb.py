@@ -146,6 +146,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
                 offset=offset,
                 max_length=max_length,
             )
+            chunks.seek(0)
             return chunks.read()
 
         offset = seek

@@ -266,7 +266,7 @@ async def main():
         playlists = await mass.music.playlists.db_items()
         playlists_lib = await mass.music.playlists.db_items(True)
         print(
-            f"Got {playlists_lib.total} tracks  in library (of {playlists.total} total in db)"
+            f"Got {playlists_lib.total} playlists  in library (of {playlists.total} total in db)"
         )
 
         # register a player
