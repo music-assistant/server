@@ -3,6 +3,7 @@
 
 import asyncio
 import tempfile
+from io import BytesIO
 from typing import AsyncGenerator
 
 from smb.base import SharedFile
@@ -137,15 +138,15 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         file_item: FileSystemItem = await self.resolve(file_path)
 
         def _read_chunks(offset: int, max_length: int):
-            with tempfile.NamedTemporaryFile() as file_obj:
-                _, _ = self._smb_connection.retrieveFileFromOffset(
-                    self.config.share_name,
-                    file_item.absolute_path,
-                    file_obj=file_obj,
-                    offset=offset,
-                    max_length=max_length,
-                )
-                return file_obj.read()
+            chunks = BytesIO()
+            _, _ = self._smb_connection.retrieveFileFromOffset(
+                self.config.share_name,
+                file_item.absolute_path,
+                file_obj=chunks,
+                offset=offset,
+                max_length=max_length,
+            )
+            return chunks.read()
 
         offset = seek
         while True:
