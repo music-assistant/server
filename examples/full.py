@@ -228,7 +228,7 @@ async def main():
         # run sync
         await mass.music.start_sync()
 
-        # # get some data
+        # get some data
         artists = await mass.music.artists.db_items()
         artists_lib = await mass.music.artists.db_items(True)
         print(

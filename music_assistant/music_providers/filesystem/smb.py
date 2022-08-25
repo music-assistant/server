@@ -2,21 +2,26 @@
 
 
 import asyncio
+import contextvars
 import os
+from contextlib import asynccontextmanager
 from io import BytesIO
-from typing import AsyncGenerator
+from typing import AsyncContextManager, AsyncGenerator
 
-from smb.base import SharedFile
+from smb.base import SharedFile, SMBTimeout
 from smb.smb_structs import OperationFailure
 from smb.SMBConnection import SMBConnection
 
 from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.models.enums import ProviderType
+from music_assistant.models.errors import LoginFailed
 
 from .base import FileSystemItem, FileSystemProviderBase
 from .helpers import get_absolute_path, get_relative_path
 
 SERVICE_NAME = "music_assistant"
+
+smb_conn_ctx = contextvars.ContextVar("smb_conn_ctx")
 
 
 async def create_item(
@@ -47,9 +52,10 @@ class SMBFileSystemProvider(FileSystemProviderBase):
 
     _attr_name = "smb"
     _attr_type = ProviderType.FILESYSTEM_SMB
-    _smb_connection = None
     _service_name = ""
     _root_path = "/"
+    _remote_name = ""
+    _default_target_ip = ""
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
@@ -60,26 +66,12 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             path_parts = self.config.path[6:].split("/", 2)
         else:
             path_parts = self.config.path.split(os.sep)
-        remote_name = path_parts[0]
+        self._remote_name = path_parts[0]
         self._service_name = path_parts[1]
         if len(path_parts) > 2:
             self._root_path = os.sep + path_parts[2]
-        self._smb_connection = SMBConnection(
-            username=self.config.username,
-            password=self.config.password,
-            my_name=SERVICE_NAME,
-            remote_name=remote_name,
-            # choose sane default options but allow user to override them via the options dict
-            domain=self.config.options.get("domain", ""),
-            use_ntlm_v2=self.config.options.get("use_ntlm_v2", False),
-            sign_options=self.config.options.get("sign_options", 2),
-            is_direct_tcp=self.config.options.get("is_direct_tcp", False),
-        )
-        default_target_ip = await get_ip_from_host(remote_name)
-        target_ip = self.config.options.get("target_ip", default_target_ip)
-        return await self.mass.loop.run_in_executor(
-            None, self._smb_connection.connect, target_ip
-        )
+
+        self._default_target_ip = await get_ip_from_host(self._remote_name)
 
     async def listdir(
         self, path: str, recursive: bool = False
@@ -97,34 +89,36 @@ class SMBFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self._root_path, path)
-        path_result: list[SharedFile] = await self.mass.loop.run_in_executor(
-            None, self._smb_connection.listPath, self._service_name, abs_path
-        )
-        for entry in path_result:
-            if entry.filename.startswith("."):
-                # skip invalid/system files and dirs
-                continue
-            file_path = os.path.join(path, entry.filename)
-            item = await create_item(file_path, entry, self._root_path)
-            if recursive and item.is_dir:
-                # yield sublevel recursively
-                try:
-                    async for subitem in self.listdir(file_path, True):
-                        yield subitem
-                except (OSError, PermissionError) as err:
-                    self.logger.warning("Skip folder %s: %s", item.path, str(err))
-            elif item.is_file or item.is_dir:
-                yield item
+        async with self._get_smb_connection() as smb_conn:
+            path_result: list[SharedFile] = await self.mass.loop.run_in_executor(
+                None, smb_conn.listPath, self._service_name, abs_path
+            )
+            for entry in path_result:
+                if entry.filename.startswith("."):
+                    # skip invalid/system files and dirs
+                    continue
+                file_path = os.path.join(path, entry.filename)
+                item = await create_item(file_path, entry, self._root_path)
+                if recursive and item.is_dir:
+                    # yield sublevel recursively
+                    try:
+                        async for subitem in self.listdir(file_path, True):
+                            yield subitem
+                    except (OSError, PermissionError) as err:
+                        self.logger.warning("Skip folder %s: %s", item.path, str(err))
+                elif item.is_file or item.is_dir:
+                    yield item
 
     async def resolve(self, file_path: str) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem."""
         absolute_path = get_absolute_path(self._root_path, file_path)
-        entry: SharedFile = await self.mass.loop.run_in_executor(
-            None,
-            self._smb_connection.getAttributes,
-            self._service_name,
-            absolute_path,
-        )
+        async with self._get_smb_connection() as smb_conn:
+            entry: SharedFile = await self.mass.loop.run_in_executor(
+                None,
+                smb_conn.getAttributes,
+                self._service_name,
+                absolute_path,
+            )
         return FileSystemItem(
             name=file_path,
             path=get_relative_path(self._root_path, file_path),
@@ -139,7 +133,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         """Return bool is this FileSystem musicprovider has given file/dir."""
         try:
             await self.resolve(file_path)
-        except OperationFailure:
+        except (OperationFailure, SMBTimeout):
             return False
         return True
 
@@ -150,30 +144,61 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         abs_path = get_absolute_path(self._root_path, file_path)
         chunk_size = 256000
 
-        def _read_chunk_from_file(offset: int):
-            with BytesIO() as file_obj:
-                self._smb_connection.retrieveFileFromOffset(
-                    self._service_name,
-                    abs_path,
-                    file_obj=file_obj,
-                    offset=offset,
-                    max_length=chunk_size,
-                )
-                file_obj.seek(0)
-                return file_obj.read()
+        async with self._get_smb_connection() as smb_conn:
 
-        offset = seek
-        while True:
-            data = await self.mass.loop.run_in_executor(
-                None, _read_chunk_from_file, offset
-            )
-            if not data:
-                break
-            yield data
-            if len(data) < chunk_size:
-                break
-            offset += len(data)
+            def _read_chunk_from_file(offset: int):
+                with BytesIO() as file_obj:
+                    smb_conn.retrieveFileFromOffset(
+                        self._service_name,
+                        abs_path,
+                        file_obj=file_obj,
+                        offset=offset,
+                        max_length=chunk_size,
+                    )
+                    file_obj.seek(0)
+                    return file_obj.read()
+
+            offset = seek
+            while True:
+                data = await self.mass.loop.run_in_executor(
+                    None, _read_chunk_from_file, offset
+                )
+                if not data:
+                    break
+                yield data
+                if len(data) < chunk_size:
+                    break
+                offset += len(data)
 
     async def write_file_content(self, file_path: str, data: bytes) -> None:
         """Write entire file content as bytes (e.g. for playlists)."""
         raise NotImplementedError  # TODO !
+
+    @asynccontextmanager
+    async def _get_smb_connection(self) -> AsyncContextManager[SMBConnection]:
+        """Get instance of SMBConnection."""
+        if existing := smb_conn_ctx.get():
+            yield existing
+            return
+        target_ip = self.config.options.get("target_ip", self._default_target_ip)
+        with SMBConnection(
+            username=self.config.username,
+            password=self.config.password,
+            my_name=SERVICE_NAME,
+            remote_name=self._remote_name,
+            # choose sane default options but allow user to override them via the options dict
+            domain=self.config.options.get("domain", ""),
+            use_ntlm_v2=self.config.options.get("use_ntlm_v2", False),
+            sign_options=self.config.options.get("sign_options", 2),
+            is_direct_tcp=self.config.options.get("is_direct_tcp", False),
+        ) as smb_conn:
+            default_target_ip = await get_ip_from_host(self._remote_name)
+            target_ip = self.config.options.get("target_ip", default_target_ip)
+            # connect
+            if not await self.mass.loop.run_in_executor(
+                None, smb_conn.connect, target_ip
+            ):
+                raise LoginFailed(f"SMB Connect failed to {self._remote_name}")
+            smb_conn_ctx.set(smb_conn)
+            yield smb_conn
+        smb_conn_ctx.reset()

@@ -234,7 +234,14 @@ async def parse_tags(input_file: Union[str, AsyncGenerator[bytes, None]]) -> Aud
         if file_path == "-":
             # feed the file contents to the process
             async def chunk_feeder():
+                # pylint: disable=protected-access
                 async for chunk in input_file:
+                    if (
+                        proc.closed
+                        or proc._proc.returncode is not None
+                        or proc._proc.stdout.at_eof()
+                    ):
+                        break
                     await proc.write(chunk)
 
             proc.attach_task(chunk_feeder())
