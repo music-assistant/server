@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from io import BytesIO
 from typing import AsyncContextManager, AsyncGenerator
 
-from smb.base import SharedFile, SMBTimeout
+from smb.base import NotConnectedError, SharedFile, SMBTimeout
 from smb.smb_structs import OperationFailure
 from smb.SMBConnection import SMBConnection
 
@@ -29,22 +29,17 @@ async def create_item(
 ) -> FileSystemItem:
     """Create FileSystemItem from smb.SharedFile."""
 
-    def _create_item():
-        rel_path = get_relative_path(root_path, file_path)
-        abs_path = get_absolute_path(root_path, file_path)
-        return FileSystemItem(
-            name=entry.filename,
-            path=rel_path,
-            absolute_path=abs_path,
-            is_file=not entry.isDirectory,
-            is_dir=entry.isDirectory,
-            checksum=str(int(entry.last_write_time)),
-            file_size=entry.file_size,
-        )
-
-    # run in executor because strictly taken this may be blocking IO
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _create_item)
+    rel_path = get_relative_path(root_path, file_path)
+    abs_path = get_absolute_path(root_path, file_path)
+    return FileSystemItem(
+        name=entry.filename,
+        path=rel_path,
+        absolute_path=abs_path,
+        is_file=not entry.isDirectory,
+        is_dir=entry.isDirectory,
+        checksum=str(int(entry.last_write_time)),
+        file_size=entry.file_size,
+    )
 
 
 class SMBFileSystemProvider(FileSystemProviderBase):
@@ -72,7 +67,8 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             self._root_path = os.sep + path_parts[2]
 
         self._default_target_ip = await get_ip_from_host(self._remote_name)
-        return True
+        async with self._get_smb_connection():
+            return True
 
     async def listdir(
         self, path: str, recursive: bool = False
@@ -91,8 +87,8 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         """
         abs_path = get_absolute_path(self._root_path, path)
         async with self._get_smb_connection() as smb_conn:
-            path_result: list[SharedFile] = await self.mass.loop.run_in_executor(
-                None, smb_conn.listPath, self._service_name, abs_path
+            path_result: list[SharedFile] = await asyncio.to_thread(
+                smb_conn.listPath, self._service_name, abs_path
             )
             for entry in path_result:
                 if entry.filename.startswith("."):
@@ -114,8 +110,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         """Resolve (absolute or relative) path to FileSystemItem."""
         absolute_path = get_absolute_path(self._root_path, file_path)
         async with self._get_smb_connection() as smb_conn:
-            entry: SharedFile = await self.mass.loop.run_in_executor(
-                None,
+            entry: SharedFile = await asyncio.to_thread(
                 smb_conn.getAttributes,
                 self._service_name,
                 absolute_path,
@@ -134,7 +129,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         """Return bool is this FileSystem musicprovider has given file/dir."""
         try:
             await self.resolve(file_path)
-        except (OperationFailure, SMBTimeout):
+        except (OperationFailure, SMBTimeout, NotConnectedError):
             return False
         return True
 
@@ -160,13 +155,13 @@ class SMBFileSystemProvider(FileSystemProviderBase):
                     return file_obj.read()
 
             offset = seek
+            chunk_num = 1
             while True:
-                data = await self.mass.loop.run_in_executor(
-                    None, _read_chunk_from_file, offset
-                )
+                data = await asyncio.to_thread(_read_chunk_from_file, offset)
                 if not data:
                     break
                 yield data
+                chunk_num += 1
                 if len(data) < chunk_size:
                     break
                 offset += len(data)
@@ -193,12 +188,9 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             sign_options=self.config.options.get("sign_options", 2),
             is_direct_tcp=self.config.options.get("is_direct_tcp", False),
         ) as smb_conn:
-            default_target_ip = await get_ip_from_host(self._remote_name)
-            target_ip = self.config.options.get("target_ip", default_target_ip)
+            target_ip = self.config.options.get("target_ip", self._default_target_ip)
             # connect
-            if not await self.mass.loop.run_in_executor(
-                None, smb_conn.connect, target_ip
-            ):
+            if not await asyncio.to_thread(smb_conn.connect, target_ip):
                 raise LoginFailed(f"SMB Connect failed to {self._remote_name}")
             token = smb_conn_ctx.set(smb_conn)
             yield smb_conn
