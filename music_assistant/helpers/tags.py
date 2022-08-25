@@ -233,11 +233,14 @@ async def parse_tags(input_file: Union[str, AsyncGenerator[bytes, None]]) -> Aud
 
         if file_path == "-":
             # feed the file contents to the process
-            async for chunk in input_file:
-                await proc.write(chunk)
+            async def chunk_feeder():
+                async for chunk in input_file:
+                    await proc.write(chunk)
+
+            proc.attach_task(chunk_feeder())
 
         try:
-            res, _ = await proc.communicate()
+            res = await proc.read(-1)
             data = json.loads(res)
             if error := data.get("error"):
                 raise InvalidDataError(error["string"])
@@ -283,5 +286,12 @@ async def get_embedded_image(
             async for chunk in input_file:
                 await proc.write(chunk)
 
-        res, _ = await proc.communicate()
-        return res
+        if file_path == "-":
+            # feed the file contents to the process
+            async def chunk_feeder():
+                async for chunk in input_file:
+                    await proc.write(chunk)
+
+            proc.attach_task(chunk_feeder())
+
+        return await proc.read(-1)

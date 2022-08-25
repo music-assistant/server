@@ -3,7 +3,6 @@ import argparse
 import asyncio
 import logging
 import os
-import webbrowser
 
 from os.path import abspath, dirname
 from sys import path
@@ -74,24 +73,9 @@ parser.add_argument(
     help="SMB password",
 )
 parser.add_argument(
-    "--smb-target-name",
+    "--smb-path",
     required=False,
-    help="The NetBIOS machine name of the remote server.",
-)
-parser.add_argument(
-    "--smb-ip",
-    required=False,
-    help="The IP of the remote server",
-)
-parser.add_argument(
-    "--smb-share",
-    required=False,
-    help="The share on the remote server to connect to.",
-)
-parser.add_argument(
-    "--path",
-    required=False,
-    help="The path on the share to connect to.",
+    help="The NetBIOS machine name of the remote server + share (e.g. \\\\machine\\share).",
 )
 parser.add_argument(
     "--debug",
@@ -111,6 +95,7 @@ logging.getLogger("aiorun").setLevel(logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.INFO)
 logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 logging.getLogger("databases").setLevel(logging.INFO)
+logging.getLogger("SMB").setLevel(logging.INFO)
 
 
 # default database based on sqlite
@@ -162,16 +147,13 @@ if args.musicdir:
         MusicProviderConfig(type=ProviderType.FILESYSTEM_LOCAL, path=args.musicdir)
     )
 
-if args.smb_share and args.smb_target_name:
+if args.smb_path:
     mass_conf.providers.append(
         MusicProviderConfig(
             ProviderType.FILESYSTEM_SMB,
             username=args.smb_username,
             password=args.smb_password,
-            target_name=args.smb_target_name,
-            target_ip=args.smb_ip,
-            share_name=args.smb_share,
-            path=args.path,
+            path=args.smb_path,
         )
     )
 
@@ -195,9 +177,11 @@ class TestPlayer(Player):
         print(f"stream url: {url}")
         self._attr_current_url = url
         self.update_state()
-        # launch stream url in browser so we can hear it playing ;-)
+        # launch stream url with ffplay so we can hear it playing ;-)
         # normally this url is sent to the actual player implementation
-        webbrowser.open(url)
+        await asyncio.create_subprocess_shell(
+            f'ffplay -hide_banner -loglevel quiet -i "{url}"'
+        )
 
     async def stop(self) -> None:
         """Send STOP command to player."""
@@ -287,6 +271,8 @@ async def main():
         # or a list of items
         if playlists.count > 0:
             await test_player1.active_queue.play_media(playlists.items[0])
+        elif tracks.count > 0:
+            await test_player1.active_queue.play_media(tracks.items[0])
 
         await asyncio.sleep(3600)
 

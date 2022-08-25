@@ -125,13 +125,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         abs_path = get_absolute_path(self.config.path, file_path)
         return await exists(abs_path)
 
-    async def read_file_content(self, file_path: str) -> bytes:
-        """Read entire file content as bytes."""
-        abs_path = get_absolute_path(self.config.path, file_path)
-        async with aiofiles.open(abs_path, "rb") as _file:
-            return await _file.read()
-
-    async def iter_file_content(
+    async def read_file_content(
         self, file_path: str, seek: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""

@@ -118,11 +118,7 @@ class FileSystemProviderBase(MusicProvider):
         """Return bool is this FileSystem musicprovider has given file/dir."""
 
     @abstractmethod
-    async def read_file_content(self, file_path: str) -> bytes:
-        """Read entire file content as bytes."""
-
-    @abstractmethod
-    async def iter_file_content(
+    async def read_file_content(
         self, file_path: str, seek: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
@@ -349,7 +345,7 @@ class FileSystemProviderBase(MusicProvider):
         file_item = await self.resolve(prov_track_id)
 
         # parse tags
-        input_file = file_item.local_path or self.iter_file_content(
+        input_file = file_item.local_path or self.read_file_content(
             file_item.absolute_path
         )
         tags = await parse_tags(input_file)
@@ -561,7 +557,9 @@ class FileSystemProviderBase(MusicProvider):
         _, ext = prov_playlist_id.rsplit(".", 1)
         try:
             # get playlist file contents
-            playlist_data = await self.read_file_content(prov_playlist_id)
+            playlist_data = b""
+            async for chunk in self.read_file_content(prov_playlist_id):
+                playlist_data += chunk
             playlist_data = playlist_data.decode("utf-8")
 
             if ext in ("m3u", "m3u8"):
@@ -611,7 +609,9 @@ class FileSystemProviderBase(MusicProvider):
             raise MediaNotFoundError(
                 f"Playlist path does not exist: {prov_playlist_id}"
             )
-        playlist_data = await self.read_file_content(prov_playlist_id)
+        playlist_data = b""
+        async for chunk in self.read_file_content(prov_playlist_id):
+            playlist_data += chunk
         playlist_data = playlist_data.decode("utf-8")
         for uri in prov_track_ids:
             playlist_data += f"\n{uri}"
@@ -631,7 +631,9 @@ class FileSystemProviderBase(MusicProvider):
         _, ext = prov_playlist_id.rsplit(".", 1)
 
         # get playlist file contents
-        playlist_data = await self.read_file_content(prov_playlist_id)
+        playlist_data = b""
+        async for chunk in self.read_file_content(prov_playlist_id):
+            playlist_data += chunk
         playlist_data.decode("utf-8")
 
         if ext in ("m3u", "m3u8"):
@@ -667,7 +669,7 @@ class FileSystemProviderBase(MusicProvider):
         file_item = await self.resolve(item_id)
 
         # parse tags
-        input_file = file_item.local_path or self.iter_file_content(
+        input_file = file_item.local_path or self.read_file_content(
             file_item.absolute_path
         )
         tags = await parse_tags(input_file)
@@ -697,7 +699,7 @@ class FileSystemProviderBase(MusicProvider):
         else:
             seek_bytes = 0
 
-        async for chunk in self.iter_file_content(streamdetails.item_id, seek_bytes):
+        async for chunk in self.read_file_content(streamdetails.item_id, seek_bytes):
             yield chunk
 
     async def _parse_artist(
@@ -733,7 +735,9 @@ class FileSystemProviderBase(MusicProvider):
         if await self.exists(nfo_file):
             # found NFO file with metadata
             # https://kodi.wiki/view/NFO_files/Artists
-            data = await self.read_file_content(nfo_file)
+            data = b""
+            async for chunk in self.read_file_content(nfo_file):
+                data += chunk
             info = await self.mass.loop.run_in_executor(None, xmltodict.parse, data)
             info = info["artist"]
             artist.name = info.get("title", info.get("name", name))
@@ -780,7 +784,9 @@ class FileSystemProviderBase(MusicProvider):
         if await self.exists(nfo_file):
             # found NFO file with metadata
             # https://kodi.wiki/view/NFO_files/Artists
-            data = await self.read_file_content(nfo_file)
+            data = b""
+            async for chunk in self.read_file_content(nfo_file):
+                data += chunk
             info = await self.mass.loop.run_in_executor(None, xmltodict.parse, data)
             info = info["album"]
             album.name = info.get("title", info.get("name", name))
