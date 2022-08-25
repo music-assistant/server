@@ -16,6 +16,7 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHUNKSIZE = 128000
 DEFAULT_TIMEOUT = 600
+DEFAULT_LIMIT = 64 * 1024 * 1024
 
 # pylint: disable=invalid-name
 
@@ -45,14 +46,13 @@ class AsyncProcess:
             args = " ".join(self._args)
         else:
             args = self._args
-
         if isinstance(args, str):
             self._proc = await asyncio.create_subprocess_shell(
                 args,
                 stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
                 stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
                 stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-                limit=64 * 1024 * 1024,
+                limit=DEFAULT_LIMIT,
                 close_fds=True,
             )
         else:
@@ -61,9 +61,17 @@ class AsyncProcess:
                 stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
                 stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
                 stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-                limit=64 * 1024 * 102,
+                limit=DEFAULT_LIMIT,
                 close_fds=True,
             )
+
+            # Fix BrokenPipeError due to a race condition
+            # by attaching a default done callback
+            def _done_cb(fut: asyncio.Future):
+                fut.exception()
+
+            self._proc._transport._protocol._stdin_closed.add_done_callback(_done_cb)
+
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
@@ -78,7 +86,11 @@ class AsyncProcess:
                 pass
         if self._proc.returncode is None:
             # prevent subprocess deadlocking, read remaining bytes
-            await self._proc.communicate(b"" if self._enable_stdin else None)
+            await self._proc.communicate()
+            if self._enable_stdout and not self._proc.stdout.at_eof():
+                await self._proc.stdout.read()
+            if self._enable_stderr and not self._proc.stderr.at_eof():
+                await self._proc.stderr.read()
             if self._proc.returncode is None:
                 # just in case?
                 self._proc.kill()
@@ -89,6 +101,8 @@ class AsyncProcess:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
+            if chunk == b"":
+                break
             yield chunk
             if len(chunk) < n:
                 break
@@ -96,15 +110,13 @@ class AsyncProcess:
     async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks as they come in from process stdout."""
         while True:
-            chunk = await self._proc.stdout.read(n)
+            chunk = await self.read(n)
             if chunk == b"":
                 break
             yield chunk
 
     async def readexactly(self, n: int, timeout: int = DEFAULT_TIMEOUT) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
-        if self.closed:
-            return b""
         try:
             async with _timeout(timeout):
                 return await self._proc.stdout.readexactly(n)
@@ -119,34 +131,28 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        if self.closed:
-            return b""
         async with _timeout(timeout):
             return await self._proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
-        if self.closed:
-            return
+        self._proc.stdin.write(data)
+        await self._proc.stdin.drain()
+
+    def write_eof(self) -> None:
+        """Write end of file to to process stdin."""
         try:
-            self._proc.stdin.write(data)
-            await self._proc.stdin.drain()
+            if self._proc.stdin.can_write_eof():
+                self._proc.stdin.write_eof()
         except (
             AttributeError,
             AssertionError,
             BrokenPipeError,
             RuntimeError,
             ConnectionResetError,
-        ) as err:
+        ):
             # already exited, race condition
-            raise asyncio.CancelledError() from err
-
-    def write_eof(self) -> None:
-        """Write end of file to to process stdin."""
-        if self.closed:
             return
-        if self._proc.stdin.can_write_eof():
-            self._proc.stdin.write_eof()
 
     async def communicate(
         self, input_data: Optional[bytes] = None
