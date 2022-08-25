@@ -1,6 +1,7 @@
 """Helper and utility functions."""
 from __future__ import annotations
 
+import asyncio
 import os
 import platform
 import re
@@ -173,6 +174,20 @@ def select_stream_port() -> int:
     for port in range(8095, 8195):
         if not is_port_in_use(port):
             return port
+
+
+async def get_ip_from_host(dns_name: str) -> str:
+    """Resolve (first) IP-address for given dns name."""
+
+    def _resolve():
+        try:
+            return socket.gethostbyname(dns_name)
+        except Exception:  # pylint: disable=broad-except
+            # fail gracefully!
+            return dns_name
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _resolve)
 
 
 def get_folder_size(folderpath):

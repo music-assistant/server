@@ -10,6 +10,7 @@ from smb.base import SharedFile
 from smb.smb_structs import OperationFailure
 from smb.SMBConnection import SMBConnection
 
+from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.models.enums import ProviderType
 
 from .base import FileSystemItem, FileSystemProviderBase
@@ -74,7 +75,8 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             sign_options=self.config.options.get("sign_options", 2),
             is_direct_tcp=self.config.options.get("is_direct_tcp", False),
         )
-        target_ip = self.config.options.get("target_ip", "192.168.1.1")
+        default_target_ip = await get_ip_from_host(remote_name)
+        target_ip = self.config.options.get("target_ip", default_target_ip)
         return await self.mass.loop.run_in_executor(
             None, self._smb_connection.connect, target_ip
         )
