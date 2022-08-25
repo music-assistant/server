@@ -21,13 +21,13 @@ from music_assistant.models.errors import MediaNotFoundError, MusicAssistantErro
 from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import MediaItemType, media_from_dict
 
-from .player import Player, PlayerState
 from .queue_item import QueueItem
 from .queue_settings import QueueSettings
 
 if TYPE_CHECKING:
     from music_assistant.controllers.streams import QueueStream
-    from music_assistant.mass import MusicAssistant
+
+    from .player import Player, PlayerState
 
 
 @dataclass
@@ -47,13 +47,14 @@ class QueueSnapShot:
 class PlayerQueue:
     """Represents a PlayerQueue object."""
 
-    def __init__(self, mass: MusicAssistant, player_id: str):
+    def __init__(self, player: Player):
         """Instantiate a PlayerQueue instance."""
-        self.mass = mass
-        self.logger = mass.players.logger
-        self.queue_id = player_id
+        self.player = player
+        self.mass = player.mass
+        self.logger = player.logger.getChild("queue")
+        self.queue_id = player.player_id
+        self.settings = QueueSettings(self)
         self._stream_id: str = ""
-        self._settings = QueueSettings(self)
         self._current_index: Optional[int] = None
         self._current_item_elapsed_time: int = 0
         self._prev_item: Optional[QueueItem] = None
@@ -68,26 +69,11 @@ class PlayerQueue:
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
-        await self._settings.restore()
+        await self.settings.restore()
         await self._restore_items()
         self.mass.signal_event(
             MassEvent(EventType.QUEUE_ADDED, object_id=self.queue_id, data=self)
         )
-
-    @property
-    def settings(self) -> QueueSettings:
-        """Return settings/preferences for this PlayerQueue."""
-        return self._settings
-
-    @property
-    def player(self) -> Player:
-        """Return the player attached to this queue."""
-        return self.mass.players.get_player(self.queue_id)
-
-    @property
-    def available(self) -> bool:
-        """Return if player(queue) is available."""
-        return self.player.available
 
     @property
     def stream(self) -> QueueStream | None:
@@ -331,9 +317,9 @@ class PlayerQueue:
                 await asyncio.sleep(0.1)
 
             # adjust volume if needed
-            if self._settings.announce_volume_increase:
+            if self.settings.announce_volume_increase:
                 announce_volume = (
-                    self.player.volume_level + self._settings.announce_volume_increase
+                    self.player.volume_level + self.settings.announce_volume_increase
                 )
                 announce_volume = min(announce_volume, 100)
                 announce_volume = max(announce_volume, 0)
@@ -352,7 +338,7 @@ class PlayerQueue:
 
             # send announcement stream to player
             announce_stream_url = self.mass.streams.get_announcement_url(
-                self.queue_id, announce_urls, self._settings.stream_type
+                self.queue_id, announce_urls, self.settings.stream_type
             )
             await self.player.play_url(announce_stream_url)
 
@@ -474,7 +460,7 @@ class PlayerQueue:
             items=self._items,
             index=self._current_index,
             position=self._current_item_elapsed_time,
-            settings=self._settings.to_dict(),
+            settings=self.settings.to_dict(),
             volume_level=self.player.volume_level,
             player_url=self.player.current_url,
         )
@@ -489,7 +475,7 @@ class PlayerQueue:
             if self._snapshot.volume_level != self.player.volume_level:
                 await self.player.volume_set(self._snapshot.volume_level)
             # restore queue
-            self._settings.from_dict(self._snapshot.settings)
+            self.settings.from_dict(self._snapshot.settings)
             await self.update_items(self._snapshot.items)
             self._current_index = self._snapshot.index
             self._current_item_elapsed_time = self._snapshot.position
@@ -659,7 +645,7 @@ class PlayerQueue:
             self.signal_update()
 
         # update queue details only if we're the active queue for the attached player
-        if self.player.active_queue != self or not self.active:
+        if self.player.active_queue != self.queue_id or not self.active:
             return
 
         track_time = self._current_item_elapsed_time
@@ -714,7 +700,7 @@ class PlayerQueue:
             start_index=start_index,
             seek_position=seek_position,
             fade_in=fade_in,
-            output_format=self._settings.stream_type,
+            output_format=self.settings.stream_type,
         )
         self._stream_id = stream.stream_id
         self._current_item_elapsed_time = 0

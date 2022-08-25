@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC
 from dataclasses import dataclass
+from logging import Logger
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 from mashumaro import DataClassDictMixin
@@ -33,12 +34,12 @@ DEFAULT_FEATURES = (PlayerFeature.POWER, PlayerFeature.MUTE)
 
 
 class Player(ABC):
-    """Model for a music player."""
+    """Model for a standard music player."""
 
     player_id: str
     platform: str  # e.g. cast or sonos etc.
 
-    _attr_type: PlayerType = PlayerType.STANDARD
+    _attr_type: PlayerType = PlayerType.PLAYER
     _attr_name: str = ""
     _attr_powered: bool = False
     _attr_elapsed_time: float = 0
@@ -53,13 +54,20 @@ class Player(ABC):
 
     # below objects will be set by playermanager at register/update
     mass: MusicAssistant = None  # type: ignore[assignment]
+    queue: PlayerQueue = None  # type: ignore[assignment]
     settings: PlayerSettings = None  # type: ignore[assignment]
+    logger: Logger = None  # type: ignore[assignment]
     _prev_state: dict = {}
 
     @property
     def type(self) -> bool:
         """Return player type."""
         return self._attr_type
+
+    @property
+    def available(self) -> bool:
+        """Return current availablity of player."""
+        return self._attr_available
 
     @property
     def name(self) -> bool:
@@ -90,11 +98,6 @@ class Player(ABC):
         if not self.powered:
             return PlayerState.OFF
         return self._attr_state
-
-    @property
-    def available(self) -> bool:
-        """Return current availablity of player."""
-        return self._attr_available
 
     @property
     def volume_level(self) -> int:
@@ -136,125 +139,42 @@ class Player(ABC):
 
     async def power(self, powered: bool) -> None:
         """Send POWER command to player."""
-        raise NotImplementedError
+        if PlayerFeature.POWER in self.supported_features:
+            raise NotImplementedError
+        # fallback to mute as power control
+        if PlayerFeature.MUTE in self.supported_features:
+            await self.volume_mute(not powered)
+        self._attr_powered = powered
+        self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Send volume level (0..100) command to player."""
         raise NotImplementedError
 
-    # GROUP PLAYER ATTRIBUTES AND METHODS (may be overridden if needed)
-    # a player can optionally be a group leader (e.g. Sonos)
-    # or be a group player itself (e.g. Cast)
-    # support both scenarios here
-
-    @property
-    def is_group(self) -> bool:
-        """Return if this player represents a playergroup or is grouped with other players."""
-        return len(self.group_members) > 1
-
     @property
     def group_members(self) -> List[str]:
         """
-        Return list of grouped players.
+        Return list of player group child id's or synced childs.
 
-        If this player is a dedicated group player (e.g. cast), returns the grouped child id's.
-        If this is a player grouped with other players within the same platform (e.g. Sonos),
-        this will return the players that are currently grouped together.
-        The first child id should represent the group leader.
+        - If this player is a dedicated group player (e.g. cast),
+          returns all child id's of the players in the group.
+        - If this is a syncgroup of players from the same platform (e.g. sonos),
+          this will return the id's of players synced to this player.
         """
         return self._attr_group_members
 
-    @property
-    def group_leader(self) -> str | None:
-        """Return the leader's player_id of this playergroup."""
-        if group_members := self.group_members:
-            return group_members[0]
-        return None
-
-    @property
-    def is_group_leader(self) -> bool:
-        """Return if this player is the leader in a playergroup."""
-        return self.is_group and self.group_leader == self.player_id
-
-    @property
-    def is_passive(self) -> bool:
-        """
-        Return if this player may not accept any playback related commands.
-
-        Usually this means the player is part of a playergroup but not the leader.
-        """
-        if self.is_group and self.player_id not in self.group_members:
-            return False
-        return self.is_group and not self.is_group_leader
-
-    @property
-    def group_name(self) -> str:
-        """Return name of this grouped player."""
-        if not self.is_group:
-            return self.name
-        # default to name of groupleader and number of childs
-        num_childs = len([x for x in self.group_members if x != self.player_id])
-        return f"{self.name} +{num_childs}"
-
-    @property
-    def group_powered(self) -> bool:
-        """Calculate a group power state from the grouped members."""
-        if not self.is_group:
-            return self.powered
-        for _ in self.get_child_players(True):
-            return True
-        return False
-
-    @property
-    def group_volume_level(self) -> int:
-        """Calculate a group volume from the grouped members."""
-        if not self.is_group:
-            return self.volume_level
-        group_volume = 0
-        active_players = 0
-        for child_player in self.get_child_players(True):
-            group_volume += child_player.volume_level
-            active_players += 1
-        if active_players:
-            group_volume = group_volume / active_players
-        return int(group_volume)
-
-    async def set_group_volume(self, volume_level: int) -> None:
-        """Send volume level (0..100) command to groupplayer's member(s)."""
-        # handle group volume by only applying the volume to powered members
-        cur_volume = self.group_volume_level
-        new_volume = volume_level
-        volume_dif = new_volume - cur_volume
-        if cur_volume == 0:
-            volume_dif_percent = 1 + (new_volume / 100)
-        else:
-            volume_dif_percent = volume_dif / cur_volume
-        coros = []
-        for child_player in self.get_child_players(True):
-            cur_child_volume = child_player.volume_level
-            new_child_volume = cur_child_volume + (
-                cur_child_volume * volume_dif_percent
-            )
-            coros.append(child_player.volume_set(new_child_volume))
-        await asyncio.gather(*coros)
-
-    async def set_group_power(self, powered: bool) -> None:
-        """Send power command to groupplayer's member(s)."""
-        coros = [
-            player.power(powered) for player in self.get_child_players(not powered)
-        ]
-        await asyncio.gather(*coros)
-
-    # SOME CONVENIENCE METHODS (may be overridden if needed)
-
     async def volume_mute(self, muted: bool) -> None:
         """Send volume mute command to player."""
+        if PlayerFeature.MUTE in self.supported_features:
+            raise NotImplementedError
         # for players that do not support mute, we fake mute with volume
         self._attr_volume_muted = muted
         if muted:
             setattr(self, "prev_volume", self.volume_level)
         else:
             await self.volume_set(getattr(self, "prev_volume", 0))
+
+    # SOME CONVENIENCE METHODS (may be overridden if needed)
 
     async def volume_up(self, step_size: int = 5) -> None:
         """Send volume UP command to player."""
@@ -291,15 +211,35 @@ class Player(ABC):
     def on_remove(self) -> None:
         """Call when player is about to be removed (cleaned up) from player manager."""
 
-    # DO NOT OVERRIDE BELOW
+    @property
+    def active_queue(self) -> str:
+        """Return the queue_id that is currently active on/for this player."""
+        # if player is a (passive) sync child, return its sync parent
+        if self.type == PlayerType.SYNC_CHILD:
+            for player in self.mass.players:
+                if self.player_id in player.group_members:
+                    return player.queue.queue_id
+
+        # look for any groups that are active (powered on)
+        for group in self.groups:
+            if group.powered:
+                return group.queue.queue_id
+
+        # no group parents active return own queue
+        return self.queue.queue_id
 
     @property
-    def active_queue(self) -> PlayerQueue:
-        """Return the queue that is currently active on/for this player."""
-        for queue in self.mass.players.player_queues:
-            if queue.stream and queue.stream.url == self.current_url:
-                return queue
-        return self.mass.players.get_player_queue(self.player_id)
+    def groups(self) -> List[Player]:
+        """Return all group players this player belongs to."""
+        if not self.mass:
+            return []
+        return [
+            x
+            for x in self.mass.players
+            if self.player_id != x.player_id and self.player_id in x.group_members
+        ]
+
+    # DO NOT OVERRIDE BELOW !
 
     def update_state(self, skip_forward: bool = False) -> None:
         """Update current player state in the player manager."""
@@ -317,7 +257,7 @@ class Player(ABC):
             return
 
         # update the playerqueue
-        self.mass.players.get_player_queue(self.player_id).on_player_update()
+        self.queue.on_player_update()
 
         self._prev_state = cur_state
         self.mass.signal_event(
@@ -326,7 +266,7 @@ class Player(ABC):
 
         if skip_forward:
             return
-        if self.is_group:
+        if self.type == PlayerType.GROUP:
             # update group player members when parent updates
             for child_player_id in self.group_members:
                 if child_player_id == self.player_id:
@@ -337,7 +277,7 @@ class Player(ABC):
                     )
 
         # update group player(s) when child updates
-        for group_player in self.get_group_parents():
+        for group_player in self.groups:
             self.mass.loop.call_soon_threadsafe(
                 group_player.on_child_update, self.player_id, changed_keys
             )
@@ -352,24 +292,64 @@ class Player(ABC):
             "state": self.state.value,
             "available": self.available,
             "volume_level": int(self.volume_level),
-            "is_group": self.is_group,
             "group_members": self.group_members,
-            "group_leader": self.group_leader,
-            "is_group_leader": self.is_group_leader,
-            "is_passive": self.is_passive,
-            "group_name": self.group_name,
-            "group_powered": self.group_powered,
-            "group_volume_level": int(self.group_volume_level),
             "device_info": self.device_info.to_dict(),
-            "active_queue": self.active_queue.queue_id
-            if self.active_queue
-            else self.player_id,
+            "active_queue": self.active_queue,
+            "groups": [x.player_id for x in self.groups],
         }
+
+
+class PlayerGroup(Player):
+    """Model for a group of players."""
+
+    _attr_type: PlayerType = PlayerType.GROUP
+    _attr_supported_features: Tuple[PlayerFeature] = tuple()
+
+    @property
+    def volume_level(self) -> int:
+        """Calculate a group volume from the grouped members."""
+        group_volume = 0
+        active_players = 0
+        for child_player in self.get_child_players(True):
+            group_volume += child_player.volume_level
+            active_players += 1
+        if active_players:
+            group_volume = group_volume / active_players
+        return int(group_volume)
+
+    async def volume_set(self, volume_level: int) -> None:
+        """Send volume level (0..100) command to groupplayer's member(s)."""
+        # handle group volume by only applying the volume to powered members
+        cur_volume = self.volume_level
+        new_volume = volume_level
+        volume_dif = new_volume - cur_volume
+        if cur_volume == 0:
+            volume_dif_percent = 1 + (new_volume / 100)
+        else:
+            volume_dif_percent = volume_dif / cur_volume
+        coros = []
+        for child_player in self.get_child_players(True):
+            cur_child_volume = child_player.volume_level
+            new_child_volume = cur_child_volume + (
+                cur_child_volume * volume_dif_percent
+            )
+            coros.append(child_player.volume_set(new_child_volume))
+        await asyncio.gather(*coros)
+
+    async def power(self, powered: bool) -> None:
+        """Send POWER command to (group) player."""
+        await super().power(powered)
+        # turn on/off group childs
+        coros = [
+            player.power(powered) for player in self.get_child_players(not powered)
+        ]
+        await asyncio.gather(*coros)
 
     def get_child_players(
         self,
         only_powered: bool = False,
         only_playing: bool = False,
+        ignore_sync_childs: bool = False,
     ) -> List[Player]:
         """Get players attached to a grouped player."""
         if not self.mass:
@@ -381,26 +361,44 @@ class Player(ABC):
                     continue
                 if not (not only_playing or child_player.state == PlayerState.PLAYING):
                     continue
+                if ignore_sync_childs and child_player.type == PlayerType.SYNC_CHILD:
+                    continue
                 child_players.add(child_player)
         return list(child_players)
 
-    def get_group_parents(
-        self,
-        only_powered: bool = False,
-        only_playing: bool = False,
-    ) -> List[Player]:
-        """Get players which have this player as child in a group."""
-        if not self.mass:
-            return []
-        parent_players = set()
-        for player in self.mass.players:
-            if player.player_id == self.player_id:
-                continue
-            if self.player_id not in player.group_members:
-                continue
-            if not (not only_powered or player.powered):
-                continue
-            if not (not only_playing or player.state == PlayerState.PLAYING):
-                continue
-            parent_players.add(player)
-        return list(parent_players)
+
+class UniversalPlayerGroup(PlayerGroup):
+    """Universal multi-platform player group (group and sync maintained by MA)."""
+
+    async def play_url(self, url: str) -> None:
+        """Play the specified url on the player."""
+        # redirect command to all (non passive) clients
+        coros = [
+            player.play_url(url)
+            for player in self.get_child_players(ignore_sync_childs=True)
+        ]
+        await asyncio.gather(*coros)
+
+    async def stop(self) -> None:
+        """Send STOP command to player."""
+        # redirect command to all (non passive) clients
+        coros = [
+            player.stop() for player in self.get_child_players(ignore_sync_childs=True)
+        ]
+        await asyncio.gather(*coros)
+
+    async def play(self) -> None:
+        """Send PLAY/UNPAUSE command to player."""
+        # redirect command to all (non passive) clients
+        coros = [
+            player.play() for player in self.get_child_players(ignore_sync_childs=True)
+        ]
+        await asyncio.gather(*coros)
+
+    async def pause(self) -> None:
+        """Send PAUSE command to player."""
+        # redirect command to all (non passive) clients
+        coros = [
+            player.pause() for player in self.get_child_players(ignore_sync_childs=True)
+        ]
+        await asyncio.gather(*coros)

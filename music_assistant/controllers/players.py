@@ -22,7 +22,6 @@ class PlayerController:
         self.mass = mass
         self.logger = mass.logger.getChild("players")
         self._players: Dict[str, Player] = {}
-        self._player_queues: Dict[str, PlayerQueue] = {}
 
     async def setup(self) -> None:
         """Async initialize of module."""
@@ -33,18 +32,11 @@ class PlayerController:
         for player_id in set(self._players.keys()):
             player = self._players.pop(player_id)
             player.on_remove()
-        for queue_id in set(self._player_queues.keys()):
-            self._player_queues.pop(queue_id)
 
     @property
     def players(self) -> Tuple[Player]:
         """Return all registered players."""
         return tuple(self._players.values())
-
-    @property
-    def player_queues(self) -> Tuple[PlayerQueue]:
-        """Return all available PlayerQueue's."""
-        return tuple(self._player_queues.values())
 
     def __iter__(self):
         """Iterate over (available) players."""
@@ -53,10 +45,6 @@ class PlayerController:
     def get_player(self, player_id: str) -> Player | None:
         """Return Player by player_id or None if not found."""
         return self._players.get(player_id)
-
-    def get_player_queue(self, queue_id: str) -> PlayerQueue | None:
-        """Return PlayerQueue by id or None if not found."""
-        return self._player_queues.get(queue_id)
 
     def get_player_by_name(self, name: str) -> Player | None:
         """Return Player by name or None if no match is found."""
@@ -73,13 +61,12 @@ class PlayerController:
 
         # make sure that the mass instance is set on the player
         player.mass = self.mass
-        self._players[player_id] = player
+        player.logger = self.logger.getChild(player.player_id)
 
         # create playerqueue for this player
-        self._player_queues[player.player_id] = player_queue = PlayerQueue(
-            self.mass, player_id
-        )
-        await player_queue.setup()
+        player.queue = PlayerQueue(player)
+        await player.queue.setup()
+        self._players[player_id] = player
 
         self.logger.info(
             "Player registered: %s/%s",
@@ -100,12 +87,8 @@ class PlayerController:
                     continue
                 if cur_tick == interval:
                     self.mass.loop.call_soon(player.update_state)
-                elif (
-                    player.active_queue.queue_id == player.player_id
-                    and player.active_queue.active
-                    and player.state == PlayerState.PLAYING
-                ):
-                    self.mass.loop.call_soon(player.active_queue.on_player_update)
+                if player.queue.active and player.state == PlayerState.PLAYING:
+                    self.mass.loop.call_soon(player.queue.on_player_update)
             if cur_tick == interval:
                 cur_tick = 0
             else:

@@ -232,17 +232,17 @@ async def main():
         await mass.players.register_player(test_player2)
 
         # try to play some music
-        test_player1.active_queue.settings.shuffle_enabled = True
-        test_player1.active_queue.settings.repeat_mode = RepeatMode.ALL
-        test_player1.active_queue.settings.crossfade_duration = 10
-        test_player1.active_queue.settings.crossfade_mode = CrossFadeMode.SMART
+        test_player1.queue.settings.shuffle_enabled = True
+        test_player1.queue.settings.repeat_mode = RepeatMode.ALL
+        test_player1.queue.settings.crossfade_duration = 10
+        test_player1.queue.settings.crossfade_mode = CrossFadeMode.SMART
 
         # we can send a MediaItem object (such as Artist, Album, Track, Playlist)
         # we can also send an uri, such as spotify://track/abcdfefgh
         # or database://playlist/1
         # or a list of items
         if playlists.count > 0:
-            await test_player1.active_queue.play_media(playlists.items[0])
+            await test_player1.queue.play_media(playlists.items[0])
 
         await asyncio.sleep(3600)
 

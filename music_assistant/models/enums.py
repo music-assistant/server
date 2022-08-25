@@ -240,16 +240,16 @@ class PlayerType(Enum):
     """
     Enum with possible Player Types.
 
-    standard: A standard player not synced with other players from the same platform.
-    grouped: Player that is grouped with other (platform-specific) players.
-    group: Dedicated platform-specific group player (e.g. cast).
-    universal_group: Universal multi-platform player group (sync maintained by MA).
+    player: A regular player.
+    sync_child: Player that is synced to another (platform-specific) player.
+    group: A dedicated group player.
+
+    Note: A player marked as sync_child can not accept playback related commands itself.
     """
 
-    STANDARD = "standard"
-    GROUPED = "grouped"
+    PLAYER = "player"
+    SYNC_CHILD = "sync_child"
     GROUP = "group"
-    UNIVERSAL_GROUP = "universal_group"
 
 
 class PlayerFeature(Enum):
@@ -258,13 +258,13 @@ class PlayerFeature(Enum):
 
     power: The player has a dedicated power control.
     mute: The player supports muting the volume.
-    grouping: The player supports grouping with other players (of the same platform).
+    sync: The player supports syncing with other players (of the same platform).
     accurate_time: The player provides millisecond accurate timing information.
     """
 
     POWER = "power"
     MUTE = "mute"
-    GROUPING = "grouping"
+    SYNC = "sync"
     ACCURATE_TIME = "accurate_time"
 
 
