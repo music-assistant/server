@@ -21,7 +21,7 @@ from .helpers import get_absolute_path, get_relative_path
 
 SERVICE_NAME = "music_assistant"
 
-smb_conn_ctx = contextvars.ContextVar("smb_conn_ctx")
+smb_conn_ctx = contextvars.ContextVar("smb_conn_ctx", default=None)
 
 
 async def create_item(
@@ -72,6 +72,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             self._root_path = os.sep + path_parts[2]
 
         self._default_target_ip = await get_ip_from_host(self._remote_name)
+        return True
 
     async def listdir(
         self, path: str, recursive: bool = False
@@ -199,6 +200,6 @@ class SMBFileSystemProvider(FileSystemProviderBase):
                 None, smb_conn.connect, target_ip
             ):
                 raise LoginFailed(f"SMB Connect failed to {self._remote_name}")
-            smb_conn_ctx.set(smb_conn)
+            token = smb_conn_ctx.set(smb_conn)
             yield smb_conn
-        smb_conn_ctx.reset()
+        smb_conn_ctx.reset(token)
