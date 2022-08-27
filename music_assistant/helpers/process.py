@@ -136,6 +136,8 @@ class AsyncProcess:
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
+        if self.closed or self._proc.stdin.is_closing():
+            raise asyncio.CancelledError()
         self._proc.stdin.write(data)
         await self._proc.stdin.drain()
 

@@ -366,7 +366,7 @@ class TracksController(MediaControllerBase[Track]):
             )
 
         if db_album := await self.mass.music.albums.get_db_item_by_prov_id(
-            album.item_id, provider=album.provider
+            album.item_id, provider_type=album.provider
         ):
             return ItemMapping.from_item(db_album)
 
@@ -391,7 +391,7 @@ class TracksController(MediaControllerBase[Track]):
             )
 
         if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
-            artist.item_id, provider=artist.provider
+            artist.item_id, provider_type=artist.provider
         ):
             return ItemMapping.from_item(db_artist)
 

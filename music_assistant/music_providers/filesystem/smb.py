@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from io import BytesIO
 from typing import AsyncContextManager, AsyncGenerator
 
-from smb.base import NotConnectedError, SharedFile, SMBTimeout
+from smb.base import SharedFile, SMBTimeout
 from smb.smb_structs import OperationFailure
 from smb.SMBConnection import SMBConnection
 
@@ -129,7 +129,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         """Return bool is this FileSystem musicprovider has given file/dir."""
         try:
             await self.resolve(file_path)
-        except (OperationFailure, SMBTimeout, NotConnectedError):
+        except (OperationFailure, SMBTimeout):
             return False
         return True
 
@@ -142,14 +142,16 @@ class SMBFileSystemProvider(FileSystemProviderBase):
 
         async with self._get_smb_connection() as smb_conn:
 
-            def _read_chunk_from_file(offset: int):
+            async def _read_chunk_from_file(offset: int):
+
                 with BytesIO() as file_obj:
-                    smb_conn.retrieveFileFromOffset(
+                    await asyncio.to_thread(
+                        smb_conn.retrieveFileFromOffset,
                         self._service_name,
                         abs_path,
-                        file_obj=file_obj,
-                        offset=offset,
-                        max_length=chunk_size,
+                        file_obj,
+                        offset,
+                        chunk_size,
                     )
                     file_obj.seek(0)
                     return file_obj.read()
@@ -157,7 +159,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             offset = seek
             chunk_num = 1
             while True:
-                data = await asyncio.to_thread(_read_chunk_from_file, offset)
+                data = await _read_chunk_from_file(offset)
                 if not data:
                     break
                 yield data
@@ -173,10 +175,11 @@ class SMBFileSystemProvider(FileSystemProviderBase):
     @asynccontextmanager
     async def _get_smb_connection(self) -> AsyncContextManager[SMBConnection]:
         """Get instance of SMBConnection."""
+        target_ip = self.config.options.get("target_ip", self._default_target_ip)
         if existing := smb_conn_ctx.get():
             yield existing
             return
-        target_ip = self.config.options.get("target_ip", self._default_target_ip)
+
         with SMBConnection(
             username=self.config.username,
             password=self.config.password,

@@ -208,7 +208,6 @@ class DatabaseController:
                 await self.execute(f"DROP TABLE IF EXISTS {TABLE_RADIOS}")
                 await self.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
                 await self.execute(f"DROP TABLE IF EXISTS {TABLE_THUMBS}")
-                await self.execute("DROP TABLE IF EXISTS provider_mappings")
                 # recreate missing tables
                 await self.__create_database_tables()
 
@@ -218,21 +217,20 @@ class DatabaseController:
                 # this will require a full resync of all providers including matching but at least
                 # the additional metadata is not lost
                 await self.execute(
-                    f"ALTER TABLE {TABLE_ARTISTS} ADD provider_mappings json;"
+                    f"ALTER TABLE {TABLE_ARTISTS} ADD provider_mappings json DEFAULT '[]';"
                 )
                 await self.execute(
-                    f"ALTER TABLE {TABLE_ALBUMS} ADD provider_mappings json;"
+                    f"ALTER TABLE {TABLE_ALBUMS} ADD provider_mappings json DEFAULT '[]';"
                 )
                 await self.execute(
-                    f"ALTER TABLE {TABLE_TRACKS} ADD provider_mappings json;"
+                    f"ALTER TABLE {TABLE_TRACKS} ADD provider_mappings json DEFAULT '[]';"
                 )
                 await self.execute(
-                    f"ALTER TABLE {TABLE_PLAYLISTS} ADD provider_mappings json;"
+                    f"ALTER TABLE {TABLE_PLAYLISTS} ADD provider_mappings json DEFAULT '[]';"
                 )
                 await self.execute(
-                    f"ALTER TABLE {TABLE_RADIOS} ADD provider_mappings json;"
+                    f"ALTER TABLE {TABLE_RADIOS} ADD provider_mappings json DEFAULT '[]';"
                 )
-
                 await self.execute(
                     f"ALTER TABLE {TABLE_ARTISTS} DROP column provider_ids;"
                 )
@@ -248,9 +246,14 @@ class DatabaseController:
                 await self.execute(
                     f"ALTER TABLE {TABLE_RADIOS} DROP column provider_ids;"
                 )
+                await self.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
+                # recreate missing table(s)
+                await self.__create_database_tables()
 
         # store current schema version
         await self.set_setting("version", str(SCHEMA_VERSION))
+        # compact db
+        await self.mass.database.execute("VACUUM")
 
     async def __create_database_tables(self) -> None:
         """Init database tables."""

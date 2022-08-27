@@ -404,7 +404,7 @@ class MusicProvider:
 
                 db_item: MediaItemType = await controller.get_db_item_by_prov_id(
                     provider_item_id=prov_item.item_id,
-                    provider=prov_item.provider,
+                    provider_type=prov_item.provider,
                 )
                 if not db_item:
                     # dump the item in the db, rich metadata is lazy loaded later

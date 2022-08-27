@@ -154,19 +154,19 @@ class FileSystemProviderBase(MusicProvider):
         # instead we make some (slow) freaking queries to the db ;-)
         params = {"name": f"%{search_query}%", "provider_id": f"%{self.id}%"}
         if media_types is None or MediaType.TRACK in media_types:
-            query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_mappings LIKE :prov_id"
+            query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_mappings LIKE :provider_id"
             tracks = await self.mass.music.tracks.get_db_items_by_query(query, params)
             result += tracks
         if media_types is None or MediaType.ALBUM in media_types:
-            query = "SELECT * FROM albums WHERE name LIKE :name AND provider_mappings LIKE :prov_id"
+            query = "SELECT * FROM albums WHERE name LIKE :name AND provider_mappings LIKE :provider_id"
             albums = await self.mass.music.albums.get_db_items_by_query(query, params)
             result += albums
         if media_types is None or MediaType.ARTIST in media_types:
-            query = "SELECT * FROM artists WHERE name LIKE :name AND provider_mappings LIKE :prov_id"
+            query = "SELECT * FROM artists WHERE name LIKE :name AND provider_mappings LIKE :provider_id"
             artists = await self.mass.music.artists.get_db_items_by_query(query, params)
             result += artists
         if media_types is None or MediaType.PLAYLIST in media_types:
-            query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_mappings LIKE :prov_id"
+            query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_mappings LIKE :provider_id"
             playlists = await self.mass.music.playlists.get_db_items_by_query(
                 query, params
             )

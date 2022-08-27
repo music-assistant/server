@@ -75,7 +75,7 @@ class CacheController:
 
     async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
         """Set data in cache."""
-        if not isinstance(checksum, str):
+        if checksum is not None and not isinstance(checksum, str):
             checksum = str(checksum)
         expires = int(time.time() + expiration)
         self._mem_cache[cache_key] = (data, checksum, expires)
@@ -109,8 +109,6 @@ class CacheController:
             # clean up db cache object only if expired
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
-        # compact db
-        await self.mass.database.execute("VACUUM")
 
     def __schedule_cleanup_task(self):
         """Schedule the cleanup task."""

@@ -132,7 +132,7 @@ class TuneInProvider(MusicProvider):
             url = stream["url"]
             item_id = f'{details["preset_id"]}--{stream["media_type"]}'
             content_type = ContentType.try_parse(stream["media_type"])
-            bit_rate = 128  # TODO !
+            bit_rate = stream.get("bitrate", 128)  # TODO !
 
         radio = Radio(item_id=item_id, provider=self.type, name=name)
         radio.add_provider_mapping(
