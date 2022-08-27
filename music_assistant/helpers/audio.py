@@ -241,7 +241,7 @@ async def get_stream_details(
         full_item = await mass.music.get_item_by_uri(queue_item.uri)
         # sort by quality and check track availability
         for prov_media in sorted(
-            full_item.provider_ids, key=lambda x: x.quality or 0, reverse=True
+            full_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
         ):
             if not prov_media.available:
                 continue
@@ -564,11 +564,11 @@ async def check_audio_support(try_install: bool = False) -> Tuple[bool, bool]:
 
 async def get_preview_stream(
     mass: MusicAssistant,
-    provider_id: str,
+    provider_mapping: str,
     track_id: str,
 ) -> AsyncGenerator[bytes, None]:
     """Create a 30 seconds preview audioclip for the given streamdetails."""
-    music_prov = mass.music.get_provider(provider_id)
+    music_prov = mass.music.get_provider(provider_mapping)
 
     streamdetails = await music_prov.get_stream_details(track_id)
 

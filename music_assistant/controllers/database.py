@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 TABLE_TRACK_LOUDNESS = "track_loudness"
 TABLE_PLAYLOG = "playlog"
@@ -212,6 +212,43 @@ class DatabaseController:
                 # recreate missing tables
                 await self.__create_database_tables()
 
+            if prev_version < 19:
+                # model for provider_mapping completely changed,
+                # we just drop the old provider_ids column and add the new provider_mappings column
+                # this will require a full resync of all providers including matching but at least
+                # the additional metadata is not lost
+                await self.execute(
+                    f"ALTER TABLE {TABLE_ARTISTS} ADD provider_mappings json;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_ALBUMS} ADD provider_mappings json;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_TRACKS} ADD provider_mappings json;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_PLAYLISTS} ADD provider_mappings json;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_RADIOS} ADD provider_mappings json;"
+                )
+
+                await self.execute(
+                    f"ALTER TABLE {TABLE_ARTISTS} DROP column provider_ids;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_ALBUMS} DROP column provider_ids;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_TRACKS} DROP column provider_ids;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_PLAYLISTS} DROP column provider_ids;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_RADIOS} DROP column provider_ids;"
+                )
+
         # store current schema version
         await self.set_setting("version", str(SCHEMA_VERSION))
 
@@ -251,7 +288,7 @@ class DatabaseController:
                     musicbrainz_id TEXT,
                     artists json,
                     metadata json,
-                    provider_ids json,
+                    provider_mappings json,
                     timestamp INTEGER DEFAULT 0
                 );"""
         )
@@ -263,7 +300,7 @@ class DatabaseController:
                     musicbrainz_id TEXT,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
-                    provider_ids json,
+                    provider_mappings json,
                     timestamp INTEGER DEFAULT 0
                     );"""
         )
@@ -282,7 +319,7 @@ class DatabaseController:
                     artists json,
                     albums json,
                     metadata json,
-                    provider_ids json,
+                    provider_mappings json,
                     timestamp INTEGER DEFAULT 0
                 );"""
         )
@@ -295,7 +332,7 @@ class DatabaseController:
                     is_editable BOOLEAN NOT NULL,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
-                    provider_ids json,
+                    provider_mappings json,
                     timestamp INTEGER DEFAULT 0,
                     UNIQUE(name, owner)
                 );"""
@@ -307,7 +344,7 @@ class DatabaseController:
                     sort_name TEXT NOT NULL,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
-                    provider_ids json,
+                    provider_mappings json,
                     timestamp INTEGER DEFAULT 0
                 );"""
         )

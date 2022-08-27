@@ -12,18 +12,12 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.tags import AudioTags, parse_tags
 from music_assistant.models.config import MusicProviderConfig
-from music_assistant.models.enums import (
-    ContentType,
-    ImageType,
-    MediaQuality,
-    MediaType,
-    ProviderType,
-)
+from music_assistant.models.enums import ContentType, ImageType, MediaType, ProviderType
 from music_assistant.models.media_items import (
     Artist,
     MediaItemImage,
-    MediaItemProviderId,
     MediaItemType,
+    ProviderMapping,
     Radio,
     StreamDetails,
     Track,
@@ -67,8 +61,8 @@ class URLProvider(MusicProvider):
             artist,
             self.type,
             artist,
-            provider_ids={
-                MediaItemProviderId(artist, self.type, self.id, available=False)
+            provider_mappings={
+                ProviderMapping(artist, self.type, self.id, available=False)
             },
         )
 
@@ -110,9 +104,16 @@ class URLProvider(MusicProvider):
                 ],
             )
 
-        quality = MediaQuality.from_file_type(media_info.format)
-        media_item.provider_ids = {
-            MediaItemProviderId(item_id, self.type, self.id, quality=quality)
+        media_item.provider_mappings = {
+            ProviderMapping(
+                item_id=item_id,
+                provider_type=self.type,
+                provider_id=self.id,
+                content_type=ContentType.try_parse(media_info.format),
+                sample_rate=media_info.sample_rate,
+                bit_depth=media_info.bits_per_sample,
+                bit_rate=media_info.bit_rate,
+            )
         }
         if media_info.has_cover_image:
             media_item.metadata.images = [MediaItemImage(ImageType.THUMB, url, True)]

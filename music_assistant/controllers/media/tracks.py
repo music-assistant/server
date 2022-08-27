@@ -90,31 +90,34 @@ class TracksController(MediaControllerBase[Track]):
     async def versions(
         self,
         item_id: str,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
     ) -> List[Track]:
         """Return all versions of a track we can find on all providers."""
-        assert provider or provider_id, "Provider type or ID must be specified"
-        track = await self.get(item_id, provider, provider_id)
+        assert provider_type or provider_id, "Provider type or ID must be specified"
+        track = await self.get(item_id, provider_type or provider_id)
         # perform a search on all provider(types) to collect all versions/variants
-        prov_types = {item.type for item in self.mass.music.providers}
+        provider_types = {item.type for item in self.mass.music.providers}
         search_query = f"{track.artist.name} - {track.name}"
         all_versions = {
             prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(
-                *[self.search(search_query, prov_type) for prov_type in prov_types]
+                *[
+                    self.search(search_query, provider_type)
+                    for provider_type in provider_types
+                ]
             )
             for prov_item in prov_items
             if loose_compare_strings(track.name, prov_item.name)
             and compare_artists(prov_item.artists, track.artists, any_match=True)
         }
         # make sure that the 'base' version is included
-        for prov_version in track.provider_ids:
+        for prov_version in track.provider_mappings:
             if prov_version.item_id in all_versions:
                 continue
             # grab full item here including album details etc
             prov_track = await self.get_provider_item(
-                prov_version.item_id, prov_version.prov_id
+                prov_version.item_id, prov_version.provider_id
             )
             all_versions[prov_version.item_id] = prov_track
 
@@ -162,12 +165,12 @@ class TracksController(MediaControllerBase[Track]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the track."""
-        prov = self.mass.music.get_provider(provider_id or provider)
+        prov = self.mass.music.get_provider(provider_id or provider_type)
         if (
             not prov
             or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
@@ -192,7 +195,7 @@ class TracksController(MediaControllerBase[Track]):
         """Add a new item record to the database."""
         assert isinstance(item, Track), "Not a full Track object"
         assert item.artists, "Track is missing artist(s)"
-        assert item.provider_ids, "Track is missing provider id(s)"
+        assert item.provider_mappings, "Track is missing provider id(s)"
         async with self._db_add_lock:
             cur_item = None
 
@@ -256,14 +259,14 @@ class TracksController(MediaControllerBase[Track]):
 
         if overwrite:
             metadata = item.metadata
-            provider_ids = item.provider_ids
+            provider_mappings = item.provider_mappings
             metadata.last_refresh = None
             # we store a mapping to artists/albums on the item for easier access/listings
             track_artists = await self._get_track_artists(item, overwrite=True)
             track_albums = await self._get_track_albums(item, overwrite=True)
         else:
             metadata = cur_item.metadata.update(item.metadata, item.provider.is_file())
-            provider_ids = {*cur_item.provider_ids, *item.provider_ids}
+            provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
             track_artists = await self._get_track_artists(cur_item, item)
             track_albums = await self._get_track_albums(cur_item, item)
 
@@ -278,7 +281,7 @@ class TracksController(MediaControllerBase[Track]):
                 "artists": json_serializer(track_artists),
                 "albums": json_serializer(track_albums),
                 "metadata": json_serializer(metadata),
-                "provider_ids": json_serializer(provider_ids),
+                "provider_mappings": json_serializer(provider_mappings),
                 "isrc": item.isrc or cur_item.isrc,
             },
         )

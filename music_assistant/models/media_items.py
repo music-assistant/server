@@ -15,31 +15,48 @@ from music_assistant.models.enums import (
     ContentType,
     ImageType,
     LinkType,
-    MediaQuality,
     MediaType,
     ProviderType,
 )
 
 MetadataTypes = Union[int, bool, str, List[str]]
 
-JSON_KEYS = ("artists", "artist", "albums", "metadata", "provider_ids")
+JSON_KEYS = ("artists", "artist", "albums", "metadata", "provider_mappings")
 
 
 @dataclass(frozen=True)
-class MediaItemProviderId(DataClassDictMixin):
-    """Model for a MediaItem's provider id."""
+class ProviderMapping(DataClassDictMixin):
+    """Model for a MediaItem's provider mapping details."""
 
     item_id: str
-    prov_type: ProviderType
-    prov_id: str
+    provider_type: ProviderType
+    provider_id: str
     available: bool = True
-    quality: Optional[MediaQuality] = None
+    # quality details (streamable content only)
+    content_type: ContentType = ContentType.UNKNOWN
+    sample_rate: int = 44100
+    bit_depth: int = 16
+    bit_rate: int = 320
+    # optional details to store provider specific details
     details: Optional[str] = None
+    # url = link to provider details page if exists
     url: Optional[str] = None
+
+    @property
+    def quality(self) -> int:
+        """Calculate quality score."""
+        if self.content_type.is_lossless():
+            return int(self.sample_rate / 1000) + self.bit_depth
+        # lossy content, bit_rate is most important score
+        # but prefer some codecs over others
+        score = self.bit_rate / 100
+        if self.content_type in (ContentType.AAC, ContentType.OGG):
+            score += 1
+        return int(score)
 
     def __hash__(self):
         """Return custom hash."""
-        return hash((self.prov_id, self.item_id, self.quality))
+        return hash((self.provider_type.value, self.item_id))
 
 
 @dataclass(frozen=True)
@@ -124,7 +141,7 @@ class MediaItem(DataClassDictMixin):
     item_id: str
     provider: ProviderType
     name: str
-    provider_ids: Set[MediaItemProviderId] = field(default_factory=set)
+    provider_mappings: Set[ProviderMapping] = field(default_factory=set)
 
     # optional fields below
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
@@ -181,7 +198,7 @@ class MediaItem(DataClassDictMixin):
     @property
     def available(self):
         """Return (calculated) availability."""
-        return any(x.available for x in self.provider_ids)
+        return any(x.available for x in self.provider_mappings)
 
     @property
     def image(self) -> MediaItemImage | None:
@@ -192,14 +209,17 @@ class MediaItem(DataClassDictMixin):
             (x for x in self.metadata.images if x.type == ImageType.THUMB), None
         )
 
-    def add_provider_id(self, prov_id: MediaItemProviderId) -> None:
+    def add_provider_mapping(self, prov_mapping: ProviderMapping) -> None:
         """Add provider ID, overwrite existing entry."""
-        self.provider_ids = {
+        self.provider_mappings = {
             x
-            for x in self.provider_ids
-            if not (x.item_id == prov_id.item_id and x.prov_id == prov_id.prov_id)
+            for x in self.provider_mappings
+            if not (
+                x.item_id == prov_mapping.item_id
+                and x.provider_id == prov_mapping.provider_id
+            )
         }
-        self.provider_ids.add(prov_id)
+        self.provider_mappings.add(prov_mapping)
 
     @property
     def last_refresh(self) -> int:

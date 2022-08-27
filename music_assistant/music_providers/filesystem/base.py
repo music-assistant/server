@@ -25,11 +25,10 @@ from music_assistant.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemProviderId,
     MediaItemType,
-    MediaQuality,
     MediaType,
     Playlist,
+    ProviderMapping,
     Radio,
     StreamDetails,
     Track,
@@ -153,21 +152,21 @@ class FileSystemProviderBase(MusicProvider):
         result = []
         # searching the filesystem is slow and unreliable,
         # instead we make some (slow) freaking queries to the db ;-)
-        params = {"name": f"%{search_query}%", "prov_id": f"%{self.id}%"}
+        params = {"name": f"%{search_query}%", "provider_id": f"%{self.id}%"}
         if media_types is None or MediaType.TRACK in media_types:
-            query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_ids LIKE :prov_id"
+            query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_mappings LIKE :prov_id"
             tracks = await self.mass.music.tracks.get_db_items_by_query(query, params)
             result += tracks
         if media_types is None or MediaType.ALBUM in media_types:
-            query = "SELECT * FROM albums WHERE name LIKE :name AND provider_ids LIKE :prov_id"
+            query = "SELECT * FROM albums WHERE name LIKE :name AND provider_mappings LIKE :prov_id"
             albums = await self.mass.music.albums.get_db_items_by_query(query, params)
             result += albums
         if media_types is None or MediaType.ARTIST in media_types:
-            query = "SELECT * FROM artists WHERE name LIKE :name AND provider_ids LIKE :prov_id"
+            query = "SELECT * FROM artists WHERE name LIKE :name AND provider_mappings LIKE :prov_id"
             artists = await self.mass.music.artists.get_db_items_by_query(query, params)
             result += artists
         if media_types is None or MediaType.PLAYLIST in media_types:
-            query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_ids LIKE :prov_id"
+            query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_mappings LIKE :prov_id"
             playlists = await self.mass.music.playlists.get_db_items_by_query(
                 query, params
             )
@@ -202,7 +201,7 @@ class FileSystemProviderBase(MusicProvider):
 
             if item.ext in TRACK_EXTENSIONS:
                 if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
-                    item.path, provider_id=self.id
+                    item.path, provider_mapping=self.id
                 ):
                     subitems.append(db_item)
                 elif track := await self.get_track(item.path):
@@ -213,7 +212,7 @@ class FileSystemProviderBase(MusicProvider):
                 continue
             if item.ext in PLAYLIST_EXTENSIONS:
                 if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
-                    item.path, provider_id=self.id
+                    item.path, provider_mapping=self.id
                 ):
                     subitems.append(db_item)
                 elif playlist := await self.get_playlist(item.path):
@@ -314,7 +313,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
-            provider_item_id=prov_artist_id, provider_id=self.id
+            provider_item_id=prov_artist_id, provider_mapping=self.id
         )
         if db_artist is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
@@ -326,7 +325,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            provider_item_id=prov_album_id, provider_id=self.id
+            provider_item_id=prov_album_id, provider_mapping=self.id
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
@@ -465,38 +464,15 @@ class FileSystemProviderBase(MusicProvider):
             for artist in track.album.artists:
                 artist.metadata.checksum = checksum_timestamp
 
-        quality_details = ""
-        content_type = ContentType.try_parse(tags.format)
-        quality_details = f"{int(tags.bit_rate / 1000)} kbps"
-        if content_type == ContentType.MP3:
-            quality = MediaQuality.LOSSY_MP3
-        elif content_type == ContentType.OGG:
-            quality = MediaQuality.LOSSY_OGG
-        elif content_type == ContentType.AAC:
-            quality = MediaQuality.LOSSY_AAC
-        elif content_type == ContentType.M4A:
-            quality = MediaQuality.LOSSY_M4A
-        elif content_type.is_lossless():
-            quality = MediaQuality.LOSSLESS
-            quality_details = f"{tags.sample_rate / 1000} Khz / {tags.bit_rate} bit"
-            if tags.sample_rate > 192000:
-                quality = MediaQuality.LOSSLESS_HI_RES_4
-            elif tags.sample_rate > 96000:
-                quality = MediaQuality.LOSSLESS_HI_RES_3
-            elif tags.sample_rate > 48000:
-                quality = MediaQuality.LOSSLESS_HI_RES_2
-            elif tags.bits_per_sample > 16:
-                quality = MediaQuality.LOSSLESS_HI_RES_1
-        else:
-            quality = MediaQuality.UNKNOWN
-
-        track.add_provider_id(
-            MediaItemProviderId(
+        track.add_provider_mapping(
+            ProviderMapping(
                 item_id=file_item.path,
-                prov_type=self.type,
-                prov_id=self.id,
-                quality=quality,
-                details=quality_details,
+                provider_type=self.type,
+                provider_id=self.id,
+                content_type=ContentType.try_parse(tags.format),
+                sample_rate=tags.sample_rate,
+                bit_depth=tags.bits_per_sample,
+                bit_rate=tags.bit_rate,
             )
         )
         return track
@@ -512,11 +488,11 @@ class FileSystemProviderBase(MusicProvider):
         playlist = Playlist(file_item.path, provider=self.type, name=file_item.name)
         playlist.is_editable = file_item.ext != "pls"  # can only edit m3u playlists
 
-        playlist.add_provider_id(
-            MediaItemProviderId(
+        playlist.add_provider_mapping(
+            ProviderMapping(
                 item_id=file_item.path,
-                prov_type=self.type,
-                prov_id=self.id,
+                provider_type=self.type,
+                provider_id=self.id,
             )
         )
         playlist.owner = self._attr_name
@@ -528,13 +504,13 @@ class FileSystemProviderBase(MusicProvider):
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
         db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            prov_album_id, provider_id=self.id
+            prov_album_id, provider_mapping=self.id
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
         # TODO: adjust to json query instead of text search
         query = f"SELECT * FROM tracks WHERE albums LIKE '%\"{db_album.item_id}\"%'"
-        query += f" AND provider_ids LIKE '%\"{self.id}\"%'"
+        query += f" AND provider_mappings LIKE '%\"{self.id}\"%'"
         result = []
         for track in await self.mass.music.tracks.get_db_items_by_query(query):
             track.album = db_album
@@ -719,8 +695,8 @@ class FileSystemProviderBase(MusicProvider):
             artist_path,
             self.type,
             name,
-            provider_ids={
-                MediaItemProviderId(artist_path, self.type, self.id, url=artist_path)
+            provider_mappings={
+                ProviderMapping(artist_path, self.type, self.id, url=artist_path)
             },
             musicbrainz_id=VARIOUS_ARTISTS_ID
             if compare_strings(name, VARIOUS_ARTISTS)
@@ -771,8 +747,8 @@ class FileSystemProviderBase(MusicProvider):
             self.type,
             name,
             artists=artists,
-            provider_ids={
-                MediaItemProviderId(album_path, self.type, self.id, url=album_path)
+            provider_mappings={
+                ProviderMapping(album_path, self.type, self.id, url=album_path)
             },
         )
 
@@ -810,28 +786,6 @@ class FileSystemProviderBase(MusicProvider):
         album.metadata.images = await self._get_local_images(album_path) or None
 
         return album
-
-    async def _get_filepath(
-        self, media_type: MediaType, prov_item_id: str
-    ) -> str | None:
-        """Get full filepath on disk for item_id."""
-        if prov_item_id is None:
-            return None  # guard
-        # funky sql queries go here ;-)
-        table = f"{media_type.value}s"
-        query = (
-            f"SELECT json_extract(json_each.value, '$.url') as url FROM {table}"
-            " ,json_each(provider_ids) WHERE"
-            f" json_extract(json_each.value, '$.prov_id') = '{self.id}'"
-            f" AND json_extract(json_each.value, '$.item_id') = '{prov_item_id}'"
-        )
-        for db_row in await self.mass.database.get_rows_from_query(query):
-            file_path = db_row["url"]
-            # ensure we have a full path and not relative
-            if self.config.path not in file_path:
-                file_path = os.path.join(self.config.path, file_path)
-            return file_path
-        return None
 
     async def _get_local_images(self, folder: str) -> List[MediaItemImage]:
         """Return local images found in a given folderpath."""

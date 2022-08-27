@@ -23,11 +23,10 @@ from music_assistant.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemProviderId,
     MediaItemType,
-    MediaQuality,
     MediaType,
     Playlist,
+    ProviderMapping,
     StreamDetails,
     Track,
 )
@@ -408,11 +407,11 @@ class QobuzProvider(MusicProvider):
         artist = Artist(
             item_id=str(artist_obj["id"]), provider=self.type, name=artist_obj["name"]
         )
-        artist.add_provider_id(
-            MediaItemProviderId(
+        artist.add_provider_mapping(
+            ProviderMapping(
                 item_id=str(artist_obj["id"]),
-                prov_type=self.type,
-                prov_id=self.id,
+                provider_type=self.type,
+                provider_id=self.id,
                 url=artist_obj.get(
                     "url", f'https://open.qobuz.com/artist/{artist_obj["id"]}'
                 ),
@@ -435,29 +434,18 @@ class QobuzProvider(MusicProvider):
         album = Album(
             item_id=str(album_obj["id"]), provider=self.type, name=name, version=version
         )
-        if album_obj["maximum_sampling_rate"] > 192:
-            quality = MediaQuality.LOSSLESS_HI_RES_4
-        elif album_obj["maximum_sampling_rate"] > 96:
-            quality = MediaQuality.LOSSLESS_HI_RES_3
-        elif album_obj["maximum_sampling_rate"] > 48:
-            quality = MediaQuality.LOSSLESS_HI_RES_2
-        elif album_obj["maximum_bit_depth"] > 16:
-            quality = MediaQuality.LOSSLESS_HI_RES_1
-        elif album_obj.get("format_id", 0) == 5:
-            quality = MediaQuality.LOSSY_AAC
-        else:
-            quality = MediaQuality.LOSSLESS
-        album.add_provider_id(
-            MediaItemProviderId(
+        album.add_provider_mapping(
+            ProviderMapping(
                 item_id=str(album_obj["id"]),
-                prov_type=self.type,
-                prov_id=self.id,
-                quality=quality,
+                provider_type=self.type,
+                provider_id=self.id,
+                available=album_obj["streamable"] and album_obj["displayable"],
+                content_type=ContentType.FLAC,
+                sample_rate=album_obj["maximum_sampling_rate"] * 1000,
+                bit_depth=album_obj["maximum_bit_depth"],
                 url=album_obj.get(
                     "url", f'https://open.qobuz.com/album/{album_obj["id"]}'
                 ),
-                details=f'{album_obj["maximum_sampling_rate"]}kHz {album_obj["maximum_bit_depth"]}bit',
-                available=album_obj["streamable"] and album_obj["displayable"],
             )
         )
 
@@ -553,30 +541,19 @@ class QobuzProvider(MusicProvider):
             track.metadata.explicit = True
         if img := self.__get_image(track_obj):
             track.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
-        # get track quality
-        if track_obj["maximum_sampling_rate"] > 192:
-            quality = MediaQuality.LOSSLESS_HI_RES_4
-        elif track_obj["maximum_sampling_rate"] > 96:
-            quality = MediaQuality.LOSSLESS_HI_RES_3
-        elif track_obj["maximum_sampling_rate"] > 48:
-            quality = MediaQuality.LOSSLESS_HI_RES_2
-        elif track_obj["maximum_bit_depth"] > 16:
-            quality = MediaQuality.LOSSLESS_HI_RES_1
-        elif track_obj.get("format_id", 0) == 5:
-            quality = MediaQuality.LOSSY_AAC
-        else:
-            quality = MediaQuality.LOSSLESS
-        track.add_provider_id(
-            MediaItemProviderId(
+
+        track.add_provider_mapping(
+            ProviderMapping(
                 item_id=str(track_obj["id"]),
-                prov_type=self.type,
-                prov_id=self.id,
-                quality=quality,
+                provider_type=self.type,
+                provider_id=self.id,
+                available=track_obj["streamable"] and track_obj["displayable"],
+                content_type=ContentType.FLAC,
+                sample_rate=track_obj["maximum_sampling_rate"] * 1000,
+                bit_depth=track_obj["maximum_bit_depth"],
                 url=track_obj.get(
                     "url", f'https://open.qobuz.com/track/{track_obj["id"]}'
                 ),
-                details=f'{track_obj["maximum_sampling_rate"]}kHz {track_obj["maximum_bit_depth"]}bit',
-                available=track_obj["streamable"] and track_obj["displayable"],
             )
         )
         return track
@@ -589,11 +566,11 @@ class QobuzProvider(MusicProvider):
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["name"],
         )
-        playlist.add_provider_id(
-            MediaItemProviderId(
+        playlist.add_provider_mapping(
+            ProviderMapping(
                 item_id=str(playlist_obj["id"]),
-                prov_type=self.type,
-                prov_id=self.id,
+                provider_type=self.type,
+                provider_id=self.id,
                 url=playlist_obj.get(
                     "url", f'https://open.qobuz.com/playlist/{playlist_obj["id"]}'
                 ),

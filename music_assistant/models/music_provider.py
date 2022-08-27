@@ -431,11 +431,13 @@ class MusicProvider:
             async for db_item in controller.iter_db_items(True):
                 if db_item.item_id in cur_db_ids:
                     continue
-                for prov_id in db_item.provider_ids:
-                    prov_types = {x.prov_type for x in db_item.provider_ids}
-                    if len(prov_types) > 1:
+                for prov_mapping in db_item.provider_mappings:
+                    provider_types = {
+                        x.provider_type for x in db_item.provider_mappings
+                    }
+                    if len(provider_types) > 1:
                         continue
-                    if prov_id.prov_id != self.id:
+                    if prov_mapping.provider_id != self.id:
                         continue
                     # only mark the item as not in library and leave the metadata in db
                     await controller.set_db_library(db_item.item_id, False)

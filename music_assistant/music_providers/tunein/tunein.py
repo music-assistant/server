@@ -8,6 +8,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.helpers.audio import get_radio_stream
 from music_assistant.helpers.playlists import fetch_playlist
+from music_assistant.helpers.tags import parse_tags
 from music_assistant.helpers.util import create_sort_name
 from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.errors import LoginFailed, MediaNotFoundError
@@ -15,9 +16,8 @@ from music_assistant.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemProviderId,
-    MediaQuality,
     MediaType,
+    ProviderMapping,
     Radio,
     StreamDetails,
 )
@@ -125,25 +125,23 @@ class TuneInProvider(MusicProvider):
             # custom url (no stream object present)
             url = details["URL"]
             item_id = url
-            # TODO: parse header of stream for audio quality details?
-            quality = MediaQuality.UNKNOWN
+            media_info = await parse_tags(url)
+            content_type = ContentType.try_parse(media_info.format)
+            bit_rate = media_info.bit_rate
         else:
             url = stream["url"]
             item_id = f'{details["preset_id"]}--{stream["media_type"]}'
-            if stream["media_type"] == "aac":
-                quality = MediaQuality.LOSSY_AAC
-            elif stream["media_type"] == "ogg":
-                quality = MediaQuality.LOSSY_OGG
-            else:
-                quality = MediaQuality.LOSSY_MP3
+            content_type = ContentType.try_parse(stream["media_type"])
+            bit_rate = 128  # TODO !
 
         radio = Radio(item_id=item_id, provider=self.type, name=name)
-        radio.add_provider_id(
-            MediaItemProviderId(
+        radio.add_provider_mapping(
+            ProviderMapping(
                 item_id=item_id,
-                prov_type=self.type,
-                prov_id=self.id,
-                quality=quality,
+                provider_type=self.type,
+                provider_id=self.id,
+                content_type=content_type,
+                bit_rate=bit_rate,
                 details=url,
             )
         )

@@ -8,11 +8,7 @@ from urllib.parse import unquote
 import pytube
 import ytmusicapi
 
-from music_assistant.models.enums import (
-    MediaQuality,
-    MusicProviderFeature,
-    ProviderType,
-)
+from music_assistant.models.enums import MusicProviderFeature, ProviderType
 from music_assistant.models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -25,10 +21,10 @@ from music_assistant.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemProviderId,
     MediaItemType,
     MediaType,
     Playlist,
+    ProviderMapping,
     StreamDetails,
     Track,
 )
@@ -502,9 +498,9 @@ class YoutubeMusicProvider(MusicProvider):
             else:
                 album_type = AlbumType.UNKNOWN
             album.album_type = album_type
-        album.add_provider_id(
-            MediaItemProviderId(
-                item_id=str(album_id), prov_type=self.type, prov_id=self.id
+        album.add_provider_mapping(
+            ProviderMapping(
+                item_id=str(album_id), provider_type=self.type, provider_id=self.id
             )
         )
         return album
@@ -527,11 +523,11 @@ class YoutubeMusicProvider(MusicProvider):
             artist.metadata.images = await self._parse_thumbnails(
                 artist_obj["thumbnails"]
             )
-        artist.add_provider_id(
-            MediaItemProviderId(
+        artist.add_provider_mapping(
+            ProviderMapping(
                 item_id=str(artist_id),
-                prov_type=self.type,
-                prov_id=self.id,
+                provider_type=self.type,
+                provider_id=self.id,
                 url=f"https://music.youtube.com/channel/{artist_id}",
             )
         )
@@ -552,9 +548,9 @@ class YoutubeMusicProvider(MusicProvider):
         if playlist_obj.get("privacy") and playlist_obj.get("privacy") == "PRIVATE":
             is_editable = True
         playlist.is_editable = is_editable
-        playlist.add_provider_id(
-            MediaItemProviderId(
-                item_id=playlist_obj["id"], prov_type=self.type, prov_id=self.id
+        playlist.add_provider_mapping(
+            ProviderMapping(
+                item_id=playlist_obj["id"], provider_type=self.type, provider_id=self.id
             )
         )
         playlist.metadata.checksum = playlist_obj.get("checksum")
@@ -598,13 +594,13 @@ class YoutubeMusicProvider(MusicProvider):
         available = True
         if "isAvailable" in track_obj:
             available = track_obj["isAvailable"]
-        track.add_provider_id(
-            MediaItemProviderId(
+        track.add_provider_mapping(
+            ProviderMapping(
                 item_id=str(track_obj["videoId"]),
-                prov_type=self.type,
-                prov_id=self.id,
+                provider_type=self.type,
+                provider_id=self.id,
                 available=available,
-                quality=MediaQuality.LOSSY_M4A,
+                content_type=ContentType.M4A,
             )
         )
         return track
