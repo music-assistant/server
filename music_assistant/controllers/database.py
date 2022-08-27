@@ -192,7 +192,7 @@ class DatabaseController:
         except (KeyError, ValueError):
             prev_version = 0
 
-        if SCHEMA_VERSION != prev_version:
+        if prev_version not in (0, SCHEMA_VERSION):
             self.logger.info(
                 "Performing database migration from %s to %s",
                 prev_version,
@@ -211,7 +211,7 @@ class DatabaseController:
                 # recreate missing tables
                 await self.__create_database_tables()
 
-            if prev_version < 19:
+            if prev_version == 18:
                 # model for provider_mapping completely changed,
                 # we just drop the old provider_ids column and add the new provider_mappings column
                 # this will require a full resync of all providers including matching but at least
