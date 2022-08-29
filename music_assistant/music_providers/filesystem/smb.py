@@ -1,27 +1,17 @@
 """SMB filesystem provider for Music Assistant."""
 
-
-import asyncio
 import contextvars
 import os
 from contextlib import asynccontextmanager
-from io import BytesIO
-from typing import AsyncContextManager, AsyncGenerator
+from typing import AsyncGenerator
 
-from smb.base import SharedFile, SMBTimeout
-from smb.smb_structs import OperationFailure
-from smb.SMBConnection import SMBConnection
+from smb.base import SharedFile
 
 from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.models.enums import ProviderType
-from music_assistant.models.errors import LoginFailed
 
 from .base import FileSystemItem, FileSystemProviderBase
-from .helpers import get_absolute_path, get_relative_path
-
-SERVICE_NAME = "music_assistant"
-
-smb_conn_ctx = contextvars.ContextVar("smb_conn_ctx", default=None)
+from .helpers import AsyncSMB, get_absolute_path, get_relative_path
 
 
 async def create_item(
@@ -42,6 +32,9 @@ async def create_item(
     )
 
 
+smb_conn_ctx = contextvars.ContextVar("smb_conn_ctx", default=None)
+
+
 class SMBFileSystemProvider(FileSystemProviderBase):
     """Implementation of an SMB File System Provider."""
 
@@ -50,7 +43,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
     _service_name = ""
     _root_path = "/"
     _remote_name = ""
-    _default_target_ip = ""
+    _target_ip = ""
 
     async def setup(self) -> bool:
         """Handle async initialization of the provider."""
@@ -66,12 +59,15 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         if len(path_parts) > 2:
             self._root_path = os.sep + path_parts[2]
 
-        self._default_target_ip = await get_ip_from_host(self._remote_name)
+        default_target_ip = await get_ip_from_host(self._remote_name)
+        self._target_ip = self.config.options.get("target_ip", default_target_ip)
         async with self._get_smb_connection():
             return True
 
     async def listdir(
-        self, path: str, recursive: bool = False
+        self,
+        path: str,
+        recursive: bool = False,
     ) -> AsyncGenerator[FileSystemItem, None]:
         """
         List contents of a given provider directory/path.
@@ -87,9 +83,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         """
         abs_path = get_absolute_path(self._root_path, path)
         async with self._get_smb_connection() as smb_conn:
-            path_result: list[SharedFile] = await asyncio.to_thread(
-                smb_conn.listPath, self._service_name, abs_path
-            )
+            path_result: list[SharedFile] = await smb_conn.list_path(abs_path)
             for entry in path_result:
                 if entry.filename.startswith("."):
                     # skip invalid/system files and dirs
@@ -108,17 +102,13 @@ class SMBFileSystemProvider(FileSystemProviderBase):
 
     async def resolve(self, file_path: str) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem."""
-        absolute_path = get_absolute_path(self._root_path, file_path)
+        abs_path = get_absolute_path(self._root_path, file_path)
         async with self._get_smb_connection() as smb_conn:
-            entry: SharedFile = await asyncio.to_thread(
-                smb_conn.getAttributes,
-                self._service_name,
-                absolute_path,
-            )
+            entry: SharedFile = await smb_conn.get_attributes(abs_path)
         return FileSystemItem(
             name=file_path,
             path=get_relative_path(self._root_path, file_path),
-            absolute_path=absolute_path,
+            absolute_path=abs_path,
             is_file=not entry.isDirectory,
             is_dir=entry.isDirectory,
             checksum=str(int(entry.last_write_time)),
@@ -126,75 +116,43 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         )
 
     async def exists(self, file_path: str) -> bool:
-        """Return bool is this FileSystem musicprovider has given file/dir."""
-        try:
-            await self.resolve(file_path)
-        except (OperationFailure, SMBTimeout):
-            return False
-        return True
+        """Return bool if this FileSystem musicprovider has given file/dir."""
+        abs_path = get_absolute_path(self._root_path, file_path)
+        async with self._get_smb_connection() as smb_conn:
+            return await smb_conn.path_exists(abs_path)
 
     async def read_file_content(
         self, file_path: str, seek: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
         abs_path = get_absolute_path(self._root_path, file_path)
-        chunk_size = 256000
 
         async with self._get_smb_connection() as smb_conn:
-
-            async def _read_chunk_from_file(offset: int):
-
-                with BytesIO() as file_obj:
-                    await asyncio.to_thread(
-                        smb_conn.retrieveFileFromOffset,
-                        self._service_name,
-                        abs_path,
-                        file_obj,
-                        offset,
-                        chunk_size,
-                    )
-                    file_obj.seek(0)
-                    return file_obj.read()
-
-            offset = seek
-            chunk_num = 1
-            while True:
-                data = await _read_chunk_from_file(offset)
-                if not data:
-                    break
-                yield data
-                chunk_num += 1
-                if len(data) < chunk_size:
-                    break
-                offset += len(data)
+            async for chunk in smb_conn.retrieve_file(abs_path, seek):
+                yield chunk
 
     async def write_file_content(self, file_path: str, data: bytes) -> None:
         """Write entire file content as bytes (e.g. for playlists)."""
-        raise NotImplementedError  # TODO !
+        abs_path = get_absolute_path(self._root_path, file_path)
+        async with self._get_smb_connection() as smb_conn:
+            await smb_conn.write_file(abs_path, data)
 
     @asynccontextmanager
-    async def _get_smb_connection(self) -> AsyncContextManager[SMBConnection]:
-        """Get instance of SMBConnection."""
-        target_ip = self.config.options.get("target_ip", self._default_target_ip)
+    async def _get_smb_connection(self) -> AsyncGenerator[AsyncSMB, None]:
+        """Get instance of AsyncSMB."""
+
         if existing := smb_conn_ctx.get():
             yield existing
             return
 
-        with SMBConnection(
+        async with AsyncSMB(
+            remote_name=self._remote_name,
+            service_name=self._service_name,
             username=self.config.username,
             password=self.config.password,
-            my_name=SERVICE_NAME,
-            remote_name=self._remote_name,
-            # choose sane default options but allow user to override them via the options dict
-            domain=self.config.options.get("domain", ""),
-            use_ntlm_v2=self.config.options.get("use_ntlm_v2", False),
-            sign_options=self.config.options.get("sign_options", 2),
-            is_direct_tcp=self.config.options.get("is_direct_tcp", False),
+            target_ip=self._target_ip,
+            options=self.config.options,
         ) as smb_conn:
-            target_ip = self.config.options.get("target_ip", self._default_target_ip)
-            # connect
-            if not await asyncio.to_thread(smb_conn.connect, target_ip):
-                raise LoginFailed(f"SMB Connect failed to {self._remote_name}")
             token = smb_conn_ctx.set(smb_conn)
             yield smb_conn
         smb_conn_ctx.reset(token)

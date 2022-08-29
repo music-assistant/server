@@ -236,7 +236,10 @@ async def parse_tags(input_file: Union[str, AsyncGenerator[bytes, None]]) -> Aud
             async def chunk_feeder():
                 # pylint: disable=protected-access
                 async for chunk in input_file:
-                    await proc.write(chunk)
+                    try:
+                        await proc.write(chunk)
+                    except BrokenPipeError:
+                        break  # race-condition: read enough data for tags
 
             proc.attach_task(chunk_feeder())
 

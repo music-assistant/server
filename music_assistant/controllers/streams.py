@@ -96,13 +96,15 @@ class StreamsController:
         """Get url to special control stream."""
         return f"{self.base_url}/control/{player_id}/{cmd}.mp3"
 
-    async def get_preview_url(self, provider_type: ProviderType, track_id: str) -> str:
+    async def get_preview_url(self, provider: ProviderType, track_id: str) -> str:
         """Return url to short preview sample."""
-        track = await self.mass.music.tracks.get_provider_item(track_id, provider_type)
+        track = await self.mass.music.tracks.get_provider_item(track_id, provider)
         if preview := track.metadata.preview:
             return preview
         enc_track_id = urllib.parse.quote(track_id)
-        return f"{self.base_url}/preview?provider_mapping={provider_type.value}&item_id={enc_track_id}"
+        return (
+            f"{self.base_url}/preview?provider={provider.value}&item_id={enc_track_id}"
+        )
 
     async def setup(self) -> None:
         """Async initialize of module."""

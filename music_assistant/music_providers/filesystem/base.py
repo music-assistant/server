@@ -201,7 +201,7 @@ class FileSystemProviderBase(MusicProvider):
 
             if item.ext in TRACK_EXTENSIONS:
                 if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
-                    item.path, provider_mapping=self.id
+                    item.path, provider_id=self.id
                 ):
                     subitems.append(db_item)
                 elif track := await self.get_track(item.path):
@@ -212,7 +212,7 @@ class FileSystemProviderBase(MusicProvider):
                 continue
             if item.ext in PLAYLIST_EXTENSIONS:
                 if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
-                    item.path, provider_mapping=self.id
+                    item.path, provider_id=self.id
                 ):
                     subitems.append(db_item)
                 elif playlist := await self.get_playlist(item.path):
@@ -313,7 +313,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
-            provider_item_id=prov_artist_id, provider_mapping=self.id
+            provider_item_id=prov_artist_id, provider_id=self.id
         )
         if db_artist is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
@@ -325,7 +325,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            provider_item_id=prov_album_id, provider_mapping=self.id
+            provider_item_id=prov_album_id, provider_id=self.id
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
@@ -504,7 +504,7 @@ class FileSystemProviderBase(MusicProvider):
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
         db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            prov_album_id, provider_mapping=self.id
+            prov_album_id, provider_id=self.id
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
