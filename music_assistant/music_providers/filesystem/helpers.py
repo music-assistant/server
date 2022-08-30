@@ -1,4 +1,6 @@
 """Some helpers for Filesystem based Musicproviders."""
+from __future__ import annotations
+
 import asyncio
 import os
 from io import BytesIO
