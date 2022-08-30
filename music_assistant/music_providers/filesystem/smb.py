@@ -105,15 +105,15 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         abs_path = get_absolute_path(self._root_path, file_path)
         async with self._get_smb_connection() as smb_conn:
             entry: SharedFile = await smb_conn.get_attributes(abs_path)
-        return FileSystemItem(
-            name=file_path,
-            path=get_relative_path(self._root_path, file_path),
-            absolute_path=abs_path,
-            is_file=not entry.isDirectory,
-            is_dir=entry.isDirectory,
-            checksum=str(int(entry.last_write_time)),
-            file_size=entry.file_size,
-        )
+            return FileSystemItem(
+                name=file_path,
+                path=get_relative_path(self._root_path, file_path),
+                absolute_path=abs_path,
+                is_file=not entry.isDirectory,
+                is_dir=entry.isDirectory,
+                checksum=str(int(entry.last_write_time)),
+                file_size=entry.file_size,
+            )
 
     async def exists(self, file_path: str) -> bool:
         """Return bool if this FileSystem musicprovider has given file/dir."""
@@ -141,6 +141,8 @@ class SMBFileSystemProvider(FileSystemProviderBase):
     async def _get_smb_connection(self) -> AsyncGenerator[AsyncSMB, None]:
         """Get instance of AsyncSMB."""
 
+        # for a task that consists of multiple steps,
+        # the smb connection may be reused (shared through a contextvar)
         if existing := smb_conn_ctx.get():
             yield existing
             return
