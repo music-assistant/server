@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
 
 from requests import JSONDecodeError
 
@@ -204,8 +204,14 @@ class AudioTags:
         return self.tags.get(key, default)
 
 
-async def parse_tags(file_path: str) -> AudioTags:
-    """Parse tags from a media file."""
+async def parse_tags(input_file: Union[str, AsyncGenerator[bytes, None]]) -> AudioTags:
+    """
+    Parse tags from a media file.
+
+    input_file may be a (local) filename/url accessible by ffmpeg or
+    an AsyncGenerator which yields the file contents as bytes.
+    """
+    file_path = input_file if isinstance(input_file, str) else "-"
 
     args = (
         "ffprobe",
@@ -222,11 +228,23 @@ async def parse_tags(file_path: str) -> AudioTags:
     )
 
     async with AsyncProcess(
-        args, enable_stdin=False, enable_stdout=True, enable_stderr=False
+        args, enable_stdin=file_path == "-", enable_stdout=True, enable_stderr=False
     ) as proc:
 
+        if file_path == "-":
+            # feed the file contents to the process
+            async def chunk_feeder():
+                # pylint: disable=protected-access
+                async for chunk in input_file:
+                    try:
+                        await proc.write(chunk)
+                    except BrokenPipeError:
+                        break  # race-condition: read enough data for tags
+
+            proc.attach_task(chunk_feeder())
+
         try:
-            res, _ = await proc.communicate()
+            res = await proc.read(-1)
             data = json.loads(res)
             if error := data.get("error"):
                 raise InvalidDataError(error["string"])
@@ -237,8 +255,16 @@ async def parse_tags(file_path: str) -> AudioTags:
             ) from err
 
 
-async def get_embedded_image(file_path: str) -> bytes | None:
-    """Return embedded image data."""
+async def get_embedded_image(
+    input_file: Union[str, AsyncGenerator[bytes, None]]
+) -> bytes | None:
+    """
+    Return embedded image data.
+
+    input_file may be a (local) filename/url accessible by ffmpeg or
+    an AsyncGenerator which yields the file contents as bytes.
+    """
+    file_path = input_file if isinstance(input_file, str) else "-"
     args = (
         "ffmpeg",
         "-hide_banner",
@@ -256,8 +282,20 @@ async def get_embedded_image(file_path: str) -> bytes | None:
     )
 
     async with AsyncProcess(
-        args, enable_stdin=False, enable_stdout=True, enable_stderr=False
+        args, enable_stdin=file_path == "-", enable_stdout=True, enable_stderr=False
     ) as proc:
 
-        res, _ = await proc.communicate()
-        return res
+        if file_path == "-":
+            # feed the file contents to the process
+            async for chunk in input_file:
+                await proc.write(chunk)
+
+        if file_path == "-":
+            # feed the file contents to the process
+            async def chunk_feeder():
+                async for chunk in input_file:
+                    await proc.write(chunk)
+
+            proc.attach_task(chunk_feeder())
+
+        return await proc.read(-1)

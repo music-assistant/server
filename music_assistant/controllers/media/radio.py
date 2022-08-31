@@ -25,30 +25,33 @@ class RadioController(MediaControllerBase[Radio]):
     async def versions(
         self,
         item_id: str,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
     ) -> List[Radio]:
         """Return all versions of a radio station we can find on all providers."""
-        assert provider or provider_id, "Provider type or ID must be specified"
-        radio = await self.get(item_id, provider, provider_id)
+        assert provider_type or provider_id, "Provider type or ID must be specified"
+        radio = await self.get(item_id, provider_type, provider_id)
         # perform a search on all provider(types) to collect all versions/variants
-        prov_types = {item.type for item in self.mass.music.providers}
+        provider_types = {item.type for item in self.mass.music.providers}
         all_versions = {
             prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(
-                *[self.search(radio.name, prov_type) for prov_type in prov_types]
+                *[
+                    self.search(radio.name, provider_type)
+                    for provider_type in provider_types
+                ]
             )
             for prov_item in prov_items
             if loose_compare_strings(radio.name, prov_item.name)
         }
         # make sure that the 'base' version is included
-        for prov_version in radio.provider_ids:
+        for prov_version in radio.provider_mappings:
             if prov_version.item_id in all_versions:
                 continue
             radio_copy = Radio.from_dict(radio.to_dict())
             radio_copy.item_id = prov_version.item_id
-            radio_copy.provider = prov_version.prov_type
-            radio_copy.provider_ids = {prov_version}
+            radio_copy.provider = prov_version.provider_type
+            radio_copy.provider_mappings = {prov_version}
             all_versions[prov_version.item_id] = radio_copy
 
         # return the aggregated result
@@ -76,7 +79,7 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def add_db_item(self, item: Radio, overwrite_existing: bool = False) -> Radio:
         """Add a new item record to the database."""
-        assert item.provider_ids
+        assert item.provider_mappings
         async with self._db_add_lock:
             match = {"name": item.name}
             if cur_item := await self.mass.database.get_row(self.db_table, match):
@@ -102,10 +105,10 @@ class RadioController(MediaControllerBase[Radio]):
         cur_item = await self.get_db_item(item_id)
         if overwrite:
             metadata = item.metadata
-            provider_ids = item.provider_ids
+            provider_mappings = item.provider_mappings
         else:
             metadata = cur_item.metadata.update(item.metadata)
-            provider_ids = {*cur_item.provider_ids, *item.provider_ids}
+            provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
 
         match = {"item_id": item_id}
         await self.mass.database.update(
@@ -116,7 +119,7 @@ class RadioController(MediaControllerBase[Radio]):
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "metadata": json_serializer(metadata),
-                "provider_ids": json_serializer(provider_ids),
+                "provider_mappings": json_serializer(provider_mappings),
             },
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
@@ -125,7 +128,7 @@ class RadioController(MediaControllerBase[Radio]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         limit: int = 25,
     ) -> List[Track]:

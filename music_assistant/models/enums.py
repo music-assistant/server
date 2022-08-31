@@ -1,6 +1,6 @@
 """All enums used by the Music Assistant models."""
 
-from enum import Enum, IntEnum
+from enum import Enum
 from typing import List
 
 
@@ -26,38 +26,6 @@ class MediaType(Enum):
             MediaType.PLAYLIST,
             MediaType.RADIO,
         ]
-
-
-class MediaQuality(IntEnum):
-    """Enum for Media Quality."""
-
-    UNKNOWN = 0
-    LOSSY_MP3 = 1
-    LOSSY_OGG = 2
-    LOSSY_AAC = 3
-    LOSSY_M4A = 4
-    LOSSLESS = 10  # 44.1/48khz 16 bits
-    LOSSLESS_HI_RES_1 = 20  # 44.1/48khz 24 bits HI-RES
-    LOSSLESS_HI_RES_2 = 21  # 88.2/96khz 24 bits HI-RES
-    LOSSLESS_HI_RES_3 = 22  # 176/192khz 24 bits HI-RES
-    LOSSLESS_HI_RES_4 = 23  # above 192khz 24 bits HI-RES
-
-    @classmethod
-    def from_file_type(cls, file_type: str) -> "MediaQuality":
-        """Try to parse MediaQuality from file type/extension."""
-        if "mp3" in file_type:
-            return MediaQuality.LOSSY_MP3
-        if "ogg" in file_type:
-            return MediaQuality.LOSSY_OGG
-        if "aac" in file_type:
-            return MediaQuality.LOSSY_AAC
-        if "m4a" in file_type:
-            return MediaQuality.LOSSY_M4A
-        if "flac" in file_type:
-            return MediaQuality.LOSSLESS
-        if "wav" in file_type:
-            return MediaQuality.LOSSLESS
-        return MediaQuality.UNKNOWN
 
 
 class LinkType(Enum):

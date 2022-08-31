@@ -37,16 +37,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def tracks(
         self,
         item_id: str,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
     ) -> List[Track]:
         """Return playlist tracks for the given provider playlist id."""
-        playlist = await self.get(item_id, provider, provider_id)
-        prov = next(x for x in playlist.provider_ids)
+        playlist = await self.get(item_id, provider_type, provider_id)
+        prov = next(x for x in playlist.provider_mappings)
         return await self._get_provider_playlist_tracks(
             prov.item_id,
-            provider=prov.prov_type,
-            provider_id=prov.prov_id,
+            provider_type=prov.provider_type,
+            provider_id=prov.provider_id,
             cache_checksum=playlist.metadata.checksum,
         )
 
@@ -71,12 +71,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return db_item
 
     async def create(
-        self, name: str, prov_id: Union[ProviderType, str, None] = None
+        self, name: str, prov_type_or_id: Union[ProviderType, str, None] = None
     ) -> Playlist:
         """Create new playlist."""
-        # if prov_id is omitted, prefer file
-        if prov_id:
-            provider = self.mass.music.get_provider(prov_id)
+        # if prov_type_or_id is omitted, prefer file
+        if prov_type_or_id:
+            provider = self.mass.music.get_provider(prov_type_or_id)
         else:
             try:
                 provider = self.mass.music.get_provider(ProviderType.FILESYSTEM_LOCAL)
@@ -119,23 +119,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
         track = await self.mass.music.get_item_by_uri(track_uri, lazy=False)
         assert track.media_type == MediaType.TRACK
         # a playlist can only have one provider (for now)
-        playlist_prov = next(iter(playlist.provider_ids))
+        playlist_prov = next(iter(playlist.provider_mappings))
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = set()
         count = 0
-        for item in await self.tracks(playlist_prov.item_id, playlist_prov.prov_type):
+        for item in await self.tracks(
+            playlist_prov.item_id, playlist_prov.provider_type
+        ):
             count += 1
             cur_playlist_track_ids.update(
                 {
                     i.item_id
-                    for i in item.provider_ids
-                    if i.prov_id == playlist_prov.prov_id
+                    for i in item.provider_mappings
+                    if i.provider_id == playlist_prov.provider_id
                 }
             )
         # check for duplicates
-        for track_prov in track.provider_ids:
+        for track_prov in track.provider_mappings:
             if (
-                track_prov.prov_type == playlist_prov.prov_type
+                track_prov.provider_type == playlist_prov.provider_type
                 and track_prov.item_id in cur_playlist_track_ids
             ):
                 raise InvalidDataError(
@@ -147,31 +149,31 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # simply sort by quality and just add the first one (assuming track is still available)
         track_id_to_add = None
         for track_version in sorted(
-            track.provider_ids, key=lambda x: x.quality, reverse=True
+            track.provider_mappings, key=lambda x: x.quality, reverse=True
         ):
             if not track.available:
                 continue
-            if playlist_prov.prov_type.is_file():
+            if playlist_prov.provider_type.is_file():
                 # the file provider can handle uri's from all providers so simply add the uri
                 track_id_to_add = track_version.url or create_uri(
                     MediaType.TRACK,
-                    track_version.prov_type,
+                    track_version.provider_type,
                     track_version.item_id,
                 )
                 break
-            if track_version.prov_type == playlist_prov.prov_type:
+            if track_version.provider_type == playlist_prov.provider_type:
                 track_id_to_add = track_version.item_id
                 break
         if not track_id_to_add:
             raise MediaNotFoundError(
-                f"Track is not available on provider {playlist_prov.prov_type}"
+                f"Track is not available on provider {playlist_prov.provider_type}"
             )
         # actually add the tracks to the playlist on the provider
-        provider = self.mass.music.get_provider(playlist_prov.prov_id)
+        provider = self.mass.music.get_provider(playlist_prov.provider_id)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
         # invalidate cache by updating the checksum
         await self.get(
-            db_playlist_id, provider=ProviderType.DATABASE, force_refresh=True
+            db_playlist_id, provider_type=ProviderType.DATABASE, force_refresh=True
         )
 
     async def remove_playlist_tracks(
@@ -183,22 +185,22 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise MediaNotFoundError(f"Playlist with id {db_playlist_id} not found")
         if not playlist.is_editable:
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
-        for prov in playlist.provider_ids:
-            provider = self.mass.music.get_provider(prov.prov_id)
+        for prov_mapping in playlist.provider_mappings:
+            provider = self.mass.music.get_provider(prov_mapping.provider_id)
             if (
                 MusicProviderFeature.PLAYLIST_TRACKS_EDIT
                 not in provider.supported_features
             ):
                 self.logger.warning(
                     "Provider %s does not support editing playlists",
-                    prov.prov_type.value,
+                    prov_mapping.provider_type.value,
                 )
                 continue
-            await provider.remove_playlist_tracks(prov.item_id, positions_to_remove)
+            await provider.remove_playlist_tracks(
+                prov_mapping.item_id, positions_to_remove
+            )
         # invalidate cache by updating the checksum
-        await self.get(
-            db_playlist_id, provider=ProviderType.DATABASE, force_refresh=True
-        )
+        await self.get(db_playlist_id, ProviderType.DATABASE, force_refresh=True)
 
     async def add_db_item(
         self, item: Playlist, overwrite_existing: bool = False
@@ -229,10 +231,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cur_item = await self.get_db_item(item_id)
         if overwrite:
             metadata = item.metadata
-            provider_ids = item.provider_ids
+            provider_mappings = item.provider_mappings
         else:
             metadata = cur_item.metadata.update(item.metadata)
-            provider_ids = {*cur_item.provider_ids, *item.provider_ids}
+            provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
 
         await self.mass.database.update(
             self.db_table,
@@ -244,7 +246,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "owner": item.owner,
                 "is_editable": item.is_editable,
                 "metadata": json_serializer(metadata),
-                "provider_ids": json_serializer(provider_ids),
+                "provider_mappings": json_serializer(provider_mappings),
             },
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
@@ -253,20 +255,20 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def _get_provider_playlist_tracks(
         self,
         item_id: str,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         cache_checksum: Any = None,
     ) -> List[Track]:
         """Return album tracks for the given provider album id."""
-        prov = self.mass.music.get_provider(provider_id or provider)
-        if not prov:
+        provider = self.mass.music.get_provider(provider_id or provider_type)
+        if not provider:
             return []
         # prefer cache items (if any)
-        cache_key = f"{prov.id}.playlist.{item_id}.tracks"
+        cache_key = f"{provider.id}.playlist.{item_id}.tracks"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = await prov.get_playlist_tracks(item_id)
+        items = await provider.get_playlist_tracks(item_id)
         # double check if position set
         if items:
             assert (
@@ -283,19 +285,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the playlist content."""
-        prov = self.mass.music.get_provider(provider_id or provider)
+        provider = self.mass.music.get_provider(provider_id or provider_type)
         if (
-            not prov
-            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
+            not provider
+            or MusicProviderFeature.SIMILAR_TRACKS not in provider.supported_features
         ):
             return []
         playlist_tracks = await self._get_provider_playlist_tracks(
-            item_id=item_id, provider=provider, provider_id=provider_id
+            item_id=item_id, provider_type=provider_type, provider_id=provider_id
         )
         # filter out unavailable tracks
         playlist_tracks = [x for x in playlist_tracks if x.available]
@@ -312,7 +314,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             final_items.update(base_tracks)
             # get 5 suggestions for one of the base tracks
             base_track = next(x for x in base_tracks if x.available)
-            similar_tracks = await prov.get_similar_tracks(
+            similar_tracks = await provider.get_similar_tracks(
                 prov_track_id=base_track.item_id, limit=5
             )
             final_items.update(x for x in similar_tracks if x.available)

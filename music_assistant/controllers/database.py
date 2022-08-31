@@ -178,7 +178,7 @@ class DatabaseController:
         except (KeyError, ValueError):
             prev_version = 0
 
-        if SCHEMA_VERSION != prev_version:
+        if prev_version not in (0, SCHEMA_VERSION):
             self.logger.info(
                 "Performing database migration from %s to %s",
                 prev_version,
@@ -197,9 +197,43 @@ class DatabaseController:
                 # recreate missing tables
                 await self.__create_database_tables()
 
-            if prev_version < 19:
-                # recreate settings table
-                await self.execute(f"DROP TABLE IF EXISTS {TABLE_SETTINGS}")
+            if prev_version == 18:
+                # model for provider_mapping completely changed,
+                # we just drop the old provider_ids column and add the new provider_mappings column
+                # this will require a full resync of all providers including matching but at least
+                # the additional metadata is not lost
+                await self.execute(
+                    f"ALTER TABLE {TABLE_ARTISTS} ADD provider_mappings json DEFAULT '[]';"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_ALBUMS} ADD provider_mappings json DEFAULT '[]';"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_TRACKS} ADD provider_mappings json DEFAULT '[]';"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_PLAYLISTS} ADD provider_mappings json DEFAULT '[]';"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_RADIOS} ADD provider_mappings json DEFAULT '[]';"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_ARTISTS} DROP column provider_ids;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_ALBUMS} DROP column provider_ids;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_TRACKS} DROP column provider_ids;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_PLAYLISTS} DROP column provider_ids;"
+                )
+                await self.execute(
+                    f"ALTER TABLE {TABLE_RADIOS} DROP column provider_ids;"
+                )
+                await self.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
+                # recreate missing table(s)
                 await self.__create_database_tables()
 
         # store current schema version
@@ -207,6 +241,8 @@ class DatabaseController:
             TABLE_SETTINGS,
             {"key": "version", "value": str(SCHEMA_VERSION), "type": "str"},
         )
+        # compact db
+        await self.mass.database.execute("VACUUM")
 
     async def __create_database_tables(self) -> None:
         """Init database tables."""
@@ -245,7 +281,7 @@ class DatabaseController:
                     musicbrainz_id TEXT,
                     artists json,
                     metadata json,
-                    provider_ids json,
+                    provider_mappings json,
                     timestamp INTEGER DEFAULT 0
                 );"""
         )
@@ -257,7 +293,7 @@ class DatabaseController:
                     musicbrainz_id TEXT,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
-                    provider_ids json,
+                    provider_mappings json,
                     timestamp INTEGER DEFAULT 0
                     );"""
         )
@@ -276,7 +312,7 @@ class DatabaseController:
                     artists json,
                     albums json,
                     metadata json,
-                    provider_ids json,
+                    provider_mappings json,
                     timestamp INTEGER DEFAULT 0
                 );"""
         )
@@ -289,7 +325,7 @@ class DatabaseController:
                     is_editable BOOLEAN NOT NULL,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
-                    provider_ids json,
+                    provider_mappings json,
                     timestamp INTEGER DEFAULT 0,
                     UNIQUE(name, owner)
                 );"""
@@ -301,7 +337,7 @@ class DatabaseController:
                     sort_name TEXT NOT NULL,
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
-                    provider_ids json,
+                    provider_mappings json,
                     timestamp INTEGER DEFAULT 0
                 );"""
         )

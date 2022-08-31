@@ -27,11 +27,10 @@ from music_assistant.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemProviderId,
     MediaItemType,
-    MediaQuality,
     MediaType,
     Playlist,
+    ProviderMapping,
     StreamDetails,
     Track,
 )
@@ -358,11 +357,11 @@ class SpotifyProvider(MusicProvider):
         artist = Artist(
             item_id=artist_obj["id"], provider=self.type, name=artist_obj["name"]
         )
-        artist.add_provider_id(
-            MediaItemProviderId(
+        artist.add_provider_mapping(
+            ProviderMapping(
                 item_id=artist_obj["id"],
-                prov_type=self.type,
-                prov_id=self.id,
+                provider_type=self.type,
+                provider_id=self.id,
                 url=artist_obj["external_urls"]["spotify"],
             )
         )
@@ -406,12 +405,13 @@ class SpotifyProvider(MusicProvider):
             album.metadata.copyright = album_obj["copyrights"][0]["text"]
         if album_obj.get("explicit"):
             album.metadata.explicit = album_obj["explicit"]
-        album.add_provider_id(
-            MediaItemProviderId(
+        album.add_provider_mapping(
+            ProviderMapping(
                 item_id=album_obj["id"],
-                prov_type=self.type,
-                prov_id=self.id,
-                quality=MediaQuality.LOSSY_OGG,
+                provider_type=self.type,
+                provider_id=self.id,
+                content_type=ContentType.OGG,
+                bit_rate=320,
                 url=album_obj["external_urls"]["spotify"],
             )
         )
@@ -456,12 +456,13 @@ class SpotifyProvider(MusicProvider):
             track.metadata.explicit = True
         if track_obj.get("popularity"):
             track.metadata.popularity = track_obj["popularity"]
-        track.add_provider_id(
-            MediaItemProviderId(
+        track.add_provider_mapping(
+            ProviderMapping(
                 item_id=track_obj["id"],
-                prov_type=self.type,
-                prov_id=self.id,
-                quality=MediaQuality.LOSSY_OGG,
+                provider_type=self.type,
+                provider_id=self.id,
+                content_type=ContentType.OGG,
+                bit_rate=320,
                 url=track_obj["external_urls"]["spotify"],
                 available=not track_obj["is_local"] and track_obj["is_playable"],
             )
@@ -476,11 +477,11 @@ class SpotifyProvider(MusicProvider):
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["display_name"],
         )
-        playlist.add_provider_id(
-            MediaItemProviderId(
+        playlist.add_provider_mapping(
+            ProviderMapping(
                 item_id=playlist_obj["id"],
-                prov_type=self.type,
-                prov_id=self.id,
+                provider_type=self.type,
+                provider_id=self.id,
                 url=playlist_obj["external_urls"]["spotify"],
             )
         )

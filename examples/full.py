@@ -3,7 +3,6 @@ import argparse
 import asyncio
 import logging
 import os
-import webbrowser
 
 from os.path import abspath, dirname
 from sys import path
@@ -64,6 +63,21 @@ parser.add_argument(
     help="YoutubeMusic cookie",
 )
 parser.add_argument(
+    "--smb-username",
+    required=False,
+    help="SMB username",
+)
+parser.add_argument(
+    "--smb-password",
+    required=False,
+    help="SMB password",
+)
+parser.add_argument(
+    "--smb-path",
+    required=False,
+    help="The NetBIOS machine name of the remote server + share (e.g. \\\\machine\\share).",
+)
+parser.add_argument(
     "--debug",
     action="store_true",
     help="Enable verbose debug logging",
@@ -81,6 +95,7 @@ logging.getLogger("aiorun").setLevel(logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.INFO)
 logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 logging.getLogger("databases").setLevel(logging.INFO)
+logging.getLogger("SMB").setLevel(logging.INFO)
 
 
 # default database based on sqlite
@@ -126,9 +141,20 @@ if args.ytmusic_username and args.ytmusic_cookie:
             password=args.ytmusic_cookie,
         )
     )
+
 if args.musicdir:
     mass_conf.providers.append(
         MusicProviderConfig(type=ProviderType.FILESYSTEM_LOCAL, path=args.musicdir)
+    )
+
+if args.smb_path:
+    mass_conf.providers.append(
+        MusicProviderConfig(
+            ProviderType.FILESYSTEM_SMB,
+            username=args.smb_username,
+            password=args.smb_password,
+            path=args.smb_path,
+        )
     )
 
 
@@ -151,9 +177,11 @@ class TestPlayer(Player):
         print(f"stream url: {url}")
         self._attr_current_url = url
         self.update_state()
-        # launch stream url in browser so we can hear it playing ;-)
+        # launch stream url with ffplay so we can hear it playing ;-)
         # normally this url is sent to the actual player implementation
-        webbrowser.open(url)
+        await asyncio.create_subprocess_shell(
+            f'ffplay -hide_banner -loglevel quiet -i "{url}"'
+        )
 
     async def stop(self) -> None:
         """Send STOP command to player."""
@@ -222,7 +250,7 @@ async def main():
         playlists = await mass.music.playlists.db_items()
         playlists_lib = await mass.music.playlists.db_items(True)
         print(
-            f"Got {playlists_lib.total} tracks  in library (of {playlists.total} total in db)"
+            f"Got {playlists_lib.total} playlists  in library (of {playlists.total} total in db)"
         )
 
         # register a player
@@ -232,17 +260,19 @@ async def main():
         await mass.players.register_player(test_player2)
 
         # try to play some music
-        test_player1.queue.settings.shuffle_enabled = True
-        test_player1.queue.settings.repeat_mode = RepeatMode.ALL
-        test_player1.queue.settings.crossfade_duration = 10
-        test_player1.queue.settings.crossfade_mode = CrossFadeMode.SMART
+        test_player1.active_queue.settings.shuffle_enabled = True
+        test_player1.active_queue.settings.repeat_mode = RepeatMode.ALL
+        test_player1.active_queue.settings.crossfade_duration = 10
+        test_player1.active_queue.settings.crossfade_mode = CrossFadeMode.SMART
 
         # we can send a MediaItem object (such as Artist, Album, Track, Playlist)
         # we can also send an uri, such as spotify://track/abcdfefgh
         # or database://playlist/1
         # or a list of items
         if playlists.count > 0:
-            await test_player1.queue.play_media(playlists.items[0])
+            await test_player1.active_queue.play_media(playlists.items[0])
+        elif tracks.count > 0:
+            await test_player1.active_queue.play_media(tracks.items[0])
 
         await asyncio.sleep(3600)
 
