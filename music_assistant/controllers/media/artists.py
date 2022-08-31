@@ -65,22 +65,22 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def tracks(
         self,
         item_id: Optional[str] = None,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         artist: Optional[Artist] = None,
     ) -> List[Track]:
         """Return top tracks for an artist."""
         if not artist:
-            artist = await self.get(item_id, provider, provider_id)
+            artist = await self.get(item_id, provider_type, provider_id)
         # get results from all providers
         coros = [
             self.get_provider_artist_toptracks(
-                item.item_id,
-                provider=item.prov_type,
-                provider_id=item.prov_id,
+                prov_mapping.item_id,
+                provider_type=prov_mapping.provider_type,
+                provider_id=prov_mapping.provider_id,
                 cache_checksum=artist.metadata.checksum,
             )
-            for item in artist.provider_ids
+            for prov_mapping in artist.provider_mappings
         ]
         tracks = itertools.chain.from_iterable(await asyncio.gather(*coros))
         # merge duplicates using a dict
@@ -88,7 +88,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         for track in tracks:
             key = f".{track.name}.{track.version}"
             if key in final_items:
-                final_items[key].provider_ids.update(track.provider_ids)
+                final_items[key].provider_mappings.update(track.provider_mappings)
             else:
                 final_items[key] = track
         return list(final_items.values())
@@ -96,19 +96,21 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def albums(
         self,
         item_id: Optional[str] = None,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         artist: Optional[Artist] = None,
     ) -> List[Album]:
         """Return (all/most popular) albums for an artist."""
         if not artist:
-            artist = await self.get(item_id, provider, provider_id)
+            artist = await self.get(item_id, provider_type or provider_id)
         # get results from all providers
         coros = [
             self.get_provider_artist_albums(
-                item.item_id, item.prov_type, cache_checksum=artist.metadata.checksum
+                item.item_id,
+                item.provider_type,
+                cache_checksum=artist.metadata.checksum,
             )
-            for item in artist.provider_ids
+            for item in artist.provider_mappings
         ]
         albums = itertools.chain.from_iterable(await asyncio.gather(*coros))
         # merge duplicates using a dict
@@ -116,7 +118,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         for album in albums:
             key = f".{album.name}.{album.version}"
             if key in final_items:
-                final_items[key].provider_ids.update(album.provider_ids)
+                final_items[key].provider_mappings.update(album.provider_mappings)
             else:
                 final_items[key] = album
             if album.in_library:
@@ -156,14 +158,14 @@ class ArtistsController(MediaControllerBase[Artist]):
         assert (
             db_artist.provider == ProviderType.DATABASE
         ), "Matching only supported for database items!"
-        cur_prov_types = {x.prov_type for x in db_artist.provider_ids}
+        cur_provider_types = {x.provider_type for x in db_artist.provider_mappings}
         for provider in self.mass.music.providers:
-            if provider.type in cur_prov_types:
+            if provider.type in cur_provider_types:
                 continue
             if MusicProviderFeature.SEARCH not in provider.supported_features:
                 continue
             if await self._match(db_artist, provider):
-                cur_prov_types.add(provider.type)
+                cur_provider_types.add(provider.type)
             else:
                 self.logger.debug(
                     "Could not find match for Artist %s on provider %s",
@@ -174,12 +176,12 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def get_provider_artist_toptracks(
         self,
         item_id: str,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         cache_checksum: Any = None,
     ) -> List[Track]:
         """Return top tracks for an artist on given provider."""
-        prov = self.mass.music.get_provider(provider_id or provider)
+        prov = self.mass.music.get_provider(provider_id or provider_type)
         if not prov:
             return []
         # prefer cache items (if any)
@@ -192,12 +194,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         else:
             # fallback implementation using the db
             if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
-                item_id, provider=provider, provider_id=provider_id
+                item_id, provider_type=provider_type, provider_id=provider_id
             ):
-                prov_id = provider_id or provider.value
+                prov_id = provider_id or provider_type.value
                 # TODO: adjust to json query instead of text search?
                 query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
-                query += f" AND provider_ids LIKE '%\"{prov_id}\"%'"
+                query += f" AND provider_mappings LIKE '%\"{prov_id}\"%'"
                 items = await self.mass.music.tracks.get_db_items_by_query(query)
         # store (serializable items) in cache
         self.mass.create_task(
@@ -210,12 +212,12 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def get_provider_artist_albums(
         self,
         item_id: str,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         cache_checksum: Any = None,
     ) -> List[Album]:
         """Return albums for an artist on given provider."""
-        prov = self.mass.music.get_provider(provider_id or provider)
+        prov = self.mass.music.get_provider(provider_id or provider_type)
         if not prov:
             return []
         # prefer cache items (if any)
@@ -228,12 +230,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         else:
             # fallback implementation using the db
             if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
-                item_id, provider=provider, provider_id=provider_id
+                item_id, provider_type=provider_type, provider_id=provider_id
             ):
-                prov_id = provider_id or provider.value
+                prov_id = provider_id or provider_type.value
                 # TODO: adjust to json query instead of text search?
                 query = f"SELECT * FROM albums WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
-                query += f" AND provider_ids LIKE '%\"{prov_id}\"%'"
+                query += f" AND provider_mappings LIKE '%\"{prov_id}\"%'"
                 items = await self.mass.music.albums.get_db_items_by_query(query)
             else:
                 # edge case
@@ -251,7 +253,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> Artist:
         """Add a new item record to the database."""
         assert isinstance(item, Artist), "Not a full Artist object"
-        assert item.provider_ids, "Artist is missing provider id(s)"
+        assert item.provider_mappings, "Artist is missing provider id(s)"
         # enforce various artists name + id
         if compare_strings(item.name, VARIOUS_ARTISTS):
             item.musicbrainz_id = VARIOUS_ARTISTS_ID
@@ -300,10 +302,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         cur_item = await self.get_db_item(item_id)
         if overwrite:
             metadata = item.metadata
-            provider_ids = item.provider_ids
+            provider_mappings = item.provider_mappings
         else:
             metadata = cur_item.metadata.update(item.metadata, item.provider.is_file())
-            provider_ids = {*cur_item.provider_ids, *item.provider_ids}
+            provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
 
         # enforce various artists name + id
         if compare_strings(item.name, VARIOUS_ARTISTS):
@@ -319,7 +321,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "sort_name": item.sort_name if overwrite else cur_item.sort_name,
                 "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
                 "metadata": json_serializer(metadata),
-                "provider_ids": json_serializer(provider_ids),
+                "provider_mappings": json_serializer(provider_mappings),
             },
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)
@@ -361,19 +363,19 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider: Optional[ProviderType] = None,
+        provider_type: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the artist's top tracks."""
-        prov = self.mass.music.get_provider(provider_id or provider)
+        prov = self.mass.music.get_provider(provider_id or provider_type)
         if (
             not prov
             or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
         ):
             return []
         top_tracks = await self.get_provider_artist_toptracks(
-            item_id=item_id, provider=provider, provider_id=provider_id
+            item_id=item_id, provider_type=provider_type, provider_id=provider_id
         )
         # Grab a random track from the album that we use to obtain similar tracks for
         track = choice(top_tracks)

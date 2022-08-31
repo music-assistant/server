@@ -1,7 +1,7 @@
 """Model for the Music Assisant runtime config."""
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from databases import DatabaseURL
 
@@ -18,6 +18,7 @@ class MusicProviderConfig:
     username: Optional[str] = None
     password: Optional[str] = None
     path: Optional[str] = None
+    options: Dict[str, str] = field(default_factory=dict)
     # if id is omitted, an id is generated/derived from the other params
     id: Optional[str] = None
 

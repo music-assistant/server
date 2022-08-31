@@ -115,29 +115,29 @@ def compare_item_ids(
     ):
         return True
 
-    left_prov_ids = getattr(left_item, "provider_ids", None)
-    right_prov_ids = getattr(right_item, "provider_ids", None)
+    left_prov_ids = getattr(left_item, "provider_mappings", None)
+    right_prov_ids = getattr(right_item, "provider_mappings", None)
 
     if left_prov_ids is not None:
-        for prov_l in left_item.provider_ids:
+        for prov_l in left_item.provider_mappings:
             if (
-                prov_l.prov_type == right_item.provider
+                prov_l.provider_type == right_item.provider
                 and prov_l.item_id == right_item.item_id
             ):
                 return True
 
     if right_prov_ids is not None:
-        for prov_r in right_item.provider_ids:
+        for prov_r in right_item.provider_mappings:
             if (
-                prov_r.prov_type == left_item.provider
+                prov_r.provider_type == left_item.provider
                 and prov_r.item_id == left_item.item_id
             ):
                 return True
 
     if left_prov_ids is not None and right_prov_ids is not None:
-        for prov_l in left_item.provider_ids:
-            for prov_r in right_item.provider_ids:
-                if prov_l.prov_type != prov_r.prov_type:
+        for prov_l in left_item.provider_mappings:
+            for prov_r in right_item.provider_mappings:
+                if prov_l.provider_type != prov_r.provider_type:
                     continue
                 if prov_l.item_id == prov_r.item_id:
                     return True
