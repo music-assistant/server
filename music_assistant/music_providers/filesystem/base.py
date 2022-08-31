@@ -639,26 +639,26 @@ class FileSystemProviderBase(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        if not await self.exists(item_id):
-            raise MediaNotFoundError(f"Item path does not exist: {item_id}")
-
-        file_item = await self.resolve(item_id)
-
-        # parse tags
-        input_file = file_item.local_path or self.read_file_content(
-            file_item.absolute_path
+        db_item = await self.mass.music.tracks.get_db_item_by_prov_id(
+            provider_item_id=item_id, provider_id=self.id
         )
-        tags = await parse_tags(input_file)
+        if db_item is None:
+            raise MediaNotFoundError(f"Item not found: {item_id}")
+
+        prov_mapping = next(
+            x for x in db_item.provider_mappings if x.item_id == item_id
+        )
+        file_item = await self.resolve(item_id)
 
         return StreamDetails(
             provider=self.type,
             item_id=item_id,
-            content_type=ContentType.try_parse(tags.format),
+            content_type=prov_mapping.content_type,
             media_type=MediaType.TRACK,
-            duration=tags.duration,
+            duration=db_item.duration,
             size=file_item.file_size,
-            sample_rate=tags.sample_rate,
-            bit_depth=tags.bits_per_sample,
+            sample_rate=prov_mapping.sample_rate,
+            bit_depth=prov_mapping.bit_depth,
             direct=file_item.local_path,
         )
 
