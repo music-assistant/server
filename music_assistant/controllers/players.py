@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Dict, Tuple
 
 from music_assistant.models.enums import EventType, PlayerState
 from music_assistant.models.errors import AlreadyRegisteredError
-from music_assistant.models.event import MassEvent
 from music_assistant.models.player import Player
 from music_assistant.models.player_queue import PlayerQueue
 
@@ -74,7 +73,7 @@ class PlayerController:
             player.name,
         )
         self.mass.signal_event(
-            MassEvent(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+            EventType.PLAYER_ADDED, object_id=player.player_id, data=player
         )
 
     async def _poll_players(self) -> None:

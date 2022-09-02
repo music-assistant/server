@@ -56,7 +56,7 @@ class ProviderMapping(DataClassDictMixin):
 
     def __hash__(self):
         """Return custom hash."""
-        return hash((self.provider_type.value, self.item_id))
+        return hash((self.provider_type, self.item_id))
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ class MediaItemLink(DataClassDictMixin):
 
     def __hash__(self):
         """Return custom hash."""
-        return hash((self.type.value))
+        return hash((self.type))
 
 
 @dataclass(frozen=True)
@@ -492,4 +492,4 @@ class StreamDetails(DataClassDictMixin):
     @property
     def uri(self) -> str:
         """Return uri representation of item."""
-        return f"{self.provider.value}://{self.media_type.value}/{self.item_id}"
+        return f"{self.provider}://{self.media_type}/{self.item_id}"

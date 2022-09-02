@@ -174,7 +174,7 @@ class MusicProvider:
         self.logger.info(
             "Provider %s does not support library edit, "
             "the action will only be performed in the local database.",
-            self.type.value,
+            self.type,
         )
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -207,7 +207,7 @@ class MusicProvider:
         self.logger.info(
             "Provider %s does not support library edit, "
             "the action will only be performed in the local database.",
-            self.type.value,
+            self.type,
         )
 
     async def add_playlist_tracks(
@@ -396,7 +396,7 @@ class MusicProvider:
         for media_type in media_types:
             if not self.library_supported(media_type):
                 continue
-            self.logger.debug("Start sync of %s items.", media_type.value)
+            self.logger.debug("Start sync of %s items.", media_type)
             controller = self.mass.music.get_controller(media_type)
             cur_db_ids = set()
             async for prov_item in self._get_library_gen(media_type)():
@@ -452,10 +452,10 @@ class MusicProvider:
     def to_dict(self) -> Dict[str, Any]:
         """Return (serializable) dict representation of MusicProvider."""
         return {
-            "type": self.type.value,
+            "type": self.type,
             "name": self.name,
             "id": self.id,
-            "supported_features": [x.value for x in self.supported_features],
+            "supported_features": self.supported_features,
         }
 
     def library_supported(self, media_type: MediaType) -> bool:

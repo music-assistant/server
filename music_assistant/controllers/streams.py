@@ -78,7 +78,7 @@ class StreamsController:
         content_type: ContentType = ContentType.FLAC,
     ) -> str:
         """Generate unique stream url for the PlayerQueue Stream."""
-        ext = content_type.value
+        ext = content_type
         return f"{self.base_url}/{stream_id}.{ext}"
 
     def get_announcement_url(
@@ -89,7 +89,7 @@ class StreamsController:
     ) -> str:
         """Get url to announcement stream."""
         self.announcements[queue_id] = urls
-        ext = content_type.value
+        ext = content_type
         return f"{self.base_url}/announce/{queue_id}.{ext}"
 
     def get_control_url(self, player_id: str, cmd: str) -> str:
@@ -102,9 +102,7 @@ class StreamsController:
         if preview := track.metadata.preview:
             return preview
         enc_track_id = urllib.parse.quote(track_id)
-        return (
-            f"{self.base_url}/preview?provider={provider.value}&item_id={enc_track_id}"
-        )
+        return f"{self.base_url}/preview?provider={provider}&item_id={enc_track_id}"
 
     async def setup(self) -> None:
         """Async initialize of module."""
@@ -170,12 +168,12 @@ class StreamsController:
                 "-filter_complex",
                 f"[0:a][1:a]concat=n={len(urls)}:v=0:a=1",
             ]
-        ffmpeg_args += ["-f", fmt.value, "-"]
+        ffmpeg_args += ["-f", fmt, "-"]
 
         async with AsyncProcess(ffmpeg_args) as ffmpeg_proc:
             output, _ = await ffmpeg_proc.communicate()
 
-        return web.Response(body=output, headers={"Content-Type": f"audio/{fmt.value}"})
+        return web.Response(body=output, headers={"Content-Type": f"audio/{fmt}"})
 
     async def serve_control(self, request: web.Request):
         """Serve special control stream."""
@@ -244,7 +242,7 @@ class StreamsController:
 
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
-            "Content-Type": f"audio/{queue_stream.output_format.value}",
+            "Content-Type": f"audio/{queue_stream.output_format}",
             "transferMode.dlna.org": "Streaming",
             "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
             "Cache-Control": "no-cache",
@@ -470,7 +468,7 @@ class QueueStream:
             "-ignore_unknown",
             # pcm input args
             "-f",
-            input_format.value,
+            input_format,
             "-ac",
             str(self.pcm_channels),
             "-ar",
@@ -488,7 +486,7 @@ class QueueStream:
         ffmpeg_args += [
             # output args
             "-f",
-            self.output_format.value,
+            self.output_format,
             "-compression_level",
             "0",
             "-",
@@ -561,7 +559,7 @@ class QueueStream:
         self.logger.debug(
             "Starting Queue audio stream for Queue %s (PCM format: %s - sample rate: %s)",
             self.queue.player.name,
-            pcm_fmt.value,
+            pcm_fmt,
             self.pcm_sample_rate,
         )
 

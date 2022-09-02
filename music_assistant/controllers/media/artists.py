@@ -20,7 +20,6 @@ from music_assistant.models.errors import (
     MediaNotFoundError,
     UnsupportedFeaturedException,
 )
-from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -139,13 +138,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         # return final db_item after all match/metadata actions
         db_item = await self.get_db_item(db_item.item_id)
         self.mass.signal_event(
-            MassEvent(
-                EventType.MEDIA_ITEM_UPDATED
-                if existing
-                else EventType.MEDIA_ITEM_ADDED,
-                db_item.uri,
-                db_item,
-            )
+            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
+            db_item.uri,
+            db_item,
         )
         return db_item
 
@@ -185,7 +180,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if not prov:
             return []
         # prefer cache items (if any)
-        cache_key = f"{prov.type.value}.artist_toptracks.{item_id}"
+        cache_key = f"{prov.type}.artist_toptracks.{item_id}"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -196,7 +191,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
                 item_id, provider_type=provider_type, provider_id=provider_id
             ):
-                prov_id = provider_id or provider_type.value
+                prov_id = provider_id or provider_type
                 # TODO: adjust to json query instead of text search?
                 query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
                 query += f" AND provider_mappings LIKE '%\"{prov_id}\"%'"
@@ -221,7 +216,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if not prov:
             return []
         # prefer cache items (if any)
-        cache_key = f"{prov.type.value}.artist_albums.{item_id}"
+        cache_key = f"{prov.type}.artist_albums.{item_id}"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Album.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -232,7 +227,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
                 item_id, provider_type=provider_type, provider_id=provider_id
             ):
-                prov_id = provider_id or provider_type.value
+                prov_id = provider_id or provider_type
                 # TODO: adjust to json query instead of text search?
                 query = f"SELECT * FROM albums WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
                 query += f" AND provider_mappings LIKE '%\"{prov_id}\"%'"

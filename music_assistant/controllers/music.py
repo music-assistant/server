@@ -128,7 +128,7 @@ class MusicController:
         if prov := self._providers.get(provider_id_or_type):
             return prov
         for prov in self._providers.values():
-            if provider_id_or_type in (prov.type, prov.id, prov.type.value):
+            if provider_id_or_type in (prov.type, prov.id, prov.type):
                 return prov
         raise ProviderUnavailableError(
             f"Provider {provider_id_or_type} is not available"
@@ -187,8 +187,8 @@ class MusicController:
         search_query = search_query.replace("/", " ").replace("'", "")
 
         # prefer cache items (if any)
-        cache_key = f"{prov.type.value}.search.{search_query}.{limit}"
-        cache_key += "".join((x.value for x in media_types))
+        cache_key = f"{prov.type}.search.{search_query}.{limit}"
+        cache_key += "".join((x for x in media_types))
 
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]
@@ -341,7 +341,7 @@ class MusicController:
         """List integrated loudness for a track in db."""
         await self.mass.database.insert(
             TABLE_TRACK_LOUDNESS,
-            {"item_id": item_id, "provider": provider_type.value, "loudness": loudness},
+            {"item_id": item_id, "provider": provider_type, "loudness": loudness},
             allow_replace=True,
         )
 
@@ -353,7 +353,7 @@ class MusicController:
             TABLE_TRACK_LOUDNESS,
             {
                 "item_id": provider_item_id,
-                "provider": provider_type.value,
+                "provider": provider_type,
             },
         ):
             return result["loudness"]
@@ -368,7 +368,7 @@ class MusicController:
         for db_row in await self.mass.database.get_rows(
             TABLE_TRACK_LOUDNESS,
             {
-                "provider": provider_type.value,
+                "provider": provider_type,
             },
         ):
             all_items.append(db_row["loudness"])
@@ -383,7 +383,7 @@ class MusicController:
             TABLE_PLAYLOG,
             {
                 "item_id": item_id,
-                "provider": provider_type.value,
+                "provider": provider_type,
                 "timestamp": timestamp,
             },
             allow_replace=True,
@@ -446,12 +446,12 @@ class MusicController:
             provider.config = conf
             provider.mass = self.mass
             provider.cache = self.mass.cache
-            provider.logger = self.logger.getChild(provider.type.value)
+            provider.logger = self.logger.getChild(provider.type)
             if await provider.setup():
                 self._providers[provider.id] = provider
         except Exception as err:  # pylint: disable=broad-except
             raise SetupFailedError(
-                f"Setup failed of provider {provider.type.value}: {str(err)}"
+                f"Setup failed of provider {provider.type}: {str(err)}"
             ) from err
 
     async def _cleanup_library(self) -> None:

@@ -120,7 +120,7 @@ class MetaDataController:
                 playlist.metadata.genres.update(track.album.metadata.genres)
         # create collage thumb/fanart from playlist tracks
         if image_urls:
-            fake_path = f"playlist_collage.{playlist.provider.value}.{playlist.item_id}"
+            fake_path = f"playlist_collage.{playlist.provider}.{playlist.item_id}"
             collage = await create_collage(self.mass, list(image_urls))
             match = {"path": fake_path, "size": 0}
             await self.mass.database.insert(

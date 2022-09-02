@@ -94,26 +94,32 @@ class MusicAssistant:
         # cancel all running tasks
         for task in self._tracked_tasks:
             task.cancel()
-        self.signal_event(MassEvent(EventType.SHUTDOWN))
+        self.signal_event(EventType.SHUTDOWN)
         await self.database.close()
         self.closed = True
         if self.http_session and not self.http_session_provided:
             await self.http_session.close()
 
-    def signal_event(self, event: MassEvent) -> None:
+    def signal_event(
+        self,
+        event_type: EventType,
+        object_id: Optional[str] = None,
+        data: Optional[Any] = None,
+    ) -> None:
         """Signal event to subscribers."""
         if self.closed:
             return
+        event = MassEvent(type=event_type, object_id=object_id, data=data)
         if self.logger.isEnabledFor(logging.DEBUG):
-            if event.type != EventType.QUEUE_TIME_UPDATED:
+            if event_type != EventType.QUEUE_TIME_UPDATED:
                 # do not log queue time updated events because that is too chatty
                 self.logger.getChild("event").debug(
-                    "%s %s", event.type.value, event.object_id or ""
+                    "%s %s", event_type, object_id or ""
                 )
         for cb_func, event_filter, id_filter in self._listeners:
-            if not (event_filter is None or event.type in event_filter):
+            if not (event_filter is None or event_type in event_filter):
                 continue
-            if not (id_filter is None or event.object_id in id_filter):
+            if not (id_filter is None or object_id in id_filter):
                 continue
             if asyncio.iscoroutinefunction(cb_func):
                 asyncio.run_coroutine_threadsafe(cb_func(event), self.loop)
@@ -160,9 +166,7 @@ class MusicAssistant:
         job = BackgroundJob(str(uuid4()), name=name, coro=coro)
         self._jobs.append(job)
         self._jobs_event.set()
-        self.signal_event(
-            MassEvent(EventType.BACKGROUND_JOB_UPDATED, job.name, data=job)
-        )
+        self.signal_event(EventType.BACKGROUND_JOB_UPDATED, job.name, data=job)
         return job
 
     def create_task(
@@ -219,9 +223,7 @@ class MusicAssistant:
                 task.set_name(next_job.name)
                 task.add_done_callback(partial(self.__job_done_cb, job=next_job))
                 self.signal_event(
-                    MassEvent(
-                        EventType.BACKGROUND_JOB_UPDATED, next_job.name, data=next_job
-                    )
+                    EventType.BACKGROUND_JOB_UPDATED, next_job.name, data=next_job
                 )
 
     def __job_done_cb(self, task: asyncio.Task, job: BackgroundJob):
@@ -248,9 +250,7 @@ class MusicAssistant:
         self._jobs_event.set()
         # mark job as done
         job.done()
-        self.signal_event(
-            MassEvent(EventType.BACKGROUND_JOB_FINISHED, job.name, data=job)
-        )
+        self.signal_event(EventType.BACKGROUND_JOB_FINISHED, job.name, data=job)
 
     async def __aenter__(self) -> "MusicAssistant":
         """Return Context manager."""

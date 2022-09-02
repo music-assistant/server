@@ -23,7 +23,6 @@ from music_assistant.models.enums import (
     ProviderType,
 )
 from music_assistant.models.errors import MediaNotFoundError
-from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import (
     MediaItemType,
     PagedItems,
@@ -49,7 +48,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.mass = mass
-        self.logger = mass.logger.getChild(f"music.{self.media_type.value}")
+        self.logger = mass.logger.getChild(f"music.{self.media_type}")
         self._db_add_lock = asyncio.Lock()
 
     @abstractmethod
@@ -181,7 +180,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not details:
             # we couldn't get a match from any of the providers, raise error
             raise MediaNotFoundError(
-                f"Item not found: {provider_type.value or id}/{provider_item_id}"
+                f"Item not found: {provider_type or id}/{provider_item_id}"
             )
         # create job to add the item to the db, including matching metadata etc. takes some time
         # in 99% of the cases we just return lazy because we want the details as fast as possible
@@ -223,9 +222,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return []
 
         # prefer cache items (if any)
-        cache_key = (
-            f"{prov.type.value}.search.{self.media_type.value}.{search_query}.{limit}"
-        )
+        cache_key = f"{prov.type}.search.{self.media_type}.{search_query}.{limit}"
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -377,14 +374,18 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         query = f"SELECT * FROM {self.db_table}, json_each(provider_mappings)"
         if provider_id is not None:
-            query += f" WHERE json_extract(json_each.value, '$.provider_id') = '{provider_id}'"
+            query += (
+                f" WHERE json_extract(json_each, '$.provider_id') = '{provider_id}'"
+            )
         elif provider_type is not None:
-            query += f" WHERE json_extract(json_each.value, '$.provider_type') = '{provider_type.value}'"
+            query += (
+                f" WHERE json_extract(json_each, '$.provider_type') = '{provider_type}'"
+            )
         if provider_item_ids is not None:
             prov_ids = str(tuple(provider_item_ids))
             if prov_ids.endswith(",)"):
                 prov_ids = prov_ids.replace(",)", ")")
-            query += f" AND json_extract(json_each.value, '$.item_id') in {prov_ids}"
+            query += f" AND json_extract(json_each, '$.item_id') in {prov_ids}"
 
         return await self.get_db_items_by_query(query, limit=limit, offset=offset)
 
@@ -396,9 +397,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             self.db_table, match, {"in_library": in_library, "timestamp": timestamp}
         )
         db_item = await self.get_db_item(item_id)
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
-        )
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 
     async def get_provider_item(
         self,
@@ -413,7 +412,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             item = await provider.get_item(self.media_type, item_id)
         if not item:
             raise MediaNotFoundError(
-                f"{self.media_type.value}//{item_id} not found on provider {provider_id_or_type}"
+                f"{self.media_type}//{item_id} not found on provider {provider_id_or_type}"
             )
         return item
 
@@ -445,9 +444,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             match,
             {"provider_mappings": json_serializer(db_item.provider_mappings)},
         )
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
-        )
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 
         self.logger.debug("removed provider %s from item id %s", provider_id, item_id)
 
@@ -462,9 +459,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         )
         # NOTE: this does not delete any references to this item in other records,
         # this is handled/overridden in the mediatype specific controllers
-        self.mass.signal_event(
-            MassEvent(EventType.MEDIA_ITEM_DELETED, db_item.uri, db_item)
-        )
+        self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, db_item.uri, db_item)
         self.logger.debug("deleted item with id %s from database", item_id)
 
     async def dynamic_tracks(

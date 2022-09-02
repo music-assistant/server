@@ -24,8 +24,8 @@ class BackgroundJob:
         return {
             "id": self.id,
             "name": self.name,
-            "timestamp": self.status.value,
-            "status": self.status.value,
+            "timestamp": self.status,
+            "status": self.status,
         }
 
     async def wait(self) -> None:

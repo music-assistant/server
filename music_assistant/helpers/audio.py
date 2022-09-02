@@ -56,7 +56,7 @@ async def crossfade_pcm_parts(
         "-acodec",
         fmt.name.lower(),
         "-f",
-        fmt.value,
+        fmt,
         "-ac",
         str(channels),
         "-ar",
@@ -67,7 +67,7 @@ async def crossfade_pcm_parts(
         "-acodec",
         fmt.name.lower(),
         "-f",
-        fmt.value,
+        fmt,
         "-ac",
         str(channels),
         "-ar",
@@ -79,7 +79,7 @@ async def crossfade_pcm_parts(
         f"[0][1]acrossfade=d={fade_length}",
         # output args
         "-f",
-        fmt.value,
+        fmt,
         "-",
     ]
     async with AsyncProcess(args, True) as proc:
@@ -115,7 +115,7 @@ async def strip_silence(
         "-acodec",
         fmt.name.lower(),
         "-f",
-        fmt.value,
+        fmt,
         "-ac",
         str(channels),
         "-ar",
@@ -135,7 +135,7 @@ async def strip_silence(
             "atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02",
         ]
     # output args
-    args += ["-f", fmt.value, "-"]
+    args += ["-f", fmt, "-"]
     async with AsyncProcess(args, True) as proc:
         stripped_data, _ = await proc.communicate(audio_data)
         LOGGER.debug(
@@ -162,7 +162,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         "-i",
         input_file,
         "-f",
-        streamdetails.content_type.value,
+        streamdetails.content_type,
         "-af",
         "ebur128=framelog=verbose",
         "-f",
@@ -584,7 +584,7 @@ async def get_preview_stream(
     else:
         # the input is received from pipe/stdin
         if streamdetails.content_type != ContentType.UNKNOWN:
-            input_args += ["-f", streamdetails.content_type.value]
+            input_args += ["-f", streamdetails.content_type]
         input_args += ["-i", "-"]
 
     output_args = ["-to", "30", "-f", "mp3", "-"]
@@ -641,7 +641,7 @@ async def get_silence(
         "-t",
         str(duration),
         "-f",
-        output_fmt.value,
+        output_fmt,
         "-",
     ]
     async with AsyncProcess(args) as ffmpeg_proc:
@@ -717,7 +717,7 @@ async def _get_ffmpeg_args(
     else:
         # the input is received from pipe/stdin
         if streamdetails.content_type != ContentType.UNKNOWN:
-            input_args += ["-f", input_format.value]
+            input_args += ["-f", input_format]
         input_args += ["-i", "-"]
 
     # collect output args
@@ -725,7 +725,7 @@ async def _get_ffmpeg_args(
         "-acodec",
         pcm_output_format.name.lower(),
         "-f",
-        pcm_output_format.value,
+        pcm_output_format,
         "-ac",
         str(pcm_channels),
         "-ar",

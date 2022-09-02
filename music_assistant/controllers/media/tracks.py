@@ -21,7 +21,6 @@ from music_assistant.models.errors import (
     MediaNotFoundError,
     UnsupportedFeaturedException,
 )
-from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import (
     Album,
     Artist,
@@ -77,13 +76,9 @@ class TracksController(MediaControllerBase[Track]):
         # return final db_item after all match/metadata actions
         db_item = await self.get_db_item(db_item.item_id)
         self.mass.signal_event(
-            MassEvent(
-                EventType.MEDIA_ITEM_UPDATED
-                if existing
-                else EventType.MEDIA_ITEM_ADDED,
-                db_item.uri,
-                db_item,
-            )
+            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
+            db_item.uri,
+            db_item,
         )
         return db_item
 

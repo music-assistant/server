@@ -26,14 +26,14 @@ class MusicProviderConfig:
         """Call after init."""
         # create a default (hopefully unique enough) id from type + username/path
         if not self.id and (self.path or self.username):
-            prov_id = f"{self.type.value}_"
+            prov_id = f"{self.type}_"
             base_str = (self.path or self.username).lower()
             prov_id += (
                 base_str.replace(".", "").replace("_", "").split("@")[0][1::2]
             ) + base_str[-1]
             super().__setattr__("id", prov_id)
         elif not self.id:
-            super().__setattr__("id", self.type.value)
+            super().__setattr__("id", self.type)
 
 
 @dataclass(frozen=True)

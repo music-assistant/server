@@ -15,7 +15,6 @@ from music_assistant.models.errors import (
     MediaNotFoundError,
     UnsupportedFeaturedException,
 )
-from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import (
     Album,
     AlbumType,
@@ -119,13 +118,9 @@ class AlbumsController(MediaControllerBase[Album]):
             ):
                 await self.mass.music.tracks.add_db_item(track)
         self.mass.signal_event(
-            MassEvent(
-                EventType.MEDIA_ITEM_UPDATED
-                if existing
-                else EventType.MEDIA_ITEM_ADDED,
-                db_item.uri,
-                db_item,
-            )
+            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
+            db_item.uri,
+            db_item,
         )
         return db_item
 
@@ -215,7 +210,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 "version": item.version if overwrite else cur_item.version,
                 "year": item.year or cur_item.year,
                 "upc": item.upc or cur_item.upc,
-                "album_type": album_type.value,
+                "album_type": album_type,
                 "artists": json_serializer(album_artists) or None,
                 "metadata": json_serializer(metadata),
                 "provider_mappings": json_serializer(provider_mappings),
@@ -256,7 +251,7 @@ class AlbumsController(MediaControllerBase[Album]):
             return []
         full_album = await self.get_provider_item(item_id, provider_id or provider_type)
         # prefer cache items (if any)
-        cache_key = f"{prov.type.value}.albumtracks.{item_id}"
+        cache_key = f"{prov.type}.albumtracks.{item_id}"
         cache_checksum = full_album.metadata.checksum
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]

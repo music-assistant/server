@@ -12,7 +12,6 @@ from mashumaro import DataClassDictMixin
 from music_assistant.helpers.util import get_changed_keys
 
 from .enums import EventType, PlayerFeature, PlayerState, PlayerType
-from .event import MassEvent
 from .player_settings import PlayerSettings
 
 if TYPE_CHECKING:
@@ -261,7 +260,7 @@ class Player(ABC):
 
         self._prev_state = cur_state
         self.mass.signal_event(
-            MassEvent(EventType.PLAYER_UPDATED, object_id=self.player_id, data=self)
+            EventType.PLAYER_UPDATED, object_id=self.player_id, data=self
         )
 
         if skip_forward:
@@ -289,7 +288,7 @@ class Player(ABC):
             "name": self.name,
             "powered": self.powered,
             "elapsed_time": int(self.elapsed_time),
-            "state": self.state.value,
+            "state": self.state,
             "available": self.available,
             "volume_level": int(self.volume_level),
             "group_members": self.group_members,

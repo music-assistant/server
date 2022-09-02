@@ -21,7 +21,6 @@ from music_assistant.models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant.models.event import MassEvent
 from music_assistant.models.media_items import Playlist, Track
 
 from .base import MediaControllerBase
@@ -60,13 +59,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         else:
             db_item = await self.add_db_item(item)
         self.mass.signal_event(
-            MassEvent(
-                EventType.MEDIA_ITEM_UPDATED
-                if existing
-                else EventType.MEDIA_ITEM_ADDED,
-                db_item.uri,
-                db_item,
-            )
+            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
+            db_item.uri,
+            db_item,
         )
         return db_item
 
@@ -193,7 +188,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             ):
                 self.logger.warning(
                     "Provider %s does not support editing playlists",
-                    prov_mapping.provider_type.value,
+                    prov_mapping.provider_type,
                 )
                 continue
             await provider.remove_playlist_tracks(

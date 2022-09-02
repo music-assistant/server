@@ -1,13 +1,13 @@
 """Models and helpers for a player."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 
-from music_assistant.models.enums import MetadataMode
+from music_assistant.models.enums import EventType, MetadataMode
 from music_assistant.models.media_items import ContentType
 
 if TYPE_CHECKING:
-    from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player import Player
 
 
 class PlayerSettings:
@@ -17,11 +17,11 @@ class PlayerSettings:
     default_stream_type: ContentType = ContentType.FLAC
     default_announce_volume_increase: int = 15
 
-    def __init__(self, mass: MusicAssistant, player_id: str) -> None:
+    def __init__(self, player: Player) -> None:
         """Initialize PlayerSettings."""
-        self.mass = mass
-        self.player_id = player_id
-        self.base_key = f"{self.player_id}.settings"
+        self.player = player
+        self.mass = player.mass
+        self.base_key = f"{player.player_id}.settings"
 
     @property
     def max_sample_rate(self) -> int:
@@ -37,6 +37,7 @@ class PlayerSettings:
         settings_key = f"{self.base_key}.max_sample_rate"
         if cur_value != value:
             self.mass.settings.set(settings_key, value)
+            self._on_update()
 
     @property
     def stream_type(self) -> ContentType:
@@ -52,7 +53,8 @@ class PlayerSettings:
         cur_value = self.stream_type
         settings_key = f"{self.base_key}.stream_type"
         if cur_value != value:
-            self.mass.settings.set(settings_key, value.value)
+            self.mass.settings.set(settings_key, value)
+            self._on_update()
 
     @property
     def announce_volume_increase(self) -> int:
@@ -68,7 +70,8 @@ class PlayerSettings:
         cur_value = self.announce_volume_increase
         settings_key = f"{self.base_key}.announce_volume_increase"
         if cur_value != value:
-            self.mass.settings.set(settings_key, value.value)
+            self.mass.settings.set(settings_key, value)
+            self._on_update()
 
     @property
     def metadata_mode(self) -> MetadataMode:
@@ -84,4 +87,24 @@ class PlayerSettings:
         cur_value = self.metadata_mode
         settings_key = f"{self.base_key}.metadata_mode"
         if cur_value != value:
-            self.mass.settings.set(settings_key, value.value)
+            self.mass.settings.set(settings_key, value)
+            self._on_update()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return dict from settings."""
+        # return a dict from all property-decorated attributes
+        keys = {
+            x for x, val in vars(PlayerSettings).items() if isinstance(val, property)
+        }
+        return {key: getattr(self, key) for key in keys}
+
+    def from_dict(self, d: Dict[str, Any]) -> None:
+        """Initialize/change settings from dict."""
+        for key, value in d.items():
+            setattr(self, key, value)
+
+    def _on_update(self) -> None:
+        """Handle state changed."""
+        self.mass.signal_event(
+            EventType.PLAYER_SETTINGS_UPDATED, self.player.player_id, self
+        )
