@@ -1,7 +1,7 @@
 async-timeout>=3.0,<=4.0.2
 aiohttp>=3.7.0,>=3.8.1
 asyncio-throttle>=1.0,<=1.0.2
-aiofiles>=0.7.0,<=0.8.5
+aiofiles>=0.7.0,<22.1.1
 databases>=0.5,<0.6.5
 aiosqlite>=0.13,<=0.17
 python-slugify>=4.0,<6.1.3
