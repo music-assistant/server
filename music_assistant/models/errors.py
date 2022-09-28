@@ -39,3 +39,7 @@ class QueueEmpty(MusicAssistantError):
 
 class UnsupportedFeaturedException(MusicAssistantError):
     """Error raised when a feature is not supported."""
+
+
+class PlayerUnavailableError(MusicAssistantError):
+    """Error raised when trying to access non-existing or unavailable player."""

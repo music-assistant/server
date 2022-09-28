@@ -256,3 +256,13 @@ def get_changed_keys(
         elif dict1[key] != value:
             changed_keys.add(key)
     return changed_keys
+
+
+def empty_queue(q: asyncio.Queue) -> None:
+    """Empty an asyncio Queue."""
+    for _ in range(q.qsize()):
+        try:
+            q.get_nowait()
+            q.task_done()
+        except (asyncio.QueueEmpty, ValueError):
+            pass

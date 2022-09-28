@@ -16,16 +16,20 @@ from music_assistant.models.enums import (
     ProviderType,
     QueueOption,
     RepeatMode,
+    StreamState,
 )
-from music_assistant.models.errors import MediaNotFoundError, MusicAssistantError
-from music_assistant.models.event import MassEvent
+from music_assistant.models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    QueueEmpty,
+)
 from music_assistant.models.media_items import MediaItemType, media_from_dict
+from music_assistant.models.queue_stream import QueueStream
 
 from .queue_item import QueueItem
 from .queue_settings import QueueSettings
 
 if TYPE_CHECKING:
-    from music_assistant.controllers.streams import QueueStream
 
     from .player import Player, PlayerState
 
@@ -54,7 +58,7 @@ class PlayerQueue:
         self.logger = player.logger.getChild("queue")
         self.queue_id = player.player_id
         self.settings = QueueSettings(self)
-        self._stream_id: str = ""
+        self.stream = QueueStream(self)
         self._current_index: Optional[int] = None
         self._current_item_elapsed_time: int = 0
         self._prev_item: Optional[QueueItem] = None
@@ -62,23 +66,16 @@ class PlayerQueue:
         self._items: List[QueueItem] = []
         self._save_task: TimerHandle = None
         self._last_player_update: int = 0
-        self._last_stream_id: str = ""
         self._snapshot: Optional[QueueSnapShot] = None
         self._radio_source: List[MediaItemType] = []
         self.announcement_in_progress: bool = False
 
     async def setup(self) -> None:
         """Handle async setup of instance."""
-        await self.settings.restore()
         await self._restore_items()
         self.mass.signal_event(
-            MassEvent(EventType.QUEUE_ADDED, object_id=self.queue_id, data=self)
+            EventType.QUEUE_ADDED, object_id=self.queue_id, data=self
         )
-
-    @property
-    def stream(self) -> QueueStream | None:
-        """Return the currently connected/active stream for this queue."""
-        return self.mass.streams.queue_streams.get(self._stream_id)
 
     @property
     def index_in_buffer(self) -> int | None:
@@ -93,13 +90,9 @@ class PlayerQueue:
     @property
     def active(self) -> bool:
         """Return if the queue is currenty active."""
-        if stream := self.stream:
-            if not self.stream.done.is_set():
-                return True
-            if not self.player.current_url:
-                return False
-            return stream.stream_id in self.player.current_url
-        return False
+        if self.queue_id not in self.player.current_url:
+            return False
+        return
 
     @property
     def elapsed_time(self) -> float:
@@ -418,10 +411,14 @@ class PlayerQueue:
         assert position < self.current_item.duration
         await self.play_index(self._current_index, position)
 
-    async def resume(self) -> None:
+    async def resume(self, passive: bool = False) -> None:
         """Resume previous queue."""
         last_player_url = self._last_player_state[1]
-        if last_player_url and self.mass.streams.base_url not in last_player_url:
+        if (
+            not passive
+            and last_player_url
+            and self.mass.streams.base_url not in last_player_url
+        ):
             self.logger.info("Trying to resume non-MA content %s...", last_player_url)
             await self.player.play_url(last_player_url)
             return
@@ -445,11 +442,11 @@ class PlayerQueue:
         if resume_item is not None:
             resume_pos = resume_pos if resume_pos > 10 else 0
             fade_in = resume_pos > 0
-            await self.play_index(resume_item.item_id, resume_pos, fade_in)
-        else:
-            self.logger.warning(
-                "resume queue requested for %s but queue is empty", self.queue_id
+            await self.play_index(
+                resume_item.item_id, resume_pos, fade_in, passive=passive
             )
+        else:
+            raise QueueEmpty("Resume queue requested but queue is empty")
 
     async def snapshot_create(self) -> None:
         """Create snapshot of current Queue state."""
@@ -680,11 +677,9 @@ class PlayerQueue:
             self.mass.create_task(self._fetch_full_details(self._current_index))
         if abs(prev_item_time - self._current_item_elapsed_time) >= 1:
             self.mass.signal_event(
-                MassEvent(
-                    EventType.QUEUE_TIME_UPDATED,
-                    object_id=self.queue_id,
-                    data=int(self.elapsed_time),
-                )
+                EventType.QUEUE_TIME_UPDATED,
+                object_id=self.queue_id,
+                data=int(self.elapsed_time),
             )
 
     async def queue_stream_start(
@@ -700,7 +695,6 @@ class PlayerQueue:
             start_index=start_index,
             seek_position=seek_position,
             fade_in=fade_in,
-            output_format=self.settings.stream_type,
         )
         self._stream_id = stream.stream_id
         self._current_item_elapsed_time = 0
@@ -730,9 +724,7 @@ class PlayerQueue:
         """Signal state changed of this queue."""
         if items_changed:
             self.mass.signal_event(
-                MassEvent(
-                    EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self
-                )
+                EventType.QUEUE_ITEMS_UPDATED, object_id=self.queue_id, data=self
             )
             # save items
             self.mass.create_task(
@@ -744,19 +736,15 @@ class PlayerQueue:
 
         # always send the base event
         self.mass.signal_event(
-            MassEvent(EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self)
+            EventType.QUEUE_UPDATED, object_id=self.queue_id, data=self
         )
         # save state
-        self.mass.create_task(
-            self.mass.database.set_setting(
-                f"queue.{self.queue_id}.current_index", self._current_index
-            )
+        self.mass.settings.set(
+            f"queue.{self.queue_id}.current_index", self._current_index
         )
-        self.mass.create_task(
-            self.mass.database.set_setting(
-                f"queue.{self.queue_id}.current_item_elapsed_time",
-                self._current_item_elapsed_time,
-            )
+        self.mass.settings.set(
+            f"queue.{self.queue_id}.current_item_elapsed_time",
+            self._current_item_elapsed_time,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -770,7 +758,7 @@ class PlayerQueue:
             "name": self.player.name,
             "active": self.active,
             "elapsed_time": int(self.elapsed_time),
-            "state": self.player.state.value,
+            "state": self.player.state,
             "available": self.player.available,
             "current_index": self.current_index,
             "index_in_buffer": self.index_in_buffer,
@@ -834,14 +822,13 @@ class PlayerQueue:
                 )
             else:
                 # restore state too
-                db_key = f"queue.{self.queue_id}.current_index"
-                if db_value := await self.mass.database.get_setting(db_key):
-                    self._current_index = try_parse_int(db_value)
-                db_key = f"queue.{self.queue_id}.current_item_elapsed_time"
-                if db_value := await self.mass.database.get_setting(db_key):
-                    self._current_item_elapsed_time = try_parse_int(db_value)
+                settings_key = f"queue.{self.queue_id}.current_index"
+                if val := self.mass.settings.get(settings_key):
+                    self._current_index = try_parse_int(val)
 
-        await self.settings.restore()
+                settings_key = f"queue.{self.queue_id}.current_item_elapsed_time"
+                if val := self.mass.settings.get(settings_key):
+                    self._current_item_elapsed_time = try_parse_int(val)
 
     async def _fetch_full_details(self, index: int) -> None:
         """Background task that fetches the full details of an item in the queue."""

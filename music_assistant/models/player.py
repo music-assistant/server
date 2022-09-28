@@ -299,7 +299,7 @@ class Player(ABC):
 
 
 class PlayerGroup(Player):
-    """Model for a group of players."""
+    """Model for a group of players (or dedicated groupplayer)."""
 
     _attr_type: PlayerType = PlayerType.GROUP
     _attr_supported_features: Tuple[PlayerFeature] = tuple()

@@ -242,6 +242,7 @@ class PlayerType(StrEnum):
     player: A regular player.
     sync_child: Player that is synced to another (platform-specific) player.
     group: A dedicated group player.
+    universal_group: A universal (Music Assistant) group.
 
     Note: A player marked as sync_child can not accept playback related commands itself.
     """
@@ -249,6 +250,7 @@ class PlayerType(StrEnum):
     PLAYER = "player"
     SYNC_CHILD = "sync_child"
     GROUP = "group"
+    UNIVERSAL_GROUP = "universal_group"
 
 
 class PlayerFeature(StrEnum):
@@ -358,3 +360,21 @@ class ProviderType(StrEnum):
             if val.startswith(mem):
                 return mem
         raise ValueError(f"Unable to parse ProviderType from {val}")
+
+
+class StreamState(StrEnum):
+    """
+    Enum with the state of the QueueStream.
+
+    pending_start: Stream is started but waiting for the client(s) to connect.
+    pending_stop: Abort of the stream is requested but pending stop/cleanup.
+    pending_next: The stream needs to be restarted (e.g. to switch to another sample rate).
+    running: Audio is currently being streamed to clients.
+    idle: There is no stream requested or in progress.
+    """
+
+    PENDING_START = "pending_start"
+    PENDING_STOP = "pending_stop"
+    PENDING_NEXT = "pending_next"
+    RUNNING = "running"
+    IDLE = "idle"
