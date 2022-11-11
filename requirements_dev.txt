@@ -5,7 +5,7 @@ mypy==0.982
 pydocstyle==6.1.1
 pylint==2.15.5
 pytest-aiohttp==1.0.4
-pytest-cov==3.0.0
+pytest-cov==4.0.0
 pytest-freezegun==0.4.2
 pytest-socket==0.5.1
 pytest-test-groups==1.0.3
