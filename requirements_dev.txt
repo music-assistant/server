@@ -11,6 +11,6 @@ pytest-socket==0.5.1
 pytest-test-groups==1.0.3
 pytest-sugar==0.9.6
 pytest-timeout==2.1.0
-pytest-xdist==3.0.2
+pytest-xdist==3.1.0
 pytest==7.2.0
 pre-commit==2.20.0
