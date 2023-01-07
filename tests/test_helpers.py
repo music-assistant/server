@@ -2,10 +2,10 @@
 
 from pytest import raises
 
-from music_assistant.helpers import uri, util
-from music_assistant.models import media_items
-from music_assistant.models.enums import ProviderType
-from music_assistant.models.errors import MusicAssistantError
+from music_assistant.common.helpers import uri, util
+from music_assistant.common.models import media_items
+from music_assistant.common.models.enums import ProviderType
+from music_assistant.common.models.errors import MusicAssistantError
 
 
 def test_version_extract():

@@ -2,7 +2,7 @@
 
 import pathlib
 
-from music_assistant.helpers import tags
+from music_assistant.server.helpers import tags
 
 RESOURCES_DIR = pathlib.Path(__file__).parent.resolve().joinpath("fixtures")
 

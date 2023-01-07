@@ -9,11 +9,11 @@ from sys import path
 path.insert(1, dirname(dirname(abspath(__file__))))
 
 # pylint: disable=wrong-import-position
-from music_assistant.mass import MusicAssistant
-from music_assistant.models.config import MassConfig, MusicProviderConfig
-from music_assistant.models.enums import ProviderType
+from music_assistant.server import MusicAssistantServer
+from music_assistant.common.models.config import MassConfig, MusicProviderConfig
+from music_assistant.common.models.enums import ProviderType
 
-parser = argparse.ArgumentParser(description="MusicAssistant")
+parser = argparse.ArgumentParser(description="MusicAssistantServer")
 parser.add_argument(
     "--username",
     required=True,
@@ -52,7 +52,7 @@ if not os.path.isdir(data_dir):
     os.makedirs(data_dir)
 db_file = os.path.join(data_dir, "music_assistant.db")
 
-mass = MusicAssistant(
+mass = MusicAssistantServer(
     MassConfig(
         database_url=MassConfig,
         providers=[
