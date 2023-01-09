@@ -31,7 +31,7 @@ from music_assistant.common.models.media_items import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 ItemCls = TypeVar("ItemCls", bound="MediaControllerBase")
 
@@ -45,7 +45,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     item_cls: MediaItemType
     db_table: str
 
-    def __init__(self, mass: MusicAssistantServer):
+    def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.mass = mass
         self.logger = mass.logger.getChild(f"music.{self.media_type}")

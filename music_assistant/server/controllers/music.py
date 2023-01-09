@@ -47,7 +47,7 @@ from music_assistant.server.music_providers.url.url import PROVIDER_CONFIG as UR
 from music_assistant.server.music_providers.ytmusic import YoutubeMusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 PROV_MAP = {
     ProviderType.FILESYSTEM_LOCAL: LocalFileSystemProvider,
@@ -62,7 +62,7 @@ PROV_MAP = {
 class MusicController:
     """Several helpers around the musicproviders."""
 
-    def __init__(self, mass: MusicAssistantServer):
+    def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.logger = mass.logger.getChild("music")
         self.mass = mass

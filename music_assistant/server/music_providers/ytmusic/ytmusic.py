@@ -1,4 +1,4 @@
-"""Youtube Music support for MusicAssistantServer."""
+"""Youtube Music support for MusicAssistant."""
 import re
 from operator import itemgetter
 from time import time

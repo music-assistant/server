@@ -1,4 +1,4 @@
-"""Qobuz musicprovider support for MusicAssistantServer."""
+"""Qobuz musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
 import datetime

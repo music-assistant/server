@@ -21,7 +21,6 @@ from music_assistant.server.controllers.players import PlayerController
 from music_assistant.server.controllers.settings import SettingsController
 from music_assistant.server.controllers.streams import StreamsController
 from music_assistant.common.models.background_job import BackgroundJob
-from music_assistant.common.models.config import MassConfig
 from music_assistant.common.models.enums import EventType, JobStatus
 from music_assistant.common.models.event import MassEvent
 
@@ -30,28 +29,18 @@ EventSubscriptionType = Tuple[
     EventCallBackType, Optional[Tuple[EventType]], Optional[Tuple[str]]
 ]
 
+LOGGER = logging.getLogger(ROOT_LOGGER_NAME)
 
-class MusicAssistantServer:
-    """Main MusicAssistantServer object."""
 
-    def __init__(
-        self,
-        config: MassConfig,
-        session: Optional[aiohttp.ClientSession] = None,
-    ) -> None:
+class MusicAssistant:
+    """Main MusicAssistant (Server) object."""
+
+    loop: asyncio.AbstractEventLoop | None = None
+    http_session: aiohttp.ClientSession | None = None
+
+    def __init__(self, storage_path: str) -> None:
         """
-        Create an instance of MusicAssistantServer.
-
-            config: Music Assistant runtimestartup Config
-            session: Optionally provide an aiohttp clientsession
-        """
-
-        self.config = config
-        self.loop: asyncio.AbstractEventLoop = None
-        self.http_session: aiohttp.ClientSession = session
-        self.http_session_provided = session is not None
-        self.logger = logging.getLogger(ROOT_LOGGER_NAME)
-
+        Create an instance of the MusicAssistant Server."""
         self._listeners = []
         self._jobs: Deque[BackgroundJob] = deque()
         self._jobs_event = asyncio.Event()
@@ -72,11 +61,10 @@ class MusicAssistantServer:
         # initialize loop
         self.loop = asyncio.get_running_loop()
         # create shared aiohttp ClientSession
-        if not self.http_session:
-            self.http_session = aiohttp.ClientSession(
-                loop=self.loop,
-                connector=aiohttp.TCPConnector(ssl=False),
-            )
+        self.http_session = aiohttp.ClientSession(
+            loop=self.loop,
+            connector=aiohttp.TCPConnector(ssl=False),
+        )
         # setup core controllers
         await self.database.setup()
         await self.settings.setup()
@@ -89,7 +77,7 @@ class MusicAssistantServer:
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
-        self.logger.info("Stop called, cleaning up...")
+        LOGGER.info("Stop called, cleaning up...")
         await self.players.cleanup()
         # cancel all running tasks
         for task in self._tracked_tasks:
@@ -97,7 +85,7 @@ class MusicAssistantServer:
         self.signal_event(EventType.SHUTDOWN)
         await self.database.close()
         self.closed = True
-        if self.http_session and not self.http_session_provided:
+        if self.http_session:
             await self.http_session.close()
 
     def signal_event(
@@ -110,12 +98,10 @@ class MusicAssistantServer:
         if self.closed:
             return
         event = MassEvent(type=event_type, object_id=object_id, data=data)
-        if self.logger.isEnabledFor(logging.DEBUG):
+        if LOGGER.isEnabledFor(logging.DEBUG):
             if event_type != EventType.QUEUE_TIME_UPDATED:
                 # do not log queue time updated events because that is too chatty
-                self.logger.getChild("event").debug(
-                    "%s %s", event_type, object_id or ""
-                )
+                LOGGER.getChild("event").debug("%s %s", event_type, object_id or "")
         for cb_func, event_filter, id_filter in self._listeners:
             if not (event_filter is None or event_type in event_filter):
                 continue
@@ -158,7 +144,7 @@ class MusicAssistantServer:
         """Add job to be (slowly) processed in the background."""
         if not allow_duplicate:
             if existing := next((x for x in self._jobs if x.name == name), None):
-                self.logger.debug("Ignored duplicate job: %s", name)
+                LOGGER.debug("Ignored duplicate job: %s", name)
                 coro.close()
                 return existing
         if not name:
@@ -234,7 +220,7 @@ class MusicAssistantServer:
             job.status = JobStatus.CANCELLED
         elif err := task.exception():
             job.status = JobStatus.ERROR
-            self.logger.error(
+            LOGGER.error(
                 "Job [%s] failed with error %s.",
                 job.name,
                 str(err),
@@ -243,16 +229,14 @@ class MusicAssistantServer:
         else:
             job.result = task.result()
             job.status = JobStatus.FINISHED
-            self.logger.info(
-                "Finished job [%s] in %s seconds.", job.name, execution_time
-            )
+            LOGGER.info("Finished job [%s] in %s seconds.", job.name, execution_time)
         self._jobs.remove(job)
         self._jobs_event.set()
         # mark job as done
         job.done()
         self.signal_event(EventType.BACKGROUND_JOB_FINISHED, job.name, data=job)
 
-    async def __aenter__(self) -> "MusicAssistantServer":
+    async def __aenter__(self) -> "MusicAssistant":
         """Return Context manager."""
         await self.setup()
         return self

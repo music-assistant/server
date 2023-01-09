@@ -20,7 +20,7 @@ from music_assistant.server.helpers.app_vars import (  # pylint: disable=no-name
 )
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 # TODO: add support for personal api keys ?
 
@@ -36,7 +36,7 @@ IMG_MAPPING = {
 class FanartTv:
     """Fanart.tv metadata provider."""
 
-    def __init__(self, mass: MusicAssistantServer):
+    def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache

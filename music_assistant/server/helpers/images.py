@@ -11,10 +11,10 @@ from music_assistant.server.controllers.database import TABLE_THUMBS
 from music_assistant.server.helpers.tags import get_embedded_image
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 
-async def get_image_data(mass: MusicAssistantServer, path: str) -> bytes:
+async def get_image_data(mass: MusicAssistant, path: str) -> bytes:
     """Create thumbnail from image url."""
     # return from db if exists
     match = {"path": path, "size": 0}
@@ -39,7 +39,7 @@ async def get_image_data(mass: MusicAssistantServer, path: str) -> bytes:
 
 
 async def create_thumbnail(
-    mass: MusicAssistantServer, path: str, size: Optional[int]
+    mass: MusicAssistant, path: str, size: Optional[int]
 ) -> bytes:
     """Create thumbnail from image url."""
     img_data = await get_image_data(mass, path)
@@ -55,7 +55,7 @@ async def create_thumbnail(
     return await mass.loop.run_in_executor(None, _create_image)
 
 
-async def create_collage(mass: MusicAssistantServer, images: List[str]) -> bytes:
+async def create_collage(mass: MusicAssistant, images: List[str]) -> bytes:
     """Create a basic collage image from multiple image urls."""
 
     def _new_collage():

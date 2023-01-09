@@ -28,7 +28,7 @@ from music_assistant.server.helpers.process import AsyncProcess, check_output
 
 if TYPE_CHECKING:
     from music_assistant.common.models.player_queue import QueueItem
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
 
@@ -151,7 +151,7 @@ async def strip_silence(
 
 
 async def analyze_audio(
-    mass: MusicAssistantServer, streamdetails: StreamDetails
+    mass: MusicAssistant, streamdetails: StreamDetails
 ) -> None:
     """Analyze track audio, for now we only calculate EBU R128 loudness."""
 
@@ -225,7 +225,7 @@ async def analyze_audio(
 
 
 async def get_stream_details(
-    mass: MusicAssistantServer, queue_item: "QueueItem", queue_id: str = ""
+    mass: MusicAssistant, queue_item: "QueueItem", queue_id: str = ""
 ) -> StreamDetails:
     """
     Get streamdetails for the given QueueItem.
@@ -291,7 +291,7 @@ async def get_stream_details(
 
 
 async def get_gain_correct(
-    mass: MusicAssistantServer, streamdetails: StreamDetails
+    mass: MusicAssistant, streamdetails: StreamDetails
 ) -> Tuple[Optional[float], Optional[float]]:
     """Get gain correction for given queue / track combination."""
     queue = mass.players.get_player_queue(streamdetails.queue_id)
@@ -373,7 +373,7 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
 
 
 async def get_media_stream(
-    mass: MusicAssistantServer,
+    mass: MusicAssistant,
     streamdetails: StreamDetails,
     pcm_fmt: ContentType,
     sample_rate: int,
@@ -437,7 +437,7 @@ async def get_media_stream(
 
 
 async def get_radio_stream(
-    mass: MusicAssistantServer, url: str, streamdetails: StreamDetails
+    mass: MusicAssistant, url: str, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
     headers = {"Icy-MetaData": "1"}
@@ -471,7 +471,7 @@ async def get_radio_stream(
 
 
 async def get_http_stream(
-    mass: MusicAssistantServer,
+    mass: MusicAssistant,
     url: str,
     streamdetails: StreamDetails,
     seek_position: int = 0,
@@ -517,7 +517,7 @@ async def get_http_stream(
 
 
 async def get_file_stream(
-    mass: MusicAssistantServer,
+    mass: MusicAssistant,
     filename: str,
     streamdetails: StreamDetails,
     seek_position: int = 0,
@@ -569,7 +569,7 @@ async def check_audio_support(try_install: bool = False) -> Tuple[bool, bool]:
 
 
 async def get_preview_stream(
-    mass: MusicAssistantServer,
+    mass: MusicAssistant,
     provider_mapping: str,
     track_id: str,
 ) -> AsyncGenerator[bytes, None]:

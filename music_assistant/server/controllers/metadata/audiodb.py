@@ -25,7 +25,7 @@ from music_assistant.server.helpers.app_vars import (  # pylint: disable=no-name
 from music_assistant.server.helpers.compare import compare_strings
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 IMG_MAPPING = {
     "strArtistThumb": ImageType.THUMB,
@@ -63,7 +63,7 @@ ALBUMTYPE_MAPPING = {
 class TheAudioDb:
     """TheAudioDb metadata provider."""
 
-    def __init__(self, mass: MusicAssistantServer):
+    def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache

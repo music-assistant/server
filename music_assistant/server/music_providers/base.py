@@ -22,7 +22,7 @@ from music_assistant.common.models.media_items import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 
 class MusicProvider:
@@ -32,7 +32,7 @@ class MusicProvider:
     _attr_type: ProviderType = None
     _attr_available: bool = True
 
-    def __init__(self, mass: MusicAssistantServer, config: MusicProviderConfig) -> None:
+    def __init__(self, mass: MusicAssistant, config: MusicProviderConfig) -> None:
         """Initialize MusicProvider."""
         self.mass = mass
         self.config = config

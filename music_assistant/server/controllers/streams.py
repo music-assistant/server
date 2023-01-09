@@ -41,7 +41,7 @@ from music_assistant.server.helpers.process import AsyncProcess
 
 if TYPE_CHECKING:
     from music_assistant.common.models.queue_stream import QueueStream
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 ICY_CHUNKSIZE = 8192
 
@@ -49,7 +49,7 @@ ICY_CHUNKSIZE = 8192
 class StreamsController:
     """Controller to stream audio to players."""
 
-    def __init__(self, mass: MusicAssistantServer):
+    def __init__(self, mass: MusicAssistant):
         """Initialize instance."""
         self.mass = mass
         self.logger = mass.logger.getChild("stream")

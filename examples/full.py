@@ -10,7 +10,7 @@ from sys import path
 path.insert(1, dirname(dirname(abspath(__file__))))
 
 # pylint: disable=wrong-import-position
-from music_assistant.server import MusicAssistantServer
+from music_assistant.server import MusicAssistant
 from music_assistant.common.models.config import MassConfig, MusicProviderConfig
 from music_assistant.common.models.enums import (
     CrossFadeMode,
@@ -21,7 +21,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.player import Player
 
 
-parser = argparse.ArgumentParser(description="MusicAssistantServer")
+parser = argparse.ArgumentParser(description="MusicAssistant")
 parser.add_argument(
     "--spotify-username",
     required=False,
@@ -223,7 +223,7 @@ async def main():
 
     asyncio.get_event_loop().set_debug(args.debug)
 
-    async with MusicAssistantServer(mass_conf) as mass:
+    async with MusicAssistant(mass_conf) as mass:
 
         # run sync
         await mass.music.start_sync()

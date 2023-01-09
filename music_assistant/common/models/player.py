@@ -15,7 +15,7 @@ from .enums import EventType, PlayerFeature, PlayerState, PlayerType
 from .player_settings import PlayerSettings
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
     from .player_queue import PlayerQueue
 
@@ -52,7 +52,7 @@ class Player(ABC):
     _attr_group_members: List[str] = []
 
     # below objects will be set by playermanager at register/update
-    mass: MusicAssistantServer = None  # type: ignore[assignment]
+    mass: MusicAssistant = None  # type: ignore[assignment]
     queue: PlayerQueue = None  # type: ignore[assignment]
     settings: PlayerSettings = None  # type: ignore[assignment]
     logger: Logger = None  # type: ignore[assignment]

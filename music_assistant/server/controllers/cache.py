@@ -12,13 +12,13 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional
 from music_assistant.server.controllers.database import TABLE_CACHE
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 
 class CacheController:
     """Basic cache controller using both memory and database."""
 
-    def __init__(self, mass: MusicAssistantServer) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize our caching class."""
         self.mass = mass
         self.logger = mass.logger.getChild("cache")

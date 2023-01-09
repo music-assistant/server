@@ -1,40 +1,41 @@
-"""Various helpers for web requests."""
-from __future__ import annotations
+"""Helpers to work with (de)serializing of json."""
 
-import asyncio
-import json
+from typing import Any
 
-
-def serialize_values(obj):
-    """Recursively create serializable values for (custom) data types."""
-
-    def get_val(val):
-        if (
-            isinstance(val, (list, set, filter, tuple))
-            or val.__class__ == "dict_valueiterator"
-        ):
-            return [get_val(x) for x in val] if val else []
-        if isinstance(val, dict):
-            return {key: get_val(value) for key, value in val.items()}
-        try:
-            return val.to_dict()
-        except AttributeError:
-            return val
-        except Exception:  # pylint: disable=broad-except
-            return val
-
-    return get_val(obj)
+import orjson
 
 
-def json_serializer(data):
-    """Json serializer to recursively create serializable values for custom data types."""
-    return json.dumps(serialize_values(data))
+JSON_ENCODE_EXCEPTIONS = (TypeError, ValueError)
+JSON_DECODE_EXCEPTIONS = (orjson.JSONDecodeError,)
 
 
-async def async_json_serializer(data):
-    """Run json serializer in executor for large data."""
-    if isinstance(data, list) and len(data) > 100:
-        return await asyncio.get_running_loop().run_in_executor(
-            None, json_serializer, data
-        )
-    return json_serializer(data)
+def json_encoder_default(obj: Any) -> Any:
+    """Convert Special objects.
+
+    Hand other objects to the original method.
+    """
+    if getattr(obj, "do_not_serialize", None):
+        return None
+    if (
+        isinstance(obj, (list, set, filter, tuple))
+        or obj.__class__ == "dict_valueiterator"
+    ):
+        return list(obj)
+    if hasattr(obj, "as_dict"):
+        return obj.as_dict()
+    if isinstance(obj, bytes):
+        return str(obj)
+
+    raise TypeError
+
+
+def json_dumps(data: Any) -> str:
+    """Dump json string."""
+    return orjson.dumps(
+        data,
+        option=orjson.OPT_NON_STR_KEYS | orjson.OPT_INDENT_2,
+        default=json_encoder_default,
+    ).decode("utf-8")
+
+
+json_loads = orjson.loads

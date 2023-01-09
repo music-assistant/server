@@ -1,58 +1,151 @@
-"""Provides a simple Settings controller to store key/value pairs."""
+"""Logic to handle storage of persistent data."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Union
+import asyncio
+import logging
+import os
+from typing import TYPE_CHECKING, Any, Dict
 
-from .database import TABLE_SETTINGS
+from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from ..server import MusicAssistant
 
-SETTING_TYPE_MAP = {
-    "int": int,
-    "float": float,
-    "str": str,
-    "dict": dict,
-}
-SettingType = Union[int, float, str, dict]
+LOGGER = logging.getLogger(__name__)
+DEFAULT_SAVE_DELAY = 120
 
 
 class SettingsController:
-    """Basic settings controller to get/set key/value pairs."""
+    """Controller that handles storage of persistent data."""
 
-    def __init__(self, mass: MusicAssistantServer) -> None:
-        """Initialize our caching class."""
+    def __init__(self, mass: "MusicAssistant") -> None:
+        """Initialize storage controller."""
         self.mass = mass
-        self.logger = mass.logger.getChild("settings")
-        self._settings: Dict[str, Any] = {}
+        self._data: Dict[str, Any] = {}
+        self._timer_handle: asyncio.TimerHandle | None = None
+
+    @property
+    def filename(self) -> str:
+        """Return full path to (fabric-specific) storage file."""
+        return os.path.join(
+            self.server.storage_path,
+            f"{self.server.device_controller.compressed_fabric_id}.json",
+        )
 
     async def setup(self) -> None:
-        """Async initialize of settings module."""
-        # read all settings into memory at start
-        for db_row in await self.mass.database.get_rows(TABLE_SETTINGS):
-            value_type = SETTING_TYPE_MAP[db_row["type"]]
-            self._settings[db_row["key"]] = value_type(db_row["value"])
+        """Async initialize of controller."""
+        await self._load()
+        LOGGER.debug("Started.")
 
-    def get(self, key: str, default=None) -> SettingType | None:
-        """Get config value by key."""
-        return self._settings.get(key, default)
-
-    def set(self, key: str, value: SettingType | None) -> None:
-        """Set value in settings (or deletes if None)."""
-        self.mass.create_task(self.async_set(key, value))
-
-    async def async_set(self, key: str, value: SettingType | None) -> None:
-        """Set value in settings (or deletes if None)."""
-        if value is None:
-            self._settings.pop(key, None)
-            await self.mass.database.delete(TABLE_SETTINGS, {"key": key})
+    async def stop(self) -> None:
+        """Handle logic on server stop."""
+        if not self._timer_handle:
+            # no point in forcing a save when there are no changes pending
             return
-        self._settings[key] = value
-        # store persistent in db
-        type_str = str(type(value))
-        assert type_str in SettingType, "Unsupported value type"
-        await self.mass.database.insert(
-            TABLE_SETTINGS,
-            {"key": key, "value": str(value), "type": type_str},
-            allow_replace=True,
-        )
+        await self.async_save()
+        LOGGER.debug("Stopped.")
+
+    def get(self, key: str, default: Any = None, subkey: str | None = None) -> Any:
+        """Get data from specific (sub)key."""
+        if subkey:
+            # we provide support for (1-level) nested dict
+            return self._data.get(key, {}).get(subkey, default)
+        return self._data.get(key, default)
+
+    def set(
+        self,
+        key: str,
+        value: Any,
+        subkey: str | None = None,
+        force: bool = False,
+    ) -> None:
+        """Set a (sub)value in persistent storage."""
+        if not force and self.get(key, subkey=subkey) == value:
+            # no need to save if value did not change
+            return
+        if subkey:
+            # we provide support for (1-level) nested dict
+            self._data.setdefault(key, {})
+            self._data[key][subkey] = value
+        else:
+            self._data[key] = value
+        self.save(force)
+
+    def remove(
+        self,
+        key: str,
+        subkey: str | None = None,
+    ) -> None:
+        """Remove a (sub)value in persistent storage."""
+        if subkey:
+            # we provide support for (1-level) nested dict
+            self._data.setdefault(key, {})
+            self._data[key].pop(subkey)
+        else:
+            self._data.pop(key)
+        self.save(True)
+
+    def __getitem__(self, key: str) -> Any:
+        """Get data from specific key."""
+        return self._data[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        """Set a value in persistent storage."""
+        self.set(key, value)
+
+    async def _load(self) -> None:
+        """Load data from persistent storage."""
+        assert not self._data, "Already loaded"
+
+        def _load() -> dict:
+            for filename in self.filename, f"{self.filename}.backup":
+                try:
+                    _filename = os.path.join(self.server.storage_path, filename)
+                    with open(_filename, "r", encoding="utf-8") as _file:
+                        return json_loads(_file.read())
+                except FileNotFoundError:
+                    pass
+                except JSON_DECODE_EXCEPTIONS:  # pylint: disable=catching-non-exception
+                    LOGGER.error(
+                        "Error while reading persistent storage file %s", filename
+                    )
+                else:
+                    LOGGER.debug("Loaded persistent settings from %s", filename)
+            LOGGER.debug(
+                "Started with empty storage: No persistent storage file found."
+            )
+            return {}
+
+        loop = asyncio.get_running_loop()
+        self._data = await loop.run_in_executor(None, _load)
+
+    def save(self, immediate: bool = False) -> None:
+        """Schedule save of data to disk."""
+        if self._timer_handle is not None:
+            self._timer_handle.cancel()
+            self._timer_handle = None
+
+        if immediate:
+            self.server.loop.create_task(self.async_save())
+        else:
+            # schedule the save for later
+            self._timer_handle = self.server.loop.call_later(
+                DEFAULT_SAVE_DELAY, self.server.loop.create_task, self.async_save()
+            )
+
+    async def async_save(self):
+        """Save persistent data to disk."""
+
+        def do_save():
+            filename_backup = f"{self.filename}.backup"
+            # make backup before we write a new file
+            if os.path.isfile(self.filename):
+                if os.path.isfile(filename_backup):
+                    os.remove(filename_backup)
+                os.rename(self.filename, filename_backup)
+
+            with open(self.filename, "w", encoding="utf-8") as _file:
+                _file.write(json_dumps(self._data))
+            LOGGER.debug("Saved data to persistent storage")
+
+        await self.server.loop.run_in_executor(None, do_save)

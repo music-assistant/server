@@ -7,7 +7,7 @@ from databases import Database as Db
 from sqlalchemy.sql import ClauseElement
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 
 SCHEMA_VERSION = 19
@@ -27,7 +27,7 @@ TABLE_THUMBS = "thumbnails"
 class DatabaseController:
     """Controller that holds the (connection to the) database."""
 
-    def __init__(self, mass: MusicAssistantServer):
+    def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.url = mass.config.database_url
         self.mass = mass

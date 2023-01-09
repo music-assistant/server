@@ -24,13 +24,13 @@ from .fanarttv import FanartTv
 from .musicbrainz import MusicBrainz
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 
 class MetaDataController:
     """Several helpers to search and store metadata for mediaitems."""
 
-    def __init__(self, mass: MusicAssistantServer) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache

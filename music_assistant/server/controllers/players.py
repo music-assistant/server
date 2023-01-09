@@ -10,13 +10,13 @@ from music_assistant.common.models.player import Player
 from music_assistant.common.models.player_queue import PlayerQueue
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 
 class PlayerController:
     """Controller holding all logic to play music from MusicProviders to supported players."""
 
-    def __init__(self, mass: MusicAssistantServer) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         self.mass = mass
         self.logger = mass.logger.getChild("players")

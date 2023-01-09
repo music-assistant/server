@@ -10,7 +10,7 @@ import aiohttp
 from music_assistant.common.models.errors import InvalidDataError
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistantServer
+    from music_assistant.server import MusicAssistant
 
 
 LOGGER = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ async def parse_pls(pls_data: str) -> List[str]:
     return lines
 
 
-async def fetch_playlist(mass: MusicAssistantServer, url: str) -> List[str]:
+async def fetch_playlist(mass: MusicAssistant, url: str) -> List[str]:
     """Parse an online m3u or pls playlist."""
 
     try:
