@@ -1,6 +1,7 @@
 """FanartTv Metadata provider."""
 from __future__ import annotations
 
+import logging
 from json.decoder import JSONDecodeError
 from typing import TYPE_CHECKING, Optional
 
@@ -14,6 +15,7 @@ from music_assistant.common.models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
 )
+from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.app_vars import (  # pylint: disable=no-name-in-module
     app_var,
@@ -21,6 +23,8 @@ from music_assistant.server.helpers.app_vars import (  # pylint: disable=no-name
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
+
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata.audiodb")
 
 # TODO: add support for personal api keys ?
 
@@ -40,14 +44,13 @@ class FanartTv:
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
-        self.logger = mass.logger.getChild("fanarttv")
         self.throttler = Throttler(rate_limit=2, period=1)
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on fanart.tv."""
         if not artist.musicbrainz_id:
             return
-        self.logger.debug("Fetching metadata for Artist %s on Fanart.tv", artist.name)
+        LOGGER.debug("Fetching metadata for Artist %s on Fanart.tv", artist.name)
         if data := await self._get_data(f"music/{artist.musicbrainz_id}"):
             metadata = MediaItemMetadata()
             metadata.images = []
@@ -64,7 +67,7 @@ class FanartTv:
         """Retrieve metadata for album on fanart.tv."""
         if not album.musicbrainz_id:
             return
-        self.logger.debug("Fetching metadata for Album %s on Fanart.tv", album.name)
+        LOGGER.debug("Fetching metadata for Album %s on Fanart.tv", album.name)
         if data := await self._get_data(f"music/albums/{album.musicbrainz_id}"):
             if data and data.get("albums"):
                 data = data["albums"][album.musicbrainz_id]
@@ -94,17 +97,17 @@ class FanartTv:
                     aiohttp.ContentTypeError,
                     JSONDecodeError,
                 ):
-                    self.logger.error("Failed to retrieve %s", endpoint)
+                    LOGGER.error("Failed to retrieve %s", endpoint)
                     text_result = await response.text()
-                    self.logger.debug(text_result)
+                    LOGGER.debug(text_result)
                     return None
                 except (
                     aiohttp.ClientConnectorError,
                     aiohttp.client_exceptions.ServerDisconnectedError,
                 ):
-                    self.logger.warning("Failed to retrieve %s", endpoint)
+                    LOGGER.warning("Failed to retrieve %s", endpoint)
                     return None
                 if "error" in result and "limit" in result["error"]:
-                    self.logger.warning(result["error"])
+                    LOGGER.warning(result["error"])
                     return None
                 return result

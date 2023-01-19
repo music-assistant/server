@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.common.helpers.json import json
+from music_assistant.common.helpers.json import json_loads, json_dumps
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name, merge_lists
 from music_assistant.common.models.enums import (
@@ -167,7 +167,7 @@ class MediaItem(DataClassDictMixin):
         db_row["provider"] = "database"
         for key in JSON_KEYS:
             if key in db_row and db_row[key] is not None:
-                db_row[key] = json.loads(db_row[key])
+                db_row[key] = json_loads(db_row[key])
         if "in_library" in db_row:
             db_row["in_library"] = bool(db_row["in_library"])
         if db_row.get("albums"):
@@ -180,7 +180,7 @@ class MediaItem(DataClassDictMixin):
     def to_db_row(self) -> dict:
         """Create dict from item suitable for db."""
         return {
-            key: json.dumps(value) if key in JSON_KEYS else value
+            key: json_dumps(value) if key in JSON_KEYS else value
             for key, value in self.to_dict().items()
             if key
             not in [

@@ -1,6 +1,7 @@
 """TheAudioDb Metadata provider."""
 from __future__ import annotations
 
+import logging
 from json.decoder import JSONDecodeError
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -18,6 +19,7 @@ from music_assistant.common.models.media_items import (
     MediaItemMetadata,
     Track,
 )
+from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.app_vars import (  # pylint: disable=no-name-in-module
     app_var,
@@ -26,6 +28,8 @@ from music_assistant.server.helpers.compare import compare_strings
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
+
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata.audiodb")
 
 IMG_MAPPING = {
     "strArtistThumb": ImageType.THUMB,
@@ -67,12 +71,11 @@ class TheAudioDb:
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
-        self.logger = mass.logger.getChild("audiodb")
         self.throttler = Throttler(rate_limit=2, period=1)
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on theaudiodb."""
-        self.logger.debug("Fetching metadata for Artist %s on TheAudioDb", artist.name)
+        LOGGER.debug("Fetching metadata for Artist %s on TheAudioDb", artist.name)
         if data := await self._get_data("artist-mb.php", i=artist.musicbrainz_id):
             if data.get("artists"):
                 return self.__parse_artist(data["artists"][0])
@@ -160,9 +163,7 @@ class TheAudioDb:
         self, artist: Artist, ref_albums: List[Album]
     ) -> str | None:
         """Try to discover MusicBrainz ID for an artist given some reference albums."""
-        self.logger.debug(
-            "Lookup MusicbrainzID for Artist %s on TheAudioDb", artist.name
-        )
+        LOGGER.debug("Lookup MusicbrainzID for Artist %s on TheAudioDb", artist.name)
         musicbrainz_id = None
         if data := await self._get_data("searchalbum.php", s=artist.name):
             # NOTE: object is 'null' when no records found instead of empty array
@@ -179,9 +180,7 @@ class TheAudioDb:
                         await self.mass.music.albums.add_db_item(ref_album)
                     musicbrainz_id = item["strMusicBrainzArtistID"]
         if musicbrainz_id:
-            self.logger.debug(
-                "Found MusicBrainzID for artist %s on TheAudioDb", artist.name
-            )
+            LOGGER.debug("Found MusicBrainzID for artist %s on TheAudioDb", artist.name)
         return musicbrainz_id
 
     def __parse_artist(self, artist_obj: Dict[str, Any]) -> MediaItemMetadata:
@@ -295,17 +294,17 @@ class TheAudioDb:
                     aiohttp.ContentTypeError,
                     JSONDecodeError,
                 ):
-                    self.logger.error("Failed to retrieve %s", endpoint)
+                    LOGGER.error("Failed to retrieve %s", endpoint)
                     text_result = await response.text()
-                    self.logger.debug(text_result)
+                    LOGGER.debug(text_result)
                     return None
                 except (
                     aiohttp.ClientConnectorError,
                     aiohttp.client_exceptions.ServerDisconnectedError,
                 ):
-                    self.logger.warning("Failed to retrieve %s", endpoint)
+                    LOGGER.warning("Failed to retrieve %s", endpoint)
                     return None
                 if "error" in result and "limit" in result["error"]:
-                    self.logger.warning(result["error"])
+                    LOGGER.warning(result["error"])
                     return None
                 return result

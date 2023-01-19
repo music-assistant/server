@@ -1,7 +1,7 @@
 """Helpers to work with (de)serializing of json."""
 
 from typing import Any
-
+import base64
 import orjson
 
 
@@ -23,8 +23,10 @@ def json_encoder_default(obj: Any) -> Any:
         return list(obj)
     if hasattr(obj, "as_dict"):
         return obj.as_dict()
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
     if isinstance(obj, bytes):
-        return str(obj)
+        return base64.b64encode(obj).decode("ascii")
 
     raise TypeError
 

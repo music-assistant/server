@@ -6,7 +6,7 @@ from random import choice, random
 from time import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from music_assistant.common.helpers.json import json_serializer
+from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.models.enums import (
     EventType,
     MusicProviderFeature,
@@ -319,8 +319,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "name": item.name if overwrite else cur_item.name,
                 "sort_name": item.sort_name if overwrite else cur_item.sort_name,
                 "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
-                "metadata": json_serializer(metadata),
-                "provider_mappings": json_serializer(provider_mappings),
+                "metadata": json_dumps(metadata),
+                "provider_mappings": json_dumps(provider_mappings),
             },
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)

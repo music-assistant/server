@@ -1,16 +1,20 @@
 """Database logic."""
 from __future__ import annotations
+import logging
+import os
 
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Union
 
 from databases import Database as Db
 from sqlalchemy.sql import ClauseElement
 
+from music_assistant.constants import ROOT_LOGGER_NAME, CONF_DB_URL
+
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.db")
 
-SCHEMA_VERSION = 19
 
 TABLE_TRACK_LOUDNESS = "track_loudness"
 TABLE_PLAYLOG = "playlog"
@@ -23,15 +27,17 @@ TABLE_CACHE = "cache"
 TABLE_SETTINGS = "settings"
 TABLE_THUMBS = "thumbnails"
 
+SCHEMA_VERSION = 19
+
 
 class DatabaseController:
     """Controller that holds the (connection to the) database."""
 
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
-        self.url = mass.config.database_url
+        db_file = os.path.join(mass.storage_path, "music_assistant.db")
+        self.url = mass.config.get(CONF_DB_URL, f"sqlite:///{db_file}")
         self.mass = mass
-        self.logger = mass.logger.getChild("db")
         # we maintain one global connection - otherwise we run into (dead)lock issues.
         # https://github.com/encode/databases/issues/456
         self._db = Db(self.url, timeout=360)
@@ -39,12 +45,12 @@ class DatabaseController:
     async def setup(self) -> None:
         """Perform async initialization."""
         await self._db.connect()
-        self.logger.info("Database connected.")
+        LOGGER.info("Database connected.")
         await self._migrate()
 
     async def close(self) -> None:
         """Close db connection on exit."""
-        self.logger.info("Database disconnected.")
+        LOGGER.info("Database disconnected.")
         await self._db.disconnect()
 
     async def get_rows(
@@ -179,7 +185,7 @@ class DatabaseController:
             prev_version = 0
 
         if prev_version not in (0, SCHEMA_VERSION):
-            self.logger.info(
+            LOGGER.info(
                 "Performing database migration from %s to %s",
                 prev_version,
                 SCHEMA_VERSION,

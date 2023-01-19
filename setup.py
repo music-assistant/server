@@ -3,11 +3,12 @@ import os
 from pathlib import Path
 
 from setuptools import find_packages, setup
+from music_assistant.constants import __version__
 
 PROJECT_NAME = "Music Assistant"
 PROJECT_PACKAGE_NAME = "music_assistant"
-PROJECT_VERSION = "1.8.8"
-PROJECT_REQ_PYTHON_VERSION = "3.9"
+PROJECT_VERSION = __version__
+PROJECT_REQ_PYTHON_VERSION = "3.10"
 PROJECT_LICENSE = "Apache License 2.0"
 PROJECT_AUTHOR = "Marcel van der Veldt"
 PROJECT_EMAIL = "marcelveldt@users.noreply.github.com"

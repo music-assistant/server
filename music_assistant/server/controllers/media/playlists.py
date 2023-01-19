@@ -6,7 +6,7 @@ from ctypes import Union
 from time import time
 from typing import Any, List, Optional, Tuple
 
-from music_assistant.common.helpers.json import json_serializer
+from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.models.enums import (
     EventType,
@@ -240,8 +240,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "sort_name": item.sort_name,
                 "owner": item.owner,
                 "is_editable": item.is_editable,
-                "metadata": json_serializer(metadata),
-                "provider_mappings": json_serializer(provider_mappings),
+                "metadata": json_dumps(metadata),
+                "provider_mappings": json_dumps(provider_mappings),
             },
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)

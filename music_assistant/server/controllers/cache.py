@@ -4,15 +4,19 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import logging
 import time
 from collections import OrderedDict
 from collections.abc import MutableMapping
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
+from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.controllers.database import TABLE_CACHE
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
+
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
 
 
 class CacheController:
@@ -21,7 +25,6 @@ class CacheController:
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize our caching class."""
         self.mass = mass
-        self.logger = mass.logger.getChild("cache")
         self._mem_cache = MemoryCache(500)
 
     async def setup(self) -> None:
@@ -60,7 +63,7 @@ class CacheController:
                         None, json.loads, db_row["data"]
                     )
                 except Exception as exc:  # pylint: disable=broad-except
-                    self.logger.exception(
+                    LOGGER.exception(
                         "Error parsing cache data for %s", cache_key, exc_info=exc
                     )
                 else:

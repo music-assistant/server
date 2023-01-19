@@ -2,16 +2,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Dict, Tuple
 
 from music_assistant.common.models.enums import EventType, PlayerState
 from music_assistant.common.models.errors import AlreadyRegisteredError
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.player_queue import PlayerQueue
+from music_assistant.constants import ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
 
 class PlayerController:
     """Controller holding all logic to play music from MusicProviders to supported players."""
@@ -19,7 +22,6 @@ class PlayerController:
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         self.mass = mass
-        self.logger = mass.logger.getChild("players")
         self._players: Dict[str, Player] = {}
 
     async def setup(self) -> None:
@@ -60,14 +62,14 @@ class PlayerController:
 
         # make sure that the mass instance is set on the player
         player.mass = self.mass
-        player.logger = self.logger.getChild(player.player_id)
+        player.logger = LOGGER.getChild(player.player_id)
 
         # create playerqueue for this player
         player.queue = PlayerQueue(player)
         await player.queue.setup()
         self._players[player_id] = player
 
-        self.logger.info(
+        LOGGER.info(
             "Player registered: %s/%s",
             player_id,
             player.name,

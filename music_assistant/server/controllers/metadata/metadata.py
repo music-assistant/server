@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from base64 import b64encode
+import logging
 from time import time
 from typing import TYPE_CHECKING, Optional
 
@@ -16,6 +17,7 @@ from music_assistant.common.models.media_items import (
     Radio,
     Track,
 )
+from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.controllers.database import TABLE_THUMBS
 from music_assistant.server.helpers.images import create_collage, create_thumbnail
 
@@ -26,6 +28,7 @@ from .musicbrainz import MusicBrainz
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
 
 class MetaDataController:
     """Several helpers to search and store metadata for mediaitems."""
@@ -34,7 +37,6 @@ class MetaDataController:
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
-        self.logger = mass.logger.getChild("metadata")
         self.fanarttv = FanartTv(mass)
         self.musicbrainz = MusicBrainz(mass)
         self.audiodb = TheAudioDb(mass)
@@ -175,7 +177,7 @@ class MetaDataController:
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
         ref_tracks_str = "/".join(x.name for x in ref_tracks) or "none"
-        self.logger.info(
+        LOGGER.info(
             "Unable to get musicbrainz ID for artist %s\n"
             " - using lookup-album(s): %s\n"
             " - using lookup-track(s): %s\n",

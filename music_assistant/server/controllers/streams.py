@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import urllib.parse
 from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
@@ -27,7 +28,7 @@ from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import BASE_URL_OVERRIDE_ENVNAME
+from music_assistant.constants import BASE_URL_OVERRIDE_ENVNAME, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
     from music_assistant.common.models.queue_stream import QueueStream
     from music_assistant.server import MusicAssistant
 
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.streams")
+
 ICY_CHUNKSIZE = 8192
 
 
@@ -52,7 +55,6 @@ class StreamsController:
     def __init__(self, mass: MusicAssistant):
         """Initialize instance."""
         self.mass = mass
-        self.logger = mass.logger.getChild("stream")
         self._port = mass.config.stream_port
         self._ip = mass.config.stream_ip
         self.queue_streams: Dict[str, QueueStream] = {}
@@ -123,22 +125,22 @@ class StreamsController:
             await runner.cleanup()
             await app.shutdown()
             await app.cleanup()
-            self.logger.debug("Streamserver exited.")
+            LOGGER.debug("Streamserver exited.")
 
         self.mass.subscribe(on_shutdown_event, EventType.SHUTDOWN)
 
         ffmpeg_present, libsoxr_support = await check_audio_support(True)
         if not ffmpeg_present:
-            self.logger.error(
+            LOGGER.error(
                 "FFmpeg binary not found on your system, playback will NOT work!."
             )
         elif not libsoxr_support:
-            self.logger.warning(
+            LOGGER.warning(
                 "FFmpeg version found without libsoxr support, "
                 "highest quality audio not available. "
             )
 
-        self.logger.info("Started stream server on port %s", self._port)
+        LOGGER.info("Started stream server on port %s", self._port)
 
     async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""
@@ -175,7 +177,7 @@ class StreamsController:
 
     async def serve_queue_stream(self, request: web.Request):
         """Serve queue audio stream to a player."""
-        self.logger.debug(
+        LOGGER.debug(
             "Got %s request to %s from %s\nheaders: %s\n",
             request.method,
             request.path,
@@ -196,7 +198,7 @@ class StreamsController:
 
         # handle situation where the player requests a stream but we did not initiate the request
         if queue.stream.state in (StreamState.IDLE, StreamState.PENDING_STOP):
-            self.logger.warning(
+            LOGGER.warning(
                 "Got unsollicited stream request for %s",
                 queue_id,
             )
@@ -204,7 +206,7 @@ class StreamsController:
             await queue.resume(passive=True)
         # handle scenario where the player (re)requests the stream while it is already running
         elif queue.stream.state == StreamState.RUNNING:
-            self.logger.warning(
+            LOGGER.warning(
                 "Got stream request for %s while already running, playback may be disturbed!",
                 queue_id,
             )
@@ -296,7 +298,7 @@ class StreamsController:
         if client_id in stream.listeners:
             # multiple connections from the same player
             # this probably means a client which does multiple GET requests (e.g. Kodi, Vlc)
-            self.logger.warning(
+            LOGGER.warning(
                 "Simultanuous connections detected from %s, playback may be disturbed!",
                 client_id,
             )

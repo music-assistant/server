@@ -5,7 +5,7 @@ import asyncio
 from random import choice, random
 from typing import TYPE_CHECKING, List, Optional, Union
 
-from music_assistant.common.helpers.json import json_serializer
+from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.models.enums import (
     EventType,
     MusicProviderFeature,
@@ -164,7 +164,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 self.db_table,
                 {
                     **item.to_db_row(),
-                    "artists": json_serializer(album_artists) or None,
+                    "artists": json_dumps(album_artists) or None,
                     "sort_artist": sort_artist,
                 },
             )
@@ -215,9 +215,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 "year": item.year or cur_item.year,
                 "upc": item.upc or cur_item.upc,
                 "album_type": album_type,
-                "artists": json_serializer(album_artists) or None,
-                "metadata": json_serializer(metadata),
-                "provider_mappings": json_serializer(provider_mappings),
+                "artists": json_dumps(album_artists) or None,
+                "metadata": json_dumps(metadata),
+                "provider_mappings": json_dumps(provider_mappings),
                 "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
             },
         )

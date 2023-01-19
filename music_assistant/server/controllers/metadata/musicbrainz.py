@@ -1,6 +1,7 @@
 """Handle getting Id's from MusicBrainz."""
 from __future__ import annotations
 
+import logging
 import re
 from json.decoder import JSONDecodeError
 from typing import TYPE_CHECKING
@@ -9,11 +10,14 @@ import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import create_sort_name
+from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.compare import compare_strings
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
+
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata.audiodb")
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
@@ -25,7 +29,6 @@ class MusicBrainz:
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
-        self.logger = mass.logger.getChild("musicbrainz")
         self.throttler = Throttler(rate_limit=1, period=1)
 
     async def get_mb_artist_id(
@@ -37,7 +40,7 @@ class MusicBrainz:
         track_isrc=None,
     ):
         """Retrieve musicbrainz artist id for the given details."""
-        self.logger.debug(
+        LOGGER.debug(
             "searching musicbrainz for %s \
                 (albumname: %s - album_upc: %s - trackname: %s - track_isrc: %s)",
             artistname,
@@ -49,7 +52,7 @@ class MusicBrainz:
 
         if album_upc:
             if mb_id := await self.search_artist_by_album(artistname, None, album_upc):
-                self.logger.debug(
+                LOGGER.debug(
                     "Got MusicbrainzArtistId for %s after search on upc %s --> %s",
                     artistname,
                     album_upc,
@@ -58,7 +61,7 @@ class MusicBrainz:
                 return mb_id
         if track_isrc:
             if mb_id := await self.search_artist_by_track(artistname, None, track_isrc):
-                self.logger.debug(
+                LOGGER.debug(
                     "Got MusicbrainzArtistId for %s after search on isrc %s --> %s",
                     artistname,
                     track_isrc,
@@ -67,7 +70,7 @@ class MusicBrainz:
                 return mb_id
         if albumname:
             if mb_id := await self.search_artist_by_album(artistname, albumname):
-                self.logger.debug(
+                LOGGER.debug(
                     "Got MusicbrainzArtistId for %s after search on albumname %s --> %s",
                     artistname,
                     albumname,
@@ -76,7 +79,7 @@ class MusicBrainz:
                 return mb_id
         if trackname:
             if mb_id := await self.search_artist_by_track(artistname, trackname):
-                self.logger.debug(
+                LOGGER.debug(
                     "Got MusicbrainzArtistId for %s after search on trackname %s --> %s",
                     artistname,
                     trackname,
@@ -175,6 +178,6 @@ class MusicBrainz:
                     JSONDecodeError,
                 ) as exc:
                     msg = await response.text()
-                    self.logger.warning("%s - %s", str(exc), msg)
+                    LOGGER.warning("%s - %s", str(exc), msg)
                     result = None
                 return result

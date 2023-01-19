@@ -29,7 +29,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.server.music_providers.base import MusicProvider
-from music_assistant.music_providers.ytmusic.helpers import (
+from music_assistant.server.music_providers.ytmusic.helpers import (
     add_remove_playlist_tracks,
     get_album,
     get_artist,

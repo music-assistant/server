@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import ABCMeta, abstractmethod
 from time import time
 from typing import (
@@ -15,7 +16,7 @@ from typing import (
     Union,
 )
 
-from music_assistant.common.helpers.json import json_serializer
+from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.models.enums import (
     EventType,
     MediaType,
@@ -29,6 +30,7 @@ from music_assistant.common.models.media_items import (
     Track,
     media_from_dict,
 )
+from music_assistant.constants import ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
@@ -48,7 +50,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.mass = mass
-        self.logger = mass.logger.getChild(f"music.{self.media_type}")
+        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.media_type}")
         self._db_add_lock = asyncio.Lock()
 
     @abstractmethod
@@ -442,7 +444,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         await self.mass.database.update(
             self.db_table,
             match,
-            {"provider_mappings": json_serializer(db_item.provider_mappings)},
+            {"provider_mappings": json_dumps(db_item.provider_mappings)},
         )
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 

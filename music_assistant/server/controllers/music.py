@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import logging
 import statistics
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
@@ -25,6 +26,7 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     media_from_dict,
 )
+from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.controllers.database import (
     TABLE_PLAYLOG,
     TABLE_TRACK_LOUDNESS,
@@ -49,6 +51,8 @@ from music_assistant.server.music_providers.ytmusic import YoutubeMusicProvider
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
+
 PROV_MAP = {
     ProviderType.FILESYSTEM_LOCAL: LocalFileSystemProvider,
     ProviderType.FILESYSTEM_SMB: SMBFileSystemProvider,
@@ -64,7 +68,6 @@ class MusicController:
 
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
-        self.logger = mass.logger.getChild("music")
         self.mass = mass
         self.artists = ArtistsController(mass)
         self.albums = AlbumsController(mass)
@@ -453,7 +456,7 @@ class MusicController:
             provider.config = conf
             provider.mass = self.mass
             provider.cache = self.mass.cache
-            provider.logger = self.logger.getChild(provider.type)
+            provider.logger = LOGGER.getChild(provider.type)
             if await provider.setup():
                 self._providers[provider.id] = provider
         except Exception as err:  # pylint: disable=broad-except

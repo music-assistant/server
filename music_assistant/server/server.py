@@ -7,24 +7,42 @@ from collections import deque
 from functools import partial
 from time import time
 from types import TracebackType
-from typing import Any, Callable, Coroutine, Deque, List, Optional, Tuple, Type, Union
+from typing import (
+    Any,
+    Callable,
+    Coroutine,
+    Deque,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Type,
+    Union,
+)
 from uuid import uuid4
 
-import aiohttp
+from aiohttp import ClientSession, TCPConnector, web
 
-from music_assistant.constants import ROOT_LOGGER_NAME
+from music_assistant.common.models.background_job import BackgroundJob
+from music_assistant.common.models.enums import EventType, JobStatus
+from music_assistant.common.models.event import MassEvent
+from music_assistant.constants import (
+    CONF_WEB_HOST,
+    CONF_WEB_PORT,
+    DEFAULT_PORT,
+    DEFAULT_HOST,
+    ROOT_LOGGER_NAME,
+)
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.database import DatabaseController
 from music_assistant.server.controllers.metadata.metadata import MetaDataController
 from music_assistant.server.controllers.music import MusicController
 from music_assistant.server.controllers.players import PlayerController
-from music_assistant.server.controllers.settings import SettingsController
+from music_assistant.server.controllers.config import ConfigController
 from music_assistant.server.controllers.streams import StreamsController
-from music_assistant.common.models.background_job import BackgroundJob
-from music_assistant.common.models.enums import EventType, JobStatus
-from music_assistant.common.models.event import MassEvent
+from music_assistant.server.helpers.api import APICommandHandler, mount_websocket
 
-EventCallBackType = Callable[[MassEvent], None]
+EventCallBackType = Callable[[EventType, Any], None]
 EventSubscriptionType = Tuple[
     EventCallBackType, Optional[Tuple[EventType]], Optional[Tuple[str]]
 ]
@@ -36,18 +54,21 @@ class MusicAssistant:
     """Main MusicAssistant (Server) object."""
 
     loop: asyncio.AbstractEventLoop | None = None
-    http_session: aiohttp.ClientSession | None = None
+    http_session: ClientSession | None = None
+    _web_apprunner: web.AppRunner | None = None
+    _web_tcp: web.TCPSite | None = None
 
     def __init__(self, storage_path: str) -> None:
         """
         Create an instance of the MusicAssistant Server."""
-        self._listeners = []
+        self.storage_path = storage_path
+        self._subscribers: Set[EventCallBackType] = set()
         self._jobs: Deque[BackgroundJob] = deque()
         self._jobs_event = asyncio.Event()
 
         # init core controllers
+        self.config = ConfigController(self)
         self.database = DatabaseController(self)
-        self.settings = SettingsController(self)
         self.cache = CacheController(self)
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
@@ -55,15 +76,19 @@ class MusicAssistant:
         self.streams = StreamsController(self)
         self._tracked_tasks: List[asyncio.Task] = []
         self.closed = False
+        self.loop: asyncio.AbstractEventLoop | None = None
+        # we dynamically register command handlers
+        self.webapp = web.Application()
+        self.command_handlers: dict[str, APICommandHandler] = {}
+        self._register_api_commands()
 
-    async def setup(self) -> None:
-        """Async setup of music assistant."""
-        # initialize loop
+    async def start(self) -> None:
+        """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
         # create shared aiohttp ClientSession
-        self.http_session = aiohttp.ClientSession(
+        self.http_session = ClientSession(
             loop=self.loop,
-            connector=aiohttp.TCPConnector(ssl=False),
+            connector=TCPConnector(ssl=False),
         )
         # setup core controllers
         await self.database.setup()
@@ -73,6 +98,17 @@ class MusicAssistant:
         await self.metadata.setup()
         await self.players.setup()
         await self.streams.setup()
+        # setup web server
+        host = self.config.get(CONF_WEB_HOST, DEFAULT_HOST)
+        port = self.config.get(CONF_WEB_PORT, DEFAULT_PORT)
+        if host == "0.0.0.0":
+            # set host to None to bind to all addresses on both IPv4 and IPv6
+            host = None
+        mount_websocket(self, "/ws")
+        self._web_apprunner = web.AppRunner(self.webapp, access_log=None)
+        await self._web_apprunner.setup()
+        self._http = web.TCPSite(self._web_apprunner, host=host, port=port)
+        await self._http.start()
         self.create_task(self.__process_jobs())
 
     async def stop(self) -> None:
@@ -102,7 +138,7 @@ class MusicAssistant:
             if event_type != EventType.QUEUE_TIME_UPDATED:
                 # do not log queue time updated events because that is too chatty
                 LOGGER.getChild("event").debug("%s %s", event_type, object_id or "")
-        for cb_func, event_filter, id_filter in self._listeners:
+        for cb_func, event_filter, id_filter in self._subscribers:
             if not (event_filter is None or event_type in event_filter):
                 continue
             if not (id_filter is None or object_id in id_filter):
@@ -131,10 +167,10 @@ class MusicAssistant:
         if isinstance(id_filter, str):
             id_filter = (id_filter,)
         listener = (cb_func, event_filter, id_filter)
-        self._listeners.append(listener)
+        self._subscribers.add(listener)
 
         def remove_listener():
-            self._listeners.remove(listener)
+            self._subscribers.remove(listener)
 
         return remove_listener
 
@@ -186,6 +222,15 @@ class MusicAssistant:
         """Return the pending/running background jobs."""
         return list(self._jobs)
 
+    def register_api_command(
+        self,
+        command: str,
+        handler: Callable,
+    ) -> None:
+        """Dynamically register a command on the API."""
+        assert command not in self.command_handlers, "Command already registered"
+        self.command_handlers[command] = APICommandHandler.parse(command, handler)
+
     async def __process_jobs(self):
         """Process jobs in the background."""
         while True:
@@ -235,6 +280,18 @@ class MusicAssistant:
         # mark job as done
         job.done()
         self.signal_event(EventType.BACKGROUND_JOB_FINISHED, job.name, data=job)
+
+    def _register_api_commands(self) -> None:
+        """Register all methods decorated as api_command."""
+        for cls in dir(self):
+            for attr_name in dir(cls):
+                if attr_name.startswith("__"):
+                    continue
+                val = getattr(cls, attr_name)
+                if not hasattr(val, "api_cmd"):
+                    continue
+                # method is decorated with our api decorator
+                self.register_api_command(val.api_cmd, val)
 
     async def __aenter__(self) -> "MusicAssistant":
         """Return Context manager."""

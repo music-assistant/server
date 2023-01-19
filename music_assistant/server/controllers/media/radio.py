@@ -5,7 +5,7 @@ import asyncio
 from time import time
 from typing import List, Optional
 
-from music_assistant.common.helpers.json import json_serializer
+from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.models.enums import EventType, MediaType, ProviderType
 from music_assistant.common.models.media_items import Radio, Track
 from music_assistant.server.controllers.database import TABLE_RADIOS
@@ -113,8 +113,8 @@ class RadioController(MediaControllerBase[Radio]):
                 # always prefer name from updated item here
                 "name": item.name,
                 "sort_name": item.sort_name,
-                "metadata": json_serializer(metadata),
-                "provider_mappings": json_serializer(provider_mappings),
+                "metadata": json_dumps(metadata),
+                "provider_mappings": json_dumps(provider_mappings),
             },
         )
         self.logger.debug("updated %s in database: %s", item.name, item_id)

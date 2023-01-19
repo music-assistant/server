@@ -2,6 +2,8 @@
 
 import pathlib
 
+__version__ = "2.0.0"
+
 ROOT_LOGGER_NAME = "music_assistant"
 
 UNKNOWN_ARTIST = "Unknown Artist"
@@ -19,3 +21,13 @@ FALLBACK_DURATION = 172800
 
 # Name of the environment-variable to override base_url
 BASE_URL_OVERRIDE_ENVNAME = "MASS_BASE_URL"
+
+
+# config keys
+CONF_WEB_HOST = "webserver/host"
+CONF_WEB_PORT = "webserver/port"
+CONF_DB_URL = "database/url"
+
+# config default values
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 8095
