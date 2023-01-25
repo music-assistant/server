@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Tuple
+import logging
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
 
 from music_assistant.common.models.config import MusicProviderConfig
 from music_assistant.common.models.enums import (
@@ -20,23 +21,43 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
+from music_assistant.common.models.config_entries import (
+    CONFIG_ENTRY_ENABLED,
+    ConfigEntry,
+    ConfigValues,
+)
+from music_assistant.constants import ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.cache import CacheController
+
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata.audiodb")
+
+# config entries: return the required config entries for the provider
+CONFIG_ENTRIES: tuple[ConfigEntry, ...] = (CONFIG_ENTRY_ENABLED,)
 
 
-class MusicProvider:
-    """Model for a Music Provider."""
+class MusicProviderController:
+    """
+    Base representation of a Music Provider (controller).
+    
+    Provider implementations should subclass this base model/class
+    or make sure they implement all public methods and properties.
+    """
 
     _attr_name: str = None
-    _attr_type: ProviderType = None
+    _attr_type: str = "base",
     _attr_available: bool = True
 
-    def __init__(self, mass: MusicAssistant, config: MusicProviderConfig) -> None:
+    # config entries: return the required config entries for this provider
+    config_entries: tuple[ConfigEntry, ...] = (CONFIG_ENTRY_ENABLED,)
+
+    def __init__(self, mass: MusicAssistant, config: ConfigValues) -> None:
         """Initialize MusicProvider."""
         self.mass = mass
         self.config = config
-        self.logger = mass.logger
+        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.type}")
         self.cache = mass.cache
 
     @property
@@ -49,12 +70,30 @@ class MusicProvider:
         """
         Handle async initialization of the provider.
 
-        Called when provider is registered.
+        Called when provider is registered (or its config updated).
         """
+
+    async def close(self) -> bool:
+        """
+        Handle close/cleanup of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        """
+
+    async def update_config(self, config: ConfigValues) -> bool:
+        """
+        Handle updated configuration.
+
+        Called when config is adjusted by the user for this provider.
+        """
+        self.config = config
+        # default implementation is to simply stop and restart the provider with updated config
+        await self.close()
+        await self.setup()
 
     @property
     def type(self) -> ProviderType:
-        """Return provider type for this provider."""
+        """Return provider domain for this provider."""
         return self._attr_type
 
     @property
@@ -408,7 +447,7 @@ class MusicProvider:
 
                 db_item: MediaItemType = await controller.get_db_item_by_prov_id(
                     provider_item_id=prov_item.item_id,
-                    provider_type=prov_item.provider,
+                    provider_domain=prov_item.provider,
                 )
                 if not db_item:
                     # dump the item in the db, rich metadata is lazy loaded later
@@ -436,10 +475,10 @@ class MusicProvider:
                 if db_item.item_id in cur_db_ids:
                     continue
                 for prov_mapping in db_item.provider_mappings:
-                    provider_types = {
-                        x.provider_type for x in db_item.provider_mappings
+                    provider_domains = {
+                        x.provider_domain for x in db_item.provider_mappings
                     }
-                    if len(provider_types) > 1:
+                    if len(provider_domains) > 1:
                         continue
                     if prov_mapping.provider_id != self.id:
                         continue

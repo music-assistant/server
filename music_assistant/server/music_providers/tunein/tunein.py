@@ -138,7 +138,7 @@ class TuneInProvider(MusicProvider):
         radio.add_provider_mapping(
             ProviderMapping(
                 item_id=item_id,
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 content_type=content_type,
                 bit_rate=bit_rate,

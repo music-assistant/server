@@ -68,18 +68,18 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def tracks(
         self,
         item_id: Optional[str] = None,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         artist: Optional[Artist] = None,
     ) -> List[Track]:
         """Return top tracks for an artist."""
         if not artist:
-            artist = await self.get(item_id, provider_type, provider_id)
+            artist = await self.get(item_id, provider_domain, provider_id)
         # get results from all providers
         coros = [
             self.get_provider_artist_toptracks(
                 prov_mapping.item_id,
-                provider_type=prov_mapping.provider_type,
+                provider_domain=prov_mapping.provider_domain,
                 provider_id=prov_mapping.provider_id,
                 cache_checksum=artist.metadata.checksum,
             )
@@ -99,18 +99,18 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def albums(
         self,
         item_id: Optional[str] = None,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         artist: Optional[Artist] = None,
     ) -> List[Album]:
         """Return (all/most popular) albums for an artist."""
         if not artist:
-            artist = await self.get(item_id, provider_type or provider_id)
+            artist = await self.get(item_id, provider_domain or provider_id)
         # get results from all providers
         coros = [
             self.get_provider_artist_albums(
                 item.item_id,
-                item.provider_type,
+                item.provider_domain,
                 cache_checksum=artist.metadata.checksum,
             )
             for item in artist.provider_mappings
@@ -157,14 +157,14 @@ class ArtistsController(MediaControllerBase[Artist]):
         assert (
             db_artist.provider == ProviderType.DATABASE
         ), "Matching only supported for database items!"
-        cur_provider_types = {x.provider_type for x in db_artist.provider_mappings}
+        cur_provider_domains = {x.provider_domain for x in db_artist.provider_mappings}
         for provider in self.mass.music.providers:
-            if provider.type in cur_provider_types:
+            if provider.type in cur_provider_domains:
                 continue
             if MusicProviderFeature.SEARCH not in provider.supported_features:
                 continue
             if await self._match(db_artist, provider):
-                cur_provider_types.add(provider.type)
+                cur_provider_domains.add(provider.type)
             else:
                 self.logger.debug(
                     "Could not find match for Artist %s on provider %s",
@@ -175,12 +175,12 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def get_provider_artist_toptracks(
         self,
         item_id: str,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         cache_checksum: Any = None,
     ) -> List[Track]:
         """Return top tracks for an artist on given provider."""
-        prov = self.mass.music.get_provider(provider_id or provider_type)
+        prov = self.mass.music.get_provider(provider_id or provider_domain)
         if not prov:
             return []
         # prefer cache items (if any)
@@ -193,9 +193,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         else:
             # fallback implementation using the db
             if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
-                item_id, provider_type=provider_type, provider_id=provider_id
+                item_id, provider_domain=provider_domain, provider_id=provider_id
             ):
-                prov_id = provider_id or provider_type
+                prov_id = provider_id or provider_domain
                 # TODO: adjust to json query instead of text search?
                 query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
                 query += f" AND provider_mappings LIKE '%\"{prov_id}\"%'"
@@ -211,12 +211,12 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def get_provider_artist_albums(
         self,
         item_id: str,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         cache_checksum: Any = None,
     ) -> List[Album]:
         """Return albums for an artist on given provider."""
-        prov = self.mass.music.get_provider(provider_id or provider_type)
+        prov = self.mass.music.get_provider(provider_id or provider_domain)
         if not prov:
             return []
         # prefer cache items (if any)
@@ -229,9 +229,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         else:
             # fallback implementation using the db
             if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
-                item_id, provider_type=provider_type, provider_id=provider_id
+                item_id, provider_domain=provider_domain, provider_id=provider_id
             ):
-                prov_id = provider_id or provider_type
+                prov_id = provider_id or provider_domain
                 # TODO: adjust to json query instead of text search?
                 query = f"SELECT * FROM albums WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
                 query += f" AND provider_mappings LIKE '%\"{prov_id}\"%'"
@@ -362,19 +362,19 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the artist's top tracks."""
-        prov = self.mass.music.get_provider(provider_id or provider_type)
+        prov = self.mass.music.get_provider(provider_id or provider_domain)
         if (
             not prov
             or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
         ):
             return []
         top_tracks = await self.get_provider_artist_toptracks(
-            item_id=item_id, provider_type=provider_type, provider_id=provider_id
+            item_id=item_id, provider_domain=provider_domain, provider_id=provider_id
         )
         # Grab a random track from the album that we use to obtain similar tracks for
         track = choice(top_tracks)

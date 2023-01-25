@@ -1,1 +1,1 @@
-"""Models package."""
+"""Package with all common/shared (serializable) Models (dataclassses)."""

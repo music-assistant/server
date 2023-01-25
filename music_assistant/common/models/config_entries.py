@@ -21,7 +21,16 @@ class ConfigEntryType(Enum):
     DICT = "dict"
 
 
-ValueTypes = Union[str, int, float, bool, dict, None]
+ConfigValueTypes = Union[str, int, float, bool, dict, None]
+
+ConfigEntryTypeMap = {
+    ConfigEntryType.BOOL: bool,
+    ConfigEntryType.STRING: str,
+    ConfigEntryType.PASSWORD: str,
+    ConfigEntryType.INT: int,
+    ConfigEntryType.FLOAT: float,
+    ConfigEntryType.LABEL: str,
+}
 
 
 @dataclass
@@ -29,16 +38,24 @@ class ConfigValueOption(DataClassDictMixin):
     """Model for a value with seperated name/value."""
 
     text: str
-    value: ValueTypes
+    value: ConfigValueTypes
 
 
 @dataclass
-class ConfigEntryBase(DataClassDictMixin):
-    """Base Model for Config Entries."""
+class ConfigEntry(DataClassDictMixin):
+    """
+    Model for a Config Entry.
+
+    The definition of something that can be configured for an opbject (e.g. provider or player)
+    within Music Assistant. Its value will be loaded at runtime.
+    """
 
     # key: used as identifier for the entry, also for localization
     key: str
-    type: ConfigEntryType
+    value_type: ConfigEntryType
+    # label: default label when no translation for the key is present
+    label: str
+    default_value: ConfigValueTypes = None
     # options [optional]: select from list of possible values/options
     options: Optional[List[ConfigValueOption]] = None
     # range [optional]: select values within range
@@ -53,19 +70,27 @@ class ConfigEntryBase(DataClassDictMixin):
     depends_on: Optional[str] = None
     # hidden: hide from UI
     hidden: bool = False
+    # require_reload: if the object depending on this entry must be reloaded on change
+    require_reload: bool = False
+    # value: the actual value of the configentry, only available at runtime for active instances.
+    value: ConfigValueTypes = None
 
 
-@dataclass
-class ConfigEntry(ConfigEntryBase):
-    """Model for a Config Entry definition."""
+class ConfigValues(dict):
 
-    default_value: ValueTypes = None
+    @classmethod
+    def parse(cls: "ConfigValues", entries: list[ConfigEntry], values: dict[str, ConfigValueTypes]):
+        result = {}
+        for entry in entries:
+            entry.value = values.get(entry.key, entry.default_value)
+            expected_type = ConfigEntryTypeMap.get(entry.value_type)
+            if not isinstance(entry.value, expected_type):
+                raise ValueError(f"{entry.key} has unexpected type: {type(entry.value)}")
+            result[entry.key] = result
+
+# ConfigValues = dict[str, ConfigValueTypes]
 
 
-@dataclass
-class ConfigValue(ConfigEntryBase):
-    """Model for a Config Entry Value."""
-
-    # path: full path to get/set this value (e.g. music_providers/spotify/marcel/username)
-    path: str = None
-    value: ValueTypes = None
+CONFIG_ENTRY_ENABLED = ConfigEntry(
+    key="enabled", type=ConfigEntryType.BOOL, require_reload=True
+)

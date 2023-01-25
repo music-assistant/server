@@ -410,7 +410,7 @@ class QobuzProvider(MusicProvider):
         artist.add_provider_mapping(
             ProviderMapping(
                 item_id=str(artist_obj["id"]),
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 url=artist_obj.get(
                     "url", f'https://open.qobuz.com/artist/{artist_obj["id"]}'
@@ -437,7 +437,7 @@ class QobuzProvider(MusicProvider):
         album.add_provider_mapping(
             ProviderMapping(
                 item_id=str(album_obj["id"]),
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 available=album_obj["streamable"] and album_obj["displayable"],
                 content_type=ContentType.FLAC,
@@ -545,7 +545,7 @@ class QobuzProvider(MusicProvider):
         track.add_provider_mapping(
             ProviderMapping(
                 item_id=str(track_obj["id"]),
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 available=track_obj["streamable"] and track_obj["displayable"],
                 content_type=ContentType.FLAC,
@@ -569,7 +569,7 @@ class QobuzProvider(MusicProvider):
         playlist.add_provider_mapping(
             ProviderMapping(
                 item_id=str(playlist_obj["id"]),
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 url=playlist_obj.get(
                     "url", f'https://open.qobuz.com/playlist/{playlist_obj["id"]}'

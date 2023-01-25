@@ -24,20 +24,20 @@ class RadioController(MediaControllerBase[Radio]):
     async def versions(
         self,
         item_id: str,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
     ) -> List[Radio]:
         """Return all versions of a radio station we can find on all providers."""
-        assert provider_type or provider_id, "Provider type or ID must be specified"
-        radio = await self.get(item_id, provider_type, provider_id)
+        assert provider_domain or provider_id, "Provider type or ID must be specified"
+        radio = await self.get(item_id, provider_domain, provider_id)
         # perform a search on all provider(types) to collect all versions/variants
-        provider_types = {item.type for item in self.mass.music.providers}
+        provider_domains = {item.type for item in self.mass.music.providers}
         all_versions = {
             prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(
                 *[
-                    self.search(radio.name, provider_type)
-                    for provider_type in provider_types
+                    self.search(radio.name, provider_domain)
+                    for provider_domain in provider_domains
                 ]
             )
             for prov_item in prov_items
@@ -49,7 +49,7 @@ class RadioController(MediaControllerBase[Radio]):
                 continue
             radio_copy = Radio.from_dict(radio.to_dict())
             radio_copy.item_id = prov_version.item_id
-            radio_copy.provider = prov_version.provider_type
+            radio_copy.provider = prov_version.provider_domain
             radio_copy.provider_mappings = {prov_version}
             all_versions[prov_version.item_id] = radio_copy
 
@@ -123,7 +123,7 @@ class RadioController(MediaControllerBase[Radio]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         limit: int = 25,
     ) -> List[Track]:

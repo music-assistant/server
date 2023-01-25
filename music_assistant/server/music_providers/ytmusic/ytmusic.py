@@ -500,7 +500,7 @@ class YoutubeMusicProvider(MusicProvider):
             album.album_type = album_type
         album.add_provider_mapping(
             ProviderMapping(
-                item_id=str(album_id), provider_type=self.type, provider_id=self.id
+                item_id=str(album_id), provider_domain=self.type, provider_id=self.id
             )
         )
         return album
@@ -526,7 +526,7 @@ class YoutubeMusicProvider(MusicProvider):
         artist.add_provider_mapping(
             ProviderMapping(
                 item_id=str(artist_id),
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 url=f"https://music.youtube.com/channel/{artist_id}",
             )
@@ -550,7 +550,7 @@ class YoutubeMusicProvider(MusicProvider):
         playlist.is_editable = is_editable
         playlist.add_provider_mapping(
             ProviderMapping(
-                item_id=playlist_obj["id"], provider_type=self.type, provider_id=self.id
+                item_id=playlist_obj["id"], provider_domain=self.type, provider_id=self.id
             )
         )
         playlist.metadata.checksum = playlist_obj.get("checksum")
@@ -597,7 +597,7 @@ class YoutubeMusicProvider(MusicProvider):
         track.add_provider_mapping(
             ProviderMapping(
                 item_id=str(track_obj["videoId"]),
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 available=available,
                 content_type=ContentType.M4A,

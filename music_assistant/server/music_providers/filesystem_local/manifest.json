@@ -1,0 +1,17 @@
+{
+  "provider": "filesystem_local",
+  "name": "Local Filesystem",
+  "codeowners": ["@marcelveldt"],
+  "config_entries": [
+    {
+      "key": "enabled",
+      "type": "string",
+      "label": "Enabled",
+      "default_value": true,
+
+    }
+  ],
+
+  "requirements": [],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820"
+}

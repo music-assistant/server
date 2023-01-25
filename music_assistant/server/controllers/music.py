@@ -4,10 +4,18 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import os
 import statistics
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
+from media.albums import AlbumsController
+from media.artists import ArtistsController
+from media.playlists import PlaylistController
+from media.radio import RadioController
+from media.tracks import TracksController
+
 from music_assistant.common.helpers.datetime import utc_timestamp
+from music_assistant.common.helpers.json import load_json_file
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config import MusicProviderConfig
 from music_assistant.common.models.enums import (
@@ -26,41 +34,20 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     media_from_dict,
 )
+from music_assistant.common.models.provider import MusicProviderManifest
 from music_assistant.constants import ROOT_LOGGER_NAME
-from music_assistant.server.controllers.database import (
-    TABLE_PLAYLOG,
-    TABLE_TRACK_LOUDNESS,
-)
-from music_assistant.server.controllers.media.albums import AlbumsController
-from music_assistant.server.controllers.media.artists import ArtistsController
-from music_assistant.server.controllers.media.playlists import PlaylistController
-from music_assistant.server.controllers.media.radio import RadioController
-from music_assistant.server.controllers.media.tracks import TracksController
-from music_assistant.server.music_providers.base import MusicProvider
-from music_assistant.server.music_providers.filesystem import (
-    LocalFileSystemProvider,
-    SMBFileSystemProvider,
-)
-from music_assistant.server.music_providers.qobuz import QobuzProvider
-from music_assistant.server.music_providers.spotify import SpotifyProvider
-from music_assistant.server.music_providers.tunein import TuneInProvider
-from music_assistant.server.music_providers.url import URLProvider
-from music_assistant.server.music_providers.url.url import PROVIDER_CONFIG as URL_CONFIG
-from music_assistant.server.music_providers.ytmusic import YoutubeMusicProvider
+from music_assistant.server.helpers.api import api_command
+
+from .database import TABLE_PLAYLOG, TABLE_TRACK_LOUDNESS
+from .music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 
-PROV_MAP = {
-    ProviderType.FILESYSTEM_LOCAL: LocalFileSystemProvider,
-    ProviderType.FILESYSTEM_SMB: SMBFileSystemProvider,
-    ProviderType.SPOTIFY: SpotifyProvider,
-    ProviderType.QOBUZ: QobuzProvider,
-    ProviderType.TUNEIN: TuneInProvider,
-    ProviderType.YTMUSIC: YoutubeMusicProvider,
-}
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROVIDERS_PATH = os.path.join(BASE_DIR, "music_providers")
 
 
 class MusicController:
@@ -74,11 +61,13 @@ class MusicController:
         self.tracks = TracksController(mass)
         self.radio = RadioController(mass)
         self.playlists = PlaylistController(mass)
-        self._providers: Dict[str, MusicProvider] = {}
+        self._available_providers: dict[MusicProviderManifest] = set()
+        self._providers: dict[str, MusicProvider] = {}
 
     async def setup(self):
         """Async initialize of module."""
-        # register providers
+        # load available providers
+        await self._load_available_providers()
         for prov_conf in self.mass.config.providers:
             prov_cls = PROV_MAP[prov_conf.type]
             await self._register_provider(prov_cls(self.mass, prov_conf), prov_conf)
@@ -91,45 +80,38 @@ class MusicController:
             allow_duplicate=False,
         )
 
+    @api_command("music/providers")
+    def get_providers(self) -> list[MusicProviderManifest]:
+        """Return all loaded/running MusicProviders (instances)."""
+        return list(self._available_providers.values())
+
+    @api_command("music/providers/available")
+    def get_available_providers(self) -> list[MusicProviderManifest]:
+        """Return all available MusicProviders."""
+        return list(self._available_providers.values())
+
+    @api_command("music/sync")
     async def start_sync(
         self,
         media_types: Optional[Tuple[MediaType]] = None,
-        provider_types: Optional[Tuple[ProviderType]] = None,
-        schedule: Optional[float] = None,
+        providers: Optional[Tuple[str]] = None,
     ) -> None:
         """
-        Start running the sync of all registred providers.
+        Start running the sync of (all or selected) musicproviders.
 
         media_types: only sync these media types. None for all.
-        provider_types: only sync these provider types. None for all.
-        schedule: schedule syncjob every X hours, set to None for just a manual sync run.
+        providers: only sync these provider domains. None for all.
         """
 
-        async def do_sync():
-            while True:
-                for prov in self.providers:
-                    if provider_types is not None and prov.type not in provider_types:
-                        continue
-                    self.mass.add_job(
-                        prov.sync_library(media_types),
-                        f"Library sync for provider {prov.name}",
-                        allow_duplicate=False,
-                    )
-                if schedule is None:
-                    return
-                await asyncio.sleep(3600 * schedule)
+        for provider in self.providers:
+            if providers is not None and prov.type not in provider_domains:
+                continue
+            self.mass.add_job(
+                prov.sync_library(media_types),
+                f"Library sync for provider {prov.name}",
+                allow_duplicate=False,
+            )
 
-        self.mass.create_task(do_sync())
-
-    @property
-    def provider_count(self) -> int:
-        """Return count of all registered music providers."""
-        return len(self._providers)
-
-    @property
-    def providers(self) -> Tuple[MusicProvider]:
-        """Return all (available) music providers."""
-        return tuple(x for x in self._providers.values() if x.available)
 
     def get_provider(
         self, provider_id_or_type: Union[str, ProviderType]
@@ -175,7 +157,7 @@ class MusicController:
         self,
         search_query: str,
         media_types: List[MediaType] = MediaType.ALL,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         limit: int = 10,
     ) -> List[MediaItemType]:
@@ -183,13 +165,13 @@ class MusicController:
         Perform search on given provider.
 
             :param search_query: Search query
-            :param provider_type: type of the provider to perform the search on.
+            :param provider_domain: type of the provider to perform the search on.
             :param provider_id: id of the provider to perform the search on.
             :param media_types: A list of media_types to include. All types if None.
             :param limit: number of items to return in the search (per type).
         """
-        assert provider_type or provider_id, "Provider needs to be supplied"
-        prov = self.get_provider(provider_id or provider_type)
+        assert provider_domain or provider_id, "Provider needs to be supplied"
+        prov = self.get_provider(provider_id or provider_domain)
         if MusicProviderFeature.SEARCH not in prov.supported_features:
             return []
 
@@ -246,11 +228,11 @@ class MusicController:
         self, uri: str, force_refresh: bool = False, lazy: bool = True
     ) -> MediaItemType:
         """Fetch MediaItem by uri."""
-        media_type, provider_type, item_id = parse_uri(uri)
+        media_type, provider_domain, item_id = parse_uri(uri)
         return await self.get_item(
             item_id=item_id,
             media_type=media_type,
-            provider_type=provider_type,
+            provider_domain=provider_domain,
             force_refresh=force_refresh,
             lazy=lazy,
         )
@@ -259,22 +241,22 @@ class MusicController:
         self,
         item_id: str,
         media_type: MediaType,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         force_refresh: bool = False,
         lazy: bool = True,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         assert (
-            provider_type or provider_id
-        ), "provider_type or provider_id must be supplied"
-        if provider_type == ProviderType.URL or provider_id == "url":
+            provider_domain or provider_id
+        ), "provider_domain or provider_id must be supplied"
+        if provider_domain == ProviderType.URL or provider_id == "url":
             # handle special case of 'URL' MusicProvider which allows us to play regular url's
             return await self.get_provider(ProviderType.URL).parse_item(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             provider_item_id=item_id,
-            provider_type=provider_type,
+            provider_domain=provider_domain,
             provider_id=provider_id,
             force_refresh=force_refresh,
             lazy=lazy,
@@ -284,26 +266,26 @@ class MusicController:
         self,
         media_type: MediaType,
         provider_item_id: str,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
     ) -> None:
         """Add an item to the library."""
         ctrl = self.get_controller(media_type)
         await ctrl.add_to_library(
-            provider_item_id, provider_type=provider_type, provider_id=provider_id
+            provider_item_id, provider_domain=provider_domain, provider_id=provider_id
         )
 
     async def remove_from_library(
         self,
         media_type: MediaType,
         provider_item_id: str,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
     ) -> None:
         """Remove item from the library."""
         ctrl = self.get_controller(media_type)
         await ctrl.remove_from_library(
-            provider_item_id, provider_type=provider_type, provider_id=provider_id
+            provider_item_id, provider_domain=provider_domain, provider_id=provider_id
         )
 
     async def delete_db_item(
@@ -332,7 +314,7 @@ class MusicController:
             return await self.get_item(
                 media_item.item_id,
                 media_item.media_type,
-                provider_type=media_item.provider,
+                provider_domain=media_item.provider,
                 force_refresh=True,
                 lazy=False,
             )
@@ -346,39 +328,41 @@ class MusicController:
                 )
 
     async def set_track_loudness(
-        self, item_id: str, provider_type: ProviderType, loudness: int
+        self, item_id: str, provider_domain: ProviderType, loudness: int
     ):
         """List integrated loudness for a track in db."""
         await self.mass.database.insert(
             TABLE_TRACK_LOUDNESS,
-            {"item_id": item_id, "provider": provider_type, "loudness": loudness},
+            {"item_id": item_id, "provider": provider_domain, "loudness": loudness},
             allow_replace=True,
         )
 
     async def get_track_loudness(
-        self, provider_item_id: str, provider_type: ProviderType
+        self, provider_item_id: str, provider_domain: ProviderType
     ) -> float | None:
         """Get integrated loudness for a track in db."""
         if result := await self.mass.database.get_row(
             TABLE_TRACK_LOUDNESS,
             {
                 "item_id": provider_item_id,
-                "provider": provider_type,
+                "provider": provider_domain,
             },
         ):
             return result["loudness"]
         return None
 
-    async def get_provider_loudness(self, provider_type: ProviderType) -> float | None:
+    async def get_provider_loudness(
+        self, provider_domain: ProviderType
+    ) -> float | None:
         """Get average integrated loudness for tracks of given provider."""
         all_items = []
-        if provider_type == ProviderType.URL:
+        if provider_domain == ProviderType.URL:
             # this is not a very good idea for random urls
             return None
         for db_row in await self.mass.database.get_rows(
             TABLE_TRACK_LOUDNESS,
             {
-                "provider": provider_type,
+                "provider": provider_domain,
             },
         ):
             all_items.append(db_row["loudness"])
@@ -386,14 +370,14 @@ class MusicController:
             return statistics.fmean(all_items)
         return None
 
-    async def mark_item_played(self, item_id: str, provider_type: ProviderType):
+    async def mark_item_played(self, item_id: str, provider_domain: ProviderType):
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
         await self.mass.database.insert(
             TABLE_PLAYLOG,
             {
                 "item_id": item_id,
-                "provider": provider_type,
+                "provider": provider_domain,
                 "timestamp": timestamp,
             },
             allow_replace=True,
@@ -488,3 +472,30 @@ class MusicController:
                 for item in prov_items:
                     await ctrl.remove_prov_mapping(item.item_id, provider_id)
         await self.mass.cache.set("prov_ids", cur_providers)
+
+    async def _load_available_providers(self) -> None:
+        """Preload all available provider manifest files."""
+        for dir_str in os.listdir(PROVIDERS_PATH):
+            dir_path = os.path.join(PROVIDERS_PATH, dir_str)
+            if not os.path.isdir(dir_path):
+                continue
+            # get files in subdirectory
+            for file_str in os.listdir(dir_path):
+                file_path = os.path.join(dir_path, file_str)
+                if not os.path.isfile(file_path):
+                    continue
+                if file_str != "manifest.json":
+                    continue
+                try:
+                    manifest_dict = await load_json_file(file_path)
+                    provider_manifest = MusicProviderManifest.from_dict(manifest_dict)
+                    self._available_providers[
+                        provider_manifest.domain
+                    ] = provider_manifest
+                    LOGGER.debug("Loaded manifest for MusicProvider %s", dir_str)
+                except Exception as exc:  # pylint: disable=broad-except
+                    LOGGER.exception(
+                        "Error while loading manifest for provider %s",
+                        dir_str,
+                        exc_info=exc,
+                    )

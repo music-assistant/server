@@ -1,0 +1,9 @@
+{
+  "provider": "qobuz",
+  "name": "Qobuz",
+  "codeowners": ["@marcelveldt"],
+  "config_entries": [],
+
+  "requirements": [],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/817"
+}

@@ -29,7 +29,7 @@ class ProviderMapping(DataClassDictMixin):
     """Model for a MediaItem's provider mapping details."""
 
     item_id: str
-    provider_type: ProviderType
+    provider_domain: ProviderType
     provider_id: str
     available: bool = True
     # quality details (streamable content only)
@@ -56,7 +56,7 @@ class ProviderMapping(DataClassDictMixin):
 
     def __hash__(self):
         """Return custom hash."""
-        return hash((self.provider_type, self.item_id))
+        return hash((self.provider_domain, self.item_id))
 
 
 @dataclass(frozen=True)

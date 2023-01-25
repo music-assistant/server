@@ -13,5 +13,4 @@ mashumaro==3.3.1
 xmltodict==0.13.0
 ytmusicapi==0.25.0
 pytube==12.1.2
-pysmb==1.2.9.1
 orjson==3.8.3

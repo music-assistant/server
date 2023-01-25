@@ -1,0 +1,9 @@
+{
+  "provider": "spotify",
+  "name": "Spotify",
+  "codeowners": ["@marcelveldt"],
+  "config_entries": [],
+
+  "requirements": [],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/817"
+}

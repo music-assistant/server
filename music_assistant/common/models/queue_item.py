@@ -7,14 +7,8 @@ from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.common.models.enums import MediaType
-from music_assistant.common.models.media_items import (
-    ItemMapping,
-    MediaItemImage,
-    Radio,
-    StreamDetails,
-    Track,
-)
+from .enums import MediaType
+from .media_items import ItemMapping, MediaItemImage, Radio, StreamDetails, Track
 
 
 @dataclass

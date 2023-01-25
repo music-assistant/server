@@ -360,7 +360,7 @@ class SpotifyProvider(MusicProvider):
         artist.add_provider_mapping(
             ProviderMapping(
                 item_id=artist_obj["id"],
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 url=artist_obj["external_urls"]["spotify"],
             )
@@ -408,7 +408,7 @@ class SpotifyProvider(MusicProvider):
         album.add_provider_mapping(
             ProviderMapping(
                 item_id=album_obj["id"],
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 content_type=ContentType.OGG,
                 bit_rate=320,
@@ -459,7 +459,7 @@ class SpotifyProvider(MusicProvider):
         track.add_provider_mapping(
             ProviderMapping(
                 item_id=track_obj["id"],
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 content_type=ContentType.OGG,
                 bit_rate=320,
@@ -480,7 +480,7 @@ class SpotifyProvider(MusicProvider):
         playlist.add_provider_mapping(
             ProviderMapping(
                 item_id=playlist_obj["id"],
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 url=playlist_obj["external_urls"]["spotify"],
             )

@@ -112,7 +112,7 @@ class URLProvider(MusicProvider):
         media_item.provider_mappings = {
             ProviderMapping(
                 item_id=item_id,
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 content_type=ContentType.try_parse(media_info.format),
                 sample_rate=media_info.sample_rate,

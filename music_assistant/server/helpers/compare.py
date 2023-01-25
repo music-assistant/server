@@ -121,7 +121,7 @@ def compare_item_ids(
     if left_prov_ids is not None:
         for prov_l in left_item.provider_mappings:
             if (
-                prov_l.provider_type == right_item.provider
+                prov_l.provider_domain == right_item.provider
                 and prov_l.item_id == right_item.item_id
             ):
                 return True
@@ -129,7 +129,7 @@ def compare_item_ids(
     if right_prov_ids is not None:
         for prov_r in right_item.provider_mappings:
             if (
-                prov_r.provider_type == left_item.provider
+                prov_r.provider_domain == left_item.provider
                 and prov_r.item_id == left_item.item_id
             ):
                 return True
@@ -137,7 +137,7 @@ def compare_item_ids(
     if left_prov_ids is not None and right_prov_ids is not None:
         for prov_l in left_item.provider_mappings:
             for prov_r in right_item.provider_mappings:
-                if prov_l.provider_type != prov_r.provider_type:
+                if prov_l.provider_domain != prov_r.provider_domain:
                     continue
                 if prov_l.item_id == prov_r.item_id:
                     return True

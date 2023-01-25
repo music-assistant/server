@@ -10,8 +10,9 @@ from smb.base import SharedFile
 from music_assistant.common.helpers.util import get_ip_from_host
 from music_assistant.common.models.enums import ProviderType
 
-from .base import FileSystemItem, FileSystemProviderBase
-from .helpers import AsyncSMB, get_absolute_path, get_relative_path
+from ..filesystem_local.base import FileSystemItem, FileSystemProviderBase
+from ..filesystem_local.helpers import get_absolute_path, get_relative_path
+from .helpers import AsyncSMB
 
 
 async def create_item(

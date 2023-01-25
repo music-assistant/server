@@ -208,7 +208,7 @@ class PlayerQueue:
                 self._radio_source.append(media_item)
                 # if radio mode enabled, grab the first batch of tracks here
                 tracks += await ctrl.dynamic_tracks(
-                    item_id=media_item.item_id, provider_type=media_item.provider
+                    item_id=media_item.item_id, provider_domain=media_item.provider
                 )
             elif media_item.media_type in (
                 MediaType.ARTIST,
@@ -216,7 +216,7 @@ class PlayerQueue:
                 MediaType.PLAYLIST,
             ):
                 tracks += await ctrl.tracks(
-                    media_item.item_id, provider_type=media_item.provider
+                    media_item.item_id, provider_domain=media_item.provider
                 )
             else:
                 # single track or radio item
@@ -274,7 +274,7 @@ class PlayerQueue:
         for radio_item in random.sample(self._radio_source, len(self._radio_source)):
             ctrl = self.mass.music.get_controller(radio_item.media_type)
             tracks += await ctrl.dynamic_tracks(
-                item_id=radio_item.item_id, provider_type=radio_item.provider
+                item_id=radio_item.item_id, provider_domain=radio_item.provider
             )
             # make sure we do not grab too much items
             if len(tracks) >= 50:

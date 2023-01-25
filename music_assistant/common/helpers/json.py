@@ -3,7 +3,7 @@
 from typing import Any
 import base64
 import orjson
-
+import aiofiles
 
 JSON_ENCODE_EXCEPTIONS = (TypeError, ValueError)
 JSON_DECODE_EXCEPTIONS = (orjson.JSONDecodeError,)
@@ -41,3 +41,10 @@ def json_dumps(data: Any) -> str:
 
 
 json_loads = orjson.loads
+
+
+async def load_json_file(path: str) -> dict:
+    """Load JSON from file."""
+    async with aiofiles.open(path, "r") as _file:
+        content = await _file.read()
+        return json_loads(content)

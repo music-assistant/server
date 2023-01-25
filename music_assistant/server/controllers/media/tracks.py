@@ -85,21 +85,21 @@ class TracksController(MediaControllerBase[Track]):
     async def versions(
         self,
         item_id: str,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
     ) -> List[Track]:
         """Return all versions of a track we can find on all providers."""
-        assert provider_type or provider_id, "Provider type or ID must be specified"
-        track = await self.get(item_id, provider_type or provider_id)
+        assert provider_domain or provider_id, "Provider type or ID must be specified"
+        track = await self.get(item_id, provider_domain or provider_id)
         # perform a search on all provider(types) to collect all versions/variants
-        provider_types = {item.type for item in self.mass.music.providers}
+        provider_domains = {item.type for item in self.mass.music.providers}
         search_query = f"{track.artist.name} - {track.name}"
         all_versions = {
             prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(
                 *[
-                    self.search(search_query, provider_type)
-                    for provider_type in provider_types
+                    self.search(search_query, provider_domain)
+                    for provider_domain in provider_domains
                 ]
             )
             for prov_item in prov_items
@@ -160,12 +160,12 @@ class TracksController(MediaControllerBase[Track]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider_type: Optional[ProviderType] = None,
+        provider_domain: Optional[ProviderType] = None,
         provider_id: Optional[str] = None,
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the track."""
-        prov = self.mass.music.get_provider(provider_id or provider_type)
+        prov = self.mass.music.get_provider(provider_id or provider_domain)
         if (
             not prov
             or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
@@ -361,7 +361,7 @@ class TracksController(MediaControllerBase[Track]):
             )
 
         if db_album := await self.mass.music.albums.get_db_item_by_prov_id(
-            album.item_id, provider_type=album.provider
+            album.item_id, provider_domain=album.provider
         ):
             return ItemMapping.from_item(db_album)
 
@@ -386,7 +386,7 @@ class TracksController(MediaControllerBase[Track]):
             )
 
         if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
-            artist.item_id, provider_type=artist.provider
+            artist.item_id, provider_domain=artist.provider
         ):
             return ItemMapping.from_item(db_artist)
 

@@ -467,7 +467,7 @@ class FileSystemProviderBase(MusicProvider):
         track.add_provider_mapping(
             ProviderMapping(
                 item_id=file_item.path,
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
                 content_type=ContentType.try_parse(tags.format),
                 sample_rate=tags.sample_rate,
@@ -491,7 +491,7 @@ class FileSystemProviderBase(MusicProvider):
         playlist.add_provider_mapping(
             ProviderMapping(
                 item_id=file_item.path,
-                provider_type=self.type,
+                provider_domain=self.type,
                 provider_id=self.id,
             )
         )
