@@ -288,17 +288,6 @@ class EventType(StrEnum):
     PROVIDER_CONFIG_CREATED = "provider_config_created"
 
 
-
-class JobStatus(StrEnum):
-    """Enum with Job status."""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    CANCELLED = "cancelled"
-    FINISHED = "success"
-    ERROR = "error"
-
-
 class MusicProviderFeature(StrEnum):
     """Enum with features for a MusicProvider."""
 

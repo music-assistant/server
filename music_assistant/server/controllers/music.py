@@ -36,11 +36,23 @@ from music_assistant.common.models.media_items import (
     media_from_dict,
 )
 from music_assistant.common.models.provider_manifest import ProviderManifest
-from music_assistant.constants import ROOT_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_DB_LIBRARY,
+    DEFAULT_DB_LIBRARY,
+    ROOT_LOGGER_NAME,
+    DB_TABLE_SETTINGS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_PLAYLISTS,
+    DB_TABLE_RADIOS,
+    DB_TABLE_TRACK_LOUDNESS,
+    DB_TABLE_PLAYLOG,
+    DB_TABLE_TRACKS,
+)
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.music_provider import MusicProvider
+from music_assistant.server.helpers.database import DatabaseConnection
 
-from .database import TABLE_PLAYLOG, TABLE_TRACK_LOUDNESS
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
 from .media.playlists import PlaylistController
@@ -56,9 +68,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVER_DIR = os.path.dirname(BASE_DIR)
 PROVIDERS_PATH = os.path.join(SERVER_DIR, "music_providers")
 
+SCHEMA_VERSION = 19
+
 
 class MusicController:
     """Several helpers around the musicproviders."""
+
+    database: DatabaseConnection | None = None
 
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
@@ -73,6 +89,8 @@ class MusicController:
 
     async def setup(self):
         """Async initialize of module."""
+        # setup library database
+        await self._setup_database()
         # load available providers
         await self._load_available_providers()
         # load providers from config
@@ -356,8 +374,8 @@ class MusicController:
         self, item_id: str, provider_domain: str, loudness: int
     ):
         """list integrated loudness for a track in db."""
-        await self.mass.database.insert(
-            TABLE_TRACK_LOUDNESS,
+        await self.database.insert(
+            DB_TABLE_TRACK_LOUDNESS,
             {"item_id": item_id, "provider": provider_domain, "loudness": loudness},
             allow_replace=True,
         )
@@ -366,8 +384,8 @@ class MusicController:
         self, provider_item_id: str, provider_domain: str
     ) -> float | None:
         """Get integrated loudness for a track in db."""
-        if result := await self.mass.database.get_row(
-            TABLE_TRACK_LOUDNESS,
+        if result := await self.database.get_row(
+            DB_TABLE_TRACK_LOUDNESS,
             {
                 "item_id": provider_item_id,
                 "provider": provider_domain,
@@ -382,8 +400,8 @@ class MusicController:
         if provider_domain == "url":
             # this is not a very good idea for random urls
             return None
-        for db_row in await self.mass.database.get_rows(
-            TABLE_TRACK_LOUDNESS,
+        for db_row in await self.database.get_rows(
+            DB_TABLE_TRACK_LOUDNESS,
             {
                 "provider": provider_domain,
             },
@@ -396,8 +414,8 @@ class MusicController:
     async def mark_item_played(self, item_id: str, provider_domain: str):
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
-        await self.mass.database.insert(
-            TABLE_PLAYLOG,
+        await self.database.insert(
+            DB_TABLE_PLAYLOG,
             {
                 "item_id": item_id,
                 "provider": provider_domain,
@@ -457,6 +475,13 @@ class MusicController:
 
         domain = conf.domain
         prov_manifest = self._available_providers.get(domain)
+        # check for other instances of this provider
+        existing = next((x for x in self.providers if x.domain == domain), None)
+        if existing and not prov_manifest.multi_instance:
+            raise SetupFailedError(
+                f"Provider {domain} already loaded and only one instance allowed."
+            )
+
         if not prov_manifest:
             raise SetupFailedError(f"Provider {domain} manifest not found")
         # try to load the module
@@ -483,16 +508,14 @@ class MusicController:
         # pylint: disable=broad-except
         except Exception as exc:
             LOGGER.exception(
-                "Error loading provider(instance) %s (%s): %s",
-                conf.domain,
-                conf.title or conf.instance_id,
+                "Error loading provider(instance) %s: %s",
+                conf.title or conf.domain,
                 str(exc),
             )
         else:
             LOGGER.debug(
-                "Successfully preloaded module %s (%s)",
-                conf.domain,
-                conf.title or conf.instance_id,
+                "Successfully loaded provider %s",
+                conf.title or conf.domain,
             )
 
     async def _cleanup_library(self) -> None:
@@ -555,10 +578,201 @@ class MusicController:
                         exc_info=exc,
                     )
 
-    async def _handle_config_updated_event(
-        self, event: MassEvent
-    ):
+    async def _handle_config_updated_event(self, event: MassEvent):
         """Handle ProviderConfig updated/created event."""
         if event.data.type != ProviderType.MUSIC:
             return
         await self._load_provider(event.data)
+
+    async def _setup_database(self):
+        """Initialize database."""
+        db_url: str = self.mass.config.get(CONF_DB_LIBRARY, DEFAULT_DB_LIBRARY)
+        db_url = db_url.replace("[storage_path]", self.mass.storage_path)
+        self.database = DatabaseConnection(db_url)
+
+        # always create db tables if they don't exist to prevent errors trying to access them later
+        await self.__create_database_tables()
+        try:
+            if db_row := await self.database.get_row(
+                DB_TABLE_SETTINGS, {"key": "version"}
+            ):
+                prev_version = int(db_row["value"])
+            else:
+                prev_version = 0
+        except (KeyError, ValueError):
+            prev_version = 0
+
+        if prev_version not in (0, SCHEMA_VERSION):
+            LOGGER.info(
+                "Performing database migration from %s to %s",
+                prev_version,
+                SCHEMA_VERSION,
+            )
+
+            if prev_version < SCHEMA_VERSION:
+                # for now just keep it simple and just recreate the tables
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ARTISTS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ALBUMS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACKS}")
+                await self.database.execute(
+                    f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLISTS}"
+                )
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_RADIOS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_THUMBS}")
+                # recreate missing tables
+                await self.__create_database_tables()
+
+        # store current schema version
+        await self.database.insert_or_replace(
+            DB_TABLE_SETTINGS,
+            {"key": "version", "value": str(SCHEMA_VERSION), "type": "str"},
+        )
+        # compact db
+        await self.database.execute("VACUUM")
+
+    async def __create_database_tables(self) -> None:
+        """Create database tables."""
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SETTINGS}(
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    type TEXT
+                );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_LOUDNESS}(
+                    item_id INTEGER NOT NULL,
+                    provider TEXT NOT NULL,
+                    loudness REAL,
+                    UNIQUE(item_id, provider));"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLOG}(
+                item_id INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                timestamp INTEGER DEFAULT 0,
+                UNIQUE(item_id, provider));"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUMS}(
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    sort_name TEXT NOT NULL,
+                    sort_artist TEXT,
+                    album_type TEXT,
+                    year INTEGER,
+                    version TEXT,
+                    in_library BOOLEAN DEFAULT 0,
+                    upc TEXT,
+                    musicbrainz_id TEXT,
+                    artists json,
+                    metadata json,
+                    provider_mappings json,
+                    timestamp INTEGER DEFAULT 0
+                );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ARTISTS}(
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    sort_name TEXT NOT NULL,
+                    musicbrainz_id TEXT,
+                    in_library BOOLEAN DEFAULT 0,
+                    metadata json,
+                    provider_mappings json,
+                    timestamp INTEGER DEFAULT 0
+                    );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACKS}(
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    sort_name TEXT NOT NULL,
+                    sort_artist TEXT,
+                    sort_album TEXT,
+                    version TEXT,
+                    duration INTEGER,
+                    in_library BOOLEAN DEFAULT 0,
+                    isrc TEXT,
+                    musicbrainz_id TEXT,
+                    artists json,
+                    albums json,
+                    metadata json,
+                    provider_mappings json,
+                    timestamp INTEGER DEFAULT 0
+                );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLISTS}(
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    sort_name TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    is_editable BOOLEAN NOT NULL,
+                    in_library BOOLEAN DEFAULT 0,
+                    metadata json,
+                    provider_mappings json,
+                    timestamp INTEGER DEFAULT 0,
+                    UNIQUE(name, owner)
+                );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_RADIOS}(
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    sort_name TEXT NOT NULL,
+                    in_library BOOLEAN DEFAULT 0,
+                    metadata json,
+                    provider_mappings json,
+                    timestamp INTEGER DEFAULT 0
+                );"""
+        )
+
+        # create indexes
+        # TODO: create indexes for the json columns ?
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(in_library);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS albums_in_library_idx on albums(in_library);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS tracks_in_library_idx on tracks(in_library);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS playlists_in_library_idx on playlists(in_library);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS radios_in_library_idx on radios(in_library);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS artists_sort_name_idx on artists(sort_name);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS albums_sort_name_idx on albums(sort_name);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS tracks_sort_name_idx on tracks(sort_name);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS playlists_sort_name_idx on playlists(sort_name);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS radios_sort_name_idx on radios(sort_name);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS artists_musicbrainz_id_idx on artists(musicbrainz_id);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS albums_musicbrainz_id_idx on albums(musicbrainz_id);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS tracks_musicbrainz_id_idx on tracks(musicbrainz_id);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS tracks_isrc_idx on tracks(isrc);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS albums_upc_idx on albums(upc);"
+        )

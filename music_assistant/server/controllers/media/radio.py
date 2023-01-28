@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import asyncio
 from time import time
-from typing import List, Optional
+from typing import List
 
 from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.models.enums import EventType, MediaType
 from music_assistant.common.models.media_items import Radio, Track
-from music_assistant.server.controllers.database import TABLE_RADIOS
+from music_assistant.constants import DB_TABLE_RADIOS
 from music_assistant.server.helpers.compare import loose_compare_strings
 
 from .base import MediaControllerBase
@@ -17,7 +17,7 @@ from .base import MediaControllerBase
 class RadioController(MediaControllerBase[Radio]):
     """Controller managing MediaItems of type Radio."""
 
-    db_table = TABLE_RADIOS
+    db_table = DB_TABLE_RADIOS
     media_type = MediaType.RADIO
     item_cls = Radio
 
@@ -28,7 +28,9 @@ class RadioController(MediaControllerBase[Radio]):
         provider_instance: str | None = None,
     ) -> List[Radio]:
         """Return all versions of a radio station we can find on all providers."""
-        assert provider_domain or provider_instance, "Provider type or ID must be specified"
+        assert (
+            provider_domain or provider_instance
+        ), "Provider type or ID must be specified"
         radio = await self.get(item_id, provider_domain, provider_instance)
         # perform a search on all provider(types) to collect all versions/variants
         provider_domains = {item.type for item in self.mass.music.providers}
@@ -77,14 +79,16 @@ class RadioController(MediaControllerBase[Radio]):
         assert item.provider_mappings
         async with self._db_add_lock:
             match = {"name": item.name}
-            if cur_item := await self.mass.database.get_row(self.db_table, match):
+            if cur_item := await self.mass.music.database.get_row(self.db_table, match):
                 # update existing
                 return await self.update_db_item(
                     cur_item["item_id"], item, overwrite=overwrite_existing
                 )
 
             # insert new item
-            new_item = await self.mass.database.insert(self.db_table, item.to_db_row())
+            new_item = await self.mass.music.database.insert(
+                self.db_table, item.to_db_row()
+            )
             item_id = new_item["item_id"]
             self.logger.debug("added %s to database", item.name)
             # return created object
@@ -106,7 +110,7 @@ class RadioController(MediaControllerBase[Radio]):
             provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
 
         match = {"item_id": item_id}
-        await self.mass.database.update(
+        await self.mass.music.database.update(
             self.db_table,
             match,
             {

@@ -107,7 +107,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if 0 < count < limit:
             total = offset + count
         else:
-            total = await self.mass.database.get_count_from_query(sql_query, params)
+            total = await self.mass.music.database.get_count_from_query(sql_query, params)
         return PagedItems(items, count, limit, offset, total)
 
     async def iter_db_items(
@@ -208,7 +208,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if "database" in (provider_domain, provider_instance):
             return [
                 self.item_cls.from_db_row(db_row)
-                for db_row in await self.mass.database.search(
+                for db_row in await self.mass.music.database.search(
                     self.db_table, search_query
                 )
             ]
@@ -231,7 +231,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             limit,
         )
         # store (serializable items) in cache
-        if not prov.type.is_file():  # do not cache filesystem results
+        if not prov.domain.startswith("filesystem"):  # do not cache filesystem results
             self.mass.create_task(
                 self.mass.cache.set(
                     cache_key, [x.to_dict() for x in items], expiration=86400 * 7
@@ -326,7 +326,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Fetch MediaItem records from database given a custom query."""
         return [
             self.item_cls.from_db_row(db_row)
-            for db_row in await self.mass.database.get_rows_from_query(
+            for db_row in await self.mass.music.database.get_rows_from_query(
                 custom_query, query_params, limit=limit, offset=offset
             )
         ]
@@ -334,7 +334,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def get_db_item(self, item_id: Union[int, str]) -> ItemCls:
         """Get record by id."""
         match = {"item_id": int(item_id)}
-        if db_row := await self.mass.database.get_row(self.db_table, match):
+        if db_row := await self.mass.music.database.get_row(self.db_table, match):
             return self.item_cls.from_db_row(db_row)
         raise MediaNotFoundError(f"Album not found in database: {item_id}")
 
@@ -390,7 +390,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Set the in-library bool on a database item."""
         match = {"item_id": item_id}
         timestamp = int(time()) if in_library else 0
-        await self.mass.database.update(
+        await self.mass.music.database.update(
             self.db_table, match, {"in_library": in_library, "timestamp": timestamp}
         )
         db_item = await self.get_db_item(item_id)
@@ -438,7 +438,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         # update the item in db (provider_mappings column only)
         match = {"item_id": item_id}
-        await self.mass.database.update(
+        await self.mass.music.database.update(
             self.db_table,
             match,
             {"provider_mappings": json_dumps(db_item.provider_mappings)},
@@ -454,7 +454,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         db_item = await self.get_db_item(item_id)
         assert db_item, f"Item does not exist: {item_id}"
         # delete item
-        await self.mass.database.delete(
+        await self.mass.music.database.delete(
             self.db_table,
             {"item_id": int(item_id)},
         )

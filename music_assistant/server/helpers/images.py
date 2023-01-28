@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, List, Optional
 
 from PIL import Image
 
-from music_assistant.server.controllers.database import TABLE_THUMBS
 from music_assistant.server.helpers.tags import get_embedded_image
 
 if TYPE_CHECKING:
@@ -16,10 +15,6 @@ if TYPE_CHECKING:
 
 async def get_image_data(mass: MusicAssistant, path: str) -> bytes:
     """Create thumbnail from image url."""
-    # return from db if exists
-    match = {"path": path, "size": 0}
-    if result := await mass.database.get_row(TABLE_THUMBS, match):
-        return result["data"]
     # always try ffmpeg first to get the image because it supports
     # both online and offline image files as well as embedded images in media files
     img_data = await get_embedded_image(path)
@@ -27,7 +22,7 @@ async def get_image_data(mass: MusicAssistant, path: str) -> bytes:
         return img_data
     # assume file from file provider, we need to fetch it here...
     for prov in mass.music.providers:
-        if not prov.type.is_file():
+        if not prov.domain.startswith("filesystem")():
             continue
         if not await prov.exists(path):
             continue

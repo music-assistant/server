@@ -26,7 +26,8 @@ BASE_URL_OVERRIDE_ENVNAME = "MASS_BASE_URL"
 # config keys
 CONF_WEB_HOST = "webserver/host"
 CONF_WEB_PORT = "webserver/port"
-CONF_DB_URL = "database/url"
+CONF_DB_LIBRARY = "database/library"
+CONF_DB_CACHE = "database/cache"
 CONF_PROVIDERS = "providers"
 CONF_PATH = "path"
 CONF_OPTIONS = "options"
@@ -36,3 +37,17 @@ CONF_PASSWORD = "password"
 # config default values
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8095
+DEFAULT_DB_LIBRARY = "sqlite:///[storage_path]/library.db"
+DEFAULT_DB_CACHE = "sqlite:///[storage_path]/cache.db"
+
+# common db tables
+DB_TABLE_TRACK_LOUDNESS = "track_loudness"
+DB_TABLE_PLAYLOG = "playlog"
+DB_TABLE_ARTISTS = "artists"
+DB_TABLE_ALBUMS = "albums"
+DB_TABLE_TRACKS = "tracks"
+DB_TABLE_PLAYLISTS = "playlists"
+DB_TABLE_RADIOS = "radios"
+DB_TABLE_CACHE = "cache"
+DB_TABLE_SETTINGS = "settings"
+DB_TABLE_THUMBS = "thumbnails"

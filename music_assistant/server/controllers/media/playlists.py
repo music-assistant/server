@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import random
-from ctypes import Union
 from time import time
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.helpers.uri import create_uri
@@ -20,7 +19,7 @@ from music_assistant.common.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.media_items import Playlist, Track
-from music_assistant.server.controllers.database import TABLE_PLAYLISTS
+from music_assistant.constants import DB_TABLE_PLAYLISTS
 
 from .base import MediaControllerBase
 
@@ -28,7 +27,7 @@ from .base import MediaControllerBase
 class PlaylistController(MediaControllerBase[Playlist]):
     """Controller managing MediaItems of type Playlist."""
 
-    db_table = TABLE_PLAYLISTS
+    db_table = DB_TABLE_PLAYLISTS
     media_type = MediaType.PLAYLIST
     item_cls = Playlist
 
@@ -37,7 +36,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_domain: str | None = None,
         provider_instance: str | None = None,
-    ) -> List[Track]:
+    ) -> list[Track]:
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(item_id, provider_domain, provider_instance)
         prov = next(x for x in playlist.provider_mappings)
@@ -64,9 +63,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
         return db_item
 
-    async def create(
-        self, name: str, provider: str | None = None
-    ) -> Playlist:
+    async def create(self, name: str, provider: str | None = None) -> Playlist:
         """Create new playlist."""
         # if provider is omitted, just pick first provider
         if provider:
@@ -87,7 +84,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         return await provider.create_playlist(name)
 
-    async def add_playlist_tracks(self, db_playlist_id: str, uris: List[str]) -> None:
+    async def add_playlist_tracks(self, db_playlist_id: str, uris: list[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
         playlist = await self.get_db_item(db_playlist_id)
         if not playlist:
@@ -143,7 +140,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             if not track.available:
                 continue
-            if playlist_prov.provider_domain.is_file():
+            if playlist_prov.provider_domain.startswith("filesystem"):
                 # the file provider can handle uri's from all providers so simply add the uri
                 track_id_to_add = track_version.url or create_uri(
                     MediaType.TRACK,
@@ -162,12 +159,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider = self.mass.music.get_provider(playlist_prov.provider_instance)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
         # invalidate cache by updating the checksum
-        await self.get(
-            db_playlist_id, provider_domain="database", force_refresh=True
-        )
+        await self.get(db_playlist_id, provider_domain="database", force_refresh=True)
 
     async def remove_playlist_tracks(
-        self, db_playlist_id: str, positions_to_remove: Tuple[int]
+        self, db_playlist_id: str, positions_to_remove: tuple[int]
     ) -> None:
         """Remove multiple tracks from playlist."""
         playlist = await self.get_db_item(db_playlist_id)
@@ -198,14 +193,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Add a new record to the database."""
         async with self._db_add_lock:
             match = {"name": item.name, "owner": item.owner}
-            if cur_item := await self.mass.database.get_row(self.db_table, match):
+            if cur_item := await self.mass.music.database.get_row(self.db_table, match):
                 # update existing
                 return await self.update_db_item(
                     cur_item["item_id"], item, overwrite=overwrite_existing
                 )
 
             # insert new item
-            new_item = await self.mass.database.insert(self.db_table, item.to_db_row())
+            new_item = await self.mass.music.database.insert(
+                self.db_table, item.to_db_row()
+            )
             item_id = new_item["item_id"]
             self.logger.debug("added %s to database", item.name)
             # return created object
@@ -226,7 +223,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             metadata = cur_item.metadata.update(item.metadata)
             provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
 
-        await self.mass.database.update(
+        await self.mass.music.database.update(
             self.db_table,
             {"item_id": item_id},
             {
@@ -248,7 +245,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_domain: str | None = None,
         provider_instance: str | None = None,
         cache_checksum: Any = None,
-    ) -> List[Track]:
+    ) -> list[Track]:
         """Return album tracks for the given provider album id."""
         provider = self.mass.music.get_provider(provider_instance or provider_domain)
         if not provider:
@@ -287,7 +284,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             return []
         playlist_tracks = await self._get_provider_playlist_tracks(
-            item_id=item_id, provider_domain=provider_domain, provider_instance=provider_instance
+            item_id=item_id,
+            provider_domain=provider_domain,
+            provider_instance=provider_instance,
         )
         # filter out unavailable tracks
         playlist_tracks = [x for x in playlist_tracks if x.available]
@@ -315,7 +314,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _get_dynamic_tracks(
         self, media_item: Playlist, limit: int = 25
-    ) -> List[Track]:
+    ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
         raise UnsupportedFeaturedException(

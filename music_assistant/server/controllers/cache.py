@@ -8,19 +8,28 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import MutableMapping
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Iterator
 
-from music_assistant.constants import ROOT_LOGGER_NAME
-from music_assistant.server.controllers.database import TABLE_CACHE
+from music_assistant.constants import (
+    CONF_DB_CACHE,
+    DB_TABLE_CACHE,
+    DB_TABLE_SETTINGS,
+    DEFAULT_DB_CACHE,
+    ROOT_LOGGER_NAME,
+)
+from music_assistant.server.helpers.database import DatabaseConnection
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
+SCHEMA_VERSION = 1
 
 
 class CacheController:
     """Basic cache controller using both memory and database."""
+
+    database: DatabaseConnection | None = None
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize our caching class."""
@@ -29,6 +38,7 @@ class CacheController:
 
     async def setup(self) -> None:
         """Async initialize of cache module."""
+        await self._setup_database()
         self.__schedule_cleanup_task()
 
     async def get(self, cache_key: str, checksum: str | None = None, default=None):
@@ -52,7 +62,7 @@ class CacheController:
         ):
             return cache_data[0]
         # fall back to db cache
-        if db_row := await self.mass.database.get_row(TABLE_CACHE, {"key": cache_key}):
+        if db_row := await self.database.get_row(DB_TABLE_CACHE, {"key": cache_key}):
             if (
                 not checksum
                 or db_row["checksum"] == checksum
@@ -86,8 +96,8 @@ class CacheController:
             # do not cache items in db with short expiration
             return
         data = await asyncio.get_running_loop().run_in_executor(None, json.dumps, data)
-        await self.mass.database.insert(
-            TABLE_CACHE,
+        await self.database.insert(
+            DB_TABLE_CACHE,
             {"key": cache_key, "expires": expires, "checksum": checksum, "data": data},
             allow_replace=True,
         )
@@ -95,23 +105,82 @@ class CacheController:
     async def delete(self, cache_key):
         """Delete data from cache."""
         self._mem_cache.pop(cache_key, None)
-        await self.mass.database.delete(TABLE_CACHE, {"key": cache_key})
+        await self.database.delete(DB_TABLE_CACHE, {"key": cache_key})
 
     async def clear(self, key_filter: str | None = None) -> None:
         """Clear all/partial items from cache."""
         self._mem_cache = {}
         query = f"key LIKE '%{key_filter}%'" if key_filter else None
-        await self.mass.database.delete(TABLE_CACHE, query=query)
+        await self.database.delete(DB_TABLE_CACHE, query=query)
 
     async def auto_cleanup(self):
         """Sceduled auto cleanup task."""
         # for now we simply reset the memory cache
         self._mem_cache = {}
         cur_timestamp = int(time.time())
-        for db_row in await self.mass.database.get_rows(TABLE_CACHE):
+        for db_row in await self.database.get_rows(DB_TABLE_CACHE):
             # clean up db cache object only if expired
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
+
+    async def _setup_database(self):
+        """Initialize database."""
+        db_url: str = self.mass.config.get(CONF_DB_CACHE, DEFAULT_DB_CACHE)
+        db_url = db_url.replace("[storage_path]", self.mass.storage_path)
+        self.database = DatabaseConnection(db_url)
+
+        # always create db tables if they don't exist to prevent errors trying to access them later
+        await self.__create_database_tables()
+        try:
+            if db_row := await self.database.get_row(
+                DB_TABLE_SETTINGS, {"key": "version"}
+            ):
+                prev_version = int(db_row["value"])
+            else:
+                prev_version = 0
+        except (KeyError, ValueError):
+            prev_version = 0
+
+        if prev_version not in (0, SCHEMA_VERSION):
+            LOGGER.info(
+                "Performing database migration from %s to %s",
+                prev_version,
+                SCHEMA_VERSION,
+            )
+
+            if prev_version < SCHEMA_VERSION:
+                # for now just keep it simple and just recreate the table(s)
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
+
+                # recreate missing table(s)
+                await self.__create_database_tables()
+
+        # store current schema version
+        await self.database.insert_or_replace(
+            DB_TABLE_SETTINGS,
+            {"key": "version", "value": str(SCHEMA_VERSION), "type": "str"},
+        )
+        # compact db
+        await self.database.execute("VACUUM")
+
+    async def __create_database_tables(self) -> None:
+        """Create database table(s)."""
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SETTINGS}(
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    type TEXT
+                );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_CACHE}(
+                    key TEXT UNIQUE NOT NULL, expires INTEGER NOT NULL, data TEXT, checksum TEXT NULL)"""
+        )
+
+        # create indexes
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_idx on {DB_TABLE_CACHE}(key);"
+        )
 
     def __schedule_cleanup_task(self):
         """Schedule the cleanup task."""

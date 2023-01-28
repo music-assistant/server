@@ -18,7 +18,6 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.constants import ROOT_LOGGER_NAME
-from music_assistant.server.controllers.database import TABLE_THUMBS
 from music_assistant.server.helpers.images import create_collage, create_thumbnail
 
 from .audiodb import TheAudioDb

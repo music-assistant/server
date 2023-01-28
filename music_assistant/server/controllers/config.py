@@ -36,6 +36,7 @@ class ConfigController:
     def __init__(self, mass: "MusicAssistant") -> None:
         """Initialize storage controller."""
         self.mass = mass
+        self.initialized = False
         self._data: Dict[str, Any] = {}
         self.filename = os.path.join(self.mass.storage_path, "settings.json")
         self._timer_handle: asyncio.TimerHandle | None = None
@@ -43,6 +44,7 @@ class ConfigController:
     async def setup(self) -> None:
         """Async initialize of controller."""
         await self._load()
+        self.initialized = True
         LOGGER.debug("Started.")
 
     async def stop(self) -> None:
@@ -55,6 +57,7 @@ class ConfigController:
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get value(s) for a specific key/path in persistent storage."""
+        assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
         # with a slash (/) as splitter. Sort that out here.
         parent = self._data
@@ -75,6 +78,7 @@ class ConfigController:
         value: Any,
     ) -> None:
         """Set value(s) for a specific key/path in persistent storage."""
+        assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
         # with a slash (/) as splitter.
         parent = self._data
@@ -96,6 +100,7 @@ class ConfigController:
         key: str,
     ) -> None:
         """Remove value(s) for a specific key/path in persistent storage."""
+        assert self.initialized, "Not yet (async) initialized"
         parent = self._data
         subkeys = key.split("/")
         for index, subkey in enumerate(subkeys):
@@ -161,7 +166,7 @@ class ConfigController:
             try:
                 _filename = os.path.join(self.mass.storage_path, filename)
                 async with aiofiles.open(_filename, "r", encoding="utf-8") as _file:
-                    self._data = json_loads(_file.read())
+                    self._data = json_loads(await _file.read())
                     return
             except FileNotFoundError:
                 pass

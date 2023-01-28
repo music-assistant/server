@@ -2,49 +2,32 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
-from collections import deque
-from functools import partial
-from time import time
 from types import TracebackType
-from typing import (
-    Any,
-    Callable,
-    Coroutine,
-    Deque,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    Type,
-    Union,
-)
-from uuid import uuid4
+from typing import Any, Callable, Coroutine, Type
 
 from aiohttp import ClientSession, TCPConnector, web
 
-from music_assistant.common.models.enums import EventType, JobStatus
+from music_assistant.common.models.enums import EventType
 from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import (
     CONF_WEB_HOST,
     CONF_WEB_PORT,
-    DEFAULT_PORT,
     DEFAULT_HOST,
+    DEFAULT_PORT,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.controllers.cache import CacheController
-from music_assistant.server.controllers.database import DatabaseController
+from music_assistant.server.controllers.config import ConfigController
 from music_assistant.server.controllers.metadata.metadata import MetaDataController
 from music_assistant.server.controllers.music import MusicController
 from music_assistant.server.controllers.players import PlayerController
-from music_assistant.server.controllers.config import ConfigController
 from music_assistant.server.controllers.streams import StreamsController
 from music_assistant.server.helpers.api import APICommandHandler, mount_websocket
 
 EventCallBackType = Callable[[EventType, Any], None]
-EventSubscriptionType = Tuple[
-    EventCallBackType, Optional[Tuple[EventType]], Optional[Tuple[str]]
+EventSubscriptionType = tuple[
+    EventCallBackType, tuple[EventType] | None, tuple[str] | None
 ]
 
 LOGGER = logging.getLogger(ROOT_LOGGER_NAME)
@@ -62,17 +45,16 @@ class MusicAssistant:
         """
         Create an instance of the MusicAssistant Server."""
         self.storage_path = storage_path
-        self._subscribers: Set[EventCallBackType] = set()
+        self._subscribers: set[EventCallBackType] = set()
 
         # init core controllers
         self.config = ConfigController(self)
-        self.database = DatabaseController(self)
         self.cache = CacheController(self)
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
         self.players = PlayerController(self)
         self.streams = StreamsController(self)
-        self._tracked_tasks: List[asyncio.Task] = []
+        self._tracked_tasks: list[asyncio.Task] = []
         self.closed = False
         self.loop: asyncio.AbstractEventLoop | None = None
         # we dynamically register command handlers
@@ -89,7 +71,6 @@ class MusicAssistant:
             connector=TCPConnector(ssl=False),
         )
         # setup core controllers
-        await self.database.setup()
         await self.config.setup()
         await self.cache.setup()
         await self.music.setup()
@@ -116,7 +97,6 @@ class MusicAssistant:
         for task in self._tracked_tasks:
             task.cancel()
         self.signal_event(EventType.SHUTDOWN)
-        await self.database.close()
         self.closed = True
         if self.http_session:
             await self.http_session.close()
@@ -125,7 +105,7 @@ class MusicAssistant:
         self,
         event: EventType,
         object_id: str | None = None,
-        data: Optional[Any] = None,
+        data: Any = None,
     ) -> None:
         """Signal event to subscribers."""
         if self.closed:
@@ -150,8 +130,8 @@ class MusicAssistant:
     def subscribe(
         self,
         cb_func: EventCallBackType,
-        event_filter: Union[EventType, Tuple[EventType], None] = None,
-        id_filter: Union[str, Tuple[str], None] = None,
+        event_filter: EventType | tuple[EventType] | None = None,
+        id_filter: str | tuple[str] | None = None,
     ) -> Callable:
         """
         Add callback to event listeners.
@@ -178,7 +158,7 @@ class MusicAssistant:
         target: Coroutine,
         *args: Any,
         **kwargs: Any,
-    ) -> Union[asyncio.Task, asyncio.Future]:
+    ) -> asyncio.Task | asyncio.Future:
         """
         Create Task on (main) event loop from Callable or awaitable.
 
@@ -229,7 +209,7 @@ class MusicAssistant:
         exc_type: Type[BaseException],
         exc_val: BaseException,
         exc_tb: TracebackType,
-    ) -> Optional[bool]:
+    ) -> bool | None:
         """Exit context manager."""
         await self.stop()
         if exc_val:
