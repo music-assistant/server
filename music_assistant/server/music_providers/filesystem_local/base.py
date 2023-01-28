@@ -33,7 +33,7 @@ from music_assistant.server.controllers.database import SCHEMA_VERSION
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import parse_tags, split_items
-from music_assistant.server.music_providers.base import MusicProvider
+from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import get_parentdir
 
@@ -65,7 +65,7 @@ class FileSystemItem:
     is_dir: bool
     checksum: str
     file_size: Optional[int] = None
-    local_path: Optional[str] = None
+    local_path: str | None = None
 
     @property
     def ext(self) -> str | None:
@@ -85,6 +85,17 @@ class FileSystemProviderBase(MusicProvider):
     Supports m3u files only for playlists.
     Supports having URI's from streaming providers within m3u playlist.
     """
+
+    _attr_supported_features = (
+            MusicProviderFeature.LIBRARY_ARTISTS,
+            MusicProviderFeature.LIBRARY_ALBUMS,
+            MusicProviderFeature.LIBRARY_TRACKS,
+            MusicProviderFeature.LIBRARY_PLAYLISTS,
+            MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
+            MusicProviderFeature.PLAYLIST_CREATE,
+            MusicProviderFeature.BROWSE,
+            MusicProviderFeature.SEARCH,
+        )
 
     @abstractmethod
     async def setup(self) -> bool:
@@ -131,19 +142,6 @@ class FileSystemProviderBase(MusicProvider):
     # DEFAULT/GENERIC IMPLEMENTATION BELOW
     # should normally not be needed to override
 
-    @property
-    def supported_features(self) -> Tuple[MusicProviderFeature]:
-        """Return the features supported by this MusicProvider."""
-        return (
-            MusicProviderFeature.LIBRARY_ARTISTS,
-            MusicProviderFeature.LIBRARY_ALBUMS,
-            MusicProviderFeature.LIBRARY_TRACKS,
-            MusicProviderFeature.LIBRARY_PLAYLISTS,
-            MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
-            MusicProviderFeature.PLAYLIST_CREATE,
-            MusicProviderFeature.BROWSE,
-            MusicProviderFeature.SEARCH,
-        )
 
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
@@ -152,21 +150,21 @@ class FileSystemProviderBase(MusicProvider):
         result = []
         # searching the filesystem is slow and unreliable,
         # instead we make some (slow) freaking queries to the db ;-)
-        params = {"name": f"%{search_query}%", "provider_id": f"%{self.id}%"}
+        params = {"name": f"%{search_query}%", "provider_instance": f"%{self.id}%"}
         if media_types is None or MediaType.TRACK in media_types:
-            query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_mappings LIKE :provider_id"
+            query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
             tracks = await self.mass.music.tracks.get_db_items_by_query(query, params)
             result += tracks
         if media_types is None or MediaType.ALBUM in media_types:
-            query = "SELECT * FROM albums WHERE name LIKE :name AND provider_mappings LIKE :provider_id"
+            query = "SELECT * FROM albums WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
             albums = await self.mass.music.albums.get_db_items_by_query(query, params)
             result += albums
         if media_types is None or MediaType.ARTIST in media_types:
-            query = "SELECT * FROM artists WHERE name LIKE :name AND provider_mappings LIKE :provider_id"
+            query = "SELECT * FROM artists WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
             artists = await self.mass.music.artists.get_db_items_by_query(query, params)
             result += artists
         if media_types is None or MediaType.PLAYLIST in media_types:
-            query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_mappings LIKE :provider_id"
+            query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
             playlists = await self.mass.music.playlists.get_db_items_by_query(
                 query, params
             )
@@ -188,7 +186,7 @@ class FileSystemProviderBase(MusicProvider):
                 subitems.append(
                     BrowseFolder(
                         item_id=item.path,
-                        provider=self.type,
+                        provider=self.domain,
                         path=f"{self.id}://{item.path}",
                         name=item.name,
                     )
@@ -201,7 +199,7 @@ class FileSystemProviderBase(MusicProvider):
 
             if item.ext in TRACK_EXTENSIONS:
                 if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
-                    item.path, provider_id=self.id
+                    item.path, provider_instance=self.id
                 ):
                     subitems.append(db_item)
                 elif track := await self.get_track(item.path):
@@ -212,7 +210,7 @@ class FileSystemProviderBase(MusicProvider):
                 continue
             if item.ext in PLAYLIST_EXTENSIONS:
                 if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
-                    item.path, provider_id=self.id
+                    item.path, provider_instance=self.id
                 ):
                     subitems.append(db_item)
                 elif playlist := await self.get_playlist(item.path):
@@ -224,7 +222,7 @@ class FileSystemProviderBase(MusicProvider):
 
         return BrowseFolder(
             item_id=item_path,
-            provider=self.type,
+            provider=self.domain,
             path=path,
             name=item_path or self.name,
             # make sure to sort the resulting listing
@@ -313,7 +311,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
-            provider_item_id=prov_artist_id, provider_id=self.id
+            provider_item_id=prov_artist_id, provider_instance=self.id
         )
         if db_artist is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
@@ -325,7 +323,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            provider_item_id=prov_album_id, provider_id=self.id
+            provider_item_id=prov_album_id, provider_instance=self.id
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
@@ -352,7 +350,7 @@ class FileSystemProviderBase(MusicProvider):
         name, version = parse_title_and_version(tags.title)
         track = Track(
             item_id=file_item.path,
-            provider=self.type,
+            provider=self.domain,
             name=name,
             version=version,
         )
@@ -468,7 +466,7 @@ class FileSystemProviderBase(MusicProvider):
             ProviderMapping(
                 item_id=file_item.path,
                 provider_domain=self.type,
-                provider_id=self.id,
+                provider_instance=self.id,
                 content_type=ContentType.try_parse(tags.format),
                 sample_rate=tags.sample_rate,
                 bit_depth=tags.bits_per_sample,
@@ -485,14 +483,14 @@ class FileSystemProviderBase(MusicProvider):
             )
 
         file_item = await self.resolve(prov_playlist_id)
-        playlist = Playlist(file_item.path, provider=self.type, name=file_item.name)
+        playlist = Playlist(file_item.path, provider=self.domain, name=file_item.name)
         playlist.is_editable = file_item.ext != "pls"  # can only edit m3u playlists
 
         playlist.add_provider_mapping(
             ProviderMapping(
                 item_id=file_item.path,
                 provider_domain=self.type,
-                provider_id=self.id,
+                provider_instance=self.id,
             )
         )
         playlist.owner = self._attr_name
@@ -504,7 +502,7 @@ class FileSystemProviderBase(MusicProvider):
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
         db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            prov_album_id, provider_id=self.id
+            prov_album_id, provider_instance=self.id
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
@@ -640,7 +638,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         db_item = await self.mass.music.tracks.get_db_item_by_prov_id(
-            provider_item_id=item_id, provider_id=self.id
+            provider_item_id=item_id, provider_instance=self.id
         )
         if db_item is None:
             raise MediaNotFoundError(f"Item not found: {item_id}")
@@ -651,7 +649,7 @@ class FileSystemProviderBase(MusicProvider):
         file_item = await self.resolve(item_id)
 
         return StreamDetails(
-            provider=self.type,
+            provider=self.domain,
             item_id=item_id,
             content_type=prov_mapping.content_type,
             media_type=MediaType.TRACK,
@@ -680,8 +678,8 @@ class FileSystemProviderBase(MusicProvider):
 
     async def _parse_artist(
         self,
-        name: Optional[str] = None,
-        artist_path: Optional[str] = None,
+        name: str | None = None,
+        artist_path: str | None = None,
     ) -> Artist | None:
         """Lookup metadata in Artist folder."""
         assert name or artist_path
@@ -731,7 +729,7 @@ class FileSystemProviderBase(MusicProvider):
         return artist
 
     async def _parse_album(
-        self, name: Optional[str], album_path: Optional[str], artists: List[Artist]
+        self, name: str | None, album_path: str | None, artists: List[Artist]
     ) -> Album | None:
         """Lookup metadata in Album folder."""
         assert (name or album_path) and artists

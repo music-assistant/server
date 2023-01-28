@@ -6,7 +6,7 @@ from time import time
 from typing import List, Optional
 
 from music_assistant.common.helpers.json import json_dumps
-from music_assistant.common.models.enums import EventType, MediaType, ProviderType
+from music_assistant.common.models.enums import EventType, MediaType
 from music_assistant.common.models.media_items import Radio, Track
 from music_assistant.server.controllers.database import TABLE_RADIOS
 from music_assistant.server.helpers.compare import loose_compare_strings
@@ -24,12 +24,12 @@ class RadioController(MediaControllerBase[Radio]):
     async def versions(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
     ) -> List[Radio]:
         """Return all versions of a radio station we can find on all providers."""
-        assert provider_domain or provider_id, "Provider type or ID must be specified"
-        radio = await self.get(item_id, provider_domain, provider_id)
+        assert provider_domain or provider_instance, "Provider type or ID must be specified"
+        radio = await self.get(item_id, provider_domain, provider_instance)
         # perform a search on all provider(types) to collect all versions/variants
         provider_domains = {item.type for item in self.mass.music.providers}
         all_versions = {
@@ -123,8 +123,8 @@ class RadioController(MediaControllerBase[Radio]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
         limit: int = 25,
     ) -> List[Track]:
         """Generate a dynamic list of tracks based on the item's content."""

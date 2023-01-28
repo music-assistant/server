@@ -9,7 +9,6 @@ from music_assistant.common.models.enums import (
     EventType,
     MediaType,
     MusicProviderFeature,
-    ProviderType,
 )
 from music_assistant.common.models.errors import (
     MediaNotFoundError,
@@ -85,12 +84,12 @@ class TracksController(MediaControllerBase[Track]):
     async def versions(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
     ) -> List[Track]:
         """Return all versions of a track we can find on all providers."""
-        assert provider_domain or provider_id, "Provider type or ID must be specified"
-        track = await self.get(item_id, provider_domain or provider_id)
+        assert provider_domain or provider_instance, "Provider type or ID must be specified"
+        track = await self.get(item_id, provider_domain or provider_instance)
         # perform a search on all provider(types) to collect all versions/variants
         provider_domains = {item.type for item in self.mass.music.providers}
         search_query = f"{track.artist.name} - {track.name}"
@@ -112,7 +111,7 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             # grab full item here including album details etc
             prov_track = await self.get_provider_item(
-                prov_version.item_id, prov_version.provider_id
+                prov_version.item_id, prov_version.provider_instance
             )
             all_versions[prov_version.item_id] = prov_track
 
@@ -125,7 +124,7 @@ class TracksController(MediaControllerBase[Track]):
 
         This is used to link objects of different providers/qualities together.
         """
-        if db_track.provider != ProviderType.DATABASE:
+        if db_track.provider != "database":
             return  # Matching only supported for database items
         for provider in self.mass.music.providers:
             if MusicProviderFeature.SEARCH not in provider.supported_features:
@@ -160,12 +159,12 @@ class TracksController(MediaControllerBase[Track]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the track."""
-        prov = self.mass.music.get_provider(provider_id or provider_domain)
+        prov = self.mass.music.get_provider(provider_instance or provider_domain)
         if (
             not prov
             or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
@@ -350,7 +349,7 @@ class TracksController(MediaControllerBase[Track]):
     ) -> ItemMapping:
         """Extract (database) album as ItemMapping."""
 
-        if album.provider == ProviderType.DATABASE:
+        if album.provider == "database":
             if isinstance(album, ItemMapping):
                 return album
             return ItemMapping.from_item(album)
@@ -375,7 +374,7 @@ class TracksController(MediaControllerBase[Track]):
     ) -> ItemMapping:
         """Extract (database) track artist as ItemMapping."""
 
-        if artist.provider == ProviderType.DATABASE:
+        if artist.provider == "database":
             if isinstance(artist, ItemMapping):
                 return artist
             return ItemMapping.from_item(artist)

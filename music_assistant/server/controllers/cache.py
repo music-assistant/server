@@ -31,7 +31,7 @@ class CacheController:
         """Async initialize of cache module."""
         self.__schedule_cleanup_task()
 
-    async def get(self, cache_key: str, checksum: Optional[str] = None, default=None):
+    async def get(self, cache_key: str, checksum: str | None = None, default=None):
         """
         Get object from cache and return the results.
 
@@ -97,7 +97,7 @@ class CacheController:
         self._mem_cache.pop(cache_key, None)
         await self.mass.database.delete(TABLE_CACHE, {"key": cache_key})
 
-    async def clear(self, key_filter: Optional[str] = None) -> None:
+    async def clear(self, key_filter: str | None = None) -> None:
         """Clear all/partial items from cache."""
         self._mem_cache = {}
         query = f"key LIKE '%{key_filter}%'" if key_filter else None
@@ -115,7 +115,7 @@ class CacheController:
 
     def __schedule_cleanup_task(self):
         """Schedule the cleanup task."""
-        self.mass.add_job(self.auto_cleanup(), "Cleanup cache")
+        self.mass.create_task(self.auto_cleanup())
         # reschedule self
         self.mass.loop.call_later(3600, self.__schedule_cleanup_task)
 

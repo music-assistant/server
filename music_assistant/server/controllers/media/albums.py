@@ -9,7 +9,6 @@ from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.models.enums import (
     EventType,
     MusicProviderFeature,
-    ProviderType,
 )
 from music_assistant.common.models.errors import (
     MediaNotFoundError,
@@ -52,15 +51,15 @@ class AlbumsController(MediaControllerBase[Album]):
     async def tracks(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
     ) -> List[Track]:
         """Return album tracks for the given provider album id."""
 
-        if not (provider_domain == ProviderType.DATABASE or provider_id == "database"):
+        if "database" not in (provider_domain, provider_instance):
             # return provider album tracks
             return await self._get_provider_album_tracks(
-                item_id, provider_domain or provider_id
+                item_id, provider_domain or provider_instance
             )
 
         # db_album requested: get results from first (non-file) provider
@@ -69,12 +68,12 @@ class AlbumsController(MediaControllerBase[Album]):
     async def versions(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
     ) -> List[Album]:
         """Return all versions of an album we can find on all providers."""
-        assert provider_domain or provider_id, "Provider type or ID must be specified"
-        album = await self.get(item_id, provider_domain or provider_id)
+        assert provider_domain or provider_instance, "Provider type or ID must be specified"
+        album = await self.get(item_id, provider_domain or provider_instance)
         # perform a search on all provider(types) to collect all versions/variants
         provider_domains = {item.type for item in self.mass.music.providers}
         search_query = f"{album.artist.name} - {album.name}"
@@ -118,7 +117,7 @@ class AlbumsController(MediaControllerBase[Album]):
         # dump album tracks in db
         for prov_mapping in db_item.provider_mappings:
             for track in await self._get_provider_album_tracks(
-                prov_mapping.item_id, prov_mapping.provider_id
+                prov_mapping.item_id, prov_mapping.provider_instance
             ):
                 await self.mass.music.tracks.add_db_item(track)
         self.mass.signal_event(
@@ -246,14 +245,14 @@ class AlbumsController(MediaControllerBase[Album]):
     async def _get_provider_album_tracks(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
     ) -> List[Track]:
         """Return album tracks for the given provider album id."""
-        prov = self.mass.music.get_provider(provider_id or provider_domain)
+        prov = self.mass.music.get_provider(provider_instance or provider_domain)
         if not prov:
             return []
-        full_album = await self.get_provider_item(item_id, provider_id or provider_domain)
+        full_album = await self.get_provider_item(item_id, provider_instance or provider_domain)
         # prefer cache items (if any)
         cache_key = f"{prov.type}.albumtracks.{item_id}"
         cache_checksum = full_album.metadata.checksum
@@ -278,19 +277,19 @@ class AlbumsController(MediaControllerBase[Album]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the album content."""
-        prov = self.mass.music.get_provider(provider_id or provider_domain)
+        prov = self.mass.music.get_provider(provider_instance or provider_domain)
         if (
             not prov
             or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
         ):
             return []
         album_tracks = await self._get_provider_album_tracks(
-            item_id=item_id, provider_domain=provider_domain, provider_id=provider_id
+            item_id=item_id, provider_domain=provider_domain, provider_instance=provider_instance
         )
         # Grab a random track from the album that we use to obtain similar tracks for
         track = choice(album_tracks)
@@ -346,7 +345,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
         This is used to link objects of different providers/qualities together.
         """
-        if db_album.provider != ProviderType.DATABASE:
+        if db_album.provider != "database":
             return  # Matching only supported for database items
 
         async def find_prov_match(provider_domain: MusicProvider):
@@ -420,7 +419,7 @@ class AlbumsController(MediaControllerBase[Album]):
             artist = await self.mass.music.artists.add_db_item(
                 artist, overwrite_existing=True
             )
-        if artist.provider == ProviderType.DATABASE:
+        if artist.provider == "database":
             if isinstance(artist, ItemMapping):
                 return artist
             return ItemMapping.from_item(artist)

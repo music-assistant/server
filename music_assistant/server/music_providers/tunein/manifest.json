@@ -1,0 +1,17 @@
+{
+  "type": "music",
+  "domain": "tunein",
+  "name": "Tune-In",
+  "codeowners": ["@marcelveldt"],
+  "config_entries": [
+    {
+      "key": "username",
+      "type": "string",
+      "label": "Username"
+    }
+  ],
+
+  "requirements": [],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/categories/music-providers",
+  "multi_instance": true
+}

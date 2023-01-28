@@ -13,7 +13,6 @@ from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.enums import (
     EventType,
     MediaType,
-    ProviderType,
     QueueOption,
     RepeatMode,
     StreamState,
@@ -838,7 +837,7 @@ class PlayerQueue:
         item_before = self._items[index]
 
         # check if the details are already fetched
-        if item_before.media_item.provider == ProviderType.DATABASE:
+        if item_before.media_item.provider == "database":
             return
 
         # fetch full details here to prevent all clients do this on their own

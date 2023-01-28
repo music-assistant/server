@@ -36,7 +36,6 @@ from music_assistant.common.models.enums import (
     MediaType,
     MetadataMode,
     PlayerType,
-    ProviderType,
     StreamState,
 )
 from music_assistant.common.models.errors import (

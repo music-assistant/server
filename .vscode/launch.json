@@ -9,7 +9,10 @@
             "type": "python",
             "request": "launch",
             "module": "music_assistant",
-            "justMyCode": false
+            "justMyCode": false,
+            "args":[
+                "--log-level", "debug"
+            ]
         }
     ]
 }

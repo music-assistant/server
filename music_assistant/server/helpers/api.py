@@ -1,20 +1,34 @@
 """Several helpers for the WebSockets API."""
 from __future__ import annotations
-
+from enum import Enum
 import asyncio
+from datetime import datetime
 import inspect
 import logging
+from types import NoneType, UnionType
 import weakref
 from concurrent import futures
 from contextlib import suppress
 from dataclasses import MISSING, dataclass
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Final, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Coroutine,
+    Final,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 import async_timeout
 from aiohttp import WSMsgType, web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.models.enums import EventType
+from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import __version__
 
 from music_assistant.common.models.api import (
@@ -43,6 +57,7 @@ class APICommandHandler:
 
     command: str
     signature: inspect.Signature
+    type_hints: dict[str, Any]
     target: Callable[..., Coroutine[Any, Any, Any]]
 
     @classmethod
@@ -52,7 +67,8 @@ class APICommandHandler:
         """Parse APICommandHandler by providing a function."""
         return APICommandHandler(
             command=command,
-            signature=get_typed_signature(func),
+            signature=inspect.signature(func),
+            type_hints=get_type_hints(func),
             target=func,
         )
 
@@ -67,14 +83,8 @@ def api_command(command: str) -> Callable[[_F], _F]:
     return decorate
 
 
-def get_typed_signature(call: Callable) -> inspect.Signature:
-    """Parse signature of function to do type validation and/or api spec generation."""
-    signature = inspect.signature(call)
-    return signature
-
-
 def parse_arguments(
-    func_sig: inspect.Signature, args: dict | None, strict: bool = False
+    func_sig: inspect.Signature, func_types: dict[str, Any], args: dict | None, strict: bool = False
 ) -> dict[str, Any]:
     """Parse (and convert) incoming arguments to correct types."""
     if args is None:
@@ -92,8 +102,7 @@ def parse_arguments(
             default = MISSING
         else:
             default = param.default
-        # final_args[name] = parse_value(name, value, param.annotation, default)
-        final_args[name] = value
+        final_args[name] = parse_value(name, value, func_types[name], default)
     return final_args
 
 
@@ -169,8 +178,8 @@ class WebsocketClientHandler:
         )
 
         # forward all events to clients
-        def handle_event(evt: EventType, data: Any) -> None:
-            self._send_message(EventMessage(event=evt, data=data))
+        def handle_event(event: MassEvent) -> None:
+            self._send_message(event)
 
         unsub_callback = self.mass.subscribe(handle_event)
 
@@ -250,7 +259,7 @@ class WebsocketClientHandler:
         self, handler: APICommandHandler, msg: CommandMessage
     ) -> None:
         try:
-            args = parse_arguments(handler.signature, msg.args)
+            args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result = handler.target(**args)
             if asyncio.iscoroutine(result):
                 result = await result
@@ -300,3 +309,85 @@ class WebsocketClientHandler:
             self._handle_task.cancel()
         if self._writer_task is not None:
             self._writer_task.cancel()
+
+
+def parse_utc_timestamp(datetime_string: str) -> datetime:
+    """Parse datetime from string."""
+    return datetime.fromisoformat(datetime_string.replace("Z", "+00:00"))
+
+
+def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) -> Any:
+    """Try to parse a value from raw (json) data and type annotations."""
+
+    if isinstance(value, dict) and hasattr(value_type, "from_dict"):
+        return value_type.from_dict(value)
+
+    if value is None and not isinstance(default, type(MISSING)):
+        return default
+    if value is None and value_type is NoneType:
+        return None
+    origin = get_origin(value_type)
+    if origin is list:
+        return [
+            parse_value(name, subvalue, get_args(value_type)[0])
+            for subvalue in value
+            if subvalue is not None
+        ]
+    elif origin is dict:
+        subkey_type = get_args(value_type)[0]
+        subvalue_type = get_args(value_type)[1]
+        return {
+            parse_value(subkey, subkey, subkey_type): parse_value(
+                f"{subkey}.value", subvalue, subvalue_type
+            )
+            for subkey, subvalue in value.items()
+        }
+    elif origin is Union or origin is UnionType:
+        # try all possible types
+        sub_value_types = get_args(value_type)
+        for sub_arg_type in sub_value_types:
+            if value is NoneType and sub_arg_type is NoneType:
+                return value
+            # try them all until one succeeds
+            try:
+                return parse_value(name, value, sub_arg_type)
+            except (KeyError, TypeError, ValueError):
+                pass
+        # if we get to this point, all possibilities failed
+        # find out if we should raise or log this
+        err = (
+            f"Value {value} of type {type(value)} is invalid for {name}, "
+            f"expected value of type {value_type}"
+        )
+        if NoneType not in sub_value_types:
+            # raise exception, we have no idea how to handle this value
+            raise TypeError(err)
+        # failed to parse the (sub) value but None allowed, log only
+        logging.getLogger(__name__).warn(err)
+        return None
+    elif origin is type:
+        return eval(value)
+    if value_type is Any:
+        return value
+    if value is None and value_type is not NoneType:
+        raise KeyError(f"`{name}` of type `{value_type}` is required.")
+
+    try:
+        if issubclass(value_type, Enum):  # type: ignore[arg-type]
+            return value_type(value)  # type: ignore[operator]
+        if issubclass(value_type, datetime):  # type: ignore[arg-type]
+            return parse_utc_timestamp(value)
+    except TypeError:
+        # happens if value_type is not a class
+        pass
+
+    if value_type is float and isinstance(value, int):
+        return float(value)
+    if value_type is int and isinstance(value, str) and value.isnumeric():
+        return int(value)
+    if not isinstance(value, value_type):  # type: ignore[arg-type]
+        raise TypeError(
+            f"Value {value} of type {type(value)} is invalid for {name}, "
+            f"expected value of type {value_type}"
+        )
+    return value

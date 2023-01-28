@@ -14,6 +14,10 @@ from music_assistant.common.helpers.json import (
     json_dumps,
     json_loads,
 )
+from music_assistant.common.models.config_entries import ProviderConfig
+from music_assistant.common.models.enums import EventType, ProviderType
+from music_assistant.server.helpers.api import api_command
+from music_assistant.constants import CONF_PROVIDERS
 
 if TYPE_CHECKING:
     from ..server import MusicAssistant
@@ -82,10 +86,6 @@ class ConfigController:
                     # no need to save if value did not change
                     return
                 parent[subkey] = value
-                if cur_value == value:
-                    # no need to save if value did not change
-                    return
-                self._data[subkey] = value
                 self.save()
             else:
                 parent.setdefault(subkey, {})
@@ -108,6 +108,50 @@ class ConfigController:
                 parent = parent[subkey]
 
         self.save()
+
+    @api_command("config/providers/all")
+    def get_provider_configs(
+        self, prov_type: ProviderType | None = None
+    ) -> list[ProviderConfig]:
+        """Return all known provider configurations, optionally filtered by ProviderType."""
+        raw_values: dict[str, dict] = self.get(CONF_PROVIDERS, {})
+        return [
+            ProviderConfig.from_dict(x)
+            for x in raw_values.values()
+            if (prov_type is None or x["type"] == prov_type)
+        ]
+
+    @api_command("config/providers/get")
+    def get_provider_config(self, instance_id: str) -> list[ProviderConfig]:
+        """Return configuration for a single provider."""
+        if raw_value := self.get(f"{CONF_PROVIDERS}/{instance_id}"):
+            return ProviderConfig.from_dict(raw_value)
+        raise KeyError(f"No config found for provider id {instance_id}")
+
+    @api_command("config/providers/set")
+    def set_provider_config(self, config: ProviderConfig) -> None:
+        """Create or update ProviderConfig."""
+        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
+        existing = self.get(conf_key)
+        config_dict = config.to_dict()
+        if existing == config_dict:
+            # no changes
+            return
+        self.set(conf_key, config.to_dict())
+        if existing:
+            # existing provider updated
+            self.mass.signal_event(
+                EventType.PROVIDER_CONFIG_UPDATED,
+                object_id=config.instance_id,
+                data=config,
+            )
+        else:
+            # new provider config added
+            self.mass.signal_event(
+                EventType.PROVIDER_CONFIG_CREATED,
+                object_id=config.instance_id,
+                data=config,
+            )
 
     async def _load(self) -> None:
         """Load data from persistent storage."""

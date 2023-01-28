@@ -16,7 +16,6 @@ from music_assistant.common.models.enums import (
     EventType,
     MediaType,
     MetadataMode,
-    ProviderType,
     StreamState,
 )
 from music_assistant.common.models.errors import (
@@ -28,7 +27,11 @@ from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import BASE_URL_OVERRIDE_ENVNAME, ROOT_LOGGER_NAME
+from music_assistant.constants import (
+    BASE_URL_OVERRIDE_ENVNAME,
+    DEFAULT_PORT,
+    ROOT_LOGGER_NAME,
+)
 from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
@@ -39,6 +42,8 @@ from music_assistant.server.helpers.audio import (
     strip_silence,
 )
 from music_assistant.server.helpers.process import AsyncProcess
+
+from music_assistant.constants import CONF_WEB_HOST, CONF_WEB_PORT
 
 if TYPE_CHECKING:
     from music_assistant.common.models.queue_stream import QueueStream
@@ -55,8 +60,6 @@ class StreamsController:
     def __init__(self, mass: MusicAssistant):
         """Initialize instance."""
         self.mass = mass
-        self._port = mass.config.stream_port
-        self._ip = mass.config.stream_ip
         self.queue_streams: Dict[str, QueueStream] = {}
         self.announcements: Dict[str, Tuple[str]] = {}
 
@@ -71,10 +74,12 @@ class StreamsController:
             # Also see https://github.com/music-assistant/hass-music-assistant/issues/802
             # and https://github.com/music-assistant/hass-music-assistant/discussions/794#discussioncomment-3331209
             return os.environ[BASE_URL_OVERRIDE_ENVNAME]
+        # TODO!
+        host = self.mass.config.get(CONF_WEB_HOST, "127.0.0.1")
+        port = self.config.get(CONF_WEB_PORT, DEFAULT_PORT)
+        return f"http://{host}:{port}"
 
-        return f"http://{self._ip}:{self._port}"
-
-    def get_stream_url(self, queue_id: str, player_id: Optional[str] = None) -> str:
+    def get_stream_url(self, queue_id: str, player_id: str | None = None) -> str:
         """Get stream url for the PlayerQueue Stream."""
         player = self.mass.players.get_player(player_id or queue_id)
         content_type = player.settings.stream_type
@@ -95,7 +100,7 @@ class StreamsController:
         ext = content_type.value
         return f"{self.base_url}/announce/{player_id}.{ext}"
 
-    async def get_preview_url(self, provider: ProviderType, track_id: str) -> str:
+    async def get_preview_url(self, provider: str, track_id: str) -> str:
         """Return url to short preview sample."""
         track = await self.mass.music.tracks.get_provider_item(track_id, provider)
         if preview := track.metadata.preview:
@@ -105,29 +110,14 @@ class StreamsController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        app = web.Application()
 
-        app.router.add_get("/preview", self.serve_preview)
-        app.router.add_get("/announce/{player_id}.{fmt}", self.serve_announcement)
-        app.router.add_get(
+        self.mass.webapp.router.add_get("/stream/preview", self.serve_preview)
+        self.mass.webapp.router.add_get(
+            "/stream/announce/{player_id}.{fmt}", self.serve_announcement
+        )
+        self.mass.webapp.router.add_get(
             "/stream/{queue_id}/{client_id}.{fmt}", self.serve_queue_stream
         )
-
-        runner = web.AppRunner(app, access_log=None)
-        await runner.setup()
-        # set host to None to bind to all addresses on both IPv4 and IPv6
-        http_site = web.TCPSite(runner, host=None, port=self._port)
-        await http_site.start()
-
-        async def on_shutdown_event(event: MassEvent):
-            """Handle shutdown event."""
-            await http_site.stop()
-            await runner.cleanup()
-            await app.shutdown()
-            await app.cleanup()
-            LOGGER.debug("Streamserver exited.")
-
-        self.mass.subscribe(on_shutdown_event, EventType.SHUTDOWN)
 
         ffmpeg_present, libsoxr_support = await check_audio_support(True)
         if not ffmpeg_present:
@@ -140,7 +130,7 @@ class StreamsController:
                 "highest quality audio not available. "
             )
 
-        LOGGER.info("Started stream server on port %s", self._port)
+        LOGGER.info("Started stream controller")
 
     async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""

@@ -8,7 +8,12 @@ from typing import AsyncGenerator
 from smb.base import SharedFile
 
 from music_assistant.common.helpers.util import get_ip_from_host
-from music_assistant.common.models.enums import ProviderType
+from music_assistant.constants import (
+    CONF_OPTIONS,
+    CONF_PASSWORD,
+    CONF_PATH,
+    CONF_USERNAME,
+)
 
 from ..filesystem_local.base import FileSystemItem, FileSystemProviderBase
 from ..filesystem_local.helpers import get_absolute_path, get_relative_path
@@ -39,31 +44,32 @@ smb_conn_ctx = contextvars.ContextVar("smb_conn_ctx", default=None)
 class SMBFileSystemProvider(FileSystemProviderBase):
     """Implementation of an SMB File System Provider."""
 
-    _attr_name = "smb"
-    _attr_type = ProviderType.FILESYSTEM_SMB
     _service_name = ""
     _root_path = "/"
     _remote_name = ""
     _target_ip = ""
 
-    async def setup(self) -> bool:
+    async def setup(self) -> None:
         """Handle async initialization of the provider."""
         # extract params from path
-        if self.config.path.startswith("\\\\"):
-            path_parts = self.config.path[2:].split("\\", 2)
-        elif self.config.path.startswith("smb://"):
-            path_parts = self.config.path[6:].split("/", 2)
+        if self.config.values[CONF_PATH].startswith("\\\\"):
+            path_parts = self.config.values[CONF_PATH][2:].split("\\", 2)
+        elif self.config.values[CONF_PATH].startswith("smb://"):
+            path_parts = self.config.values[CONF_PATH][6:].split("/", 2)
         else:
-            path_parts = self.config.path.split(os.sep)
+            path_parts = self.config.values[CONF_PATH].split(os.sep)
         self._remote_name = path_parts[0]
         self._service_name = path_parts[1]
         if len(path_parts) > 2:
             self._root_path = os.sep + path_parts[2]
 
         default_target_ip = await get_ip_from_host(self._remote_name)
-        self._target_ip = self.config.options.get("target_ip", default_target_ip)
+        self._target_ip = self.config.values[CONF_OPTIONS].get(
+            "target_ip", default_target_ip
+        )
         async with self._get_smb_connection():
-            return True
+            # test connection and return
+            return None
 
     async def listdir(
         self,
@@ -151,10 +157,10 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         async with AsyncSMB(
             remote_name=self._remote_name,
             service_name=self._service_name,
-            username=self.config.username,
-            password=self.config.password,
+            username=self.config.values[CONF_USERNAME],
+            password=self.config.values[CONF_PASSWORD],
             target_ip=self._target_ip,
-            options=self.config.options,
+            options=self.config.values[CONF_OPTIONS],
         ) as smb_conn:
             token = smb_conn_ctx.set(smb_conn)
             yield smb_conn

@@ -147,7 +147,7 @@ class DatabaseController:
         return await self.get_row(table, match)
 
     async def delete(
-        self, table: str, match: Optional[dict] = None, query: Optional[str] = None
+        self, table: str, match: Optional[dict] = None, query: str | None = None
     ) -> None:
         """Delete data in given table."""
         assert not (query and "where" in query.lower())
@@ -161,7 +161,7 @@ class DatabaseController:
 
         await self.execute(sql_query, match)
 
-    async def delete_where_query(self, table: str, query: Optional[str] = None) -> None:
+    async def delete_where_query(self, table: str, query: str | None = None) -> None:
         """Delete data in given table using given where clausule."""
         sql_query = f"DELETE FROM {table} WHERE {query}"
         await self.execute(sql_query)
@@ -205,7 +205,7 @@ class DatabaseController:
 
             if prev_version == 18:
                 # model for provider_mapping completely changed,
-                # we just drop the old provider_ids column and add the new provider_mappings column
+                # we just drop the old provider_instances column and add the new provider_mappings column
                 # this will require a full resync of all providers including matching but at least
                 # the additional metadata is not lost
                 await self.execute(
@@ -224,19 +224,19 @@ class DatabaseController:
                     f"ALTER TABLE {TABLE_RADIOS} ADD provider_mappings json DEFAULT '[]';"
                 )
                 await self.execute(
-                    f"ALTER TABLE {TABLE_ARTISTS} DROP column provider_ids;"
+                    f"ALTER TABLE {TABLE_ARTISTS} DROP column provider_instances;"
                 )
                 await self.execute(
-                    f"ALTER TABLE {TABLE_ALBUMS} DROP column provider_ids;"
+                    f"ALTER TABLE {TABLE_ALBUMS} DROP column provider_instances;"
                 )
                 await self.execute(
-                    f"ALTER TABLE {TABLE_TRACKS} DROP column provider_ids;"
+                    f"ALTER TABLE {TABLE_TRACKS} DROP column provider_instances;"
                 )
                 await self.execute(
-                    f"ALTER TABLE {TABLE_PLAYLISTS} DROP column provider_ids;"
+                    f"ALTER TABLE {TABLE_PLAYLISTS} DROP column provider_instances;"
                 )
                 await self.execute(
-                    f"ALTER TABLE {TABLE_RADIOS} DROP column provider_ids;"
+                    f"ALTER TABLE {TABLE_RADIOS} DROP column provider_instances;"
                 )
                 await self.execute(f"DROP TABLE IF EXISTS {TABLE_CACHE}")
                 # recreate missing table(s)

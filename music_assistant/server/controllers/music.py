@@ -2,23 +2,23 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import inspect
 import itertools
 import logging
 import os
 import statistics
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
-
-from media.albums import AlbumsController
-from media.artists import ArtistsController
-from media.playlists import PlaylistController
-from media.radio import RadioController
-from media.tracks import TracksController
+from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
-from music_assistant.common.helpers.json import load_json_file
 from music_assistant.common.helpers.uri import parse_uri
-from music_assistant.common.models.config import MusicProviderConfig
+from music_assistant.common.models.config_entries import (
+    CONF_KEY_ENABLED,
+    CONFIG_ENTRY_ENABLED,
+    ProviderConfig,
+)
 from music_assistant.common.models.enums import (
+    EventType,
     MediaType,
     MusicProviderFeature,
     ProviderType,
@@ -28,18 +28,24 @@ from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     SetupFailedError,
 )
+from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.media_items import (
     BrowseFolder,
     MediaItem,
     MediaItemType,
     media_from_dict,
 )
-from music_assistant.common.models.provider import MusicProviderManifest
+from music_assistant.common.models.provider_manifest import ProviderManifest
 from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
+from music_assistant.server.models.music_provider import MusicProvider
 
 from .database import TABLE_PLAYLOG, TABLE_TRACK_LOUDNESS
-from .music_provider import MusicProvider
+from .media.albums import AlbumsController
+from .media.artists import ArtistsController
+from .media.playlists import PlaylistController
+from .media.radio import RadioController
+from .media.tracks import TracksController
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
@@ -47,7 +53,8 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROVIDERS_PATH = os.path.join(BASE_DIR, "music_providers")
+SERVER_DIR = os.path.dirname(BASE_DIR)
+PROVIDERS_PATH = os.path.join(SERVER_DIR, "music_providers")
 
 
 class MusicController:
@@ -61,40 +68,67 @@ class MusicController:
         self.tracks = TracksController(mass)
         self.radio = RadioController(mass)
         self.playlists = PlaylistController(mass)
-        self._available_providers: dict[MusicProviderManifest] = set()
+        self._available_providers: dict[str, ProviderManifest] = {}
         self._providers: dict[str, MusicProvider] = {}
 
     async def setup(self):
         """Async initialize of module."""
         # load available providers
         await self._load_available_providers()
-        for prov_conf in self.mass.config.providers:
-            prov_cls = PROV_MAP[prov_conf.type]
-            await self._register_provider(prov_cls(self.mass, prov_conf), prov_conf)
-        # always register url provider
-        await self._register_provider(URLProvider(self.mass, URL_CONFIG), URL_CONFIG)
-        # add job to cleanup old records from db
-        self.mass.add_job(
-            self._cleanup_library(),
-            "Cleanup removed items from database",
-            allow_duplicate=False,
+        # load providers from config
+        for prov_conf in self.mass.config.get_provider_configs(ProviderType.MUSIC):
+            await self._load_provider(prov_conf)
+        # check for any 'load_by_default' providers (e.g. URL provider)
+        for prov_manifest in self._available_providers.values():
+            if not prov_manifest.load_by_default:
+                continue
+            loaded = any(
+                (x for x in self.providers if x.domain == prov_manifest.domain)
+            )
+            if loaded:
+                continue
+            await self._load_provider(
+                ProviderConfig(
+                    type=prov_manifest.type,
+                    domain=prov_manifest.domain,
+                    instance_id=prov_manifest.domain,
+                    values={},
+                )
+            )
+        # listen to config change events
+        self.mass.subscribe(
+            self._handle_config_updated_event,
+            (EventType.PROVIDER_CONFIG_CREATED, EventType.PROVIDER_CONFIG_UPDATED),
         )
-
-    @api_command("music/providers")
-    def get_providers(self) -> list[MusicProviderManifest]:
-        """Return all loaded/running MusicProviders (instances)."""
-        return list(self._available_providers.values())
+        # add task to cleanup old records from db
+        self.mass.create_task(self._cleanup_library())
 
     @api_command("music/providers/available")
-    def get_available_providers(self) -> list[MusicProviderManifest]:
+    def get_available_providers(self) -> list[ProviderManifest]:
         """Return all available MusicProviders."""
         return list(self._available_providers.values())
+
+    @property
+    def providers(self) -> list[MusicProvider]:
+        """Return all loaded/running MusicProviders (instances)."""
+        return list(self._providers.values())
+
+    def get_provider(self, provider_instance_or_domain: str) -> MusicProvider:
+        """Return Music provider by instance id (or domain)."""
+        if prov := self._providers.get(provider_instance_or_domain):
+            return prov
+        for prov in self._providers.values():
+            if provider_instance_or_domain in (prov.type, prov.id, prov.type):
+                return prov
+        raise ProviderUnavailableError(
+            f"Provider {provider_instance_or_domain} is not available"
+        )
 
     @api_command("music/sync")
     async def start_sync(
         self,
-        media_types: Optional[Tuple[MediaType]] = None,
-        providers: Optional[Tuple[str]] = None,
+        media_types: tuple[MediaType] | None = None,
+        providers: tuple[str] | None = None,
     ) -> None:
         """
         Start running the sync of (all or selected) musicproviders.
@@ -104,34 +138,19 @@ class MusicController:
         """
 
         for provider in self.providers:
-            if providers is not None and prov.type not in provider_domains:
+            if providers is not None and provider.domain not in providers:
                 continue
-            self.mass.add_job(
-                prov.sync_library(media_types),
-                f"Library sync for provider {prov.name}",
-                allow_duplicate=False,
+            # TODO: Add task to list to track progress
+            self.mass.create_task(
+                provider.sync_library(media_types),
             )
-
-
-    def get_provider(
-        self, provider_id_or_type: Union[str, ProviderType]
-    ) -> MusicProvider:
-        """Return Music provider by id (or type)."""
-        if prov := self._providers.get(provider_id_or_type):
-            return prov
-        for prov in self._providers.values():
-            if provider_id_or_type in (prov.type, prov.id, prov.type):
-                return prov
-        raise ProviderUnavailableError(
-            f"Provider {provider_id_or_type} is not available"
-        )
 
     async def search(
         self,
         search_query,
-        media_types: List[MediaType] = MediaType.ALL,
+        media_types: list[MediaType] = MediaType.ALL,
         limit: int = 10,
-    ) -> List[MediaItemType]:
+    ) -> list[MediaItemType]:
         """
         Perform global search for media items on all providers.
 
@@ -140,15 +159,18 @@ class MusicController:
             :param limit: number of items to return in the search (per type).
         """
         # include results from all music providers
-        provider_ids = (item.id for item in self.providers)
+        provider_instances = (item.id for item in self.providers)
         # TODO: sort by name and filter out duplicates ?
         return itertools.chain.from_iterable(
             await asyncio.gather(
                 *[
                     self.search_provider(
-                        search_query, media_types, provider_id=provider_id, limit=limit
+                        search_query,
+                        media_types,
+                        provider_instance=provider_instance,
+                        limit=limit,
                     )
-                    for provider_id in provider_ids
+                    for provider_instance in provider_instances
                 ]
             )
         )
@@ -156,22 +178,22 @@ class MusicController:
     async def search_provider(
         self,
         search_query: str,
-        media_types: List[MediaType] = MediaType.ALL,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        media_types: list[MediaType] = MediaType.ALL,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
         limit: int = 10,
-    ) -> List[MediaItemType]:
+    ) -> list[MediaItemType]:
         """
         Perform search on given provider.
 
             :param search_query: Search query
-            :param provider_domain: type of the provider to perform the search on.
-            :param provider_id: id of the provider to perform the search on.
+            :param provider_domain: domain of the provider to perform the search on.
+            :param provider_instance: instance id of the provider to perform the search on.
             :param media_types: A list of media_types to include. All types if None.
             :param limit: number of items to return in the search (per type).
         """
-        assert provider_domain or provider_id, "Provider needs to be supplied"
-        prov = self.get_provider(provider_id or provider_domain)
+        assert provider_domain or provider_instance, "Provider needs to be supplied"
+        prov = self.get_provider(provider_instance or provider_domain)
         if MusicProviderFeature.SEARCH not in prov.supported_features:
             return []
 
@@ -198,13 +220,13 @@ class MusicController:
         )
         return items
 
-    async def browse(self, path: Optional[str] = None) -> BrowseFolder:
+    async def browse(self, path: str | None = None) -> BrowseFolder:
         """Browse Music providers."""
         # root level; folder per provider
         if not path or path == "root":
             return BrowseFolder(
                 item_id="root",
-                provider=ProviderType.DATABASE,
+                provider="database",
                 path="root",
                 label="browse",
                 name="",
@@ -220,8 +242,8 @@ class MusicController:
                 ],
             )
         # provider level
-        provider_id = path.split("://", 1)[0]
-        prov = self.get_provider(provider_id)
+        provider_instance = path.split("://", 1)[0]
+        prov = self.get_provider(provider_instance)
         return await prov.browse(path)
 
     async def get_item_by_uri(
@@ -241,23 +263,23 @@ class MusicController:
         self,
         item_id: str,
         media_type: MediaType,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
         force_refresh: bool = False,
         lazy: bool = True,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         assert (
-            provider_domain or provider_id
-        ), "provider_domain or provider_id must be supplied"
-        if provider_domain == ProviderType.URL or provider_id == "url":
+            provider_domain or provider_instance
+        ), "provider_domain or provider_instance must be supplied"
+        if "url" in (provider_domain, provider_instance):
             # handle special case of 'URL' MusicProvider which allows us to play regular url's
-            return await self.get_provider(ProviderType.URL).parse_item(item_id)
+            return await self.get_provider("url").parse_item(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             provider_item_id=item_id,
             provider_domain=provider_domain,
-            provider_id=provider_id,
+            provider_instance=provider_instance,
             force_refresh=force_refresh,
             lazy=lazy,
         )
@@ -266,26 +288,30 @@ class MusicController:
         self,
         media_type: MediaType,
         provider_item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
     ) -> None:
         """Add an item to the library."""
         ctrl = self.get_controller(media_type)
         await ctrl.add_to_library(
-            provider_item_id, provider_domain=provider_domain, provider_id=provider_id
+            provider_item_id,
+            provider_domain=provider_domain,
+            provider_instance=provider_instance,
         )
 
     async def remove_from_library(
         self,
         media_type: MediaType,
         provider_item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
     ) -> None:
         """Remove item from the library."""
         ctrl = self.get_controller(media_type)
         await ctrl.remove_from_library(
-            provider_item_id, provider_domain=provider_domain, provider_id=provider_id
+            provider_item_id,
+            provider_domain=provider_domain,
+            provider_instance=provider_instance,
         )
 
     async def delete_db_item(
@@ -295,15 +321,14 @@ class MusicController:
         ctrl = self.get_controller(media_type)
         await ctrl.delete_db_item(db_item_id, recursive)
 
-    async def refresh_items(self, items: List[MediaItem]) -> None:
+    async def refresh_items(self, items: list[MediaItem]) -> None:
         """
         Refresh MediaItems to force retrieval of full info and matches.
 
         Creates background tasks to process the action.
         """
         for media_item in items:
-            job_desc = f"Refresh metadata of {media_item.uri}"
-            self.mass.add_job(self.refresh_item(media_item), job_desc)
+            self.mass.create_task(self.refresh_item(media_item))
 
     async def refresh_item(
         self,
@@ -328,9 +353,9 @@ class MusicController:
                 )
 
     async def set_track_loudness(
-        self, item_id: str, provider_domain: ProviderType, loudness: int
+        self, item_id: str, provider_domain: str, loudness: int
     ):
-        """List integrated loudness for a track in db."""
+        """list integrated loudness for a track in db."""
         await self.mass.database.insert(
             TABLE_TRACK_LOUDNESS,
             {"item_id": item_id, "provider": provider_domain, "loudness": loudness},
@@ -338,7 +363,7 @@ class MusicController:
         )
 
     async def get_track_loudness(
-        self, provider_item_id: str, provider_domain: ProviderType
+        self, provider_item_id: str, provider_domain: str
     ) -> float | None:
         """Get integrated loudness for a track in db."""
         if result := await self.mass.database.get_row(
@@ -351,12 +376,10 @@ class MusicController:
             return result["loudness"]
         return None
 
-    async def get_provider_loudness(
-        self, provider_domain: ProviderType
-    ) -> float | None:
+    async def get_provider_loudness(self, provider_domain: str) -> float | None:
         """Get average integrated loudness for tracks of given provider."""
         all_items = []
-        if provider_domain == ProviderType.URL:
+        if provider_domain == "url":
             # this is not a very good idea for random urls
             return None
         for db_row in await self.mass.database.get_rows(
@@ -370,7 +393,7 @@ class MusicController:
             return statistics.fmean(all_items)
         return None
 
-    async def mark_item_played(self, item_id: str, provider_domain: ProviderType):
+    async def mark_item_played(self, item_id: str, provider_domain: str):
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
         await self.mass.database.insert(
@@ -383,34 +406,30 @@ class MusicController:
             allow_replace=True,
         )
 
-    async def library_add_items(self, items: List[MediaItem]) -> None:
+    async def library_add_items(self, items: list[MediaItem]) -> None:
         """
         Add media item(s) to the library.
 
         Creates background tasks to process the action.
         """
         for media_item in items:
-            job_desc = f"Add {media_item.uri} to library"
-            self.mass.add_job(
+            self.mass.create_task(
                 self.add_to_library(
                     media_item.media_type, media_item.item_id, media_item.provider
-                ),
-                job_desc,
+                )
             )
 
-    async def library_remove_items(self, items: List[MediaItem]) -> None:
+    async def library_remove_items(self, items: list[MediaItem]) -> None:
         """
         Remove media item(s) from the library.
 
         Creates background tasks to process the action.
         """
         for media_item in items:
-            job_desc = f"Remove {media_item.uri} from library"
-            self.mass.add_job(
+            self.mass.create_task(
                 self.remove_from_library(
                     media_item.media_type, media_item.item_id, media_item.provider
-                ),
-                job_desc,
+                )
             )
 
     def get_controller(
@@ -428,25 +447,53 @@ class MusicController:
         if media_type == MediaType.PLAYLIST:
             return self.playlists
 
-    async def _register_provider(
-        self, provider: MusicProvider, conf: MusicProviderConfig
-    ) -> None:
-        """Register a music provider."""
-        if provider.id in self._providers:
-            raise SetupFailedError(
-                f"Provider with id {provider.id} is already registered"
-            )
+    async def _load_provider(self, conf: ProviderConfig) -> None:
+        """Load (or reload) a music provider."""
+        assert conf.type == ProviderType.MUSIC
+        if provider := self._providers.get(conf.instance_id):
+            # provider is already loaded, stop and unload it first
+            await provider.close()
+            self._providers.pop(conf.instance_id)
+
+        domain = conf.domain
+        prov_manifest = self._available_providers.get(domain)
+        if not prov_manifest:
+            raise SetupFailedError(f"Provider {domain} manifest not found")
+        # try to load the module
         try:
-            provider.config = conf
-            provider.mass = self.mass
-            provider.cache = self.mass.cache
-            provider.logger = LOGGER.getChild(provider.type)
-            if await provider.setup():
-                self._providers[provider.id] = provider
-        except Exception as err:  # pylint: disable=broad-except
-            raise SetupFailedError(
-                f"Setup failed of provider {provider.type}: {str(err)}"
-            ) from err
+            prov_mod = importlib.import_module(
+                f".{domain}", "music_assistant.server.music_providers"
+            )
+            for name, obj in inspect.getmembers(prov_mod):
+                if not inspect.isclass(obj):
+                    continue
+                # lookup class to initialize
+                if name == prov_manifest.init_class or (
+                    not prov_manifest.init_class
+                    and issubclass(obj, MusicProvider)
+                    and obj != MusicProvider
+                ):
+                    prov_cls = obj
+                    break
+            else:
+                SetupFailedError("Unable to locate Provider class")
+            provider: MusicProvider = prov_cls(self.mass, prov_manifest, conf)
+            self._providers[provider.instance_id] = provider
+            await provider.setup()
+        # pylint: disable=broad-except
+        except Exception as exc:
+            LOGGER.exception(
+                "Error loading provider(instance) %s (%s): %s",
+                conf.domain,
+                conf.title or conf.instance_id,
+                str(exc),
+            )
+        else:
+            LOGGER.debug(
+                "Successfully preloaded module %s (%s)",
+                conf.domain,
+                conf.title or conf.instance_id,
+            )
 
     async def _cleanup_library(self) -> None:
         """Cleanup deleted items from library/database."""
@@ -454,10 +501,10 @@ class MusicController:
         cur_providers = list(self._providers.keys())
         removed_providers = {x for x in prev_providers if x not in cur_providers}
 
-        for provider_id in removed_providers:
+        for provider_instance in removed_providers:
 
             # clean cache items from deleted provider(s)
-            await self.mass.cache.clear(provider_id)
+            await self.mass.cache.clear(provider_instance)
 
             # cleanup media items from db matched to deleted provider
             for ctrl in (
@@ -468,9 +515,11 @@ class MusicController:
                 self.mass.music.albums,
                 self.mass.music.artists,
             ):
-                prov_items = await ctrl.get_db_items_by_prov_id(provider_id=provider_id)
+                prov_items = await ctrl.get_db_items_by_prov_id(
+                    provider_instance=provider_instance
+                )
                 for item in prov_items:
-                    await ctrl.remove_prov_mapping(item.item_id, provider_id)
+                    await ctrl.remove_prov_mapping(item.item_id, provider_instance)
         await self.mass.cache.set("prov_ids", cur_providers)
 
     async def _load_available_providers(self) -> None:
@@ -487,8 +536,14 @@ class MusicController:
                 if file_str != "manifest.json":
                     continue
                 try:
-                    manifest_dict = await load_json_file(file_path)
-                    provider_manifest = MusicProviderManifest.from_dict(manifest_dict)
+                    provider_manifest = await ProviderManifest.parse(file_path)
+                    # inject config entry to enable/disable the provider
+                    conf_keys = (x.key for x in provider_manifest.config_entries)
+                    if CONF_KEY_ENABLED not in conf_keys:
+                        provider_manifest.config_entries = [
+                            CONFIG_ENTRY_ENABLED,
+                            *provider_manifest.config_entries,
+                        ]
                     self._available_providers[
                         provider_manifest.domain
                     ] = provider_manifest
@@ -499,3 +554,11 @@ class MusicController:
                         dir_str,
                         exc_info=exc,
                     )
+
+    async def _handle_config_updated_event(
+        self, event: MassEvent
+    ):
+        """Handle ProviderConfig updated/created event."""
+        if event.data.type != ProviderType.MUSIC:
+            return
+        await self._load_provider(event.data)

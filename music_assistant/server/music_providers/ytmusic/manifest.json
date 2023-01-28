@@ -1,0 +1,22 @@
+{
+  "type": "music",
+  "domain": "ytmusic",
+  "name": "YouTube Music",
+  "codeowners": ["@MarvinSchenkel"],
+  "config_entries": [
+    {
+      "key": "username",
+      "type": "string",
+      "label": "Username"
+    },
+    {
+      "key": "cookie",
+      "type": "string",
+      "label": "Cookie"
+    }
+  ],
+
+  "requirements": [],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/606",
+  "multi_instance": true
+}

@@ -1,16 +1,9 @@
 """Model/base for a Music Provider implementation."""
 from __future__ import annotations
 
-from abc import abstractmethod
-import logging
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
+from typing import AsyncGenerator
 
-from music_assistant.common.models.config import MusicProviderConfig
-from music_assistant.common.models.enums import (
-    MediaType,
-    MusicProviderFeature,
-    ProviderType,
-)
+from music_assistant.common.models.enums import MediaType, MusicProviderFeature
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -21,97 +14,30 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.common.models.config_entries import (
-    CONFIG_ENTRY_ENABLED,
-    ConfigEntry,
-    ConfigValues,
-)
-from music_assistant.constants import ROOT_LOGGER_NAME
 
-if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.cache import CacheController
-
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata.audiodb")
-
-# config entries: return the required config entries for the provider
-CONFIG_ENTRIES: tuple[ConfigEntry, ...] = (CONFIG_ENTRY_ENABLED,)
+from .provider import Provider
 
 
-class MusicProviderController:
+class MusicProvider(Provider):
     """
     Base representation of a Music Provider (controller).
-    
-    Provider implementations should subclass this base model/class
-    or make sure they implement all public methods and properties.
+
+    Music Provider implementations should inherit fro, this base model.
     """
 
-    _attr_name: str = None
-    _attr_type: str = "base",
-    _attr_available: bool = True
-
-    # config entries: return the required config entries for this provider
-    config_entries: tuple[ConfigEntry, ...] = (CONFIG_ENTRY_ENABLED,)
-
-    def __init__(self, mass: MusicAssistant, config: ConfigValues) -> None:
-        """Initialize MusicProvider."""
-        self.mass = mass
-        self.config = config
-        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.type}")
-        self.cache = mass.cache
+    _attr_supported_features: tuple[MusicProviderFeature] = tuple()
 
     @property
-    def supported_features(self) -> Tuple[MusicProviderFeature]:
+    def supported_features(self) -> tuple[MusicProviderFeature]:
         """Return the features supported by this MusicProvider."""
-        return tuple()
-
-    @abstractmethod
-    async def setup(self) -> bool:
-        """
-        Handle async initialization of the provider.
-
-        Called when provider is registered (or its config updated).
-        """
-
-    async def close(self) -> bool:
-        """
-        Handle close/cleanup of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        """
-
-    async def update_config(self, config: ConfigValues) -> bool:
-        """
-        Handle updated configuration.
-
-        Called when config is adjusted by the user for this provider.
-        """
-        self.config = config
-        # default implementation is to simply stop and restart the provider with updated config
-        await self.close()
-        await self.setup()
-
-    @property
-    def type(self) -> ProviderType:
-        """Return provider domain for this provider."""
-        return self._attr_type
-
-    @property
-    def name(self) -> str:
-        """Return provider Name for this provider."""
-        if sum(1 for x in self.mass.music.providers if x.type == self.type) > 1:
-            append_str = self.config.path or self.config.username
-            return f"{self._attr_name} ({append_str})"
-        return self._attr_name
-
-    @property
-    def available(self) -> bool:
-        """Return boolean if this provider is available/initialized."""
-        return self._attr_available
+        return self._attr_supported_features
 
     async def search(
-        self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
-    ) -> List[MediaItemType]:
+        self,
+        search_query: str,
+        media_types: list[MediaType] | None = None,
+        limit: int = 5,
+    ) -> list[MediaItemType]:
         """
         Perform search on musicprovider.
 
@@ -151,13 +77,13 @@ class MusicProviderController:
         """Get full artist details by id."""
         raise NotImplementedError
 
-    async def get_artist_albums(self, prov_artist_id: str) -> List[Album]:
+    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         if MusicProviderFeature.ARTIST_ALBUMS in self.supported_features:
             raise NotImplementedError
         return []
 
-    async def get_artist_toptracks(self, prov_artist_id: str) -> List[Track]:
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         if MusicProviderFeature.ARTIST_TOPTRACKS in self.supported_features:
             raise NotImplementedError
@@ -179,11 +105,11 @@ class MusicProviderController:
         """Get full radio details by id."""
         raise NotImplementedError
 
-    async def get_album_tracks(self, prov_album_id: str) -> List[Track]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         raise NotImplementedError
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> List[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
         raise NotImplementedError
 
@@ -217,7 +143,7 @@ class MusicProviderController:
         self.logger.info(
             "Provider %s does not support library edit, "
             "the action will only be performed in the local database.",
-            self.type,
+            self.title,
         )
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -250,18 +176,18 @@ class MusicProviderController:
         self.logger.info(
             "Provider %s does not support library edit, "
             "the action will only be performed in the local database.",
-            self.type,
+            self.title,
         )
 
     async def add_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: List[str]
+        self, prov_playlist_id: str, prov_track_ids: list[str]
     ) -> None:
         """Add track(s) to playlist."""
         if MusicProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
             raise NotImplementedError
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, positions_to_remove: Tuple[int]
+        self, prov_playlist_id: str, positions_to_remove: tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
         if MusicProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
@@ -271,7 +197,7 @@ class MusicProviderController:
         """Create a new playlist on provider with given name."""
         raise NotImplementedError
 
-    async def get_similar_tracks(self, prov_track_id, limit=25) -> List[Track]:
+    async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         raise NotImplementedError
 
@@ -317,7 +243,7 @@ class MusicProviderController:
                 root_items.append(
                     BrowseFolder(
                         item_id="artists",
-                        provider=self.type,
+                        provider=self.domain,
                         path=path + "artists",
                         name="",
                         label="artists",
@@ -327,7 +253,7 @@ class MusicProviderController:
                 root_items.append(
                     BrowseFolder(
                         item_id="albums",
-                        provider=self.type,
+                        provider=self.domain,
                         path=path + "albums",
                         name="",
                         label="albums",
@@ -337,7 +263,7 @@ class MusicProviderController:
                 root_items.append(
                     BrowseFolder(
                         item_id="tracks",
-                        provider=self.type,
+                        provider=self.domain,
                         path=path + "tracks",
                         name="",
                         label="tracks",
@@ -347,7 +273,7 @@ class MusicProviderController:
                 root_items.append(
                     BrowseFolder(
                         item_id="playlists",
-                        provider=self.type,
+                        provider=self.domain,
                         path=path + "playlists",
                         name="",
                         label="playlists",
@@ -357,7 +283,7 @@ class MusicProviderController:
                 root_items.append(
                     BrowseFolder(
                         item_id="radios",
-                        provider=self.type,
+                        provider=self.domain,
                         path=path + "radios",
                         name="",
                         label="radios",
@@ -365,7 +291,7 @@ class MusicProviderController:
                 )
             return BrowseFolder(
                 item_id="root",
-                provider=self.type,
+                provider=self.domain,
                 path=path,
                 name=self.name,
                 items=root_items,
@@ -374,7 +300,7 @@ class MusicProviderController:
         if subpath == "artists":
             return BrowseFolder(
                 item_id="artists",
-                provider=self.type,
+                provider=self.domain,
                 path=path,
                 name="",
                 label="artists",
@@ -383,7 +309,7 @@ class MusicProviderController:
         if subpath == "albums":
             return BrowseFolder(
                 item_id="albums",
-                provider=self.type,
+                provider=self.domain,
                 path=path,
                 name="",
                 label="albums",
@@ -392,7 +318,7 @@ class MusicProviderController:
         if subpath == "tracks":
             return BrowseFolder(
                 item_id="tracks",
-                provider=self.type,
+                provider=self.domain,
                 path=path,
                 name="",
                 label="tracks",
@@ -401,7 +327,7 @@ class MusicProviderController:
         if subpath == "radios":
             return BrowseFolder(
                 item_id="radios",
-                provider=self.type,
+                provider=self.domain,
                 path=path,
                 name="",
                 label="radios",
@@ -410,14 +336,14 @@ class MusicProviderController:
         if subpath == "playlists":
             return BrowseFolder(
                 item_id="playlists",
-                provider=self.type,
+                provider=self.domain,
                 path=path,
                 name="",
                 label="playlists",
                 items=[x async for x in self.get_library_playlists()],
             )
 
-    async def recommendations(self) -> List[BrowseFolder]:
+    async def recommendations(self) -> list[BrowseFolder]:
         """
         Get this provider's recommendations.
 
@@ -426,9 +352,7 @@ class MusicProviderController:
         if MusicProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError
 
-    async def sync_library(
-        self, media_types: Optional[Tuple[MediaType]] = None
-    ) -> None:
+    async def sync_library(self, media_types: tuple[MediaType] | None = None) -> None:
         """Run library sync for this provider."""
         # this reference implementation can be overridden with provider specific approach
         # this logic is aimed at streaming/online providers,
@@ -480,26 +404,12 @@ class MusicProviderController:
                     }
                     if len(provider_domains) > 1:
                         continue
-                    if prov_mapping.provider_id != self.id:
+                    if prov_mapping.provider_instance != self.id:
                         continue
                     # only mark the item as not in library and leave the metadata in db
                     await controller.set_db_library(db_item.item_id, False)
 
     # DO NOT OVERRIDE BELOW
-
-    @property
-    def id(self) -> str:
-        """Return unique provider id to distinguish multiple instances of the same provider."""
-        return self.config.id
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Return (serializable) dict representation of MusicProvider."""
-        return {
-            "type": self.type,
-            "name": self.name,
-            "id": self.id,
-            "supported_features": self.supported_features,
-        }
 
     def library_supported(self, media_type: MediaType) -> bool:
         """Return if Library is supported for given MediaType on this provider."""

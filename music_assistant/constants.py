@@ -27,6 +27,11 @@ BASE_URL_OVERRIDE_ENVNAME = "MASS_BASE_URL"
 CONF_WEB_HOST = "webserver/host"
 CONF_WEB_PORT = "webserver/port"
 CONF_DB_URL = "database/url"
+CONF_PROVIDERS = "providers"
+CONF_PATH = "path"
+CONF_OPTIONS = "options"
+CONF_USERNAME = "username"
+CONF_PASSWORD = "password"
 
 # config default values
 DEFAULT_HOST = "0.0.0.0"

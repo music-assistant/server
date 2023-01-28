@@ -12,7 +12,6 @@ from music_assistant.common.models.enums import (
     EventType,
     MediaType,
     MusicProviderFeature,
-    ProviderType,
 )
 from music_assistant.common.models.errors import (
     InvalidDataError,
@@ -36,16 +35,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def tracks(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
     ) -> List[Track]:
         """Return playlist tracks for the given provider playlist id."""
-        playlist = await self.get(item_id, provider_domain, provider_id)
+        playlist = await self.get(item_id, provider_domain, provider_instance)
         prov = next(x for x in playlist.provider_mappings)
         return await self._get_provider_playlist_tracks(
             prov.item_id,
             provider_domain=prov.provider_domain,
-            provider_id=prov.provider_id,
+            provider_instance=prov.provider_instance,
             cache_checksum=playlist.metadata.checksum,
         )
 
@@ -66,24 +65,21 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return db_item
 
     async def create(
-        self, name: str, prov_type_or_id: Union[ProviderType, str, None] = None
+        self, name: str, provider: str | None = None
     ) -> Playlist:
         """Create new playlist."""
-        # if prov_type_or_id is omitted, prefer file
-        if prov_type_or_id:
-            provider = self.mass.music.get_provider(prov_type_or_id)
+        # if provider is omitted, just pick first provider
+        if provider:
+            provider = self.mass.music.get_provider(provider)
         else:
-            try:
-                provider = self.mass.music.get_provider(ProviderType.FILESYSTEM_LOCAL)
-            except ProviderUnavailableError:
-                provider = next(
-                    (
-                        x
-                        for x in self.mass.music.providers
-                        if MusicProviderFeature.PLAYLIST_CREATE in x.supported_features
-                    ),
-                    None,
-                )
+            provider = next(
+                (
+                    x
+                    for x in self.mass.music.providers
+                    if MusicProviderFeature.PLAYLIST_CREATE in x.supported_features
+                ),
+                None,
+            )
             if provider is None:
                 raise ProviderUnavailableError(
                     "No provider available which allows playlists creation."
@@ -99,8 +95,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist.is_editable:
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for uri in uris:
-            job_desc = f"Add track {uri} to playlist {playlist.name}"
-            self.mass.add_job(self.add_playlist_track(db_playlist_id, uri), job_desc)
+            self.mass.create_task(self.add_playlist_track(db_playlist_id, uri))
 
     async def add_playlist_track(self, db_playlist_id: str, track_uri: str) -> None:
         """Add track to playlist - make sure we dont add duplicates."""
@@ -126,7 +121,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 {
                     i.item_id
                     for i in item.provider_mappings
-                    if i.provider_id == playlist_prov.provider_id
+                    if i.provider_instance == playlist_prov.provider_instance
                 }
             )
         # check for duplicates
@@ -164,11 +159,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 f"Track is not available on provider {playlist_prov.provider_domain}"
             )
         # actually add the tracks to the playlist on the provider
-        provider = self.mass.music.get_provider(playlist_prov.provider_id)
+        provider = self.mass.music.get_provider(playlist_prov.provider_instance)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
         # invalidate cache by updating the checksum
         await self.get(
-            db_playlist_id, provider_domain=ProviderType.DATABASE, force_refresh=True
+            db_playlist_id, provider_domain="database", force_refresh=True
         )
 
     async def remove_playlist_tracks(
@@ -181,7 +176,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist.is_editable:
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for prov_mapping in playlist.provider_mappings:
-            provider = self.mass.music.get_provider(prov_mapping.provider_id)
+            provider = self.mass.music.get_provider(prov_mapping.provider_instance)
             if (
                 MusicProviderFeature.PLAYLIST_TRACKS_EDIT
                 not in provider.supported_features
@@ -195,7 +190,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 prov_mapping.item_id, positions_to_remove
             )
         # invalidate cache by updating the checksum
-        await self.get(db_playlist_id, ProviderType.DATABASE, force_refresh=True)
+        await self.get(db_playlist_id, "database", force_refresh=True)
 
     async def add_db_item(
         self, item: Playlist, overwrite_existing: bool = False
@@ -250,12 +245,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def _get_provider_playlist_tracks(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
         cache_checksum: Any = None,
     ) -> List[Track]:
         """Return album tracks for the given provider album id."""
-        provider = self.mass.music.get_provider(provider_id or provider_domain)
+        provider = self.mass.music.get_provider(provider_instance or provider_domain)
         if not provider:
             return []
         # prefer cache items (if any)
@@ -280,19 +275,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider_domain: Optional[ProviderType] = None,
-        provider_id: Optional[str] = None,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the playlist content."""
-        provider = self.mass.music.get_provider(provider_id or provider_domain)
+        provider = self.mass.music.get_provider(provider_instance or provider_domain)
         if (
             not provider
             or MusicProviderFeature.SIMILAR_TRACKS not in provider.supported_features
         ):
             return []
         playlist_tracks = await self._get_provider_playlist_tracks(
-            item_id=item_id, provider_domain=provider_domain, provider_id=provider_id
+            item_id=item_id, provider_domain=provider_domain, provider_instance=provider_instance
         )
         # filter out unavailable tracks
         playlist_tracks = [x for x in playlist_tracks if x.available]

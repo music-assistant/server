@@ -1,9 +1,22 @@
 {
-  "provider": "spotify",
+  "type": "music",
+  "domain": "spotify",
   "name": "Spotify",
   "codeowners": ["@marcelveldt"],
-  "config_entries": [],
+  "config_entries": [
+    {
+      "key": "username",
+      "type": "string",
+      "label": "Username"
+    },
+    {
+      "key": "password",
+      "type": "password",
+      "label": "Password"
+    }
+  ],
 
   "requirements": [],
-  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/817"
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/816",
+  "multi_instance": true
 }

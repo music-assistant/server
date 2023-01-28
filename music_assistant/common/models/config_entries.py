@@ -1,18 +1,18 @@
 """Model and helpers for Config entries."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Tuple, Union
 
 from mashumaro import DataClassDictMixin
+
+from music_assistant.common.models.enums import ProviderType
 
 
 class ConfigEntryType(Enum):
     """Enum for the type of a config entry."""
 
-    BOOL = "boolean"
+    BOOLEAN = "boolean"
     STRING = "string"
     PASSWORD = "password"
     INT = "integer"
@@ -21,10 +21,10 @@ class ConfigEntryType(Enum):
     DICT = "dict"
 
 
-ConfigValueTypes = Union[str, int, float, bool, dict, None]
+ConfigValueTypes = str | int | float | bool | dict | None
 
 ConfigEntryTypeMap = {
-    ConfigEntryType.BOOL: bool,
+    ConfigEntryType.BOOLEAN: bool,
     ConfigEntryType.STRING: str,
     ConfigEntryType.PASSWORD: str,
     ConfigEntryType.INT: int,
@@ -47,50 +47,68 @@ class ConfigEntry(DataClassDictMixin):
     Model for a Config Entry.
 
     The definition of something that can be configured for an opbject (e.g. provider or player)
-    within Music Assistant. Its value will be loaded at runtime.
+    within Music Assistant (without the value).
     """
 
     # key: used as identifier for the entry, also for localization
     key: str
-    value_type: ConfigEntryType
+    type: ConfigEntryType
     # label: default label when no translation for the key is present
     label: str
     default_value: ConfigValueTypes = None
+    required: bool = True
     # options [optional]: select from list of possible values/options
-    options: Optional[List[ConfigValueOption]] = None
+    options: list[ConfigValueOption] | None = None
     # range [optional]: select values within range
-    range: Optional[Tuple[int, int]] = None
+    range: tuple[int, int] | None = None
     # description [optional]: extended description of the setting.
-    description: Optional[str] = None
+    description: str | None = None
     # help_link [optional]: link to help article.
-    help_link: Optional[str] = None
+    help_link: str | None = None
     # multi_value [optional]: allow multiple values from the list
     multi_value: bool = False
     # depends_on [optional]: needs to be set before this setting shows up in frontend
-    depends_on: Optional[str] = None
+    depends_on: str | None = None
     # hidden: hide from UI
     hidden: bool = False
-    # require_reload: if the object depending on this entry must be reloaded on change
-    require_reload: bool = False
-    # value: the actual value of the configentry, only available at runtime for active instances.
+
+
+@dataclass
+class ConfigEntryValue(ConfigEntry):
+    """Config Entry with its value parsed."""
+
     value: ConfigValueTypes = None
 
-
-class ConfigValues(dict):
-
     @classmethod
-    def parse(cls: "ConfigValues", entries: list[ConfigEntry], values: dict[str, ConfigValueTypes]):
-        result = {}
-        for entry in entries:
-            entry.value = values.get(entry.key, entry.default_value)
-            expected_type = ConfigEntryTypeMap.get(entry.value_type)
-            if not isinstance(entry.value, expected_type):
-                raise ValueError(f"{entry.key} has unexpected type: {type(entry.value)}")
-            result[entry.key] = result
+    def parse(cls, entry: ConfigEntry, value: ConfigValueTypes) -> "ConfigEntryValue":
+        """Parse ConfigEntryValue from the config entry and plain value."""
+        result = ConfigEntryValue.from_dict(entry.to_dict)
+        result.value = value
+        expected_type = ConfigEntryTypeMap.get(result.value_type)
+        if result.value is None and not entry.required:
+            expected_type = None
+        if not isinstance(result.value, expected_type):
+            raise ValueError(f"{result.key} has unexpected type: {type(result.value)}")
+        return result
 
-# ConfigValues = dict[str, ConfigValueTypes]
 
-
+CONF_KEY_ENABLED = "enabled"
 CONFIG_ENTRY_ENABLED = ConfigEntry(
-    key="enabled", type=ConfigEntryType.BOOL, require_reload=True
+    key=CONF_KEY_ENABLED,
+    type=ConfigEntryType.BOOLEAN,
+    label="Enabled",
+    default_value=True,
 )
+
+
+@dataclass
+class ProviderConfig(DataClassDictMixin):
+    """Provider(instance) Configuration."""
+
+    type: ProviderType
+    domain: str
+    instance_id: str
+    # values: the configuration values
+    values: dict[str, ConfigValueTypes]
+    # title: a custom title for this provider instance/config
+    title: str | None = None

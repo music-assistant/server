@@ -7,6 +7,8 @@ from typing import Any, Optional, Union
 
 from mashumaro import DataClassDictMixin
 
+from music_assistant.common.models.event import MassEvent
+
 from .enums import EventType
 
 
@@ -38,15 +40,10 @@ class ErrorResultMessage(ResultMessageBase):
     """Message sent when a command did not execute successfully."""
 
     error_code: str
-    details: Optional[str] = None
+    details: str | None = None
 
 
-@dataclass
-class EventMessage(DataClassDictMixin):
-    """Message sent when server or client signals a (stateless) event."""
-
-    event: EventType
-    data: Any
+EventMessage = MassEvent
 
 
 @dataclass

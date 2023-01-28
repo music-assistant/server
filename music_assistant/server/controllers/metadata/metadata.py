@@ -40,7 +40,7 @@ class MetaDataController:
         self.fanarttv = FanartTv(mass)
         self.musicbrainz = MusicBrainz(mass)
         self.audiodb = TheAudioDb(mass)
-        self._pref_lang: Optional[str] = None
+        self._pref_lang: str | None = None
 
     @property
     def preferred_language(self) -> str:

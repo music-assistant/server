@@ -1,0 +1,34 @@
+{
+  "type": "music",
+  "domain": "filesystem_smb",
+  "name": "SMB Filesystem",
+  "codeowners": ["@MarvinSchenkel", "@marcelveldt"],
+  "config_entries": [
+    {
+      "key": "path",
+      "type": "string",
+      "label": "Path",
+      "default_value": "/music"
+    },
+    {
+      "key": "username",
+      "type": "string",
+      "label": "Username"
+    },
+    {
+      "key": "password",
+      "type": "password",
+      "label": "Password"
+    },
+    {
+      "key": "options",
+      "type": "dict",
+      "label": "Options for PySMB",
+      "default_value": {}
+    }
+  ],
+
+  "requirements": ["pysmb==1.2.9.1"],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
+  "multi_instance": true
+}

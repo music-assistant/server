@@ -150,9 +150,7 @@ async def strip_silence(
         return stripped_data
 
 
-async def analyze_audio(
-    mass: MusicAssistant, streamdetails: StreamDetails
-) -> None:
+async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> None:
     """Analyze track audio, for now we only calculate EBU R128 loudness."""
 
     if streamdetails.loudness is not None:
@@ -252,7 +250,7 @@ async def get_stream_details(
             if not prov_media.available:
                 continue
             # get streamdetails from provider
-            music_prov = mass.music.get_provider(prov_media.provider_id)
+            music_prov = mass.music.get_provider(prov_media.provider_instance)
             if not music_prov or not music_prov.available:
                 continue  # provider temporary unavailable ?
             try:
@@ -430,10 +428,7 @@ async def get_media_stream(
                 mass.create_task(streamdetails.callback, streamdetails)
             # send analyze job to background worker
             if streamdetails.loudness is None:
-                mass.add_job(
-                    analyze_audio(mass, streamdetails),
-                    f"Analyze audio for {streamdetails.uri}",
-                )
+                mass.create_task(analyze_audio(mass, streamdetails))
 
 
 async def get_radio_stream(

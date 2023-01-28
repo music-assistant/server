@@ -284,6 +284,9 @@ class EventType(StrEnum):
     MEDIA_ITEM_ADDED = "media_item_added"
     MEDIA_ITEM_UPDATED = "media_item_updated"
     MEDIA_ITEM_DELETED = "media_item_deleted"
+    PROVIDER_CONFIG_UPDATED = "provider_config_updated"
+    PROVIDER_CONFIG_CREATED = "provider_config_created"
+
 
 
 class JobStatus(StrEnum):
@@ -327,37 +330,12 @@ class MusicProviderFeature(StrEnum):
 
 
 class ProviderType(StrEnum):
-    """Enum with supported music providers."""
+    """Enum with supported provider types."""
 
-    FILESYSTEM_LOCAL = "file"
-    FILESYSTEM_SMB = "smb"
-    FILESYSTEM_GOOGLE_DRIVE = "gdrive"
-    FILESYSTEM_ONEDRIVE = "onedrive"
-    SPOTIFY = "spotify"
-    QOBUZ = "qobuz"
-    TUNEIN = "tunein"
-    YTMUSIC = "ytmusic"
-    DATABASE = "database"  # internal only
-    URL = "url"  # internal only
-
-    def is_file(self) -> bool:
-        """Return if type is one of the filesystem providers."""
-        return self in (
-            self.FILESYSTEM_LOCAL,
-            self.FILESYSTEM_SMB,
-            self.FILESYSTEM_GOOGLE_DRIVE,
-            self.FILESYSTEM_ONEDRIVE,
-        )
-
-    @classmethod
-    def parse(cls: "ProviderType", val: str) -> "ProviderType":
-        """Try to parse ContentType from provider id."""
-        if isinstance(val, ProviderType):
-            return val
-        for mem in ProviderType:
-            if val.startswith(mem):
-                return mem
-        raise ValueError(f"Unable to parse ProviderType from {val}")
+    MUSIC = "music"
+    PLAYER = "player"
+    METADATA = "metadata"
+    PLUGIN = "plugin"
 
 
 class StreamState(StrEnum):

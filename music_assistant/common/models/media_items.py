@@ -16,7 +16,6 @@ from music_assistant.common.models.enums import (
     ImageType,
     LinkType,
     MediaType,
-    ProviderType,
 )
 
 MetadataTypes = Union[int, bool, str, List[str]]
@@ -29,8 +28,8 @@ class ProviderMapping(DataClassDictMixin):
     """Model for a MediaItem's provider mapping details."""
 
     item_id: str
-    provider_domain: ProviderType
-    provider_id: str
+    provider_domain: str
+    provider_instance: str
     available: bool = True
     # quality details (streamable content only)
     content_type: ContentType = ContentType.UNKNOWN
@@ -38,9 +37,9 @@ class ProviderMapping(DataClassDictMixin):
     bit_depth: int = 16
     bit_rate: int = 320
     # optional details to store provider specific details
-    details: Optional[str] = None
+    details: str | None = None
     # url = link to provider details page if exists
-    url: Optional[str] = None
+    url: str | None = None
 
     @property
     def quality(self) -> int:
@@ -88,26 +87,26 @@ class MediaItemImage(DataClassDictMixin):
 class MediaItemMetadata(DataClassDictMixin):
     """Model for a MediaItem's metadata."""
 
-    description: Optional[str] = None
-    review: Optional[str] = None
+    description: str | None = None
+    review: str | None = None
     explicit: Optional[bool] = None
     images: Optional[List[MediaItemImage]] = None
     genres: Optional[Set[str]] = None
-    mood: Optional[str] = None
-    style: Optional[str] = None
-    copyright: Optional[str] = None
-    lyrics: Optional[str] = None
-    ean: Optional[str] = None
-    label: Optional[str] = None
+    mood: str | None = None
+    style: str | None = None
+    copyright: str | None = None
+    lyrics: str | None = None
+    ean: str | None = None
+    label: str | None = None
     links: Optional[Set[MediaItemLink]] = None
     performers: Optional[Set[str]] = None
-    preview: Optional[str] = None
+    preview: str | None = None
     replaygain: Optional[float] = None
     popularity: Optional[int] = None
     # last_refresh: timestamp the (full) metadata was last collected
     last_refresh: Optional[int] = None
     # checksum: optional value to detect changes (e.g. playlists)
-    checksum: Optional[str] = None
+    checksum: str | None = None
 
     def update(
         self,
@@ -139,7 +138,7 @@ class MediaItem(DataClassDictMixin):
     """Base representation of a media item."""
 
     item_id: str
-    provider: ProviderType
+    provider: str
     name: str
     provider_mappings: Set[ProviderMapping] = field(default_factory=set)
 
@@ -148,8 +147,8 @@ class MediaItem(DataClassDictMixin):
     in_library: bool = False
     media_type: MediaType = MediaType.UNKNOWN
     # sort_name and uri are auto generated, do not override unless really needed
-    sort_name: Optional[str] = None
-    uri: Optional[str] = None
+    sort_name: str | None = None
+    uri: str | None = None
     # timestamp is used to determine when the item was added to the library
     timestamp: int = 0
 
@@ -216,7 +215,7 @@ class MediaItem(DataClassDictMixin):
             for x in self.provider_mappings
             if not (
                 x.item_id == prov_mapping.item_id
-                and x.provider_id == prov_mapping.provider_id
+                and x.provider_instance == prov_mapping.provider_instance
             )
         }
         self.provider_mappings.add(prov_mapping)
@@ -237,7 +236,7 @@ class ItemMapping(DataClassDictMixin):
 
     media_type: MediaType
     item_id: str
-    provider: ProviderType
+    provider: str
     name: str
     sort_name: str
     uri: str
@@ -258,7 +257,7 @@ class Artist(MediaItem):
     """Model for an artist."""
 
     media_type: MediaType = MediaType.ARTIST
-    musicbrainz_id: Optional[str] = None
+    musicbrainz_id: str | None = None
 
     def __hash__(self):
         """Return custom hash."""
@@ -274,8 +273,8 @@ class Album(MediaItem):
     year: Optional[int] = None
     artists: List[Union[Artist, ItemMapping]] = field(default_factory=list)
     album_type: AlbumType = AlbumType.UNKNOWN
-    upc: Optional[str] = None
-    musicbrainz_id: Optional[str] = None  # release group id
+    upc: str | None = None
+    musicbrainz_id: str | None = None  # release group id
 
     @property
     def artist(self) -> Artist | ItemMapping | None:
@@ -309,8 +308,8 @@ class Track(MediaItem):
     media_type: MediaType = MediaType.TRACK
     duration: int = 0
     version: str = ""
-    isrc: Optional[str] = None
-    musicbrainz_id: Optional[str] = None  # Recording ID
+    isrc: str | None = None
+    musicbrainz_id: str | None = None  # Recording ID
     artists: List[Union[Artist, ItemMapping]] = field(default_factory=list)
     # album track only
     album: Union[Album, ItemMapping, None] = None
@@ -444,7 +443,7 @@ class StreamDetails(DataClassDictMixin):
     # that is going to be streamed.
 
     # mandatory fields
-    provider: ProviderType
+    provider: str
     item_id: str
     content_type: ContentType
     media_type: MediaType = MediaType.TRACK
@@ -452,7 +451,7 @@ class StreamDetails(DataClassDictMixin):
     bit_depth: int = 16
     channels: int = 2
     # stream_title: radio streams can optionally set this field
-    stream_title: Optional[str] = None
+    stream_title: str | None = None
     # duration of the item to stream, copied from media_item if omitted
     duration: Optional[int] = None
     # total size in bytes of the item, calculated at eof when omitted
@@ -462,7 +461,7 @@ class StreamDetails(DataClassDictMixin):
     # data: provider specific data (not exposed externally)
     data: Optional[Any] = None
     # if the url/file is supported by ffmpeg directly, use direct stream
-    direct: Optional[str] = None
+    direct: str | None = None
     # callback: optional callback function (or coroutine) to call when the stream completes.
     # needed for streaming provivders to report what is playing
     # receives the streamdetails as only argument from which to grab
@@ -470,7 +469,7 @@ class StreamDetails(DataClassDictMixin):
     callback: Any = None
 
     # the fields below will be set/controlled by the streamcontroller
-    queue_id: Optional[str] = None
+    queue_id: str | None = None
     seconds_streamed: Optional[float] = None
     seconds_skipped: Optional[float] = None
     gain_correct: Optional[float] = None

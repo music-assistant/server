@@ -1,0 +1,14 @@
+{
+  "type": "music",
+  "domain": "url",
+  "name": "URL",
+  "codeowners": ["@marcelveldt"],
+  "config_entries": [
+  ],
+
+  "requirements": [],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/categories/music-providers",
+  "multi_instance": false,
+  "builtin": true,
+  "load_by_default": true
+}

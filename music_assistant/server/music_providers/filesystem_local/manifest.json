@@ -1,17 +1,18 @@
 {
-  "provider": "filesystem_local",
+  "type": "music",
+  "domain": "filesystem_local",
   "name": "Local Filesystem",
   "codeowners": ["@marcelveldt"],
   "config_entries": [
     {
-      "key": "enabled",
+      "key": "path",
       "type": "string",
-      "label": "Enabled",
-      "default_value": true,
-
+      "label": "Path",
+      "default_value": "/music"
     }
   ],
 
   "requirements": [],
-  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820"
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
+  "multi_instance": true
 }

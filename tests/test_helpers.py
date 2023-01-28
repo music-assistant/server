@@ -4,7 +4,6 @@ from pytest import raises
 
 from music_assistant.common.helpers import uri, util
 from music_assistant.common.models import media_items
-from music_assistant.common.models.enums import ProviderType
 from music_assistant.common.models.errors import MusicAssistantError
 
 
@@ -23,13 +22,13 @@ def test_uri_parsing():
     test_uri = "spotify://track/123456789"
     media_type, provider, item_id = uri.parse_uri(test_uri)
     assert media_type == media_items.MediaType.TRACK
-    assert provider == ProviderType.SPOTIFY
+    assert provider == "spotify"
     assert item_id == "123456789"
     # test spotify uri
     test_uri = "spotify:track:123456789"
     media_type, provider, item_id = uri.parse_uri(test_uri)
     assert media_type == media_items.MediaType.TRACK
-    assert provider == ProviderType.SPOTIFY
+    assert provider == "spotify"
     assert item_id == "123456789"
     # test public play/open url
     test_uri = (
@@ -37,13 +36,13 @@ def test_uri_parsing():
     )
     media_type, provider, item_id = uri.parse_uri(test_uri)
     assert media_type == media_items.MediaType.PLAYLIST
-    assert provider == ProviderType.SPOTIFY
+    assert provider == "spotify"
     assert item_id == "5lH9NjOeJvctAO92ZrKQNB"
     # test filename with slashes as item_id
     test_uri = "filesystem://track/Artist/Album/Track.flac"
     media_type, provider, item_id = uri.parse_uri(test_uri)
     assert media_type == media_items.MediaType.TRACK
-    assert provider == ProviderType.FILESYSTEM_LOCAL
+    assert provider == "filesystem"
     assert item_id == "Artist/Album/Track.flac"
     # test invalid uri
     with raises(MusicAssistantError):

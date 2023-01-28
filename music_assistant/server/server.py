@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections import deque
 from functools import partial
@@ -23,7 +24,6 @@ from uuid import uuid4
 
 from aiohttp import ClientSession, TCPConnector, web
 
-from music_assistant.common.models.background_job import BackgroundJob
 from music_assistant.common.models.enums import EventType, JobStatus
 from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import (
@@ -63,8 +63,6 @@ class MusicAssistant:
         Create an instance of the MusicAssistant Server."""
         self.storage_path = storage_path
         self._subscribers: Set[EventCallBackType] = set()
-        self._jobs: Deque[BackgroundJob] = deque()
-        self._jobs_event = asyncio.Event()
 
         # init core controllers
         self.config = ConfigController(self)
@@ -92,7 +90,7 @@ class MusicAssistant:
         )
         # setup core controllers
         await self.database.setup()
-        await self.settings.setup()
+        await self.config.setup()
         await self.cache.setup()
         await self.music.setup()
         await self.metadata.setup()
@@ -109,7 +107,6 @@ class MusicAssistant:
         await self._web_apprunner.setup()
         self._http = web.TCPSite(self._web_apprunner, host=host, port=port)
         await self._http.start()
-        self.create_task(self.__process_jobs())
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -126,27 +123,29 @@ class MusicAssistant:
 
     def signal_event(
         self,
-        event_type: EventType,
-        object_id: Optional[str] = None,
+        event: EventType,
+        object_id: str | None = None,
         data: Optional[Any] = None,
     ) -> None:
         """Signal event to subscribers."""
         if self.closed:
             return
-        event = MassEvent(type=event_type, object_id=object_id, data=data)
+
         if LOGGER.isEnabledFor(logging.DEBUG):
-            if event_type != EventType.QUEUE_TIME_UPDATED:
+            if event != EventType.QUEUE_TIME_UPDATED:
                 # do not log queue time updated events because that is too chatty
-                LOGGER.getChild("event").debug("%s %s", event_type, object_id or "")
+                LOGGER.getChild("event").debug("%s %s", event.value, object_id or "")
+
+        event_obj = MassEvent(event=event, object_id=object_id, data=data)
         for cb_func, event_filter, id_filter in self._subscribers:
-            if not (event_filter is None or event_type in event_filter):
+            if not (event_filter is None or event in event_filter):
                 continue
             if not (id_filter is None or object_id in id_filter):
                 continue
             if asyncio.iscoroutinefunction(cb_func):
-                asyncio.run_coroutine_threadsafe(cb_func(event), self.loop)
+                asyncio.run_coroutine_threadsafe(cb_func(event_obj), self.loop)
             else:
-                self.loop.call_soon_threadsafe(cb_func, event)
+                self.loop.call_soon_threadsafe(cb_func, event_obj)
 
     def subscribe(
         self,
@@ -174,23 +173,6 @@ class MusicAssistant:
 
         return remove_listener
 
-    def add_job(
-        self, coro: Coroutine, name: Optional[str] = None, allow_duplicate=False
-    ) -> BackgroundJob:
-        """Add job to be (slowly) processed in the background."""
-        if not allow_duplicate:
-            if existing := next((x for x in self._jobs if x.name == name), None):
-                LOGGER.debug("Ignored duplicate job: %s", name)
-                coro.close()
-                return existing
-        if not name:
-            name = coro.__qualname__ or coro.__name__
-        job = BackgroundJob(str(uuid4()), name=name, coro=coro)
-        self._jobs.append(job)
-        self._jobs_event.set()
-        self.signal_event(EventType.BACKGROUND_JOB_UPDATED, job.name, data=job)
-        return job
-
     def create_task(
         self,
         target: Coroutine,
@@ -217,11 +199,6 @@ class MusicAssistant:
         task.add_done_callback(task_done_callback)
         return task
 
-    @property
-    def jobs(self) -> List[BackgroundJob]:
-        """Return the pending/running background jobs."""
-        return list(self._jobs)
-
     def register_api_command(
         self,
         command: str,
@@ -231,67 +208,16 @@ class MusicAssistant:
         assert command not in self.command_handlers, "Command already registered"
         self.command_handlers[command] = APICommandHandler.parse(command, handler)
 
-    async def __process_jobs(self):
-        """Process jobs in the background."""
-        while True:
-            await self._jobs_event.wait()
-            self._jobs_event.clear()
-            # make sure we're not running more jobs than allowed
-            running_jobs = tuple(x for x in self._jobs if x.status == JobStatus.RUNNING)
-            slots_available = self.config.max_simultaneous_jobs - len(running_jobs)
-            count = 0
-            while count <= slots_available:
-                count += 1
-                next_job = next(
-                    (x for x in self._jobs if x.status == JobStatus.PENDING), None
-                )
-                if next_job is None:
-                    break
-                # create task from coroutine and attach task_done callback
-                next_job.timestamp = time()
-                next_job.status = JobStatus.RUNNING
-                task = self.create_task(next_job.coro)
-                task.set_name(next_job.name)
-                task.add_done_callback(partial(self.__job_done_cb, job=next_job))
-                self.signal_event(
-                    EventType.BACKGROUND_JOB_UPDATED, next_job.name, data=next_job
-                )
-
-    def __job_done_cb(self, task: asyncio.Task, job: BackgroundJob):
-        """Call when background job finishes."""
-        execution_time = round(time() - job.timestamp, 2)
-        job.timestamp = execution_time
-        if task.cancelled():
-            job.status = JobStatus.CANCELLED
-        elif err := task.exception():
-            job.status = JobStatus.ERROR
-            LOGGER.error(
-                "Job [%s] failed with error %s.",
-                job.name,
-                str(err),
-                exc_info=err,
-            )
-        else:
-            job.result = task.result()
-            job.status = JobStatus.FINISHED
-            LOGGER.info("Finished job [%s] in %s seconds.", job.name, execution_time)
-        self._jobs.remove(job)
-        self._jobs_event.set()
-        # mark job as done
-        job.done()
-        self.signal_event(EventType.BACKGROUND_JOB_FINISHED, job.name, data=job)
-
     def _register_api_commands(self) -> None:
-        """Register all methods decorated as api_command."""
-        for cls in dir(self):
+        """Register all methods decorated as api_command within a class(instance)."""
+        for cls in (self, self.config, self.metadata, self.music, self.players):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
                     continue
-                val = getattr(cls, attr_name)
-                if not hasattr(val, "api_cmd"):
-                    continue
-                # method is decorated with our api decorator
-                self.register_api_command(val.api_cmd, val)
+                obj = getattr(cls, attr_name)
+                if hasattr(obj, "api_cmd"):
+                    # method is decorated with our api decorator
+                    self.register_api_command(obj.api_cmd, obj)
 
     async def __aenter__(self) -> "MusicAssistant":
         """Return Context manager."""
