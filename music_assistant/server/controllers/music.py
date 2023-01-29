@@ -2,56 +2,41 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
-import inspect
 import itertools
 import logging
-import os
 import statistics
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
-from music_assistant.common.models.config_entries import (
-    CONF_KEY_ENABLED,
-    CONFIG_ENTRY_ENABLED,
-    ProviderConfig,
-)
 from music_assistant.common.models.enums import (
-    EventType,
     MediaType,
     MusicProviderFeature,
     ProviderType,
 )
-from music_assistant.common.models.errors import (
-    MusicAssistantError,
-    ProviderUnavailableError,
-    SetupFailedError,
-)
-from music_assistant.common.models.event import MassEvent
+from music_assistant.common.models.errors import MusicAssistantError
 from music_assistant.common.models.media_items import (
     BrowseFolder,
     MediaItem,
     MediaItemType,
     media_from_dict,
 )
-from music_assistant.common.models.provider_manifest import ProviderManifest
 from music_assistant.constants import (
     CONF_DB_LIBRARY,
-    DEFAULT_DB_LIBRARY,
-    ROOT_LOGGER_NAME,
-    DB_TABLE_SETTINGS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
-    DB_TABLE_RADIOS,
-    DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_PLAYLOG,
+    DB_TABLE_RADIOS,
+    DB_TABLE_SETTINGS,
+    DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
+    DEFAULT_DB_LIBRARY,
+    ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.api import api_command
-from music_assistant.server.models.music_provider import MusicProvider
 from music_assistant.server.helpers.database import DatabaseConnection
+from music_assistant.server.models.music_provider import MusicProvider
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -64,9 +49,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SERVER_DIR = os.path.dirname(BASE_DIR)
-PROVIDERS_PATH = os.path.join(SERVER_DIR, "music_providers")
 
 SCHEMA_VERSION = 19
 
@@ -84,63 +66,22 @@ class MusicController:
         self.tracks = TracksController(mass)
         self.radio = RadioController(mass)
         self.playlists = PlaylistController(mass)
-        self._available_providers: dict[str, ProviderManifest] = {}
-        self._providers: dict[str, MusicProvider] = {}
 
     async def setup(self):
         """Async initialize of module."""
         # setup library database
         await self._setup_database()
-        # load available providers
-        await self._load_available_providers()
-        # load providers from config
-        for prov_conf in self.mass.config.get_provider_configs(ProviderType.MUSIC):
-            await self._load_provider(prov_conf)
-        # check for any 'load_by_default' providers (e.g. URL provider)
-        for prov_manifest in self._available_providers.values():
-            if not prov_manifest.load_by_default:
-                continue
-            loaded = any(
-                (x for x in self.providers if x.domain == prov_manifest.domain)
-            )
-            if loaded:
-                continue
-            await self._load_provider(
-                ProviderConfig(
-                    type=prov_manifest.type,
-                    domain=prov_manifest.domain,
-                    instance_id=prov_manifest.domain,
-                    values={},
-                )
-            )
-        # listen to config change events
-        self.mass.subscribe(
-            self._handle_config_updated_event,
-            (EventType.PROVIDER_CONFIG_CREATED, EventType.PROVIDER_CONFIG_UPDATED),
-        )
         # add task to cleanup old records from db
         self.mass.create_task(self._cleanup_library())
-
-    @api_command("music/providers/available")
-    def get_available_providers(self) -> list[ProviderManifest]:
-        """Return all available MusicProviders."""
-        return list(self._available_providers.values())
 
     @property
     def providers(self) -> list[MusicProvider]:
         """Return all loaded/running MusicProviders (instances)."""
-        return list(self._providers.values())
+        return self.mass.get_providers(ProviderType.MUSIC)
 
     def get_provider(self, provider_instance_or_domain: str) -> MusicProvider:
         """Return Music provider by instance id (or domain)."""
-        if prov := self._providers.get(provider_instance_or_domain):
-            return prov
-        for prov in self._providers.values():
-            if provider_instance_or_domain in (prov.type, prov.id, prov.type):
-                return prov
-        raise ProviderUnavailableError(
-            f"Provider {provider_instance_or_domain} is not available"
-        )
+        return self.mass.get_provider(provider_instance_or_domain)
 
     @api_command("music/sync")
     async def start_sync(
@@ -465,59 +406,6 @@ class MusicController:
         if media_type == MediaType.PLAYLIST:
             return self.playlists
 
-    async def _load_provider(self, conf: ProviderConfig) -> None:
-        """Load (or reload) a music provider."""
-        assert conf.type == ProviderType.MUSIC
-        if provider := self._providers.get(conf.instance_id):
-            # provider is already loaded, stop and unload it first
-            await provider.close()
-            self._providers.pop(conf.instance_id)
-
-        domain = conf.domain
-        prov_manifest = self._available_providers.get(domain)
-        # check for other instances of this provider
-        existing = next((x for x in self.providers if x.domain == domain), None)
-        if existing and not prov_manifest.multi_instance:
-            raise SetupFailedError(
-                f"Provider {domain} already loaded and only one instance allowed."
-            )
-
-        if not prov_manifest:
-            raise SetupFailedError(f"Provider {domain} manifest not found")
-        # try to load the module
-        try:
-            prov_mod = importlib.import_module(
-                f".{domain}", "music_assistant.server.music_providers"
-            )
-            for name, obj in inspect.getmembers(prov_mod):
-                if not inspect.isclass(obj):
-                    continue
-                # lookup class to initialize
-                if name == prov_manifest.init_class or (
-                    not prov_manifest.init_class
-                    and issubclass(obj, MusicProvider)
-                    and obj != MusicProvider
-                ):
-                    prov_cls = obj
-                    break
-            else:
-                SetupFailedError("Unable to locate Provider class")
-            provider: MusicProvider = prov_cls(self.mass, prov_manifest, conf)
-            self._providers[provider.instance_id] = provider
-            await provider.setup()
-        # pylint: disable=broad-except
-        except Exception as exc:
-            LOGGER.exception(
-                "Error loading provider(instance) %s: %s",
-                conf.title or conf.domain,
-                str(exc),
-            )
-        else:
-            LOGGER.debug(
-                "Successfully loaded provider %s",
-                conf.title or conf.domain,
-            )
-
     async def _cleanup_library(self) -> None:
         """Cleanup deleted items from library/database."""
         prev_providers = await self.mass.cache.get("prov_ids", default=[])
@@ -544,45 +432,6 @@ class MusicController:
                 for item in prov_items:
                     await ctrl.remove_prov_mapping(item.item_id, provider_instance)
         await self.mass.cache.set("prov_ids", cur_providers)
-
-    async def _load_available_providers(self) -> None:
-        """Preload all available provider manifest files."""
-        for dir_str in os.listdir(PROVIDERS_PATH):
-            dir_path = os.path.join(PROVIDERS_PATH, dir_str)
-            if not os.path.isdir(dir_path):
-                continue
-            # get files in subdirectory
-            for file_str in os.listdir(dir_path):
-                file_path = os.path.join(dir_path, file_str)
-                if not os.path.isfile(file_path):
-                    continue
-                if file_str != "manifest.json":
-                    continue
-                try:
-                    provider_manifest = await ProviderManifest.parse(file_path)
-                    # inject config entry to enable/disable the provider
-                    conf_keys = (x.key for x in provider_manifest.config_entries)
-                    if CONF_KEY_ENABLED not in conf_keys:
-                        provider_manifest.config_entries = [
-                            CONFIG_ENTRY_ENABLED,
-                            *provider_manifest.config_entries,
-                        ]
-                    self._available_providers[
-                        provider_manifest.domain
-                    ] = provider_manifest
-                    LOGGER.debug("Loaded manifest for MusicProvider %s", dir_str)
-                except Exception as exc:  # pylint: disable=broad-except
-                    LOGGER.exception(
-                        "Error while loading manifest for provider %s",
-                        dir_str,
-                        exc_info=exc,
-                    )
-
-    async def _handle_config_updated_event(self, event: MassEvent):
-        """Handle ProviderConfig updated/created event."""
-        if event.data.type != ProviderType.MUSIC:
-            return
-        await self._load_provider(event.data)
 
     async def _setup_database(self):
         """Initialize database."""
@@ -618,8 +467,7 @@ class MusicController:
                     f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLISTS}"
                 )
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_RADIOS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_THUMBS}")
+
                 # recreate missing tables
                 await self.__create_database_tables()
 

@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from typing import Any
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.event import MassEvent
-
-from .enums import EventType
 
 
 @dataclass
@@ -18,7 +16,7 @@ class CommandMessage(DataClassDictMixin):
 
     message_id: str
     command: str
-    args: Union[dict[str, Any], None] = None
+    args: dict[str, Any] | None = None
 
 
 @dataclass
@@ -54,10 +52,10 @@ class ServerInfoMessage(DataClassDictMixin):
     schema_version: int
 
 
-MessageType = Union[
-    CommandMessage,
-    EventMessage,
-    SuccessResultMessage,
-    ErrorResultMessage,
-    ServerInfoMessage,
-]
+MessageType = (
+    CommandMessage
+    | EventMessage
+    | SuccessResultMessage
+    | ErrorResultMessage
+    | ServerInfoMessage
+)

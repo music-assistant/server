@@ -22,7 +22,7 @@ class MusicProvider(Provider):
     """
     Base representation of a Music Provider (controller).
 
-    Music Provider implementations should inherit fro, this base model.
+    Music Provider implementations should inherit from this base model.
     """
 
     _attr_supported_features: tuple[MusicProviderFeature] = tuple()

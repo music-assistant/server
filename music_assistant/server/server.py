@@ -2,13 +2,21 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import inspect
 import logging
+import os
 from types import TracebackType
 from typing import Any, Callable, Coroutine, Type
 
 from aiohttp import ClientSession, TCPConnector, web
 
+from music_assistant.common.models.provider_manifest import ProviderManifest
 from music_assistant.common.models.enums import EventType
+from music_assistant.common.models.errors import (
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import (
     CONF_WEB_HOST,
@@ -17,20 +25,37 @@ from music_assistant.constants import (
     DEFAULT_PORT,
     ROOT_LOGGER_NAME,
 )
+from music_assistant.common.models.config_entries import (
+    CONF_KEY_ENABLED,
+    CONFIG_ENTRY_ENABLED,
+    ProviderConfig,
+)
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
 from music_assistant.server.controllers.metadata.metadata import MetaDataController
 from music_assistant.server.controllers.music import MusicController
 from music_assistant.server.controllers.players import PlayerController
 from music_assistant.server.controllers.streams import StreamsController
-from music_assistant.server.helpers.api import APICommandHandler, mount_websocket
+from music_assistant.server.helpers.api import (
+    APICommandHandler,
+    api_command,
+    mount_websocket,
+)
 
+from .models.metadata_provider import MetadataProvider
+from .models.music_provider import MusicProvider
+from .models.player_provider import PlayerProvider
+
+ProviderType = MetadataProvider | MusicProvider | PlayerProvider
 EventCallBackType = Callable[[EventType, Any], None]
 EventSubscriptionType = tuple[
     EventCallBackType, tuple[EventType] | None, tuple[str] | None
 ]
 
 LOGGER = logging.getLogger(ROOT_LOGGER_NAME)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
 
 
 class MusicAssistant:
@@ -46,6 +71,8 @@ class MusicAssistant:
         Create an instance of the MusicAssistant Server."""
         self.storage_path = storage_path
         self._subscribers: set[EventCallBackType] = set()
+        self._available_providers: dict[str, ProviderManifest] = {}
+        self._providers: dict[str, ProviderType] = {}
 
         # init core controllers
         self.config = ConfigController(self)
@@ -100,6 +127,35 @@ class MusicAssistant:
         self.closed = True
         if self.http_session:
             await self.http_session.close()
+
+    @api_command("providers/available")
+    def get_available_providers(self) -> list[ProviderManifest]:
+        """Return all available Providers."""
+        return list(self._available_providers.values())
+
+    @property
+    def providers(self) -> list[ProviderType]:
+        """Return all loaded/running Providers (instances)."""
+        return list(self._providers.values())
+
+    def get_provider(self, provider_instance_or_domain: str) -> ProviderType:
+        """Return provider by instance id (or domain)."""
+        if prov := self._providers.get(provider_instance_or_domain):
+            return prov
+        for prov in self._providers.values():
+            if prov.domain == provider_instance_or_domain:
+                return prov
+        raise ProviderUnavailableError(
+            f"Provider {provider_instance_or_domain} is not available"
+        )
+
+    def get_providers(self, provider_type: ProviderType | None) -> list[ProviderType]:
+        """Return all loaded/running Providers (instances), optionally filtered by ProviderType."""
+        return [
+            x
+            for x in self._providers.values()
+            if provider_type is None or provider_type == x.type
+        ]
 
     def signal_event(
         self,
@@ -198,6 +254,126 @@ class MusicAssistant:
                 if hasattr(obj, "api_cmd"):
                     # method is decorated with our api decorator
                     self.register_api_command(obj.api_cmd, obj)
+
+    async def _load_providers(self) -> None:
+        """Load providers from config."""
+        # load all available providers from manifest files
+        await self.__load_available_providers()
+        # load all configured providers
+        for prov_conf in self.config.get_provider_configs():
+            await self._load_provider(prov_conf)
+        # check for any 'load_by_default' providers (e.g. URL provider)
+        for prov_manifest in self._available_providers.values():
+            if not prov_manifest.load_by_default:
+                continue
+            loaded = any(
+                (x for x in self.providers if x.domain == prov_manifest.domain)
+            )
+            if loaded:
+                continue
+            await self._load_provider(
+                ProviderConfig(
+                    type=prov_manifest.type,
+                    domain=prov_manifest.domain,
+                    instance_id=prov_manifest.domain,
+                    values={},
+                )
+            )
+
+        # listen to config change events
+        async def handle_config_updated_event(event: MassEvent):
+            """Handle ProviderConfig updated/created event."""
+            await self._load_provider(event.data)
+
+        self.subscribe(
+            handle_config_updated_event,
+            (EventType.PROVIDER_CONFIG_CREATED, EventType.PROVIDER_CONFIG_UPDATED),
+        )
+
+    async def _load_provider(self, conf: ProviderConfig) -> None:
+        """Load (or reload) a provider."""
+        if provider := self._providers.get(conf.instance_id):
+            # provider is already loaded, stop and unload it first
+            await provider.close()
+            self._providers.pop(conf.instance_id)
+
+        domain = conf.domain
+        prov_manifest = self._available_providers.get(domain)
+        # check for other instances of this provider
+        existing = next((x for x in self.providers if x.domain == domain), None)
+        if existing and not prov_manifest.multi_instance:
+            raise SetupFailedError(
+                f"Provider {domain} already loaded and only one instance allowed."
+            )
+
+        if not prov_manifest:
+            raise SetupFailedError(f"Provider {domain} manifest not found")
+        # try to load the module
+        try:
+            prov_mod = importlib.import_module(
+                f".{domain}", "music_assistant.server.providers"
+            )
+            for name, obj in inspect.getmembers(prov_mod):
+                if not inspect.isclass(obj):
+                    continue
+                # lookup class to initialize
+                if name == prov_manifest.init_class or (
+                    not prov_manifest.init_class
+                    and issubclass(obj, MusicProvider)
+                    and obj != MusicProvider
+                ):
+                    prov_cls = obj
+                    break
+            else:
+                SetupFailedError("Unable to locate Provider class")
+            provider: MusicProvider = prov_cls(self, prov_manifest, conf)
+            self._providers[provider.instance_id] = provider
+            await provider.setup()
+        # pylint: disable=broad-except
+        except Exception as exc:
+            LOGGER.exception(
+                "Error loading provider(instance) %s: %s",
+                conf.title or conf.domain,
+                str(exc),
+            )
+        else:
+            LOGGER.debug(
+                "Successfully loaded provider %s",
+                conf.title or conf.domain,
+            )
+
+    async def __load_available_providers(self) -> None:
+        """Preload all available provider manifest files."""
+        for dir_str in os.listdir(PROVIDERS_PATH):
+            dir_path = os.path.join(PROVIDERS_PATH, dir_str)
+            if not os.path.isdir(dir_path):
+                continue
+            # get files in subdirectory
+            for file_str in os.listdir(dir_path):
+                file_path = os.path.join(dir_path, file_str)
+                if not os.path.isfile(file_path):
+                    continue
+                if file_str != "manifest.json":
+                    continue
+                try:
+                    provider_manifest = await ProviderManifest.parse(file_path)
+                    # inject config entry to enable/disable the provider
+                    conf_keys = (x.key for x in provider_manifest.config_entries)
+                    if CONF_KEY_ENABLED not in conf_keys:
+                        provider_manifest.config_entries = [
+                            CONFIG_ENTRY_ENABLED,
+                            *provider_manifest.config_entries,
+                        ]
+                    self._available_providers[
+                        provider_manifest.domain
+                    ] = provider_manifest
+                    LOGGER.debug("Loaded manifest for provider %s", dir_str)
+                except Exception as exc:  # pylint: disable=broad-except
+                    LOGGER.exception(
+                        "Error while loading manifest for provider %s",
+                        dir_str,
+                        exc_info=exc,
+                    )
 
     async def __aenter__(self) -> "MusicAssistant":
         """Return Context manager."""

@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from time import time
-from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Mapping
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.common.helpers.json import json_loads, json_dumps
+from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name, merge_lists
 from music_assistant.common.models.enums import (
@@ -18,7 +18,7 @@ from music_assistant.common.models.enums import (
     MediaType,
 )
 
-MetadataTypes = Union[int, bool, str, List[str]]
+MetadataTypes = int | bool | str | list[str]
 
 JSON_KEYS = ("artists", "artist", "albums", "metadata", "provider_mappings")
 
@@ -89,22 +89,22 @@ class MediaItemMetadata(DataClassDictMixin):
 
     description: str | None = None
     review: str | None = None
-    explicit: Optional[bool] = None
-    images: Optional[List[MediaItemImage]] = None
-    genres: Optional[Set[str]] = None
+    explicit: bool | None = None
+    images: list[MediaItemImage] | None = None
+    genres: set[str] | None = None
     mood: str | None = None
     style: str | None = None
     copyright: str | None = None
     lyrics: str | None = None
     ean: str | None = None
     label: str | None = None
-    links: Optional[Set[MediaItemLink]] = None
-    performers: Optional[Set[str]] = None
+    links: set[MediaItemLink] | None = None
+    performers: set[str] | None = None
     preview: str | None = None
-    replaygain: Optional[float] = None
-    popularity: Optional[int] = None
+    replaygain: float | None = None
+    popularity: int | None = None
     # last_refresh: timestamp the (full) metadata was last collected
-    last_refresh: Optional[int] = None
+    last_refresh: int | None = None
     # checksum: optional value to detect changes (e.g. playlists)
     checksum: str | None = None
 
@@ -140,7 +140,7 @@ class MediaItem(DataClassDictMixin):
     item_id: str
     provider: str
     name: str
-    provider_mappings: Set[ProviderMapping] = field(default_factory=set)
+    provider_mappings: set[ProviderMapping] = field(default_factory=set)
 
     # optional fields below
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
@@ -270,8 +270,8 @@ class Album(MediaItem):
 
     media_type: MediaType = MediaType.ALBUM
     version: str = ""
-    year: Optional[int] = None
-    artists: List[Union[Artist, ItemMapping]] = field(default_factory=list)
+    year: int | None = None
+    artists: list[Artist | ItemMapping] = field(default_factory=list)
     album_type: AlbumType = AlbumType.UNKNOWN
     upc: str | None = None
     musicbrainz_id: str | None = None  # release group id
@@ -284,8 +284,8 @@ class Album(MediaItem):
         return None
 
     @artist.setter
-    def artist(self, artist: Union[Artist, ItemMapping]) -> None:
-        """Set (first/only) artist of album."""
+    def artist(self, artist: Artist | ItemMapping) -> None:
+        """set (first/only) artist of album."""
         self.artists = [artist]
 
     def __hash__(self):
@@ -297,8 +297,8 @@ class Album(MediaItem):
 class TrackAlbumMapping(ItemMapping):
     """Model for a track that is mapped to an album."""
 
-    disc_number: Optional[int] = None
-    track_number: Optional[int] = None
+    disc_number: int | None = None
+    track_number: int | None = None
 
 
 @dataclass
@@ -310,14 +310,14 @@ class Track(MediaItem):
     version: str = ""
     isrc: str | None = None
     musicbrainz_id: str | None = None  # Recording ID
-    artists: List[Union[Artist, ItemMapping]] = field(default_factory=list)
+    artists: list[Artist | ItemMapping] = field(default_factory=list)
     # album track only
-    album: Union[Album, ItemMapping, None] = None
-    albums: List[TrackAlbumMapping] = field(default_factory=list)
-    disc_number: Optional[int] = None
-    track_number: Optional[int] = None
+    album: Album | ItemMapping | None = None
+    albums: list[TrackAlbumMapping] = field(default_factory=list)
+    disc_number: int | None = None
+    track_number: int | None = None
     # playlist track only
-    position: Optional[int] = None
+    position: int | None = None
 
     def __hash__(self):
         """Return custom hash."""
@@ -334,7 +334,7 @@ class Track(MediaItem):
         return None
 
     @property
-    def isrcs(self) -> Tuple[str]:
+    def isrcs(self) -> tuple[str]:
         """Split multiple values in isrc field."""
         # sometimes the isrc contains multiple values, splitted by semicolon
         if not self.isrc:
@@ -349,8 +349,8 @@ class Track(MediaItem):
         return None
 
     @artist.setter
-    def artist(self, artist: Union[Artist, ItemMapping]) -> None:
-        """Set (first/only) artist of track."""
+    def artist(self, artist: Artist | ItemMapping) -> None:
+        """set (first/only) artist of track."""
         self.artists = [artist]
 
 
@@ -395,7 +395,7 @@ class BrowseFolder(MediaItem):
     # label: a labelid that needs to be translated by the frontend
     label: str = ""
     # subitems of this folder when expanding
-    items: Optional[List[Union[MediaItemType, BrowseFolder]]] = None
+    items: list[MediaItemType | BrowseFolder] | None = None
 
     def __post_init__(self):
         """Call after init."""
@@ -404,18 +404,18 @@ class BrowseFolder(MediaItem):
             self.path = f"{self.provider}://{self.item_id}"
 
 
-MediaItemType = Union[Artist, Album, Track, Radio, Playlist, BrowseFolder]
+MediaItemType = Artist | Album | Track | Radio | Playlist | BrowseFolder
 
 
 @dataclass
 class PagedItems(DataClassDictMixin):
     """Model for a paged listing."""
 
-    items: List[MediaItemType]
+    items: list[MediaItemType]
     count: int
     limit: int
     offset: int
-    total: Optional[int] = None
+    total: int | None = None
 
 
 def media_from_dict(media_item: dict) -> MediaItemType:
@@ -453,13 +453,13 @@ class StreamDetails(DataClassDictMixin):
     # stream_title: radio streams can optionally set this field
     stream_title: str | None = None
     # duration of the item to stream, copied from media_item if omitted
-    duration: Optional[int] = None
+    duration: int | None = None
     # total size in bytes of the item, calculated at eof when omitted
-    size: Optional[int] = None
+    size: int | None = None
     # expires: timestamp this streamdetails expire
     expires: float = time() + 3600
     # data: provider specific data (not exposed externally)
-    data: Optional[Any] = None
+    data: Any = None
     # if the url/file is supported by ffmpeg directly, use direct stream
     direct: str | None = None
     # callback: optional callback function (or coroutine) to call when the stream completes.
@@ -470,12 +470,12 @@ class StreamDetails(DataClassDictMixin):
 
     # the fields below will be set/controlled by the streamcontroller
     queue_id: str | None = None
-    seconds_streamed: Optional[float] = None
-    seconds_skipped: Optional[float] = None
-    gain_correct: Optional[float] = None
-    loudness: Optional[float] = None
+    seconds_streamed: float | None = None
+    seconds_skipped: float | None = None
+    gain_correct: float | None = None
+    loudness: float | None = None
 
-    def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]:
+    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
         """Exclude internal fields from dict."""
         d.pop("data")
         d.pop("direct")

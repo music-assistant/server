@@ -1,0 +1,13 @@
+{
+  "type": "player",
+  "domain": "slimproto",
+  "name": "Slimproto",
+  "codeowners": ["@marcelveldt"],
+  "config_entries": [
+  ],
+  "requirements": ["aioslimproto==2.1.1"],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/categories/player-providers",
+  "multi_instance": false,
+  "builtin": true,
+  "load_by_default": true
+}

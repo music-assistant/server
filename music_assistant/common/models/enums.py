@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, List, TypeVar
+from typing import Any, TypeVar
 
 _StrEnumSelfT = TypeVar("_StrEnumSelfT", bound="StrEnum")
 
@@ -48,7 +48,7 @@ class MediaType(StrEnum):
 
     @classmethod
     @property
-    def ALL(cls) -> List["MediaType"]:  # pylint: disable=invalid-name
+    def ALL(cls) -> list["MediaType"]:  # pylint: disable=invalid-name
         """Return all (default) MediaTypes as list."""
         return [
             MediaType.ARTIST,

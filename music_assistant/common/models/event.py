@@ -5,9 +5,11 @@ from typing import Any, Optional
 
 from music_assistant.common.models.enums import EventType
 
+from mashumaro import DataClassDictMixin
+
 
 @dataclass
-class MassEvent:
+class MassEvent(DataClassDictMixin):
     """Representation of an Event emitted in/by Music Assistant."""
 
     event: EventType
