@@ -391,6 +391,15 @@ class MusicController:
                 )
             )
 
+    async def get_preview_url(self, provider_domain: str, track_id: str) -> str:
+        """Return url to short preview sample."""
+        track = await self.tracks.get_provider_item(track_id, provider_domain)
+        # prefer provider-provided preview
+        if preview := track.metadata.preview:
+            return preview
+        # fallback to a preview/sample hosted by our own webserver
+        return self.mass.streams.get_preview_url(provider_domain, track_id)
+
     def get_controller(
         self, media_type: MediaType
     ) -> ArtistsController | AlbumsController | TracksController | RadioController | PlaylistController:

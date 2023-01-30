@@ -3,18 +3,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Dict, Iterable, Tuple, cast
-from music_assistant.common.helpers.util import get_changed_keys
+from typing import TYPE_CHECKING, cast
 
-from music_assistant.common.models.enums import EventType, PlayerState, PlayerType
+from music_assistant.common.helpers.util import get_changed_keys
+from music_assistant.common.models.enums import (
+    EventType,
+    PlayerFeature,
+    PlayerState,
+    PlayerType,
+)
 from music_assistant.common.models.errors import AlreadyRegisteredError
 from music_assistant.common.models.player import Player
-from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.player_provider import PlayerProvider
 
-from .queues import PlayerQueueController
+from .player_queue import PlayerQueuesController
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
@@ -30,7 +34,7 @@ class PlayerController:
         self.mass = mass
         self._players: dict[str, Player] = {}
         self._prev_states: dict[str, dict] = {}
-        self.queues = PlayerQueueController()
+        self.queues = PlayerQueuesController()
 
     async def setup(self) -> None:
         """Async initialize of module."""
@@ -47,7 +51,7 @@ class PlayerController:
         return iter(self._players.values())
 
     @api_command("players/all")
-    def all(self) -> Tuple[Player]:
+    def all(self) -> tuple[Player]:
         """Return all registered players."""
         return tuple(self._players.values())
 
@@ -82,7 +86,7 @@ class PlayerController:
             raise AlreadyRegisteredError(f"Player {player_id} is already registered")
 
         # register playerqueue for this player
-        self.mass.create_task(self.queues.register(player_id))
+        self.mass.create_task(self.queues.on_player_register(player_id))
 
         self._players[player_id] = player
 
@@ -98,15 +102,18 @@ class PlayerController:
     @api_command("players/remove")
     def remove(self, player_id: str):
         """Remove a player from the registry."""
-        self._player_queues.pop(player_id, None)
         player = self._players.pop(player_id, None)
-        player_name = player.name if player else player_id
-        LOGGER.info("Player removed: %s", player_name)
-        self.mass.eventbus.signal(EVENT_PLAYER_REMOVED, {"player_id": player_id})
-    
+        if player is None:
+            return
+        LOGGER.info("Player removed: %s", player.name)
+        self.queues.on_player_remove(player_id)
+        self.mass.config.remove(f"players/{player_id}")
+        self._prev_states.pop(player_id, None)
+        self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+
     @api_command("players/update")
     def update(self, player_id: str, skip_forward: bool = False) -> None:
-        """Call when a player has been updated."""
+        """Update player state."""
         if player_id not in self._players:
             return
         player = self._players[player_id]
@@ -123,29 +130,24 @@ class PlayerController:
             return
 
         # signal update to the playerqueue
-        self.queues.update(player_id)
+        self.queues.on_player_update(player_id)
 
         self.mass.signal_event(
-            EventType.PLAYER_UPDATED, object_id=self.player_id, data=self
+            EventType.PLAYER_UPDATED, object_id=player_id, data=player
         )
 
         if skip_forward:
             return
         if player.type == PlayerType.GROUP:
             # update group player members when parent updates
-            for child_player_id in self.group_members:
-                if child_player_id == self.player_id:
+            for child_player_id in player.group_members:
+                if child_player_id == player_id:
                     continue
-                if player := self.mass.players.get_player(child_player_id):
-                    self.mass.loop.call_soon_threadsafe(
-                        player.on_parent_update, self.player_id, changed_keys
-                    )
+                self.update(child_player_id, skip_forward=True)
 
         # update group player(s) when child updates
-        for group_player in self.groups:
-            self.mass.loop.call_soon_threadsafe(
-                group_player.on_child_update, self.player_id, changed_keys
-            )
+        for group_player in self._get_player_groups(player_id):
+            self.update(group_player.player_id, skip_forward=True)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
@@ -167,7 +169,7 @@ class PlayerController:
     @api_command("players/cmd/play")
     async def cmd_play(self, player_id: str) -> None:
         """
-        Send PLAY command to given player.
+        Send PLAY (unpause) command to given player.
             - player_id: player_id of the player to handle the command.
         """
         player_provider = self.get_player_provider(player_id)
@@ -194,16 +196,69 @@ class PlayerController:
         else:
             await self.cmd_play(player_id)
 
+    @api_command("players/cmd/power")
+    async def cmd_power(self, player_id: str, powered: bool) -> None:
+        """
+        Send POWER command to given player.
+            - player_id: player_id of the player to handle the command.
+            - powered: bool if player should be powered on or off.
+        """
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
+        # TODO: Implement PlayerControl
+        player = self._players[player_id]
+        # stop player at power off
+        if not powered and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+            await self.cmd_stop(player_id)
+        if PlayerFeature.POWER not in player.supported_features:
+            LOGGER.warning(
+                "Power command called but player %s does not support setting power",
+                player_id,
+            )
+            player.powered = powered
+            self.update(player_id)
+            return
+        player_provider = self.get_player_provider(player_id)
+        await player_provider.cmd_power(player_id, powered)
+
+    @api_command("players/cmd/volume_set")
+    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+        """
+        Send VOLUME_SET command to given player.
+            - player_id: player_id of the player to handle the command.
+            - volume_level: volume level (0..100) to set on the player.
+        """
+        # TODO: Implement PlayerControl
+        player = self._players[player_id]
+        if PlayerFeature.VOLUME_SET not in player.supported_features:
+            LOGGER.warning(
+                "Volume set command called but player %s does not support volume",
+                player_id,
+            )
+            player.volume_level = volume_level
+            self.update(player_id)
+            return
+        player_provider = self.get_player_provider(player_id)
+        await player_provider.cmd_volume_set(player_id, volume_level)
+
+    @api_command("players/cmd/volume_mute")
+    async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
+        """
+        Send VOLUME_MUTE command to given player.
+            - player_id: player_id of the player to handle the command.
+            - muted: bool if player should be muted.
+        """
+        player = self._players[player_id]
+        if PlayerFeature.VOLUME_MUTE not in player.supported_features:
+            LOGGER.warning(
+                "Mute command called but player %s does not support muting", player_id
+            )
+            player.volume_muted = muted
+            self.update(player_id)
+            return
+        # TODO: Implement PlayerControl
+        player_provider = self.get_player_provider(player_id)
+        await player_provider.cmd_volume_mute(player_id, muted)
+
     def _get_player_groups(self, player_id: str) -> tuple[Player, ...]:
         """Return all (player_ids of) any groupplayers the given player belongs to."""
         return tuple(x for x in self if player_id in x.group_members)
@@ -221,8 +276,7 @@ class PlayerController:
                     return group_player.player_id
         # defaults to the player's own player id
         return player_id
-    
-    
+
     async def _poll_players(self) -> None:
         """Poll players every X interval."""
         interval = 30

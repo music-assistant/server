@@ -6,7 +6,7 @@ import time
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.media_items import MediaItemType
-from .enums import PlayerFeature, PlayerType, PlayerState, RepeatMode
+from .enums import PlayerState, RepeatMode
 
 from .queue_item import QueueItem
 
@@ -20,7 +20,9 @@ class PlayerQueue(DataClassDictMixin):
 
     shuffle_enabled: bool
     repeat_mode: RepeatMode = RepeatMode.OFF
+    # current_index: index that is active (e.g. being played) by the player
     current_index: int | None = None
+    # index_in_buffer: index that has been preloaded/buffered by the player
     index_in_buffer: int | None = None
     elapsed_time: float = 0
     elapsed_time_last_updated: float = time.time()

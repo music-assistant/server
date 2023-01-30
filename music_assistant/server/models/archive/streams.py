@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import urllib.parse
-from typing import TYPE_CHECKING, AsyncGenerator
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from aiohttp import web
@@ -24,7 +24,6 @@ from music_assistant.common.models.errors import (
     QueueEmpty,
 )
 from music_assistant.common.models.event import MassEvent
-from music_assistant.common.models.media_items import StreamDetails
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
@@ -61,33 +60,49 @@ class StreamsController:
     def __init__(self, mass: MusicAssistant):
         """Initialize instance."""
         self.mass = mass
+        # self.queue_streams: Dict[str, QueueStream] = {}
+        self.announcements: Dict[str, Tuple[str]] = {}
 
     @property
     def base_url(self) -> str:
         """Return the base url for the stream engine."""
 
+        if BASE_URL_OVERRIDE_ENVNAME in os.environ:
+            # This is a purpously undocumented feature to override the automatic
+            # generated base_url used by the streaming-devices.
+            # If you need this, you know it, but you should probably try to not set it!
+            # Also see https://github.com/music-assistant/hass-music-assistant/issues/802
+            # and https://github.com/music-assistant/hass-music-assistant/discussions/794#discussioncomment-3331209
+            return os.environ[BASE_URL_OVERRIDE_ENVNAME]
+        # TODO!
         host = self.mass.config.get(CONF_WEB_HOST, "127.0.0.1")
-        port = self.mass.config.get(CONF_WEB_PORT, DEFAULT_PORT)
+        port = self.config.get(CONF_WEB_PORT, DEFAULT_PORT)
         return f"http://{host}:{port}"
 
-    def get_stream_url(
-        self,
-        queue_id: str,
-        queue_item_id: str,
-        fmt: str = "pcm",
-        seek_position: int | None = None,
-        player_id: str | None = None,
-    ) -> str:
-        """Get stream url for the QueueItem Stream."""
-        url = f"{self.base_url}/stream/{queue_id}/{queue_item_id}?fmt={fmt}"
-        if seek_position:
-            url += f"&seek={seek_position}"
+    def get_stream_url(self, queue_id: str, queue_item_id: str, player_id: str | None = None) -> str:
+        """Get stream url for the PlayerQueue Stream."""
+        url = f"{self.base_url}/stream/{queue_id}/{queue_item_id}"
         if player_id:
-            url += f"&player_id={player_id}"
+            url += f"?player_id={player_id}"
         return url
+
+    def get_announcement_url(
+        self,
+        player_id: str,
+        urls: Tuple[str],
+    ) -> str:
+        """Get url to announcement stream."""
+        self.announcements[player_id] = urls
+        player = self.mass.players.get_player(player_id)
+        content_type = player.settings.stream_type
+        ext = content_type.value
+        return f"{self.base_url}/announce/{player_id}.{ext}"
 
     async def get_preview_url(self, provider: str, track_id: str) -> str:
         """Return url to short preview sample."""
+        track = await self.mass.music.tracks.get_provider_item(track_id, provider)
+        if preview := track.metadata.preview:
+            return preview
         enc_track_id = urllib.parse.quote(track_id)
         return f"{self.base_url}/preview?provider={provider}&item_id={enc_track_id}"
 
@@ -125,11 +140,11 @@ class StreamsController:
         player_queue = mass.players.queues.get(queue_id)
         if not player or not player_queue:
             raise web.HTTPNotFound(reason="player or queue not found")
-
+        
         # if player_queue.use_queue_stream:
         #     # redirect request if player switched to queue streaming
         #     return await stream_queue(request)
-
+        
         LOGGER.debug("Stream request for %s", player.name)
 
         queue_item = self.mass.players.queues.item_by_id(queue_id, queue_item_id)
@@ -137,59 +152,34 @@ class StreamsController:
             raise web.HTTPNotFound(reason="invalid queue_item_id")
 
         streamdetails = await get_stream_details(mass, queue_item, queue_id)
-        output_format_str = request.query.get("fmt", "flac")
-        # TODO: handle raw pcm types
-        output_format = ContentType.try_parse(output_format_str)
 
         # prepare request
         resp = web.StreamResponse(
             status=200,
             reason="OK",
-            headers={"Content-Type": f"audio/{output_format_str}"},
+            headers={"Content-Type": "audio/flac"},
         )
         await resp.prepare(request)
 
         # start streaming
         LOGGER.debug(
-            "Start streaming %s (%s) on player %s (queue %s)",
+            "Start streaming %s (%s) on player %s",
             queue_item_id,
             queue_item.name,
-            player.name,
-            queue_id,
+            player_queue.player.name,
         )
 
-        ffmpeg_args = self._get_player_ffmpeg_args(streamdetails, player, output_format)
-        seek_position = int(request.query.get("seek", "0"))
-        pcm_fmt = ContentType.from_bit_depth(streamdetails.bit_depth)
-        async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
-
-            # feed stdin with pcm audio chunks from origin
-            async def read_audio():
-                async for _, audio_chunk in get_media_stream(
-                    mass,
-                    streamdetails,
-                    pcm_fmt,
-                    streamdetails.sample_rate,
-                    streamdetails.channels,
-                    seek_position=seek_position,
-                ):
-                    await resp.write(audio_chunk)
-
-            ffmpeg_proc.attach_task(read_audio())
-
-            # read final chunks from stdout
-            async for chunk in ffmpeg_proc.iter_any():
-                await resp.write(chunk)
-
+        async for _, audio_chunk in get_media_stream(mass, streamdetails, ContentType.FLAC):
+            await resp.write(audio_chunk)
+            del audio_chunk
         LOGGER.debug(
-            "Finished streaming %s (%s) on player %s (queue %s)",
+            "Finished streaming %s (%s) on player %s",
             queue_item_id,
             queue_item.name,
-            player.name,
-            queue_id,
+            player_queue.player.name,
         )
 
-        return
+        return 
 
     async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""
@@ -382,13 +372,9 @@ class StreamsController:
                 stream.listeners.pop(client_id, None)
 
     def _get_player_ffmpeg_args(
-        self,
-        streamdetails: StreamDetails,
-        player: Player,
-        output_format: ContentType,
-        input_is_pcm: bool = True,
-    ) -> list[str]:
-        """Get player specific arguments for the given stream and output details."""
+        self, stream: QueueStreamInfo, player: Player, output_format: ContentType
+    ) -> List[str]:
+        """Get arguments for ffmpeg for the player specific oputput stream."""
         # generic args
         ffmpeg_args = [
             "ffmpeg",
@@ -397,18 +383,14 @@ class StreamsController:
             "quiet",
             "-ignore_unknown",
         ]
-        # pcm input args,
-        if input_is_pcm:
-            input_fmt = ContentType.from_bit_depth(streamdetails.bit_depth)
-        else:
-            input_fmt = streamdetails.content_type
+        # pcm input args
         ffmpeg_args += [
             "-f",
-            input_fmt,
+            stream.pcm_format,
             "-ac",
-            str(streamdetails.channels),
+            str(stream.pcm_channels),
             "-ar",
-            str(streamdetails.sample_rate),
+            str(stream.pcm_sample_rate),
             "-i",
             "-",
         ]

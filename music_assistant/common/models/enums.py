@@ -256,13 +256,15 @@ class PlayerFeature(StrEnum):
     Enum with possible Player features.
 
     power: The player has a dedicated power control.
+    volume: The player supports adjusting the volume.
     mute: The player supports muting the volume.
     sync: The player supports syncing with other players (of the same platform).
     accurate_time: The player provides millisecond accurate timing information.
     """
 
     POWER = "power"
-    MUTE = "mute"
+    VOLUME_SET = "volume_set"
+    VOLUME_MUTE = "volume_mute"
     SYNC = "sync"
     ACCURATE_TIME = "accurate_time"
 
@@ -272,6 +274,7 @@ class EventType(StrEnum):
 
     PLAYER_ADDED = "player_added"
     PLAYER_UPDATED = "player_updated"
+    PLAYER_REMOVED = "player_removed"
     PLAYER_SETTINGS_UPDATED = "player_settings_updated"
     QUEUE_ADDED = "queue_added"
     QUEUE_UPDATED = "queue_updated"

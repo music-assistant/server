@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
@@ -16,12 +16,12 @@ class QueueItem(DataClassDictMixin):
     """Representation of a queue item."""
 
     name: str = ""
-    duration: Optional[int] = None
+    duration: int | None = None
     item_id: str = ""
     sort_index: int = 0
-    streamdetails: Optional[StreamDetails] = None
-    media_item: Union[Track, Radio, None] = None
-    image: Optional[MediaItemImage] = None
+    streamdetails: StreamDetails | None = None
+    media_item: Track | Radio | None = None
+    image: MediaItemImage | None = None
 
     def __post_init__(self):
         """Set default values."""
@@ -33,7 +33,7 @@ class QueueItem(DataClassDictMixin):
             self.name = self.uri
 
     @classmethod
-    def __pre_deserialize__(cls, d: Dict[Any, Any]) -> Dict[Any, Any]:
+    def __pre_deserialize__(cls, d: dict[Any, Any]) -> dict[Any, Any]:
         """Run actions before deserialization."""
         d.pop("streamdetails", None)
         return d
