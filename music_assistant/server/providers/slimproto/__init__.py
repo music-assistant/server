@@ -1,188 +1,177 @@
 """Base/builtin provider with support for players using slimproto."""
 from __future__ import annotations
 
-import os
-from typing import AsyncGenerator, Tuple
+import asyncio
+import time
+from typing import Any
 
-from music_assistant.common.models.enums import ContentType, ImageType, MediaType
-from music_assistant.common.models.media_items import (
-    Artist,
-    MediaItemImage,
-    MediaItemType,
-    ProviderMapping,
-    Radio,
-    StreamDetails,
-    Track,
-)
-from music_assistant.server.helpers.audio import (
-    get_file_stream,
-    get_http_stream,
-    get_radio_stream,
-)
-from music_assistant.server.helpers.playlists import fetch_playlist
-from music_assistant.server.helpers.tags import AudioTags, parse_tags
-from music_assistant.server.models.music_provider import MusicProvider
+from aioslimproto.client import SlimClient
+from aioslimproto.const import EventType as SlimEventType
+from aioslimproto.discovery import start_discovery
+
+from music_assistant.common.helpers.util import select_free_port
+from music_assistant.common.models.enums import PlayerFeature, PlayerState, PlayerType
+from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.server.models.player_provider import PlayerProvider
 
 
-class URLProvider(MusicProvider):
-    """Music Provider for manual URL's/files added to the queue."""
+class SlimprotoProvider(PlayerProvider):
+    """Base/builtin provider for players using the SLIM protocol (aka slimproto)."""
 
-    _attr_available: bool = True
-    _full_url = {}
+    _socket_servers: tuple[asyncio.Server | asyncio.BaseTransport] | None = None
+    _socket_clients: dict[str, SlimClient] | None = None
 
-    async def setup(self) -> bool:
-        """
-        Handle async initialization of the provider.
-
-        Called when provider is registered.
-        """
-        return True
-
-    async def get_track(self, prov_track_id: str) -> Track:
-        """Get full track details by id."""
-        return await self.parse_item(prov_track_id)
-
-    async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get full radio details by id."""
-        return await self.parse_item(prov_radio_id)
-
-    async def get_artist(self, prov_artist_id: str) -> Track:
-        """Get full artist details by id."""
-        artist = prov_artist_id
-        # this is here for compatibility reasons only
-        return Artist(
-            artist,
-            self.type,
-            artist,
-            provider_mappings={
-                ProviderMapping(artist, self.type, self.id, available=False)
-            },
+    async def setup(self) -> None:
+        """Handle async initialization of the provider."""
+        self._socket_clients = {}
+        # autodiscovery of the slimproto server does not work
+        # when the port is not the default (3483) so we hardcode it for now
+        slimproto_port = 3483
+        self.logger.info("Starting SLIMProto server on port %s", slimproto_port)
+        self._socket_servers = (
+            # start slimproto server
+            await asyncio.start_server(self._create_client, "0.0.0.0", slimproto_port),
+            # setup discovery
+            await start_discovery(slimproto_port, None, self.mass.port),
         )
 
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
-        """Get single MediaItem from provider."""
-        if media_type == MediaType.ARTIST:
-            return await self.get_artist(prov_item_id)
-        if media_type == MediaType.TRACK:
-            return await self.get_track(prov_item_id)
-        if media_type == MediaType.RADIO:
-            return await self.get_radio(prov_item_id)
-        if media_type == MediaType.UNKNOWN:
-            return await self.parse_item(prov_item_id)
-        raise NotImplementedError
+    async def close(self) -> None:
+        """Handle close/cleanup of the provider."""
+        if self._socket_clients is not None:
+            for client in list(self._socket_clients.values()):
+                client.disconnect()
+        self._socket_clients = {}
+        if self._socket_servers is not None:
+            for _server in self._socket_servers:
+                _server.close()
+            self._socket_servers = None
 
-    async def parse_item(
-        self, item_id_or_url: str, force_refresh: bool = False
-    ) -> Track | Radio:
-        """Parse plain URL to MediaItem of type Radio or Track."""
-        item_id, url, media_info = await self._get_media_info(
-            item_id_or_url, force_refresh
-        )
-        is_radio = media_info.get("icy-name") or not media_info.duration
-        if is_radio:
-            # treat as radio
-            media_item = Radio(
-                item_id=item_id,
-                provider=self.domain,
-                name=media_info.get("icy-name") or media_info.title,
-            )
-        else:
-            media_item = Track(
-                item_id=item_id,
-                provider=self.domain,
-                name=media_info.title,
-                duration=int(media_info.duration or 0),
-                artists=[
-                    await self.get_artist(artist) for artist in media_info.artists
-                ],
-            )
+    async def _create_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """Create player from new connection on the socket."""
+        addr = writer.get_extra_info("peername")
+        self.logger.debug("Socket client connected: %s", addr)
 
-        media_item.provider_mappings = {
-            ProviderMapping(
-                item_id=item_id,
-                provider_domain=self.type,
-                provider_instance=self.id,
-                content_type=ContentType.try_parse(media_info.format),
-                sample_rate=media_info.sample_rate,
-                bit_depth=media_info.bits_per_sample,
-                bit_rate=media_info.bit_rate,
-            )
-        }
-        if media_info.has_cover_image:
-            media_item.metadata.images = [MediaItemImage(ImageType.THUMB, url, True)]
-        return media_item
-
-    async def _get_media_info(
-        self, item_id_or_url: str, force_refresh: bool = False
-    ) -> Tuple[str, str, AudioTags]:
-        """Retrieve (cached) mediainfo for url."""
-        # check if the radio stream is not a playlist
-        if (
-            item_id_or_url.endswith("m3u8")
-            or item_id_or_url.endswith("m3u")
-            or item_id_or_url.endswith("pls")
+        def client_callback(
+            event_type: SlimEventType, client: SlimClient, data: Any = None
         ):
-            playlist = await fetch_playlist(self.mass, item_id_or_url)
-            url = playlist[0]
-            item_id = item_id_or_url
-            self._full_url[item_id] = url
-        elif "?" in item_id_or_url or "&" in item_id_or_url:
-            # store the 'real' full url to be picked up later
-            # this makes sure that we're not storing any temporary data like auth keys etc
-            # a request for an url mediaitem always passes here first before streamdetails
-            url = item_id_or_url
-            item_id = item_id_or_url.split("?")[0].split("&")[0]
-            self._full_url[item_id] = url
-        else:
-            url = self._full_url.get(item_id_or_url, item_id_or_url)
-            item_id = item_id_or_url
-        cache_key = f"{self.type}.media_info.{item_id}"
-        # do we have some cached info for this url ?
-        cached_info = await self.mass.cache.get(cache_key)
-        if cached_info and not force_refresh:
-            media_info = AudioTags.parse(cached_info)
-        else:
-            # parse info with ffprobe (and store in cache)
-            media_info = await parse_tags(url)
-            if "authSig" in url:
-                media_info.has_cover_image = False
-            await self.mass.cache.set(cache_key, media_info.raw)
-        return (item_id, url, media_info)
+            player_id = client.player_id
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
-        """Get streamdetails for a track/radio."""
-        item_id, url, media_info = await self._get_media_info(item_id)
-        is_radio = media_info.get("icy-name") or not media_info.duration
-        return StreamDetails(
-            provider=self.domain,
-            item_id=item_id,
-            content_type=ContentType.try_parse(media_info.format),
-            media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            sample_rate=media_info.sample_rate,
-            bit_depth=media_info.bits_per_sample,
-            direct=None if is_radio else url,
-            data=url,
-        )
+            # handle player disconnect
+            if event_type == SlimEventType.PLAYER_DISCONNECTED:
+                prev = self._socket_clients.pop(player_id, None)
+                if prev is None:
+                    # already cleaned up
+                    return
+                if player := self.mass.players.get(player_id):
+                    player.available = False
+                    self.mass.players.update(player_id)
+                return
 
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        if streamdetails.media_type == MediaType.RADIO:
-            # radio stream url
-            async for chunk in get_radio_stream(
-                self.mass, streamdetails.data, streamdetails
-            ):
-                yield chunk
-        elif os.path.isfile(streamdetails.data):
-            # local file
-            async for chunk in get_file_stream(
-                self.mass, streamdetails.data, streamdetails, seek_position
-            ):
-                yield chunk
-        else:
-            # regular stream url (without icy meta)
-            async for chunk in get_http_stream(
-                self.mass, streamdetails.data, streamdetails, seek_position
-            ):
-                yield chunk
+            # handle player (re)connect
+            if event_type == SlimEventType.PLAYER_CONNECTED:
+                prev = self._socket_clients.pop(player_id, None)
+                if prev is not None:
+                    # player reconnected while we did not yet cleanup the old socket
+                    prev.disconnect()
+                self._socket_clients[player_id] = client
+
+            player = self.mass.players.get(player_id)
+            if not player:
+                player = Player(
+                    player_id=player_id,
+                    provider=self.domain,
+                    type=PlayerType.PLAYER,
+                    name=client.name,
+                    available=True,
+                    powered=client.powered,
+                    device_info=DeviceInfo(
+                        model=client.device_model,
+                        address=client.device_address,
+                        manufacturer=client.device_type,
+                    ),
+                    supported_features=(
+                        PlayerFeature.ACCURATE_TIME,
+                        PlayerFeature.POWER,
+                        PlayerFeature.SYNC,
+                        PlayerFeature.VOLUME_MUTE,
+                        PlayerFeature.VOLUME_SET,
+                    ),
+                )
+                self.mass.players.register(player)
+
+            # update player state on player events
+            player.available = True
+            player.current_url = client.current_url
+            player.elapsed_time = client.elapsed_seconds
+            player.elapsed_time_last_updated = time.time()
+            player.name = client.name
+            player.powered = client.powered
+            player.state = PlayerState(client.state.value)
+            player.volume_level = client.volume_level
+            player.volume_muted = client.muted
+            self.mass.players.update(player_id)
+
+        # construct SlimClient from socket client
+        SlimClient(reader, writer, client_callback)
+
+    async def cmd_stop(self, player_id: str) -> None:
+        """
+        Send STOP command to given player.
+            - player_id: player_id of the player to handle the command.
+        """
+        if client := self._socket_clients.get(player_id):
+            await client.stop()
+
+    async def cmd_play(self, player_id: str) -> None:
+        """
+        Send PLAY command to given player.
+            - player_id: player_id of the player to handle the command.
+        """
+        if client := self._socket_clients.get(player_id):
+            await client.play()
+
+    async def cmd_play_url(self, player_id: str, url: str) -> None:
+        """
+        Send PLAY MEDIA command to given player.
+            - player_id: player_id of the player to handle the command.
+            - url: the url to start playing on the player.
+        """
+        if client := self._socket_clients.get(player_id):
+            await client.play_url(url)
+
+    async def cmd_pause(self, player_id: str) -> None:
+        """
+        Send PAUSE command to given player.
+            - player_id: player_id of the player to handle the command.
+        """
+        if client := self._socket_clients.get(player_id):
+            await client.pause()
+
+    async def cmd_power(self, player_id: str, powered: bool) -> None:
+        """
+        Send POWER command to given player.
+            - player_id: player_id of the player to handle the command.
+            - powered: bool if player should be powered on or off.
+        """
+        if client := self._socket_clients.get(player_id):
+            await client.power(powered)
+
+    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+        """
+        Send VOLUME_SET command to given player.
+            - player_id: player_id of the player to handle the command.
+            - volume_level: volume level (0..100) to set on the player.
+        """
+        if client := self._socket_clients.get(player_id):
+            await client.volume_set(volume_level)
+
+    async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
+        """
+        Send VOLUME MUTE command to given player.
+            - player_id: player_id of the player to handle the command.
+            - muted: bool if player should be muted.
+        """
+        if client := self._socket_clients.get(player_id):
+            await client.mute(muted)

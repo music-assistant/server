@@ -251,8 +251,8 @@ async def get_stream_details(
                 continue
             # get streamdetails from provider
             music_prov = mass.music.get_provider(prov_media.provider_instance)
-            if not music_prov or not music_prov.available:
-                continue  # provider temporary unavailable ?
+            if not music_prov:
+                continue  # provider not available ?
             try:
                 streamdetails: StreamDetails = await music_prov.get_stream_details(
                     prov_media.item_id

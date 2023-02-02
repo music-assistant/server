@@ -65,6 +65,16 @@ class DatabaseConnection:
             return result[0]
         return 0
 
+    async def get_count(
+        self,
+        table: str,
+    ) -> int:
+        """Get row count for given table."""
+        query = f"SELECT count(*) FROM {table}"
+        if result := await self._db.fetch_one(query):
+            return result[0]
+        return 0
+
     async def search(
         self, table: str, search: str, column: str = "name"
     ) -> list[Mapping]:

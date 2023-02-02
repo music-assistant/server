@@ -16,9 +16,6 @@ class DeviceInfo(DataClassDictMixin):
     manufacturer: str = "unknown"
 
 
-DEFAULT_FEATURES = (PlayerFeature.POWER, PlayerFeature.MUTE)
-
-
 @dataclass
 class Player(DataClassDictMixin):
     """Representation of a Player within Music Assistant."""
@@ -30,7 +27,7 @@ class Player(DataClassDictMixin):
     available: bool
     powered: bool
     device_info: DeviceInfo
-    supported_features: tuple[PlayerFeature] = DEFAULT_FEATURES
+    supported_features: tuple[PlayerFeature] = field(default_factory=list)
 
     elapsed_time: float = 0
     elapsed_time_last_updated: float = time.time()
@@ -47,8 +44,8 @@ class Player(DataClassDictMixin):
     #   this will return the id's of players synced to this player.
     group_members: list[str] = field(default_factory=list)
     # active_queue: return player_id of the active queue for this player
-    # if the player is grouped and a group is active, this will return the group's player_id
-    # otherwise it will return the own player_id
+    # if the player is grouped and a group is active, this will be set to the group's player_id
+    # otherwise it will be set to the own player_id
     active_queue: str = ""
 
     @property

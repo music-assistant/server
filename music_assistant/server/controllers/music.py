@@ -418,7 +418,7 @@ class MusicController:
     async def _cleanup_library(self) -> None:
         """Cleanup deleted items from library/database."""
         prev_providers = await self.mass.cache.get("prov_ids", default=[])
-        cur_providers = list(self._providers.keys())
+        cur_providers = [x.instance_id for x in self.providers]
         removed_providers = {x for x in prev_providers if x not in cur_providers}
 
         for provider_instance in removed_providers:

@@ -4,7 +4,6 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from music_assistant.common.models.player import Player
-from music_assistant.common.models.queue_item import QueueItem
 
 from .provider import Provider
 
@@ -21,9 +20,7 @@ class PlayerProvider(Provider):
         """Return all players belonging to this provider."""
         # pylint: disable=no-member
         return [
-            player
-            for player in self.mass.players
-            if player.provider == self.domain
+            player for player in self.mass.players if player.provider == self.domain
         ]
 
     @abstractmethod
@@ -41,7 +38,7 @@ class PlayerProvider(Provider):
         """
 
     @abstractmethod
-    async def cmd_play_url(self, player_id: str, url: str ) -> None:
+    async def cmd_play_url(self, player_id: str, url: str) -> None:
         """
         Send PLAY MEDIA command to given player.
             - player_id: player_id of the player to handle the command.

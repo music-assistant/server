@@ -61,31 +61,37 @@ class PlayerQueuesController:
         """Return all QueueItems for given PlayerQueue."""
         return self._queue_items.get(queue_id, [])
 
-    async def on_player_register(self, queue_id: str) -> None:
+    async def on_player_register(self, player_id: str) -> None:
         """Register PlayerQueue for given player/queue id."""
 
         # try to restore previous state
-        cache_key = f"queue_state_{queue_id}"
-        if prev_state := await self.mass.cache.get(cache_key):
+        if prev_state := await self.mass.cache.get(f"queue.state.{player_id}"):
             queue = PlayerQueue.from_dict(prev_state)
+            prev_items = await self.mass.cache.get(
+                f"queue.items.{player_id}", default=[]
+            )
+            queue_items = [QueueItem.from_dict(x) for x in prev_items]
         else:
             queue = PlayerQueue(
-                queue_id=queue_id,
+                queue_id=player_id,
                 active=False,
                 shuffle_enabled=False,
             )
+            queue_items = []
 
-        self._queues[queue_id] = queue
+        self._queues[player_id] = queue
+        self._queue_items[player_id] = queue_items
         # always call update to calculate state etc
-        self.on_player_update(queue_id)
+        self.on_player_update(player_id)
 
-    def on_player_update(self, queue_id: str) -> None:
+    def on_player_update(self, player_id: str) -> None:
         """Call when a PlayerQueue needs to be updated (e.g. when player updates)."""
-        if queue_id not in self._queues:
-            self.mass.create_task(self.on_player_register(queue_id))
+        if player_id not in self._queues:
+            self.mass.create_task(self.on_player_register(player_id))
             return
 
-        player = self.players.get(queue_id)
+        player = self.players.get(player_id)
+        queue_id = player_id
         queue = self._queues[queue_id]
         # queue is active when underlying player has the queue_id loaded as stream url
         queue.active = f"/{queue_id}/" in player.current_url
@@ -123,6 +129,13 @@ class PlayerQueuesController:
             fill_index = len(self._queue_items[queue_id]) - 5
             if queue.radio_source and (queue.current_index >= fill_index):
                 self.mass.create_task(self._fill_radio_tracks(queue_id))
+
+    def on_player_remove(self, player_id: str) -> None:
+        """Call when a player is removed from the registry."""
+        self.mass.create_task(self.mass.cache.delete(f"queue.state.{player_id}"))
+        self.mass.create_task(self.mass.cache.delete(f"queue.items.{player_id}"))
+        self._queues.pop(player_id, None)
+        self._queue_items.pop(player_id, None)
 
     def load(
         self,
@@ -575,7 +588,7 @@ class PlayerQueuesController:
         # save state
         self.mass.create_task(
             self.mass.cache.set(
-                f"queue_state_{queue_id}",
+                f"queue.state.{queue_id}",
                 queue.to_dict(),
             )
         )

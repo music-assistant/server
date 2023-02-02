@@ -10,6 +10,7 @@ from types import TracebackType
 from typing import Any, Callable, Coroutine, Type
 
 from aiohttp import ClientSession, TCPConnector, web
+from music_assistant.common.helpers.util import select_free_port
 
 from music_assistant.common.models.provider_manifest import ProviderManifest
 from music_assistant.common.models.enums import EventType
@@ -66,10 +67,11 @@ class MusicAssistant:
     _web_apprunner: web.AppRunner | None = None
     _web_tcp: web.TCPSite | None = None
 
-    def __init__(self, storage_path: str) -> None:
+    def __init__(self, storage_path: str, port: int | None = None) -> None:
         """
         Create an instance of the MusicAssistant Server."""
         self.storage_path = storage_path
+        self.port = port
         self._subscribers: set[EventCallBackType] = set()
         self._available_providers: dict[str, ProviderManifest] = {}
         self._providers: dict[str, ProviderType] = {}
@@ -92,6 +94,9 @@ class MusicAssistant:
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
+        # if port is None, we need to autoselect it, prefer 9000 (lms)
+        if self.port is None:
+            self.port = await select_free_port(9000, 9200)
         # create shared aiohttp ClientSession
         self.http_session = ClientSession(
             loop=self.loop,
@@ -104,16 +109,15 @@ class MusicAssistant:
         await self.metadata.setup()
         await self.players.setup()
         await self.streams.setup()
+        # load providers
+        await self._load_providers()
         # setup web server
-        host = self.config.get(CONF_WEB_HOST, DEFAULT_HOST)
-        port = self.config.get(CONF_WEB_PORT, DEFAULT_PORT)
-        if host == "0.0.0.0":
-            # set host to None to bind to all addresses on both IPv4 and IPv6
-            host = None
         mount_websocket(self, "/ws")
         self._web_apprunner = web.AppRunner(self.webapp, access_log=None)
         await self._web_apprunner.setup()
-        self._http = web.TCPSite(self._web_apprunner, host=host, port=port)
+        # set host to None to bind to all addresses on both IPv4 and IPv6
+        host = None
+        self._http = web.TCPSite(self._web_apprunner, host=host, port=self.port)
         await self._http.start()
 
     async def stop(self) -> None:
@@ -319,14 +323,15 @@ class MusicAssistant:
                 # lookup class to initialize
                 if name == prov_manifest.init_class or (
                     not prov_manifest.init_class
-                    and issubclass(obj, MusicProvider)
+                    and issubclass(obj, (MusicProvider, PlayerProvider))
                     and obj != MusicProvider
+                    and obj != PlayerProvider
                 ):
                     prov_cls = obj
                     break
             else:
                 SetupFailedError("Unable to locate Provider class")
-            provider: MusicProvider = prov_cls(self, prov_manifest, conf)
+            provider: ProviderType = prov_cls(self, prov_manifest, conf)
             self._providers[provider.instance_id] = provider
             await provider.setup()
         # pylint: disable=broad-except

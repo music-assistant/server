@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
+
 import urllib.parse
 from typing import TYPE_CHECKING, AsyncGenerator
 from uuid import uuid4
@@ -12,30 +12,23 @@ from aiohttp import web
 
 from music_assistant.common.models.enums import (
     ContentType,
-    CrossFadeMode,
-    EventType,
-    MediaType,
     MetadataMode,
     StreamState,
 )
 from music_assistant.common.models.errors import (
-    MediaNotFoundError,
     PlayerUnavailableError,
-    QueueEmpty,
 )
-from music_assistant.common.models.event import MassEvent
+
 from music_assistant.common.models.media_items import StreamDetails
 from music_assistant.common.models.player import Player
-from music_assistant.common.models.player_queue import PlayerQueue
-from music_assistant.common.models.queue_item import QueueItem
+
+
 from music_assistant.constants import (
-    BASE_URL_OVERRIDE_ENVNAME,
     DEFAULT_PORT,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.audio import (
     check_audio_support,
-    crossfade_pcm_parts,
     get_chunksize,
     get_media_stream,
     get_preview_stream,
@@ -117,29 +110,26 @@ class StreamsController:
 
     async def serve_queue_item(self, request: web.Request) -> web.Response:
         """Stream a single queue item."""
-        mass: MusicAssistant = request.app["mass"]
         queue_id = request.match_info["queue_id"]
         queue_item_id = request.match_info["queue_item_id"]
         player_id = request.query.get("player_id", queue_id)
-        player = mass.players.get(player_id)
-        player_queue = mass.players.queues.get(queue_id)
+        player = self.mass.players.get(player_id)
+        player_queue = self.mass.players.queues.get(queue_id)
         if not player or not player_queue:
             raise web.HTTPNotFound(reason="player or queue not found")
 
-        # if player_queue.use_queue_stream:
-        #     # redirect request if player switched to queue streaming
-        #     return await stream_queue(request)
-
         LOGGER.debug("Stream request for %s", player.name)
 
-        queue_item = self.mass.players.queues.item_by_id(queue_id, queue_item_id)
+        queue_item = self.mass.players.queues.get_item(queue_id, queue_item_id)
         if not queue_item:
             raise web.HTTPNotFound(reason="invalid queue_item_id")
 
-        streamdetails = await get_stream_details(mass, queue_item, queue_id)
-        output_format_str = request.query.get("fmt", "flac")
-        # TODO: handle raw pcm types
+        streamdetails = await get_stream_details(self.mass, queue_item, queue_id)
+        output_format_str = request.query.get("fmt", "wav").lower()
         output_format = ContentType.try_parse(output_format_str)
+        if output_format_str == "wav":
+            output_format_str = f"x-wav;codec=pcm;rate={streamdetails.sample_rate};"
+            output_format_str += f"bitrate={streamdetails.bit_depth};channels={streamdetails.channels}"
 
         # prepare request
         resp = web.StreamResponse(
@@ -223,117 +213,6 @@ class StreamsController:
             output, _ = await ffmpeg_proc.communicate()
 
         return web.Response(body=output, headers={"Content-Type": f"audio/{fmt}"})
-
-    async def serve_queue_stream(self, request: web.Request):
-        """Serve queue audio stream to a player."""
-        LOGGER.debug(
-            "Got %s request to %s from %s\nheaders: %s\n",
-            request.method,
-            request.path,
-            request.remote,
-            request.headers,
-        )
-        fmt = request.match_info["fmt"]
-        queue_id = request.match_info["queue_id"]
-        queue_player = self.mass.players.get_player(queue_id)
-        if not queue_player:
-            raise PlayerUnavailableError(f"PlayerQueue {queue_id} is not available!")
-        queue = queue_player.queue
-
-        # player_id is optional and only used for multi-client streams
-        player_id = request.match_info.get("player_id", queue_id)
-        player = self.mass.players.get_player(player_id) or queue_player
-        output_format = ContentType.try_parse(fmt)
-
-        # handle situation where the player requests a stream but we did not initiate the request
-        if queue.stream.state in (StreamState.IDLE, StreamState.PENDING_STOP):
-            LOGGER.warning(
-                "Got unsollicited stream request for %s",
-                queue_id,
-            )
-            # issue resume request to player
-            await queue.resume(passive=True)
-        # handle scenario where the player (re)requests the stream while it is already running
-        elif queue.stream.state == StreamState.RUNNING:
-            LOGGER.warning(
-                "Got stream request for %s while already running, playback may be disturbed!",
-                queue_id,
-            )
-
-        # prepare request, add some DLNA/UPNP compatible headers
-        headers = {
-            "Content-Type": f"audio/{output_format.value}",
-            "transferMode.dlna.org": "Streaming",
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
-            "Cache-Control": "no-cache",
-        }
-
-        # Append ICY-metadata headers depending on player settings
-        metadata_mode = player.settings.metadata_mode
-        if metadata_mode == MetadataMode.LEGACY:
-            # in legacy mode, use the very small default chunk size of 8192 bytes
-            output_chunksize = ICY_CHUNKSIZE
-        else:
-            # otherwise calculate a sane default chunk size depending on the content
-            output_chunksize = get_chunksize(
-                output_format,
-                sample_rate=queue.stream.pcm_sample_rate,
-                bit_depth=queue.stream.pcm_bit_depth,
-                seconds=2,
-            )
-        if metadata_mode != MetadataMode.DISABLED:
-            headers["icy-name"] = "Music Assistant"
-            headers["icy-pub"] = "1"
-            headers["icy-metaint"] = str(output_chunksize)
-
-        # prepare request/headers
-        resp = web.StreamResponse(headers=headers)
-        await resp.prepare(request)
-
-        # do not start stream on HEAD request
-        if request.method != "GET":
-            return resp
-
-        # if the client sets the 'Icy-MetaData' header,
-        # it means it supports (and wants) ICY metadata
-        enable_icy = request.headers.get("Icy-MetaData", "") == "1"
-
-        # start of actual audio streaming logic
-
-        # regular streaming - each chunk is sent to the callback here
-        # this chunk is already encoded to the requested audio format of choice.
-        # optional ICY metadata can be sent to the client if it supports that
-        async def audio_callback(chunk: bytes) -> None:
-            """Call when a new audio chunk arrives."""
-            # write audio
-            await resp.write(chunk)
-
-            # ICY metadata support
-            if not enable_icy:
-                return
-
-            # if icy metadata is enabled, send the icy metadata after the chunk
-            item_in_buf = queue_stream.queue.get_item(queue_stream.index_in_buffer)
-            if item_in_buf and item_in_buf.name:
-                title = item_in_buf.name
-                if item_in_buf.image and not item_in_buf.image.is_file:
-                    image = item_in_buf.media_item.image.url
-                else:
-                    image = ""
-            else:
-                title = "Music Assistant"
-                image = ""
-            metadata = f"StreamTitle='{title}';StreamUrl='&picture={image}';".encode()
-            while len(metadata) % 16 != 0:
-                metadata += b"\x00"
-            length = len(metadata)
-            length_b = chr(int(length / 16)).encode()
-            await resp.write(length_b + metadata)
-
-        await queue_stream.subscribe(client_id, audio_callback)
-        await resp.write_eof()
-
-        return resp
 
     async def _get_player_stream(
         self,

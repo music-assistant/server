@@ -1,7 +1,6 @@
 """Logic to play music from MusicProviders to supported players."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, cast
 
@@ -34,17 +33,13 @@ class PlayerController:
         self.mass = mass
         self._players: dict[str, Player] = {}
         self._prev_states: dict[str, dict] = {}
-        self.queues = PlayerQueuesController()
+        self.queues = PlayerQueuesController(self)
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self.mass.create_task(self._poll_players())
 
     async def cleanup(self) -> None:
         """Cleanup on exit."""
-        for player_id in set(self._players.keys()):
-            player = self._players.pop(player_id)
-            player.on_remove()
 
     def __iter__(self):
         """Iterate over (available) players."""
@@ -276,21 +271,3 @@ class PlayerController:
                     return group_player.player_id
         # defaults to the player's own player id
         return player_id
-
-    async def _poll_players(self) -> None:
-        """Poll players every X interval."""
-        interval = 30
-        cur_tick = 0
-        while True:
-            for player in self.players:
-                if not player.available:
-                    continue
-                if cur_tick == interval:
-                    self.mass.loop.call_soon(player.update_state)
-                if player.queue.active and player.state == PlayerState.PLAYING:
-                    self.mass.loop.call_soon(player.queue.on_player_update)
-            if cur_tick == interval:
-                cur_tick = 0
-            else:
-                cur_tick += 1
-            await asyncio.sleep(1)

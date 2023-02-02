@@ -49,8 +49,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.mass = mass
-        # self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.media_type}")
-        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.")
+        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.media_type.value}")
         self._db_add_lock = asyncio.Lock()
 
     @abstractmethod
@@ -372,6 +371,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         ), "provider_domain or provider_instance must be supplied"
         if "database" in (provider_domain, provider_instance):
             return await self.get_db_items_by_query(limit=limit, offset=offset)
+
+        # safety guard, when table is empty, json_each calls will cause erors
+        # https://stackoverflow.com/questions/41309722/error-no-such-function-json-each-in-sqlite-with-json1-installed
+        # TODO: cache the count or adjust the query to prevent the additional count call
+        if await self.mass.music.database.get_count(self.db_table) == 0:
+            return []
 
         query = f"SELECT * FROM {self.db_table}, json_each(provider_mappings)"
         if provider_instance is not None:

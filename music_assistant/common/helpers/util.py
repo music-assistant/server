@@ -169,11 +169,16 @@ def is_port_in_use(port: int) -> bool:
             return True
 
 
-def select_stream_port() -> int:
-    """Automatically find available stream port, prefer the default 8095."""
-    for port in range(8095, 8195):
-        if not is_port_in_use(port):
-            return port
+async def select_free_port(range_start: int, range_end: int) -> int:
+    """Automatically find available port within range."""
+
+    def _select_free_port():
+        for port in range(range_start, range_end):
+            if not is_port_in_use(port):
+                return port
+        raise OSError("No free port available")
+
+    return await asyncio.get_running_loop().run_in_executor(None, _select_free_port)
 
 
 async def get_ip_from_host(dns_name: str) -> str:
