@@ -41,6 +41,9 @@ class CacheController:
         await self._setup_database()
         self.__schedule_cleanup_task()
 
+    async def close(self) -> None:
+        """Cleanup on exit."""
+
     async def get(self, cache_key: str, checksum: str | None = None, default=None):
         """
         Get object from cache and return the results.

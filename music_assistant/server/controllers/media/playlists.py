@@ -67,7 +67,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Create new playlist."""
         # if provider is omitted, just pick first provider
         if provider:
-            provider = self.mass.music.get_provider(provider)
+            provider = self.mass.get_provider(provider)
         else:
             provider = next(
                 (
@@ -156,7 +156,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 f"Track is not available on provider {playlist_prov.provider_domain}"
             )
         # actually add the tracks to the playlist on the provider
-        provider = self.mass.music.get_provider(playlist_prov.provider_instance)
+        provider = self.mass.get_provider(playlist_prov.provider_instance)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
         # invalidate cache by updating the checksum
         await self.get(db_playlist_id, provider_domain="database", force_refresh=True)
@@ -171,7 +171,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist.is_editable:
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for prov_mapping in playlist.provider_mappings:
-            provider = self.mass.music.get_provider(prov_mapping.provider_instance)
+            provider = self.mass.get_provider(prov_mapping.provider_instance)
             if (
                 MusicProviderFeature.PLAYLIST_TRACKS_EDIT
                 not in provider.supported_features
@@ -247,7 +247,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cache_checksum: Any = None,
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
-        provider = self.mass.music.get_provider(provider_instance or provider_domain)
+        provider = self.mass.get_provider(provider_instance or provider_domain)
         if not provider:
             return []
         # prefer cache items (if any)
@@ -277,7 +277,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the playlist content."""
-        provider = self.mass.music.get_provider(provider_instance or provider_domain)
+        provider = self.mass.get_provider(provider_instance or provider_domain)
         if (
             not provider
             or MusicProviderFeature.SIMILAR_TRACKS not in provider.supported_features

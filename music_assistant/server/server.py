@@ -123,12 +123,29 @@ class MusicAssistant:
     async def stop(self) -> None:
         """Stop running the music assistant server."""
         LOGGER.info("Stop called, cleaning up...")
-        await self.players.cleanup()
+        self.signal_event(EventType.SHUTDOWN)
+        self.closed = True
         # cancel all running tasks
         for task in self._tracked_tasks:
             task.cancel()
-        self.signal_event(EventType.SHUTDOWN)
-        self.closed = True
+        # stop/clean streams controller
+        await self.streams.close()
+        # stop/clean webserver
+        await self._http.stop()
+        await self._web_apprunner.cleanup()
+        await self.webapp.shutdown()
+        await self.webapp.cleanup()
+        # stop core controllers
+        await self.metadata.close()
+        await self.music.close()
+        await self.players.close()
+        # cleanup all providers
+        for prov in self._providers.values():
+            await prov.close()
+        # cleanup cache and config
+        await self.config.close()
+        await self.cache.close()
+        # close/cleanup shared http session
         if self.http_session:
             await self.http_session.close()
 

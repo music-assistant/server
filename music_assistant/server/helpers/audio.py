@@ -182,7 +182,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
 
         async def writer():
             """Task that grabs the source audio and feeds it to ffmpeg."""
-            music_prov = mass.music.get_provider(streamdetails.provider)
+            music_prov = mass.get_provider(streamdetails.provider)
             async for audio_chunk in music_prov.get_audio_stream(streamdetails):
                 await ffmpeg_proc.write(audio_chunk)
                 if (time() - started) > 300:
@@ -250,7 +250,7 @@ async def get_stream_details(
             if not prov_media.available:
                 continue
             # get streamdetails from provider
-            music_prov = mass.music.get_provider(prov_media.provider_instance)
+            music_prov = mass.get_provider(prov_media.provider_instance)
             if not music_prov:
                 continue  # provider not available ?
             try:
@@ -397,7 +397,7 @@ async def get_media_stream(
         async def writer():
             """Task that grabs the source audio and feeds it to ffmpeg."""
             LOGGER.debug("writer started for %s", streamdetails.uri)
-            music_prov = mass.music.get_provider(streamdetails.provider)
+            music_prov = mass.get_provider(streamdetails.provider)
             async for audio_chunk in music_prov.get_audio_stream(
                 streamdetails, seek_position
             ):
@@ -569,7 +569,7 @@ async def get_preview_stream(
     track_id: str,
 ) -> AsyncGenerator[bytes, None]:
     """Create a 30 seconds preview audioclip for the given streamdetails."""
-    music_prov = mass.music.get_provider(provider_mapping)
+    music_prov = mass.get_provider(provider_mapping)
 
     streamdetails = await music_prov.get_stream_details(track_id)
 
@@ -594,7 +594,7 @@ async def get_preview_stream(
 
         async def writer():
             """Task that grabs the source audio and feeds it to ffmpeg."""
-            music_prov = mass.music.get_provider(streamdetails.provider)
+            music_prov = mass.get_provider(streamdetails.provider)
             async for audio_chunk in music_prov.get_audio_stream(streamdetails, 30):
                 await ffmpeg_proc.write(audio_chunk)
             # write eof when last packet is received

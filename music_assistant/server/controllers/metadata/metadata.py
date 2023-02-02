@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
 
+
 class MetaDataController:
     """Several helpers to search and store metadata for mediaitems."""
 
@@ -40,6 +41,12 @@ class MetaDataController:
         self.musicbrainz = MusicBrainz(mass)
         self.audiodb = TheAudioDb(mass)
         self._pref_lang: str | None = None
+
+    async def setup(self):
+        """Async initialize of module."""
+
+    async def close(self) -> None:
+        """Handle logic on server stop."""
 
     @property
     def preferred_language(self) -> str:
@@ -59,9 +66,6 @@ class MetaDataController:
         """
         if self._pref_lang is None:
             self._pref_lang = lang.upper()
-
-    async def setup(self):
-        """Async initialize of module."""
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""

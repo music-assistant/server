@@ -165,7 +165,7 @@ class TracksController(MediaControllerBase[Track]):
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the track."""
-        prov = self.mass.music.get_provider(provider_instance or provider_domain)
+        prov = self.mass.get_provider(provider_instance or provider_domain)
         if (
             not prov
             or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features

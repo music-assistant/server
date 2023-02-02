@@ -55,6 +55,33 @@ class StreamsController:
         """Initialize instance."""
         self.mass = mass
 
+    async def setup(self) -> None:
+        """Async initialize of module."""
+
+        self.mass.webapp.router.add_get("/stream/preview", self.serve_preview)
+        self.mass.webapp.router.add_get(
+            "/stream/announce/{player_id}.{fmt}", self.serve_announcement
+        )
+        self.mass.webapp.router.add_get(
+            "/stream/{queue_id}/{queue_item_id}", self.serve_queue_item
+        )
+
+        ffmpeg_present, libsoxr_support = await check_audio_support(True)
+        if not ffmpeg_present:
+            LOGGER.error(
+                "FFmpeg binary not found on your system, playback will NOT work!."
+            )
+        elif not libsoxr_support:
+            LOGGER.warning(
+                "FFmpeg version found without libsoxr support, "
+                "highest quality audio not available. "
+            )
+
+        LOGGER.info("Started stream controller")
+
+    async def close(self) -> None:
+        """Cleanup on exit."""
+
     @property
     def base_url(self) -> str:
         """Return the base url for the stream engine."""
@@ -84,30 +111,6 @@ class StreamsController:
         enc_track_id = urllib.parse.quote(track_id)
         return f"{self.base_url}/preview?provider={provider}&item_id={enc_track_id}"
 
-    async def setup(self) -> None:
-        """Async initialize of module."""
-
-        self.mass.webapp.router.add_get("/stream/preview", self.serve_preview)
-        self.mass.webapp.router.add_get(
-            "/stream/announce/{player_id}.{fmt}", self.serve_announcement
-        )
-        self.mass.webapp.router.add_get(
-            "/stream/{queue_id}/{queue_item_id}", self.serve_queue_item
-        )
-
-        ffmpeg_present, libsoxr_support = await check_audio_support(True)
-        if not ffmpeg_present:
-            LOGGER.error(
-                "FFmpeg binary not found on your system, playback will NOT work!."
-            )
-        elif not libsoxr_support:
-            LOGGER.warning(
-                "FFmpeg version found without libsoxr support, "
-                "highest quality audio not available. "
-            )
-
-        LOGGER.info("Started stream controller")
-
     async def serve_queue_item(self, request: web.Request) -> web.Response:
         """Stream a single queue item."""
         queue_id = request.match_info["queue_id"]
@@ -129,7 +132,9 @@ class StreamsController:
         output_format = ContentType.try_parse(output_format_str)
         if output_format_str == "wav":
             output_format_str = f"x-wav;codec=pcm;rate={streamdetails.sample_rate};"
-            output_format_str += f"bitrate={streamdetails.bit_depth};channels={streamdetails.channels}"
+            output_format_str += (
+                f"bitrate={streamdetails.bit_depth};channels={streamdetails.channels}"
+            )
 
         # prepare request
         resp = web.StreamResponse(

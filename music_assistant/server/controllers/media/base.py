@@ -212,7 +212,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 )
             ]
 
-        prov = self.mass.music.get_provider(provider_instance or provider_domain)
+        prov = self.mass.get_provider(provider_instance or provider_domain)
         if not prov or MusicProviderFeature.SEARCH not in prov.supported_features:
             return []
         if not prov.library_supported(self.media_type):
@@ -258,7 +258,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return
         # mark as favorite/library item on provider(s)
         for prov_mapping in prov_item.provider_mappings:
-            if prov := self.mass.music.get_provider(prov_mapping.provider_instance):
+            if prov := self.mass.get_provider(prov_mapping.provider_instance):
                 if not prov.library_edit_supported(self.media_type):
                     continue
                 await prov.library_add(provider_instance.item_id, self.media_type)
@@ -288,7 +288,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return
         # unmark as favorite/library item on provider(s)
         for prov_mapping in prov_item.provider_mappings:
-            if prov := self.mass.music.get_provider(prov_mapping.provider_instance):
+            if prov := self.mass.get_provider(prov_mapping.provider_instance):
                 if not prov.library_edit_supported(self.media_type):
                     continue
                 await prov.library_remove(prov_mapping.item_id, self.media_type)
@@ -311,7 +311,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     "filesystem"
                 ):
                     continue
-                if self.mass.music.get_provider(prov_mapping.provider_instance):
+                if self.mass.get_provider(prov_mapping.provider_instance):
                     return (prov_mapping.provider_instance, prov_mapping.item_id)
         return None, None
 
@@ -410,7 +410,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if provider == "database":
             item = await self.get_db_item(item_id)
         else:
-            provider = self.mass.music.get_provider(provider)
+            provider = self.mass.get_provider(provider)
             item = await provider.get_item(self.media_type, item_id)
         if not item:
             raise MediaNotFoundError(
@@ -478,7 +478,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Return a dynamic list of tracks based on the given item."""
         ref_item = await self.get(item_id, provider_domain, provider_instance)
         for prov_mapping in ref_item.provider_mappings:
-            prov = self.mass.music.get_provider(prov_mapping.provider_instance)
+            prov = self.mass.get_provider(prov_mapping.provider_instance)
             if not prov.available:
                 continue
             if MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features:

@@ -10,6 +10,7 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
+    ProviderType,
 )
 from music_assistant.common.models.errors import AlreadyRegisteredError
 from music_assistant.common.models.player import Player
@@ -38,8 +39,13 @@ class PlayerController:
     async def setup(self) -> None:
         """Async initialize of module."""
 
-    async def cleanup(self) -> None:
+    async def close(self) -> None:
         """Cleanup on exit."""
+
+    @property
+    def providers(self) -> list[PlayerProvider]:
+        """Return all loaded/running MusicProviders (instances)."""
+        return self.mass.get_providers(ProviderType.MUSIC)
 
     def __iter__(self):
         """Iterate over (available) players."""

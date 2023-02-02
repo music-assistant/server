@@ -176,7 +176,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         cache_checksum: Any = None,
     ) -> list[Track]:
         """Return top tracks for an artist on given provider."""
-        prov = self.mass.music.get_provider(provider_instance or provider_domain)
+        prov = self.mass.get_provider(provider_instance or provider_domain)
         if not prov:
             return []
         # prefer cache items (if any)
@@ -214,7 +214,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         cache_checksum: Any = None,
     ) -> list[Album]:
         """Return albums for an artist on given provider."""
-        prov = self.mass.music.get_provider(provider_instance or provider_domain)
+        prov = self.mass.get_provider(provider_instance or provider_domain)
         if not prov:
             return []
         # prefer cache items (if any)
@@ -372,7 +372,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the artist's top tracks."""
-        prov = self.mass.music.get_provider(provider_instance or provider_domain)
+        prov = self.mass.get_provider(provider_instance or provider_domain)
         if (
             not prov
             or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features

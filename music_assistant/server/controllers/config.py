@@ -47,7 +47,7 @@ class ConfigController:
         self.initialized = True
         LOGGER.debug("Started.")
 
-    async def stop(self) -> None:
+    async def close(self) -> None:
         """Handle logic on server stop."""
         if not self._timer_handle:
             # no point in forcing a save when there are no changes pending

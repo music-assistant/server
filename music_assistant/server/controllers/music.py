@@ -74,14 +74,13 @@ class MusicController:
         # add task to cleanup old records from db
         self.mass.create_task(self._cleanup_library())
 
+    async def close(self) -> None:
+        """Cleanup on exit."""
+
     @property
     def providers(self) -> list[MusicProvider]:
         """Return all loaded/running MusicProviders (instances)."""
         return self.mass.get_providers(ProviderType.MUSIC)
-
-    def get_provider(self, provider_instance_or_domain: str) -> MusicProvider:
-        """Return Music provider by instance id (or domain)."""
-        return self.mass.get_provider(provider_instance_or_domain)
 
     @api_command("music/sync")
     async def start_sync(
@@ -152,7 +151,7 @@ class MusicController:
             :param limit: number of items to return in the search (per type).
         """
         assert provider_domain or provider_instance, "Provider needs to be supplied"
-        prov = self.get_provider(provider_instance or provider_domain)
+        prov = self.mass.get_provider(provider_instance or provider_domain)
         if MusicProviderFeature.SEARCH not in prov.supported_features:
             return []
 
@@ -202,7 +201,7 @@ class MusicController:
             )
         # provider level
         provider_instance = path.split("://", 1)[0]
-        prov = self.get_provider(provider_instance)
+        prov = self.mass.get_provider(provider_instance)
         return await prov.browse(path)
 
     async def get_item_by_uri(
@@ -233,7 +232,7 @@ class MusicController:
         ), "provider_domain or provider_instance must be supplied"
         if "url" in (provider_domain, provider_instance):
             # handle special case of 'URL' MusicProvider which allows us to play regular url's
-            return await self.get_provider("url").parse_item(item_id)
+            return await self.mass.get_provider("url").parse_item(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             provider_item_id=item_id,
