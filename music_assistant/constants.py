@@ -24,15 +24,20 @@ BASE_URL_OVERRIDE_ENVNAME = "MASS_BASE_URL"
 
 
 # config keys
-CONF_WEB_HOST = "webserver/host"
-CONF_WEB_PORT = "webserver/port"
-CONF_DB_LIBRARY = "database/library"
-CONF_DB_CACHE = "database/cache"
+CONF_WEB_HOST = "webserver./host"
+CONF_WEB_PORT = "webserver.port"
+CONF_DB_LIBRARY = "database.library"
+CONF_DB_CACHE = "database.cache"
 CONF_PROVIDERS = "providers"
+CONF_PLAYERS = "players"
 CONF_PATH = "path"
 CONF_OPTIONS = "options"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
+CONF_VOLUME_NORMALISATION = "volume_normalisation"
+CONF_VOLUME_NORMALISATION_TARGET = "volume_normalisation_target"
+CONF_CROSSFADE = "crossfade"
+CONF_MAX_SAMPLE_RATE = "max_sample_rate"
 
 # config default values
 DEFAULT_HOST = "0.0.0.0"

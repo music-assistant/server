@@ -9,10 +9,11 @@ from aioslimproto.client import SlimClient
 from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
 
-from music_assistant.common.helpers.util import select_free_port
 from music_assistant.common.models.enums import PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.server.models.player_provider import PlayerProvider
+
+# TODO: Implement display support
 
 
 class SlimprotoProvider(PlayerProvider):
@@ -157,6 +158,7 @@ class SlimprotoProvider(PlayerProvider):
         """
         if client := self._socket_clients.get(player_id):
             await client.power(powered)
+        # TODO: unsync client at poweroff if synced
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
@@ -175,3 +177,26 @@ class SlimprotoProvider(PlayerProvider):
         """
         if client := self._socket_clients.get(player_id):
             await client.mute(muted)
+
+    async def cmd_sync(self, player_id: str, target_player: str) -> None:
+        """
+        Handle SYNC command for given player.
+
+        Join/add the given player(id) to the given (master) player/sync group.
+
+            - player_id: player_id of the player to handle the command.
+            - target_player: player_id of the syncgroup master or group player.
+        """
+        # will only be called for players with SYNC feature set.
+        raise NotImplementedError()
+
+    async def cmd_unsync(self, player_id: str) -> None:
+        """
+        Handle UNSYNC command for given player.
+
+        Remove the given player from any syncgroups it currently is synced to.
+
+            - player_id: player_id of the player to handle the command.
+        """
+        # will only be called for players with SYNC feature set.
+        raise NotImplementedError()

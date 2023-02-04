@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Iterator
 
 from music_assistant.common.helpers.util import get_changed_keys
 from music_assistant.common.models.enums import (
+    ContentType,
     EventType,
     MediaType,
     PlayerState,
@@ -60,122 +61,6 @@ class PlayerQueuesController:
     def items(self, queue_id: str) -> list[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
         return self._queue_items.get(queue_id, [])
-
-    async def on_player_register(self, player_id: str) -> None:
-        """Register PlayerQueue for given player/queue id."""
-
-        # try to restore previous state
-        if prev_state := await self.mass.cache.get(f"queue.state.{player_id}"):
-            queue = PlayerQueue.from_dict(prev_state)
-            prev_items = await self.mass.cache.get(
-                f"queue.items.{player_id}", default=[]
-            )
-            queue_items = [QueueItem.from_dict(x) for x in prev_items]
-        else:
-            queue = PlayerQueue(
-                queue_id=player_id,
-                active=False,
-                shuffle_enabled=False,
-            )
-            queue_items = []
-
-        self._queues[player_id] = queue
-        self._queue_items[player_id] = queue_items
-        # always call update to calculate state etc
-        self.on_player_update(player_id)
-
-    def on_player_update(self, player_id: str) -> None:
-        """Call when a PlayerQueue needs to be updated (e.g. when player updates)."""
-        if player_id not in self._queues:
-            self.mass.create_task(self.on_player_register(player_id))
-            return
-
-        player = self.players.get(player_id)
-        queue_id = player_id
-        queue = self._queues[queue_id]
-        # queue is active when underlying player has the queue_id loaded as stream url
-        queue.active = f"/{queue_id}/" in player.current_url
-
-        if queue.active:
-            queue.state = player.state
-            queue.elapsed_time = player.corrected_elapsed_time
-            queue.elapsed_time_last_updated = time.time()
-            queue.current_item = self.get_item(queue_id, queue.current_index)
-            next_index = self.get_next_index(queue_id, queue.current_index)
-            queue.next_item = self.get_item(queue_id, next_index)
-        else:
-            queue.state = PlayerState.IDLE
-            queue.current_item = None
-            queue.next_item = None
-
-        # basic throttle: do not send state changed events if queue did not actually change
-        prev_state = self._prev_states.get(queue_id, {})
-        new_state = self._queues[queue_id].to_dict()
-        changed_keys = get_changed_keys(prev_state, new_state)
-
-        if len(changed_keys) == 0:
-            return
-
-        if "elapsed_time" in changed_keys:
-            self.mass.signal_event(
-                EventType.QUEUE_TIME_UPDATED, object_id=queue_id, data=queue
-            )
-        elif changed_keys != {"elapsed_time"}:
-            self.mass.signal_event(
-                EventType.QUEUE_UPDATED, object_id=self.player_id, data=self
-            )
-        # watch dynamic radio items refill if needed
-        if "current_index" in changed_keys:
-            fill_index = len(self._queue_items[queue_id]) - 5
-            if queue.radio_source and (queue.current_index >= fill_index):
-                self.mass.create_task(self._fill_radio_tracks(queue_id))
-
-    def on_player_remove(self, player_id: str) -> None:
-        """Call when a player is removed from the registry."""
-        self.mass.create_task(self.mass.cache.delete(f"queue.state.{player_id}"))
-        self.mass.create_task(self.mass.cache.delete(f"queue.items.{player_id}"))
-        self._queues.pop(player_id, None)
-        self._queue_items.pop(player_id, None)
-
-    def load(
-        self,
-        queue_id: str,
-        queue_items: list[QueueItem],
-        insert_at_index: int = 0,
-        keep_remaining: bool = True,
-        shuffle: bool = False,
-    ) -> None:
-        """
-        Load new items at index.
-
-        - queue_id: id of the queue to process this request.
-        - queue_items: a list of QueueItems
-        - insert_at_index: insert the item(s) at this index
-        - keep_remaining: keep the remaining items after the insert
-        - shuffle: (re)shuffle the items after insert index
-        """
-        queue_items = self._queue_items[queue_id]
-
-        # keep previous/played items, append the new ones
-        prev_items = queue_items[:insert_at_index]
-        next_items: list[QueueItem] = []
-
-        # if keep_remaining, append the old previous items
-        if keep_remaining:
-            next_items += queue_items[insert_at_index:]
-
-        # we set the original insert order as attribute so we can un-shuffle
-        for index, item in enumerate(next_items):
-            item.sort_index += insert_at_index + index
-        # (re)shuffle the final batch if needed
-        if shuffle:
-            next_items = random.sample(next_items, len(next_items))
-        self.update_items(queue_id, prev_items + next_items)
-
-    def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
-        """Update the existing queue items, mostly caused by reordering."""
-        self._queue_items[queue_id] = queue_items
-        self.signal_update(queue_id, True)
 
     # Queue commands
 
@@ -250,7 +135,7 @@ class PlayerQueuesController:
 
         # only add valid/available items
         queue_items = [
-            QueueItem.from_media_item(x) for x in tracks if x and x.available
+            QueueItem.from_media_item(queue_id, x) for x in tracks if x and x.available
         ]
 
         # load the items into the queue
@@ -448,7 +333,7 @@ class PlayerQueuesController:
         Handle SEEK command for given queue.
 
             - queue_id: queue_id of the queue to handle the command.
-            - position: position in seconds to seek to in the track.
+            - position: position in seconds to seek to in the current playing item.
         """
         queue = self._queues[queue_id]
         assert queue.current_item, "No item loaded"
@@ -521,6 +406,143 @@ class PlayerQueuesController:
         # execute the play command on the player(s)
         player_prov = self.mass.players.get_player_provider(queue_id)
         await player_prov.cmd_play_url(queue_id, stream_url)
+
+    # Interaction with player
+
+    async def on_player_register(self, player_id: str) -> None:
+        """Register PlayerQueue for given player/queue id."""
+
+        # try to restore previous state
+        if prev_state := await self.mass.cache.get(f"queue.state.{player_id}"):
+            queue = PlayerQueue.from_dict(prev_state)
+            prev_items = await self.mass.cache.get(
+                f"queue.items.{player_id}", default=[]
+            )
+            queue_items = [QueueItem.from_dict(x) for x in prev_items]
+        else:
+            queue = PlayerQueue(
+                queue_id=player_id,
+                active=False,
+                shuffle_enabled=False,
+            )
+            queue_items = []
+
+        self._queues[player_id] = queue
+        self._queue_items[player_id] = queue_items
+        # always call update to calculate state etc
+        self.on_player_update(player_id)
+
+    def on_player_update(self, player_id: str) -> None:
+        """Call when a PlayerQueue needs to be updated (e.g. when player updates)."""
+        if player_id not in self._queues:
+            self.mass.create_task(self.on_player_register(player_id))
+            return
+
+        player = self.players.get(player_id)
+        queue_id = player_id
+        queue = self._queues[queue_id]
+        # queue is active when underlying player has the queue_id loaded as stream url
+        queue.active = f"/{queue_id}/" in player.current_url
+
+        if queue.active:
+            queue.state = player.state
+            queue.elapsed_time = player.corrected_elapsed_time
+            queue.elapsed_time_last_updated = time.time()
+            queue.current_item = self.get_item(queue_id, queue.current_index)
+            next_index = self.get_next_index(queue_id, queue.current_index)
+            queue.next_item = self.get_item(queue_id, next_index)
+        else:
+            queue.state = PlayerState.IDLE
+            queue.current_item = None
+            queue.next_item = None
+
+        # basic throttle: do not send state changed events if queue did not actually change
+        prev_state = self._prev_states.get(queue_id, {})
+        new_state = self._queues[queue_id].to_dict()
+        changed_keys = get_changed_keys(prev_state, new_state)
+
+        if len(changed_keys) == 0:
+            return
+
+        if "elapsed_time" in changed_keys:
+            self.mass.signal_event(
+                EventType.QUEUE_TIME_UPDATED, object_id=queue_id, data=queue
+            )
+        elif changed_keys != {"elapsed_time"}:
+            self.mass.signal_event(
+                EventType.QUEUE_UPDATED, object_id=self.player_id, data=self
+            )
+        # watch dynamic radio items refill if needed
+        if "current_index" in changed_keys:
+            fill_index = len(self._queue_items[queue_id]) - 5
+            if queue.radio_source and (queue.current_index >= fill_index):
+                self.mass.create_task(self._fill_radio_tracks(queue_id))
+
+    def on_player_remove(self, player_id: str) -> None:
+        """Call when a player is removed from the registry."""
+        self.mass.create_task(self.mass.cache.delete(f"queue.state.{player_id}"))
+        self.mass.create_task(self.mass.cache.delete(f"queue.items.{player_id}"))
+        self._queues.pop(player_id, None)
+        self._queue_items.pop(player_id, None)
+
+    async def resolve_stream(
+        self,
+        queue_item: QueueItem,
+        player_id: str,
+        content_type: ContentType = ContentType.WAV,
+    ) -> str:
+        """
+        Resolve the stream URL for the given QueueItem.
+
+        This is called just-in-time by the player implementation to get the URL to the audio.
+        - queue_item: the QueueItem that is about to be played (or buffered).
+        - player_id: the player_id of the player that will play the stream.
+          In case of a multi subscriber stream (e.g. sync/groups),
+          call resolve for every child player.
+        - content_type: Encode the stream in the given format.
+        """
+
+    # Main queue manipulation methods
+
+    def load(
+        self,
+        queue_id: str,
+        queue_items: list[QueueItem],
+        insert_at_index: int = 0,
+        keep_remaining: bool = True,
+        shuffle: bool = False,
+    ) -> None:
+        """
+        Load new items at index.
+
+        - queue_id: id of the queue to process this request.
+        - queue_items: a list of QueueItems
+        - insert_at_index: insert the item(s) at this index
+        - keep_remaining: keep the remaining items after the insert
+        - shuffle: (re)shuffle the items after insert index
+        """
+        queue_items = self._queue_items[queue_id]
+
+        # keep previous/played items, append the new ones
+        prev_items = queue_items[:insert_at_index]
+        next_items: list[QueueItem] = []
+
+        # if keep_remaining, append the old previous items
+        if keep_remaining:
+            next_items += queue_items[insert_at_index:]
+
+        # we set the original insert order as attribute so we can un-shuffle
+        for index, item in enumerate(next_items):
+            item.sort_index += insert_at_index + index
+        # (re)shuffle the final batch if needed
+        if shuffle:
+            next_items = random.sample(next_items, len(next_items))
+        self.update_items(queue_id, prev_items + next_items)
+
+    def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
+        """Update the existing queue items, mostly caused by reordering."""
+        self._queue_items[queue_id] = queue_items
+        self.signal_update(queue_id, True)
 
     # Helper methods
 
@@ -609,7 +631,9 @@ class PlayerQueuesController:
             if len(tracks) >= 50:
                 break
         # fill queue - filter out unavailable items
-        queue_items = [QueueItem.from_media_item(x) for x in tracks if x.available]
+        queue_items = [
+            QueueItem.from_media_item(queue_id, x) for x in tracks if x.available
+        ]
         await self.load(
             queue_id,
             queue_items,

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from music_assistant.common.models.enums import PlayerState
 
 from music_assistant.common.models.player import Player
+from music_assistant.common.models.queue_item import QueueItem
 
 from .provider import Provider
 
@@ -33,16 +35,21 @@ class PlayerProvider(Provider):
     @abstractmethod
     async def cmd_play(self, player_id: str) -> None:
         """
-        Send PLAY command to given player.
+        Send PLAY (unpause) command to given player.
             - player_id: player_id of the player to handle the command.
         """
 
     @abstractmethod
-    async def cmd_play_url(self, player_id: str, url: str) -> None:
+    async def cmd_play_media(self, player_id: str, media: QueueItem) -> None:
         """
         Send PLAY MEDIA command to given player.
+
+        This is called when the Queue wants the player to start playing a specific QueueItem.
+        The player implementation can decide how to process the request, such as playing
+        queue items one-by-one or enqueue all/some items.
+
             - player_id: player_id of the player to handle the command.
-            - url: the url to start playing on the player.
+            - media: the QueueItem to start playing on the player.
         """
 
     @abstractmethod
@@ -78,3 +85,50 @@ class PlayerProvider(Provider):
         """
         # will only be called for players with Mute feature set.
         raise NotImplementedError()
+
+    async def cmd_seek(self, player_id: str, position: int) -> None:
+        """
+        Handle SEEK command for given queue.
+
+            - player_id: player_id of the player to handle the command.
+            - position: position in seconds to seek to in the current playing item.
+        """
+        # will only be called for players with Seek feature set.
+        raise NotImplementedError()
+
+    async def cmd_sync(self, player_id: str, target_player: str) -> None:
+        """
+        Handle SYNC command for given player.
+
+        Join/add the given player(id) to the given (master) player/sync group.
+
+            - player_id: player_id of the player to handle the command.
+            - target_player: player_id of the syncgroup master or group player.
+        """
+        # will only be called for players with SYNC feature set.
+        raise NotImplementedError()
+
+    async def cmd_unsync(self, player_id: str) -> None:
+        """
+        Handle UNSYNC command for given player.
+
+        Remove the given player from any syncgroups it currently is synced to.
+
+            - player_id: player_id of the player to handle the command.
+        """
+        # will only be called for players with SYNC feature set.
+        raise NotImplementedError()
+
+    async def cmd_set_members(self, player_id: str, members: list[str]) -> None:
+        """
+        Handle SET_MEMBERS command for given playergroup.
+
+        Update the memberlist of the given PlayerGroup.
+
+            - player_id: player_id of the groupplayer to handle the command.
+            - members: list of player ids to set as members.
+        """
+        # will only be called for players of type GROUP with SET_MEMBERS feature set.
+        raise NotImplementedError()
+
+    

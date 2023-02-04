@@ -260,6 +260,9 @@ class PlayerFeature(StrEnum):
     mute: The player supports muting the volume.
     sync: The player supports syncing with other players (of the same platform).
     accurate_time: The player provides millisecond accurate timing information.
+    seek: The player supports seeking to a specific.
+    set_members: The PlayerGroup supports adding/removing members.
+    queue: The player supports (en)queuing of media items.
     """
 
     POWER = "power"
@@ -267,6 +270,9 @@ class PlayerFeature(StrEnum):
     VOLUME_MUTE = "volume_mute"
     SYNC = "sync"
     ACCURATE_TIME = "accurate_time"
+    SEEK = "seek"
+    SET_MEMBERS = "set_members"
+    QUEUE = "queue"
 
 
 class EventType(StrEnum):
@@ -289,6 +295,7 @@ class EventType(StrEnum):
     MEDIA_ITEM_DELETED = "media_item_deleted"
     PROVIDER_CONFIG_UPDATED = "provider_config_updated"
     PROVIDER_CONFIG_CREATED = "provider_config_created"
+    PLAYER_CONFIG_UPDATED = "player_config_updated"
 
 
 class MusicProviderFeature(StrEnum):
@@ -341,6 +348,7 @@ class StreamState(StrEnum):
     idle: There is no stream requested or in progress.
     """
 
+    INITIALIZING = "initializing"
     PENDING_START = "pending_start"
     PENDING_STOP = "pending_stop"
     PENDING_NEXT = "pending_next"

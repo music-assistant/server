@@ -14,3 +14,4 @@ xmltodict==0.13.0
 ytmusicapi==0.25.0
 pytube==12.1.2
 orjson==3.8.3
+shortuuid==1.0.11

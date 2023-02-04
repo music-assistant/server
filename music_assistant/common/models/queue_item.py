@@ -15,9 +15,11 @@ from .media_items import ItemMapping, MediaItemImage, Radio, StreamDetails, Trac
 class QueueItem(DataClassDictMixin):
     """Representation of a queue item."""
 
-    name: str = ""
-    duration: int | None = None
-    item_id: str = ""
+    queue_id: str
+    queue_item_id: str
+
+    name: str
+    duration: int | None
     sort_index: int = 0
     streamdetails: StreamDetails | None = None
     media_item: Track | Radio | None = None
@@ -25,8 +27,6 @@ class QueueItem(DataClassDictMixin):
 
     def __post_init__(self):
         """Set default values."""
-        if not self.item_id:
-            self.item_id = str(uuid4())
         if self.streamdetails and self.streamdetails.stream_title:
             self.name = self.streamdetails.stream_title
         if not self.name:
@@ -43,7 +43,7 @@ class QueueItem(DataClassDictMixin):
         """Return uri for this QueueItem (for logging purposes)."""
         if self.media_item:
             return self.media_item.uri
-        return self.item_id
+        return self.queue_item_id
 
     @property
     def media_type(self) -> MediaType:
@@ -53,7 +53,7 @@ class QueueItem(DataClassDictMixin):
         return MediaType.UNKNOWN
 
     @classmethod
-    def from_media_item(cls, media_item: Track | Radio):
+    def from_media_item(cls, queue_id: str, media_item: Track | Radio):
         """Construct QueueItem from track/radio item."""
         if media_item.media_type == MediaType.TRACK:
             artists = "/".join((x.name for x in media_item.artists))
@@ -66,6 +66,8 @@ class QueueItem(DataClassDictMixin):
         else:
             name = media_item.name
         return cls(
+            queue_id=queue_id,
+            queue_item_id=uuid4().hex,
             name=name,
             duration=media_item.duration,
             media_item=media_item,

@@ -107,13 +107,14 @@ async def crossfade_pcm_parts(
 
 async def strip_silence(
     audio_data: bytes,
-    fmt: ContentType,
     sample_rate: int,
+    bit_depth: int,
     channels: int = 2,
     reverse=False,
 ) -> bytes:
     """Strip silence from (a chunk of) pcm audio."""
     # input args
+    fmt = ContentType.from_bit_depth(bit_depth)
     args = ["ffmpeg", "-hide_banner", "-loglevel", "quiet"]
     args += [
         "-acodec",
@@ -222,19 +223,16 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
             )
 
 
-async def get_stream_details(
-    mass: MusicAssistant, queue_item: "QueueItem", queue_id: str = ""
-) -> StreamDetails:
+async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> StreamDetails:
     """
     Get streamdetails for the given QueueItem.
 
     This is called just-in-time when a PlayerQueue wants a MediaItem to be played.
     Do not try to request streamdetails in advance as this is expiring data.
-        param media_item: The MediaItem (track/radio) for which to request the streamdetails for.
-        param queue_id: Optionally provide the queue_id which will play this stream.
+        param media_item: The QueueItem for which to request the streamdetails for.
     """
     streamdetails = None
-    if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 60)):
+    if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 360)):
         # we already have fresh streamdetails, use these
         queue_item.streamdetails.seconds_skipped = None
         queue_item.streamdetails.seconds_streamed = None
@@ -267,7 +265,7 @@ async def get_stream_details(
         raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
 
     # set queue_id on the streamdetails so we know what is being streamed
-    streamdetails.queue_id = queue_id
+    streamdetails.queue_id = queue_item.queue_id
     # get gain correct / replaygain
     if streamdetails.gain_correct is None:
         loudness, gain_correct = await get_gain_correct(mass, streamdetails)
@@ -373,19 +371,29 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
 async def get_media_stream(
     mass: MusicAssistant,
     streamdetails: StreamDetails,
-    pcm_fmt: ContentType,
-    sample_rate: int,
-    channels: int = 2,
     seek_position: int = 0,
-    chunk_size: int = 64000,
+    fade_in: bool = False,
 ) -> AsyncGenerator[bytes, None]:
-    """Get the PCM audio stream for the given streamdetails."""
-    assert pcm_fmt.is_pcm(), "Output format must be a PCM type"
+    """
+    Get the (PCM) audio stream for the given streamdetails.
+
+    Other than stripping silence at end and beginning this is the pure,
+    unaltered audio data as PCM chunks.
+    """
+    bytes_sent = 0
+    sample_rate = streamdetails.sample_rate
+    bit_depth = streamdetails.bit_depth
+    channels = streamdetails.channels
+    # chunk size = 2 seconds of pcm audio
+    pcm_sample_size = int(sample_rate * (bit_depth / 8) * channels)
+    chunk_size = pcm_sample_size * 2
+    expected_chunks = int((streamdetails.duration or 0) / 2)
+    # collect all arguments for ffmpeg
     args = await _get_ffmpeg_args(
-        streamdetails,
-        pcm_fmt,
-        pcm_sample_rate=sample_rate,
-        pcm_channels=channels,
+        streamdetails=streamdetails,
+        sample_rate=sample_rate,
+        bit_depth=bit_depth,
+        channels=channels,
         seek_position=seek_position,
     )
     async with AsyncProcess(
@@ -409,10 +417,55 @@ async def get_media_stream(
         if streamdetails.direct is None:
             ffmpeg_proc.attach_task(writer())
 
-        # yield chunks from stdout
+        # get pcm chunks from stdout
+        # we always stay one chunk behind to properly detect end of chunks
+        # so we can strip silence at the beginning and end of a track
+        prev_chunk = b""
+        chunk_num = 0
         try:
             async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
-                yield chunk
+                chunk_num += 1
+                if seek_position == 0 and chunk_num == 2:
+                    # first 2 chunks received, strip silence of beginning
+                    stripped_audio = await strip_silence(
+                        prev_chunk + chunk,
+                        sample_rate=sample_rate,
+                        bit_depth=bit_depth,
+                        channels=channels,
+                    )
+                    yield stripped_audio
+                    bytes_sent += len(stripped_audio)
+                    prev_chunk = b""
+                    del stripped_audio
+                    continue
+                if expected_chunks > 60 and chunk_num >= (expected_chunks - 6):
+                    # last part of the track, collect chunks to strip silence later
+                    prev_chunk += chunk
+                    continue
+
+                # middle part of the track, send previous chunk and collect current chunk
+                if prev_chunk:
+                    yield prev_chunk
+                    bytes_sent += len(prev_chunk)
+
+                prev_chunk = chunk
+
+            # all chunks received, strip silence of last part
+            stripped_audio = await strip_silence(
+                prev_chunk,
+                sample_rate=sample_rate,
+                bit_depth=bit_depth,
+                channels=channels,
+                reverse=True,
+            )
+            yield stripped_audio
+            bytes_sent += len(stripped_audio)
+            del stripped_audio
+            del prev_chunk
+
+            # update duration details based on the actual pcm data we sent
+            streamdetails.seconds_skipped = seek_position
+            streamdetails.seconds_streamed = bytes_sent / pcm_sample_size
 
         except (asyncio.CancelledError, GeneratorExit) as err:
             LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
@@ -672,14 +725,14 @@ def get_chunksize(
 
 async def _get_ffmpeg_args(
     streamdetails: StreamDetails,
-    pcm_output_format: ContentType,
-    pcm_sample_rate: int,
-    pcm_channels: int = 2,
+    sample_rate: int,
+    bit_depth: int,
+    channels: int = 2,
     seek_position: int = 0,
+    fade_in: bool = False,
 ) -> List[str]:
     """Collect all args to send to the ffmpeg process."""
     input_format = streamdetails.content_type
-    assert pcm_output_format.is_pcm(), "Output format needs to be PCM"
 
     ffmpeg_present, libsoxr_support = await check_audio_support()
 
@@ -721,6 +774,7 @@ async def _get_ffmpeg_args(
             input_args += ["-f", input_format]
         input_args += ["-i", "-"]
 
+    pcm_output_format = ContentType.from_bit_depth(bit_depth)
     # collect output args
     output_args = [
         "-acodec",
@@ -728,9 +782,9 @@ async def _get_ffmpeg_args(
         "-f",
         pcm_output_format,
         "-ac",
-        str(pcm_channels),
+        str(channels),
         "-ar",
-        str(pcm_sample_rate),
+        str(sample_rate),
         "-",
     ]
     # collect extra and filter args
@@ -739,12 +793,14 @@ async def _get_ffmpeg_args(
     if streamdetails.gain_correct is not None:
         filter_params.append(f"volume={streamdetails.gain_correct}dB")
     if (
-        streamdetails.sample_rate != pcm_sample_rate
+        streamdetails.sample_rate != sample_rate
         and libsoxr_support
         and streamdetails.media_type == MediaType.TRACK
     ):
         # prefer libsoxr high quality resampler (if present) for sample rate conversions
         filter_params.append("aresample=resampler=soxr")
+    if fade_in:
+        filter_params.append("afade=type=in:start_time=0:duration=3")
     if filter_params:
         extra_args += ["-af", ",".join(filter_params)]
 

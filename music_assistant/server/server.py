@@ -10,26 +10,24 @@ from types import TracebackType
 from typing import Any, Callable, Coroutine, Type
 
 from aiohttp import ClientSession, TCPConnector, web
-from music_assistant.common.helpers.util import select_free_port
 
-from music_assistant.common.models.provider_manifest import ProviderManifest
+from music_assistant.common.helpers.util import select_free_port
+from music_assistant.common.models.config_entries import (
+    ProviderConfig,
+)
 from music_assistant.common.models.enums import EventType
 from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     SetupFailedError,
 )
 from music_assistant.common.models.event import MassEvent
+from music_assistant.common.models.provider_manifest import ProviderManifest
 from music_assistant.constants import (
     CONF_WEB_HOST,
     CONF_WEB_PORT,
     DEFAULT_HOST,
     DEFAULT_PORT,
     ROOT_LOGGER_NAME,
-)
-from music_assistant.common.models.config_entries import (
-    CONF_KEY_ENABLED,
-    CONFIG_ENTRY_ENABLED,
-    ProviderConfig,
 )
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
@@ -280,7 +278,7 @@ class MusicAssistant:
         """Load providers from config."""
         # load all available providers from manifest files
         await self.__load_available_providers()
-        # load all configured providers
+        # load all configured (and enabled) providers
         for prov_conf in self.config.get_provider_configs():
             await self._load_provider(prov_conf)
         # check for any 'load_by_default' providers (e.g. URL provider)
@@ -317,6 +315,14 @@ class MusicAssistant:
             # provider is already loaded, stop and unload it first
             await provider.close()
             self._providers.pop(conf.instance_id)
+
+        # abort if provider is disabled
+        if not conf.enabled:
+            LOGGER.debug(
+                "Not loading provider %s because it is disabled",
+                conf.title or conf.instance_id,
+            )
+            return
 
         domain = conf.domain
         prov_manifest = self._available_providers.get(domain)
@@ -379,13 +385,6 @@ class MusicAssistant:
                     continue
                 try:
                     provider_manifest = await ProviderManifest.parse(file_path)
-                    # inject config entry to enable/disable the provider
-                    conf_keys = (x.key for x in provider_manifest.config_entries)
-                    if CONF_KEY_ENABLED not in conf_keys:
-                        provider_manifest.config_entries = [
-                            CONFIG_ENTRY_ENABLED,
-                            *provider_manifest.config_entries,
-                        ]
                     self._available_providers[
                         provider_manifest.domain
                     ] = provider_manifest

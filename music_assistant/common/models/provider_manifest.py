@@ -6,7 +6,7 @@ from mashumaro import DataClassDictMixin
 
 from music_assistant.common.helpers.json import load_json_file
 
-from .config_entries import CONFIG_ENTRY_ENABLED, ConfigEntry
+from .config_entries import ConfigEntry
 from .enums import ProviderType
 
 

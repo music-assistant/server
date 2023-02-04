@@ -12,7 +12,12 @@ from music_assistant.common.models.enums import (
     PlayerType,
     ProviderType,
 )
-from music_assistant.common.models.errors import AlreadyRegisteredError
+from music_assistant.common.models.errors import (
+    AlreadyRegisteredError,
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+    UnsupportedFeaturedException,
+)
 from music_assistant.common.models.player import Player
 from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
@@ -24,6 +29,8 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
+
+# TODO: Implement volume fade effect (https://github.com/Logitech/slimserver/blob/public/8.4/Slim/Player/Player.pm#L373)
 
 
 class PlayerController:
@@ -57,9 +64,19 @@ class PlayerController:
         return tuple(self._players.values())
 
     @api_command("players/get")
-    def get(self, player_id: str) -> Player | None:
+    def get(
+        self,
+        player_id: str,
+        raise_not_found: bool = False,
+        raise_unavailable: bool = False,
+    ) -> Player | None:
         """Return Player by player_id or None if not found."""
-        return self._players.get(player_id)
+        player = self._players.get(player_id)
+        if player is None and raise_not_found:
+            raise PlayerUnavailableError(f"Player {player_id} does not exist")
+        if player and not player.available and raise_unavailable:
+            raise PlayerUnavailableError(f"Player {player_id} is not available")
+        return player
 
     @api_command("players/get_by_name")
     def get_by_name(self, name: str) -> Player | None:
@@ -119,7 +136,7 @@ class PlayerController:
             return
         player = self._players[player_id]
         # calculate active_queue
-        player.active_queue = self._get_active_queue(player_id)
+        player.active_queue = self._get_active_queue(player)
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
         new_state = self._players[player_id].to_dict()
@@ -140,8 +157,8 @@ class PlayerController:
         if skip_forward:
             return
         if player.type == PlayerType.GROUP:
-            # update group player members when parent updates
-            for child_player_id in player.group_members:
+            # update group player childs when parent updates
+            for child_player_id in player.group_childs:
                 if child_player_id == player_id:
                     continue
                 self.update(child_player_id, skip_forward=True)
@@ -191,7 +208,7 @@ class PlayerController:
         Toggle play/pause on given player.
             - player_id: player_id of the player to handle the command.
         """
-        player = self._players[player_id]
+        player = self.get(player_id, True, True)
         if player.state == PlayerState.PLAYING:
             await self.cmd_pause(player_id)
         else:
@@ -206,7 +223,7 @@ class PlayerController:
         """
 
         # TODO: Implement PlayerControl
-        player = self._players[player_id]
+        player = self.get(player_id, True, True)
         # stop player at power off
         if not powered and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             await self.cmd_stop(player_id)
@@ -229,7 +246,7 @@ class PlayerController:
             - volume_level: volume level (0..100) to set on the player.
         """
         # TODO: Implement PlayerControl
-        player = self._players[player_id]
+        player = self.get(player_id, True, True)
         if PlayerFeature.VOLUME_SET not in player.supported_features:
             LOGGER.warning(
                 "Volume set command called but player %s does not support volume",
@@ -248,7 +265,7 @@ class PlayerController:
             - player_id: player_id of the player to handle the command.
             - muted: bool if player should be muted.
         """
-        player = self._players[player_id]
+        player = self.get(player_id, True, True)
         if PlayerFeature.VOLUME_MUTE not in player.supported_features:
             LOGGER.warning(
                 "Mute command called but player %s does not support muting", player_id
@@ -260,13 +277,110 @@ class PlayerController:
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_volume_mute(player_id, muted)
 
+    @api_command("players/cmd/sync")
+    async def cmd_sync(self, player_id: str, target_player: str) -> None:
+        """
+        Handle SYNC command for given player.
+
+        Join/add the given player(id) to the given (master) player/sync group.
+        If the player is already synced to another player, it will be unsynced there first.
+        If the target player itself is already synced to another player, this will fail.
+        If the player can not be synced with the given target player, this will fail.
+
+            - player_id: player_id of the player to handle the command.
+            - target_player: player_id of the syncgroup master or group player.
+        """
+        child_player = self.get(player_id, True, True)
+        master_player = self.get(target_player, True, True)
+        if PlayerFeature.SYNC not in child_player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {child_player.name} does not support (unsync) commands"
+            )
+        if PlayerFeature.SYNC not in master_player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {master_player.name} does not support (unsync) commands"
+            )
+        if master_player.synced_to is not None:
+            raise PlayerCommandFailed(
+                f"Player {target_player} is already synced to another player."
+            )
+        if player_id not in master_player.can_sync_with:
+            raise PlayerCommandFailed(
+                f"Player {player_id} can not be synced to {target_player}."
+            )
+        # all checks passed, forward command to the player provider
+        player_provider = self.get_player_provider(player_id)
+        await player_provider.cmd_sync(player_id, target_player)
+
+    @api_command("players/cmd/unsync")
+    async def cmd_unsync(self, player_id: str) -> None:
+        """
+        Handle UNSYNC command for given player.
+
+        Remove the given player from any syncgroups it currently is synced to.
+        If the player is not currently synced to any other player,
+        this will silently be ignored.
+
+            - player_id: player_id of the player to handle the command.
+        """
+        player = self.get(player_id, True, True)
+        if PlayerFeature.SYNC not in player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {player.name} does not support syncing"
+            )
+        if not player.synced_to:
+            LOGGER.info(
+                "Ignoring command to unsync player %s "
+                "because it is currently not part of a (sync)group."
+            )
+            return
+
+        # all checks passed, forward command to the player provider
+        player_provider = self.get_player_provider(player_id)
+        await player_provider.cmd_unsync(player_id)
+
+    @api_command("players/cmd/set_members")
+    async def cmd_set_members(self, player_id: str, members: list[str]) -> None:
+        """
+        Handle SET_MEMBERS command for given playergroup.
+
+        Update the memberlist of the given PlayerGroup.
+
+            - player_id: player_id of the groupplayer to handle the command.
+            - members: list of player ids to set as members.
+        """
+        player = self.get(player_id, True, True)
+        if player.type != PlayerType.GROUP:
+            raise UnsupportedFeaturedException(f"{player.name} is not a PlayerGroup")
+        if PlayerFeature.SET_MEMBERS not in player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"PlayerGroup {player.name} does not support updating the members"
+            )
+        for member_id in members:
+            member_player = self.get(member_id, True, True)
+            if (
+                member_player.player_id not in player.can_sync_with
+                and not "*" in player.can_sync_with
+            ):
+                raise PlayerCommandFailed(
+                    f"Player {member_id} can not be a member of {player_id}."
+                )
+
+        # all checks passed, forward command to the player provider
+        player_provider = self.get_player_provider(player_id)
+        await player_provider.cmd_unsync(player_id)
+
     def _get_player_groups(self, player_id: str) -> tuple[Player, ...]:
         """Return all (player_ids of) any groupplayers the given player belongs to."""
-        return tuple(x for x in self if player_id in x.group_members)
+        return tuple(x for x in self if player_id in x.group_childs)
 
-    def _get_active_queue(self, player_id: str) -> str:
+    def _get_active_queue(self, player: Player) -> str:
         """Return the active_queue id for given player."""
-        if group_players := self._get_player_groups(player_id):
+        # if player is synced, return master/group leader
+        if player.synced_to:
+            return player.synced_to
+        # iterate player groups to find out if one is playing
+        if group_players := self._get_player_groups(player.player_id):
             # prefer the first playing (or paused) group parent
             for group_player in group_players:
                 if group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
@@ -276,4 +390,4 @@ class PlayerController:
                 if group_player.powered:
                     return group_player.player_id
         # defaults to the player's own player id
-        return player_id
+        return player.player_id

@@ -43,3 +43,7 @@ class UnsupportedFeaturedException(MusicAssistantError):
 
 class PlayerUnavailableError(MusicAssistantError):
     """Error raised when trying to access non-existing or unavailable player."""
+
+
+class PlayerCommandFailed(MusicAssistantError):
+    """Error raised when a command to a player failed execution."""

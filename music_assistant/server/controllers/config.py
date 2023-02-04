@@ -14,10 +14,13 @@ from music_assistant.common.helpers.json import (
     json_dumps,
     json_loads,
 )
-from music_assistant.common.models.config_entries import ProviderConfig
+from music_assistant.common.models.config_entries import (
+    PlayerConfig,
+    ProviderConfig,
+)
 from music_assistant.common.models.enums import EventType, ProviderType
+from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS
 from music_assistant.server.helpers.api import api_command
-from music_assistant.constants import CONF_PROVIDERS
 
 if TYPE_CHECKING:
     from ..server import MusicAssistant
@@ -120,17 +123,23 @@ class ConfigController:
     ) -> list[ProviderConfig]:
         """Return all known provider configurations, optionally filtered by ProviderType."""
         raw_values: dict[str, dict] = self.get(CONF_PROVIDERS, {})
+        prov_entries = {
+            x.domain: x.config_entries for x in self.mass.get_available_providers()
+        }
         return [
-            ProviderConfig.from_dict(x)
-            for x in raw_values.values()
-            if (prov_type is None or x["type"] == prov_type)
+            ProviderConfig.parse(prov_entries[prov_conf["domain"]], prov_conf)
+            for prov_conf in raw_values.values()
+            if (prov_type is None or prov_conf["type"] == prov_type)
         ]
 
     @api_command("config/providers/get")
-    def get_provider_config(self, instance_id: str) -> list[ProviderConfig]:
+    def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
-        if raw_value := self.get(f"{CONF_PROVIDERS}/{instance_id}"):
-            return ProviderConfig.from_dict(raw_value)
+        if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
+            for prov in self.mass.get_available_providers():
+                if prov.domain != raw_conf["domain"]:
+                    continue
+                return ProviderConfig.parse(prov.config_entries, raw_conf)
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/set")
@@ -138,11 +147,11 @@ class ConfigController:
         """Create or update ProviderConfig."""
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         existing = self.get(conf_key)
-        config_dict = config.to_dict()
+        config_dict = config.to_raw()
         if existing == config_dict:
             # no changes
             return
-        self.set(conf_key, config.to_dict())
+        self.set(conf_key, config_dict)
         if existing:
             # existing provider updated
             self.mass.signal_event(
@@ -157,6 +166,47 @@ class ConfigController:
                 object_id=config.instance_id,
                 data=config,
             )
+
+    @api_command("config/players/all")
+    def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
+        """Return all known player configurations, optionally filtered by provider domain."""
+        raw_values: dict[str, dict] = self.get(CONF_PLAYERS, {})
+        return [
+            PlayerConfig.parse(
+                player.config_entries, raw_values.get(player.player_id, {})
+            )
+            for player in self.mass.players
+            if (provider is None or player.provider == provider)
+        ]
+
+    @api_command("config/players/get")
+    def get_player_config(self, player_id: str) -> PlayerConfig:
+        """Return configuration for a single player."""
+        player = self.mass.players.get(player_id, True)
+        raw_conf = self.get(f"{CONF_PLAYERS}/{player_id}", {})
+        return PlayerConfig.parse(player.config_entries, raw_conf)
+
+    @api_command("config/players/set")
+    def set_player_config(self, config: PlayerConfig) -> None:
+        """Create or update PlayerConfig."""
+        conf_key = f"{CONF_PLAYERS}/{config.player_id}"
+        existing = self.get(conf_key)
+        config_dict = config.to_raw()
+        if existing == config_dict:
+            # no changes
+            return
+        self.set(conf_key, config_dict)
+        # existing provider updated
+        self.mass.signal_event(
+            EventType.PLAYER_CONFIG_UPDATED,
+            object_id=config.player_id,
+            data=config,
+        )
+        # signal update to the player manager
+        # TODO: restart playback if player is playing?
+        if player := self.mass.players.get(config.player_id):
+            player.enabled = config.enabled
+            self.mass.players.update(config.player_id)
 
     async def _load(self) -> None:
         """Load data from persistent storage."""

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from mashumaro import DataClassDictMixin
 
@@ -21,7 +22,7 @@ class ConfigEntryType(Enum):
     DICT = "dict"
 
 
-ConfigValueTypes = str | int | float | bool | dict | None
+ConfigValueType = str | int | float | bool | dict | None
 
 ConfigEntryTypeMap = {
     ConfigEntryType.BOOLEAN: bool,
@@ -38,7 +39,7 @@ class ConfigValueOption(DataClassDictMixin):
     """Model for a value with seperated name/value."""
 
     text: str
-    value: ConfigValueTypes
+    value: ConfigValueType
 
 
 @dataclass
@@ -55,10 +56,10 @@ class ConfigEntry(DataClassDictMixin):
     type: ConfigEntryType
     # label: default label when no translation for the key is present
     label: str
-    default_value: ConfigValueTypes = None
+    default_value: ConfigValueType = None
     required: bool = True
     # options [optional]: select from list of possible values/options
-    options: list[ConfigValueOption] | None = None
+    options: tuple[ConfigValueOption] | None = None
     # range [optional]: select values within range
     range: tuple[int, int] | None = None
     # description [optional]: extended description of the setting.
@@ -71,20 +72,22 @@ class ConfigEntry(DataClassDictMixin):
     depends_on: str | None = None
     # hidden: hide from UI
     hidden: bool = False
+    # advanced: this is an advanced setting (frontend hides it in some corner)
+    advanced: bool = False
 
 
 @dataclass
 class ConfigEntryValue(ConfigEntry):
     """Config Entry with its value parsed."""
 
-    value: ConfigValueTypes = None
+    value: ConfigValueType = None
 
     @classmethod
-    def parse(cls, entry: ConfigEntry, value: ConfigValueTypes) -> "ConfigEntryValue":
+    def parse(cls, entry: ConfigEntry, value: ConfigValueType) -> "ConfigEntryValue":
         """Parse ConfigEntryValue from the config entry and plain value."""
         result = ConfigEntryValue.from_dict(entry.to_dict)
         result.value = value
-        expected_type = ConfigEntryTypeMap.get(result.value_type)
+        expected_type = ConfigEntryTypeMap.get(result.type)
         if result.value is None and not entry.required:
             expected_type = None
         if not isinstance(result.value, expected_type):
@@ -92,23 +95,59 @@ class ConfigEntryValue(ConfigEntry):
         return result
 
 
-CONF_KEY_ENABLED = "enabled"
-CONFIG_ENTRY_ENABLED = ConfigEntry(
-    key=CONF_KEY_ENABLED,
-    type=ConfigEntryType.BOOLEAN,
-    label="Enabled",
-    default_value=True,
-)
+@dataclass
+class Config(DataClassDictMixin):
+    """Base Configuration object."""
+
+    values: dict[str, ConfigEntryValue]
+
+    def get_value(self, key: str) -> ConfigValueType:
+        """Return config value for given key."""
+        return self.values[key].value
+
+    @classmethod
+    def parse(
+        cls: object, config_entries: list[ConfigEntry], raw: dict[str, Any]
+    ) -> "PlayerConfig":
+        """Parse PlayerConfig from the raw values (as stored in persistent storage)."""
+        values = {
+            x.key: ConfigEntryValue.parse(x, raw.get("values", {}).get(x.key))
+            for x in config_entries
+        }
+        return cls(**raw, values=values)
+
+    def to_raw(self) -> dict[str, Any]:
+        """Return minimized/raw dict to store in persistent storage."""
+        return {
+            **self.to_dict(),
+            "values": {
+                x.key: x.value
+                for x in self.values.values()
+                if x.value != x.default_value
+            },
+        }
 
 
 @dataclass
-class ProviderConfig(DataClassDictMixin):
+class ProviderConfig(Config):
     """Provider(instance) Configuration."""
 
     type: ProviderType
     domain: str
     instance_id: str
-    # values: the configuration values
-    values: dict[str, ConfigValueTypes]
-    # title: a custom title for this provider instance/config
+    # enabled: boolean to indicate if the provider is enabled
+    enabled: bool = True
+    # name: an (optional) custom name for this provider instance/config
     title: str | None = None
+
+
+@dataclass
+class PlayerConfig(Config):
+    """Player Configuration."""
+
+    provider: str
+    player_id: str
+    # enabled: boolean to indicate if the player is enabled
+    enabled: bool = True
+    # name: an (optional) custom name for this player
+    name: str | None = None
