@@ -7,7 +7,7 @@ import logging
 
 from dataclasses import dataclass, field
 import urllib.parse
-from typing import TYPE_CHECKING, Any, AsyncContextManager, AsyncGenerator
+from typing import TYPE_CHECKING, Any, AsyncContextManager, AsyncGenerator, Awaitable
 import shortuuid
 
 from aiohttp import web
@@ -62,26 +62,31 @@ class StreamJob:
     """
 
     def __init__(
-        self, queue_item: QueueItem, seek_position: int = 0, fade_in: bool = False
+        self,
+        queue_item: QueueItem,
+        audio_source: AsyncGenerator[bytes, None],
+        seek_position: int = 0,
+        fade_in: bool = False,
     ) -> None:
         """Initialize MultiQueue instance."""
         self.queue_item = queue_item
+        self.audio_source = audio_source
         self.seek_position = seek_position
         self.fade_in = fade_in
         self.stream_id = shortuuid.uuid()
         self.expected_consumers = 1
+        self._audio_task: asyncio.Task | None = None
         self._subscribers: list[asyncio.Queue[bytes]] = []
-        self.audio_task: asyncio.Task | None = None
-        self._start = asyncio.Event()
+        self._all_clients_connected = asyncio.Event()
 
     @property
     def finished(self) -> bool:
         """Return if this StreamJob is finished."""
-        if self.audio_task is None:
+        if self._audio_task is None:
             return False
         if not self._start.is_set():
             return False
-        return self.audio_task.cancelled() or self.audio_task.done()
+        return self._audio_task.cancelled() or self._audio_task.done()
 
     @property
     def pending(self) -> bool:
@@ -94,12 +99,13 @@ class StreamJob:
             sub_queue = asyncio.Queue(10)
             self._subscribers.append(sub_queue)
             if len(self._subscribers) == self.expected_consumers:
-                # we reached the number of expected subscribers, release awaiting subscribers
-                self._start.set()
+                # we reached the number of expected subscribers, set event
+                # so that chunks can be pushed
+                self._all_clients_connected.set()
             else:
                 # wait until all expected subscribers arrived
                 # TODO: handle edge case where a player does not connect at all ?!
-                await self._start.wait()
+                await self._all_clients_connected.wait()
             # keep reading audio chunks from the queue until we receive an empty one
             while True:
                 chunk = await sub_queue.get()
@@ -112,14 +118,40 @@ class StreamJob:
             await asyncio.sleep(1)
             self._subscribers.remove(sub_queue)
             # check if this was the last subscriber and we should cancel
-            if len(self._subscribers) == 0 and self.audio_task and not self.finished:
-                self.audio_task.cancel()
+            if len(self._subscribers) == 0 and self._audio_task and not self.finished:
+                self._audio_task.cancel()
 
     async def put_data(self, data: Any, timeout: float | None) -> None:
         """Put chunk of data to all subscribers."""
         await asyncio.wait(
             *(x.put(data) for x in list(self._subscribers)), timeout=timeout
         )
+
+    async def wait(self, timeout: float | None) -> None:
+        """Wait until all expected subscribers arrived."""
+        # TODO: handle edge case where a player does not connect at all ?!
+        await asyncio.wait(self._all_clients_connected.wait(), timeout=timeout)
+
+    async def attach_task(self, coro: Awaitable) -> None:
+        """Attach"""
+
+    async def _stream_job_runner(self, stream_job: StreamJob) -> None:
+        """Feed audio chunks to StreamJob."""
+        queue_item = stream_job.queue_item
+        streamdetails = await get_stream_details(self.mass, queue_item)
+        # send audio chunks to subscribers
+        chunk_num = 0
+        async for chunk in get_media_stream(
+            self.mass,
+            streamdetails=streamdetails,
+            seek_position=stream_job.seek_position,
+            fade_in=stream_job.fade_in,
+        ):
+            chunk_num += 1
+            if chunk_num == 1:
+                # wait until all expected clients are connected
+                await stream_job.wait(60)
+            await stream_job.put_data(chunk)
 
 
 class StreamsController:
@@ -136,10 +168,10 @@ class StreamsController:
     async def setup(self) -> None:
         """Async initialize of module."""
 
-        self.mass.webapp.router.add_get("/stream/preview", self.serve_preview)
+        self.mass.webapp.router.add_get("/stream/preview", self._serve_preview)
         self.mass.webapp.router.add_get(
             "/stream/{player_id}/{queue_item_id}{stream_id}.{fmt}",
-            self.serve_queue_item_stream,
+            self._serve_queue_item_stream,
         )
 
         ffmpeg_present, libsoxr_support = await check_audio_support(True)
@@ -178,11 +210,15 @@ class StreamsController:
         Resolve the stream URL for the given QueueItem.
 
         This is called just-in-time by the player implementation to get the URL to the audio.
+        It will create a StreamJob which is a background task responsible for feeding
+        the PCM audio chunks to the consumer(s).
 
         - queue_item: the QueueItem that is about to be played (or buffered).
         - player_id: the player_id of the player that will play the stream.
           In case of a multi subscriber stream (e.g. sync/groups),
           call resolve for every child player.
+        - seek_position: start playing from this specific position.
+        - fade_in: fade in the music at start (e.g. at resume).
         - content_type: Encode the stream in the given format.
         """
         # check if there is already a pending job
@@ -200,6 +236,8 @@ class StreamsController:
                 queue_item, seek_position=seek_position, fade_in=fade_in
             )
             self.stream_jobs[stream_job.stream_id] = stream_job
+            stream_job.audio_task = asyncio.create_task(self._stream_job_runner())
+
         # mark this queue item as the one in buffer
         queue = self.mass.players.queues.get(queue_item.queue_id)
         item_index = self.mass.players.queues.get_item(
@@ -216,7 +254,7 @@ class StreamsController:
         enc_track_id = urllib.parse.quote(track_id)
         return f"{self.base_url}/preview?provider={provider}&item_id={enc_track_id}"
 
-    async def serve_queue_item_stream(self, request: web.Request) -> web.Response:
+    async def _serve_queue_item_stream(self, request: web.Request) -> web.Response:
         """Stream a queue item to player(s)."""
         queue_id = request.match_info["queue_id"]
         queue_item_id = request.match_info["queue_item_id"]
@@ -261,7 +299,7 @@ class StreamsController:
 
         return
 
-    async def serve_preview(self, request: web.Request):
+    async def _serve_preview(self, request: web.Request):
         """Serve short preview sample."""
         provider_mapping = request.query["provider_mapping"]
         item_id = urllib.parse.unquote(request.query["item_id"])
@@ -363,13 +401,7 @@ class StreamsController:
         ]
         return ffmpeg_args
 
-    async def _stream_job_runner(self, stream_job: StreamJob) -> None:
-        """Feed audio chunks to StreamJob."""
-        queue_item = stream_job.queue_item
-        streamdetails = queue_item.streamdetails
-        await get_stream_details(self.mass, queue_item)
-
-    async def cleanup_stale(self) -> None:
+    async def _cleanup_stale(self) -> None:
         """Cleanup stale/done stream tasks."""
         stale = set()
         for stream_id, stream in self.queue_streams.items():

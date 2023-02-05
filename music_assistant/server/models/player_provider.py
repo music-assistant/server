@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from music_assistant.common.models.enums import PlayerState
+from music_assistant.common.models.enums import ContentType, PlayerState
 
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.queue_item import QueueItem
@@ -40,7 +40,30 @@ class PlayerProvider(Provider):
         """
 
     @abstractmethod
-    async def cmd_play_media(self, player_id: str, media: QueueItem) -> None:
+    async def cmd_pause(self, player_id: str) -> None:
+        """
+        Send PAUSE command to given player.
+            - player_id: player_id of the player to handle the command.
+        """
+
+    @abstractmethod
+    async def cmd_play_url(self, player_id: str, url: str) -> None:
+        """
+        Send PLAY URL command to given player.
+
+        This is called when the Queue wants the player to start playing a specific url.
+
+            - player_id: player_id of the player to handle the command.
+            - media: the QueueItem to start playing on the player.
+        """
+
+    async def cmd_play_media(
+        self,
+        player_id: str,
+        queue_item: QueueItem,
+        seek_position: int = 0,
+        fade_in: bool = False,
+    ) -> None:
         """
         Send PLAY MEDIA command to given player.
 
@@ -49,15 +72,20 @@ class PlayerProvider(Provider):
         queue items one-by-one or enqueue all/some items.
 
             - player_id: player_id of the player to handle the command.
-            - media: the QueueItem to start playing on the player.
+            - queue_item: the QueueItem to start playing on the player.
+            - seek_position: start playing from this specific position.
+            - fade_in: fade in the music at start (e.g. at resume).
         """
-
-    @abstractmethod
-    async def cmd_pause(self, player_id: str) -> None:
-        """
-        Send PAUSE command to given player.
-            - player_id: player_id of the player to handle the command.
-        """
+        # default implementation is to simply resolve the url and send the url to the player
+        # player/provider implementations may override this default.
+        url = await self.mass.streams.resolve_stream(
+            queue_item=queue_item,
+            player_id=player_id,
+            seek_position=seek_position,
+            fade_in=fade_in,
+            content_type=ContentType.FLAC,
+        )
+        await self.cmd_play_url(player_id, url)
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """
@@ -130,5 +158,3 @@ class PlayerProvider(Provider):
         """
         # will only be called for players of type GROUP with SET_MEMBERS feature set.
         raise NotImplementedError()
-
-    

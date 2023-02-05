@@ -24,6 +24,10 @@ from music_assistant.common.models.media_items import (
     MediaType,
     StreamDetails,
 )
+from music_assistant.constants import (
+    CONF_VOLUME_NORMALISATION,
+    CONF_VOLUME_NORMALISATION_TARGET,
+)
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 
 if TYPE_CHECKING:
@@ -223,7 +227,9 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
             )
 
 
-async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> StreamDetails:
+async def get_stream_details(
+    mass: MusicAssistant, queue_item: QueueItem
+) -> StreamDetails:
     """
     Get streamdetails for the given QueueItem.
 
@@ -290,12 +296,12 @@ async def get_gain_correct(
     mass: MusicAssistant, streamdetails: StreamDetails
 ) -> Tuple[Optional[float], Optional[float]]:
     """Get gain correction for given queue / track combination."""
-    queue = mass.players.get_player_queue(streamdetails.queue_id)
-    if not queue or not queue.settings.volume_normalization_enabled:
+    player_settings = mass.config.get_player_config(streamdetails.queue_id)
+    if not player_settings or not player_settings.get_value(CONF_VOLUME_NORMALISATION):
         return (None, None)
     if streamdetails.gain_correct is not None:
         return (streamdetails.loudness, streamdetails.gain_correct)
-    target_gain = queue.settings.volume_normalization_target
+    target_gain = player_settings.get_value(CONF_VOLUME_NORMALISATION_TARGET)
     track_loudness = await mass.music.get_track_loudness(
         streamdetails.item_id, streamdetails.provider
     )
@@ -377,8 +383,8 @@ async def get_media_stream(
     """
     Get the (PCM) audio stream for the given streamdetails.
 
-    Other than stripping silence at end and beginning this is the pure,
-    unaltered audio data as PCM chunks.
+    Other than stripping silence at end and beginning and optional 
+    volume normalization this is the pure, unaltered audio data as PCM chunks.
     """
     bytes_sent = 0
     sample_rate = streamdetails.sample_rate
