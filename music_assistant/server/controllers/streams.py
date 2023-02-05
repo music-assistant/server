@@ -2,49 +2,36 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 import logging
-
-from dataclasses import dataclass, field
 import urllib.parse
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncContextManager, AsyncGenerator, Awaitable
+
 import shortuuid
-
 from aiohttp import web
+
 from music_assistant.common.helpers.util import empty_queue
-
-from music_assistant.common.models.enums import (
-    ContentType,
-    MetadataMode,
-    StreamState,
-)
-from music_assistant.common.models.errors import (
-    PlayerUnavailableError,
-)
-
+from music_assistant.common.models.enums import ContentType, MetadataMode, StreamState
+from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.media_items import StreamDetails
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.queue_item import QueueItem
-
-
 from music_assistant.constants import (
+    CONF_WEB_HOST,
+    CONF_WEB_PORT,
     DEFAULT_PORT,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.audio import (
     check_audio_support,
-    get_chunksize,
     get_media_stream,
     get_preview_stream,
     get_stream_details,
-    strip_silence,
 )
 from music_assistant.server.helpers.process import AsyncProcess
 
-from music_assistant.constants import CONF_WEB_HOST, CONF_WEB_PORT
-
 if TYPE_CHECKING:
-    # from music_assistant.common.models.queue_stream import QueueStream
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.streams")
@@ -65,17 +52,19 @@ class StreamJob:
         self,
         queue_item: QueueItem,
         audio_source: AsyncGenerator[bytes, None],
-        seek_position: int = 0,
-        fade_in: bool = False,
+        pcm_sample_rate: int,
+        pcm_bit_depth: int,
+        pcm_channels: int,
     ) -> None:
         """Initialize MultiQueue instance."""
         self.queue_item = queue_item
         self.audio_source = audio_source
-        self.seek_position = seek_position
-        self.fade_in = fade_in
+        self.pcm_sample_rate = pcm_sample_rate
+        self.pcm_bit_depth = pcm_bit_depth
+        self.pcm_channels = pcm_channels
         self.stream_id = shortuuid.uuid()
         self.expected_consumers = 1
-        self._audio_task: asyncio.Task | None = None
+        self._audio_task: asyncio.create_task(self._stream_job_runner())
         self._subscribers: list[asyncio.Queue[bytes]] = []
         self._all_clients_connected = asyncio.Event()
 
@@ -121,37 +110,22 @@ class StreamJob:
             if len(self._subscribers) == 0 and self._audio_task and not self.finished:
                 self._audio_task.cancel()
 
-    async def put_data(self, data: Any, timeout: float | None) -> None:
+    async def _put_data(self, data: Any, timeout: float | None) -> None:
         """Put chunk of data to all subscribers."""
         await asyncio.wait(
             *(x.put(data) for x in list(self._subscribers)), timeout=timeout
         )
 
-    async def wait(self, timeout: float | None) -> None:
-        """Wait until all expected subscribers arrived."""
-        # TODO: handle edge case where a player does not connect at all ?!
-        await asyncio.wait(self._all_clients_connected.wait(), timeout=timeout)
-
-    async def attach_task(self, coro: Awaitable) -> None:
-        """Attach"""
-
-    async def _stream_job_runner(self, stream_job: StreamJob) -> None:
-        """Feed audio chunks to StreamJob."""
-        queue_item = stream_job.queue_item
-        streamdetails = await get_stream_details(self.mass, queue_item)
-        # send audio chunks to subscribers
+    async def _stream_job_runner(self) -> None:
+        """Feed audio chunks to StreamJob subscribers."""
         chunk_num = 0
-        async for chunk in get_media_stream(
-            self.mass,
-            streamdetails=streamdetails,
-            seek_position=stream_job.seek_position,
-            fade_in=stream_job.fade_in,
-        ):
+        async for chunk in self.audio_source:
             chunk_num += 1
             if chunk_num == 1:
                 # wait until all expected clients are connected
-                await stream_job.wait(60)
-            await stream_job.put_data(chunk)
+                # TODO: handle edge case where a player does not connect at all ?!
+                await asyncio.wait(self._all_clients_connected.wait(), timeout=30)
+            await self._put_data(chunk)
 
 
 class StreamsController:
@@ -171,7 +145,7 @@ class StreamsController:
         self.mass.webapp.router.add_get("/stream/preview", self._serve_preview)
         self.mass.webapp.router.add_get(
             "/stream/{player_id}/{queue_item_id}{stream_id}.{fmt}",
-            self._serve_queue_item_stream,
+            self._serve_queue_stream,
         )
 
         ffmpeg_present, libsoxr_support = await check_audio_support(True)
@@ -184,7 +158,7 @@ class StreamsController:
                 "FFmpeg version found without libsoxr support, "
                 "highest quality audio not available. "
             )
-
+        await self._cleanup_stale()
         LOGGER.info("Started stream controller")
 
     async def close(self) -> None:
@@ -233,10 +207,15 @@ class StreamsController:
         else:
             # register a new stream job
             stream_job = StreamJob(
-                queue_item, seek_position=seek_position, fade_in=fade_in
+                queue_item=queue_item,
+                audio_source=get_media_stream(
+                    self.mass,
+                    streamdetails=await get_stream_details(self.mass, queue_item),
+                    seek_position=stream_job.seek_position,
+                    fade_in=stream_job.fade_in,
+                ),
             )
             self.stream_jobs[stream_job.stream_id] = stream_job
-            stream_job.audio_task = asyncio.create_task(self._stream_job_runner())
 
         # mark this queue item as the one in buffer
         queue = self.mass.players.queues.get(queue_item.queue_id)
@@ -254,30 +233,25 @@ class StreamsController:
         enc_track_id = urllib.parse.quote(track_id)
         return f"{self.base_url}/preview?provider={provider}&item_id={enc_track_id}"
 
-    async def _serve_queue_item_stream(self, request: web.Request) -> web.Response:
-        """Stream a queue item to player(s)."""
-        queue_id = request.match_info["queue_id"]
-        queue_item_id = request.match_info["queue_item_id"]
-        seek_position = int(request.query.get("seek", "0"))
-        player_queue = self.mass.players.queues.get(queue_id)
-        player = self.mass.players.get(queue_id)
-        if not player_queue or not player:
-            raise web.HTTPNotFound(reason="player(queue) not found")
+    async def _serve_queue_stream(self, request: web.Request) -> web.Response:
+        """Serve Queue Stream audio to player(s)."""
+        stream_id = request.match_info["stream_id"]
+        stream_job = self.stream_jobs.get(stream_id)
+        if not stream_job:
+            raise web.HTTPNotFound(reason=f"Unknown stream_id: {stream_id}")
+        player_id = request.match_info["player_id"]
+        player = self.mass.players.get(player_id)
+        if not player:
+            raise web.HTTPNotFound(reason=f"Unknown player_id: {player_id}")
 
-        LOGGER.debug("Stream request for %s", queue_id)
+        LOGGER.debug("Start serving audio stream %s to %s", stream_id, player.name)
 
-        queue_item = self.mass.players.queues.get_item(queue_id, queue_item_id)
-        if not queue_item:
-            raise web.HTTPNotFound(reason="invalid queue item_id")
-
-        streamdetails = await get_stream_details(self.mass, queue_item, queue_id)
-        pcm_sample_rate = min(streamdetails.sample_rate, player.max_sample_rate)
-        output_format_str = request.query.get("fmt", "wav").lower()
+        output_format_str = request.match_info["fmt"]
         output_format = ContentType.try_parse(output_format_str)
         if output_format_str == "wav":
             output_format_str = (
-                f"x-wav;codec=pcm;rate={pcm_sample_rate};"
-                f"bitrate={streamdetails.bit_depth};channels={streamdetails.channels}"
+                f"x-wav;codec=pcm;rate={stream_job.pcm_sample_rate};"
+                f"bitrate={stream_job.pcm_bit_depth};channels={stream_job.pcm_channels}"
             )
 
         # prepare request
@@ -288,14 +262,27 @@ class StreamsController:
         )
         await resp.prepare(request)
 
-        async for chunk in self._get_queue_item_stream(
-            streamdetails,
-            player,
+        # collect player specific ffmpeg args to re-encode the source PCM stream
+        ffmpeg_args = self._get_player_ffmpeg_args(
+            player=player,
+            pcm_sample_rate=stream_job.pcm_sample_rate,
+            pcm_bit_depth=stream_job.pcm_bit_depth,
+            pcm_channels=stream_job.pcm_channels,
             output_format=output_format,
-            sample_rate=pcm_sample_rate,
-            seek_position=seek_position,
-        ):
-            await resp.write(chunk)
+        )
+        async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
+
+            # feed stdin with pcm audio chunks from origin
+            async def read_audio():
+                async for chunk in stream_job.subscribe():
+                    await ffmpeg_proc.write(chunk)
+                await ffmpeg_proc.write_eof()
+
+            ffmpeg_proc.attach_task(read_audio())
+
+            # read final chunks from stdout
+            async for chunk in ffmpeg_proc.iter_any():
+                await resp.write(chunk)
 
         return
 
@@ -311,65 +298,15 @@ class StreamsController:
             await resp.write(chunk)
         return resp
 
-    async def _get_queue_item_stream(
-        self,
-        streamdetails: StreamDetails,
-        player: Player,
-        output_format: ContentType,
-        sample_rate: int,
-        seek_position: int = 0,
-    ) -> AsyncGenerator[bytes, None]:
-        """Get (playerspecific) audio stream for a Queue Item."""
-        # start streaming
-        LOGGER.debug(
-            "Start streaming %s (%s) on player %s",
-            streamdetails.stream_title,
-            streamdetails.uri,
-            player.name,
-        )
-        # determine PCM details
-        bit_depth = streamdetails.bit_depth
-        channels = streamdetails.channels
-        ffmpeg_args = self._get_player_ffmpeg_args(player_id=player)
-        async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
-
-            # feed stdin with pcm audio chunks from origin
-            async def read_audio():
-                # use 5 seconds chunks so we can strip silence
-                chunk_size = int(sample_rate * (bit_depth / 8) * channels * 5)
-                async for audio_chunk in get_media_stream(
-                    mass=self.mass,
-                    streamdetails=streamdetails,
-                    sample_rate=sample_rate,
-                    bit_depth=bit_depth,
-                    channels=channels,
-                    seek_position=seek_position,
-                ):
-                    await resp.write(audio_chunk)
-
-            ffmpeg_proc.attach_task(read_audio())
-
-            # read final chunks from stdout
-            async for chunk in ffmpeg_proc.iter_any():
-                await resp.write(chunk)
-
-        LOGGER.debug(
-            "Finished streaming %s (%s) on player %s (queue %s)",
-            queue_item_id,
-            queue_item.name,
-            player.name,
-            queue_id,
-        )
-
     def _get_player_ffmpeg_args(
         self,
         player: Player,
-        input_format: ContentType,
-        channels: int,
-        sample_rate: int,
+        pcm_sample_rate: int,
+        pcm_bit_depth: int,
+        pcm_channels: int,
         output_format: ContentType,
     ) -> list[str]:
-        """Get player specific arguments for the given input and output details."""
+        """Get player specific arguments for the given (pcm) input and output details."""
         # generic args
         ffmpeg_args = [
             "ffmpeg",
@@ -381,15 +318,15 @@ class StreamsController:
         # input args
         ffmpeg_args += [
             "-f",
-            input_format,
+            ContentType.from_bit_depth(pcm_bit_depth),
             "-ac",
-            str(channels),
+            str(pcm_channels),
             "-ar",
-            str(sample_rate),
+            str(pcm_sample_rate),
             "-i",
             "-",
         ]
-        # TODO: insert filters/convolution/DSP here!
+        # TODO: insert playerspecific filters/convolution/DSP here!
         # output args
         ffmpeg_args += [
             # output args
@@ -404,8 +341,10 @@ class StreamsController:
     async def _cleanup_stale(self) -> None:
         """Cleanup stale/done stream tasks."""
         stale = set()
-        for stream_id, stream in self.queue_streams.items():
-            if stream.done.is_set() and not stream.connected_clients:
+        for stream_id, job in self.stream_jobs.items():
+            if job.finished:
                 stale.add(stream_id)
         for stream_id in stale:
-            self.queue_streams.pop(stream_id, None)
+            self.stream_jobs.pop(stream_id, None)
+        # reschedule self to run every 5 minutes
+        self.mass.loop.call_later(300, self.mass.create_task, self._cleanup_stale())

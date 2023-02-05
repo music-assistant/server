@@ -164,10 +164,11 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
 
     LOGGER.debug("Start analyzing track %s", streamdetails.uri)
     # calculate BS.1770 R128 integrated loudness with ffmpeg
-    started = time()
     input_file = streamdetails.direct or "-"
     proc_args = [
         "ffmpeg",
+        "-t",
+        "300",  # limit to 5 minutes to prevent OOM
         "-i",
         input_file,
         "-f",
@@ -190,9 +191,6 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
             music_prov = mass.get_provider(streamdetails.provider)
             async for audio_chunk in music_prov.get_audio_stream(streamdetails):
                 await ffmpeg_proc.write(audio_chunk)
-                if (time() - started) > 300:
-                    # just in case of endless radio stream etc
-                    break
             ffmpeg_proc.write_eof()
 
         if streamdetails.direct is None:
@@ -383,7 +381,7 @@ async def get_media_stream(
     """
     Get the (PCM) audio stream for the given streamdetails.
 
-    Other than stripping silence at end and beginning and optional 
+    Other than stripping silence at end and beginning and optional
     volume normalization this is the pure, unaltered audio data as PCM chunks.
     """
     bytes_sent = 0
