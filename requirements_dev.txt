@@ -1,5 +1,5 @@
 -r requirements.txt
-black==22.10.0
+black==23.1.0
 flake8==6.0.0
 mypy==0.982
 pydocstyle==6.1.1
