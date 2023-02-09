@@ -14,7 +14,7 @@ import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version
-from music_assistant.common.models.enums import MusicProviderFeature
+from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -50,20 +50,20 @@ class SpotifyProvider(MusicProvider):
     _cache_dir = CACHE_DIR
     _ap_workaround = False
     _attr_supported_features = (
-        MusicProviderFeature.LIBRARY_ARTISTS,
-        MusicProviderFeature.LIBRARY_ALBUMS,
-        MusicProviderFeature.LIBRARY_TRACKS,
-        MusicProviderFeature.LIBRARY_PLAYLISTS,
-        MusicProviderFeature.LIBRARY_ARTISTS_EDIT,
-        MusicProviderFeature.LIBRARY_ALBUMS_EDIT,
-        MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-        MusicProviderFeature.LIBRARY_TRACKS_EDIT,
-        MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
-        MusicProviderFeature.BROWSE,
-        MusicProviderFeature.SEARCH,
-        MusicProviderFeature.ARTIST_ALBUMS,
-        MusicProviderFeature.ARTIST_TOPTRACKS,
-        MusicProviderFeature.SIMILAR_TRACKS,
+        ProviderFeature.LIBRARY_ARTISTS,
+        ProviderFeature.LIBRARY_ALBUMS,
+        ProviderFeature.LIBRARY_TRACKS,
+        ProviderFeature.LIBRARY_PLAYLISTS,
+        ProviderFeature.LIBRARY_ARTISTS_EDIT,
+        ProviderFeature.LIBRARY_ALBUMS_EDIT,
+        ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+        ProviderFeature.LIBRARY_TRACKS_EDIT,
+        ProviderFeature.PLAYLIST_TRACKS_EDIT,
+        ProviderFeature.BROWSE,
+        ProviderFeature.SEARCH,
+        ProviderFeature.ARTIST_ALBUMS,
+        ProviderFeature.ARTIST_TOPTRACKS,
+        ProviderFeature.SIMILAR_TRACKS,
     )
 
     async def setup(self) -> None:

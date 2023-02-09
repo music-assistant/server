@@ -7,7 +7,7 @@ from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.models.enums import (
     EventType,
     MediaType,
-    MusicProviderFeature,
+    ProviderFeature,
 )
 from music_assistant.common.models.errors import (
     MediaNotFoundError,
@@ -36,6 +36,16 @@ class TracksController(MediaControllerBase[Track]):
     db_table = DB_TABLE_TRACKS
     media_type = MediaType.TRACK
     item_cls = Track
+
+    def __init__(self, *args, **kwargs):
+        """Initialize class."""
+        super().__init__(*args, **kwargs)
+        # register api handlers
+        self.mass.register_api_command("music/tracks", self.db_items)
+        self.mass.register_api_command("music/track", self.get)
+        self.mass.register_api_command("music/track/versions", self.versions)
+        self.mass.register_api_command("music/track/update", self.update_db_item)
+        self.mass.register_api_command("music/track/delete", self.delete_db_item)
 
     async def get(self, *args, **kwargs) -> Track:
         """Return (full) details for a single media item."""
@@ -119,6 +129,15 @@ class TracksController(MediaControllerBase[Track]):
         # return the aggregated result
         return all_versions.values()
 
+    async def get_preview_url(self, provider_domain: str, item_id: str) -> str:
+        """Return url to short preview sample."""
+        track = await self.get_provider_item(item_id, provider_domain)
+        # prefer provider-provided preview
+        if preview := track.metadata.preview:
+            return preview
+        # fallback to a preview/sample hosted by our own webserver
+        return self.mass.streams.get_preview_url(provider_domain, item_id)
+
     async def _match(self, db_track: Track) -> None:
         """
         Try to find matching track on all providers for the provided (database) track_id.
@@ -128,7 +147,7 @@ class TracksController(MediaControllerBase[Track]):
         if db_track.provider != "database":
             return  # Matching only supported for database items
         for provider in self.mass.music.providers:
-            if MusicProviderFeature.SEARCH not in provider.supported_features:
+            if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
             self.logger.debug(
                 "Trying to match track %s on provider %s", db_track.name, provider.name
@@ -168,7 +187,7 @@ class TracksController(MediaControllerBase[Track]):
         prov = self.mass.get_provider(provider_instance or provider_domain)
         if (
             not prov
-            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
+            or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features
         ):
             return []
         # Grab similar tracks from the music provider

@@ -15,7 +15,6 @@ from music_assistant.common.models.enums import (
     MediaType,
     QueueOption,
     RepeatMode,
-    StreamState,
 )
 from music_assistant.common.models.errors import (
     MediaNotFoundError,

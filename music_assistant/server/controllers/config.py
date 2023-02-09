@@ -15,10 +15,12 @@ from music_assistant.common.helpers.json import (
     json_loads,
 )
 from music_assistant.common.models.config_entries import (
+    DEFAULT_PLAYER_CONFIG_ENTRIES,
     PlayerConfig,
     ProviderConfig,
 )
 from music_assistant.common.models.enums import EventType, ProviderType
+from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS
 from music_assistant.server.helpers.api import api_command
 
@@ -117,7 +119,7 @@ class ConfigController:
 
         self.save()
 
-    @api_command("config/providers/all")
+    @api_command("config/providers")
     def get_provider_configs(
         self, prov_type: ProviderType | None = None
     ) -> list[ProviderConfig]:
@@ -167,24 +169,32 @@ class ConfigController:
                 data=config,
             )
 
-    @api_command("config/players/all")
+    @api_command("config/players")
     def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
-        raw_values: dict[str, dict] = self.get(CONF_PLAYERS, {})
-        return [
-            PlayerConfig.parse(
-                player.config_entries, raw_values.get(player.player_id, {})
-            )
-            for player in self.mass.players
-            if (provider is None or player.provider == provider)
-        ]
+        player_configs: dict[str, dict] = self.get(CONF_PLAYERS, {})
+        # we build a list of all playerids to cover both edge cases:
+        # - player does not yet have a config stored persistently
+        # - player is disabled in config and not available
+        all_player_ids = set(player_configs.keys())
+        for player in self.mass.players:
+            all_player_ids.add(player.player_id)
+        return [self.get_player_config(x) for x in all_player_ids]
 
     @api_command("config/players/get")
     def get_player_config(self, player_id: str) -> PlayerConfig:
         """Return configuration for a single player."""
-        player = self.mass.players.get(player_id, True)
-        raw_conf = self.get(f"{CONF_PLAYERS}/{player_id}", {})
-        return PlayerConfig.parse(player.config_entries, raw_conf)
+        conf = self.get(f"{CONF_PLAYERS}/{player_id}")
+        if not conf:
+            player = self.mass.players.get(player_id)
+            if not player:
+                raise PlayerUnavailableError(f"Player {player_id} is not available")
+            conf = {"provider": player.provider, "player_id": player_id}
+        prov = self.mass.get_provider(conf["provider"])
+        entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(
+            player_id
+        )
+        return PlayerConfig.parse(entries, conf)
 
     @api_command("config/players/set")
     def set_player_config(self, config: PlayerConfig) -> None:
@@ -196,7 +206,7 @@ class ConfigController:
             # no changes
             return
         self.set(conf_key, config_dict)
-        # existing provider updated
+        # existing config updated
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
             object_id=config.player_id,

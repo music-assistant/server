@@ -21,6 +21,16 @@ class RadioController(MediaControllerBase[Radio]):
     media_type = MediaType.RADIO
     item_cls = Radio
 
+    def __init__(self, *args, **kwargs):
+        """Initialize class."""
+        super().__init__(*args, **kwargs)
+        # register api handlers
+        self.mass.register_api_command("music/radios", self.db_items)
+        self.mass.register_api_command("music/radio", self.get)
+        self.mass.register_api_command("music/radio/versions", self.versions)
+        self.mass.register_api_command("music/radio/update", self.update_db_item)
+        self.mass.register_api_command("music/radio/delete", self.delete_db_item)
+
     async def versions(
         self,
         item_id: str,

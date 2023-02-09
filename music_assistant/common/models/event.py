@@ -1,7 +1,7 @@
 """Model for Music Assistant Event."""
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from music_assistant.common.models.enums import EventType
 
@@ -14,4 +14,4 @@ class MassEvent(DataClassDictMixin):
 
     event: EventType
     object_id: str | None = None  # player_id, queue_id or uri
-    data: Optional[Any] = None  # optional data (such as the object)
+    data: Any = None  # optional data (such as the object)

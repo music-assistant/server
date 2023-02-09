@@ -10,7 +10,7 @@ from typing import AsyncGenerator, List, Optional, Set, Tuple
 import xmltodict
 
 from music_assistant.common.helpers.util import parse_title_and_version
-from music_assistant.common.models.enums import MusicProviderFeature
+from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import (
     Album,
@@ -87,14 +87,14 @@ class FileSystemProviderBase(MusicProvider):
     """
 
     _attr_supported_features = (
-            MusicProviderFeature.LIBRARY_ARTISTS,
-            MusicProviderFeature.LIBRARY_ALBUMS,
-            MusicProviderFeature.LIBRARY_TRACKS,
-            MusicProviderFeature.LIBRARY_PLAYLISTS,
-            MusicProviderFeature.PLAYLIST_TRACKS_EDIT,
-            MusicProviderFeature.PLAYLIST_CREATE,
-            MusicProviderFeature.BROWSE,
-            MusicProviderFeature.SEARCH,
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+            ProviderFeature.PLAYLIST_TRACKS_EDIT,
+            ProviderFeature.PLAYLIST_CREATE,
+            ProviderFeature.BROWSE,
+            ProviderFeature.SEARCH,
         )
 
     @abstractmethod
@@ -311,7 +311,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
-            provider_item_id=prov_artist_id, provider_instance=self.id
+            item_id=prov_artist_id, provider_instance=self.id
         )
         if db_artist is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
@@ -323,7 +323,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            provider_item_id=prov_album_id, provider_instance=self.id
+            item_id=prov_album_id, provider_instance=self.id
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
@@ -638,7 +638,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         db_item = await self.mass.music.tracks.get_db_item_by_prov_id(
-            provider_item_id=item_id, provider_instance=self.id
+            item_id=item_id, provider_instance=self.id
         )
         if db_item is None:
             raise MediaNotFoundError(f"Item not found: {item_id}")

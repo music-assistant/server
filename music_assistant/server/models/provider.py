@@ -9,8 +9,8 @@ from music_assistant.common.models.config_entries import (
     ConfigEntryValue,
     ProviderConfig,
 )
-from music_assistant.common.models.enums import ProviderType
-from music_assistant.common.models.provider_manifest import ProviderManifest
+from music_assistant.common.models.enums import ProviderFeature, ProviderType
+from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
 from music_assistant.constants import ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 class Provider:
     """Base representation of a Provider implementation within Music Assistant."""
 
+    _attr_supported_features: tuple[ProviderFeature] = tuple()
+
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
@@ -27,8 +29,15 @@ class Provider:
         self.mass = mass
         self.manifest = manifest
         self.config = config
-        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.{self.type.value}[{self.title}]")
+        self.logger = logging.getLogger(
+            f"{ROOT_LOGGER_NAME}.{self.type.value}[{self.name}]"
+        )
         self.cache = mass.cache
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature]:
+        """Return the features supported by this MusicProvider."""
+        return self._attr_supported_features
 
     @abstractmethod
     async def setup(self) -> None:
@@ -62,15 +71,12 @@ class Provider:
 
     @property
     def name(self) -> str:
-        """Return provider name."""
-        return self.manifest.name
-
-    @property
-    def title(self) -> str:
         """Return (custom) friendly name for this provider instance."""
-        if self.config.title:
-            return self.config.title
-        inst_count = len([x for x in self.mass.music.providers if x.domain == self.domain])
+        if self.config.name:
+            return self.config.name
+        inst_count = len(
+            [x for x in self.mass.music.providers if x.domain == self.domain]
+        )
         if inst_count > 1:
             postfix = self.instance_id[:-8]
             return f"{self.manifest.name}.{postfix}"
@@ -83,3 +89,13 @@ class Provider:
             ConfigEntryValue.parse(x, self.config.values.get(x.key))
             for x in self.manifest.config_entries
         ]
+
+    def to_dict(self) -> ProviderInstance:
+        """Return Provider(instance) as serializable dict."""
+        return {
+            "type": self.type,
+            "domain": self.domain,
+            "name": self.name,
+            "instance_id": self.instance_id,
+            "supported_features": self.supported_features
+        }

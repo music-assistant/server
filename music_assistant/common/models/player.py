@@ -6,69 +6,7 @@ from dataclasses import dataclass, field
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_MAX_SAMPLE_RATE,
-    CONF_VOLUME_NORMALISATION,
-    CONF_VOLUME_NORMALISATION_TARGET,
-)
-
-from .config_entries import (
-    ConfigEntry,
-    ConfigEntryType,
-    ConfigEntryValue,
-    ConfigValueOption,
-)
 from .enums import PlayerFeature, PlayerState, PlayerType
-
-DEFAULT_PLAYER_CONFIG_ENTRIES = (
-    ConfigEntry(
-        key=CONF_VOLUME_NORMALISATION,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable volume normalization (EBU-R128 based)",
-        default_value=True,
-        description="Enable volume normalization based on the EBU-R128 standard without affecting dynamic range",
-    ),
-    ConfigEntry(
-        key=CONF_CROSSFADE,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable crossfade between tracks",
-        default_value=True,
-        description="Enable a crossfade transition between tracks (of different albums)",
-    ),
-    ConfigEntry(
-        key=CONF_VOLUME_NORMALISATION_TARGET,
-        type=ConfigEntryType.INT,
-        range=(-30, 0),
-        default_value=-14,
-        label="Target level for volume normalisation",
-        description="Adjust average (perceived) loudness to this target level, default is -14 LUFS",
-        depends_on=CONF_VOLUME_NORMALISATION,
-        advanced=True,
-    ),
-    ConfigEntry(
-        key=CONF_MAX_SAMPLE_RATE,
-        type=ConfigEntryType.INT,
-        options=(
-            ConfigValueOption("44100", 44100),
-            ConfigValueOption("48000", 48000),
-            ConfigValueOption("88200", 88200),
-            ConfigValueOption("96000", 96000),
-            ConfigValueOption("176400", 176400),
-            ConfigValueOption("192000", 192000),
-            ConfigValueOption("352800", 352800),
-            ConfigValueOption("384000", 384000),
-        ),
-        default_value=96000,
-        label="Maximum sample rate",
-        description="Maximum sample rate that is sent to the player, content with a higher sample rate than this treshold will be downsampled",
-        advanced=True,
-    ),
-)
-
-
-def default_config_entries() -> list(ConfigEntry):
-    """Return default Player config entries to attach to Player object."""
 
 
 @dataclass(frozen=True)
@@ -91,7 +29,7 @@ class Player(DataClassDictMixin):
     available: bool
     powered: bool
     device_info: DeviceInfo
-    supported_features: tuple[PlayerFeature] = field(default_factory=tuple)
+    supported_features: tuple[PlayerFeature, ...] = field(default=tuple())
 
     elapsed_time: float = 0
     elapsed_time_last_updated: float = time.time()
@@ -113,9 +51,9 @@ class Player(DataClassDictMixin):
     # otherwise it will be set to the own player_id
     active_queue: str = ""
 
-    # can_sync_with: return list of player_ids that can be synced to/with this player
+    # can_sync_with: return tuple of player_ids that can be synced to/with this player
     # ususally this is just a list of all player_ids within the playerprovider
-    can_sync_with: tuple[str] = field(default_factory=tuple)
+    can_sync_with: tuple[str, ...] = field(default=tuple())
 
     # synced_to: plauyer_id of the player this player is currently sunced to
     # also referred to as "sync master"
@@ -123,10 +61,6 @@ class Player(DataClassDictMixin):
 
     # max_sample_rate: maximum supported sample rate the player supports
     max_sample_rate: int = 96000
-
-    # config entries: all config options to configure the player
-    # the default set can be extended by the playerprovider if needed
-    config_entries: list[ConfigEntry] = field(default_factory=default_config_entries)
 
     # enabled: if the player is enabled
     # will be set by the player manager based on config

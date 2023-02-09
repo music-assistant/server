@@ -48,15 +48,15 @@ class MediaType(StrEnum):
 
     @classmethod
     @property
-    def ALL(cls) -> list["MediaType"]:  # pylint: disable=invalid-name
-        """Return all (default) MediaTypes as list."""
-        return [
+    def ALL(cls) -> tuple["MediaType"]:  # pylint: disable=invalid-name
+        """Return all (default) MediaTypes as tuple."""
+        return (
             MediaType.ARTIST,
             MediaType.ALBUM,
             MediaType.TRACK,
             MediaType.PLAYLIST,
             MediaType.RADIO,
-        ]
+        )
 
 
 class LinkType(StrEnum):
@@ -194,36 +194,12 @@ class QueueOption(StrEnum):
     ADD = "add"
 
 
-class CrossFadeMode(StrEnum):
-    """
-    Enum with crossfade modes.
-
-    - DISABLED: no crossfading at all
-    - STRICT: do not crossfade tracks of same album
-    - SMART: crossfade if possible (do not crossfade different sample rates)
-    - ALWAYS: all tracks - resample to fixed sample rate
-    """
-
-    DISABLED = "disabled"
-    STRICT = "strict"
-    SMART = "smart"
-    ALWAYS = "always"
-
-
 class RepeatMode(StrEnum):
     """Enum with repeat modes."""
 
     OFF = "off"  # no repeat at all
     ONE = "one"  # repeat one/single track
     ALL = "all"  # repeat entire queue
-
-
-class MetadataMode(StrEnum):
-    """Enum with stream metadata modes."""
-
-    DISABLED = "disabled"  # do not notify icy support
-    DEFAULT = "default"  # enable icy if player requests it, default chunksize
-    LEGACY = "legacy"  # enable icy but with legacy 8kb chunksize, requires mp3
 
 
 class PlayerState(StrEnum):
@@ -288,8 +264,6 @@ class EventType(StrEnum):
     QUEUE_TIME_UPDATED = "queue_time_updated"
     QUEUE_SETTINGS_UPDATED = "queue_settings_updated"
     SHUTDOWN = "application_shutdown"
-    BACKGROUND_JOB_UPDATED = "background_job_updated"
-    BACKGROUND_JOB_FINISHED = "background_job_finished"
     MEDIA_ITEM_ADDED = "media_item_added"
     MEDIA_ITEM_UPDATED = "media_item_updated"
     MEDIA_ITEM_DELETED = "media_item_deleted"
@@ -298,8 +272,8 @@ class EventType(StrEnum):
     PLAYER_CONFIG_UPDATED = "player_config_updated"
 
 
-class MusicProviderFeature(StrEnum):
-    """Enum with features for a MusicProvider."""
+class ProviderFeature(StrEnum):
+    """Enum with features for a Provider."""
 
     # browse/explore/recommendations
     BROWSE = "browse"
@@ -337,20 +311,13 @@ class ProviderType(StrEnum):
     PLUGIN = "plugin"
 
 
-class StreamState(StrEnum):
-    """
-    Enum with the state of the QueueStream.
+class ConfigEntryType(StrEnum):
+    """Enum for the type of a config entry."""
 
-    pending_start: Stream is started but waiting for the client(s) to connect.
-    pending_stop: Abort of the stream is requested but pending stop/cleanup.
-    pending_next: The stream needs to be restarted (e.g. to switch to another sample rate).
-    running: Audio is currently being streamed to clients.
-    idle: There is no stream requested or in progress.
-    """
-
-    INITIALIZING = "initializing"
-    PENDING_START = "pending_start"
-    PENDING_STOP = "pending_stop"
-    PENDING_NEXT = "pending_next"
-    RUNNING = "running"
-    IDLE = "idle"
+    BOOLEAN = "boolean"
+    STRING = "string"
+    PASSWORD = "password"
+    INT = "integer"
+    FLOAT = "float"
+    LABEL = "label"
+    DICT = "dict"

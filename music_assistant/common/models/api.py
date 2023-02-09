@@ -14,7 +14,7 @@ from music_assistant.common.models.event import MassEvent
 class CommandMessage(DataClassDictMixin):
     """Model for a Message holding a command from server to client or client to server."""
 
-    message_id: str
+    message_id: str | int
     command: str
     args: dict[str, Any] | None = None
 

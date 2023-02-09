@@ -28,6 +28,7 @@ from aiohttp import WSMsgType, web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.models.enums import EventType
+from music_assistant.common.models.errors import InvalidCommand
 from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import __version__
 
@@ -84,7 +85,10 @@ def api_command(command: str) -> Callable[[_F], _F]:
 
 
 def parse_arguments(
-    func_sig: inspect.Signature, func_types: dict[str, Any], args: dict | None, strict: bool = False
+    func_sig: inspect.Signature,
+    func_types: dict[str, Any],
+    args: dict | None,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """Parse (and convert) incoming arguments to correct types."""
     if args is None:
@@ -245,7 +249,7 @@ class WebsocketClientHandler:
             self._send_message(
                 ErrorResultMessage(
                     msg.message_id,
-                    "invalid_command",
+                    InvalidCommand.error_code,
                     f"Invalid command: {msg.command}",
                 )
             )
@@ -267,7 +271,9 @@ class WebsocketClientHandler:
         except Exception as err:  # pylint: disable=broad-except
             self._logger.exception("Error handling message: %s", msg)
             self._send_message(
-                ErrorResultMessage(msg.message_id, "unknown_error", str(err))
+                ErrorResultMessage(
+                    msg.message_id, getattr(err, "error_code", 999), str(err)
+                )
             )
 
     async def _writer(self) -> None:

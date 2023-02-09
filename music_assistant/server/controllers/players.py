@@ -147,6 +147,10 @@ class PlayerController:
         if len(changed_keys) == 0:
             return
 
+        if not player.enabled and "enabled" not in changed_keys:
+            # ignore updates for disabled players
+            return
+
         # signal update to the playerqueue
         self.queues.on_player_update(player_id)
 
@@ -360,7 +364,7 @@ class PlayerController:
             member_player = self.get(member_id, True, True)
             if (
                 member_player.player_id not in player.can_sync_with
-                and not "*" in player.can_sync_with
+                and "*" not in player.can_sync_with
             ):
                 raise PlayerCommandFailed(
                     f"Player {member_id} can not be a member of {player_id}."

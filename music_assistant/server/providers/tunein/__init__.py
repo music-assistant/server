@@ -7,7 +7,7 @@ from typing import AsyncGenerator, List, Optional
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import create_sort_name
-from music_assistant.common.models.enums import MusicProviderFeature
+from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     ContentType,
@@ -30,8 +30,8 @@ class TuneInProvider(MusicProvider):
 
     _throttler = Throttler(rate_limit=1, period=1)
     _attr_supported_features = (
-        MusicProviderFeature.LIBRARY_RADIOS,
-        MusicProviderFeature.BROWSE,
+        ProviderFeature.LIBRARY_RADIOS,
+        ProviderFeature.BROWSE,
     )
 
     async def setup(self) -> None:

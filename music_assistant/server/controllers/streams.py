@@ -4,17 +4,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import urllib.parse
-from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, AsyncContextManager, AsyncGenerator, Awaitable
+from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 import shortuuid
 from aiohttp import web
 
-from music_assistant.common.helpers.util import empty_queue
-from music_assistant.common.models.enums import ContentType, MetadataMode, StreamState
-from music_assistant.common.models.errors import PlayerUnavailableError
-from music_assistant.common.models.media_items import StreamDetails
+from music_assistant.common.models.enums import ContentType
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import (
@@ -347,4 +342,4 @@ class StreamsController:
         for stream_id in stale:
             self.stream_jobs.pop(stream_id, None)
         # reschedule self to run every 5 minutes
-        self.mass.loop.call_later(300, self.mass.create_task, self._cleanup_stale())
+        self.mass.loop.call_later(300, asyncio.create_task, self._cleanup_stale())

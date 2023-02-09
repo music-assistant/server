@@ -1,13 +1,14 @@
 """Models for providers and plugins in the MA ecosystem."""
 
 from dataclasses import dataclass, field
+from typing import TypedDict
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.helpers.json import load_json_file
 
 from .config_entries import ConfigEntry
-from .enums import ProviderType
+from .enums import ProviderFeature, ProviderType
 
 
 @dataclass
@@ -41,3 +42,13 @@ class ProviderManifest(DataClassDictMixin):
         """Parse ProviderManifest from file."""
         manifest_dict = await load_json_file(manifest_file)
         return cls.from_dict(manifest_dict)
+
+
+class ProviderInstance(TypedDict):
+    """Provider instance detailed dict when a provider is serialized over the api."""
+
+    type: ProviderType
+    domain: str
+    name: str
+    instance_id: str
+    supported_features: list[ProviderFeature]

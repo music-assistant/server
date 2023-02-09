@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import AsyncGenerator
 
-from music_assistant.common.models.enums import MediaType, MusicProviderFeature
+from music_assistant.common.models.enums import MediaType, ProviderFeature
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -25,13 +25,6 @@ class MusicProvider(Provider):
     Music Provider implementations should inherit from this base model.
     """
 
-    _attr_supported_features: tuple[MusicProviderFeature] = tuple()
-
-    @property
-    def supported_features(self) -> tuple[MusicProviderFeature]:
-        """Return the features supported by this MusicProvider."""
-        return self._attr_supported_features
-
     async def search(
         self,
         search_query: str,
@@ -45,32 +38,32 @@ class MusicProvider(Provider):
             :param media_types: A list of media_types to include. All types if None.
             :param limit: Number of items to return in the search (per type).
         """
-        if MusicProviderFeature.SEARCH in self.supported_features:
+        if ProviderFeature.SEARCH in self.supported_features:
             raise NotImplementedError
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
-        if MusicProviderFeature.LIBRARY_ARTISTS in self.supported_features:
+        if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             raise NotImplementedError
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider."""
-        if MusicProviderFeature.LIBRARY_ALBUMS in self.supported_features:
+        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
             raise NotImplementedError
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        if MusicProviderFeature.LIBRARY_TRACKS in self.supported_features:
+        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
             raise NotImplementedError
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library/subscribed playlists from the provider."""
-        if MusicProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
+        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
             raise NotImplementedError
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
-        if MusicProviderFeature.LIBRARY_RADIOS in self.supported_features:
+        if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
             raise NotImplementedError
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -79,13 +72,13 @@ class MusicProvider(Provider):
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
-        if MusicProviderFeature.ARTIST_ALBUMS in self.supported_features:
+        if ProviderFeature.ARTIST_ALBUMS in self.supported_features:
             raise NotImplementedError
         return []
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
-        if MusicProviderFeature.ARTIST_TOPTRACKS in self.supported_features:
+        if ProviderFeature.ARTIST_TOPTRACKS in self.supported_features:
             raise NotImplementedError
         return []
 
@@ -117,27 +110,27 @@ class MusicProvider(Provider):
         """Add item to provider's library. Return true on succes."""
         if (
             media_type == MediaType.ARTIST
-            and MusicProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
+            and ProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
             media_type == MediaType.ALBUM
-            and MusicProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
+            and ProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
             media_type == MediaType.TRACK
-            and MusicProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
+            and ProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
             media_type == MediaType.PLAYLIST
-            and MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
+            and ProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
             media_type == MediaType.RADIO
-            and MusicProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
+            and ProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         self.logger.info(
@@ -150,27 +143,27 @@ class MusicProvider(Provider):
         """Remove item from provider's library. Return true on succes."""
         if (
             media_type == MediaType.ARTIST
-            and MusicProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
+            and ProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
             media_type == MediaType.ALBUM
-            and MusicProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
+            and ProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
             media_type == MediaType.TRACK
-            and MusicProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
+            and ProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
             media_type == MediaType.PLAYLIST
-            and MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
+            and ProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
             media_type == MediaType.RADIO
-            and MusicProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
+            and ProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         self.logger.info(
@@ -183,14 +176,14 @@ class MusicProvider(Provider):
         self, prov_playlist_id: str, prov_track_ids: list[str]
     ) -> None:
         """Add track(s) to playlist."""
-        if MusicProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
+        if ProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
             raise NotImplementedError
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int]
     ) -> None:
         """Remove track(s) from playlist."""
-        if MusicProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
+        if ProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
             raise NotImplementedError
 
     async def create_playlist(self, name: str) -> Playlist:
@@ -229,7 +222,7 @@ class MusicProvider(Provider):
 
             :param path: The path to browse, (e.g. provid://artists).
         """
-        if MusicProviderFeature.BROWSE not in self.supported_features:
+        if ProviderFeature.BROWSE not in self.supported_features:
             # we may NOT use the default implementation if the provider does not support browse
             raise NotImplementedError
 
@@ -239,7 +232,7 @@ class MusicProvider(Provider):
         if not subpath:
             # return main listing
             root_items = []
-            if MusicProviderFeature.LIBRARY_ARTISTS in self.supported_features:
+            if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
                 root_items.append(
                     BrowseFolder(
                         item_id="artists",
@@ -249,7 +242,7 @@ class MusicProvider(Provider):
                         label="artists",
                     )
                 )
-            if MusicProviderFeature.LIBRARY_ALBUMS in self.supported_features:
+            if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
                 root_items.append(
                     BrowseFolder(
                         item_id="albums",
@@ -259,7 +252,7 @@ class MusicProvider(Provider):
                         label="albums",
                     )
                 )
-            if MusicProviderFeature.LIBRARY_TRACKS in self.supported_features:
+            if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
                 root_items.append(
                     BrowseFolder(
                         item_id="tracks",
@@ -269,7 +262,7 @@ class MusicProvider(Provider):
                         label="tracks",
                     )
                 )
-            if MusicProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
+            if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
                 root_items.append(
                     BrowseFolder(
                         item_id="playlists",
@@ -279,7 +272,7 @@ class MusicProvider(Provider):
                         label="playlists",
                     )
                 )
-            if MusicProviderFeature.LIBRARY_RADIOS in self.supported_features:
+            if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
                 root_items.append(
                     BrowseFolder(
                         item_id="radios",
@@ -349,7 +342,7 @@ class MusicProvider(Provider):
 
             Returns a list of BrowseFolder items with (max 25) mediaitems in the items attribute.
         """
-        if MusicProviderFeature.RECOMMENDATIONS in self.supported_features:
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError
 
     async def sync_library(self, media_types: tuple[MediaType] | None = None) -> None:
@@ -370,7 +363,7 @@ class MusicProvider(Provider):
                 prov_item: MediaItemType = prov_item
 
                 db_item: MediaItemType = await controller.get_db_item_by_prov_id(
-                    provider_item_id=prov_item.item_id,
+                    item_id=prov_item.item_id,
                     provider_domain=prov_item.provider,
                 )
                 if not db_item:
@@ -414,30 +407,28 @@ class MusicProvider(Provider):
     def library_supported(self, media_type: MediaType) -> bool:
         """Return if Library is supported for given MediaType on this provider."""
         if media_type == MediaType.ARTIST:
-            return MusicProviderFeature.LIBRARY_ARTISTS in self.supported_features
+            return ProviderFeature.LIBRARY_ARTISTS in self.supported_features
         if media_type == MediaType.ALBUM:
-            return MusicProviderFeature.LIBRARY_ALBUMS in self.supported_features
+            return ProviderFeature.LIBRARY_ALBUMS in self.supported_features
         if media_type == MediaType.TRACK:
-            return MusicProviderFeature.LIBRARY_TRACKS in self.supported_features
+            return ProviderFeature.LIBRARY_TRACKS in self.supported_features
         if media_type == MediaType.PLAYLIST:
-            return MusicProviderFeature.LIBRARY_PLAYLISTS in self.supported_features
+            return ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features
         if media_type == MediaType.RADIO:
-            return MusicProviderFeature.LIBRARY_RADIOS in self.supported_features
+            return ProviderFeature.LIBRARY_RADIOS in self.supported_features
 
     def library_edit_supported(self, media_type: MediaType) -> bool:
         """Return if Library add/remove is supported for given MediaType on this provider."""
         if media_type == MediaType.ARTIST:
-            return MusicProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
+            return ProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
         if media_type == MediaType.ALBUM:
-            return MusicProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
+            return ProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
         if media_type == MediaType.TRACK:
-            return MusicProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
+            return ProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
         if media_type == MediaType.PLAYLIST:
-            return (
-                MusicProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
-            )
+            return ProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
         if media_type == MediaType.RADIO:
-            return MusicProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
+            return ProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
 
     def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType]:
         """Return library generator for given media_type."""

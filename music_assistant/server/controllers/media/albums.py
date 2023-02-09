@@ -6,7 +6,7 @@ from random import choice, random
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.json import json_dumps
-from music_assistant.common.models.enums import EventType, MusicProviderFeature
+from music_assistant.common.models.enums import EventType, ProviderFeature
 from music_assistant.common.models.errors import (
     MediaNotFoundError,
     UnsupportedFeaturedException,
@@ -34,6 +34,17 @@ class AlbumsController(MediaControllerBase[Album]):
     db_table = DB_TABLE_ALBUMS
     media_type = MediaType.ALBUM
     item_cls = Album
+
+    def __init__(self, *args, **kwargs):
+        """Initialize class."""
+        super().__init__(*args, **kwargs)
+        # register api handlers
+        self.mass.register_api_command("music/albums", self.db_items)
+        self.mass.register_api_command("music/album", self.get)
+        self.mass.register_api_command("music/album/tracks", self.tracks)
+        self.mass.register_api_command("music/album/versions", self.versions)
+        self.mass.register_api_command("music/album/update", self.update_db_item)
+        self.mass.register_api_command("music/album/delete", self.delete_db_item)
 
     async def get(self, *args, **kwargs) -> Album:
         """Return (full) details for a single media item."""
@@ -289,7 +300,7 @@ class AlbumsController(MediaControllerBase[Album]):
         prov = self.mass.get_provider(provider_instance or provider_domain)
         if (
             not prov
-            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
+            or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features
         ):
             return []
         album_tracks = await self._get_provider_album_tracks(
@@ -387,7 +398,7 @@ class AlbumsController(MediaControllerBase[Album]):
         for provider in self.mass.music.providers:
             if provider.type in cur_provider_domains:
                 continue
-            if MusicProviderFeature.SEARCH not in provider.supported_features:
+            if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
             if await find_prov_match(provider):
                 cur_provider_domains.add(provider.type)

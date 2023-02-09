@@ -10,7 +10,7 @@ from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.models.enums import (
     EventType,
     MediaType,
-    MusicProviderFeature,
+    ProviderFeature,
 )
 from music_assistant.common.models.errors import (
     InvalidDataError,
@@ -30,6 +30,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
     db_table = DB_TABLE_PLAYLISTS
     media_type = MediaType.PLAYLIST
     item_cls = Playlist
+
+    def __init__(self, *args, **kwargs):
+        """Initialize class."""
+        super().__init__(*args, **kwargs)
+        # register api handlers
+        self.mass.register_api_command("music/playlists", self.db_items)
+        self.mass.register_api_command("music/playlist", self.get)
+        self.mass.register_api_command("music/playlist/tracks", self.tracks)
+        self.mass.register_api_command("music/playlist/tracks/add", self.add_playlist_tracks)
+        self.mass.register_api_command("music/playlist/tracks/remove", self.remove_playlist_tracks)
+        self.mass.register_api_command("music/playlist/update", self.update_db_item)
+        self.mass.register_api_command("music/playlist/delete", self.delete_db_item)
+        self.mass.register_api_command("music/playlist/create", self.create)
 
     async def tracks(
         self,
@@ -73,7 +86,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 (
                     x
                     for x in self.mass.music.providers
-                    if MusicProviderFeature.PLAYLIST_CREATE in x.supported_features
+                    if ProviderFeature.PLAYLIST_CREATE in x.supported_features
                 ),
                 None,
             )
@@ -173,7 +186,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         for prov_mapping in playlist.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
             if (
-                MusicProviderFeature.PLAYLIST_TRACKS_EDIT
+                ProviderFeature.PLAYLIST_TRACKS_EDIT
                 not in provider.supported_features
             ):
                 self.logger.warning(
@@ -280,7 +293,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider = self.mass.get_provider(provider_instance or provider_domain)
         if (
             not provider
-            or MusicProviderFeature.SIMILAR_TRACKS not in provider.supported_features
+            or ProviderFeature.SIMILAR_TRACKS not in provider.supported_features
         ):
             return []
         playlist_tracks = await self._get_provider_playlist_tracks(

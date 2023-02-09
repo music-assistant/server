@@ -8,19 +8,14 @@ from typing import Any
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.enums import ProviderType
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    CONF_MAX_SAMPLE_RATE,
+    CONF_VOLUME_NORMALISATION,
+    CONF_VOLUME_NORMALISATION_TARGET,
+)
 
-
-class ConfigEntryType(Enum):
-    """Enum for the type of a config entry."""
-
-    BOOLEAN = "boolean"
-    STRING = "string"
-    PASSWORD = "password"
-    INT = "integer"
-    FLOAT = "float"
-    LABEL = "label"
-    DICT = "dict"
-
+from .enums import ConfigEntryType
 
 ConfigValueType = str | int | float | bool | dict | None
 
@@ -85,9 +80,11 @@ class ConfigEntryValue(ConfigEntry):
     @classmethod
     def parse(cls, entry: ConfigEntry, value: ConfigValueType) -> "ConfigEntryValue":
         """Parse ConfigEntryValue from the config entry and plain value."""
-        result = ConfigEntryValue.from_dict(entry.to_dict)
+        result = ConfigEntryValue.from_dict(entry.to_dict())
         result.value = value
         expected_type = ConfigEntryTypeMap.get(result.type)
+        if result.value is None:
+            result.value = entry.default_value
         if result.value is None and not entry.required:
             expected_type = None
         if not isinstance(result.value, expected_type):
@@ -138,7 +135,7 @@ class ProviderConfig(Config):
     # enabled: boolean to indicate if the provider is enabled
     enabled: bool = True
     # name: an (optional) custom name for this provider instance/config
-    title: str | None = None
+    name: str | None = None
 
 
 @dataclass
@@ -151,3 +148,49 @@ class PlayerConfig(Config):
     enabled: bool = True
     # name: an (optional) custom name for this player
     name: str | None = None
+
+
+DEFAULT_PLAYER_CONFIG_ENTRIES = (
+    ConfigEntry(
+        key=CONF_VOLUME_NORMALISATION,
+        type=ConfigEntryType.BOOLEAN,
+        label="Enable volume normalization (EBU-R128 based)",
+        default_value=True,
+        description="Enable volume normalization based on the EBU-R128 standard without affecting dynamic range",
+    ),
+    ConfigEntry(
+        key=CONF_CROSSFADE,
+        type=ConfigEntryType.BOOLEAN,
+        label="Enable crossfade between tracks",
+        default_value=True,
+        description="Enable a crossfade transition between tracks (of different albums)",
+    ),
+    ConfigEntry(
+        key=CONF_VOLUME_NORMALISATION_TARGET,
+        type=ConfigEntryType.INT,
+        range=(-30, 0),
+        default_value=-14,
+        label="Target level for volume normalisation",
+        description="Adjust average (perceived) loudness to this target level, default is -14 LUFS",
+        depends_on=CONF_VOLUME_NORMALISATION,
+        advanced=True,
+    ),
+    ConfigEntry(
+        key=CONF_MAX_SAMPLE_RATE,
+        type=ConfigEntryType.INT,
+        options=(
+            ConfigValueOption("44100", 44100),
+            ConfigValueOption("48000", 48000),
+            ConfigValueOption("88200", 88200),
+            ConfigValueOption("96000", 96000),
+            ConfigValueOption("176400", 176400),
+            ConfigValueOption("192000", 192000),
+            ConfigValueOption("352800", 352800),
+            ConfigValueOption("384000", 384000),
+        ),
+        default_value=96000,
+        label="Maximum sample rate",
+        description="Maximum sample rate that is sent to the player, content with a higher sample rate than this treshold will be downsampled",
+        advanced=True,
+    ),
+)

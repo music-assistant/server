@@ -24,7 +24,7 @@ def json_encoder_default(obj: Any) -> Any:
     if hasattr(obj, "as_dict"):
         return obj.as_dict()
     if hasattr(obj, "to_dict"):
-        return obj.to_dict()
+        return obj.to_dict(omit_none=True)
     if isinstance(obj, bytes):
         return base64.b64encode(obj).decode("ascii")
 

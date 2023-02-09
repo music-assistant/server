@@ -1,5 +1,6 @@
 """Manage MediaItems of type Artist."""
 from __future__ import annotations
+
 import asyncio
 import itertools
 from random import choice, random
@@ -7,7 +8,7 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.json import json_dumps
-from music_assistant.common.models.enums import EventType, MusicProviderFeature
+from music_assistant.common.models.enums import EventType, ProviderFeature
 from music_assistant.common.models.errors import (
     MediaNotFoundError,
     UnsupportedFeaturedException,
@@ -40,6 +41,17 @@ class ArtistsController(MediaControllerBase[Artist]):
     db_table = DB_TABLE_ARTISTS
     media_type = MediaType.ARTIST
     item_cls = Artist
+
+    def __init__(self, *args, **kwargs):
+        """Initialize class."""
+        super().__init__(*args, **kwargs)
+        # register api handlers
+        self.mass.register_api_command("music/artists", self.db_items)
+        self.mass.register_api_command("music/albumartists", self.album_artists)
+        self.mass.register_api_command("music/artist", self.get)
+        self.mass.register_api_command("music/artist/tracks", self.tracks)
+        self.mass.register_api_command("music/artist/update", self.update_db_item)
+        self.mass.register_api_command("music/artist/delete", self.delete_db_item)
 
     async def album_artists(
         self,
@@ -157,7 +169,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         for provider in self.mass.music.providers:
             if provider.type in cur_provider_domains:
                 continue
-            if MusicProviderFeature.SEARCH not in provider.supported_features:
+            if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
             if await self._match(db_artist, provider):
                 cur_provider_domains.add(provider.type)
@@ -184,7 +196,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        if MusicProviderFeature.ARTIST_TOPTRACKS in prov.supported_features:
+        if ProviderFeature.ARTIST_TOPTRACKS in prov.supported_features:
             items = await prov.get_artist_toptracks(item_id)
         else:
             # fallback implementation using the db
@@ -222,7 +234,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Album.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        if MusicProviderFeature.ARTIST_ALBUMS in prov.supported_features:
+        if ProviderFeature.ARTIST_ALBUMS in prov.supported_features:
             items = await prov.get_artist_albums(item_id)
         else:
             # fallback implementation using the db
@@ -373,10 +385,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ):
         """Generate a dynamic list of tracks based on the artist's top tracks."""
         prov = self.mass.get_provider(provider_instance or provider_domain)
-        if (
-            not prov
-            or MusicProviderFeature.SIMILAR_TRACKS not in prov.supported_features
-        ):
+        if not prov or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []
         top_tracks = await self.get_provider_artist_toptracks(
             item_id=item_id,

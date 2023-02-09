@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from music_assistant.common.models.enums import ContentType, PlayerState
+from typing import TYPE_CHECKING
 
+from music_assistant.common.models.enums import ContentType
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.queue_item import QueueItem
 
 from .provider import Provider
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ConfigEntry
 
 
 class PlayerProvider(Provider):
@@ -17,13 +21,9 @@ class PlayerProvider(Provider):
     Player Provider implementations should inherit from this base model.
     """
 
-    @property
-    def players(self) -> list[Player]:
-        """Return all players belonging to this provider."""
-        # pylint: disable=no-member
-        return [
-            player for player in self.mass.players if player.provider == self.domain
-        ]
+    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        return tuple()
 
     @abstractmethod
     async def cmd_stop(self, player_id: str) -> None:
@@ -158,3 +158,13 @@ class PlayerProvider(Provider):
         """
         # will only be called for players of type GROUP with SET_MEMBERS feature set.
         raise NotImplementedError()
+
+    # DO NOT OVERRIDE BELOW
+
+    @property
+    def players(self) -> list[Player]:
+        """Return all players belonging to this provider."""
+        # pylint: disable=no-member
+        return [
+            player for player in self.mass.players if player.provider == self.domain
+        ]

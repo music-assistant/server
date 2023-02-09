@@ -21,7 +21,7 @@ from music_assistant.common.models.errors import (
     SetupFailedError,
 )
 from music_assistant.common.models.event import MassEvent
-from music_assistant.common.models.provider_manifest import ProviderManifest
+from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
     CONF_WEB_HOST,
     CONF_WEB_PORT,
@@ -70,6 +70,9 @@ class MusicAssistant:
         Create an instance of the MusicAssistant Server."""
         self.storage_path = storage_path
         self.port = port
+        # we dynamically register command handlers
+        self.webapp = web.Application()
+        self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventCallBackType] = set()
         self._available_providers: dict[str, ProviderManifest] = {}
         self._providers: dict[str, ProviderType] = {}
@@ -84,9 +87,7 @@ class MusicAssistant:
         self._tracked_tasks: list[asyncio.Task] = []
         self.closed = False
         self.loop: asyncio.AbstractEventLoop | None = None
-        # we dynamically register command handlers
-        self.webapp = web.Application()
-        self.command_handlers: dict[str, APICommandHandler] = {}
+        # register all api commands (methods with decorator)    
         self._register_api_commands()
 
     async def start(self) -> None:
@@ -94,7 +95,7 @@ class MusicAssistant:
         self.loop = asyncio.get_running_loop()
         # if port is None, we need to autoselect it, prefer 9000 (lms)
         if self.port is None:
-            self.port = await select_free_port(9000, 9200)
+            self.port = await select_free_port(8095, 9200)
         # create shared aiohttp ClientSession
         self.http_session = ClientSession(
             loop=self.loop,
@@ -152,6 +153,15 @@ class MusicAssistant:
         """Return all available Providers."""
         return list(self._available_providers.values())
 
+    @api_command("providers")
+    def get_providers(self, provider_type: ProviderType | None) -> list[ProviderType]:
+        """Return all loaded/running Providers (instances), optionally filtered by ProviderType."""
+        return [
+            x
+            for x in self._providers.values()
+            if provider_type is None or provider_type == x.type
+        ]
+
     @property
     def providers(self) -> list[ProviderType]:
         """Return all loaded/running Providers (instances)."""
@@ -167,14 +177,6 @@ class MusicAssistant:
         raise ProviderUnavailableError(
             f"Provider {provider_instance_or_domain} is not available"
         )
-
-    def get_providers(self, provider_type: ProviderType | None) -> list[ProviderType]:
-        """Return all loaded/running Providers (instances), optionally filtered by ProviderType."""
-        return [
-            x
-            for x in self._providers.values()
-            if provider_type is None or provider_type == x.type
-        ]
 
     def signal_event(
         self,
@@ -361,13 +363,13 @@ class MusicAssistant:
         except Exception as exc:
             LOGGER.exception(
                 "Error loading provider(instance) %s: %s",
-                conf.title or conf.domain,
+                conf.name or conf.domain,
                 str(exc),
             )
         else:
             LOGGER.debug(
                 "Successfully loaded provider %s",
-                conf.title or conf.domain,
+                conf.name or conf.domain,
             )
 
     async def __load_available_providers(self) -> None:
