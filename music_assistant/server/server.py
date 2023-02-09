@@ -359,6 +359,8 @@ class MusicAssistant:
             provider: ProviderType = prov_cls(self, prov_manifest, conf)
             self._providers[provider.instance_id] = provider
             await provider.setup()
+            # TODO: handle setup failed, add provider as unavailable
+            provider.available = True
         # pylint: disable=broad-except
         except Exception as exc:
             LOGGER.exception(

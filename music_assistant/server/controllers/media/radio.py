@@ -43,7 +43,7 @@ class RadioController(MediaControllerBase[Radio]):
         ), "Provider type or ID must be specified"
         radio = await self.get(item_id, provider_domain, provider_instance)
         # perform a search on all provider(types) to collect all versions/variants
-        provider_domains = {item.type for item in self.mass.music.providers}
+        provider_domains = {item.domain for item in self.mass.music.providers}
         all_versions = {
             prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(

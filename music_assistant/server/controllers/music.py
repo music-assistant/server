@@ -85,8 +85,8 @@ class MusicController:
     @api_command("music/sync")
     async def start_sync(
         self,
-        media_types: tuple[MediaType] | None = None,
-        providers: tuple[str] | None = None,
+        media_types: list[MediaType] | None = None,
+        providers: list[str] | None = None,
     ) -> None:
         """
         Start running the sync of (all or selected) musicproviders.
@@ -106,7 +106,7 @@ class MusicController:
     @api_command("music/search")
     async def search(
         self,
-        search_query,
+        search_query: str,
         media_types: list[MediaType] = MediaType.ALL,
         limit: int = 10,
     ) -> list[MediaItemType]:
@@ -118,9 +118,9 @@ class MusicController:
             :param limit: number of items to return in the search (per type).
         """
         # include results from all music providers
-        provider_instances = (item.id for item in self.providers)
+        provider_instances = (item.instance_id for item in self.providers)
         # TODO: sort by name and filter out duplicates ?
-        return itertools.chain.from_iterable(
+        return list(itertools.chain.from_iterable(
             await asyncio.gather(
                 *[
                     self.search_provider(
@@ -132,7 +132,7 @@ class MusicController:
                     for provider_instance in provider_instances
                 ]
             )
-        )
+        ))
 
     async def search_provider(
         self,
@@ -160,7 +160,7 @@ class MusicController:
         search_query = search_query.replace("/", " ").replace("'", "")
 
         # prefer cache items (if any)
-        cache_key = f"{prov.type}.search.{search_query}.{limit}"
+        cache_key = f"{prov.domain}.search.{search_query}.{limit}"
         cache_key += "".join((x for x in media_types))
 
         if cache := await self.mass.cache.get(cache_key):
@@ -193,8 +193,8 @@ class MusicController:
                 items=[
                     BrowseFolder(
                         item_id="root",
-                        provider=prov.type,
-                        path=f"{prov.id}://",
+                        provider=prov.domain,
+                        path=f"{prov.instance_id}://",
                         name=prov.name,
                     )
                     for prov in self.providers

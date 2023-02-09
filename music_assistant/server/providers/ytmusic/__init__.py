@@ -77,9 +77,9 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def setup(self) -> None:
         """Set up the YTMusic provider."""
-        if not self.config.values[CONF_USERNAME] or not self.config.values[CONF_COOKIE]:
+        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_COOKIE):
             raise LoginFailed("Invalid login credentials")
-        await self._initialize_headers(cookie=self.config.values[CONF_COOKIE])
+        await self._initialize_headers(cookie=self.config.get_value(CONF_COOKIE))
         await self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
         self._signature_timestamp = await self._get_signature_timestamp()
@@ -122,7 +122,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Youtube Music."""
         artists_obj = await get_library_artists(
-            headers=self._headers, username=self.config.values[CONF_USERNAME]
+            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
         )
         for artist in artists_obj:
             yield await self._parse_artist(artist)
@@ -130,7 +130,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Youtube Music."""
         albums_obj = await get_library_albums(
-            headers=self._headers, username=self.config.values[CONF_USERNAME]
+            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
         )
         for album in albums_obj:
             yield await self._parse_album(album, album["browseId"])
@@ -138,7 +138,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         playlists_obj = await get_library_playlists(
-            headers=self._headers, username=self.config.values[CONF_USERNAME]
+            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
         )
         for playlist in playlists_obj:
             yield await self._parse_playlist(playlist)
@@ -146,7 +146,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Youtube Music."""
         tracks_obj = await get_library_tracks(
-            headers=self._headers, username=self.config.values[CONF_USERNAME]
+            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
         )
         for track in tracks_obj:
             # Library tracks sometimes do not have a valid artist id
@@ -194,7 +194,7 @@ class YoutubeMusicProvider(MusicProvider):
         playlist_obj = await get_playlist(
             prov_playlist_id=prov_playlist_id,
             headers=self._headers,
-            username=self.config.values[CONF_USERNAME],
+            username=self.config.get_value(CONF_USERNAME),
         )
         return await self._parse_playlist(playlist_obj)
 
@@ -203,7 +203,7 @@ class YoutubeMusicProvider(MusicProvider):
         playlist_obj = await get_playlist(
             prov_playlist_id=prov_playlist_id,
             headers=self._headers,
-            username=self.config.values[CONF_USERNAME],
+            username=self.config.get_value(CONF_USERNAME),
         )
         if "tracks" not in playlist_obj:
             return []
@@ -257,21 +257,21 @@ class YoutubeMusicProvider(MusicProvider):
                 headers=self._headers,
                 prov_artist_id=prov_item_id,
                 add=True,
-                username=self.config.values[CONF_USERNAME],
+                username=self.config.get_value(CONF_USERNAME),
             )
         elif media_type == MediaType.ALBUM:
             result = await library_add_remove_album(
                 headers=self._headers,
                 prov_item_id=prov_item_id,
                 add=True,
-                username=self.config.values[CONF_USERNAME],
+                username=self.config.get_value(CONF_USERNAME),
             )
         elif media_type == MediaType.PLAYLIST:
             result = await library_add_remove_playlist(
                 headers=self._headers,
                 prov_item_id=prov_item_id,
                 add=True,
-                username=self.config.values[CONF_USERNAME],
+                username=self.config.get_value(CONF_USERNAME),
             )
         elif media_type == MediaType.TRACK:
             raise NotImplementedError
@@ -285,21 +285,21 @@ class YoutubeMusicProvider(MusicProvider):
                 headers=self._headers,
                 prov_artist_id=prov_item_id,
                 add=False,
-                username=self.config.values[CONF_USERNAME],
+                username=self.config.get_value(CONF_USERNAME),
             )
         elif media_type == MediaType.ALBUM:
             result = await library_add_remove_album(
                 headers=self._headers,
                 prov_item_id=prov_item_id,
                 add=False,
-                username=self.config.values[CONF_USERNAME],
+                username=self.config.get_value(CONF_USERNAME),
             )
         elif media_type == MediaType.PLAYLIST:
             result = await library_add_remove_playlist(
                 headers=self._headers,
                 prov_item_id=prov_item_id,
                 add=False,
-                username=self.config.values[CONF_USERNAME],
+                username=self.config.get_value(CONF_USERNAME),
             )
         elif media_type == MediaType.TRACK:
             raise NotImplementedError
@@ -314,7 +314,7 @@ class YoutubeMusicProvider(MusicProvider):
             prov_playlist_id=prov_playlist_id,
             prov_track_ids=prov_track_ids,
             add=True,
-            username=self.config.values[CONF_USERNAME],
+            username=self.config.get_value(CONF_USERNAME),
         )
 
     async def remove_playlist_tracks(
@@ -324,7 +324,7 @@ class YoutubeMusicProvider(MusicProvider):
         playlist_obj = await get_playlist(
             prov_playlist_id=prov_playlist_id,
             headers=self._headers,
-            username=self.config.values[CONF_USERNAME],
+            username=self.config.get_value(CONF_USERNAME),
         )
         if "tracks" not in playlist_obj:
             return
@@ -343,7 +343,7 @@ class YoutubeMusicProvider(MusicProvider):
             prov_playlist_id=prov_playlist_id,
             prov_track_ids=tracks_to_delete,
             add=False,
-            username=self.config.values[CONF_USERNAME],
+            username=self.config.get_value(CONF_USERNAME),
         )
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> List[Track]:
@@ -351,7 +351,7 @@ class YoutubeMusicProvider(MusicProvider):
         result = []
         result = await get_song_radio_tracks(
             headers=self._headers,
-            username=self.config.values[CONF_USERNAME],
+            username=self.config.get_value(CONF_USERNAME),
             prov_item_id=prov_track_id,
             limit=limit,
         )
@@ -496,8 +496,8 @@ class YoutubeMusicProvider(MusicProvider):
         album.add_provider_mapping(
             ProviderMapping(
                 item_id=str(album_id),
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
             )
         )
         return album
@@ -525,8 +525,8 @@ class YoutubeMusicProvider(MusicProvider):
         artist.add_provider_mapping(
             ProviderMapping(
                 item_id=str(artist_id),
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 url=f"https://music.youtube.com/channel/{artist_id}",
             )
         )
@@ -550,8 +550,8 @@ class YoutubeMusicProvider(MusicProvider):
         playlist.add_provider_mapping(
             ProviderMapping(
                 item_id=playlist_obj["id"],
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
             )
         )
         playlist.metadata.checksum = playlist_obj.get("checksum")
@@ -598,8 +598,8 @@ class YoutubeMusicProvider(MusicProvider):
         track.add_provider_mapping(
             ProviderMapping(
                 item_id=str(track_obj["videoId"]),
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 available=available,
                 content_type=ContentType.M4A,
             )

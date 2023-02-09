@@ -17,7 +17,9 @@ from music_assistant.common.helpers.json import (
 from music_assistant.common.models.config_entries import (
     DEFAULT_PLAYER_CONFIG_ENTRIES,
     PlayerConfig,
+    PlayerConfigSet,
     ProviderConfig,
+    ProviderConfigSet,
 )
 from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import PlayerUnavailableError
@@ -145,7 +147,7 @@ class ConfigController:
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/set")
-    def set_provider_config(self, config: ProviderConfig) -> None:
+    def set_provider_config(self, config: ProviderConfig | ProviderConfigSet) -> None:
         """Create or update ProviderConfig."""
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         existing = self.get(conf_key)
@@ -154,6 +156,9 @@ class ConfigController:
             # no changes
             return
         self.set(conf_key, config_dict)
+        # make sure we send a full object in the event
+        if isinstance(config, ProviderConfigSet):
+            config = self.get(f"{CONF_PROVIDERS}/{config.instance_id}")
         if existing:
             # existing provider updated
             self.mass.signal_event(
@@ -197,7 +202,7 @@ class ConfigController:
         return PlayerConfig.parse(entries, conf)
 
     @api_command("config/players/set")
-    def set_player_config(self, config: PlayerConfig) -> None:
+    def set_player_config(self, config: PlayerConfig | PlayerConfigSet) -> None:
         """Create or update PlayerConfig."""
         conf_key = f"{CONF_PLAYERS}/{config.player_id}"
         existing = self.get(conf_key)
@@ -206,7 +211,10 @@ class ConfigController:
             # no changes
             return
         self.set(conf_key, config_dict)
-        # existing config updated
+        # make sure we send a full object in the event
+        if isinstance(config, PlayerConfigSet):
+            config = self.get(f"{CONF_PLAYERS}/{config.player_id}")
+        # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
             object_id=config.player_id,

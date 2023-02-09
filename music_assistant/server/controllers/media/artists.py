@@ -167,12 +167,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         ), "Matching only supported for database items!"
         cur_provider_domains = {x.provider_domain for x in db_artist.provider_mappings}
         for provider in self.mass.music.providers:
-            if provider.type in cur_provider_domains:
+            if provider.domain in cur_provider_domains:
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
             if await self._match(db_artist, provider):
-                cur_provider_domains.add(provider.type)
+                cur_provider_domains.add(provider.domain)
             else:
                 self.logger.debug(
                     "Could not find match for Artist %s on provider %s",
@@ -192,7 +192,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if not prov:
             return []
         # prefer cache items (if any)
-        cache_key = f"{prov.type}.artist_toptracks.{item_id}"
+        cache_key = f"{prov.domain}.artist_toptracks.{item_id}"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -230,7 +230,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if not prov:
             return []
         # prefer cache items (if any)
-        cache_key = f"{prov.type}.artist_albums.{item_id}"
+        cache_key = f"{prov.domain}.artist_albums.{item_id}"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Album.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -438,7 +438,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 ref_track.name,
             ):
                 search_results = await self.mass.music.tracks.search(
-                    search_str, provider.type
+                    search_str, provider.domain
                 )
                 for search_result_item in search_results:
                     if search_result_item.sort_name != ref_track.sort_name:
@@ -469,7 +469,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"{db_artist.name} {ref_album.name}",
             ):
                 search_result = await self.mass.music.albums.search(
-                    search_str, provider.type
+                    search_str, provider.domain
                 )
                 for search_result_item in search_result:
                     if search_result_item.artist is None:

@@ -216,14 +216,10 @@ class PlayerType(StrEnum):
     Enum with possible Player Types.
 
     player: A regular player.
-    sync_child: Player that is synced to another (platform-specific) player.
     group: A (dedicated) group player or playergroup.
-
-    Note: A player marked as sync_child can not accept playback related commands itself.
     """
 
     PLAYER = "player"
-    SYNC_CHILD = "sync_child"
     GROUP = "group"
 
 

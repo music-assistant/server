@@ -264,7 +264,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not provider:
             return []
         # prefer cache items (if any)
-        cache_key = f"{provider.id}.playlist.{item_id}.tracks"
+        cache_key = f"{provider.instance_id}.playlist.{item_id}.tracks"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider

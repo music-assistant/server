@@ -36,9 +36,9 @@ class TuneInProvider(MusicProvider):
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
-        if not self.config.values[CONF_USERNAME]:
+        if not self.config.get_value(CONF_USERNAME):
             raise LoginFailed("Username is invalid")
-        if "@" in self.config.values[CONF_USERNAME]:
+        if "@" in self.config.get_value(CONF_USERNAME):
             self.logger.warning(
                 "Emailadress detected instead of username, "
                 "it is advised to use the tunein username instead of email."
@@ -130,8 +130,8 @@ class TuneInProvider(MusicProvider):
         radio.add_provider_mapping(
             ProviderMapping(
                 item_id=item_id,
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 content_type=content_type,
                 bit_rate=bit_rate,
                 details=url,
@@ -201,7 +201,7 @@ class TuneInProvider(MusicProvider):
         else:
             url = f"https://opml.radiotime.com/{endpoint}"
             kwargs["formats"] = "ogg,aac,wma,mp3"
-            kwargs["username"] = self.config.values[CONF_USERNAME]
+            kwargs["username"] = self.config.get_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
         async with self._throttler:

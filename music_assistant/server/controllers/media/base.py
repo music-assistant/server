@@ -140,11 +140,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         force_refresh: bool = False,
         lazy: bool = True,
         details: ItemCls = None,
+        force_provider_item: bool = False
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         assert (
             provider_domain or provider_instance
         ), "provider_domain or provider_instance must be supplied"
+        if force_provider_item:
+            return await self.get_provider_item(item_id, provider_instance)
         db_item = await self.get_db_item_by_prov_id(
             item_id=item_id,
             provider_domain=provider_domain,
@@ -169,10 +172,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             for prov in self.mass.music.providers:
                 if not prov.available:
                     continue
-                if prov.type == provider_domain:
+                if prov.domain == provider_domain:
                     try:
                         details = await self.get_provider_item(
-                            item_id, prov.id
+                            item_id, prov.domain
                         )
                     except MediaNotFoundError:
                         pass
@@ -220,7 +223,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return []
 
         # prefer cache items (if any)
-        cache_key = f"{prov.type}.search.{self.media_type}.{search_query}.{limit}"
+        cache_key = f"{prov.domain}.search.{self.media_type}.{search_query}.{limit}"
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider

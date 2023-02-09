@@ -51,4 +51,4 @@ def parse_uri(uri: str) -> Tuple[MediaType, str, str]:
 
 def create_uri(media_type: MediaType, provider_domain: str, item_id: str) -> str:
     """Create Music Assistant URI from MediaItem values."""
-    return f"{provider_domain}://{media_type}/{item_id}"
+    return f"{provider_domain}://{media_type.value}/{item_id}"

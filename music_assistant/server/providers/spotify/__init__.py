@@ -352,8 +352,8 @@ class SpotifyProvider(MusicProvider):
         artist.add_provider_mapping(
             ProviderMapping(
                 item_id=artist_obj["id"],
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 url=artist_obj["external_urls"]["spotify"],
             )
         )
@@ -400,8 +400,8 @@ class SpotifyProvider(MusicProvider):
         album.add_provider_mapping(
             ProviderMapping(
                 item_id=album_obj["id"],
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 content_type=ContentType.OGG,
                 bit_rate=320,
                 url=album_obj["external_urls"]["spotify"],
@@ -451,8 +451,8 @@ class SpotifyProvider(MusicProvider):
         track.add_provider_mapping(
             ProviderMapping(
                 item_id=track_obj["id"],
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 content_type=ContentType.OGG,
                 bit_rate=320,
                 url=track_obj["external_urls"]["spotify"],
@@ -472,8 +472,8 @@ class SpotifyProvider(MusicProvider):
         playlist.add_provider_mapping(
             ProviderMapping(
                 item_id=playlist_obj["id"],
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 url=playlist_obj["external_urls"]["spotify"],
             )
         )
@@ -499,8 +499,8 @@ class SpotifyProvider(MusicProvider):
             return self._auth_token
         tokeninfo, userinfo = None, self._sp_user
         if (
-            not self.config.values[CONF_USERNAME]
-            or not self.config.values[CONF_PASSWORD]
+            not self.config.get_value(CONF_USERNAME)
+            or not self.config.get_value(CONF_PASSWORD)
         ):
             raise LoginFailed("Invalid login credentials")
         # retrieve token with librespot
@@ -533,12 +533,12 @@ class SpotifyProvider(MusicProvider):
             raise LoginFailed(
                 "Unable to retrieve userdetails from Spotify API - probably just a temporary error"
             )
-        if self.config.values[CONF_USERNAME].isnumeric():
+        if self.config.get_value(CONF_USERNAME).isnumeric():
             # a spotify free/basic account can be recognized when
             # the username consists of numbers only - check that here
             # an integer can be parsed of the username, this is a free account
             raise LoginFailed("Only Spotify Premium accounts are supported")
-        raise LoginFailed(f"Login failed for user {self.config.values[CONF_USERNAME]}")
+        raise LoginFailed(f"Login failed for user {self.config.get_value(CONF_USERNAME)}")
 
     async def _get_token(self):
         """Get spotify auth token with librespot bin."""
@@ -551,9 +551,9 @@ class SpotifyProvider(MusicProvider):
             self._cache_dir,
             "-a",
             "-u",
-            self.config.values[CONF_USERNAME],
+            self.config.get_value(CONF_USERNAME),
             "-p",
-            self.config.values[CONF_PASSWORD],
+            self.config.get_value(CONF_PASSWORD),
         ]
         librespot = await asyncio.create_subprocess_exec(*args)
         await librespot.wait()

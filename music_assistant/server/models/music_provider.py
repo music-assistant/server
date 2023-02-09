@@ -356,7 +356,7 @@ class MusicProvider(Provider):
         for media_type in media_types:
             if not self.library_supported(media_type):
                 continue
-            self.logger.debug("Start sync of %s items.", media_type)
+            self.logger.debug("Start sync of %s items.", media_type.value)
             controller = self.mass.music.get_controller(media_type)
             cur_db_ids = set()
             async for prov_item in self._get_library_gen(media_type)():
@@ -397,7 +397,7 @@ class MusicProvider(Provider):
                     }
                     if len(provider_domains) > 1:
                         continue
-                    if prov_mapping.provider_instance != self.id:
+                    if prov_mapping.provider_instance != self.instance_id:
                         continue
                     # only mark the item as not in library and leave the metadata in db
                     await controller.set_db_library(db_item.item_id, False)

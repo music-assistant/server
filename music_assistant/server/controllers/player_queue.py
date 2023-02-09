@@ -28,6 +28,7 @@ from music_assistant.server.helpers.api import api_command
 
 if TYPE_CHECKING:
     from .players import PlayerController
+    from music_assistant.common.models.player import Player
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players.queue")
 
@@ -409,40 +410,44 @@ class PlayerQueuesController:
 
     # Interaction with player
 
-    async def on_player_register(self, player_id: str) -> None:
+    async def on_player_register(self, player: Player) -> None:
         """Register PlayerQueue for given player/queue id."""
-
+        queue_id = player.player_id
         # try to restore previous state
-        if prev_state := await self.mass.cache.get(f"queue.state.{player_id}"):
+        if prev_state := await self.mass.cache.get(f"queue.state.{queue_id}"):
             queue = PlayerQueue.from_dict(prev_state)
             prev_items = await self.mass.cache.get(
-                f"queue.items.{player_id}", default=[]
+                f"queue.items.{queue_id}", default=[]
             )
             queue_items = [QueueItem.from_dict(x) for x in prev_items]
         else:
             queue = PlayerQueue(
-                queue_id=player_id,
+                queue_id=queue_id,
                 active=False,
-                shuffle_enabled=False,
+                display_name=player.display_name,
+                available=player.available,
+                items=0
             )
             queue_items = []
 
-        self._queues[player_id] = queue
-        self._queue_items[player_id] = queue_items
+        self._queues[queue_id] = queue
+        self._queue_items[queue_id] = queue_items
         # always call update to calculate state etc
-        self.on_player_update(player_id)
+        self.on_player_update(player)
 
-    def on_player_update(self, player_id: str) -> None:
+    def on_player_update(self, player: Player) -> None:
         """Call when a PlayerQueue needs to be updated (e.g. when player updates)."""
-        if player_id not in self._queues:
-            self.mass.create_task(self.on_player_register(player_id))
+        if player.player_id not in self._queues:
+            self.mass.create_task(self.on_player_register(player))
             return
-
-        player = self.players.get(player_id)
-        queue_id = player_id
+        queue_id = player.player_id
+        player = self.players.get(queue_id)
         queue = self._queues[queue_id]
         # queue is active when underlying player has the queue_id loaded as stream url
         queue.active = f"/{queue_id}/" in player.current_url
+        queue.display_name = player.display_name
+        queue.available = player.available
+        queue.items = len(self._queue_items[queue_id])
 
         if queue.active:
             queue.state = player.state

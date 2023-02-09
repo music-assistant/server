@@ -52,10 +52,10 @@ class URLProvider(MusicProvider):
         # this is here for compatibility reasons only
         return Artist(
             artist,
-            self.type,
+            self.domain,
             artist,
             provider_mappings={
-                ProviderMapping(artist, self.type, self.id, available=False)
+                ProviderMapping(artist, self.domain, self.instance_id, available=False)
             },
         )
 
@@ -100,8 +100,8 @@ class URLProvider(MusicProvider):
         media_item.provider_mappings = {
             ProviderMapping(
                 item_id=item_id,
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 content_type=ContentType.try_parse(media_info.format),
                 sample_rate=media_info.sample_rate,
                 bit_depth=media_info.bits_per_sample,
@@ -136,7 +136,7 @@ class URLProvider(MusicProvider):
         else:
             url = self._full_url.get(item_id_or_url, item_id_or_url)
             item_id = item_id_or_url
-        cache_key = f"{self.type}.media_info.{item_id}"
+        cache_key = f"{self.domain}.media_info.{item_id}"
         # do we have some cached info for this url ?
         cached_info = await self.mass.cache.get(cache_key)
         if cached_info and not force_refresh:

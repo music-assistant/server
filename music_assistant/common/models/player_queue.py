@@ -17,8 +17,11 @@ class PlayerQueue(DataClassDictMixin):
 
     queue_id: str
     active: bool
+    display_name: str
+    available: bool
+    items: int
 
-    shuffle_enabled: bool
+    shuffle_enabled: bool = False
     repeat_mode: RepeatMode = RepeatMode.OFF
     # current_index: index that is active (e.g. being played) by the player
     current_index: int | None = None

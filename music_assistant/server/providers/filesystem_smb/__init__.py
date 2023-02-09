@@ -52,19 +52,19 @@ class SMBFileSystemProvider(FileSystemProviderBase):
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         # extract params from path
-        if self.config.values[CONF_PATH].startswith("\\\\"):
-            path_parts = self.config.values[CONF_PATH][2:].split("\\", 2)
-        elif self.config.values[CONF_PATH].startswith("smb://"):
-            path_parts = self.config.values[CONF_PATH][6:].split("/", 2)
+        if self.config.get_value(CONF_PATH).startswith("\\\\"):
+            path_parts = self.config.get_value(CONF_PATH)[2:].split("\\", 2)
+        elif self.config.get_value(CONF_PATH).startswith("smb://"):
+            path_parts = self.config.get_value(CONF_PATH)[6:].split("/", 2)
         else:
-            path_parts = self.config.values[CONF_PATH].split(os.sep)
+            path_parts = self.config.get_value(CONF_PATH).split(os.sep)
         self._remote_name = path_parts[0]
         self._service_name = path_parts[1]
         if len(path_parts) > 2:
             self._root_path = os.sep + path_parts[2]
 
         default_target_ip = await get_ip_from_host(self._remote_name)
-        self._target_ip = self.config.values[CONF_OPTIONS].get(
+        self._target_ip = self.config.get_value(CONF_OPTIONS).get(
             "target_ip", default_target_ip
         )
         async with self._get_smb_connection():
@@ -157,10 +157,10 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         async with AsyncSMB(
             remote_name=self._remote_name,
             service_name=self._service_name,
-            username=self.config.values[CONF_USERNAME],
-            password=self.config.values[CONF_PASSWORD],
+            username=self.config.get_value(CONF_USERNAME),
+            password=self.config.get_value(CONF_PASSWORD),
             target_ip=self._target_ip,
-            options=self.config.values[CONF_OPTIONS],
+            options=self.config.get_value(CONF_OPTIONS),
         ) as smb_conn:
             token = smb_conn_ctx.set(smb_conn)
             yield smb_conn

@@ -49,7 +49,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
-        conf_path = self.config.values[CONF_PATH]
+        conf_path = self.config.get_value(CONF_PATH)
         if not await isdir(conf_path):
             raise SetupFailedError(f"Music Directory {conf_path} does not exist")
 
@@ -68,13 +68,13 @@ class LocalFileSystemProvider(FileSystemProviderBase):
             AsyncGenerator yielding FileSystemItem objects.
 
         """
-        abs_path = get_absolute_path(self.config.values[CONF_PATH], path)
+        abs_path = get_absolute_path(self.config.get_value(CONF_PATH), path)
         loop = asyncio.get_running_loop()
         for entry in await loop.run_in_executor(None, os.scandir, abs_path):
             if entry.name.startswith("."):
                 # skip invalid/system files and dirs
                 continue
-            item = await create_item(self.config.values[CONF_PATH], entry)
+            item = await create_item(self.config.get_value(CONF_PATH), entry)
             if recursive and item.is_dir:
                 try:
                     async for subitem in self.listdir(item.absolute_path, True):
@@ -93,13 +93,13 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         If require_local is True, we prefer to have the `local_path` attribute filled
         (e.g. with a tempfile), if supported by the provider/item.
         """
-        absolute_path = get_absolute_path(self.config.values[CONF_PATH], file_path)
+        absolute_path = get_absolute_path(self.config.get_value(CONF_PATH), file_path)
 
         def _create_item():
             stat = os.stat(absolute_path, follow_symlinks=False)
             return FileSystemItem(
                 name=os.path.basename(file_path),
-                path=get_relative_path(self.config.values[CONF_PATH], file_path),
+                path=get_relative_path(self.config.get_value(CONF_PATH), file_path),
                 absolute_path=absolute_path,
                 is_dir=os.path.isdir(absolute_path),
                 is_file=os.path.isfile(absolute_path),
@@ -117,14 +117,14 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         """Return bool is this FileSystem musicprovider has given file/dir."""
         if not file_path:
             return False  # guard
-        abs_path = get_absolute_path(self.config.values[CONF_PATH], file_path)
+        abs_path = get_absolute_path(self.config.get_value(CONF_PATH), file_path)
         return await exists(abs_path)
 
     async def read_file_content(
         self, file_path: str, seek: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
-        abs_path = get_absolute_path(self.config.values[CONF_PATH], file_path)
+        abs_path = get_absolute_path(self.config.get_value(CONF_PATH), file_path)
         chunk_size = 512000
         async with aiofiles.open(abs_path, "rb") as _file:
             if seek:
@@ -138,6 +138,6 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
     async def write_file_content(self, file_path: str, data: bytes) -> None:
         """Write entire file content as bytes (e.g. for playlists)."""
-        abs_path = get_absolute_path(self.config.values[CONF_PATH], file_path)
+        abs_path = get_absolute_path(self.config.get_value(CONF_PATH), file_path)
         async with aiofiles.open(abs_path, "wb") as _file:
             await _file.write(data)

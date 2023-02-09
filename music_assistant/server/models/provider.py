@@ -33,6 +33,7 @@ class Provider:
             f"{ROOT_LOGGER_NAME}.{self.type.value}[{self.name}]"
         )
         self.cache = mass.cache
+        self.available = False
 
     @property
     def supported_features(self) -> tuple[ProviderFeature]:

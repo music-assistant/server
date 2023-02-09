@@ -58,15 +58,15 @@ class QobuzProvider(MusicProvider):
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         if (
-            not self.config.values[CONF_USERNAME]
-            or not self.config.values[CONF_PASSWORD]
+            not self.config.get_value(CONF_USERNAME)
+            or not self.config.get_value(CONF_PASSWORD)
         ):
             raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails
         token = await self._auth_token()
         if not token:
             raise LoginFailed(
-                f"Login failed for user {self.config.values[CONF_USERNAME]}"
+                f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
             )
 
     async def search(
@@ -407,8 +407,8 @@ class QobuzProvider(MusicProvider):
         artist.add_provider_mapping(
             ProviderMapping(
                 item_id=str(artist_obj["id"]),
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 url=artist_obj.get(
                     "url", f'https://open.qobuz.com/artist/{artist_obj["id"]}'
                 ),
@@ -437,8 +437,8 @@ class QobuzProvider(MusicProvider):
         album.add_provider_mapping(
             ProviderMapping(
                 item_id=str(album_obj["id"]),
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 available=album_obj["streamable"] and album_obj["displayable"],
                 content_type=ContentType.FLAC,
                 sample_rate=album_obj["maximum_sampling_rate"] * 1000,
@@ -519,7 +519,7 @@ class QobuzProvider(MusicProvider):
                 role = performer_str.split(", ")[1]
                 name = performer_str.split(", ")[0]
                 if "artist" in role.lower():
-                    artist = Artist(name, self.type, name)
+                    artist = Artist(name, self.domain, name)
                 track.artists.append(artist)
         # TODO: fix grabbing composer from details
 
@@ -545,8 +545,8 @@ class QobuzProvider(MusicProvider):
         track.add_provider_mapping(
             ProviderMapping(
                 item_id=str(track_obj["id"]),
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 available=track_obj["streamable"] and track_obj["displayable"],
                 content_type=ContentType.FLAC,
                 sample_rate=track_obj["maximum_sampling_rate"] * 1000,
@@ -569,8 +569,8 @@ class QobuzProvider(MusicProvider):
         playlist.add_provider_mapping(
             ProviderMapping(
                 item_id=str(playlist_obj["id"]),
-                provider_domain=self.type,
-                provider_instance=self.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
                 url=playlist_obj.get(
                     "url", f'https://open.qobuz.com/playlist/{playlist_obj["id"]}'
                 ),
@@ -590,8 +590,8 @@ class QobuzProvider(MusicProvider):
         if self._user_auth_info:
             return self._user_auth_info["user_auth_token"]
         params = {
-            "username": self.config.values[CONF_USERNAME],
-            "password": self.config.values[CONF_PASSWORD],
+            "username": self.config.get_value(CONF_USERNAME),
+            "password": self.config.get_value(CONF_PASSWORD),
             "device_manufacturer_id": "music_assistant",
         }
         details = await self._get_data("user/login", **params)

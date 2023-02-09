@@ -85,7 +85,7 @@ class AlbumsController(MediaControllerBase[Album]):
         ), "Provider type or ID must be specified"
         album = await self.get(item_id, provider_domain or provider_instance)
         # perform a search on all provider(types) to collect all versions/variants
-        provider_domains = {item.type for item in self.mass.music.providers}
+        provider_domains = {item.domain for item in self.mass.music.providers}
         search_query = f"{album.artist.name} - {album.name}"
         all_versions = {
             prov_item.item_id: prov_item
@@ -269,7 +269,7 @@ class AlbumsController(MediaControllerBase[Album]):
             item_id, provider_instance or provider_domain
         )
         # prefer cache items (if any)
-        cache_key = f"{prov.type}.albumtracks.{item_id}"
+        cache_key = f"{prov.domain}.albumtracks.{item_id}"
         cache_checksum = full_album.metadata.checksum
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
@@ -377,7 +377,7 @@ class AlbumsController(MediaControllerBase[Album]):
             ):
                 if match_found:
                     break
-                search_result = await self.search(search_str, provider.id)
+                search_result = await self.search(search_str, provider.instance_id)
                 for search_result_item in search_result:
                     if not search_result_item.available:
                         continue
@@ -396,12 +396,12 @@ class AlbumsController(MediaControllerBase[Album]):
         # try to find match on all providers
         cur_provider_domains = {x.provider_domain for x in db_album.provider_mappings}
         for provider in self.mass.music.providers:
-            if provider.type in cur_provider_domains:
+            if provider.domain in cur_provider_domains:
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
             if await find_prov_match(provider):
-                cur_provider_domains.add(provider.type)
+                cur_provider_domains.add(provider.domain)
             else:
                 self.logger.debug(
                     "Could not find match for Album %s on provider %s",

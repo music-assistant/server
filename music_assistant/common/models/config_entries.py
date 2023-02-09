@@ -111,7 +111,7 @@ class Config(DataClassDictMixin):
             x.key: ConfigEntryValue.parse(x, raw.get("values", {}).get(x.key))
             for x in config_entries
         }
-        return cls(**raw, values=values)
+        return cls(**{**raw, "values": values})
 
     def to_raw(self) -> dict[str, Any]:
         """Return minimized/raw dict to store in persistent storage."""
@@ -139,6 +139,18 @@ class ProviderConfig(Config):
 
 
 @dataclass
+class ProviderConfigSet(ProviderConfig):
+    """Provider(instance) Configuration when updated/created (using raw values)."""
+
+    values: dict[str, ConfigValueType]
+
+    def to_raw(self) -> dict[str, Any]:
+        """Return minimized/raw dict to store in persistent storage."""
+        # this is just here for compatibility/convenience reasons
+        return self.to_dict()
+
+
+@dataclass
 class PlayerConfig(Config):
     """Player Configuration."""
 
@@ -148,6 +160,18 @@ class PlayerConfig(Config):
     enabled: bool = True
     # name: an (optional) custom name for this player
     name: str | None = None
+
+
+@dataclass
+class PlayerConfigSet(PlayerConfig):
+    """Player Configuration when updated/created (using raw values)."""
+
+    values: dict[str, ConfigValueType]
+
+    def to_raw(self) -> dict[str, Any]:
+        """Return minimized/raw dict to store in persistent storage."""
+        # this is just here for compatibility/convenience reasons
+        return self.to_dict()
 
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (

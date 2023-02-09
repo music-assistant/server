@@ -55,7 +55,7 @@ class Player(DataClassDictMixin):
     # ususally this is just a list of all player_ids within the playerprovider
     can_sync_with: tuple[str, ...] = field(default=tuple())
 
-    # synced_to: plauyer_id of the player this player is currently sunced to
+    # synced_to: plauyer_id of the player this player is currently synced to
     # also referred to as "sync master"
     synced_to: str | None = None
 
@@ -66,6 +66,15 @@ class Player(DataClassDictMixin):
     # will be set by the player manager based on config
     # a disabled player is hidden in the UI and updates will not be processed
     enabled: bool = True
+
+    # group_volume: if the player is a player group or syncgroup master,
+    # this will return the average volume of all child players
+    # if not a group player, this is just the player's volume
+    group_volume: int = 100
+
+    # display_name: return final/corrected name of the player
+    # always prefers any overridden name from settings
+    display_name: str = ""
 
     @property
     def corrected_elapsed_time(self) -> float:
