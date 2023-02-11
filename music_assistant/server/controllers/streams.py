@@ -5,7 +5,6 @@ import asyncio
 import logging
 import urllib.parse
 from typing import TYPE_CHECKING, Any, AsyncGenerator
-
 import shortuuid
 from aiohttp import web
 
@@ -59,7 +58,7 @@ class StreamJob:
         self.pcm_channels = pcm_channels
         self.stream_id = shortuuid.uuid()
         self.expected_consumers = 1
-        self._audio_task: asyncio.create_task(self._stream_job_runner())
+        self._audio_task = asyncio.create_task(self._stream_job_runner())
         self._subscribers: list[asyncio.Queue[bytes]] = []
         self._all_clients_connected = asyncio.Event()
 
@@ -68,14 +67,14 @@ class StreamJob:
         """Return if this StreamJob is finished."""
         if self._audio_task is None:
             return False
-        if not self._start.is_set():
+        if not self._all_clients_connected.is_set():
             return False
         return self._audio_task.cancelled() or self._audio_task.done()
 
     @property
     def pending(self) -> bool:
         """Return if this Job is pending start."""
-        return not self._start.is_set()
+        return not self._all_clients_connected.is_set()
 
     async def subscribe(self) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate incoming chunks on the queue."""
@@ -105,11 +104,9 @@ class StreamJob:
             if len(self._subscribers) == 0 and self._audio_task and not self.finished:
                 self._audio_task.cancel()
 
-    async def _put_data(self, data: Any, timeout: float | None) -> None:
+    async def _put_data(self, data: Any, timeout: float = 600) -> None:
         """Put chunk of data to all subscribers."""
-        await asyncio.wait(
-            *(x.put(data) for x in list(self._subscribers)), timeout=timeout
-        )
+        await asyncio.wait([x.put(data) for x in self._subscribers], timeout=timeout)
 
     async def _stream_job_runner(self) -> None:
         """Feed audio chunks to StreamJob subscribers."""
@@ -119,8 +116,10 @@ class StreamJob:
             if chunk_num == 1:
                 # wait until all expected clients are connected
                 # TODO: handle edge case where a player does not connect at all ?!
-                await asyncio.wait(self._all_clients_connected.wait(), timeout=30)
+                await asyncio.wait([self._all_clients_connected.wait()], timeout=30)
             await self._put_data(chunk)
+        # mark EOF with empty chunk
+        await self._put_data(b"")
 
 
 class StreamsController:
@@ -139,7 +138,7 @@ class StreamsController:
 
         self.mass.webapp.router.add_get("/stream/preview", self._serve_preview)
         self.mass.webapp.router.add_get(
-            "/stream/{player_id}/{queue_item_id}{stream_id}.{fmt}",
+            "/stream/{player_id}/{queue_item_id}/{stream_id}.{fmt}",
             self._serve_queue_stream,
         )
 
@@ -163,7 +162,7 @@ class StreamsController:
     def base_url(self) -> str:
         """Return the base url for the stream engine."""
 
-        host = self.mass.config.get(CONF_WEB_HOST, "127.0.0.1")
+        host = self.mass.config.get(CONF_WEB_HOST, "localhost")
         port = self.mass.config.get(CONF_WEB_PORT, DEFAULT_PORT)
         return f"http://{host}:{port}"
 
@@ -201,20 +200,24 @@ class StreamsController:
             break
         else:
             # register a new stream job
+            streamdetails = await get_stream_details(self.mass, queue_item)
             stream_job = StreamJob(
                 queue_item=queue_item,
                 audio_source=get_media_stream(
                     self.mass,
-                    streamdetails=await get_stream_details(self.mass, queue_item),
-                    seek_position=stream_job.seek_position,
-                    fade_in=stream_job.fade_in,
+                    streamdetails=streamdetails,
+                    seek_position=seek_position,
+                    fade_in=fade_in,
                 ),
+                pcm_sample_rate=streamdetails.sample_rate,
+                pcm_bit_depth=streamdetails.bit_depth,
+                pcm_channels=streamdetails.channels,
             )
             self.stream_jobs[stream_job.stream_id] = stream_job
 
         # mark this queue item as the one in buffer
         queue = self.mass.players.queues.get(queue_item.queue_id)
-        item_index = self.mass.players.queues.get_item(
+        item_index = self.mass.players.queues.index_by_id(
             queue.queue_id, queue_item.queue_item_id
         )
         queue.index_in_buffer = item_index
@@ -271,7 +274,7 @@ class StreamsController:
             async def read_audio():
                 async for chunk in stream_job.subscribe():
                     await ffmpeg_proc.write(chunk)
-                await ffmpeg_proc.write_eof()
+                ffmpeg_proc.write_eof()
 
             ffmpeg_proc.attach_task(read_audio())
 
@@ -279,7 +282,7 @@ class StreamsController:
             async for chunk in ffmpeg_proc.iter_any():
                 await resp.write(chunk)
 
-        return
+        return resp
 
     async def _serve_preview(self, request: web.Request):
         """Serve short preview sample."""
@@ -313,7 +316,7 @@ class StreamsController:
         # input args
         ffmpeg_args += [
             "-f",
-            ContentType.from_bit_depth(pcm_bit_depth),
+            ContentType.from_bit_depth(pcm_bit_depth).value,
             "-ac",
             str(pcm_channels),
             "-ar",
@@ -342,4 +345,4 @@ class StreamsController:
         for stream_id in stale:
             self.stream_jobs.pop(stream_id, None)
         # reschedule self to run every 5 minutes
-        self.mass.loop.call_later(300, asyncio.create_task, self._cleanup_stale())
+        self.mass.loop.call_later(300, self.mass.create_task, self._cleanup_stale)

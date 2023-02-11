@@ -2,6 +2,7 @@
   "type": "music",
   "domain": "filesystem_smb",
   "name": "SMB Filesystem",
+  "description": "Support for music files that are present on remote SMB/CIFS share.",
   "codeowners": ["@MarvinSchenkel", "@marcelveldt"],
   "config_entries": [
     {

@@ -2,6 +2,7 @@
   "type": "music",
   "domain": "spotify",
   "name": "Spotify",
+  "description": "Support for the Spotify streaming provider in Music Assistant.",
   "codeowners": ["@marcelveldt"],
   "config_entries": [
     {

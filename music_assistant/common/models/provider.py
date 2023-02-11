@@ -1,14 +1,15 @@
 """Models for providers and plugins in the MA ecosystem."""
 
+import asyncio
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.helpers.json import load_json_file
 
 from .config_entries import ConfigEntry
-from .enums import ProviderFeature, ProviderType
+from .enums import ProviderFeature, ProviderType, MediaType
 
 
 @dataclass
@@ -18,6 +19,7 @@ class ProviderManifest(DataClassDictMixin):
     type: ProviderType
     domain: str
     name: str
+    description: str
     codeowners: list[str]
 
     # optional params
@@ -52,3 +54,19 @@ class ProviderInstance(TypedDict):
     name: str
     instance_id: str
     supported_features: list[ProviderFeature]
+    available: bool
+
+
+@dataclass
+class SyncTask:
+    """Description of a Sync task/job of a musicprovider."""
+
+    provider_domain: str
+    provider_instance: str
+    media_types: tuple[MediaType]
+    task: asyncio.Task
+
+    def __post_init__(self):
+        """Execute action after initialization."""
+        # make sure that the task does not get serialized.
+        setattr(self.task, "do_not_serialize", True)

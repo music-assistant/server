@@ -2,6 +2,7 @@
   "type": "music",
   "domain": "filesystem_local",
   "name": "Local Filesystem",
+  "description": "Support for music files that are present on a local accessible disk/folder.",
   "codeowners": ["@marcelveldt"],
   "config_entries": [
     {

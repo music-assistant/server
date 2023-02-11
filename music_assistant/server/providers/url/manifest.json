@@ -2,6 +2,7 @@
   "type": "music",
   "domain": "url",
   "name": "URL",
+  "description": "Built-in/generic provider to play music (or playlists) from a remote URL.",
   "codeowners": ["@marcelveldt"],
   "config_entries": [
   ],

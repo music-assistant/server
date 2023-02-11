@@ -2,6 +2,7 @@
   "type": "music",
   "domain": "qobuz",
   "name": "Qobuz",
+  "description": "Qobuz support for Music Assistant: Lossless (and hi-res) Music provider.",
   "codeowners": ["@marcelveldt"],
   "config_entries": [
     {

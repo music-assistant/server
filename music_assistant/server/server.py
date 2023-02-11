@@ -14,8 +14,9 @@ from aiohttp import ClientSession, TCPConnector, web
 from music_assistant.common.helpers.util import select_free_port
 from music_assistant.common.models.config_entries import (
     ProviderConfig,
+    ProviderConfigSet,
 )
-from music_assistant.common.models.enums import EventType
+from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     SetupFailedError,
@@ -40,12 +41,13 @@ from music_assistant.server.helpers.api import (
     api_command,
     mount_websocket,
 )
+from music_assistant.server.helpers.util import install_package
 
 from .models.metadata_provider import MetadataProvider
 from .models.music_provider import MusicProvider
 from .models.player_provider import PlayerProvider
 
-ProviderType = MetadataProvider | MusicProvider | PlayerProvider
+ProviderInstanceType = MetadataProvider | MusicProvider | PlayerProvider
 EventCallBackType = Callable[[EventType, Any], None]
 EventSubscriptionType = tuple[
     EventCallBackType, tuple[EventType] | None, tuple[str] | None
@@ -75,7 +77,7 @@ class MusicAssistant:
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventCallBackType] = set()
         self._available_providers: dict[str, ProviderManifest] = {}
-        self._providers: dict[str, ProviderType] = {}
+        self._providers: dict[str, ProviderInstanceType] = {}
 
         # init core controllers
         self.config = ConfigController(self)
@@ -87,7 +89,7 @@ class MusicAssistant:
         self._tracked_tasks: list[asyncio.Task] = []
         self.closed = False
         self.loop: asyncio.AbstractEventLoop | None = None
-        # register all api commands (methods with decorator)    
+        # register all api commands (methods with decorator)
         self._register_api_commands()
 
     async def start(self) -> None:
@@ -154,7 +156,9 @@ class MusicAssistant:
         return list(self._available_providers.values())
 
     @api_command("providers")
-    def get_providers(self, provider_type: ProviderType | None) -> list[ProviderType]:
+    def get_providers(
+        self, provider_type: ProviderType | None
+    ) -> list[ProviderInstanceType]:
         """Return all loaded/running Providers (instances), optionally filtered by ProviderType."""
         return [
             x
@@ -163,11 +167,11 @@ class MusicAssistant:
         ]
 
     @property
-    def providers(self) -> list[ProviderType]:
+    def providers(self) -> list[ProviderInstanceType]:
         """Return all loaded/running Providers (instances)."""
         return list(self._providers.values())
 
-    def get_provider(self, provider_instance_or_domain: str) -> ProviderType:
+    def get_provider(self, provider_instance_or_domain: str) -> ProviderInstanceType:
         """Return provider by instance id (or domain)."""
         if prov := self._providers.get(provider_instance_or_domain):
             return prov
@@ -265,64 +269,16 @@ class MusicAssistant:
         assert command not in self.command_handlers, "Command already registered"
         self.command_handlers[command] = APICommandHandler.parse(command, handler)
 
-    def _register_api_commands(self) -> None:
-        """Register all methods decorated as api_command within a class(instance)."""
-        for cls in (self, self.config, self.metadata, self.music, self.players):
-            for attr_name in dir(cls):
-                if attr_name.startswith("__"):
-                    continue
-                obj = getattr(cls, attr_name)
-                if hasattr(obj, "api_cmd"):
-                    # method is decorated with our api decorator
-                    self.register_api_command(obj.api_cmd, obj)
-
-    async def _load_providers(self) -> None:
-        """Load providers from config."""
-        # load all available providers from manifest files
-        await self.__load_available_providers()
-        # load all configured (and enabled) providers
-        for prov_conf in self.config.get_provider_configs():
-            await self._load_provider(prov_conf)
-        # check for any 'load_by_default' providers (e.g. URL provider)
-        for prov_manifest in self._available_providers.values():
-            if not prov_manifest.load_by_default:
-                continue
-            loaded = any(
-                (x for x in self.providers if x.domain == prov_manifest.domain)
-            )
-            if loaded:
-                continue
-            await self._load_provider(
-                ProviderConfig(
-                    type=prov_manifest.type,
-                    domain=prov_manifest.domain,
-                    instance_id=prov_manifest.domain,
-                    values={},
-                )
-            )
-
-        # listen to config change events
-        async def handle_config_updated_event(event: MassEvent):
-            """Handle ProviderConfig updated/created event."""
-            await self._load_provider(event.data)
-
-        self.subscribe(
-            handle_config_updated_event,
-            (EventType.PROVIDER_CONFIG_CREATED, EventType.PROVIDER_CONFIG_UPDATED),
-        )
-
-    async def _load_provider(self, conf: ProviderConfig) -> None:
+    async def load_provider(self, conf: ProviderConfig) -> None:
         """Load (or reload) a provider."""
-        if provider := self._providers.get(conf.instance_id):
-            # provider is already loaded, stop and unload it first
-            await provider.close()
-            self._providers.pop(conf.instance_id)
+        # if provider is already loaded, stop and unload it first
+        await self.unload_provider(conf.instance_id)
 
         # abort if provider is disabled
         if not conf.enabled:
             LOGGER.debug(
                 "Not loading provider %s because it is disabled",
-                conf.title or conf.instance_id,
+                conf.name or conf.instance_id,
             )
             return
 
@@ -337,6 +293,7 @@ class MusicAssistant:
 
         if not prov_manifest:
             raise SetupFailedError(f"Provider {domain} manifest not found")
+
         # try to load the module
         try:
             prov_mod = importlib.import_module(
@@ -355,12 +312,15 @@ class MusicAssistant:
                     prov_cls = obj
                     break
             else:
-                SetupFailedError("Unable to locate Provider class")
-            provider: ProviderType = prov_cls(self, prov_manifest, conf)
+                raise AttributeError("Unable to locate Provider class")
+            provider: ProviderInstanceType = prov_cls(self, prov_manifest, conf)
             self._providers[provider.instance_id] = provider
             await provider.setup()
-            # TODO: handle setup failed, add provider as unavailable
+            # mark provider as available once setup succeeded
             provider.available = True
+            # if this is a music provider, start sync
+            if provider.type == ProviderType.MUSIC:
+                await self.music.start_sync(providers=[provider.instance_id])
         # pylint: disable=broad-except
         except Exception as exc:
             LOGGER.exception(
@@ -373,6 +333,72 @@ class MusicAssistant:
                 "Successfully loaded provider %s",
                 conf.name or conf.domain,
             )
+
+    async def unload_provider(self, instance_id: str) -> None:
+        """Unload a provider."""
+        if provider := self._providers.get(instance_id):
+            # make sure to stop any running sync tasks first
+            for sync_task in self.music.in_progress_syncs:
+                if sync_task.provider_instance == instance_id:
+                    sync_task.task.cancel()
+                    await sync_task.task
+            await provider.close()
+            self._providers.pop(instance_id)
+
+    def _register_api_commands(self) -> None:
+        """Register all methods decorated as api_command within a class(instance)."""
+        for cls in (
+            self,
+            self.config,
+            self.metadata,
+            self.music,
+            self.players,
+            self.players.queues,
+        ):
+            for attr_name in dir(cls):
+                if attr_name.startswith("__"):
+                    continue
+                obj = getattr(cls, attr_name)
+                if hasattr(obj, "api_cmd"):
+                    # method is decorated with our api decorator
+                    self.register_api_command(obj.api_cmd, obj)
+
+    async def _load_providers(self) -> None:
+        """Load providers from config."""
+        # load all available providers from manifest files
+        await self.__load_available_providers()
+        # load all configured (and enabled) providers
+        for prov_conf in self.config.get_provider_configs():
+            self.create_task(self.load_provider(prov_conf))
+        # create default config for any 'load_by_default' providers (e.g. URL provider)
+        # NOTE: this will auto load any not yet existing providers
+        for prov_manifest in self._available_providers.values():
+            if not prov_manifest.load_by_default:
+                continue
+            loaded = any(
+                (x for x in self.providers if x.domain == prov_manifest.domain)
+            )
+            if loaded:
+                continue
+            self.config.set_provider_config(
+                ProviderConfigSet(
+                    values={},
+                    type=prov_manifest.type,
+                    domain=prov_manifest.domain,
+                    instance_id=prov_manifest.domain,
+                    enabled=True,
+                )
+            )
+
+        # listen to config change events
+        async def handle_config_updated_event(event: MassEvent):
+            """Handle ProviderConfig updated/created event."""
+            await self.load_provider(event.data)
+
+        self.subscribe(
+            handle_config_updated_event,
+            (EventType.PROVIDER_CONFIG_CREATED, EventType.PROVIDER_CONFIG_UPDATED),
+        )
 
     async def __load_available_providers(self) -> None:
         """Preload all available provider manifest files."""
@@ -392,6 +418,9 @@ class MusicAssistant:
                     self._available_providers[
                         provider_manifest.domain
                     ] = provider_manifest
+                    # install requirement/dependencies
+                    for requirement in provider_manifest.requirements:
+                        await install_package(requirement)
                     LOGGER.debug("Loaded manifest for provider %s", dir_str)
                 except Exception as exc:  # pylint: disable=broad-except
                     LOGGER.exception(

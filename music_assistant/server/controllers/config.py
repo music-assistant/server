@@ -158,7 +158,7 @@ class ConfigController:
         self.set(conf_key, config_dict)
         # make sure we send a full object in the event
         if isinstance(config, ProviderConfigSet):
-            config = self.get(f"{CONF_PROVIDERS}/{config.instance_id}")
+            config = self.get_provider_config(config.instance_id)
         if existing:
             # existing provider updated
             self.mass.signal_event(
@@ -173,6 +173,16 @@ class ConfigController:
                 object_id=config.instance_id,
                 data=config,
             )
+
+    @api_command("config/providers/remove")
+    async def remove_provider_config(self, instance_id: str) -> None:
+        """Remove ProviderConfig."""
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        existing = self.get(conf_key)
+        if not existing:
+            raise KeyError(f"Provider {instance_id} does not exist")
+        await self.mass.unload_provider(instance_id)
+        self.remove(conf_key)
 
     @api_command("config/players")
     def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
@@ -213,7 +223,7 @@ class ConfigController:
         self.set(conf_key, config_dict)
         # make sure we send a full object in the event
         if isinstance(config, PlayerConfigSet):
-            config = self.get(f"{CONF_PLAYERS}/{config.player_id}")
+            config = self.get_player_config(config.player_id)
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
@@ -255,7 +265,7 @@ class ConfigController:
         else:
             # schedule the save for later
             self._timer_handle = self.mass.loop.call_later(
-                DEFAULT_SAVE_DELAY, self.mass.loop.create_task, self.async_save()
+                DEFAULT_SAVE_DELAY, self.mass.loop.create_task, self.async_save
             )
 
     async def async_save(self):

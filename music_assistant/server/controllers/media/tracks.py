@@ -47,9 +47,26 @@ class TracksController(MediaControllerBase[Track]):
         self.mass.register_api_command("music/track/update", self.update_db_item)
         self.mass.register_api_command("music/track/delete", self.delete_db_item)
 
-    async def get(self, *args, **kwargs) -> Track:
+    async def get(
+        self,
+        item_id: str,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
+        force_refresh: bool = False,
+        lazy: bool = True,
+        details: Track = None,
+        force_provider_item: bool = False,
+    ) -> Track:
         """Return (full) details for a single media item."""
-        track = await super().get(*args, **kwargs)
+        track = await super().get(
+            item_id=item_id,
+            provider_domain=provider_domain,
+            provider_instance=provider_instance,
+            force_refresh=force_refresh,
+            lazy=lazy,
+            details=details,
+            force_provider_item=force_provider_item,
+        )
         # append full album details to full track item
         if track.album:
             try:
@@ -185,10 +202,7 @@ class TracksController(MediaControllerBase[Track]):
     ):
         """Generate a dynamic list of tracks based on the track."""
         prov = self.mass.get_provider(provider_instance or provider_domain)
-        if (
-            not prov
-            or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features
-        ):
+        if not prov or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []
         # Grab similar tracks from the music provider
         similar_tracks = await prov.get_similar_tracks(
@@ -260,6 +274,8 @@ class TracksController(MediaControllerBase[Track]):
                 },
             )
             item_id = new_item["item_id"]
+            # update/set provider_mappings table
+            await self._set_provider_mappings(item_id, item.provider_mappings)
             # return created object
             self.logger.debug("added %s to database: %s", item.name, item_id)
             return await self.get_db_item(item_id)
@@ -281,7 +297,7 @@ class TracksController(MediaControllerBase[Track]):
             track_artists = await self._get_track_artists(item, overwrite=True)
             track_albums = await self._get_track_albums(item, overwrite=True)
         else:
-            metadata = cur_item.metadata.update(item.metadata, item.provider.is_file())
+            metadata = cur_item.metadata.update(item.metadata, "file" in item.provider)
             provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
             track_artists = await self._get_track_artists(cur_item, item)
             track_albums = await self._get_track_albums(cur_item, item)
@@ -301,6 +317,8 @@ class TracksController(MediaControllerBase[Track]):
                 "isrc": item.isrc or cur_item.isrc,
             },
         )
+        # update/set provider_mappings table
+        await self._set_provider_mappings(item_id, item.provider_mappings)
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         return await self.get_db_item(item_id)
 

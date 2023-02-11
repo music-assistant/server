@@ -27,7 +27,7 @@ import async_timeout
 from aiohttp import WSMsgType, web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
-from music_assistant.common.models.enums import EventType
+
 from music_assistant.common.models.errors import InvalidCommand
 from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import __version__
@@ -35,7 +35,6 @@ from music_assistant.constants import __version__
 from music_assistant.common.models.api import (
     CommandMessage,
     ErrorResultMessage,
-    EventMessage,
     MessageType,
     ServerInfoMessage,
     SuccessResultMessage,
@@ -49,6 +48,8 @@ CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 API_SCHEMA_VERSION = 1
 
 LOGGER = logging.getLogger(__name__)
+DEBUG = False  # Set to True to enable very verbose logging of all incoming/outgoing messages
+
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
@@ -200,7 +201,8 @@ class WebsocketClientHandler:
                     disconnect_warn = "Received non-Text message."
                     break
 
-                self._logger.debug("Received: %s", msg.data)
+                if DEBUG:
+                    self._logger.debug("Received: %s", msg.data)
 
                 try:
                     command_msg = CommandMessage.from_dict(json_loads(msg.data))
@@ -208,11 +210,10 @@ class WebsocketClientHandler:
                     disconnect_warn = f"Received invalid JSON: {msg.data}"
                     break
 
-                self._logger.debug("Received %s", command_msg)
                 self._handle_command(command_msg)
 
         except asyncio.CancelledError:
-            self._logger.info("Connection closed by client")
+            self._logger.debug("Connection closed by client")
 
         except Exception:  # pylint: disable=broad-except
             self._logger.exception("Unexpected error inside websocket API")
@@ -288,6 +289,8 @@ class WebsocketClientHandler:
                     message: str = process()
                 else:
                     message = process
+                if DEBUG:
+                    self._logger.debug("Writing: %s", message)
                 await self.wsock.send_str(message)
 
     def _send_message(self, message: MessageType) -> None:
@@ -326,6 +329,8 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
     """Try to parse a value from raw (json) data and type annotations."""
 
     if isinstance(value, dict) and hasattr(value_type, "from_dict"):
+        if "media_type" in value and value["media_type"] != value_type.media_type:
+            raise ValueError("Invalid MediaType")
         return value_type.from_dict(value)
 
     if value is None and not isinstance(default, type(MISSING)):

@@ -91,12 +91,13 @@ class Provider:
             for x in self.manifest.config_entries
         ]
 
-    def to_dict(self) -> ProviderInstance:
+    def to_dict(self, *args, **kwargs) -> ProviderInstance:
         """Return Provider(instance) as serializable dict."""
         return {
-            "type": self.type,
+            "type": self.type.value,
             "domain": self.domain,
             "name": self.name,
             "instance_id": self.instance_id,
-            "supported_features": self.supported_features
+            "supported_features": [x.value for x in self.supported_features],
+            "available": self.available
         }

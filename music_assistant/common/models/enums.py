@@ -265,7 +265,9 @@ class EventType(StrEnum):
     MEDIA_ITEM_DELETED = "media_item_deleted"
     PROVIDER_CONFIG_UPDATED = "provider_config_updated"
     PROVIDER_CONFIG_CREATED = "provider_config_created"
+    PROVIDER_LOADED = "provider_loaded"
     PLAYER_CONFIG_UPDATED = "player_config_updated"
+    SYNC_TASKS_UPDATED = "sync_tasks_updated"
 
 
 class ProviderFeature(StrEnum):

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.enums import (
+    EventType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -21,12 +22,14 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     media_from_dict,
 )
+from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
     CONF_DB_LIBRARY,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PLAYLOG,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_LOUDNESS,
@@ -66,6 +69,7 @@ class MusicController:
         self.tracks = TracksController(mass)
         self.radio = RadioController(mass)
         self.playlists = PlaylistController(mass)
+        self.in_progress_syncs: list[SyncTask] = []
 
     async def setup(self):
         """Async initialize of module."""
@@ -92,16 +96,22 @@ class MusicController:
         Start running the sync of (all or selected) musicproviders.
 
         media_types: only sync these media types. None for all.
-        providers: only sync these provider domains. None for all.
+        providers: only sync these provider domains/instances. None for all.
         """
+        if media_types is None:
+            media_types = MediaType.ALL
+        if providers is None:
+            providers = [x.domain for x in self.providers]
 
         for provider in self.providers:
-            if providers is not None and provider.domain not in providers:
+            if not (provider.domain in providers or provider.instance_id in providers):
                 continue
-            # TODO: Add task to list to track progress
-            self.mass.create_task(
-                provider.sync_library(media_types),
-            )
+            self._start_provider_sync(provider.instance_id, media_types)
+
+    @api_command("music/synctasks")
+    def get_running_sync_tasks(self) -> list[SyncTask]:
+        """Return list with providers that are currently syncing."""
+        return self.in_progress_syncs
 
     @api_command("music/search")
     async def search(
@@ -120,19 +130,21 @@ class MusicController:
         # include results from all music providers
         provider_instances = (item.instance_id for item in self.providers)
         # TODO: sort by name and filter out duplicates ?
-        return list(itertools.chain.from_iterable(
-            await asyncio.gather(
-                *[
-                    self.search_provider(
-                        search_query,
-                        media_types,
-                        provider_instance=provider_instance,
-                        limit=limit,
-                    )
-                    for provider_instance in provider_instances
-                ]
+        return list(
+            itertools.chain.from_iterable(
+                await asyncio.gather(
+                    *[
+                        self.search_provider(
+                            search_query,
+                            media_types,
+                            provider_instance=provider_instance,
+                            limit=limit,
+                        )
+                        for provider_instance in provider_instances
+                    ]
+                )
             )
-        ))
+        )
 
     async def search_provider(
         self,
@@ -448,6 +460,45 @@ class MusicController:
         if media_type == MediaType.PLAYLIST:
             return self.playlists
 
+    def _start_provider_sync(
+        self, provider_instance: str, media_types: tuple[MediaType]
+    ):
+        """Start sync task on provider and track progress."""
+        # check if we're not already running a sync task for this provider/mediatype
+        for sync_task in self.in_progress_syncs:
+            if sync_task.provider_instance != provider_instance:
+                continue
+            for media_type in media_types:
+                if media_type in sync_task.media_types:
+                    LOGGER.debug(
+                        "Skip sync task for %s because another task is already in progress",
+                        provider_instance,
+                    )
+                    return
+
+        # we keep track of running sync tasks
+        provider = self.mass.get_provider(provider_instance)
+        task = self.mass.create_task(provider.sync_library(media_types))
+        sync_spec = SyncTask(
+            provider_domain=provider.domain,
+            provider_instance=provider.instance_id,
+            media_types=media_types,
+            task=task,
+        )
+        self.in_progress_syncs.append(sync_spec)
+
+        self.mass.signal_event(
+            EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs
+        )
+
+        def on_sync_task_done(task: asyncio.Task):
+            self.in_progress_syncs.remove(sync_spec)
+            self.mass.signal_event(
+                EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs
+            )
+
+        task.add_done_callback(on_sync_task_done)
+
     async def _cleanup_library(self) -> None:
         """Cleanup deleted items from library/database."""
         prev_providers = await self.mass.cache.get("prov_ids", default=[])
@@ -618,9 +669,18 @@ class MusicController:
                     timestamp INTEGER DEFAULT 0
                 );"""
         )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}(
+                    media_type TEXT NOT NULL,
+                    item_id INTEGER NOT NULL,
+                    provider_domain TEXT NOT NULL,
+                    provider_instance TEXT NOT NULL,
+                    provider_item_id TEXT NOT NULL,
+                    UNIQUE(media_type, item_id, provider_instance, provider_item_id)
+                );"""
+        )
 
         # create indexes
-        # TODO: create indexes for the json columns ?
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(in_library);"
         )

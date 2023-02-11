@@ -46,9 +46,26 @@ class AlbumsController(MediaControllerBase[Album]):
         self.mass.register_api_command("music/album/update", self.update_db_item)
         self.mass.register_api_command("music/album/delete", self.delete_db_item)
 
-    async def get(self, *args, **kwargs) -> Album:
+    async def get(
+        self,
+        item_id: str,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
+        force_refresh: bool = False,
+        lazy: bool = True,
+        details: Album = None,
+        force_provider_item: bool = False,
+    ) -> Album:
         """Return (full) details for a single media item."""
-        album = await super().get(*args, **kwargs)
+        album = await super().get(
+            item_id=item_id,
+            provider_domain=provider_domain,
+            provider_instance=provider_instance,
+            force_refresh=force_refresh,
+            lazy=lazy,
+            details=details,
+            force_provider_item=force_provider_item,
+        )
         # append full artist details to full album item
         if album.artist:
             album.artist = await self.mass.music.artists.get(
@@ -180,6 +197,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 },
             )
             item_id = new_item["item_id"]
+            # update/set provider_mappings table
+            await self._set_provider_mappings(item_id, item.provider_mappings)
             self.logger.debug("added %s to database", item.name)
             # return created object
             return await self.get_db_item(item_id)
@@ -233,6 +252,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
             },
         )
+        # update/set provider_mappings table
+        await self._set_provider_mappings(item_id, item.provider_mappings)
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         return await self.get_db_item(item_id)
 
@@ -298,10 +319,7 @@ class AlbumsController(MediaControllerBase[Album]):
     ):
         """Generate a dynamic list of tracks based on the album content."""
         prov = self.mass.get_provider(provider_instance or provider_domain)
-        if (
-            not prov
-            or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features
-        ):
+        if not prov or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []
         album_tracks = await self._get_provider_album_tracks(
             item_id=item_id,

@@ -49,6 +49,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self.mass.register_api_command("music/artists", self.db_items)
         self.mass.register_api_command("music/albumartists", self.album_artists)
         self.mass.register_api_command("music/artist", self.get)
+        self.mass.register_api_command("music/artist/albums", self.albums)
         self.mass.register_api_command("music/artist/tracks", self.tracks)
         self.mass.register_api_command("music/artist/update", self.update_db_item)
         self.mass.register_api_command("music/artist/delete", self.delete_db_item)
@@ -303,6 +304,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 self.db_table, item.to_db_row()
             )
             item_id = new_item["item_id"]
+            # update/set provider_mappings table
+            await self._set_provider_mappings(item_id, item.provider_mappings)
             self.logger.debug("added %s to database", item.name)
             # return created object
             return await self.get_db_item(item_id)
@@ -340,6 +343,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "provider_mappings": json_dumps(provider_mappings),
             },
         )
+        # update/set provider_mappings table
+        await self._set_provider_mappings(item_id, item.provider_mappings)
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         return await self.get_db_item(item_id)
 

@@ -46,7 +46,7 @@ class SpotifyProvider(MusicProvider):
     _auth_token = None
     _sp_user = None
     _librespot_bin = None
-    _throttler = Throttler(rate_limit=4, period=1)
+    _throttler = Throttler(rate_limit=1, period=0.1)
     _cache_dir = CACHE_DIR
     _ap_workaround = False
     _attr_supported_features = (

@@ -52,6 +52,8 @@ class CacheController:
         checkum: optional argument to check if the checksum in the
                     cacheobject matches the checkum provided
         """
+        if not cache_key:
+            return
         cur_time = int(time.time())
         if checksum is not None and not isinstance(checksum, str):
             checksum = str(checksum)
@@ -91,6 +93,8 @@ class CacheController:
 
     async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
         """Set data in cache."""
+        if not cache_key:
+            return
         if checksum is not None and not isinstance(checksum, str):
             checksum = str(checksum)
         expires = int(time.time() + expiration)

@@ -491,4 +491,4 @@ class StreamDetails(DataClassDictMixin):
     @property
     def uri(self) -> str:
         """Return uri representation of item."""
-        return f"{self.provider}://{self.media_type}/{self.item_id}"
+        return f"{self.provider}://{self.media_type.value}/{self.item_id}"

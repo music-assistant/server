@@ -69,7 +69,7 @@ class PlayerQueuesController:
     async def play_media(
         self,
         queue_id: str,
-        media: str | list[str] | MediaItemType | list[MediaItemType],
+        media: MediaItemType | list[MediaItemType] | str | list[str],
         option: QueueOption = QueueOption.PLAY,
         radio_mode: bool = False,
     ) -> str:
@@ -146,25 +146,31 @@ class PlayerQueuesController:
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
             await self.clear(queue_id)
-            await self.load(queue_id, queue_items, shuffle=shuffle)
+            await self.load(queue_id, queue_items=queue_items, shuffle=shuffle)
             await self.play_index(queue_id, 0)
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
         elif option == QueueOption.NEXT:
             await self.load(
-                queue_id, queue_items, insert_at_index=cur_index + 1, shuffle=shuffle
+                queue_id,
+                queue_items=queue_items,
+                insert_at_index=cur_index + 1,
+                shuffle=shuffle,
             )
         elif option == QueueOption.REPLACE_NEXT:
-            await self.load(
+            self.load(
                 queue_id,
-                queue_items,
+                queue_items=queue_items,
                 insert_at_index=cur_index + 1,
                 keep_remaining=False,
                 shuffle=shuffle,
             )
         # handle play: replace current loaded/playing index with new item(s)
         elif option == QueueOption.PLAY:
-            await self.load(
-                queue_id, queue_items, insert_at_index=cur_index, shuffle=shuffle
+            self.load(
+                queue_id,
+                queue_items=queue_items,
+                insert_at_index=cur_index,
+                shuffle=shuffle,
             )
             await self.play_index(queue_id, cur_index)
         # handle add: add/append item(s) to the remaining queue items
@@ -175,9 +181,9 @@ class PlayerQueuesController:
             else:
                 # just append at the end
                 insert_at_index = len(self._queue_items[queue_id])
-            await self.load(
-                queue_id,
-                queue_items,
+            self.load(
+                queue_id=queue_id,
+                queue_items=queue_items,
                 insert_at_index=insert_at_index,
                 shuffle=queue.shuffle_enabled,
             )
@@ -293,7 +299,7 @@ class PlayerQueuesController:
         if self._queues[queue_id].state == PlayerState.PLAYING:
             await self.pause()
             return
-        await self.play()
+        await self.play(queue_id)
 
     @api_command("players/queue/next")
     async def next(self, queue_id: str) -> None:
@@ -382,6 +388,7 @@ class PlayerQueuesController:
         queue_id: str,
         index: int | str,
         seek_position: int = 0,
+        fade_in: bool = False,
     ) -> None:
         """Play item at index (or item_id) X in queue."""
         queue = self._queues[queue_id]
@@ -395,18 +402,14 @@ class PlayerQueuesController:
             raise FileNotFoundError(f"Unknown index/id: {index}")
         queue.current_index = index
         queue.index_in_buffer = index
-        # create url for the stream
-        stream_url = self.mass.streams.get_stream_url(
-            queue_id=queue_id,
-            queue_item_id=queue_item.item_id,
-            player_id=queue_id,
-            seek_position=seek_position,
-        )
-        # TODO: Handle multi-client player groups here
-
-        # execute the play command on the player(s)
+        # execute the play_media command on the player(s)
         player_prov = self.mass.players.get_player_provider(queue_id)
-        await player_prov.cmd_play_url(queue_id, stream_url)
+        await player_prov.cmd_play_media(
+            queue_id,
+            queue_item=queue_item,
+            seek_position=seek_position,
+            fade_in=fade_in,
+        )
 
     # Interaction with player
 
@@ -426,7 +429,7 @@ class PlayerQueuesController:
                 active=False,
                 display_name=player.display_name,
                 available=player.available,
-                items=0
+                items=0,
             )
             queue_items = []
 
@@ -451,7 +454,7 @@ class PlayerQueuesController:
 
         if queue.active:
             queue.state = player.state
-            queue.elapsed_time = player.corrected_elapsed_time
+            queue.elapsed_time = int(player.corrected_elapsed_time)
             queue.elapsed_time_last_updated = time.time()
             queue.current_item = self.get_item(queue_id, queue.current_index)
             next_index = self.get_next_index(queue_id, queue.current_index)
@@ -464,6 +467,7 @@ class PlayerQueuesController:
         # basic throttle: do not send state changed events if queue did not actually change
         prev_state = self._prev_states.get(queue_id, {})
         new_state = self._queues[queue_id].to_dict()
+        self._prev_states[queue_id] = new_state
         changed_keys = get_changed_keys(prev_state, new_state)
 
         if len(changed_keys) == 0:
@@ -473,9 +477,9 @@ class PlayerQueuesController:
             self.mass.signal_event(
                 EventType.QUEUE_TIME_UPDATED, object_id=queue_id, data=queue
             )
-        elif changed_keys != {"elapsed_time"}:
+        elif changed_keys != {"elapsed_time", "elapsed_time_last_updated"}:
             self.mass.signal_event(
-                EventType.QUEUE_UPDATED, object_id=self.player_id, data=self
+                EventType.QUEUE_UPDATED, object_id=queue_id, data=queue
             )
         # watch dynamic radio items refill if needed
         if "current_index" in changed_keys:
@@ -526,10 +530,9 @@ class PlayerQueuesController:
         - keep_remaining: keep the remaining items after the insert
         - shuffle: (re)shuffle the items after insert index
         """
-        queue_items = self._queue_items[queue_id]
 
         # keep previous/played items, append the new ones
-        prev_items = queue_items[:insert_at_index]
+        prev_items = self._queue_items[queue_id][:insert_at_index]
         next_items: list[QueueItem] = []
 
         # if keep_remaining, append the old previous items
@@ -561,14 +564,16 @@ class PlayerQueuesController:
         if isinstance(item_id_or_index, int) and len(queue_items) > item_id_or_index:
             return queue_items[item_id_or_index]
         if isinstance(item_id_or_index, str):
-            return next((x for x in queue_items if x.item_id == item_id_or_index), None)
+            return next(
+                (x for x in queue_items if x.queue_item_id == item_id_or_index), None
+            )
         return None
 
     def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
         """Get index by queue_item_id."""
         queue_items = self._queue_items[queue_id]
         for index, item in enumerate(queue_items):
-            if item.item_id == queue_item_id:
+            if item.queue_item_id == queue_item_id:
                 return index
         return None
 
@@ -639,7 +644,7 @@ class PlayerQueuesController:
         queue_items = [
             QueueItem.from_media_item(queue_id, x) for x in tracks if x.available
         ]
-        await self.load(
+        self.load(
             queue_id,
             queue_items,
             insert_at_index=len(self._queue_items[queue_id]) - 1,

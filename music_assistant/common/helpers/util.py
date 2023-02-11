@@ -248,6 +248,8 @@ def get_changed_keys(
     ignore_keys: Optional[List[str]] = None,
 ) -> Set[str]:
     """Compare 2 dicts and return set of changed keys."""
+    if not dict1:
+        return set(dict2.keys())
     if not dict2:
         return set(dict1.keys())
     changed_keys = set()

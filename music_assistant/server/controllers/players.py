@@ -144,22 +144,28 @@ class PlayerController:
         player.display_name = self.mass.config.get(
             "{CONF_PLAYERS}/{player_id}/name", player.name
         )
+        # set player state to off if player is not powered
+        if player.powered and player.state == PlayerState.OFF:
+            player.state = PlayerState.IDLE
+        elif not player.powered:
+            player.state = PlayerState.OFF
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
         new_state = self._players[player_id].to_dict()
+        self._prev_states[player_id] = new_state
         changed_keys = get_changed_keys(
-            prev_state, new_state, ignore_keys=["elapsed_time"]
+            prev_state, new_state, ignore_keys=["elapsed_time", "elapsed_time_last_updated"]
         )
-
-        if len(changed_keys) == 0:
-            return
 
         if not player.enabled and "enabled" not in changed_keys:
             # ignore updates for disabled players
             return
 
-        # signal update to the playerqueue
+        # always signal update to the playerqueue
         self.queues.on_player_update(player)
+
+        if len(changed_keys) == 0:
+            return
 
         self.mass.signal_event(
             EventType.PLAYER_UPDATED, object_id=player_id, data=player
