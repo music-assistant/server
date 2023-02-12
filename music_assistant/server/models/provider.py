@@ -34,6 +34,7 @@ class Provider:
         )
         self.cache = mass.cache
         self.available = False
+        self.last_error = None
 
     @property
     def supported_features(self) -> tuple[ProviderFeature]:
@@ -99,5 +100,6 @@ class Provider:
             "name": self.name,
             "instance_id": self.instance_id,
             "supported_features": [x.value for x in self.supported_features],
-            "available": self.available
+            "available": self.available,
+            "last_error": self.last_error
         }

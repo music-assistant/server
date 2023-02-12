@@ -28,8 +28,11 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.constants import VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID
-from music_assistant.server.controllers.database import SCHEMA_VERSION
+from music_assistant.constants import (
+    SCHEMA_VERSION,
+    VARIOUS_ARTISTS,
+    VARIOUS_ARTISTS_ID,
+)
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import parse_tags, split_items
@@ -87,15 +90,15 @@ class FileSystemProviderBase(MusicProvider):
     """
 
     _attr_supported_features = (
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.PLAYLIST_TRACKS_EDIT,
-            ProviderFeature.PLAYLIST_CREATE,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-        )
+        ProviderFeature.LIBRARY_ARTISTS,
+        ProviderFeature.LIBRARY_ALBUMS,
+        ProviderFeature.LIBRARY_TRACKS,
+        ProviderFeature.LIBRARY_PLAYLISTS,
+        ProviderFeature.PLAYLIST_TRACKS_EDIT,
+        ProviderFeature.PLAYLIST_CREATE,
+        ProviderFeature.BROWSE,
+        ProviderFeature.SEARCH,
+    )
 
     @abstractmethod
     async def setup(self) -> bool:
@@ -142,7 +145,6 @@ class FileSystemProviderBase(MusicProvider):
     # DEFAULT/GENERIC IMPLEMENTATION BELOW
     # should normally not be needed to override
 
-
     async def search(
         self, search_query: str, media_types=Optional[List[MediaType]], limit: int = 5
     ) -> List[MediaItemType]:
@@ -150,7 +152,10 @@ class FileSystemProviderBase(MusicProvider):
         result = []
         # searching the filesystem is slow and unreliable,
         # instead we make some (slow) freaking queries to the db ;-)
-        params = {"name": f"%{search_query}%", "provider_instance": f"%{self.instance_id}%"}
+        params = {
+            "name": f"%{search_query}%",
+            "provider_instance": f"%{self.instance_id}%",
+        }
         if media_types is None or MediaType.TRACK in media_types:
             query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
             tracks = await self.mass.music.tracks.get_db_items_by_query(query, params)
@@ -305,7 +310,9 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 controller = self.mass.music.get_controller(MediaType.TRACK)
 
-            if db_item := await controller.get_db_item_by_prov_id(file_path, self.domain):
+            if db_item := await controller.get_db_item_by_prov_id(
+                file_path, self.domain
+            ):
                 await controller.remove_prov_mapping(db_item.item_id, self.instance_id)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -694,7 +701,9 @@ class FileSystemProviderBase(MusicProvider):
             self.domain,
             name,
             provider_mappings={
-                ProviderMapping(artist_path, self.domain, self.instance_id, url=artist_path)
+                ProviderMapping(
+                    artist_path, self.domain, self.instance_id, url=artist_path
+                )
             },
             musicbrainz_id=VARIOUS_ARTISTS_ID
             if compare_strings(name, VARIOUS_ARTISTS)

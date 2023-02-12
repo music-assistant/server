@@ -9,7 +9,7 @@
       "key": "path",
       "type": "string",
       "label": "Path",
-      "default_value": "/music"
+      "description": "Full SMB path to the files, e.g. \\\\server\\share\folder or smb://server/share"
     },
     {
       "key": "username",
@@ -31,5 +31,6 @@
 
   "requirements": ["pysmb==1.2.9.1"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
-  "multi_instance": true
+  "multi_instance": true,
+  "init_class": "SMBFileSystemProvider"
 }

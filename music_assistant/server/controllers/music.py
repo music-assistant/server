@@ -36,6 +36,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
     DEFAULT_DB_LIBRARY,
     ROOT_LOGGER_NAME,
+    SCHEMA_VERSION,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.database import DatabaseConnection
@@ -51,9 +52,6 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
-
-
-SCHEMA_VERSION = 19
 
 
 class MusicController:
@@ -460,6 +458,26 @@ class MusicController:
         if media_type == MediaType.PLAYLIST:
             return self.playlists
 
+    async def cleanup_provider(self, provider_instance: str) -> None:
+        """Cleanup provider records from the database."""
+        # clean cache items from deleted provider(s)
+        await self.mass.cache.clear(provider_instance)
+
+        # cleanup media items from db matched to deleted provider
+        for ctrl in (
+            # order is important here to recursively cleanup bottom up
+            self.mass.music.radio,
+            self.mass.music.playlists,
+            self.mass.music.tracks,
+            self.mass.music.albums,
+            self.mass.music.artists,
+        ):
+            prov_items = await ctrl.get_db_items_by_prov_id(
+                provider_instance=provider_instance
+            )
+            for item in prov_items:
+                await ctrl.remove_prov_mapping(item.item_id, provider_instance)
+
     def _start_provider_sync(
         self, provider_instance: str, media_types: tuple[MediaType]
     ):
@@ -506,24 +524,7 @@ class MusicController:
         removed_providers = {x for x in prev_providers if x not in cur_providers}
 
         for provider_instance in removed_providers:
-
-            # clean cache items from deleted provider(s)
-            await self.mass.cache.clear(provider_instance)
-
-            # cleanup media items from db matched to deleted provider
-            for ctrl in (
-                # order is important here to recursively cleanup bottom up
-                self.mass.music.radio,
-                self.mass.music.playlists,
-                self.mass.music.tracks,
-                self.mass.music.albums,
-                self.mass.music.artists,
-            ):
-                prov_items = await ctrl.get_db_items_by_prov_id(
-                    provider_instance=provider_instance
-                )
-                for item in prov_items:
-                    await ctrl.remove_prov_mapping(item.item_id, provider_instance)
+            await self.cleanup_provider(provider_instance)
         await self.mass.cache.set("prov_ids", cur_providers)
 
     async def _setup_database(self):

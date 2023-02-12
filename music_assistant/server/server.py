@@ -12,12 +12,10 @@ from typing import Any, Callable, Coroutine, Type
 from aiohttp import ClientSession, TCPConnector, web
 
 from music_assistant.common.helpers.util import select_free_port
-from music_assistant.common.models.config_entries import (
-    ProviderConfig,
-    ProviderConfigSet,
-)
+from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import (
+    MusicAssistantError,
     ProviderUnavailableError,
     SetupFailedError,
 )
@@ -157,7 +155,7 @@ class MusicAssistant:
 
     @api_command("providers")
     def get_providers(
-        self, provider_type: ProviderType | None
+        self, provider_type: ProviderType | None = None
     ) -> list[ProviderInstanceType]:
         """Return all loaded/running Providers (instances), optionally filtered by ProviderType."""
         return [
@@ -315,9 +313,16 @@ class MusicAssistant:
                 raise AttributeError("Unable to locate Provider class")
             provider: ProviderInstanceType = prov_cls(self, prov_manifest, conf)
             self._providers[provider.instance_id] = provider
-            await provider.setup()
+            try:
+                await provider.setup()
+            except MusicAssistantError as err:
+                provider.last_error = str(err)
+                provider.available = False
+                raise err
+
             # mark provider as available once setup succeeded
             provider.available = True
+            provider.last_error = None
             # if this is a music provider, start sync
             if provider.type == ProviderType.MUSIC:
                 await self.music.start_sync(providers=[provider.instance_id])
@@ -333,6 +338,8 @@ class MusicAssistant:
                 "Successfully loaded provider %s",
                 conf.name or conf.domain,
             )
+        # always signal event, regardless if the loading succeeded or not
+        self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
     async def unload_provider(self, instance_id: str) -> None:
         """Unload a provider."""
@@ -344,6 +351,7 @@ class MusicAssistant:
                     await sync_task.task
             await provider.close()
             self._providers.pop(instance_id)
+            self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
     def _register_api_commands(self) -> None:
         """Register all methods decorated as api_command within a class(instance)."""
@@ -368,37 +376,20 @@ class MusicAssistant:
         # load all available providers from manifest files
         await self.__load_available_providers()
         # load all configured (and enabled) providers
+        loaded_providers = set()
         for prov_conf in self.config.get_provider_configs():
+            loaded_providers.add(prov_conf.domain)
             self.create_task(self.load_provider(prov_conf))
         # create default config for any 'load_by_default' providers (e.g. URL provider)
         # NOTE: this will auto load any not yet existing providers
         for prov_manifest in self._available_providers.values():
+            if prov_manifest.domain in loaded_providers:
+                continue
             if not prov_manifest.load_by_default:
                 continue
-            loaded = any(
-                (x for x in self.providers if x.domain == prov_manifest.domain)
-            )
-            if loaded:
-                continue
             self.config.set_provider_config(
-                ProviderConfigSet(
-                    values={},
-                    type=prov_manifest.type,
-                    domain=prov_manifest.domain,
-                    instance_id=prov_manifest.domain,
-                    enabled=True,
-                )
+                self.config.create_provider_config(prov_manifest.domain)
             )
-
-        # listen to config change events
-        async def handle_config_updated_event(event: MassEvent):
-            """Handle ProviderConfig updated/created event."""
-            await self.load_provider(event.data)
-
-        self.subscribe(
-            handle_config_updated_event,
-            (EventType.PROVIDER_CONFIG_CREATED, EventType.PROVIDER_CONFIG_UPDATED),
-        )
 
     async def __load_available_providers(self) -> None:
         """Preload all available provider manifest files."""

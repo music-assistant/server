@@ -15,5 +15,6 @@
 
   "requirements": [],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
-  "multi_instance": true
+  "multi_instance": true,
+  "init_class": "LocalFileSystemProvider"
 }

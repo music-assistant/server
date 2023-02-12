@@ -4,6 +4,8 @@ import pathlib
 
 __version__ = "2.0.0"
 
+SCHEMA_VERSION = 19
+
 ROOT_LOGGER_NAME = "music_assistant"
 
 UNKNOWN_ARTIST = "Unknown Artist"

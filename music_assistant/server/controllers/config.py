@@ -17,9 +17,7 @@ from music_assistant.common.helpers.json import (
 from music_assistant.common.models.config_entries import (
     DEFAULT_PLAYER_CONFIG_ENTRIES,
     PlayerConfig,
-    PlayerConfigSet,
     ProviderConfig,
-    ProviderConfigSet,
 )
 from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import PlayerUnavailableError
@@ -123,7 +121,9 @@ class ConfigController:
 
     @api_command("config/providers")
     def get_provider_configs(
-        self, prov_type: ProviderType | None = None
+        self,
+        provider_type: ProviderType | None = None,
+        provider_domain: str | None = None,
     ) -> list[ProviderConfig]:
         """Return all known provider configurations, optionally filtered by ProviderType."""
         raw_values: dict[str, dict] = self.get(CONF_PROVIDERS, {})
@@ -133,7 +133,8 @@ class ConfigController:
         return [
             ProviderConfig.parse(prov_entries[prov_conf["domain"]], prov_conf)
             for prov_conf in raw_values.values()
-            if (prov_type is None or prov_conf["type"] == prov_type)
+            if (provider_type is None or prov_conf["type"] == provider_type)
+            and (provider_domain is None or prov_conf["domain"] == provider_domain)
         ]
 
     @api_command("config/providers/get")
@@ -147,7 +148,7 @@ class ConfigController:
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/set")
-    def set_provider_config(self, config: ProviderConfig | ProviderConfigSet) -> None:
+    def set_provider_config(self, config: ProviderConfig) -> None:
         """Create or update ProviderConfig."""
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         existing = self.get(conf_key)
@@ -156,23 +157,53 @@ class ConfigController:
             # no changes
             return
         self.set(conf_key, config_dict)
-        # make sure we send a full object in the event
-        if isinstance(config, ProviderConfigSet):
-            config = self.get_provider_config(config.instance_id)
-        if existing:
-            # existing provider updated
-            self.mass.signal_event(
-                EventType.PROVIDER_CONFIG_UPDATED,
-                object_id=config.instance_id,
-                data=config,
-            )
+        # (re)load provider
+        updated_config = self.get_provider_config(config.instance_id)
+        self.mass.create_task(self.mass.load_provider(updated_config))
+
+    @api_command("config/providers/create")
+    def create_provider_config(self, provider_domain: str) -> ProviderConfig:
+        """
+        Create default/empty ProviderConfig.
+
+        This is intended to be used as helper method to add a new provider,
+        and it performs some quick sanity checks as well as handling the
+        instance_id generation.
+        """
+        # lookup provider manifesr
+        for prov in self.mass.get_available_providers():
+            if prov.domain == provider_domain:
+                manifest = prov
+                break
         else:
-            # new provider config added
-            self.mass.signal_event(
-                EventType.PROVIDER_CONFIG_CREATED,
-                object_id=config.instance_id,
-                data=config,
+            raise KeyError(f"Unknown provider domain: {provider_domain}")
+
+        # determine instance id based on previous configs
+        existing = self.get_provider_configs(provider_domain=provider_domain)
+        if existing and not manifest.multi_instance:
+            raise ValueError(
+                f"Provider {manifest.name} does not support multiple instances"
             )
+
+        count = len(existing)
+        if count == 0:
+            instance_id = provider_domain
+            name = manifest.name
+        else:
+            instance_id = f"{provider_domain}{count+1}"
+            name = f"{manifest.name} {count+1}"
+
+        return ProviderConfig.parse(
+            prov.config_entries,
+            {
+                "type": manifest.type.value,
+                "domain": manifest.domain,
+                "instance_id": instance_id,
+                "name": name,
+                "values": {},
+            },
+            allow_none=True
+        )
 
     @api_command("config/providers/remove")
     async def remove_provider_config(self, instance_id: str) -> None:
@@ -182,6 +213,9 @@ class ConfigController:
         if not existing:
             raise KeyError(f"Provider {instance_id} does not exist")
         await self.mass.unload_provider(instance_id)
+        if existing["type"] == "music":
+            # cleanup entries in library
+            await self.mass.music.cleanup_provider(instance_id)
         self.remove(conf_key)
 
     @api_command("config/players")
@@ -212,7 +246,7 @@ class ConfigController:
         return PlayerConfig.parse(entries, conf)
 
     @api_command("config/players/set")
-    def set_player_config(self, config: PlayerConfig | PlayerConfigSet) -> None:
+    def set_player_config(self, config: PlayerConfig) -> None:
         """Create or update PlayerConfig."""
         conf_key = f"{CONF_PLAYERS}/{config.player_id}"
         existing = self.get(conf_key)
@@ -221,9 +255,6 @@ class ConfigController:
             # no changes
             return
         self.set(conf_key, config_dict)
-        # make sure we send a full object in the event
-        if isinstance(config, PlayerConfigSet):
-            config = self.get_player_config(config.player_id)
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
@@ -265,7 +296,7 @@ class ConfigController:
         else:
             # schedule the save for later
             self._timer_handle = self.mass.loop.call_later(
-                DEFAULT_SAVE_DELAY, self.mass.loop.create_task, self.async_save
+                DEFAULT_SAVE_DELAY, self.mass.create_task, self.async_save
             )
 
     async def async_save(self):

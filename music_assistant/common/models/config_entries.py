@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from types import NoneType
 from typing import Any
 
 from mashumaro import DataClassDictMixin
@@ -26,6 +27,8 @@ ConfigEntryTypeMap = {
     ConfigEntryType.INT: int,
     ConfigEntryType.FLOAT: float,
     ConfigEntryType.LABEL: str,
+    ConfigEntryType.DICT: dict,
+    ConfigEntryType.LABEL: str
 }
 
 
@@ -78,16 +81,21 @@ class ConfigEntryValue(ConfigEntry):
     value: ConfigValueType = None
 
     @classmethod
-    def parse(cls, entry: ConfigEntry, value: ConfigValueType) -> "ConfigEntryValue":
+    def parse(
+        cls, entry: ConfigEntry, value: ConfigValueType, allow_none: bool = False
+    ) -> "ConfigEntryValue":
         """Parse ConfigEntryValue from the config entry and plain value."""
         result = ConfigEntryValue.from_dict(entry.to_dict())
         result.value = value
-        expected_type = ConfigEntryTypeMap.get(result.type)
+        expected_type = ConfigEntryTypeMap.get(result.type, NoneType)
         if result.value is None:
             result.value = entry.default_value
         if result.value is None and not entry.required:
-            expected_type = None
-        if not isinstance(result.value, expected_type):
+            expected_type = NoneType
+        if not isinstance(result.value, expected_type) and not (
+            result.value is None and allow_none
+        ):
+            # NOTE: in some cases we allow this (e.g. create default config), hence the allow_none
             raise ValueError(f"{result.key} has unexpected type: {type(result.value)}")
         return result
 
@@ -104,11 +112,16 @@ class Config(DataClassDictMixin):
 
     @classmethod
     def parse(
-        cls: object, config_entries: list[ConfigEntry], raw: dict[str, Any]
-    ) -> "PlayerConfig":
-        """Parse PlayerConfig from the raw values (as stored in persistent storage)."""
+        cls: object,
+        config_entries: list[ConfigEntry],
+        raw: dict[str, Any],
+        allow_none: bool = False,
+    ) -> "Config":
+        """Parse Config from the raw values (as stored in persistent storage)."""
         values = {
-            x.key: ConfigEntryValue.parse(x, raw.get("values", {}).get(x.key))
+            x.key: ConfigEntryValue.parse(
+                x, raw.get("values", {}).get(x.key), allow_none
+            )
             for x in config_entries
         }
         return cls(**{**raw, "values": values})
@@ -139,18 +152,6 @@ class ProviderConfig(Config):
 
 
 @dataclass
-class ProviderConfigSet(ProviderConfig):
-    """Provider(instance) Configuration when updated/created (using raw values)."""
-
-    values: dict[str, ConfigValueType]
-
-    def to_raw(self) -> dict[str, Any]:
-        """Return minimized/raw dict to store in persistent storage."""
-        # this is just here for compatibility/convenience reasons
-        return self.to_dict()
-
-
-@dataclass
 class PlayerConfig(Config):
     """Player Configuration."""
 
@@ -160,18 +161,6 @@ class PlayerConfig(Config):
     enabled: bool = True
     # name: an (optional) custom name for this player
     name: str | None = None
-
-
-@dataclass
-class PlayerConfigSet(PlayerConfig):
-    """Player Configuration when updated/created (using raw values)."""
-
-    values: dict[str, ConfigValueType]
-
-    def to_raw(self) -> dict[str, Any]:
-        """Return minimized/raw dict to store in persistent storage."""
-        # this is just here for compatibility/convenience reasons
-        return self.to_dict()
 
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (

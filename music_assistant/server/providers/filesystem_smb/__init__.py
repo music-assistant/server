@@ -54,6 +54,8 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         # extract params from path
         if self.config.get_value(CONF_PATH).startswith("\\\\"):
             path_parts = self.config.get_value(CONF_PATH)[2:].split("\\", 2)
+        if self.config.get_value(CONF_PATH).startswith("//"):
+            path_parts = self.config.get_value(CONF_PATH)[2:].split("/", 2)
         elif self.config.get_value(CONF_PATH).startswith("smb://"):
             path_parts = self.config.get_value(CONF_PATH)[6:].split("/", 2)
         else:
