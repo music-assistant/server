@@ -437,7 +437,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             },
         )
 
-        
         # update the item in db (provider_mappings column only)
         db_item.provider_mappings = {
             x

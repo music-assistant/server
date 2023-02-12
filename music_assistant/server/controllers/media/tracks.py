@@ -71,7 +71,10 @@ class TracksController(MediaControllerBase[Track]):
         if track.album:
             try:
                 track.album = await self.mass.music.albums.get(
-                    track.album.item_id, track.album.provider
+                    track.album.item_id,
+                    track.album.provider,
+                    lazy=True,
+                    details=track.album,
                 )
             except MediaNotFoundError:
                 # edge case where playlist track has invalid albumdetails
@@ -80,7 +83,9 @@ class TracksController(MediaControllerBase[Track]):
         full_artists = []
         for artist in track.artists:
             full_artists.append(
-                await self.mass.music.artists.get(artist.item_id, artist.provider)
+                await self.mass.music.artists.get(
+                    artist.item_id, artist.provider, lazy=True, details=artist
+                )
             )
         track.artists = full_artists
         return track
@@ -318,7 +323,7 @@ class TracksController(MediaControllerBase[Track]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(item_id, item.provider_mappings)
+        await self._set_provider_mappings(item_id, provider_mappings)
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         return await self.get_db_item(item_id)
 

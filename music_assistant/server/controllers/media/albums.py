@@ -69,7 +69,10 @@ class AlbumsController(MediaControllerBase[Album]):
         # append full artist details to full album item
         if album.artist:
             album.artist = await self.mass.music.artists.get(
-                album.artist.item_id, album.artist.provider
+                album.artist.item_id,
+                album.artist.provider,
+                lazy=True,
+                details=album.artist,
             )
         return album
 

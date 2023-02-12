@@ -1,5 +1,6 @@
 """Helpers to work with (de)serializing of json."""
 
+from types import MethodType
 from typing import Any
 import base64
 import orjson
@@ -28,7 +29,8 @@ def json_encoder_default(obj: Any) -> Any:
         return obj.to_dict(omit_none=True)
     if isinstance(obj, bytes):
         return base64.b64encode(obj).decode("ascii")
-
+    if isinstance(obj, MethodType):
+        return None
     raise TypeError
 
 
