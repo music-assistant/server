@@ -145,8 +145,8 @@ class PlayerQueuesController:
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            await self.clear(queue_id)
-            await self.load(queue_id, queue_items=queue_items, shuffle=shuffle)
+            self.clear(queue_id)
+            self.load(queue_id, queue_items=queue_items, shuffle=shuffle)
             await self.play_index(queue_id, 0)
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
         elif option == QueueOption.NEXT:
@@ -463,6 +463,15 @@ class PlayerQueuesController:
             queue.state = PlayerState.IDLE
             queue.current_item = None
             queue.next_item = None
+            queue.elapsed_time = 0
+
+        # correct elapsed time when seeking
+        if (
+            queue.current_item
+            and queue.current_item.streamdetails
+            and queue.current_item.streamdetails.seconds_skipped
+        ):
+            queue.elapsed_time += queue.current_item.streamdetails.seconds_skipped
 
         # basic throttle: do not send state changed events if queue did not actually change
         prev_state = self._prev_states.get(queue_id, {})
@@ -475,7 +484,9 @@ class PlayerQueuesController:
 
         if "elapsed_time" in changed_keys:
             self.mass.signal_event(
-                EventType.QUEUE_TIME_UPDATED, object_id=queue_id, data=queue
+                EventType.QUEUE_TIME_UPDATED,
+                object_id=queue_id,
+                data=queue.elapsed_time,
             )
         elif changed_keys != {"elapsed_time", "elapsed_time_last_updated"}:
             self.mass.signal_event(
