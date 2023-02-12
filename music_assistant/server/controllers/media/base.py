@@ -35,7 +35,7 @@ from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, ROOT_LOGGER_NA
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
-ItemCls = TypeVar("ItemCls", bound="MediaControllerBase")
+ItemCls = TypeVar("ItemCls", bound="MediaItemType")
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 30
 
@@ -204,7 +204,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider_domain: str | None = None,
         provider_instance: str | None = None,
         limit: int = 25,
-    ) -> List[ItemCls]:
+    ) -> list[ItemCls]:
         """Search database or provider with given query."""
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
@@ -224,7 +224,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return []
 
         # prefer cache items (if any)
-        cache_key = f"{prov.domain}.search.{self.media_type.value}.{search_query}.{limit}"
+        cache_key = f"{prov.instance_id}.search.{self.media_type.value}.{search_query}.{limit}"
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -437,22 +437,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             },
         )
 
+        
+        # update the item in db (provider_mappings column only)
         db_item.provider_mappings = {
             x
             for x in db_item.provider_mappings
             if x.provider_instance != provider_instance
         }
-        if not db_item.provider_mappings:
-            # item has no more provider_mappings left, it is completely deleted
-            try:
-                await self.delete_db_item(db_item.item_id)
-            except AssertionError:
-                self.logger.debug(
-                    "Could not delete %s: it has items attached", db_item.item_id
-                )
-            return
-
-        # update the item in db (provider_mappings column only)
         match = {"item_id": item_id}
         await self.mass.music.database.update(
             self.db_table,
@@ -460,6 +451,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             {"provider_mappings": json_dumps(db_item.provider_mappings)},
         )
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
+
+        # NOTE: If the item has no providers left we leave an orphan item in the db
+        # to easily reinstate when a new provider attaches to it.
 
         self.logger.debug(
             "removed provider %s from item id %s", provider_instance, item_id

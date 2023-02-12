@@ -119,7 +119,7 @@ class TracksController(MediaControllerBase[Track]):
         ), "Provider type or ID must be specified"
         track = await self.get(item_id, provider_domain or provider_instance)
         # perform a search on all provider(types) to collect all versions/variants
-        provider_domains = {item.domain for item in self.mass.music.providers}
+        provider_domains = {prov.domain for prov in self.mass.music.providers}
         search_query = f"{track.artist.name} - {track.name}"
         all_versions = {
             prov_item.item_id: prov_item

@@ -136,7 +136,7 @@ class URLProvider(MusicProvider):
         else:
             url = self._full_url.get(item_id_or_url, item_id_or_url)
             item_id = item_id_or_url
-        cache_key = f"{self.domain}.media_info.{item_id}"
+        cache_key = f"{self.instance_id}.media_info.{item_id}"
         # do we have some cached info for this url ?
         cached_info = await self.mass.cache.get(cache_key)
         if cached_info and not force_refresh:

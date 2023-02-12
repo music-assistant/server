@@ -290,7 +290,7 @@ class AlbumsController(MediaControllerBase[Album]):
             item_id, provider_instance or provider_domain
         )
         # prefer cache items (if any)
-        cache_key = f"{prov.domain}.albumtracks.{item_id}"
+        cache_key = f"{prov.instance_id}.albumtracks.{item_id}"
         cache_checksum = full_album.metadata.checksum
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
