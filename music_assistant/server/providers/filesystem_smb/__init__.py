@@ -66,9 +66,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             self._root_path = os.sep + path_parts[2]
 
         default_target_ip = await get_ip_from_host(self._remote_name)
-        self._target_ip = self.config.get_value(CONF_OPTIONS).get(
-            "target_ip", default_target_ip
-        )
+        self._target_ip = self.config.get_value("target_ip") or default_target_ip
         async with self._get_smb_connection():
             # test connection and return
             return None
@@ -162,7 +160,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             username=self.config.get_value(CONF_USERNAME),
             password=self.config.get_value(CONF_PASSWORD),
             target_ip=self._target_ip,
-            options=self.config.get_value(CONF_OPTIONS),
+            options={key: value.value for key, value in self.config.values.items()},
         ) as smb_conn:
             token = smb_conn_ctx.set(smb_conn)
             yield smb_conn

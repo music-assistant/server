@@ -20,7 +20,7 @@ from music_assistant.common.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.player import Player
-from music_assistant.constants import ROOT_LOGGER_NAME
+from music_assistant.constants import CONF_PLAYERS, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -142,7 +142,7 @@ class PlayerController:
         player.group_volume = self._get_group_volume_level(player)
         # prefer any overridden name from config
         player.display_name = self.mass.config.get(
-            "{CONF_PLAYERS}/{player_id}/name", player.name
+            f"{CONF_PLAYERS}/{player_id}/name", player.name
         )
         # set player state to off if player is not powered
         if player.powered and player.state == PlayerState.OFF:
@@ -154,7 +154,9 @@ class PlayerController:
         new_state = self._players[player_id].to_dict()
         self._prev_states[player_id] = new_state
         changed_keys = get_changed_keys(
-            prev_state, new_state, ignore_keys=["elapsed_time", "elapsed_time_last_updated"]
+            prev_state,
+            new_state,
+            ignore_keys=["elapsed_time", "elapsed_time_last_updated"],
         )
 
         if not player.enabled and "enabled" not in changed_keys:

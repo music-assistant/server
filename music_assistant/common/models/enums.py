@@ -313,7 +313,6 @@ class ConfigEntryType(StrEnum):
     BOOLEAN = "boolean"
     STRING = "string"
     PASSWORD = "password"
-    INT = "integer"
+    INTEGER = "integer"
     FLOAT = "float"
     LABEL = "label"
-    DICT = "dict"

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from types import NoneType
 from typing import Any
 
@@ -18,16 +17,14 @@ from music_assistant.constants import (
 
 from .enums import ConfigEntryType
 
-ConfigValueType = str | int | float | bool | dict | None
+ConfigValueType = str | int | float | bool | None
 
 ConfigEntryTypeMap = {
     ConfigEntryType.BOOLEAN: bool,
     ConfigEntryType.STRING: str,
     ConfigEntryType.PASSWORD: str,
-    ConfigEntryType.INT: int,
+    ConfigEntryType.INTEGER: int,
     ConfigEntryType.FLOAT: float,
-    ConfigEntryType.LABEL: str,
-    ConfigEntryType.DICT: dict,
     ConfigEntryType.LABEL: str
 }
 
@@ -36,7 +33,7 @@ ConfigEntryTypeMap = {
 class ConfigValueOption(DataClassDictMixin):
     """Model for a value with seperated name/value."""
 
-    text: str
+    title: str
     value: ConfigValueType
 
 
@@ -57,7 +54,7 @@ class ConfigEntry(DataClassDictMixin):
     default_value: ConfigValueType = None
     required: bool = True
     # options [optional]: select from list of possible values/options
-    options: tuple[ConfigValueOption] | None = None
+    options: list[ConfigValueOption] | None = None
     # range [optional]: select values within range
     range: tuple[int, int] | None = None
     # description [optional]: extended description of the setting.
@@ -180,7 +177,7 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
     ),
     ConfigEntry(
         key=CONF_VOLUME_NORMALISATION_TARGET,
-        type=ConfigEntryType.INT,
+        type=ConfigEntryType.INTEGER,
         range=(-30, 0),
         default_value=-14,
         label="Target level for volume normalisation",
@@ -190,8 +187,8 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
     ),
     ConfigEntry(
         key=CONF_MAX_SAMPLE_RATE,
-        type=ConfigEntryType.INT,
-        options=(
+        type=ConfigEntryType.INTEGER,
+        options=[
             ConfigValueOption("44100", 44100),
             ConfigValueOption("48000", 48000),
             ConfigValueOption("88200", 88200),
@@ -200,7 +197,7 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
             ConfigValueOption("192000", 192000),
             ConfigValueOption("352800", 352800),
             ConfigValueOption("384000", 384000),
-        ),
+        ],
         default_value=96000,
         label="Maximum sample rate",
         description="Maximum sample rate that is sent to the player, content with a higher sample rate than this treshold will be downsampled",
