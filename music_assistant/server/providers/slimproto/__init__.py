@@ -3,15 +3,24 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aioslimproto.client import SlimClient
 from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
 
-from music_assistant.common.models.enums import PlayerFeature, PlayerState, PlayerType
+from music_assistant.common.models.enums import (
+    ContentType,
+    PlayerFeature,
+    PlayerState,
+    PlayerType,
+)
 from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.constants import CONF_CROSSFADE
 from music_assistant.server.models.player_provider import PlayerProvider
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.queue_item import QueueItem
 
 # TODO: Implement display support
 
@@ -78,41 +87,19 @@ class SlimprotoProvider(PlayerProvider):
                     prev.disconnect()
                 self._socket_clients[player_id] = client
 
-            player = self.mass.players.get(player_id)
-            if not player:
-                player = Player(
-                    player_id=player_id,
-                    provider=self.domain,
-                    type=PlayerType.PLAYER,
-                    name=client.name,
-                    available=True,
-                    powered=client.powered,
-                    device_info=DeviceInfo(
-                        model=client.device_model,
-                        address=client.device_address,
-                        manufacturer=client.device_type,
-                    ),
-                    supported_features=(
-                        PlayerFeature.ACCURATE_TIME,
-                        PlayerFeature.POWER,
-                        PlayerFeature.SYNC,
-                        PlayerFeature.VOLUME_MUTE,
-                        PlayerFeature.VOLUME_SET,
-                    ),
-                )
-                self.mass.players.register(player)
+            if event_type == SlimEventType.PLAYER_DECODER_READY:
+                self.mass.create_task(self._handle_decoder_ready(client))
+                return
 
-            # update player state on player events
-            player.available = True
-            player.current_url = client.current_url
-            player.elapsed_time = client.elapsed_seconds
-            player.elapsed_time_last_updated = time.time()
-            player.name = client.name
-            player.powered = client.powered
-            player.state = PlayerState(client.state.value)
-            player.volume_level = client.volume_level
-            player.volume_muted = client.muted
-            self.mass.players.update(player_id)
+            # ignore some uninteresting events
+            if event_type in (
+                SlimEventType.PLAYER_CLI_EVENT,
+                SlimEventType.PLAYER_DECODER_ERROR,
+            ):
+                return
+
+            # forward player update to MA player controller
+            self._handle_player_update(client)
 
         # construct SlimClient from socket client
         SlimClient(reader, writer, client_callback)
@@ -139,8 +126,42 @@ class SlimprotoProvider(PlayerProvider):
             - player_id: player_id of the player to handle the command.
             - url: the url to start playing on the player.
         """
+        crossfade_enabled: bool = self.mass.config.get_player_config_value(
+            player_id, CONF_CROSSFADE
+        ).value
+        crossfade = 10 if crossfade_enabled else 0
         if client := self._socket_clients.get(player_id):
-            await client.play_url(url)
+            await client.play_url(url, crossfade)
+
+    # async def cmd_play_media(
+    #     self,
+    #     player_id: str,
+    #     queue_item: QueueItem,
+    #     seek_position: int = 0,
+    #     fade_in: bool = False,
+    # ) -> None:
+    #     """
+    #     Send PLAY MEDIA command to given player.
+
+    #     This is called when the Queue wants the player to start playing a specific QueueItem.
+    #     The player implementation can decide how to process the request, such as playing
+    #     queue items one-by-one or enqueue all/some items.
+
+    #         - player_id: player_id of the player to handle the command.
+    #         - queue_item: the QueueItem to start playing on the player.
+    #         - seek_position: start playing from this specific position.
+    #         - fade_in: fade in the music at start (e.g. at resume).
+    #     """
+    #     # default implementation is to simply resolve the url and send the url to the player
+    #     # player/provider implementations may override this default.
+    #     url = await self.mass.streams.resolve_stream(
+    #         queue_item=queue_item,
+    #         player_id=player_id,
+    #         seek_position=seek_position,
+    #         fade_in=fade_in,
+    #         content_type=ContentType.WAV,
+    #     )
+    #     await self.cmd_play_url(player_id, url)
 
     async def cmd_pause(self, player_id: str) -> None:
         """
@@ -200,3 +221,58 @@ class SlimprotoProvider(PlayerProvider):
         """
         # will only be called for players with SYNC feature set.
         raise NotImplementedError()
+
+    def _handle_player_update(self, client: SlimClient) -> None:
+        """Process SlimClient update/add to Player controller."""
+        player_id = client.player_id
+        player = self.mass.players.get(player_id)
+        if not player:
+            player = Player(
+                player_id=player_id,
+                provider=self.domain,
+                type=PlayerType.PLAYER,
+                name=client.name,
+                available=True,
+                powered=client.powered,
+                device_info=DeviceInfo(
+                    model=client.device_model,
+                    address=client.device_address,
+                    manufacturer=client.device_type,
+                ),
+                supported_features=(
+                    PlayerFeature.ACCURATE_TIME,
+                    PlayerFeature.POWER,
+                    PlayerFeature.SYNC,
+                    PlayerFeature.VOLUME_MUTE,
+                    PlayerFeature.VOLUME_SET,
+                ),
+            )
+            self.mass.players.register(player)
+
+        # update player state on player events
+        player.available = True
+        player.current_url = client.current_url
+        player.elapsed_time = client.elapsed_seconds
+        player.elapsed_time_last_updated = time.time()
+        player.name = client.name
+        player.powered = client.powered
+        player.state = PlayerState(client.state.value)
+        player.volume_level = client.volume_level
+        player.volume_muted = client.muted
+        self.mass.players.update(player_id)
+
+    async def _handle_decoder_ready(self, client: SlimClient) -> None:
+        """Handle decoder ready event, player is ready for the next track."""
+        player_id = client.player_id
+        queue_id = self.mass.players.get(player_id).active_queue
+        if next_item := self.mass.players.queues.get_next_item(queue_id):
+            url = await self.mass.streams.resolve_stream(
+                queue_item=next_item,
+                player_id=player_id,
+                content_type=ContentType.WAV,
+            )
+            crossfade_enabled: bool = self.mass.config.get_player_config_value(
+                player_id, CONF_CROSSFADE
+            ).value
+            crossfade = 10 if crossfade_enabled else 0
+            await client.play_url(url, crossfade, send_flush=False)

@@ -436,9 +436,9 @@ class PlayerQueuesController:
         self._queues[queue_id] = queue
         self._queue_items[queue_id] = queue_items
         # always call update to calculate state etc
-        self.on_player_update(player)
+        self.on_player_update(player, {})
 
-    def on_player_update(self, player: Player) -> None:
+    def on_player_update(self, player: Player, changed_keys: set[str]) -> None:
         """Call when a PlayerQueue needs to be updated (e.g. when player updates)."""
         if player.player_id not in self._queues:
             self.mass.create_task(self.on_player_register(player))
@@ -452,17 +452,29 @@ class PlayerQueuesController:
         queue.available = player.available
         queue.items = len(self._queue_items[queue_id])
 
+        if "current_url" in changed_keys and player.state == PlayerState.PLAYING:
+            # determine current index from player url
+            for item in self._queue_items[queue_id]:
+                if item.queue_item_id in player.current_url:
+                    queue.current_index = self.index_by_id(queue_id, item.queue_item_id)
+                    break
+        if "state" in changed_keys and player.state in (
+            PlayerState.IDLE,
+            PlayerState.OFF,
+        ):
+            queue.index_in_buffer = None
+
         if queue.active:
             queue.state = player.state
             queue.elapsed_time = int(player.corrected_elapsed_time)
             queue.elapsed_time_last_updated = time.time()
             queue.current_item = self.get_item(queue_id, queue.current_index)
-            next_index = self.get_next_index(queue_id, queue.current_index)
-            queue.next_item = self.get_item(queue_id, next_index)
+            queue.next_item = self.get_next_item(queue_id)
         else:
             queue.state = PlayerState.IDLE
             queue.current_item = None
             queue.next_item = None
+            queue.index_in_buffer = None
             queue.elapsed_time = 0
 
         # correct elapsed time when seeking
@@ -610,6 +622,12 @@ class PlayerQueuesController:
             return 0
         next_index = cur_index + 1
         return next_index
+
+    def get_next_item(self, queue_id: str) -> QueueItem | None:
+        """Return next QueueItem for given queue."""
+        queue = self._queues[queue_id]
+        next_index = self.get_next_index(queue_id, queue.current_index)
+        return self.get_item(queue_id, next_index)
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
         """Signal state changed of given queue."""

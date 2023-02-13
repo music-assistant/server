@@ -16,6 +16,7 @@ from music_assistant.common.helpers.json import (
 )
 from music_assistant.common.models.config_entries import (
     DEFAULT_PLAYER_CONFIG_ENTRIES,
+    ConfigEntryValue,
     PlayerConfig,
     ProviderConfig,
 )
@@ -244,6 +245,24 @@ class ConfigController:
             player_id
         )
         return PlayerConfig.parse(entries, conf)
+
+    @api_command("config/players/get_value")
+    def get_player_config_value(self, player_id: str, key: str) -> ConfigEntryValue:
+        """Return single configentry value for a player."""
+        conf = self.get(f"{CONF_PLAYERS}/{player_id}")
+        if not conf:
+            player = self.mass.players.get(player_id)
+            if not player:
+                raise PlayerUnavailableError(f"Player {player_id} is not available")
+            conf = {"provider": player.provider, "player_id": player_id}
+        prov = self.mass.get_provider(conf["provider"])
+        entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(
+            player_id
+        )
+        for entry in entries:
+            if entry.key == key:
+                return ConfigEntryValue.parse(entry, conf["values"].get(key))
+        raise KeyError(f"ConfigEntry {key} is invalid")
 
     @api_command("config/players/set")
     def set_player_config(self, config: PlayerConfig) -> None:

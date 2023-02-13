@@ -9,7 +9,6 @@ from smb.base import SharedFile
 
 from music_assistant.common.helpers.util import get_ip_from_host
 from music_assistant.constants import (
-    CONF_OPTIONS,
     CONF_PASSWORD,
     CONF_PATH,
     CONF_USERNAME,

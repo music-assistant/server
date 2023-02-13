@@ -164,7 +164,7 @@ class PlayerController:
             return
 
         # always signal update to the playerqueue
-        self.queues.on_player_update(player)
+        self.queues.on_player_update(player, changed_keys)
 
         if len(changed_keys) == 0:
             return

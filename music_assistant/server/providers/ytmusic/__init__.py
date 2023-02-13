@@ -570,6 +570,9 @@ class YoutubeMusicProvider(MusicProvider):
                 or artist.get("channelId")
                 or artist.get("name") == "Various Artists"
             ]
+        # guard that track has valid artists
+        if not track.artists:
+            raise InvalidDataError("Track is missing artists")
         if "thumbnails" in track_obj and track_obj["thumbnails"]:
             track.metadata.images = await self._parse_thumbnails(
                 track_obj["thumbnails"]
