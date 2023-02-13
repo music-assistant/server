@@ -77,7 +77,9 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def setup(self) -> None:
         """Set up the YTMusic provider."""
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_COOKIE):
+        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(
+            CONF_COOKIE
+        ):
             raise LoginFailed("Invalid login credentials")
         await self._initialize_headers(cookie=self.config.get_value(CONF_COOKIE))
         await self._initialize_context()
@@ -108,15 +110,18 @@ class YoutubeMusicProvider(MusicProvider):
         results = await search(query=search_query, ytm_filter=ytm_filter, limit=limit)
         parsed_results = []
         for result in results:
-            if result["resultType"] == "artist":
-                parsed_results.append(await self._parse_artist(result))
-            elif result["resultType"] == "album":
-                parsed_results.append(await self._parse_album(result))
-            elif result["resultType"] == "playlist":
-                parsed_results.append(await self._parse_playlist(result))
-            elif result["resultType"] == "song":
-                if track := await self._parse_track(result):
-                    parsed_results.append(track)
+            try:
+                if result["resultType"] == "artist":
+                    parsed_results.append(await self._parse_artist(result))
+                elif result["resultType"] == "album":
+                    parsed_results.append(await self._parse_album(result))
+                elif result["resultType"] == "playlist":
+                    parsed_results.append(await self._parse_playlist(result))
+                elif result["resultType"] == "song":
+                    if track := await self._parse_track(result):
+                        parsed_results.append(track)
+            except InvalidDataError:
+                pass  # ignore invalid item
         return parsed_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:

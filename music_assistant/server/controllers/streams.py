@@ -282,7 +282,7 @@ class StreamsController:
             async for chunk in ffmpeg_proc.iter_any():
                 try:
                     await resp.write(chunk)
-                except BrokenPipeError:
+                except (BrokenPipeError, ConnectionResetError):
                     # connection lost
                     break
 

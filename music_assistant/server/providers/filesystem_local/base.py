@@ -500,7 +500,7 @@ class FileSystemProviderBase(MusicProvider):
                 provider_instance=self.instance_id,
             )
         )
-        playlist.owner = self._attr_name
+        playlist.owner = self.name
         checksum = f"{SCHEMA_VERSION}.{file_item.checksum}"
         playlist.metadata.checksum = checksum
         return playlist
@@ -755,7 +755,7 @@ class FileSystemProviderBase(MusicProvider):
             name,
             artists=artists,
             provider_mappings={
-                ProviderMapping(album_path, self.domain, self.id, url=album_path)
+                ProviderMapping(album_path, self.domain, self.instance_id, url=album_path)
             },
         )
 

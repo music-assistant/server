@@ -201,7 +201,7 @@ class ConfigController:
                 "domain": manifest.domain,
                 "instance_id": instance_id,
                 "name": name,
-                "values": {},
+                "values": dict(),
             },
             allow_none=True
         )
@@ -254,7 +254,7 @@ class ConfigController:
             player = self.mass.players.get(player_id)
             if not player:
                 raise PlayerUnavailableError(f"Player {player_id} is not available")
-            conf = {"provider": player.provider, "player_id": player_id}
+            conf = {"provider": player.provider, "player_id": player_id, "values": {}}
         prov = self.mass.get_provider(conf["provider"])
         entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(
             player_id

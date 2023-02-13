@@ -178,7 +178,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         # only when needed we do the analyze job
         return
 
-    LOGGER.debug("Start analyzing track %s", streamdetails.uri)
+    LOGGER.debug("Start analyzing audio for %s", streamdetails.uri)
     # calculate BS.1770 R128 integrated loudness with ffmpeg
     input_file = streamdetails.direct or "-"
     proc_args = [
@@ -205,8 +205,13 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         async def writer():
             """Task that grabs the source audio and feeds it to ffmpeg."""
             music_prov = mass.get_provider(streamdetails.provider)
+            chunk_count = 0
             async for audio_chunk in music_prov.get_audio_stream(streamdetails):
+                chunk_count += 1
                 await ffmpeg_proc.write(audio_chunk)
+                if chunk_count == 300:
+                    # safety guard: max (more or less) 5 minutes seconds of audio may be analyzed
+                    break
             ffmpeg_proc.write_eof()
 
         if streamdetails.direct is None:
@@ -401,12 +406,13 @@ async def get_media_stream(
     volume normalization this is the pure, unaltered audio data as PCM chunks.
     """
     bytes_sent = 0
+    is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
     sample_rate = streamdetails.sample_rate
     bit_depth = streamdetails.bit_depth
     channels = streamdetails.channels
     # chunk size = 2 seconds of pcm audio
     pcm_sample_size = int(sample_rate * (bit_depth / 8) * channels)
-    chunk_size = pcm_sample_size * 2
+    chunk_size = pcm_sample_size * (1 if is_radio else 2)
     expected_chunks = int((streamdetails.duration or 0) / 2)
     # collect all arguments for ffmpeg
     args = await _get_ffmpeg_args(
@@ -415,7 +421,9 @@ async def get_media_stream(
         bit_depth=bit_depth,
         channels=channels,
         seek_position=seek_position,
+        fade_in=fade_in
     )
+
     async with AsyncProcess(
         args, enable_stdin=streamdetails.direct is None
     ) as ffmpeg_proc:
@@ -445,7 +453,7 @@ async def get_media_stream(
         try:
             async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
                 chunk_num += 1
-                if seek_position == 0 and chunk_num == 2:
+                if not is_radio and seek_position == 0 and chunk_num == 2:
                     # first 2 chunks received, strip silence of beginning
                     stripped_audio = await strip_silence(
                         mass,
@@ -460,7 +468,11 @@ async def get_media_stream(
                     prev_chunk = b""
                     del stripped_audio
                     continue
-                if expected_chunks > 60 and chunk_num >= (expected_chunks - 6):
+                if (
+                    not is_radio
+                    and expected_chunks > 60
+                    and chunk_num >= (expected_chunks - 6)
+                ):
                     # last part of the track, collect chunks to strip silence later
                     prev_chunk += chunk
                     continue
@@ -534,8 +546,6 @@ async def get_radio_stream(
                 stream_title = stream_title.group(1).decode()
                 if stream_title != streamdetails.stream_title:
                     streamdetails.stream_title = stream_title
-                    if queue := mass.players.get_player_queue(streamdetails.queue_id):
-                        queue.signal_update()
         # Regular HTTP stream
         else:
             async for chunk in resp.content.iter_any():

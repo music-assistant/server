@@ -18,8 +18,8 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.constants import ROOT_LOGGER_NAME
-from music_assistant.server.helpers.images import create_collage, create_thumbnail
-
+from music_assistant.server.helpers.images import create_collage, get_image_thumb
+from aiohttp import web
 from .audiodb import TheAudioDb
 from .fanarttv import FanartTv
 from .musicbrainz import MusicBrainz
@@ -44,6 +44,7 @@ class MetaDataController:
 
     async def setup(self):
         """Async initialize of module."""
+        self.mass.webapp.router.add_get("/imageproxy", self._handle_imageproxy)
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -252,21 +253,24 @@ class MetaDataController:
         return None
 
     async def get_thumbnail(
-        self, path: str, size: int = 0, base64: bool = False
+        self, path: str, size: int | None = None, base64: bool = False
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
-        # check if we already have this cached in the db
-        match_path = path.split("?")[0].split("&")[0]
-        match = {"path": match_path, "size": size}
-        if result := await self.mass.database.get_row(TABLE_THUMBS, match):
-            thumbnail = result["data"]
-        else:
-            # create thumbnail if it doesn't exist
-            thumbnail = await create_thumbnail(self.mass, path, size)
-            await self.mass.database.insert(
-                TABLE_THUMBS, {**match, "data": thumbnail}, allow_replace=True
-            )
+        thumbnail = await get_image_thumb(self.mass, path, size)
         if base64:
             enc_image = b64encode(thumbnail).decode()
             thumbnail = f"data:image/png;base64,{enc_image}"
         return thumbnail
+
+    async def _handle_imageproxy(self, request: web.Request) -> web.Response:
+        """Handle request for image proxy."""
+        path = request.query["path"]
+        size = int(request.query.get("size", "0"))
+        image_data = await self.get_thumbnail(path, size)
+        # for now we simply set the cache header to 1 year (forever)
+        # the client can use the checksum value to refresh when content changes
+        return web.Response(
+            body=image_data,
+            headers={"Cache-Control": "max-age=31536000"},
+            content_type="image/png",
+        )

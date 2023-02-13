@@ -152,12 +152,12 @@ class PlayerController:
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
         new_state = self._players[player_id].to_dict()
-        self._prev_states[player_id] = new_state
         changed_keys = get_changed_keys(
             prev_state,
             new_state,
             ignore_keys=["elapsed_time", "elapsed_time_last_updated"],
         )
+        self._prev_states[player_id] = new_state
 
         if not player.enabled and "enabled" not in changed_keys:
             # ignore updates for disabled players

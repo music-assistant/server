@@ -495,18 +495,25 @@ class MusicController:
 
         task.add_done_callback(on_sync_task_done)
 
-    async def cleanup_library(self) -> None:
-        """Cleanup deleted items from library/database."""
-        prev_providers = set()
-        for entry in await self.database.get_rows_from_query("SELECT DISTINCT provider_instance FROM provider_mappings"):
-            prev_providers.add(entry[0])
-        cur_providers = {x.instance_id for x in self.providers}
-        removed_providers = prev_providers - cur_providers
+    async def cleanup_provider(self, provider_instance: str) -> None:
+        """Cleanup provider records from the database."""
+        # clean cache items from deleted provider(s)
+        await self.mass.cache.clear(provider_instance)
 
-        removed_providers = {"spotify1"}
-
-        for provider_instance in removed_providers:
-            await self.cleanup_provider(provider_instance)
+        # cleanup media items from db matched to deleted provider
+        for ctrl in (
+            # order is important here to recursively cleanup bottom up
+            self.mass.music.radio,
+            self.mass.music.playlists,
+            self.mass.music.tracks,
+            self.mass.music.albums,
+            self.mass.music.artists,
+        ):
+            prov_items = await ctrl.get_db_items_by_prov_id(
+                provider_instance=provider_instance
+            )
+            for item in prov_items:
+                await ctrl.remove_prov_mapping(item.item_id, provider_instance)
 
     async def _setup_database(self):
         """Initialize database."""

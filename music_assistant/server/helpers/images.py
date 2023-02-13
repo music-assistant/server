@@ -22,26 +22,26 @@ async def get_image_data(mass: MusicAssistant, path: str) -> bytes:
         return img_data
     # assume file from file provider, we need to fetch it here...
     for prov in mass.music.providers:
-        if not prov.domain.startswith("filesystem")():
+        if not prov.domain.startswith("filesystem"):
             continue
         if not await prov.exists(path):
             continue
         path = await prov.resolve(path)
-        img_data = await get_embedded_image(path)
+        img_data = await get_embedded_image(path.local_path)
         if img_data:
             return img_data
     raise FileNotFoundError(f"Image not found: {path}")
 
 
-async def create_thumbnail(
+async def get_image_thumb(
     mass: MusicAssistant, path: str, size: Optional[int]
 ) -> bytes:
-    """Create thumbnail from image url."""
+    """Get (optimized) PNG thumbnail from image url."""
     img_data = await get_image_data(mass, path)
 
     def _create_image():
-        data = BytesIO(img_data)
-        img = Image.open(data)
+        data = BytesIO()
+        img = Image.open(BytesIO(img_data))
         if size:
             img.thumbnail((size, size), Image.ANTIALIAS)
         img.convert("RGB").save(data, "PNG", optimize=True)

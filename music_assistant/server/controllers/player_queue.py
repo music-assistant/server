@@ -65,6 +65,42 @@ class PlayerQueuesController:
 
     # Queue commands
 
+    @api_command("players/queue/shuffle")
+    def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+        """Configure shuffle setting on the the queue."""
+        queue = self._queues[queue_id]
+        if queue.shuffle_enabled == shuffle_enabled:
+            return  # no change
+
+        queue.shuffle_enabled = shuffle_enabled
+        queue_items = self._queue_items[queue_id]
+        cur_index = queue.index_in_buffer or queue.current_index
+        if cur_index is not None:
+            next_index = cur_index + 1
+            next_items = queue_items[next_index:]
+        else:
+            next_items = []
+
+        if not shuffle_enabled:
+            # shuffle disabled, try to restore original sort order of the remaining items
+            next_items.sort(key=lambda x: x.sort_index, reverse=False)
+        self.load(
+            queue_id=queue_id,
+            queue_items=next_items,
+            insert_at_index=next_index,
+            keep_remaining=False,
+            shuffle=shuffle_enabled,
+        )
+
+    @api_command("players/queue/repeat")
+    def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
+        """Configure repeat setting on the the queue."""
+        queue = self._queues[queue_id]
+        if queue.repeat_mode == repeat_mode:
+            return  # no change
+        queue.repeat_mode = repeat_mode
+        self.signal_update(queue_id)
+
     @api_command("players/queue/play_media")
     async def play_media(
         self,
@@ -243,6 +279,8 @@ class PlayerQueuesController:
         queue.radio_source = []
         if queue.state not in (PlayerState.IDLE, PlayerState.OFF):
             self.mass.create_task(self.stop())
+        queue.current_index = None
+        queue.index_in_buffer = None
         self.update_items(queue_id, [])
 
     @api_command("players/queue/stop")
@@ -297,7 +335,7 @@ class PlayerQueuesController:
             - queue_id: queue_id of the queue to handle the command.
         """
         if self._queues[queue_id].state == PlayerState.PLAYING:
-            await self.pause()
+            await self.pause(queue_id)
             return
         await self.play(queue_id)
 
@@ -378,7 +416,9 @@ class PlayerQueuesController:
         if resume_item is not None:
             resume_pos = resume_pos if resume_pos > 10 else 0
             fade_in = resume_pos > 0
-            await self.play_index(queue_id, resume_item.item_id, resume_pos, fade_in)
+            await self.play_index(
+                queue_id, resume_item.queue_item_id, resume_pos, fade_in
+            )
         else:
             raise QueueEmpty(f"Resume queue requested but queue {queue_id} is empty")
 
@@ -446,36 +486,36 @@ class PlayerQueuesController:
         queue_id = player.player_id
         player = self.players.get(queue_id)
         queue = self._queues[queue_id]
+
         # queue is active when underlying player has the queue_id loaded as stream url
         queue.active = f"/{queue_id}/" in player.current_url
-        queue.display_name = player.display_name
-        queue.available = player.available
-        queue.items = len(self._queue_items[queue_id])
 
-        if "current_url" in changed_keys and player.state == PlayerState.PLAYING:
-            # determine current index from player url
+        # determine (actual) current index from player url while player is playing
+        if "current_url" in changed_keys and queue.active:
             for item in self._queue_items[queue_id]:
                 if item.queue_item_id in player.current_url:
                     queue.current_index = self.index_by_id(queue_id, item.queue_item_id)
                     break
-        if "state" in changed_keys and player.state in (
-            PlayerState.IDLE,
-            PlayerState.OFF,
+
+        if not queue.active or (
+            "state" in changed_keys
+            and player.state
+            in (
+                PlayerState.IDLE,
+                PlayerState.OFF,
+            )
         ):
             queue.index_in_buffer = None
 
-        if queue.active:
-            queue.state = player.state
-            queue.elapsed_time = int(player.corrected_elapsed_time)
-            queue.elapsed_time_last_updated = time.time()
-            queue.current_item = self.get_item(queue_id, queue.current_index)
-            queue.next_item = self.get_next_item(queue_id)
-        else:
-            queue.state = PlayerState.IDLE
-            queue.current_item = None
-            queue.next_item = None
-            queue.index_in_buffer = None
-            queue.elapsed_time = 0
+        # copy most properties from the player
+        queue.display_name = player.display_name
+        queue.available = player.available
+        queue.items = len(self._queue_items[queue_id])
+        queue.state = player.state
+        queue.elapsed_time = int(player.corrected_elapsed_time)
+        queue.elapsed_time_last_updated = time.time()
+        queue.current_item = self.get_item(queue_id, queue.current_index)
+        queue.next_item = self.get_next_item(queue_id)
 
         # correct elapsed time when seeking
         if (
@@ -488,19 +528,20 @@ class PlayerQueuesController:
         # basic throttle: do not send state changed events if queue did not actually change
         prev_state = self._prev_states.get(queue_id, {})
         new_state = self._queues[queue_id].to_dict()
-        self._prev_states[queue_id] = new_state
         changed_keys = get_changed_keys(prev_state, new_state)
+        self._prev_states[queue_id] = new_state
 
         if len(changed_keys) == 0:
             return
 
-        if "elapsed_time" in changed_keys:
+        if changed_keys == {"elapsed_time", "elapsed_time_last_updated"}:
             self.mass.signal_event(
                 EventType.QUEUE_TIME_UPDATED,
                 object_id=queue_id,
                 data=queue.elapsed_time,
             )
-        elif changed_keys != {"elapsed_time", "elapsed_time_last_updated"}:
+        else:
+            # only send queue updated event if other properties than elapsed_time updated
             self.mass.signal_event(
                 EventType.QUEUE_UPDATED, object_id=queue_id, data=queue
             )
@@ -556,11 +597,11 @@ class PlayerQueuesController:
 
         # keep previous/played items, append the new ones
         prev_items = self._queue_items[queue_id][:insert_at_index]
-        next_items: list[QueueItem] = []
+        next_items = queue_items
 
         # if keep_remaining, append the old previous items
         if keep_remaining:
-            next_items += queue_items[insert_at_index:]
+            next_items += prev_items[insert_at_index:]
 
         # we set the original insert order as attribute so we can un-shuffle
         for index, item in enumerate(next_items):

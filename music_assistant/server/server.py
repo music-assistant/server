@@ -253,6 +253,8 @@ class MusicAssistant:
 
         def task_done_callback(*args, **kwargs):
             self._tracked_tasks.remove(task)
+            if task.exception():
+                LOGGER.exception(task.exception())
 
         self._tracked_tasks.append(task)
         task.add_done_callback(task_done_callback)
@@ -387,9 +389,8 @@ class MusicAssistant:
                 continue
             if not prov_manifest.load_by_default:
                 continue
-            self.config.set_provider_config(
-                self.config.create_provider_config(prov_manifest.domain)
-            )
+            default_conf = self.config.create_provider_config(prov_manifest.domain)
+            self.config.set_provider_config(default_conf)
 
     async def __load_available_providers(self) -> None:
         """Preload all available provider manifest files."""

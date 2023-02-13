@@ -25,7 +25,7 @@ ConfigEntryTypeMap = {
     ConfigEntryType.PASSWORD: str,
     ConfigEntryType.INTEGER: int,
     ConfigEntryType.FLOAT: float,
-    ConfigEntryType.LABEL: str
+    ConfigEntryType.LABEL: str,
 }
 
 
@@ -118,10 +118,10 @@ class Config(DataClassDictMixin):
         values = {
             x.key: ConfigEntryValue.parse(
                 x, raw.get("values", {}).get(x.key), allow_none
-            )
+            ).to_dict()
             for x in config_entries
         }
-        return cls(**{**raw, "values": values})
+        return cls.from_dict({**raw, "values": values})
 
     def to_raw(self) -> dict[str, Any]:
         """Return minimized/raw dict to store in persistent storage."""
