@@ -311,7 +311,7 @@ class FileSystemProviderBase(MusicProvider):
                 controller = self.mass.music.get_controller(MediaType.TRACK)
 
             if db_item := await controller.get_db_item_by_prov_id(
-                file_path, self.domain
+                file_path, provider_instance=self.instance_id
             ):
                 await controller.remove_prov_mapping(db_item.item_id, self.instance_id)
 

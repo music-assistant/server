@@ -201,6 +201,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             items = await prov.get_artist_toptracks(item_id)
         else:
             # fallback implementation using the db
+            items = []
             if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
                 item_id,
                 provider_domain=provider_domain,
@@ -344,7 +345,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(item_id, item.provider_mappings)
+        await self._set_provider_mappings(item_id, provider_mappings)
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         return await self.get_db_item(item_id)
 

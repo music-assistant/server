@@ -142,9 +142,9 @@ class MusicBrainz:
                             artist["artist"]["name"], artistname, strict
                         ):
                             return artist["artist"]["id"]
-                        for alias in artist.get("aliases", []):
+                        for alias in artist["artist"].get("aliases", []):
                             if compare_strings(alias["name"], artistname, strict):
-                                return artist["id"]
+                                return artist["artist"]["id"]
         return ""
 
     async def search_artist_by_album_mbid(

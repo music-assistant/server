@@ -1,10 +1,15 @@
 """All logic for metadata retrieval."""
 from __future__ import annotations
+import asyncio
 
-from base64 import b64encode
 import logging
+import os
+from base64 import b64encode
 from time import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
+
+import aiofiles
+from aiohttp import web
 
 from music_assistant.common.models.enums import ImageType, MediaType
 from music_assistant.common.models.media_items import (
@@ -19,7 +24,7 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.helpers.images import create_collage, get_image_thumb
-from aiohttp import web
+
 from .audiodb import TheAudioDb
 from .fanarttv import FanartTv
 from .musicbrainz import MusicBrainz
@@ -41,6 +46,7 @@ class MetaDataController:
         self.musicbrainz = MusicBrainz(mass)
         self.audiodb = TheAudioDb(mass)
         self._pref_lang: str | None = None
+        self.scan_busy: bool = False
 
     async def setup(self):
         """Async initialize of module."""
@@ -67,6 +73,29 @@ class MetaDataController:
         """
         if self._pref_lang is None:
             self._pref_lang = lang.upper()
+
+    def start_scan(self) -> None:
+        """Start background scan for missing Artist metadata."""
+        if self.scan_busy:
+            return
+
+        async def scan_artist_metadata():
+            """Background task that slowly scans for artists missing metadata."""
+            LOGGER.info("Start scan for missing artist metadata")
+            async for artist in self.mass.music.artists.iter_db_items():
+                if artist.metadata.last_refresh is not None:
+                    continue
+                # simply grabbing the full artist will trigger a full fetch
+                await self.mass.music.artists.get(
+                    artist.item_id, artist.provider, lazy=False
+                )
+                # this is slow on purpose to not cause stress on the metadata providers
+                await asyncio.sleep(30)
+            self.scan_busy = False
+            LOGGER.info("Finished scan for missing artist metadata")
+
+        self.scan_busy = True
+        self.mass.create_task(scan_artist_metadata)
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
@@ -126,15 +155,12 @@ class MetaDataController:
                 playlist.metadata.genres.update(track.album.metadata.genres)
         # create collage thumb/fanart from playlist tracks
         if image_urls:
-            fake_path = f"playlist_collage.{playlist.provider}.{playlist.item_id}"
-            collage = await create_collage(self.mass, list(image_urls))
-            match = {"path": fake_path, "size": 0}
-            await self.mass.database.insert(
-                TABLE_THUMBS, {**match, "data": collage}, allow_replace=True
-            )
-            playlist.metadata.images = [
-                MediaItemImage(ImageType.THUMB, fake_path, True)
-            ]
+            img_path = f"playlist.{playlist.provider}.{playlist.item_id}.png"
+            img_path = os.path.join(self.mass.storage_path, img_path)
+            img_data = await create_collage(self.mass, list(image_urls))
+            async with aiofiles.open(img_path, "wb") as _file:
+                await _file.write(img_data)
+            playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img_path, True)]
 
     async def get_radio_metadata(self, radio: Radio) -> None:
         """Get/update rich metadata for a radio station."""
@@ -267,7 +293,7 @@ class MetaDataController:
         path = request.query["path"]
         size = int(request.query.get("size", "0"))
         image_data = await self.get_thumbnail(path, size)
-        # for now we simply set the cache header to 1 year (forever)
+        # we set the cache header to 1 year (forever)
         # the client can use the checksum value to refresh when content changes
         return web.Response(
             body=image_data,

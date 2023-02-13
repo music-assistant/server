@@ -134,7 +134,7 @@ class RadioController(MediaControllerBase[Radio]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(item_id, item.provider_mappings)
+        await self._set_provider_mappings(item_id, provider_mappings)
         self.logger.debug("updated %s in database: %s", item.name, item_id)
         return await self.get_db_item(item_id)
 

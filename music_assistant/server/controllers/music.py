@@ -92,7 +92,7 @@ class MusicController:
         Start running the sync of (all or selected) musicproviders.
 
         media_types: only sync these media types. None for all.
-        providers: only sync these provider domains/instances. None for all.
+        providers: only sync these provider instances. None for all.
         """
         if media_types is None:
             media_types = MediaType.ALL
@@ -100,9 +100,11 @@ class MusicController:
             providers = [x.instance_id for x in self.providers]
 
         for provider in self.providers:
-            if not (provider.domain in providers or provider.instance_id in providers):
+            if not (provider.instance_id in providers):
                 continue
             self._start_provider_sync(provider.instance_id, media_types)
+        # trgger metadata scan after provider sync completed
+        self.mass.metadata.start_scan()
 
     @api_command("music/synctasks")
     def get_running_sync_tasks(self) -> list[SyncTask]:
@@ -665,7 +667,7 @@ class MusicController:
                     provider_domain TEXT NOT NULL,
                     provider_instance TEXT NOT NULL,
                     provider_item_id TEXT NOT NULL,
-                    UNIQUE(media_type, item_id, provider_instance, provider_item_id)
+                    UNIQUE(media_type, item_id, provider_instance, provider_item_id, provider_item_id)
                 );"""
         )
 
