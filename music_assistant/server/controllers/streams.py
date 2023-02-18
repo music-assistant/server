@@ -112,7 +112,10 @@ class StreamJob:
 
     async def _put_data(self, data: Any, timeout: float = 600) -> None:
         """Put chunk of data to all subscribers."""
-        await asyncio.wait([x.put(data) for x in self._subscribers], timeout=timeout)
+        async with asyncio.timeout(timeout):
+            async with asyncio.TaskGroup() as tg:
+                for sub in self._subscribers:
+                    tg.create_task(sub.put(data))
 
     async def _stream_job_runner(self) -> None:
         """Feed audio chunks to StreamJob subscribers."""
@@ -122,7 +125,8 @@ class StreamJob:
             if chunk_num == 1:
                 # wait until all expected clients are connected
                 # TODO: handle edge case where a player does not connect at all ?!
-                await asyncio.wait([self._all_clients_connected.wait()], timeout=30)
+                async with asyncio.timeout(30):
+                    await self._all_clients_connected.wait()
             await self._put_data(chunk)
         # mark EOF with empty chunk
         await self._put_data(b"")

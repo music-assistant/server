@@ -6,7 +6,6 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Generator
-from urllib.parse import urlparse
 
 from aioslimproto.client import PlayerState as SlimPlayerState
 from aioslimproto.client import SlimClient

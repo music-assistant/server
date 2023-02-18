@@ -10,8 +10,6 @@ import asyncio
 import logging
 from typing import AsyncGenerator, Coroutine, List, Optional, Tuple, Union
 
-from async_timeout import timeout as _timeout
-
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHUNKSIZE = 128000
@@ -118,7 +116,7 @@ class AsyncProcess:
     async def readexactly(self, n: int, timeout: int = DEFAULT_TIMEOUT) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
         try:
-            async with _timeout(timeout):
+            async with asyncio.timeout(timeout):
                 return await self._proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
             return err.partial
@@ -131,7 +129,7 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        async with _timeout(timeout):
+        async with asyncio.timeout(timeout):
             return await self._proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:

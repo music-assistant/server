@@ -1,4 +1,3 @@
-async-timeout==4.0.2
 aiohttp==3.8.4
 asyncio-throttle==1.0.2
 aiofiles==23.1.0
@@ -9,7 +8,7 @@ python-slugify==7.0.0
 memory-tempfile==2.2.3
 pillow==9.4.0
 unidecode==1.3.6
-mashumaro==3.3.1
+mashumaro==3.5
 xmltodict==0.13.0
 orjson==3.8.6
 shortuuid==1.0.11

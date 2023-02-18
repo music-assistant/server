@@ -23,7 +23,6 @@ from typing import (
     get_type_hints,
 )
 
-import async_timeout
 from aiohttp import WSMsgType, web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
@@ -165,7 +164,7 @@ class WebsocketClientHandler:
         request = self.request
         wsock = self.wsock
         try:
-            async with async_timeout.timeout(10):
+            async with asyncio.timeout(10):
                 await wsock.prepare(request)
         except asyncio.TimeoutError:
             self._logger.warning("Timeout preparing request from %s", request.remote)
