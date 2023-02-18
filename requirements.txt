@@ -1,7 +1,7 @@
 async-timeout==4.0.2
-aiohttp==3.8.3
+aiohttp==3.8.4
 asyncio-throttle==1.0.2
-aiofiles==22.1.0
+aiofiles==23.1.0
 aiorun==2022.11.1
 databases==0.7.0
 aiosqlite==0.18.0
@@ -11,5 +11,5 @@ pillow==9.4.0
 unidecode==1.3.6
 mashumaro==3.3.1
 xmltodict==0.13.0
-orjson==3.8.3
+orjson==3.8.6
 shortuuid==1.0.11

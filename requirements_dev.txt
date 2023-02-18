@@ -1,4 +1,4 @@
--r requirements.txt
+-rrequirements.txt
 black==22.10.0
 flake8==6.0.0
 mypy==0.982

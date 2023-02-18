@@ -37,8 +37,11 @@ CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_VOLUME_NORMALISATION = "volume_normalisation"
 CONF_VOLUME_NORMALISATION_TARGET = "volume_normalisation_target"
-CONF_CROSSFADE = "crossfade"
 CONF_MAX_SAMPLE_RATE = "max_sample_rate"
+CONF_EQ_BASS = "eq_bass"
+CONF_EQ_MID = "eq_mid"
+CONF_EQ_TREBLE = "eq_treble"
+CONF_OUTPUT_CHANNELS = "output_channels"
 
 # config default values
 DEFAULT_HOST = "0.0.0.0"

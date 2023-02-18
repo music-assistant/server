@@ -70,7 +70,11 @@ class ConfigController:
         subkeys = key.split("/")
         for index, subkey in enumerate(subkeys):
             if index == (len(subkeys) - 1):
-                return parent.get(subkey, default)
+                value = parent.get(subkey, default)
+                if value is None:
+                    # replace None with default
+                    return default
+                return value
             elif subkey not in parent:
                 # requesting subkey from a non existing parent
                 return default

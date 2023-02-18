@@ -224,7 +224,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return []
 
         # prefer cache items (if any)
-        cache_key = f"{prov.instance_id}.search.{self.media_type.value}.{search_query}.{limit}"
+        cache_key = (
+            f"{prov.instance_id}.search.{self.media_type.value}.{search_query}.{limit}"
+        )
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -391,6 +393,31 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             subquery += f" AND provider_item_id in {prov_ids}"
         query = f"SELECT * FROM {self.db_table} WHERE item_id in ({subquery})"
         return await self.get_db_items_by_query(query, limit=limit, offset=offset)
+
+    async def iter_db_items_by_prov_id(
+        self,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
+        provider_item_ids: Optional[Tuple[str]] = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> AsyncGenerator[ItemCls, None]:
+        """Iterate all records from database for given provider."""
+        limit: int = 500
+        offset: int = 0
+        while True:
+            next_items = await self.get_db_items_by_prov_id(
+                provider_domain=provider_domain,
+                provider_instance=provider_instance,
+                provider_item_ids=provider_item_ids,
+                limit=limit,
+                offset=offset,
+            )
+            for item in next_items:
+                yield item
+            if len(next_items) < limit:
+                break
+            offset += limit
 
     async def set_db_library(self, item_id: int, in_library: bool) -> None:
         """Set the in-library bool on a database item."""

@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Iterator
 
 from music_assistant.common.helpers.util import get_changed_keys
 from music_assistant.common.models.enums import (
-    ContentType,
     EventType,
     MediaType,
     PlayerState,
@@ -62,6 +61,12 @@ class PlayerQueuesController:
     def items(self, queue_id: str) -> list[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
         return self._queue_items.get(queue_id, [])
+
+    @api_command("players/queue/get_active_queue")
+    def get_active_queue(self, player_id: str) -> PlayerQueue:
+        """Return the current active/synced queue for a player."""
+        player = self.mass.players.get(player_id, True)
+        return self.get(player.active_queue)
 
     # Queue commands
 
@@ -278,7 +283,7 @@ class PlayerQueuesController:
         queue = self._queues[queue_id]
         queue.radio_source = []
         if queue.state not in (PlayerState.IDLE, PlayerState.OFF):
-            self.mass.create_task(self.stop())
+            self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
         queue.index_in_buffer = None
         self.update_items(queue_id, [])
@@ -440,8 +445,8 @@ class PlayerQueuesController:
         queue_item = self.get_item(queue_id, index)
         if queue_item is None:
             raise FileNotFoundError(f"Unknown index/id: {index}")
-        queue.current_index = index
-        queue.index_in_buffer = index
+        queue.current_index = self.index_by_id(queue_id, index)
+        queue.index_in_buffer = queue.current_index
         # execute the play_media command on the player(s)
         player_prov = self.mass.players.get_player_provider(queue_id)
         await player_prov.cmd_play_media(
@@ -488,24 +493,17 @@ class PlayerQueuesController:
         queue = self._queues[queue_id]
 
         # queue is active when underlying player has the queue_id loaded as stream url
-        queue.active = f"/{queue_id}/" in player.current_url
+        queue.active = player.current_url and f"/{queue_id}/" in player.current_url
 
         # determine (actual) current index from player url while player is playing
-        if "current_url" in changed_keys and queue.active:
+        if "current_item_id" in changed_keys and player.current_item_id:
+            if index := self.index_by_id(queue_id, player.current_item_id):
+                queue.current_index = index
+        elif "current_url" in changed_keys and player.current_url:
             for item in self._queue_items[queue_id]:
                 if item.queue_item_id in player.current_url:
                     queue.current_index = self.index_by_id(queue_id, item.queue_item_id)
                     break
-
-        if not queue.active or (
-            "state" in changed_keys
-            and player.state
-            in (
-                PlayerState.IDLE,
-                PlayerState.OFF,
-            )
-        ):
-            queue.index_in_buffer = None
 
         # copy most properties from the player
         queue.display_name = player.display_name
@@ -534,17 +532,22 @@ class PlayerQueuesController:
         if len(changed_keys) == 0:
             return
 
-        if changed_keys == {"elapsed_time", "elapsed_time_last_updated"}:
+        if "elapsed_time" in changed_keys:
             self.mass.signal_event(
                 EventType.QUEUE_TIME_UPDATED,
                 object_id=queue_id,
                 data=queue.elapsed_time,
             )
-        else:
-            # only send queue updated event if other properties than elapsed_time updated
-            self.mass.signal_event(
-                EventType.QUEUE_UPDATED, object_id=queue_id, data=queue
-            )
+        # do not send full updates if only time was updated
+        if changed_keys == {"elapsed_time_last_updated"} or changed_keys == {
+            "elapsed_time",
+            "elapsed_time_last_updated",
+        }:
+            # ignore
+            return
+
+        # only send queue updated event if other properties than elapsed_time updated
+        self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
         # watch dynamic radio items refill if needed
         if "current_index" in changed_keys:
             fill_index = len(self._queue_items[queue_id]) - 5
@@ -558,22 +561,38 @@ class PlayerQueuesController:
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
-    async def resolve_stream(
-        self,
-        queue_item: QueueItem,
-        player_id: str,
-        content_type: ContentType = ContentType.WAV,
-    ) -> str:
+    def player_ready_for_next_track(
+        self, queue_or_player_id: str, current_item_id: str
+    ) -> tuple[QueueItem, bool]:
         """
-        Resolve the stream URL for the given QueueItem.
+        Call when a player is ready to load the next track into the buffer.
 
-        This is called just-in-time by the player implementation to get the URL to the audio.
-        - queue_item: the QueueItem that is about to be played (or buffered).
-        - player_id: the player_id of the player that will play the stream.
-          In case of a multi subscriber stream (e.g. sync/groups),
-          call resolve for every child player.
-        - content_type: Encode the stream in the given format.
+        The result is a tuple of the next QueueItem to Play,
+        and a bool if the player should crossfade (if supported).
+        Raises QueueEmpty if there are no more tracks left.
+
+        NOTE: The player(s) should resolve the stream URL for the QueueItem,
+        just like with the play_media call.
         """
+        queue = self.get_active_queue(queue_or_player_id)
+        cur_index = self.index_by_id(queue.queue_id, current_item_id)
+        cur_item = self.get_item(queue.queue_id, cur_index)
+        next_index = self.get_next_index(queue.queue_id, cur_index)
+        next_item = self.get_item(queue.queue_id, next_index)
+        if not next_item:
+            raise QueueEmpty("No more tracks left in the queue.")
+        queue.index_in_buffer = next_index
+        # work out crossfade
+        crossfade = queue.crossfade_enabled
+        if (
+            cur_item.media_type == MediaType.TRACK
+            and next_item.media_type == MediaType.TRACK
+            and cur_item.media_item.album == next_item.media_item.album
+        ):
+            # disable crossfade if playing tracks from same album
+            # TODO: make this a bit more intelligent.
+            crossfade = False
+        return (next_item, crossfade)
 
     # Main queue manipulation methods
 
@@ -664,9 +683,13 @@ class PlayerQueuesController:
         next_index = cur_index + 1
         return next_index
 
-    def get_next_item(self, queue_id: str) -> QueueItem | None:
+    def get_next_item(
+        self, queue_id: str, cur_index: int | None = None
+    ) -> QueueItem | None:
         """Return next QueueItem for given queue."""
         queue = self._queues[queue_id]
+        if cur_index is None:
+            cur_index = queue.current_index
         next_index = self.get_next_index(queue_id, queue.current_index)
         return self.get_item(queue_id, next_index)
 

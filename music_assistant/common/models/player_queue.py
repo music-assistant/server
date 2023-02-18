@@ -23,6 +23,7 @@ class PlayerQueue(DataClassDictMixin):
 
     shuffle_enabled: bool = False
     repeat_mode: RepeatMode = RepeatMode.OFF
+    crossfade_enabled: bool = True
     # current_index: index that is active (e.g. being played) by the player
     current_index: int | None = None
     # index_in_buffer: index that has been preloaded/buffered by the player

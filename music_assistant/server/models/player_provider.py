@@ -78,13 +78,14 @@ class PlayerProvider(Provider):
         """
         # default implementation is to simply resolve the url and send the url to the player
         # player/provider implementations may override this default.
-        url = await self.mass.streams.resolve_stream(
+        url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=player_id,
             seek_position=seek_position,
             fade_in=fade_in,
             content_type=ContentType.FLAC,
         )
+        self.logger.info("Starting playback of %s", queue_item.name)
         await self.cmd_play_url(player_id, url)
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
@@ -147,7 +148,7 @@ class PlayerProvider(Provider):
         # will only be called for players with SYNC feature set.
         raise NotImplementedError()
 
-    async def cmd_set_members(self, player_id: str, members: list[str]) -> None:
+    async def cmd_set_group_members(self, player_id: str, members: list[str]) -> None:
         """
         Handle SET_MEMBERS command for given playergroup.
 
@@ -157,6 +158,26 @@ class PlayerProvider(Provider):
             - members: list of player ids to set as members.
         """
         # will only be called for players of type GROUP with SET_MEMBERS feature set.
+        raise NotImplementedError()
+
+    async def cmd_create_group(self, name: str) -> Player:
+        """
+        Handle CREATE_GROUP command for this player provider.
+
+            - name: name for the new group.
+
+        Returns the newly created PlayerGroup.
+        """
+        # will only be called if the provider has the CREATE_GROUP feature set.
+        raise NotImplementedError()
+
+    async def cmd_delete_group(self, player_id: str) -> None:
+        """
+        Handle DELETE_GROUP command for this player provider.
+
+            - player_id: id of the group player to remove
+        """
+        # will only be called if the provider has the DELETE_GROUP feature set.
         raise NotImplementedError()
 
     # DO NOT OVERRIDE BELOW

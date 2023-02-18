@@ -4,18 +4,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import NoneType
 from typing import Any
+import logging
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.enums import ProviderType
 from music_assistant.constants import (
-    CONF_CROSSFADE,
+    CONF_EQ_BASS,
+    CONF_EQ_MID,
+    CONF_EQ_TREBLE,
     CONF_MAX_SAMPLE_RATE,
+    CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALISATION,
     CONF_VOLUME_NORMALISATION_TARGET,
 )
 
 from .enums import ConfigEntryType
+
+LOGGER = logging.getLogger(__name__)
 
 ConfigValueType = str | int | float | bool | None
 
@@ -89,10 +95,24 @@ class ConfigEntryValue(ConfigEntry):
             result.value = entry.default_value
         if result.value is None and not entry.required:
             expected_type = NoneType
-        if not isinstance(result.value, expected_type) and not (
-            result.value is None and allow_none
-        ):
-            # NOTE: in some cases we allow this (e.g. create default config), hence the allow_none
+        if not isinstance(result.value, expected_type):
+            if result.value is None and allow_none:
+                # In some cases we allow this (e.g. create default config), hence the allow_none
+                return result
+            # handle common coversions/mistakes
+            if expected_type == float and isinstance(result.value, int):
+                result.value = float(result.value)
+                return result
+            if expected_type == int and isinstance(result.value, float):
+                result.value = int(result.value)
+                return result
+            if entry.default_value:
+                LOGGER.warning(
+                    "%s has unexpected type: %s, fallback to default",
+                    result.key,
+                    type(result.value),
+                )
+                return result
             raise ValueError(f"{result.key} has unexpected type: {type(result.value)}")
         return result
 
@@ -169,13 +189,6 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
         description="Enable volume normalization based on the EBU-R128 standard without affecting dynamic range",
     ),
     ConfigEntry(
-        key=CONF_CROSSFADE,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable crossfade between tracks",
-        default_value=True,
-        description="Enable a crossfade transition between tracks (of different albums)",
-    ),
-    ConfigEntry(
         key=CONF_VOLUME_NORMALISATION_TARGET,
         type=ConfigEntryType.INTEGER,
         range=(-30, 0),
@@ -201,6 +214,47 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
         default_value=96000,
         label="Maximum sample rate",
         description="Maximum sample rate that is sent to the player, content with a higher sample rate than this treshold will be downsampled",
+        advanced=True,
+    ),
+    ConfigEntry(
+        key=CONF_EQ_BASS,
+        type=ConfigEntryType.INTEGER,
+        range=(-10, 10),
+        default_value=0,
+        label="Equalizer: bass",
+        description="Use the builtin basic equalizer to adjust the bass of audio.",
+        advanced=True,
+    ),
+    ConfigEntry(
+        key=CONF_EQ_MID,
+        type=ConfigEntryType.INTEGER,
+        range=(-10, 10),
+        default_value=0,
+        label="Equalizer: midrange",
+        description="Use the builtin basic equalizer to adjust the midrange of audio.",
+        advanced=True,
+    ),
+    ConfigEntry(
+        key=CONF_EQ_TREBLE,
+        type=ConfigEntryType.INTEGER,
+        range=(-10, 10),
+        default_value=0,
+        label="Equalizer: treble",
+        description="Use the builtin basic equalizer to adjust the treble of audio.",
+        advanced=True,
+    ),
+    ConfigEntry(
+        key=CONF_OUTPUT_CHANNELS,
+        type=ConfigEntryType.STRING,
+        options=[
+            ConfigValueOption("Stereo (both channels)", "stereo"),
+            ConfigValueOption("Left channel", "left"),
+            ConfigValueOption("Right channel", "right"),
+            ConfigValueOption("Mono (both channels)", "mono"),
+        ],
+        default_value="stereo",
+        label="Output Channel Mode",
+        description="You can configure this player to play only the left or right channel, for example to a create a stereo pair with 2 players.",
         advanced=True,
     ),
 )

@@ -80,17 +80,22 @@ class MetaDataController:
             return
 
         async def scan_artist_metadata():
-            """Background task that slowly scans for artists missing metadata."""
+            """Background task that slowly scans for artists missing metadata on filesystem providers."""
             LOGGER.info("Start scan for missing artist metadata")
-            async for artist in self.mass.music.artists.iter_db_items():
-                if artist.metadata.last_refresh is not None:
+            for prov in self.mass.music.providers:
+                if not prov.is_file():
                     continue
-                # simply grabbing the full artist will trigger a full fetch
-                await self.mass.music.artists.get(
-                    artist.item_id, artist.provider, lazy=False
-                )
-                # this is slow on purpose to not cause stress on the metadata providers
-                await asyncio.sleep(30)
+                async for artist in self.mass.music.artists.iter_db_items_by_prov_id(
+                    provider_instance=prov.instance_id
+                ):
+                    if artist.metadata.last_refresh is not None:
+                        continue
+                    # simply grabbing the full artist will trigger a full fetch
+                    await self.mass.music.artists.get(
+                        artist.item_id, artist.provider, lazy=False
+                    )
+                    # this is slow on purpose to not cause stress on the metadata providers
+                    await asyncio.sleep(30)
             self.scan_busy = False
             LOGGER.info("Finished scan for missing artist metadata")
 

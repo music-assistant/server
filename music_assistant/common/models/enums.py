@@ -120,6 +120,7 @@ class ContentType(StrEnum):
     PCM_S32LE = "s32le"  # PCM signed 32-bit little-endian
     PCM_F32LE = "f32le"  # PCM 32-bit floating-point little-endian
     PCM_F64LE = "f64le"  # PCM 64-bit floating-point little-endian
+    PCM = "pcm"  # PCM generic (details determined later)
     MPEG_DASH = "dash"
     UNKNOWN = "?"
 
@@ -296,6 +297,9 @@ class ProviderFeature(StrEnum):
     # playlist-specific features
     PLAYLIST_TRACKS_EDIT = "playlist_tracks_edit"
     PLAYLIST_CREATE = "playlist_create"
+    # player provider specific features
+    CREATE_GROUP = "create_group"
+    DELETE_GROUP = "delete_group"
 
 
 class ProviderType(StrEnum):

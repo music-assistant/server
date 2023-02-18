@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
 
-from requests import JSONDecodeError
+from json import JSONDecodeError
 
 from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.errors import InvalidDataError

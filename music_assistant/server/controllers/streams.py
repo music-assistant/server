@@ -9,9 +9,13 @@ import shortuuid
 from aiohttp import web
 
 from music_assistant.common.models.enums import ContentType
-from music_assistant.common.models.player import Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.common.helpers.util import get_ip
 from music_assistant.constants import (
+    CONF_EQ_BASS,
+    CONF_EQ_MID,
+    CONF_EQ_TREBLE,
+    CONF_OUTPUT_CHANNELS,
     CONF_WEB_HOST,
     CONF_WEB_PORT,
     DEFAULT_PORT,
@@ -29,6 +33,8 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.streams")
+
+HOST_IP = get_ip()
 
 
 class StreamJob:
@@ -48,14 +54,14 @@ class StreamJob:
         audio_source: AsyncGenerator[bytes, None],
         pcm_sample_rate: int,
         pcm_bit_depth: int,
-        pcm_channels: int,
+
     ) -> None:
         """Initialize MultiQueue instance."""
         self.queue_item = queue_item
         self.audio_source = audio_source
+        # internally all audio within MA is raw PCM, hence the pcm details
         self.pcm_sample_rate = pcm_sample_rate
         self.pcm_bit_depth = pcm_bit_depth
-        self.pcm_channels = pcm_channels
         self.stream_id = shortuuid.uuid()
         self.expected_consumers = 1
         self._audio_task = asyncio.create_task(self._stream_job_runner())
@@ -162,11 +168,11 @@ class StreamsController:
     def base_url(self) -> str:
         """Return the base url for the stream engine."""
 
-        host = self.mass.config.get(CONF_WEB_HOST, "localhost")
+        host = self.mass.config.get(CONF_WEB_HOST, HOST_IP)
         port = self.mass.config.get(CONF_WEB_PORT, DEFAULT_PORT)
         return f"http://{host}:{port}"
 
-    async def resolve_stream(
+    async def resolve_stream_url(
         self,
         queue_item: QueueItem,
         player_id: str,
@@ -211,7 +217,6 @@ class StreamsController:
                 ),
                 pcm_sample_rate=streamdetails.sample_rate,
                 pcm_bit_depth=streamdetails.bit_depth,
-                pcm_channels=streamdetails.channels,
             )
             self.stream_jobs[stream_job.stream_id] = stream_job
 
@@ -246,10 +251,17 @@ class StreamsController:
 
         output_format_str = request.match_info["fmt"]
         output_format = ContentType.try_parse(output_format_str)
-        if output_format_str == "wav":
+        if output_format == ContentType.PCM:
+            # resolve generic pcm type
+            output_format = ContentType.from_bit_depth(stream_job.pcm_bit_depth)
+        if output_format.is_pcm() or output_format == ContentType.WAV:
+            output_channels = self.mass.config.get_player_config_value(
+                player_id, CONF_OUTPUT_CHANNELS
+            ).value
+            channels = 1 if output_channels != "stereo" else 2
             output_format_str = (
                 f"x-wav;codec=pcm;rate={stream_job.pcm_sample_rate};"
-                f"bitrate={stream_job.pcm_bit_depth};channels={stream_job.pcm_channels}"
+                f"bitrate={stream_job.pcm_bit_depth};channels={channels}"
             )
 
         # prepare request
@@ -262,12 +274,12 @@ class StreamsController:
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
         ffmpeg_args = self._get_player_ffmpeg_args(
-            player=player,
+            player.player_id,
             pcm_sample_rate=stream_job.pcm_sample_rate,
             pcm_bit_depth=stream_job.pcm_bit_depth,
-            pcm_channels=stream_job.pcm_channels,
             output_format=output_format,
         )
+
         async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
 
             # feed stdin with pcm audio chunks from origin
@@ -302,15 +314,16 @@ class StreamsController:
 
     def _get_player_ffmpeg_args(
         self,
-        player: Player,
+        player_id: str,
         pcm_sample_rate: int,
         pcm_bit_depth: int,
-        pcm_channels: int,
         output_format: ContentType,
     ) -> list[str]:
         """Get player specific arguments for the given (pcm) input and output details."""
+        player_conf = self.mass.config.get_player_config(player_id)
+        conf_channels = player_conf.get_value(CONF_OUTPUT_CHANNELS)
         # generic args
-        ffmpeg_args = [
+        generic_args = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel",
@@ -318,27 +331,55 @@ class StreamsController:
             "-ignore_unknown",
         ]
         # input args
-        ffmpeg_args += [
+        input_args = [
             "-f",
             ContentType.from_bit_depth(pcm_bit_depth).value,
             "-ac",
-            str(pcm_channels),
+            "2",
             "-ar",
             str(pcm_sample_rate),
             "-i",
             "-",
         ]
-        # TODO: insert playerspecific filters/convolution/DSP here!
         # output args
-        ffmpeg_args += [
+        output_args = [
             # output args
             "-f",
             output_format.value,
+            "-ac",
+            "1" if conf_channels != "stereo" else "2",
             "-compression_level",
             "0",
             "-",
         ]
-        return ffmpeg_args
+        # collect extra and filter args
+        # TODO: add convolution/DSP/roomcorrections here!
+        extra_args = []
+        filter_params = []
+
+        # the below is a very basic 3-band equalizer, this could be a lot more sophisticated at some point
+        if eq_bass := player_conf.get_value(CONF_EQ_BASS):
+            filter_params.append(
+                f"equalizer=frequency=100:width=200:width_type=h:gain={eq_bass}"
+            )
+        if eq_mid := player_conf.get_value(CONF_EQ_MID):
+            filter_params.append(
+                f"equalizer=frequency=900:width=1800:width_type=h:gain={eq_mid}"
+            )
+        if eq_treble := player_conf.get_value(CONF_EQ_TREBLE):
+            filter_params.append(
+                f"equalizer=frequency=9000:width=18000:width_type=h:gain={eq_treble}"
+            )
+        # handle output mixing only left or right
+        if conf_channels == "left":
+            filter_params.append("pan=mono|c0=FL")
+        elif conf_channels == "right":
+            filter_params.append("pan=mono|c0=FR")
+
+        if filter_params:
+            extra_args += ["-af", ",".join(filter_params)]
+
+        return generic_args + input_args + extra_args + output_args
 
     async def _cleanup_stale(self) -> None:
         """Cleanup stale/done stream tasks."""

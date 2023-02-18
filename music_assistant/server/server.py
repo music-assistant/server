@@ -243,7 +243,9 @@ class MusicAssistant:
 
         Tasks created by this helper will be properly cancelled on stop.
         """
+        
         if self.closed:
+            target.close()
             return
 
         if asyncio.iscoroutinefunction(target):
@@ -253,8 +255,10 @@ class MusicAssistant:
 
         def task_done_callback(*args, **kwargs):
             self._tracked_tasks.remove(task)
-            if task.exception():
-                LOGGER.exception(task.exception())
+            if LOGGER.isEnabledFor(logging.DEBUG):
+                # print unhandled exceptions
+                if not task.cancelled() and task.exception():
+                    LOGGER.exception(f"Exception in task {task.get_name()}", exc_info=task.exception())
 
         self._tracked_tasks.append(task)
         task.add_done_callback(task_done_callback)

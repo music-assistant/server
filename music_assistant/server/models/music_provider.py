@@ -402,6 +402,11 @@ class MusicProvider(Provider):
                     # only mark the item as not in library and leave the metadata in db
                     await controller.set_db_library(db_item.item_id, False)
 
+    def is_file(self) -> bool:
+        """Return if this is a FileSystem based provider."""
+        # override this is needed
+        return self.domain.startswith("filesystem")
+
     # DO NOT OVERRIDE BELOW
 
     def library_supported(self, media_type: MediaType) -> bool:

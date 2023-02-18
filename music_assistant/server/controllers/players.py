@@ -11,6 +11,7 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
+    ProviderFeature,
     ProviderType,
 )
 from music_assistant.common.models.errors import (
@@ -141,8 +142,10 @@ class PlayerController:
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
         # prefer any overridden name from config
-        player.display_name = self.mass.config.get(
-            f"{CONF_PLAYERS}/{player_id}/name", player.name
+        player.display_name = (
+            self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/name")
+            or player.name
+            or player.player_id
         )
         # set player state to off if player is not powered
         if player.powered and player.state == PlayerState.OFF:
@@ -200,6 +203,7 @@ class PlayerController:
         Send STOP command to given player.
             - player_id: player_id of the player to handle the command.
         """
+        player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_stop(player_id)
 
@@ -209,6 +213,7 @@ class PlayerController:
         Send PLAY (unpause) command to given player.
             - player_id: player_id of the player to handle the command.
         """
+        player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_play(player_id)
 
@@ -218,8 +223,30 @@ class PlayerController:
         Send PAUSE command to given player.
             - player_id: player_id of the player to handle the command.
         """
+        player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_pause(player_id)
+
+        async def _watch_pause(_player_id):
+            player = self.get(_player_id)
+            count = 0
+            # wait for pause
+            while count < 5 and player.state == PlayerState.PLAYING:
+                count += 1
+                await asyncio.sleep(1)
+            # wait for unpause
+            if player.state != PlayerState.PAUSED:
+                return
+            count = 0
+            while count < 30 and player.state == PlayerState.PAUSED:
+                count += 1
+                await asyncio.sleep(1)
+            # if player is still paused when the limit is reached, send stop
+            if player.state == PlayerState.PAUSED:
+                await self.cmd_stop(_player_id)
+
+        # we auto stop a player from paused when its paused for 30 seconds
+        self.mass.create_task(_watch_pause(player_id))
 
     @api_command("players/cmd/play_pause")
     async def cmd_play_pause(self, player_id: str) -> None:
@@ -299,8 +326,8 @@ class PlayerController:
         coros = []
         for child_player in self._get_child_players(group_player, True):
             cur_child_volume = child_player.volume_level
-            new_child_volume = cur_child_volume + (
-                cur_child_volume * volume_dif_percent
+            new_child_volume = int(
+                cur_child_volume + (cur_child_volume * volume_dif_percent)
             )
             coros.append(self.cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
@@ -338,23 +365,32 @@ class PlayerController:
             - target_player: player_id of the syncgroup master or group player.
         """
         child_player = self.get(player_id, True, True)
-        master_player = self.get(target_player, True, True)
+        parent_player = self.get(target_player, True, True)
         if PlayerFeature.SYNC not in child_player.supported_features:
             raise UnsupportedFeaturedException(
-                f"Player {child_player.name} does not support (unsync) commands"
+                f"Player {child_player.name} does not support (un)sync commands"
             )
-        if PlayerFeature.SYNC not in master_player.supported_features:
+        if PlayerFeature.SYNC not in parent_player.supported_features:
             raise UnsupportedFeaturedException(
-                f"Player {master_player.name} does not support (unsync) commands"
+                f"Player {parent_player.name} does not support (un)sync commands"
             )
-        if master_player.synced_to is not None:
+        if parent_player.synced_to is not None:
             raise PlayerCommandFailed(
                 f"Player {target_player} is already synced to another player."
             )
-        if player_id not in master_player.can_sync_with:
+        if player_id not in parent_player.can_sync_with:
             raise PlayerCommandFailed(
                 f"Player {player_id} can not be synced to {target_player}."
             )
+        if child_player.synced_to:
+            if child_player.synced_to == parent_player.player_id:
+                # nothing to do: already synced to this parent
+                return
+            # player already synced, unsync first
+            await self.cmd_unsync(child_player.player_id)
+        # stop child player if it is currently playing
+        if child_player.state == PlayerState.PLAYING:
+            await self.cmd_stop(player_id)
         # all checks passed, forward command to the player provider
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_sync(player_id, target_player)
@@ -386,10 +422,10 @@ class PlayerController:
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_unsync(player_id)
 
-    @api_command("players/cmd/set_members")
-    async def cmd_set_members(self, player_id: str, members: list[str]) -> None:
+    @api_command("players/cmd/set_group_members")
+    async def cmd_set_group_members(self, player_id: str, members: list[str]) -> None:
         """
-        Handle SET_MEMBERS command for given playergroup.
+        Handle SET_GROUP_MEMBERS command for given playergroup.
 
         Update the memberlist of the given PlayerGroup.
 
@@ -415,7 +451,58 @@ class PlayerController:
 
         # all checks passed, forward command to the player provider
         player_provider = self.get_player_provider(player_id)
-        await player_provider.cmd_unsync(player_id)
+        await player_provider.cmd_set_group_members(
+            player_id,
+        )
+
+    @api_command("players/cmd/create_group")
+    async def create_group(
+        self, name: str, provider: str = "universal_group"
+    ) -> Player:
+        """
+        Handle CREATE_GROUP command on the given player provider.
+
+            - name: name for the new group.
+            - provider: provider domain or instance id of the player provider.
+              defaults to the `universal_group` provider
+
+        Returns the newly created PlayerGroup.
+        """
+        player_provider = self.mass.get_provider(provider)
+        if ProviderFeature.CREATE_GROUP not in player_provider.supported_features:
+            raise UnsupportedFeaturedException(
+                f"{player_provider.name} does not support group creation"
+            )
+        return await player_provider.cmd_create_group(name)
+
+    @api_command("players/cmd/delete_group")
+    async def cmd_delete_group(self, player_id: str) -> None:
+        """
+        Handle DELETE_GROUP command on the given player provider.
+
+            - player_id: id of the group player to remove.
+        """
+        player_provider = self.get_player_provider(player_id)
+        if ProviderFeature.DELETE_GROUP not in player_provider.supported_features:
+            raise UnsupportedFeaturedException(
+                f"{player_provider.name} does not support group deletions."
+            )
+        return await player_provider.cmd_delete_group(player_id)
+
+    def _check_redirect(self, player_id: str) -> str:
+        """Check if playback related command should be redirected."""
+        player = self.get(player_id, True, True)
+        if player.synced_to:
+            sync_master = self.get(player.synced_to, True, True)
+            LOGGER.warning(
+                "Player %s is synced to %s and can not accept "
+                "playback related commands itself, "
+                "redirected the command to the sync leader.",
+                player.name,
+                sync_master.name,
+            )
+            return player.synced_to
+        return player_id
 
     def _get_player_groups(self, player_id: str) -> tuple[Player, ...]:
         """Return all (player_ids of) any groupplayers the given player belongs to."""
@@ -425,7 +512,7 @@ class PlayerController:
         """Return the active_queue id for given player."""
         # if player is synced, return master/group leader
         if player.synced_to:
-            return player.synced_to
+            return self._get_active_queue(self.get(player.synced_to))
         # iterate player groups to find out if one is playing
         if group_players := self._get_player_groups(player.player_id):
             # prefer the first playing (or paused) group parent

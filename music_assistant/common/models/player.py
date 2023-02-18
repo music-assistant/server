@@ -33,7 +33,8 @@ class Player(DataClassDictMixin):
 
     elapsed_time: float = 0
     elapsed_time_last_updated: float = time.time()
-    current_url: str = ""
+    current_url: str | None = None
+    current_item_id: str | None = None
     state: PlayerState = PlayerState.IDLE
 
     volume_level: int = 100
@@ -55,7 +56,7 @@ class Player(DataClassDictMixin):
     # ususally this is just a list of all player_ids within the playerprovider
     can_sync_with: tuple[str, ...] = field(default=tuple())
 
-    # synced_to: plauyer_id of the player this player is currently synced to
+    # synced_to: player_id of the player this player is currently synced to
     # also referred to as "sync master"
     synced_to: str | None = None
 

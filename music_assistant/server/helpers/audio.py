@@ -44,10 +44,9 @@ async def crossfade_pcm_parts(
     fade_out_part: bytes,
     bit_depth: int,
     sample_rate: int,
-    channels: int = 2,
 ) -> bytes:
     """Crossfade two chunks of pcm/raw audio using ffmpeg."""
-    sample_size = int(sample_rate * (bit_depth / 8) * channels)
+    sample_size = int(sample_rate * (bit_depth / 8) * 2)
     fmt = ContentType.from_bit_depth(bit_depth)
     # calculate the fade_length from the smallest chunk
     fade_length = min(len(fade_in_part), len(fade_out_part)) / sample_size
@@ -66,7 +65,7 @@ async def crossfade_pcm_parts(
         "-f",
         fmt,
         "-ac",
-        str(channels),
+        "2",
         "-ar",
         str(sample_rate),
         "-i",
@@ -77,7 +76,7 @@ async def crossfade_pcm_parts(
         "-f",
         fmt,
         "-ac",
-        str(channels),
+        "2",
         "-ar",
         str(sample_rate),
         "-i",
@@ -114,7 +113,6 @@ async def strip_silence(
     audio_data: bytes,
     sample_rate: int,
     bit_depth: int,
-    channels: int = 2,
     reverse: bool = False,
     cache_key: str | None = None,
 ) -> bytes:
@@ -135,7 +133,7 @@ async def strip_silence(
             "-f",
             fmt,
             "-ac",
-            str(channels),
+            "2",
             "-ar",
             str(sample_rate),
             "-i",
@@ -160,7 +158,7 @@ async def strip_silence(
     # return stripped audio
     bytes_stripped = len(audio_data) - len(stripped_data)
     if LOGGER.isEnabledFor(logging.DEBUG):
-        pcm_sample_size = int(sample_rate * (bit_depth / 8) * channels)
+        pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
         seconds_stripped = round(bytes_stripped / pcm_sample_size, 2)
         LOGGER.debug(
             "stripped %s seconds of silence of pcm chunk. bytes stripped: %s",
@@ -409,9 +407,8 @@ async def get_media_stream(
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
     sample_rate = streamdetails.sample_rate
     bit_depth = streamdetails.bit_depth
-    channels = streamdetails.channels
     # chunk size = 2 seconds of pcm audio
-    pcm_sample_size = int(sample_rate * (bit_depth / 8) * channels)
+    pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
     chunk_size = pcm_sample_size * (1 if is_radio else 2)
     expected_chunks = int((streamdetails.duration or 0) / 2)
     # collect all arguments for ffmpeg
@@ -419,9 +416,8 @@ async def get_media_stream(
         streamdetails=streamdetails,
         sample_rate=sample_rate,
         bit_depth=bit_depth,
-        channels=channels,
         seek_position=seek_position,
-        fade_in=fade_in
+        fade_in=fade_in,
     )
 
     async with AsyncProcess(
@@ -460,7 +456,6 @@ async def get_media_stream(
                         prev_chunk + chunk,
                         sample_rate=sample_rate,
                         bit_depth=bit_depth,
-                        channels=channels,
                         cache_key=f"{streamdetails.uri}.silence.start",
                     )
                     yield stripped_audio
@@ -490,7 +485,6 @@ async def get_media_stream(
                 prev_chunk,
                 sample_rate=sample_rate,
                 bit_depth=bit_depth,
-                channels=channels,
                 reverse=True,
                 cache_key="{streamdetails.uri}.silence.end",
             )
@@ -700,7 +694,6 @@ async def get_silence(
     output_fmt: ContentType = ContentType.WAV,
     sample_rate: int = 44100,
     bit_depth: int = 16,
-    channels: int = 2,
 ) -> AsyncGenerator[bytes, None]:
     """Create stream of silence, encoded to format of choice."""
 
@@ -713,7 +706,7 @@ async def get_silence(
             duration=duration,
         )
         for _ in range(0, duration):
-            yield b"\0" * int(sample_rate * (bit_depth / 8) * channels)
+            yield b"\0" * int(sample_rate * (bit_depth / 8) * 2)
         return
 
     # use ffmpeg for all other encodings
@@ -725,7 +718,7 @@ async def get_silence(
         "-f",
         "lavfi",
         "-i",
-        f"anullsrc=r={sample_rate}:cl={'stereo' if channels == 2 else 'mono'}",
+        f"anullsrc=r={sample_rate}:cl={'stereo'}",
         "-t",
         str(duration),
         "-f",
@@ -741,11 +734,10 @@ def get_chunksize(
     content_type: ContentType,
     sample_rate: int = 44100,
     bit_depth: int = 16,
-    channels: int = 2,
     seconds: int = 1,
 ) -> int:
     """Get a default chunksize for given contenttype."""
-    pcm_size = int(sample_rate * (bit_depth / 8) * channels * seconds)
+    pcm_size = int(sample_rate * (bit_depth / 8) * 2 * seconds)
     if content_type.is_pcm() or content_type == ContentType.WAV:
         return pcm_size
     if content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
@@ -761,7 +753,6 @@ async def _get_ffmpeg_args(
     streamdetails: StreamDetails,
     sample_rate: int,
     bit_depth: int,
-    channels: int = 2,
     seek_position: int = 0,
     fade_in: bool = False,
 ) -> List[str]:
@@ -775,14 +766,16 @@ async def _get_ffmpeg_args(
             "FFmpeg binary is missing from system."
             "Please install ffmpeg on your OS to enable playback.",
         )
-    # collect input args
-    input_args = [
+    # generic args
+    generic_args = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "quiet",
         "-ignore_unknown",
     ]
+    # collect input args
+    input_args = []
     if streamdetails.direct:
         # ffmpeg can access the inputfile (or url) directly
         if streamdetails.direct.startswith("http"):
@@ -816,7 +809,7 @@ async def _get_ffmpeg_args(
         "-f",
         pcm_output_format,
         "-ac",
-        str(channels),
+        "2",  # to simplify things, we always output 2 channels
         "-ar",
         str(sample_rate),
         "-",
@@ -838,4 +831,4 @@ async def _get_ffmpeg_args(
     if filter_params:
         extra_args += ["-af", ",".join(filter_params)]
 
-    return input_args + extra_args + output_args
+    return generic_args + input_args + extra_args + output_args
