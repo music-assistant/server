@@ -38,6 +38,8 @@ class ProviderManifest(DataClassDictMixin):
     builtin: bool = False
     # load_by_default: load this provider by default (mostly used together with `builtin`)
     load_by_default: bool = False
+    # depends_on: depends on another provider to function
+    depends_on: str | None = None
 
     @classmethod
     async def parse(cls: "ProviderManifest", manifest_file: str) -> "ProviderManifest":

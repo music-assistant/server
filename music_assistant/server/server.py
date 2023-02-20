@@ -11,7 +11,7 @@ from typing import Any, Callable, Coroutine, Type
 
 from aiohttp import ClientSession, TCPConnector, web
 
-from music_assistant.common.helpers.util import select_free_port
+from music_assistant.common.helpers.util import select_free_port, get_ip_pton
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import (
@@ -19,6 +19,7 @@ from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     SetupFailedError,
 )
+from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
@@ -34,6 +35,7 @@ from music_assistant.server.controllers.metadata.metadata import MetaDataControl
 from music_assistant.server.controllers.music import MusicController
 from music_assistant.server.controllers.players import PlayerController
 from music_assistant.server.controllers.streams import StreamsController
+
 from music_assistant.server.helpers.api import (
     APICommandHandler,
     api_command,
@@ -70,6 +72,8 @@ class MusicAssistant:
         Create an instance of the MusicAssistant Server."""
         self.storage_path = storage_path
         self.port = port
+        # shared zeroconf instance
+        self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
         # we dynamically register command handlers
         self.webapp = web.Application()
         self.command_handlers: dict[str, APICommandHandler] = {}
@@ -118,6 +122,7 @@ class MusicAssistant:
         host = None
         self._http = web.TCPSite(self._web_apprunner, host=host, port=self.port)
         await self._http.start()
+        await self._setup_discovery()
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -239,11 +244,11 @@ class MusicAssistant:
         **kwargs: Any,
     ) -> asyncio.Task | asyncio.Future:
         """
-        Create Task on (main) event loop from Callable or awaitable.
+        Create Task on (main) event loop from Coroutine(function).
 
         Tasks created by this helper will be properly cancelled on stop.
         """
-        
+
         if self.closed:
             target.close()
             return
@@ -258,7 +263,10 @@ class MusicAssistant:
             if LOGGER.isEnabledFor(logging.DEBUG):
                 # print unhandled exceptions
                 if not task.cancelled() and task.exception():
-                    LOGGER.exception(f"Exception in task {task.get_name()}", exc_info=task.exception())
+                    LOGGER.exception(
+                        f"Exception in task {task.get_name()}",
+                        exc_info=task.exception(),
+                    )
 
         self._tracked_tasks.append(task)
         task.add_done_callback(task_done_callback)
@@ -381,20 +389,30 @@ class MusicAssistant:
         """Load providers from config."""
         # load all available providers from manifest files
         await self.__load_available_providers()
-        # load all configured (and enabled) providers
         loaded_providers = set()
-        for prov_conf in self.config.get_provider_configs():
-            loaded_providers.add(prov_conf.domain)
-            self.create_task(self.load_provider(prov_conf))
-        # create default config for any 'load_by_default' providers (e.g. URL provider)
-        # NOTE: this will auto load any not yet existing providers
-        for prov_manifest in self._available_providers.values():
-            if prov_manifest.domain in loaded_providers:
-                continue
-            if not prov_manifest.load_by_default:
-                continue
-            default_conf = self.config.create_provider_config(prov_manifest.domain)
-            self.config.set_provider_config(default_conf)
+        # we loop twice to solve any dependencies
+        for allow_depends_on in (False, True):
+            # load all configured (and enabled) providers
+            for prov_conf in self.config.get_provider_configs():
+                prov_manifest = self._available_providers[prov_conf.domain]
+                if prov_manifest.depends_on and not allow_depends_on:
+                    continue
+                if prov_conf.instance_id in loaded_providers:
+                    continue
+                loaded_providers.add(prov_conf.domain)
+                loaded_providers.add(prov_conf.instance_id)
+                self.create_task(self.load_provider(prov_conf))
+            # create default config for any 'load_by_default' providers (e.g. URL provider)
+            # NOTE: this will auto load any not yet existing providers
+            for prov_manifest in self._available_providers.values():
+                if prov_manifest.domain in loaded_providers:
+                    continue
+                if not prov_manifest.load_by_default:
+                    continue
+                if prov_manifest.depends_on and not allow_depends_on:
+                    continue
+                default_conf = self.config.create_provider_config(prov_manifest.domain)
+                self.config.set_provider_config(default_conf)
 
     async def __load_available_providers(self) -> None:
         """Preload all available provider manifest files."""
@@ -424,6 +442,36 @@ class MusicAssistant:
                         dir_str,
                         exc_info=exc,
                     )
+
+    async def _setup_discovery(self) -> None:
+        """Make this Music Assistant instance discoverable on the network."""
+
+        def setup_discovery():
+            zeroconf_type = "_music-assistant._tcp.local."
+            server_id = "mass"  # TODO ?
+
+            info = ServiceInfo(
+                zeroconf_type,
+                name=f"{server_id}.{zeroconf_type}",
+                addresses=[get_ip_pton()],
+                port=self.port,
+                properties={},
+                server=f"mass_{server_id}.local.",
+            )
+            LOGGER.debug("Starting Zeroconf broadcast...")
+            try:
+                existing = getattr(self, "mass_zc_service_set", None)
+                if existing:
+                    self.zeroconf.update_service(info)
+                else:
+                    self.zeroconf.register_service(info)
+                setattr(self, "mass_zc_service_set", True)
+            except NonUniqueNameException:
+                LOGGER.error(
+                    "Music Assistant instance with identical name present in the local network!"
+                )
+
+        await self.loop.run_in_executor(None, setup_discovery)
 
     async def __aenter__(self) -> "MusicAssistant":
         """Return Context manager."""

@@ -95,6 +95,8 @@ class ConfigEntryValue(ConfigEntry):
             result.value = entry.default_value
         if result.value is None and not entry.required:
             expected_type = NoneType
+        if entry.type == ConfigEntryType.LABEL:
+            result.value = result.label
         if not isinstance(result.value, expected_type):
             if result.value is None and allow_none:
                 # In some cases we allow this (e.g. create default config), hence the allow_none
@@ -196,24 +198,6 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
         label="Target level for volume normalisation",
         description="Adjust average (perceived) loudness to this target level, default is -14 LUFS",
         depends_on=CONF_VOLUME_NORMALISATION,
-        advanced=True,
-    ),
-    ConfigEntry(
-        key=CONF_MAX_SAMPLE_RATE,
-        type=ConfigEntryType.INTEGER,
-        options=[
-            ConfigValueOption("44100", 44100),
-            ConfigValueOption("48000", 48000),
-            ConfigValueOption("88200", 88200),
-            ConfigValueOption("96000", 96000),
-            ConfigValueOption("176400", 176400),
-            ConfigValueOption("192000", 192000),
-            ConfigValueOption("352800", 352800),
-            ConfigValueOption("384000", 384000),
-        ],
-        default_value=96000,
-        label="Maximum sample rate",
-        description="Maximum sample rate that is sent to the player, content with a higher sample rate than this treshold will be downsampled",
         advanced=True,
     ),
     ConfigEntry(

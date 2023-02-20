@@ -61,7 +61,7 @@ class Player(DataClassDictMixin):
     synced_to: str | None = None
 
     # max_sample_rate: maximum supported sample rate the player supports
-    max_sample_rate: int = 96000
+    max_sample_rate: int = 48000
 
     # enabled: if the player is enabled
     # will be set by the player manager based on config

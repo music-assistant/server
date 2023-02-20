@@ -11,7 +11,7 @@ from music_assistant.common.models.queue_item import QueueItem
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ConfigEntry
+    from music_assistant.common.models.config_entries import ConfigEntry, PlayerConfig
 
 
 class PlayerProvider(Provider):
@@ -24,6 +24,9 @@ class PlayerProvider(Provider):
     def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return tuple()
+
+    def on_player_config_changed(self, config: PlayerConfig) -> None:
+        """Call (by config manager) when the configuration of a player changes."""
 
     @abstractmethod
     async def cmd_stop(self, player_id: str) -> None:

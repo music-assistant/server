@@ -48,13 +48,15 @@ class StreamJob:
     In case a QueueItem is restarted (e.g. when seeking), a new StreamJob will be created.
     """
 
+    _audio_task: asyncio.Task | None = None
+
     def __init__(
         self,
         queue_item: QueueItem,
         audio_source: AsyncGenerator[bytes, None],
         pcm_sample_rate: int,
         pcm_bit_depth: int,
-
+        auto_start: bool = True,
     ) -> None:
         """Initialize MultiQueue instance."""
         self.queue_item = queue_item
@@ -63,8 +65,9 @@ class StreamJob:
         self.pcm_sample_rate = pcm_sample_rate
         self.pcm_bit_depth = pcm_bit_depth
         self.stream_id = shortuuid.uuid()
-        self.expected_consumers = 1
-        self._audio_task = asyncio.create_task(self._stream_job_runner())
+        self.expected_consumers: set[str] = set()
+        if auto_start:
+            self._audio_task = asyncio.create_task(self._stream_job_runner())
         self._subscribers: list[asyncio.Queue[bytes]] = []
         self._all_clients_connected = asyncio.Event()
 
@@ -84,10 +87,12 @@ class StreamJob:
 
     async def subscribe(self) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate incoming chunks on the queue."""
+        if not self._audio_task:
+            self._audio_task = asyncio.create_task(self._stream_job_runner())
         try:
             sub_queue = asyncio.Queue(10)
             self._subscribers.append(sub_queue)
-            if len(self._subscribers) == self.expected_consumers:
+            if len(self._subscribers) == len(self.expected_consumers):
                 # we reached the number of expected subscribers, set event
                 # so that chunks can be pushed
                 self._all_clients_connected.set()
@@ -183,6 +188,7 @@ class StreamsController:
         seek_position: int = 0,
         fade_in: bool = False,
         content_type: ContentType = ContentType.WAV,
+        auto_start_runner: bool = True
     ) -> str:
         """
         Resolve the stream URL for the given QueueItem.
@@ -198,6 +204,7 @@ class StreamsController:
         - seek_position: start playing from this specific position.
         - fade_in: fade in the music at start (e.g. at resume).
         - content_type: Encode the stream in the given format.
+        - auto_start_runner: Start the audio stream in advance (stream track now).
         """
         # check if there is already a pending job
         for stream_job in self.stream_jobs.values():
@@ -206,7 +213,7 @@ class StreamsController:
             if stream_job.queue_item != queue_item:
                 continue
             # if we hit this point, we have a match
-            stream_job.expected_consumers += 1
+            stream_job.expected_consumers.add(player_id)
             break
         else:
             # register a new stream job
@@ -221,7 +228,9 @@ class StreamsController:
                 ),
                 pcm_sample_rate=streamdetails.sample_rate,
                 pcm_bit_depth=streamdetails.bit_depth,
+                auto_start=auto_start_runner
             )
+            stream_job.expected_consumers.add(player_id)
             self.stream_jobs[stream_job.stream_id] = stream_job
 
         # mark this queue item as the one in buffer

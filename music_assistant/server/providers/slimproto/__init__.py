@@ -5,15 +5,17 @@ import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Generator
+from typing import Any, Callable, Generator, TYPE_CHECKING
 
 from aioslimproto.client import PlayerState as SlimPlayerState
 from aioslimproto.client import SlimClient
 from aioslimproto.client import TransitionType as SlimTransition
 from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
+from music_assistant.common.models.config_entries import ConfigEntry
 
 from music_assistant.common.models.enums import (
+    ConfigEntryType,
     ContentType,
     PlayerFeature,
     PlayerState,
@@ -23,6 +25,9 @@ from music_assistant.common.models.errors import QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.server.models.player_provider import PlayerProvider
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import PlayerConfig
 
 # sync constants
 MIN_DEVIATION_ADJUST = 10  # 10 milliseconds
@@ -48,17 +53,36 @@ class SyncPlayPoint:
     diff: int
 
 
+CONF_SYNC_ADJUST = "sync_adjust"
+
+SLIM_PLAYER_CONFIG_ENTRIES = (
+    ConfigEntry(
+        key=CONF_SYNC_ADJUST,
+        type=ConfigEntryType.INTEGER,
+        range=(0, 1500),
+        default_value=0,
+        label="Correct synchronization delay",
+        description="If this player is playing audio synced with other players and you always hear the audio too late on this player, you can shift the audio a bit.",
+        advanced=True,
+    ),
+)
+
+
 class SlimprotoProvider(PlayerProvider):
     """Base/builtin provider for players using the SLIM protocol (aka slimproto)."""
 
     _socket_servers: tuple[asyncio.Server | asyncio.BaseTransport] | None = None
     _socket_clients: dict[str, SlimClient] | None = None
     _sync_playpoints: dict[str, deque[SyncPlayPoint]] = None
+    _sync_adjusts: dict[str, int] | None = None
+    _virtual_providers: dict[str, tuple[Callable, Callable]] | None = None
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         self._socket_clients = {}
         self._sync_playpoints = {}
+        self._sync_adjusts = {}
+        self._virtual_providers = {}
         # autodiscovery of the slimproto server does not work
         # when the port is not the default (3483) so we hardcode it for now
         slimproto_port = 3483
@@ -120,6 +144,16 @@ class SlimprotoProvider(PlayerProvider):
         # construct SlimClient from socket client
         SlimClient(reader, writer, client_callback)
 
+    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        return SLIM_PLAYER_CONFIG_ENTRIES
+
+    def on_player_config_changed(self, config: PlayerConfig) -> None:
+        """Call (by config manager) when the configuration of a player changes."""
+        # during synced playback this value is requested multiple times a second,
+        # so we cache it in a quick lookup dict
+        self._sync_adjusts[config.player_id] = config.get_value(CONF_SYNC_ADJUST)
+
     async def cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
@@ -127,7 +161,6 @@ class SlimprotoProvider(PlayerProvider):
         """
         # forward command to player and any connected sync childs
         for client in self._get_sync_clients(player_id):
-            setattr(client, "transitioning", False)
             if client.state == SlimPlayerState.STOPPED:
                 continue
             await client.stop()
@@ -304,10 +337,23 @@ class SlimprotoProvider(PlayerProvider):
         self.mass.players.update(child_player.player_id)
         self.mass.players.update(parent_player.player_id)
 
+    def register_virtual_provider(
+        self,
+        player_model: str,
+        register_callback: Callable,
+        update_callback: Callable,
+    ) -> None:
+        """Register a virtual provider based on slimproto, such as the airplay bridge."""
+        self._virtual_providers[player_model] = (
+            register_callback,
+            update_callback,
+        )
+
     def _handle_player_update(self, client: SlimClient) -> None:
         """Process SlimClient update/add to Player controller."""
         player_id = client.player_id
         player = self.mass.players.get(player_id)
+        virtual_provider_info = self._virtual_providers.get(client.device_model)
         if not player:
             player = Player(
                 player_id=player_id,
@@ -329,6 +375,9 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                 ),
             )
+            if virtual_provider_info:
+                # if this player is part of a virtual provider run the callback
+                virtual_provider_info[0](player)
             self.mass.players.register(player)
 
         # update player state on player events
@@ -343,12 +392,14 @@ class SlimprotoProvider(PlayerProvider):
         player.volume_level = client.volume_level
         player.volume_muted = client.muted
         # set all existing player ids in `can_sync_with` field
-        # TODO: filter out players that do not support sync at all ?
         player.can_sync_with = tuple(
             x.player_id
             for x in self._socket_clients.values()
             if x.player_id != player_id
         )
+        if virtual_provider_info:
+            # if this player is part of a virtual provider run the callback
+            virtual_provider_info[1](player)
         self.mass.players.update(player_id)
 
     def _handle_player_time_update(self, client: SlimClient) -> None:
@@ -359,14 +410,20 @@ class SlimprotoProvider(PlayerProvider):
             return
 
         player = self.mass.players.get(client.player_id)
-        if abs(client.elapsed_seconds - player.elapsed_time) >= 1:
+        sync_master_id = player.synced_to
+
+        # update player in player manager every whole second only
+        if (
+            not sync_master_id
+            and abs(client.elapsed_seconds - player.elapsed_time) >= 1
+        ):
             # do not send millisecond updates to the player manager
+            # ignore time updates of synced players
             player.elapsed_time = client.elapsed_seconds
             player.elapsed_time_last_updated = time.time()
             self.mass.players.update(client.player_id)
 
         # handle sync
-        sync_master_id = player.synced_to
         if not sync_master_id:
             # we only correct sync childs, not the sync master itself
             return
@@ -380,18 +437,6 @@ class SlimprotoProvider(PlayerProvider):
         sync_playpoints = self._sync_playpoints.setdefault(
             client.player_id, deque(maxlen=MIN_REQ_PLAYPOINTS)
         )
-
-        # prevent any adjustments while the player is transitioning from one track to another
-        # transitioning = getattr(client, "transitioning", False)
-        # if transitioning and client.elapsed_seconds < 10:
-        #     # player has just loaded a new track and is transitioning to the new track
-        #     print("###### TRASITIONING !!!")
-        #     return
-        # elif transitioning and client.elapsed_seconds < 20:
-        #     # we're 5 seconds in the new track, we're no longer transitioning
-        #     print("###### TRASITION DONE !!!")
-        #     sync_playpoints.clear()
-        #     setattr(client, "transitioning", False)
 
         # make sure client has loaded the same track as sync master
         client_item_id = (
@@ -421,8 +466,10 @@ class SlimprotoProvider(PlayerProvider):
             self._get_corrected_elapsed_milliseconds(sync_master)
             - self._get_corrected_elapsed_milliseconds(client)
         )
+
         if abs(diff) > MAX_DEVIATION_ADJUST:
             # safety guard when player is transitioning or something is just plain wrong
+            sync_playpoints.clear()
             return
 
         # we can now append the current playpoint to our list
@@ -458,7 +505,6 @@ class SlimprotoProvider(PlayerProvider):
             next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
                 client.player_id, client.current_metadata["item_id"]
             )
-            setattr(client, "transitioning", True)
             await self._handle_play_media(
                 client, next_item, send_flush=False, crossfade=crossfade
             )
@@ -473,9 +519,12 @@ class SlimprotoProvider(PlayerProvider):
             # player reconnected while we did not yet cleanup the old socket
             prev.disconnect()
         self._socket_clients[player_id] = client
-        # update existing players so they can update their `can_sync_with` field
-        for client in self._socket_clients.values():
-            self._handle_player_update(client)
+        if prev is None:
+            # update existing players so they can update their `can_sync_with` field
+            for client in self._socket_clients.values():
+                self._handle_player_update(client)
+            # precache player config
+            self.on_player_config_changed(self.mass.config.get_player_config(player_id))
 
     def _handle_disconnected(self, client: SlimClient) -> None:
         """Handle a client disconnected event."""
@@ -487,9 +536,6 @@ class SlimprotoProvider(PlayerProvider):
         if player := self.mass.players.get(player_id):
             player.available = False
             self.mass.players.update(player_id)
-            # update existing players so they can update their `can_sync_with` field
-            for client in self._socket_clients.values():
-                self._handle_player_update(client)
 
     async def _pause_for(self, client_id: str, millis: int) -> None:
         """Handle pause for x amount of time to help with syncing."""
@@ -515,6 +561,7 @@ class SlimprotoProvider(PlayerProvider):
 
     def _get_corrected_elapsed_milliseconds(self, client: SlimClient) -> int:
         """Return corrected elapsed milliseconds"""
-        if client.name == "audiocast-7":
-            return client.elapsed_milliseconds - 180
+        sync_delay = self._sync_adjusts[client.player_id]
+        if sync_delay != 0:
+            return client.elapsed_milliseconds - sync_delay
         return client.elapsed_milliseconds

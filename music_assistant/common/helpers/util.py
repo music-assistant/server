@@ -195,6 +195,15 @@ async def get_ip_from_host(dns_name: str) -> str:
     return await loop.run_in_executor(None, _resolve)
 
 
+def get_ip_pton():
+    """Return socket pton for local ip."""
+    # pylint:disable=no-member
+    try:
+        return socket.inet_pton(socket.AF_INET, get_ip())
+    except OSError:
+        return socket.inet_pton(socket.AF_INET6, get_ip())
+
+
 def get_folder_size(folderpath):
     """Return folder size in gb."""
     total_size = 0

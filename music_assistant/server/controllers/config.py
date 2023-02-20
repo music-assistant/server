@@ -285,10 +285,12 @@ class ConfigController:
             data=config,
         )
         # signal update to the player manager
-        # TODO: restart playback if player is playing?
         if player := self.mass.players.get(config.player_id):
             player.enabled = config.enabled
             self.mass.players.update(config.player_id)
+        # signal player provider that the config changed
+        if provider := self.mass.get_provider(config.provider):
+            provider.on_player_config_changed(config)
 
     async def _load(self) -> None:
         """Load data from persistent storage."""
