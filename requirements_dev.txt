@@ -1,7 +1,7 @@
 -r requirements.txt
 black==22.10.0
 flake8==6.0.0
-mypy==0.982
+mypy==1.0.1
 pydocstyle==6.1.1
 pylint==2.15.5
 pytest-aiohttp==1.0.4
