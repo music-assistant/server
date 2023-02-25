@@ -341,6 +341,7 @@ class AirplayProvider(PlayerProvider):
             if recreate:
                 raise err
             await self._check_config_xml(True)
+            return
 
         # set codecs and sample rate to airplay default
         common_elem = xml_root.find("common")

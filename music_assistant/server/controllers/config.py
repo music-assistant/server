@@ -21,7 +21,10 @@ from music_assistant.common.models.config_entries import (
     ProviderConfig,
 )
 from music_assistant.common.models.enums import EventType, ProviderType
-from music_assistant.common.models.errors import PlayerUnavailableError
+from music_assistant.common.models.errors import (
+    PlayerUnavailableError,
+    ProviderUnavailableError,
+)
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS
 from music_assistant.server.helpers.api import api_command
 
@@ -207,7 +210,7 @@ class ConfigController:
                 "name": name,
                 "values": dict(),
             },
-            allow_none=True
+            allow_none=True,
         )
 
     @api_command("config/providers/remove")
@@ -244,10 +247,13 @@ class ConfigController:
             if not player:
                 raise PlayerUnavailableError(f"Player {player_id} is not available")
             conf = {"provider": player.provider, "player_id": player_id}
-        prov = self.mass.get_provider(conf["provider"])
-        entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(
-            player_id
-        )
+        try:
+            prov = self.mass.get_provider(conf["provider"])
+            prov_entries = prov.get_player_config_entries(player_id)
+        except ProviderUnavailableError:
+            prov_entries = tuple()
+
+        entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
         return PlayerConfig.parse(entries, conf)
 
     @api_command("config/players/get_value")

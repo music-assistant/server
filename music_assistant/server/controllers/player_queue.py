@@ -85,6 +85,7 @@ class PlayerQueuesController:
             next_items = queue_items[next_index:]
         else:
             next_items = []
+            next_index = 0
 
         if not shuffle_enabled:
             # shuffle disabled, try to restore original sort order of the remaining items

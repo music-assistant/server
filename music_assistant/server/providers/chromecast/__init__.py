@@ -14,6 +14,7 @@ from pychromecast import (
     Chromecast,
     get_chromecast_from_cast_info,
 )
+from music_assistant.server.helpers.compare import compare_strings
 from pychromecast.controllers.bubbleupnp import BubbleUPNPController
 from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE
 from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
@@ -56,15 +57,11 @@ class CastPlayer:
     player_id: str
     cast_info: ChromecastInfo
     cc: Chromecast
-    is_audio_group: bool = False
+    is_stereo_pair: bool = False
     status_listener: CastStatusListener | None = None
     mz_controller: MultizoneController | None = None
     next_item: str | None = None
     poll_task: asyncio.Task | None = None
-
-    def __post_init__(self) -> None:
-        """Call after init."""
-        self.is_audio_group = self.cast_info.is_audio_group
 
 
 class ChromecastProvider(PlayerProvider):
@@ -96,7 +93,7 @@ class ChromecastProvider(PlayerProvider):
         # stop discovery
         self.mass.loop.run_in_executor(None, self.browser.stop_discovery)
         # stop all chromecasts
-        for castplayer in self.castplayers.values():
+        for castplayer in list(self.castplayers.values()):
             await self._disconnect_chromecast(castplayer)
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -183,31 +180,23 @@ class ChromecastProvider(PlayerProvider):
         """Handle Chromecast discovered callback."""
         disc_info: CastInfo = self.browser.devices[uuid]
 
-        cast_info = ChromecastInfo(
-            services=disc_info.services,
-            uuid=disc_info.uuid,
-            model_name=disc_info.model_name,
-            friendly_name=disc_info.friendly_name,
-            host=disc_info.host,
-            port=disc_info.port,
-            cast_type=disc_info.cast_type,
-            manufacturer=disc_info.manufacturer,
-        )
-
-        if cast_info.uuid is None:
-            self.logger.error("Discovered chromecast without uuid %s", cast_info)
+        if disc_info.uuid is None:
+            self.logger.error("Discovered chromecast without uuid %s", disc_info)
             return
 
-        cast_info = cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
-        if cast_info.is_dynamic_group:
-            self.logger.warning("Discovered dynamic cast group which will be ignored.")
-            return
-
-        self.logger.debug("Discovered new or updated chromecast %s", cast_info)
-        player_id = str(cast_info.uuid)
+        self.logger.debug("Discovered new or updated chromecast %s", disc_info)
+        player_id = str(disc_info.uuid)
 
         castplayer = self.castplayers.get(player_id)
         if not castplayer:
+            cast_info = ChromecastInfo.from_cast_info(disc_info)
+            cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
+            if cast_info.is_dynamic_group:
+                self.logger.warning(
+                    "Discovered dynamic cast group which will be ignored."
+                )
+                return
+
             # Instantiate chromecast object
             self.castplayers[player_id] = castplayer = CastPlayer(
                 player_id,
@@ -251,7 +240,7 @@ class ChromecastProvider(PlayerProvider):
             self.mass.loop.call_soon_threadsafe(self.mass.players.register, player)
 
         # if player was already added, the player will take care of reconnects itself.
-        castplayer.cast_info = cast_info
+        castplayer.cast_info.update(disc_info)
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, player_id)
 
     def _on_chromecast_removed(self, uuid, service, cast_info):
@@ -275,22 +264,21 @@ class ChromecastProvider(PlayerProvider):
             APP_MEDIA_RECEIVER,
             APP_BUBBLEUPNP,
         )
+        castplayer.is_stereo_pair = (
+            castplayer.cast_info.is_audio_group
+            and castplayer.mz_controller
+            and castplayer.mz_controller.members
+            and compare_strings(
+                castplayer.mz_controller.members[0], castplayer.player_id
+            )
+        )
         player.volume_level = int(status.volume_level * 100)
         player.volume_muted = status.volume_muted
+        if castplayer.is_stereo_pair:
+            player.type = PlayerType.PLAYER
         self.mass.loop.call_soon_threadsafe(
             self.mass.players.update, castplayer.player_id
         )
-
-        # self.cast_status = cast_status
-        # self._is_speaker_group = (
-        #     self._cast_info.is_audio_group
-        #     and self._chromecast.mz_controller
-        #     and self._chromecast.mz_controller.members
-        #     and compare_strings(
-        #         self._chromecast.mz_controller.members[0], self.player_id
-        #     )
-        # )
-        # self.update_state()
 
     def on_new_media_status(self, castplayer: CastPlayer, status: MediaStatus):
         """Handle updated MediaStatus."""
@@ -354,6 +342,11 @@ class ChromecastProvider(PlayerProvider):
                 status.status,
             )
             player.available = new_available
+            player.device_info = DeviceInfo(
+                model=castplayer.cast_info.model_name,
+                address=castplayer.cast_info.host,
+                manufacturer=castplayer.cast_info.manufacturer,
+            )
             self.mass.loop.call_soon_threadsafe(
                 self.mass.players.update, castplayer.player_id
             )

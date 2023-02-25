@@ -1,0 +1,14 @@
+{
+  "type": "player",
+  "domain": "sample_playerprovider",
+  "name": "Sample Playerprovider",
+  "description": "Sample PlayerProvider for demo/development/testing purposes.",
+  "codeowners": ["@music-assistant"],
+  "config_entries": [
+  ],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": false,
+  "load_by_default": false
+}

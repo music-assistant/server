@@ -511,7 +511,7 @@ class PlayerController:
     def _get_active_queue(self, player: Player) -> str:
         """Return the active_queue id for given player."""
         # if player is synced, return master/group leader
-        if player.synced_to:
+        if player.synced_to and player.synced_to in self._players:
             return self._get_active_queue(self.get(player.synced_to))
         # iterate player groups to find out if one is playing
         if group_players := self._get_player_groups(player.player_id):

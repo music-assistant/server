@@ -255,6 +255,8 @@ class MusicAssistant:
 
         if asyncio.iscoroutinefunction(target):
             task = self.loop.create_task(target(*args, **kwargs))
+        elif isinstance(target, asyncio.Future):
+            task = target
         else:
             task = self.loop.create_task(target)
 
@@ -262,15 +264,32 @@ class MusicAssistant:
             self._tracked_tasks.remove(task)
             if LOGGER.isEnabledFor(logging.DEBUG):
                 # print unhandled exceptions
+                task_name = getattr(task, "name", "")
                 if not task.cancelled() and task.exception():
+                    if hasattr(task, "get_name"):
+                        task_name = task.get_name()
+                    else:
+                        task_name = task
                     LOGGER.exception(
-                        f"Exception in task {task.get_name()}",
+                        f"Exception in task {task_name}",
                         exc_info=task.exception(),
                     )
 
         self._tracked_tasks.append(task)
         task.add_done_callback(task_done_callback)
         return task
+
+    async def run_in_executor(self, target: Callable, *args, **kwargs) -> Any:
+        """Run callable in executor thread and return results."""
+
+        def run_target():
+            return target(*args, **kwargs)
+
+        coro = self.loop.run_in_executor(None, run_target)
+        # create a task so it can be tracked and cancelled at shutdown.
+        task = self.create_task(coro)
+        await task
+        return task.result()
 
     def register_api_command(
         self,
