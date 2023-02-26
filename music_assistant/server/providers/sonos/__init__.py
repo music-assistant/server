@@ -19,7 +19,7 @@ from music_assistant.common.models.enums import (
     PlayerState,
     PlayerType,
 )
-from music_assistant.common.models.errors import QueueEmpty
+from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -75,10 +75,14 @@ class SonosPlayer:
         """Poll all info from player (must be run in executor thread)."""
         # transport info
         if update_transport_info:
-            self.transport_info = self.soco.get_current_transport_info()
-            self.transport_info_updated = time.time()
+            print("### POLLING TRANSPORT INFO FOR %s" % self.player.display_name)
+            transport_info = self.soco.get_current_transport_info()
+            if transport_info.get("current_transport_state") != "TRANSITIONING":
+                self.transport_info = transport_info
+                self.transport_info_updated = time.time()
         # track info
         if update_track_info:
+            print("### POLLING TRACK INFO FOR %s" % self.player.display_name)
             self.track_info = self.soco.get_current_track_info()
             self.track_info_updated = time.time()
             self.elapsed_time = _timespan_secs(self.track_info["position"]) or 0
@@ -95,15 +99,18 @@ class SonosPlayer:
                 self.current_item_id = None
         # speaker info
         if update_speaker_info:
+            print("### POLLING SPEAKER INFO FOR %s" % self.player.display_name)
             self.speaker_info = self.soco.get_speaker_info()
             self.speaker_info_updated = time.time()
         # rendering control info
         if update_rendering_control_info:
+            print("### POLLING RENDERCONTROL INFO FOR %s" % self.player.display_name)
             self.rendering_control_info["volume"] = self.soco.volume
             self.rendering_control_info["mute"] = self.soco.mute
             self.rendering_control_info_updated = time.time()
         # group info
         if update_group_info:
+            print("### POLLING GROUP INFO FOR %s" % self.player.display_name)
             self.group_info = self.soco.group
             self.group_info_updated = time.time()
 
@@ -149,6 +156,7 @@ class SonosPlayer:
             cur_time - self.rendering_control_info_updated
         ) > 30
         update_group_info = (cur_time - self.group_info_updated) > 600
+
         if not (
             update_transport_info
             or update_track_info
@@ -183,7 +191,6 @@ class SonosPlayerProvider(PlayerProvider):
         # silence the soco logger a bit
         logging.getLogger("soco").setLevel(logging.INFO)
         self.mass.create_task(self._run_discovery())
-        self.mass.create_task(self._poll_players())
 
     async def close(self) -> None:
         """Handle close/cleanup of the provider."""
@@ -200,7 +207,8 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
-        await self.mass.run_in_executor(sonos_player.soco.stop)
+        # clear queue instead of stop
+        await self.mass.run_in_executor(sonos_player.soco.clear_queue)
 
     async def cmd_play(self, player_id: str) -> None:
         """
@@ -235,7 +243,16 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player.next_item = None
         await self.mass.run_in_executor(sonos_player.soco.clear_queue)
 
-        await self._enqueue_item(sonos_player, queue_item=queue_item)
+        is_radio = queue_item.media_type != MediaType.TRACK
+        url = await self.mass.streams.resolve_stream_url(
+            queue_item=queue_item,
+            player_id=sonos_player.player_id,
+            seek_position=seek_position,
+            fade_in=fade_in,
+            content_type=ContentType.MP3 if is_radio else ContentType.FLAC,
+        )
+
+        await self._enqueue_item(sonos_player, queue_item=queue_item, url=url)
         await self.mass.run_in_executor(sonos_player.soco.play_from_queue, 0)
 
     async def cmd_pause(self, player_id: str) -> None:
@@ -266,6 +283,28 @@ class SonosPlayerProvider(PlayerProvider):
             sonos_player.soco.mute = muted
 
         await self.mass.run_in_executor(set_volume_mute, player_id, muted)
+
+    async def poll_player(self, player_id: str) -> None:
+        """
+        Poll player for state updates.
+
+        This is called by the Player Manager;
+        - every 360 secods if the player if not powered
+        - every 30 seconds if the player is powered
+        - every 10 seconds if the player is playing
+
+        Use this method to request any info that is not automatically updated and/or
+        to detect if the player is still alive.
+        If this method raises the PlayerUnavailable exception,
+        the player is marked as unavailable until
+        the next succesfull poll or event where it becomes available again.
+        If the player does not need any polling, simply do not override this method.
+        """
+        sonos_player = self.sonosplayers[player_id]
+        try:
+            await sonos_player.check_poll()
+        except ConnectionResetError as err:
+            raise PlayerUnavailableError from err
 
     async def _run_discovery(self) -> None:
         """Discover Sonos players on the network."""
@@ -360,19 +399,23 @@ class SonosPlayerProvider(PlayerProvider):
     def _handle_av_transport_event(self, sonos_player: SonosPlayer, event: SonosEvent):
         """Handle a SoCo AVTransport event."""
         self.logger.debug(
-            "AVTransport event for Player %s: %s", sonos_player.soco.player_name, event
+            "AVTransport event for Player %s: %s",
+            sonos_player.soco.player_name,
+            event.variables,
         )
 
         if "transport_state" in event.variables:
-            sonos_player.transport_info["current_transport_state"] = event.variables[
-                "transport_state"
-            ]
+            new_state = event.variables["transport_state"]
+            if new_state == "TRANSITIONING":
+                return
+            sonos_player.transport_info["current_transport_state"] = new_state
+
         if "current_track_uri" in event.variables:
             sonos_player.transport_info["uri"] = event.variables["current_track_uri"]
 
         sonos_player.transport_info_updated = time.time()
-        self.mass.loop.call_soon_threadsafe(
-            asyncio.create_task, self._update_player(sonos_player)
+        asyncio.run_coroutine_threadsafe(
+            self._update_player(sonos_player), self.mass.loop
         )
 
     def _handle_rendering_control_event(
@@ -382,7 +425,7 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.debug(
             "RenderingControl event for Player %s: %s",
             sonos_player.soco.player_name,
-            event,
+            event.variables,
         )
         if "volume" in event.variables:
             sonos_player.rendering_control_info["volume"] = event.variables["volume"][
@@ -393,8 +436,8 @@ class SonosPlayerProvider(PlayerProvider):
                 event.variables["mute"]["Master"]
             )
         sonos_player.rendering_control_info_updated = time.time()
-        self.mass.loop.call_soon_threadsafe(
-            asyncio.create_task, self._update_player(sonos_player)
+        asyncio.run_coroutine_threadsafe(
+            self._update_player(sonos_player), self.mass.loop
         )
 
     def _handle_zone_group_topology_event(
@@ -404,12 +447,12 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.debug(
             "ZoneGroupTopology event for Player %s: %s",
             sonos_player.soco.player_name,
-            event,
+            event.variables,
         )
         sonos_player.group_info = sonos_player.soco.group
         sonos_player.group_info_updated = time.time()
-        self.mass.loop.call_soon_threadsafe(
-            asyncio.create_task, self._update_player(sonos_player)
+        asyncio.run_coroutine_threadsafe(
+            self._update_player(sonos_player), self.mass.loop
         )
 
     def _process_groups(self, sonos_groups: list[soco.SoCo]) -> None:
@@ -435,6 +478,10 @@ class SonosPlayerProvider(PlayerProvider):
         """Enqueue the next track of the MA queue on the CC queue."""
         if not current_queue_item_id:
             return  # guard
+        if not self.mass.players.queues.get_item(
+            sonos_player.player_id, current_queue_item_id
+        ):
+            return  # guard
         try:
             next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
                 sonos_player.player_id, current_queue_item_id
@@ -456,24 +503,24 @@ class SonosPlayerProvider(PlayerProvider):
             await self.mass.run_in_executor(set_crossfade)
 
         # send queue item to sonos queue
-        await self._enqueue_item(
-            sonos_player, queue_item=next_item, is_enqueue_next=True
+        is_radio = next_item.media_type != MediaType.TRACK
+        url = await self.mass.streams.resolve_stream_url(
+            queue_item=next_item,
+            player_id=sonos_player.player_id,
+            content_type=ContentType.MP3 if is_radio else ContentType.FLAC,
+            # Sonos pre-caches pretty aggressively so do not yet start the runner
+            auto_start_runner=False,
         )
+        await self._enqueue_item(sonos_player, queue_item=next_item, url=url)
 
     async def _enqueue_item(
         self,
         sonos_player: SonosPlayer,
         queue_item: QueueItem,
-        is_enqueue_next: bool = True,
+        url: str,
     ) -> None:
         """Enqueue a queue item to the Sonos player Queue."""
         is_radio = queue_item.media_type != MediaType.TRACK
-        url = await self.mass.streams.resolve_stream_url(
-            queue_item=queue_item,
-            player_id=sonos_player.player_id,
-            content_type=ContentType.MP3 if is_radio else ContentType.FLAC,
-            auto_start_runner=not is_enqueue_next,
-        )
 
         metadata = _create_didl_metadata(url, queue_item, is_radio)
         await self.mass.run_in_executor(
@@ -493,39 +540,31 @@ class SonosPlayerProvider(PlayerProvider):
             sonos_player.player.display_name,
         )
 
-    async def _poll_players(self) -> None:
-        """Poll Sonos players to keep data updated."""
-        # some Sonos players do not support event based subscriptions
-        # so we need to poll them periodic to fetch info
-        # also to make sure we fire events when playing
-        while True:
-            for sonos_player in self.sonosplayers.values():
-                if not sonos_player.player.available:
-                    continue
-                state = sonos_player.transport_info.get("current_transport_state")
-                if state == "PLAYING" or await sonos_player.check_poll():
-                    asyncio.create_task(self._update_player(sonos_player))
-            await asyncio.sleep(1)
-
     async def _update_player(self, sonos_player: SonosPlayer) -> None:
         """Update Sonos Player."""
         prev_item_id = sonos_player.current_item_id
         prev_url = sonos_player.player.current_url
-        current_url = sonos_player.track_info["uri"]
-        if prev_url != current_url:
-            # player url changed, fetch track details
+        prev_state = sonos_player.player.state
+        sonos_player.update_attributes()
+        current_url = sonos_player.player.current_url
+        current_state = sonos_player.player.state
+
+        if (prev_url != current_url) or (prev_state != current_state):
+            # fetch track details on state or url change
             await self.mass.run_in_executor(
                 sonos_player.update_info,
                 update_track_info=True,
             )
-        sonos_player.update_attributes()
+            sonos_player.update_attributes()
+
         self.mass.players.update(sonos_player.player_id)
-        if (
-            sonos_player.player.state == PlayerState.PLAYING
-            and prev_item_id != sonos_player.current_item_id
+        if sonos_player.player.state == PlayerState.PLAYING and (
+            prev_item_id != sonos_player.current_item_id or not sonos_player.next_item
         ):
             # queue item changed, enqueue next item
-            self._enqueue_next_track(sonos_player, sonos_player.current_item_id)
+            self.mass.create_task(
+                self._enqueue_next_track(sonos_player, sonos_player.current_item_id)
+            )
 
 
 def _convert_state(sonos_state: str) -> PlayerState:

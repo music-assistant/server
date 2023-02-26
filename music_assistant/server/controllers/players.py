@@ -47,6 +47,7 @@ class PlayerController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
+        self.mass.create_task(self._poll_players())
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -567,3 +568,45 @@ class PlayerController:
                     continue
                 child_players.append(child_player)
         return child_players
+
+    async def _poll_players(self) -> None:
+        """Background task that polls players for updates."""
+        count = 0
+        while True:
+            count += 1
+            for player_id, player in self._players.items():
+                # ignore unavailable players (for now)
+                if not player.available:
+                    continue
+                # if the player is playing, update elapsed time every tick
+                # to ensure the queue has accurate details
+                player_playing = (
+                    player.active_queue == player.player_id
+                    and player.state == PlayerState.PLAYING
+                )
+                if player_playing:
+                    self.update(player_id)
+                # Poll player;
+                # - every 360 seconds if the player if not powered
+                # - every 30 seconds if the player is powered
+                # - every 10 seconds if the player is playing
+                if (
+                    (player.powered and count % 30 == 0)
+                    or (player_playing and count % 10 == 0)
+                    or count == 360
+                ):
+                    if player_prov := self.get_player_provider(player_id):
+                        try:
+                            await player_prov.poll_player(player_id)
+                        except PlayerUnavailableError:
+                            player.available = False
+                            self.update(player_id)
+                        except Exception as err:
+                            LOGGER.warning(
+                                "Error while requesting latest state from player %s: %s",
+                                str(err),
+                                exc_info=err,
+                            )
+                    if count >= 360:
+                        count = 0
+            await asyncio.sleep(1)

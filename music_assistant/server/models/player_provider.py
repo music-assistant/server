@@ -183,6 +183,23 @@ class PlayerProvider(Provider):
         # will only be called if the provider has the DELETE_GROUP feature set.
         raise NotImplementedError()
 
+    async def poll_player(self, player_id: str) -> None:
+        """
+        Poll player for state updates.
+
+        This is called by the Player Manager;
+        - every 360 secods if the player if not powered
+        - every 30 seconds if the player is powered
+        - every 10 seconds if the player is playing
+
+        Use this method to request any info that is not automatically updated and/or
+        to detect if the player is still alive.
+        If this method raises the PlayerUnavailable exception,
+        the player is marked as unavailable until
+        the next succesfull poll or event where it becomes available again.
+        If the player does not need any polling, simply do not override this method.
+        """
+
     # DO NOT OVERRIDE BELOW
 
     @property

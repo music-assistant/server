@@ -404,6 +404,7 @@ async def get_media_stream(
     volume normalization this is the pure, unaltered audio data as PCM chunks.
     """
     bytes_sent = 0
+    streamdetails.seconds_skipped = seek_position
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
     sample_rate = streamdetails.sample_rate
     bit_depth = streamdetails.bit_depth
@@ -494,7 +495,6 @@ async def get_media_stream(
             del prev_chunk
 
             # update duration details based on the actual pcm data we sent
-            streamdetails.seconds_skipped = seek_position
             streamdetails.seconds_streamed = bytes_sent / pcm_sample_size
 
         except (asyncio.CancelledError, GeneratorExit) as err:

@@ -412,16 +412,10 @@ class SlimprotoProvider(PlayerProvider):
         player = self.mass.players.get(client.player_id)
         sync_master_id = player.synced_to
 
-        # update player in player manager every whole second only
-        if (
-            not sync_master_id
-            and abs(client.elapsed_seconds - player.elapsed_time) >= 1
-        ):
-            # do not send millisecond updates to the player manager
-            # ignore time updates of synced players
-            player.elapsed_time = client.elapsed_seconds
-            player.elapsed_time_last_updated = time.time()
-            self.mass.players.update(client.player_id)
+        # elapsed time change on the time will be auto picked up
+        # by the player manager.
+        player.elapsed_time = client.elapsed_seconds
+        player.elapsed_time_last_updated = time.time()
 
         # handle sync
         if not sync_master_id:

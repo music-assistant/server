@@ -32,7 +32,7 @@ from music_assistant.common.models.enums import (
     PlayerState,
     PlayerType,
 )
-from music_assistant.common.models.errors import QueueEmpty
+from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -61,7 +61,6 @@ class CastPlayer:
     status_listener: CastStatusListener | None = None
     mz_controller: MultizoneController | None = None
     next_item: str | None = None
-    poll_task: asyncio.Task | None = None
 
 
 class ChromecastProvider(PlayerProvider):
@@ -173,6 +172,30 @@ class ChromecastProvider(PlayerProvider):
         await self.mass.loop.run_in_executor(
             None, castplayer.cc.set_volume_muted, muted
         )
+
+    async def poll_player(self, player_id: str) -> None:
+        """
+        Poll player for state updates.
+
+        This is called by the Player Manager;
+        - every 360 secods if the player if not powered
+        - every 30 seconds if the player is powered
+        - every 10 seconds if the player is playing
+
+        Use this method to request any info that is not automatically updated and/or
+        to detect if the player is still alive.
+        If this method raises the PlayerUnavailable exception,
+        the player is marked as unavailable until
+        the next succesfull poll or event where it becomes available again.
+        If the player does not need any polling, simply do not override this method.
+        """
+        castplayer = self.castplayers[player_id]
+        try:
+            await self.mass.loop.run_in_executor(
+                None, castplayer.cc.media_controller.update_status
+            )
+        except ConnectionResetError as err:
+            raise PlayerUnavailableError from err
 
     ### Discovery callbacks
 
@@ -306,10 +329,6 @@ class ChromecastProvider(PlayerProvider):
         self.mass.loop.call_soon_threadsafe(
             self.mass.players.update, castplayer.player_id
         )
-
-        if prev_state != player.state and player.state == PlayerState.PLAYING:
-            # start poll task if player started playing
-            self.mass.loop.call_soon_threadsafe(self._poll_player, castplayer)
 
         # enqueue next queue item when a new one started playing
         if player.state == PlayerState.PLAYING and (
@@ -452,37 +471,6 @@ class ChromecastProvider(PlayerProvider):
         castplayer.status_listener.invalidate()
         castplayer.status_listener = None
         self.castplayers.pop(castplayer.player_id, None)
-
-    def _poll_player(self, castplayer: CastPlayer) -> None:
-        """Start polling a Chromecast player's elapsed time."""
-
-        async def poll():
-            player = self.mass.players.get(castplayer.player_id)
-            media_status = castplayer.cc.media_controller.status
-            count = 0
-            while media_status.player_is_playing:
-                player.elapsed_time = media_status.current_time
-                player.elapsed_time_last_updated = calendar.timegm(
-                    media_status.last_updated.utctimetuple()
-                )
-                self.mass.players.update(castplayer.player_id)
-                if count == 5:
-                    # request update every 5 seconds
-                    count = 0
-                    self.mass.loop.run_in_executor(
-                        None, castplayer.cc.media_controller.update_status
-                    )
-                else:
-                    count += 1
-                await asyncio.sleep(1)
-
-        if (
-            castplayer.cc.media_controller
-            and castplayer.cc.media_controller.status
-            and castplayer.cc.media_controller.status.player_is_playing
-            and (not castplayer.poll_task or castplayer.poll_task.done())
-        ):
-            castplayer.poll_task = self.mass.loop.create_task(poll())
 
     @staticmethod
     def _create_queue_item(queue_item: QueueItem, stream_url: str):

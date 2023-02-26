@@ -79,7 +79,7 @@ class PlayerQueuesController:
 
         queue.shuffle_enabled = shuffle_enabled
         queue_items = self._queue_items[queue_id]
-        cur_index = queue.index_in_buffer or queue.current_index
+        cur_index = queue.index_in_buffer
         if cur_index is not None:
             next_index = cur_index + 1
             next_items = queue_items[next_index:]
@@ -182,7 +182,7 @@ class PlayerQueuesController:
         ]
 
         # load the items into the queue
-        cur_index = queue.index_in_buffer or queue.current_index or 0
+        cur_index = queue.index_in_buffer or 0
         shuffle = queue.shuffle_enabled and len(queue_items) >= 5
 
         # handle replace: clear all items and replace with the new items
@@ -443,11 +443,13 @@ class PlayerQueuesController:
                 "Ignore queue command for %s because an announcement is in progress."
             )
             return
+        if isinstance(index, str):
+            index = self.index_by_id(queue_id, index)
         queue_item = self.get_item(queue_id, index)
         if queue_item is None:
             raise FileNotFoundError(f"Unknown index/id: {index}")
-        queue.current_index = self.index_by_id(queue_id, index)
-        queue.index_in_buffer = queue.current_index
+        queue.current_index = index
+        queue.index_in_buffer = index
         # execute the play_media command on the player(s)
         player_prov = self.mass.players.get_player_provider(queue_id)
         await player_prov.cmd_play_media(
@@ -493,18 +495,17 @@ class PlayerQueuesController:
         player = self.players.get(queue_id)
         queue = self._queues[queue_id]
 
-        # queue is active when underlying player has the queue_id loaded as stream url
-        queue.active = player.current_url and f"/{queue_id}/" in player.current_url
-
-        # determine (actual) current index from player url while player is playing
-        if "current_item_id" in changed_keys and player.current_item_id:
-            if index := self.index_by_id(queue_id, player.current_item_id):
-                queue.current_index = index
-        elif "current_url" in changed_keys and player.current_url:
-            for item in self._queue_items[queue_id]:
-                if item.queue_item_id in player.current_url:
-                    queue.current_index = self.index_by_id(queue_id, item.queue_item_id)
-                    break
+        # determine if this queue is currently active for this player
+        queue.active = player.active_queue == queue.queue_id
+        if queue.active:
+            # update current item from player report
+            current_item_index = self.index_by_id(queue_id, player.current_item_id)
+            if current_item_index is None:
+                # player is playing something else (not MA content)
+                queue.active = current_item_index is not None
+            else:
+                queue.current_index = current_item_index
+            # TODO: account for flow mode / calculate index from elsaped time
 
         # copy most properties from the player
         queue.display_name = player.display_name
@@ -563,7 +564,7 @@ class PlayerQueuesController:
         self._queue_items.pop(player_id, None)
 
     def player_ready_for_next_track(
-        self, queue_or_player_id: str, current_item_id: str
+        self, queue_or_player_id: str, current_item_id: str | None = None
     ) -> tuple[QueueItem, bool]:
         """
         Call when a player is ready to load the next track into the buffer.
@@ -576,7 +577,10 @@ class PlayerQueuesController:
         just like with the play_media call.
         """
         queue = self.get_active_queue(queue_or_player_id)
-        cur_index = self.index_by_id(queue.queue_id, current_item_id)
+        if current_item_id is None:
+            cur_index = queue.current_index
+        else:
+            cur_index = self.index_by_id(queue.queue_id, current_item_id)
         cur_item = self.get_item(queue.queue_id, cur_index)
         next_index = self.get_next_index(queue.queue_id, cur_index)
         next_item = self.get_item(queue.queue_id, next_index)
