@@ -74,9 +74,7 @@ class CacheController:
                 and db_row["expires"] >= cur_time
             ):
                 try:
-                    data = await asyncio.get_running_loop().run_in_executor(
-                        None, json.loads, db_row["data"]
-                    )
+                    data = await asyncio.to_thread(json.loads, db_row["data"])
                 except Exception as exc:  # pylint: disable=broad-except
                     LOGGER.exception(
                         "Error parsing cache data for %s", cache_key, exc_info=exc
@@ -102,7 +100,7 @@ class CacheController:
         if (expires - time.time()) < 3600 * 4:
             # do not cache items in db with short expiration
             return
-        data = await asyncio.get_running_loop().run_in_executor(None, json.dumps, data)
+        data = await asyncio.to_thread(json.dumps, data)
         await self.database.insert(
             DB_TABLE_CACHE,
             {"key": cache_key, "expires": expires, "checksum": checksum, "data": data},

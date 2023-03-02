@@ -188,7 +188,7 @@ class PlayerProvider(Provider):
         Poll player for state updates.
 
         This is called by the Player Manager;
-        - every 360 secods if the player if not powered
+        - every 360 seconds if the player if not powered
         - every 30 seconds if the player is powered
         - every 10 seconds if the player is playing
 

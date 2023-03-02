@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
-import calendar
 from dataclasses import dataclass
+from logging import Logger
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -14,7 +15,6 @@ from pychromecast import (
     Chromecast,
     get_chromecast_from_cast_info,
 )
-from music_assistant.server.helpers.compare import compare_strings
 from pychromecast.controllers.bubbleupnp import BubbleUPNPController
 from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE
 from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
@@ -35,6 +35,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.chromecast.helpers import (
     CastStatusListener,
@@ -57,6 +58,8 @@ class CastPlayer:
     player_id: str
     cast_info: ChromecastInfo
     cc: Chromecast
+    player: Player
+    logger: Logger
     is_stereo_pair: bool = False
     status_listener: CastStatusListener | None = None
     mz_controller: MultizoneController | None = None
@@ -73,6 +76,9 @@ class ChromecastProvider(PlayerProvider):
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         self.castplayers = {}
+        # silence the cast logger a bit
+        logging.getLogger("pychromecast.socket_client").setLevel(logging.INFO)
+        logging.getLogger("pychromecast.controllers").setLevel(logging.INFO)
         self.mz_mgr = MultizoneManager()
         self.browser = CastBrowser(
             SimpleCastListener(
@@ -83,14 +89,14 @@ class ChromecastProvider(PlayerProvider):
             self.mass.zeroconf,
         )
         # start discovery in executor
-        self.mass.loop.run_in_executor(None, self.browser.start_discovery)
+        await asyncio.to_thread(self.browser.start_discovery)
 
     async def close(self) -> None:
         """Handle close/cleanup of the provider."""
         if not self.browser:
             return
         # stop discovery
-        self.mass.loop.run_in_executor(None, self.browser.stop_discovery)
+        await asyncio.to_thread(self.browser.stop_discovery)
         # stop all chromecasts
         for castplayer in list(self.castplayers.values()):
             await self._disconnect_chromecast(castplayer)
@@ -101,7 +107,7 @@ class ChromecastProvider(PlayerProvider):
             - player_id: player_id of the player to handle the command.
         """
         castplayer = self.castplayers[player_id]
-        await self.mass.loop.run_in_executor(None, castplayer.cc.media_controller.stop)
+        await asyncio.to_thread(castplayer.cc.media_controller.stop)
 
     async def cmd_play(self, player_id: str) -> None:
         """
@@ -109,7 +115,7 @@ class ChromecastProvider(PlayerProvider):
             - player_id: player_id of the player to handle the command.
         """
         castplayer = self.castplayers[player_id]
-        await self.mass.loop.run_in_executor(None, castplayer.cc.media_controller.play)
+        await asyncio.to_thread(castplayer.cc.media_controller.play)
 
     async def cmd_play_media(
         self,
@@ -142,14 +148,12 @@ class ChromecastProvider(PlayerProvider):
         # send queue info to the CC
         castplayer.next_item = None
         media_controller = castplayer.cc.media_controller
-        await self.mass.loop.run_in_executor(
-            None, media_controller.send_message, queuedata, True
-        )
+        await asyncio.to_thread(media_controller.send_message, queuedata, True)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         castplayer = self.castplayers[player_id]
-        await self.mass.loop.run_in_executor(None, castplayer.cc.media_controller.pause)
+        await asyncio.to_thread(castplayer.cc.media_controller.pause)
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player."""
@@ -157,28 +161,24 @@ class ChromecastProvider(PlayerProvider):
         if powered:
             await self._launch_app(castplayer)
         else:
-            await self.mass.loop.run_in_executor(None, castplayer.cc.quit_app)
+            await asyncio.to_thread(castplayer.cc.quit_app)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         castplayer = self.castplayers[player_id]
-        await self.mass.loop.run_in_executor(
-            None, castplayer.cc.set_volume, volume_level / 100
-        )
+        await asyncio.to_thread(castplayer.cc.set_volume, volume_level / 100)
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         castplayer = self.castplayers[player_id]
-        await self.mass.loop.run_in_executor(
-            None, castplayer.cc.set_volume_muted, muted
-        )
+        await asyncio.to_thread(castplayer.cc.set_volume_muted, muted)
 
     async def poll_player(self, player_id: str) -> None:
         """
         Poll player for state updates.
 
         This is called by the Player Manager;
-        - every 360 secods if the player if not powered
+        - every 360 seconds if the player if not powered
         - every 30 seconds if the player is powered
         - every 10 seconds if the player is playing
 
@@ -191,9 +191,8 @@ class ChromecastProvider(PlayerProvider):
         """
         castplayer = self.castplayers[player_id]
         try:
-            await self.mass.loop.run_in_executor(
-                None, castplayer.cc.media_controller.update_status
-            )
+
+            await asyncio.to_thread(castplayer.cc.media_controller.update_status)
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
 
@@ -216,19 +215,42 @@ class ChromecastProvider(PlayerProvider):
             cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
             if cast_info.is_dynamic_group:
                 self.logger.warning(
-                    "Discovered dynamic cast group which will be ignored."
+                    "Discovered a dynamic cast group which will be ignored."
                 )
                 return
 
             # Instantiate chromecast object
-            self.castplayers[player_id] = castplayer = CastPlayer(
+            castplayer = CastPlayer(
                 player_id,
                 cast_info=cast_info,
                 cc=get_chromecast_from_cast_info(
                     disc_info,
                     self.mass.zeroconf,
                 ),
+                player=Player(
+                    player_id=player_id,
+                    provider=self.domain,
+                    type=PlayerType.GROUP
+                    if cast_info.is_audio_group
+                    else PlayerType.PLAYER,
+                    name=cast_info.friendly_name,
+                    available=False,
+                    powered=False,
+                    device_info=DeviceInfo(
+                        model=cast_info.model_name,
+                        address=cast_info.host,
+                        manufacturer=cast_info.manufacturer,
+                    ),
+                    supported_features=(
+                        PlayerFeature.POWER,
+                        PlayerFeature.VOLUME_MUTE,
+                        PlayerFeature.VOLUME_SET,
+                    ),
+                ),
+                logger=self.logger.getChild(cast_info.friendly_name),
             )
+            self.castplayers[player_id] = castplayer
+
             castplayer.status_listener = CastStatusListener(
                 self, castplayer, self.mz_mgr
             )
@@ -238,29 +260,9 @@ class ChromecastProvider(PlayerProvider):
                 castplayer.mz_controller = mz_controller
             castplayer.cc.start()
 
-        player = self.mass.players.get(player_id)
-        if not player:
-            player = Player(
-                player_id=player_id,
-                provider=self.domain,
-                type=PlayerType.GROUP
-                if cast_info.is_audio_group
-                else PlayerType.PLAYER,
-                name=cast_info.friendly_name,
-                available=False,
-                powered=False,
-                device_info=DeviceInfo(
-                    model=cast_info.model_name,
-                    address=cast_info.host,
-                    manufacturer=cast_info.manufacturer,
-                ),
-                supported_features=(
-                    PlayerFeature.POWER,
-                    PlayerFeature.VOLUME_MUTE,
-                    PlayerFeature.VOLUME_SET,
-                ),
+            self.mass.loop.call_soon_threadsafe(
+                self.mass.players.register, castplayer.player
             )
-            self.mass.loop.call_soon_threadsafe(self.mass.players.register, player)
 
         # if player was already added, the player will take care of reconnects itself.
         castplayer.cast_info.update(disc_info)
@@ -278,11 +280,13 @@ class ChromecastProvider(PlayerProvider):
 
     def on_new_cast_status(self, castplayer: CastPlayer, status: CastStatus) -> None:
         """Handle updated CastStatus."""
-        player = self.mass.players.get(castplayer.player_id)
-        if player is None:
-            return  # race condition
-        player.name = castplayer.cast_info.friendly_name
-        player.powered = status.app_id in (
+        castplayer.logger.debug(
+            "Received cast status - app_id: %s - volume: %s",
+            status.app_id,
+            status.volume_level,
+        )
+        castplayer.player.name = castplayer.cast_info.friendly_name
+        castplayer.player.powered = status.app_id in (
             "705D30C6",
             APP_MEDIA_RECEIVER,
             APP_BUBBLEUPNP,
@@ -295,44 +299,46 @@ class ChromecastProvider(PlayerProvider):
                 castplayer.mz_controller.members[0], castplayer.player_id
             )
         )
-        player.volume_level = int(status.volume_level * 100)
-        player.volume_muted = status.volume_muted
+        castplayer.player.volume_level = int(status.volume_level * 100)
+        castplayer.player.volume_muted = status.volume_muted
         if castplayer.is_stereo_pair:
-            player.type = PlayerType.PLAYER
+            castplayer.player.type = PlayerType.PLAYER
         self.mass.loop.call_soon_threadsafe(
             self.mass.players.update, castplayer.player_id
         )
 
     def on_new_media_status(self, castplayer: CastPlayer, status: MediaStatus):
         """Handle updated MediaStatus."""
-        player = self.mass.players.get(castplayer.player_id)
-        prev_state = player.state
+        castplayer.logger.debug("Received media status update: %s", status.player_state)
+        prev_item_id = castplayer.player.current_item_id
         # player state
         if status.player_is_playing:
-            player.state = PlayerState.PLAYING
+            castplayer.player.state = PlayerState.PLAYING
         elif status.player_is_paused:
-            player.state = PlayerState.PAUSED
+            castplayer.player.state = PlayerState.PAUSED
         else:
-            player.state = PlayerState.IDLE
+            castplayer.player.state = PlayerState.IDLE
 
         # elapsed time
-        player.elapsed_time_last_updated = time.time()
+        castplayer.player.elapsed_time_last_updated = time.time()
         if status.player_is_playing:
-            player.elapsed_time = status.adjusted_current_time
+            castplayer.player.elapsed_time = status.adjusted_current_time
         else:
-            player.elapsed_time = status.current_time
+            castplayer.player.elapsed_time = status.current_time
 
         # current media
         queue_item_id = status.media_custom_data.get("queue_item_id")
-        player.current_item_id = queue_item_id
-        player.current_url = status.content_id
+        castplayer.player.current_item_id = queue_item_id
+        castplayer.player.current_url = status.content_id
         self.mass.loop.call_soon_threadsafe(
             self.mass.players.update, castplayer.player_id
         )
 
-        # enqueue next queue item when a new one started playing
-        if player.state == PlayerState.PLAYING and (
-            queue_item_id == castplayer.next_item or castplayer.next_item is None
+        # enqueue next item if needed
+        if castplayer.player.state == PlayerState.PLAYING and (
+            prev_item_id != castplayer.player.current_item_id
+            or not castplayer.next_item
+            or castplayer.next_item == castplayer.player.current_item_id
         ):
             asyncio.run_coroutine_threadsafe(
                 self._enqueue_next_track(castplayer, queue_item_id), self.mass.loop
@@ -342,26 +348,26 @@ class ChromecastProvider(PlayerProvider):
         self, castplayer: CastPlayer, status: ConnectionStatus
     ) -> None:
         """Handle updated ConnectionStatus."""
-        player = self.mass.players.get(castplayer.player_id)
-        if player is None:
-            return  # race condition
+        castplayer.logger.debug(
+            "Received connection status update - status: %s", status.status
+        )
 
         if status.status == CONNECTION_STATUS_DISCONNECTED:
-            player.available = False
+            castplayer.player.available = False
             self.mass.loop.call_soon_threadsafe(
                 self.mass.players.update, castplayer.player_id
             )
             return
 
         new_available = status.status == CONNECTION_STATUS_CONNECTED
-        if new_available != player.available:
+        if new_available != castplayer.player.available:
             self.logger.debug(
                 "[%s] Cast device availability changed: %s",
                 castplayer.cast_info.friendly_name,
                 status.status,
             )
-            player.available = new_available
-            player.device_info = DeviceInfo(
+            castplayer.player.available = new_available
+            castplayer.player.device_info = DeviceInfo(
                 model=castplayer.cast_info.model_name,
                 address=castplayer.cast_info.host,
                 manufacturer=castplayer.cast_info.manufacturer,
@@ -387,13 +393,7 @@ class ChromecastProvider(PlayerProvider):
         self, castplayer: CastPlayer, group_uuid: UUID, media_status: MediaStatus
     ):
         """Handle updates of audio group media status."""
-        self.logger.debug(
-            "[%s %s] Multizone %s media status: %s",
-            castplayer.cast_info.uuid,
-            castplayer.cast_info.friendly_name,
-            group_uuid,
-            media_status,
-        )
+        castplayer.logger.debug("Received multizone media status update")
         # self.mz_media_status[group_uuid] = media_status
         # self.mz_media_status_received[group_uuid] = dt_util.utcnow()
         # self.schedule_update_ha_state()
@@ -440,9 +440,7 @@ class ChromecastProvider(PlayerProvider):
         queuedata["mediaSessionId"] = media_controller.status.media_session_id
 
         await asyncio.sleep(0.5)  # throttle commands to CC a bit or it will crash
-        await self.mass.loop.run_in_executor(
-            None, media_controller.send_message, queuedata, True
-        )
+        await asyncio.to_thread(media_controller.send_message, queuedata, True)
 
     async def _launch_app(self, castplayer: CastPlayer) -> None:
         """Launch the default Media Receiver App on a Chromecast."""
@@ -456,17 +454,14 @@ class ChromecastProvider(PlayerProvider):
             castplayer.cc.register_handler(controller)
             controller.launch(launched_callback)
 
-        await self.mass.loop.run_in_executor(None, launch)
+        castplayer.logger.debug("Launching BubbleUPNPController as active app.")
+        await asyncio.to_thread(launch)
         await event.wait()
 
     async def _disconnect_chromecast(self, castplayer: CastPlayer) -> None:
         """Disconnect Chromecast object if it is set."""
-        self.logger.debug(
-            "[%s %s] Disconnecting from chromecast socket",
-            castplayer.player_id,
-            castplayer.cast_info.friendly_name,
-        )
-        await self.mass.loop.run_in_executor(None, castplayer.cc.disconnect)
+        castplayer.logger.debug("Disconnecting from chromecast socket")
+        await asyncio.to_thread(castplayer.cc.disconnect)
         castplayer.mz_controller = None
         castplayer.status_listener.invalidate()
         castplayer.status_listener = None
@@ -495,7 +490,7 @@ class ChromecastProvider(PlayerProvider):
             }
         return {
             "autoplay": True,
-            "preloadTime": 5,
+            "preloadTime": 10,
             "playbackDuration": duration,
             "startTime": 0,
             "activeTrackIds": [],

@@ -188,7 +188,7 @@ class StreamsController:
         seek_position: int = 0,
         fade_in: bool = False,
         content_type: ContentType = ContentType.WAV,
-        auto_start_runner: bool = True
+        auto_start_runner: bool = True,
     ) -> str:
         """
         Resolve the stream URL for the given QueueItem.
@@ -228,7 +228,7 @@ class StreamsController:
                 ),
                 pcm_sample_rate=streamdetails.sample_rate,
                 pcm_bit_depth=streamdetails.bit_depth,
-                auto_start=auto_start_runner
+                auto_start=auto_start_runner,
             )
             stream_job.expected_consumers.add(player_id)
             self.stream_jobs[stream_job.stream_id] = stream_job
@@ -251,16 +251,19 @@ class StreamsController:
 
     async def _serve_queue_stream(self, request: web.Request) -> web.Response:
         """Serve Queue Stream audio to player(s)."""
-        stream_id = request.match_info["stream_id"]
-        stream_job = self.stream_jobs.get(stream_id)
-        if not stream_job:
-            raise web.HTTPNotFound(reason=f"Unknown stream_id: {stream_id}")
         player_id = request.match_info["player_id"]
         player = self.mass.players.get(player_id)
         if not player:
             raise web.HTTPNotFound(reason=f"Unknown player_id: {player_id}")
-
-        LOGGER.debug("Start serving audio stream %s to %s", stream_id, player.name)
+        stream_id = request.match_info["stream_id"]
+        stream_job = self.stream_jobs.get(stream_id)
+        if not stream_job or stream_job.finished:
+            # TODO: do we want to create a new stream job on the fly for this queue item if this happens?
+            LOGGER.error(
+                "Got stream request for an already finished stream job for player %s",
+                player.display_name,
+            )
+            raise web.HTTPNotFound(reason=f"Unknown stream_id: {stream_id}")
 
         output_format_str = request.match_info["fmt"]
         output_format = ContentType.try_parse(output_format_str)
@@ -277,13 +280,25 @@ class StreamsController:
                 f"bitrate={stream_job.pcm_bit_depth};channels={channels}"
             )
 
-        # prepare request
+        # prepare request, add some DLNA/UPNP compatible headers
+        headers = {
+            "Content-Type": f"audio/{output_format_str}",
+            "transferMode.dlna.org": "Streaming",
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
+            "Cache-Control": "no-cache",
+        }
         resp = web.StreamResponse(
             status=200,
             reason="OK",
-            headers={"Content-Type": f"audio/{output_format_str}"},
+            headers=headers,
         )
         await resp.prepare(request)
+
+        # return early if this is only a HEAD request
+        if request.method.upper() == "HEAD":
+            return resp
+
+        LOGGER.debug("Start serving audio stream %s to %s", stream_id, player.name)
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
         ffmpeg_args = self._get_player_ffmpeg_args(
@@ -403,4 +418,4 @@ class StreamsController:
         for stream_id in stale:
             self.stream_jobs.pop(stream_id, None)
         # reschedule self to run every 5 minutes
-        self.mass.loop.call_later(300, self.mass.create_task, self._cleanup_stale)
+        self.mass.loop.call_later(300, self.mass.create_task, self._cleanup_stale())

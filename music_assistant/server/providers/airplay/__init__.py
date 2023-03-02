@@ -310,8 +310,11 @@ class AirplayProvider(PlayerProvider):
     async def _stop_bridge(self) -> None:
         """Stop the bridge process."""
         if self._bridge_proc:
-            self._bridge_proc.terminate()
-            await self._bridge_proc.wait()
+            try:
+                self._bridge_proc.terminate()
+                await self._bridge_proc.wait()
+            except ProcessLookupError:
+                pass
 
     async def _check_config_xml(self, recreate: bool = False) -> None:
         """Check the bridge config XML file."""

@@ -450,6 +450,8 @@ class PlayerQueuesController:
             raise FileNotFoundError(f"Unknown index/id: {index}")
         queue.current_index = index
         queue.index_in_buffer = index
+        # power on player if needed
+        await self.mass.players.cmd_power(queue_id, True)
         # execute the play_media command on the player(s)
         player_prov = self.mass.players.get_player_provider(queue_id)
         await player_prov.cmd_play_media(

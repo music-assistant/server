@@ -1,5 +1,6 @@
 """Utilities for image manipulation and retrieval."""
 from __future__ import annotations
+import asyncio
 
 import random
 from io import BytesIO
@@ -47,7 +48,7 @@ async def get_image_thumb(
         img.convert("RGB").save(data, "PNG", optimize=True)
         return data.getvalue()
 
-    return await mass.loop.run_in_executor(None, _create_image)
+    return await asyncio.to_thread(_create_image)
 
 
 async def create_collage(mass: MusicAssistant, images: List[str]) -> bytes:
@@ -56,7 +57,7 @@ async def create_collage(mass: MusicAssistant, images: List[str]) -> bytes:
     def _new_collage():
         return Image.new("RGBA", (1500, 1500), color=(255, 255, 255, 255))
 
-    collage = await mass.loop.run_in_executor(None, _new_collage)
+    collage = await asyncio.to_thread(_new_collage)
 
     def _add_to_collage(img_data: bytes, coord_x: int, coord_y: int):
         data = BytesIO(img_data)
@@ -67,11 +68,11 @@ async def create_collage(mass: MusicAssistant, images: List[str]) -> bytes:
     for x_co in range(0, 1500, 500):
         for y_co in range(0, 1500, 500):
             img_data = await get_image_data(mass, random.choice(images))
-            await mass.loop.run_in_executor(None, _add_to_collage, img_data, x_co, y_co)
+            await asyncio.to_thread(_add_to_collage, img_data, x_co, y_co)
 
     def _save_collage():
         final_data = BytesIO()
         collage.convert("RGB").save(final_data, "PNG", optimize=True)
         return final_data.getvalue()
 
-    return await mass.loop.run_in_executor(None, _save_collage)
+    return await asyncio.to_thread(_save_collage)

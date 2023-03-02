@@ -46,29 +46,21 @@ class AsyncSMB:
 
     async def list_path(self, path: str) -> list[SharedFile]:
         """Retrieve a directory listing of files/folders at *path*."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, self._conn.listPath, self._service_name, path
-        )
+        return await asyncio.to_thread(self._conn.listPath, self._service_name, path)
 
     async def get_attributes(self, path: str) -> SharedFile:
         """Retrieve information about the file at *path* on the *service_name*."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, self._conn.getAttributes, self._service_name, path
+        return await asyncio.to_thread(
+            self._conn.getAttributes, self._service_name, path
         )
 
     async def retrieve_file(
         self, path: str, offset: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Retrieve file contents."""
-        loop = asyncio.get_running_loop()
-
         chunk_size = 256000
         while True:
             with BytesIO() as file_obj:
-                await loop.run_in_executor(
-                    None,
+                await asyncio.to_thread(
                     self._conn.retrieveFileFromOffset,
                     self._service_name,
                     path,
@@ -85,12 +77,10 @@ class AsyncSMB:
 
     async def write_file(self, path: str, data: bytes) -> SharedFile:
         """Store the contents to the file at *path*."""
-        loop = asyncio.get_running_loop()
         with BytesIO() as file_obj:
             file_obj.write(data)
             file_obj.seek(0)
-            await loop.run_in_executor(
-                None,
+            await asyncio.to_thread(
                 self._conn.storeFile,
                 self._service_name,
                 path,
@@ -99,23 +89,16 @@ class AsyncSMB:
 
     async def path_exists(self, path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""
-        loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(
-                None, self._conn.getAttributes, self._service_name, path
-            )
+            await asyncio.to_thread(self._conn.getAttributes, self._service_name, path)
         except (OperationFailure, SMBTimeout):
             return False
         return True
 
     async def connect(self) -> None:
         """Connect to the SMB server."""
-        loop = asyncio.get_running_loop()
         try:
-            assert (
-                await loop.run_in_executor(None, self._conn.connect, self._target_ip)
-                is True
-            )
+            assert await asyncio.to_thread(self._conn.connect, self._target_ip) is True
         except Exception as exc:
             raise LoginFailed(f"SMB Connect failed to {self._remote_name}") from exc
 

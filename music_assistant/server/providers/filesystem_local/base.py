@@ -721,7 +721,7 @@ class FileSystemProviderBase(MusicProvider):
             data = b""
             async for chunk in self.read_file_content(nfo_file):
                 data += chunk
-            info = await self.mass.loop.run_in_executor(None, xmltodict.parse, data)
+            info = await asyncio.to_thread(xmltodict.parse, data)
             info = info["artist"]
             artist.name = info.get("title", info.get("name", name))
             if sort_name := info.get("sortname"):
@@ -770,7 +770,7 @@ class FileSystemProviderBase(MusicProvider):
             data = b""
             async for chunk in self.read_file_content(nfo_file):
                 data += chunk
-            info = await self.mass.loop.run_in_executor(None, xmltodict.parse, data)
+            info = await asyncio.to_thread(xmltodict.parse, data)
             info = info["album"]
             album.name = info.get("title", info.get("name", name))
             if sort_name := info.get("sortname"):

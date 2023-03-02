@@ -39,9 +39,8 @@ async def create_item(base_path: str, entry: os.DirEntry) -> FileSystemItem:
             local_path=absolute_path,
         )
 
-    # run in executor because strictly taken this may be blocking IO
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _create_item)
+    # run in thread because strictly taken this may be blocking IO
+    return await asyncio.to_thread(_create_item)
 
 
 class LocalFileSystemProvider(FileSystemProviderBase):
@@ -69,8 +68,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self.config.get_value(CONF_PATH), path)
-        loop = asyncio.get_running_loop()
-        for entry in await loop.run_in_executor(None, os.scandir, abs_path):
+        for entry in await asyncio.to_thread(os.scandir, abs_path):
             if entry.name.startswith("."):
                 # skip invalid/system files and dirs
                 continue
@@ -109,9 +107,8 @@ class LocalFileSystemProvider(FileSystemProviderBase):
                 local_path=absolute_path,
             )
 
-        # run in executor because strictly taken this may be blocking IO
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _create_item)
+        # run in thread because strictly taken this may be blocking IO
+        return await asyncio.to_thread(_create_item)
 
     async def exists(self, file_path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""

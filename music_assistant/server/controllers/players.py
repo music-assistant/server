@@ -120,6 +120,18 @@ class PlayerController:
             EventType.PLAYER_ADDED, object_id=player.player_id, data=player
         )
 
+    @api_command("players/register_or_update")
+    def register_or_update(self, player: Player) -> None:
+        """Register a new player on the controller or update existing one."""
+        if self.mass.closed:
+            return
+
+        if player.player_id in self._players:
+            self.update(player.player_id)
+            return
+
+        self.register(player)
+
     @api_command("players/remove")
     def remove(self, player_id: str):
         """Remove a player from the registry."""
@@ -272,6 +284,8 @@ class PlayerController:
         # TODO: Implement PlayerControl
         # TODO: Handle group power
         player = self.get(player_id, True, True)
+        if player.powered == powered:
+            return
         # stop player at power off
         if not powered and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             await self.cmd_stop(player_id)
@@ -575,9 +589,6 @@ class PlayerController:
         while True:
             count += 1
             for player_id, player in self._players.items():
-                # ignore unavailable players (for now)
-                if not player.available:
-                    continue
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
                 player_playing = (
@@ -604,6 +615,7 @@ class PlayerController:
                         except Exception as err:
                             LOGGER.warning(
                                 "Error while requesting latest state from player %s: %s",
+                                player.display_name,
                                 str(err),
                                 exc_info=err,
                             )

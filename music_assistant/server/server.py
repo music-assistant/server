@@ -7,7 +7,7 @@ import inspect
 import logging
 import os
 from types import TracebackType
-from typing import Any, Callable, Coroutine, Type
+from typing import Any, Awaitable, Callable, Coroutine, Type
 
 from aiohttp import ClientSession, TCPConnector, web
 
@@ -239,7 +239,7 @@ class MusicAssistant:
 
     def create_task(
         self,
-        target: Coroutine,
+        target: Coroutine | Awaitable | Callable | asyncio.Future,
         *args: Any,
         **kwargs: Any,
     ) -> asyncio.Task | asyncio.Future:
@@ -257,8 +257,11 @@ class MusicAssistant:
             task = self.loop.create_task(target(*args, **kwargs))
         elif isinstance(target, asyncio.Future):
             task = target
-        else:
+        elif asyncio.iscoroutine(target):
             task = self.loop.create_task(target)
+        else:
+            # assume normal callable (non coroutine or awaitable)
+            task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))
 
         def task_done_callback(*args, **kwargs):
             self._tracked_tasks.remove(task)
@@ -278,18 +281,6 @@ class MusicAssistant:
         self._tracked_tasks.append(task)
         task.add_done_callback(task_done_callback)
         return task
-
-    async def run_in_executor(self, target: Callable, *args, **kwargs) -> Any:
-        """Run callable in executor thread and return results."""
-
-        def run_target():
-            return target(*args, **kwargs)
-
-        coro = self.loop.run_in_executor(None, run_target)
-        # create a task so it can be tracked and cancelled at shutdown.
-        task = self.create_task(coro)
-        await task
-        return task.result()
 
     def register_api_command(
         self,
@@ -490,7 +481,7 @@ class MusicAssistant:
                     "Music Assistant instance with identical name present in the local network!"
                 )
 
-        await self.loop.run_in_executor(None, setup_discovery)
+        await asyncio.to_thread(setup_discovery)
 
     async def __aenter__(self) -> "MusicAssistant":
         """Return Context manager."""

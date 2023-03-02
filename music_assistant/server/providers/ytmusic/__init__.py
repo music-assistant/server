@@ -687,5 +687,5 @@ class YoutubeMusicProvider(MusicProvider):
             return cipher
 
         if not self._cipher:
-            self._cipher = await self.mass.loop.run_in_executor(None, _decipher)
+            self._cipher = await asyncio.to_thread(_decipher)
         return self._cipher.get_signature(ciphered_signature)

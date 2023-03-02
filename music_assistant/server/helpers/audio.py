@@ -602,7 +602,7 @@ async def get_file_stream(
     if seek_position:
         assert streamdetails.duration, "Duration required for seek requests"
     if not streamdetails.size:
-        stat = await mass.loop.run_in_executor(None, os.stat, filename)
+        stat = await asyncio.to_thread(os.stat, filename)
         streamdetails.size = stat.st_size
     chunk_size = get_chunksize(streamdetails.content_type)
     async with aiofiles.open(streamdetails.data, "rb") as _file:

@@ -29,8 +29,7 @@ async def get_artist(prov_artist_id: str) -> Dict[str, str]:
             artist = {"channelId": prov_artist_id, "name": user["name"]}
         return artist
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _get_artist)
+    return await asyncio.to_thread(_get_artist)
 
 
 async def get_album(prov_album_id: str) -> Dict[str, str]:
@@ -40,8 +39,7 @@ async def get_album(prov_album_id: str) -> Dict[str, str]:
         ytm = ytmusicapi.YTMusic()
         return ytm.get_album(browseId=prov_album_id)
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _get_album)
+    return await asyncio.to_thread(_get_album)
 
 
 async def get_playlist(
@@ -56,8 +54,7 @@ async def get_playlist(
         playlist["checksum"] = get_playlist_checksum(playlist)
         return playlist
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _get_playlist)
+    return await asyncio.to_thread(_get_playlist)
 
 
 async def get_track(prov_track_id: str) -> Dict[str, str]:
@@ -82,8 +79,7 @@ async def get_track(prov_track_id: str) -> Dict[str, str]:
         track["isAvailable"] = track_obj["playabilityStatus"]["status"] == "OK"
         return track
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _get_song)
+    return await asyncio.to_thread(_get_song)
 
 
 async def get_library_artists(headers: Dict[str, str], username: str) -> Dict[str, str]:
@@ -101,8 +97,7 @@ async def get_library_artists(headers: Dict[str, str], username: str) -> Dict[st
             del artist["artist"]
         return artists
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _get_library_artists)
+    return await asyncio.to_thread(_get_library_artists)
 
 
 async def get_library_albums(headers: Dict[str, str], username: str) -> Dict[str, str]:
@@ -113,8 +108,7 @@ async def get_library_albums(headers: Dict[str, str], username: str) -> Dict[str
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         return ytm.get_library_albums(limit=9999)
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _get_library_albums)
+    return await asyncio.to_thread(_get_library_albums)
 
 
 async def get_library_playlists(
@@ -133,8 +127,7 @@ async def get_library_playlists(
             playlist["checksum"] = get_playlist_checksum(playlist)
         return playlists
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _get_library_playlists)
+    return await asyncio.to_thread(_get_library_playlists)
 
 
 async def get_library_tracks(headers: Dict[str, str], username: str) -> Dict[str, str]:
@@ -146,8 +139,7 @@ async def get_library_tracks(headers: Dict[str, str], username: str) -> Dict[str
         tracks = ytm.get_library_songs(limit=9999)
         return tracks
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _get_library_tracks)
+    return await asyncio.to_thread(_get_library_tracks)
 
 
 async def library_add_remove_artist(
@@ -163,8 +155,7 @@ async def library_add_remove_artist(
         if not add:
             return "actions" in ytm.unsubscribe_artists(channelIds=[prov_artist_id])
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _library_add_remove_artist)
+    return await asyncio.to_thread(_library_add_remove_artist)
 
 
 async def library_add_remove_album(
@@ -182,8 +173,7 @@ async def library_add_remove_album(
         if not add:
             return ytm.rate_playlist(playlist_id, "INDIFFERENT")
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _library_add_remove_album)
+    return await asyncio.to_thread(_library_add_remove_album)
 
 
 async def library_add_remove_playlist(
@@ -199,8 +189,7 @@ async def library_add_remove_playlist(
         if not add:
             return "actions" in ytm.rate_playlist(prov_item_id, "INDIFFERENT")
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _library_add_remove_playlist)
+    return await asyncio.to_thread(_library_add_remove_playlist)
 
 
 async def add_remove_playlist_tracks(
@@ -224,8 +213,7 @@ async def add_remove_playlist_tracks(
                 playlistId=prov_playlist_id, videos=prov_track_ids
             )
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _add_playlist_tracks)
+    return await asyncio.to_thread(_add_playlist_tracks)
 
 
 async def get_song_radio_tracks(
@@ -249,8 +237,7 @@ async def get_song_radio_tracks(
                 track["duration"] = get_sec(track["length"])
         return result
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _get_song_radio_tracks)
+    return await asyncio.to_thread(_get_song_radio_tracks)
 
 
 async def search(query: str, ytm_filter: str = None, limit: int = 20) -> List[Dict]:
@@ -275,8 +262,7 @@ async def search(query: str, ytm_filter: str = None, limit: int = 20) -> List[Di
                     del result["browseId"]
         return results
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _search)
+    return await asyncio.to_thread(_search)
 
 
 def get_playlist_checksum(playlist_obj: dict) -> str:

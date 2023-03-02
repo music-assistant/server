@@ -178,7 +178,7 @@ async def select_free_port(range_start: int, range_end: int) -> int:
                 return port
         raise OSError("No free port available")
 
-    return await asyncio.get_running_loop().run_in_executor(None, _select_free_port)
+    return await asyncio.to_thread(_select_free_port)
 
 
 async def get_ip_from_host(dns_name: str) -> str:
@@ -191,8 +191,7 @@ async def get_ip_from_host(dns_name: str) -> str:
             # fail gracefully!
             return dns_name
 
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _resolve)
+    return await asyncio.to_thread(_resolve)
 
 
 def get_ip_pton():
