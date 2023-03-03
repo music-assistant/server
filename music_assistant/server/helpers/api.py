@@ -110,7 +110,7 @@ def parse_arguments(
     return final_args
 
 
-def mount_websocket(mass: MusicAssistant, path: str) -> None:
+def mount_websocket_api(mass: MusicAssistant, path: str) -> None:
     """Mount the websocket endpoint."""
     clients: weakref.WeakSet[WebsocketClientHandler] = weakref.WeakSet()
 

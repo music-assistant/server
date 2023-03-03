@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable, Coroutine, Type
 
 from aiohttp import ClientSession, TCPConnector, web
 
-from music_assistant.common.helpers.util import select_free_port, get_ip_pton
+from music_assistant.common.helpers.util import get_ip, select_free_port, get_ip_pton
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import (
@@ -23,7 +23,7 @@ from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroc
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
-    CONF_WEB_HOST,
+    CONF_WEB_IP,
     CONF_WEB_PORT,
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -39,7 +39,7 @@ from music_assistant.server.controllers.streams import StreamsController
 from music_assistant.server.helpers.api import (
     APICommandHandler,
     api_command,
-    mount_websocket,
+    mount_websocket_api,
 )
 from music_assistant.server.helpers.util import install_package
 
@@ -72,6 +72,7 @@ class MusicAssistant:
         Create an instance of the MusicAssistant Server."""
         self.storage_path = storage_path
         self.port = port
+        self.base_ip = get_ip()
         # shared zeroconf instance
         self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
         # we dynamically register command handlers
@@ -97,9 +98,6 @@ class MusicAssistant:
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
-        # if port is None, we need to autoselect it, prefer 9000 (lms)
-        if self.port is None:
-            self.port = await select_free_port(8095, 9200)
         # create shared aiohttp ClientSession
         self.http_session = ClientSession(
             loop=self.loop,
@@ -112,10 +110,15 @@ class MusicAssistant:
         await self.metadata.setup()
         await self.players.setup()
         await self.streams.setup()
+        # if port is None, we need to autoselect it
+        if self.port is None:
+            self.port = await select_free_port(8095, 9200)
+        # allow overriding of the base_ip if autodetect failed
+        self.base_ip = self.config.get(CONF_WEB_IP, self.base_ip)
         # load providers
         await self._load_providers()
         # setup web server
-        mount_websocket(self, "/ws")
+        mount_websocket_api(self, "/ws")
         self._web_apprunner = web.AppRunner(self.webapp, access_log=None)
         await self._web_apprunner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
@@ -152,6 +155,11 @@ class MusicAssistant:
         # close/cleanup shared http session
         if self.http_session:
             await self.http_session.close()
+
+    @property
+    def base_url(self) -> str:
+        """Return the (web)server's base url."""
+        return f"http://{self.base_ip}:{self.port}"
 
     @api_command("providers/available")
     def get_available_providers(self) -> list[ProviderManifest]:
@@ -400,29 +408,30 @@ class MusicAssistant:
         # load all available providers from manifest files
         await self.__load_available_providers()
         loaded_providers = set()
-        # we loop twice to solve any dependencies
-        for allow_depends_on in (False, True):
-            # load all configured (and enabled) providers
-            for prov_conf in self.config.get_provider_configs():
-                prov_manifest = self._available_providers[prov_conf.domain]
-                if prov_manifest.depends_on and not allow_depends_on:
-                    continue
-                if prov_conf.instance_id in loaded_providers:
-                    continue
-                loaded_providers.add(prov_conf.domain)
-                loaded_providers.add(prov_conf.instance_id)
-                self.create_task(self.load_provider(prov_conf))
-            # create default config for any 'load_by_default' providers (e.g. URL provider)
-            # NOTE: this will auto load any not yet existing providers
-            for prov_manifest in self._available_providers.values():
-                if prov_manifest.domain in loaded_providers:
-                    continue
-                if not prov_manifest.load_by_default:
-                    continue
-                if prov_manifest.depends_on and not allow_depends_on:
-                    continue
-                default_conf = self.config.create_provider_config(prov_manifest.domain)
-                self.config.set_provider_config(default_conf)
+        async with asyncio.TaskGroup() as tg:
+            # we loop twice to solve any dependencies
+            for allow_depends_on in (False, True):
+                # load all configured (and enabled) providers
+                for prov_conf in self.config.get_provider_configs():
+                    prov_manifest = self._available_providers[prov_conf.domain]
+                    if prov_manifest.depends_on and not allow_depends_on:
+                        continue
+                    if prov_conf.instance_id in loaded_providers:
+                        continue
+                    loaded_providers.add(prov_conf.domain)
+                    loaded_providers.add(prov_conf.instance_id)
+                    tg.create_task(self.load_provider(prov_conf))
+                # create default config for any 'load_by_default' providers (e.g. URL provider)
+                # NOTE: this will auto load any not yet existing providers
+                for prov_manifest in self._available_providers.values():
+                    if prov_manifest.domain in loaded_providers:
+                        continue
+                    if not prov_manifest.load_by_default:
+                        continue
+                    if prov_manifest.depends_on and not allow_depends_on:
+                        continue
+                    default_conf = self.config.create_provider_config(prov_manifest.domain)
+                    self.config.set_provider_config(default_conf)
 
     async def __load_available_providers(self) -> None:
         """Preload all available provider manifest files."""

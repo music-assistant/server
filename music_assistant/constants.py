@@ -26,7 +26,7 @@ BASE_URL_OVERRIDE_ENVNAME = "MASS_BASE_URL"
 
 
 # config keys
-CONF_WEB_HOST = "webserver./host"
+CONF_WEB_IP = "webserver./host"
 CONF_WEB_PORT = "webserver.port"
 CONF_DB_LIBRARY = "database.library"
 CONF_DB_CACHE = "database.cache"

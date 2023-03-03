@@ -10,15 +10,11 @@ from aiohttp import web
 
 from music_assistant.common.models.enums import ContentType
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.common.helpers.util import get_ip
 from music_assistant.constants import (
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
-    CONF_WEB_HOST,
-    CONF_WEB_PORT,
-    DEFAULT_PORT,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.audio import (
@@ -33,8 +29,6 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.streams")
-
-HOST_IP = get_ip()
 
 
 class StreamJob:
@@ -173,14 +167,6 @@ class StreamsController:
     async def close(self) -> None:
         """Cleanup on exit."""
 
-    @property
-    def base_url(self) -> str:
-        """Return the base url for the stream engine."""
-
-        host = self.mass.config.get(CONF_WEB_HOST, HOST_IP)
-        port = self.mass.config.get(CONF_WEB_PORT, DEFAULT_PORT)
-        return f"http://{host}:{port}"
-
     async def resolve_stream_url(
         self,
         queue_item: QueueItem,
@@ -241,13 +227,15 @@ class StreamsController:
         queue.index_in_buffer = item_index
         # generate player-specific URL for the stream job
         fmt = content_type.value
-        url = f"{self.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"
+        url = f"{self.mass.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"
         return url
 
     async def get_preview_url(self, provider: str, track_id: str) -> str:
         """Return url to short preview sample."""
         enc_track_id = urllib.parse.quote(track_id)
-        return f"{self.base_url}/preview?provider={provider}&item_id={enc_track_id}"
+        return (
+            f"{self.mass.base_url}/preview?provider={provider}&item_id={enc_track_id}"
+        )
 
     async def _serve_queue_stream(self, request: web.Request) -> web.Response:
         """Serve Queue Stream audio to player(s)."""
@@ -417,5 +405,9 @@ class StreamsController:
                 stale.add(stream_id)
         for stream_id in stale:
             self.stream_jobs.pop(stream_id, None)
+
         # reschedule self to run every 5 minutes
-        self.mass.loop.call_later(300, self.mass.create_task, self._cleanup_stale())
+        def reschedule():
+            self.mass.create_task(self._cleanup_stale())
+
+        self.mass.loop.call_later(300, reschedule)

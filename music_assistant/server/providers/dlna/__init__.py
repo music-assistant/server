@@ -21,20 +21,18 @@ from typing import (
     Callable,
     Concatenate,
     Coroutine,
-    NamedTuple,
     ParamSpec,
     Sequence,
     TypeVar,
 )
 
-from async_upnp_client.aiohttp import AiohttpNotifyServer, AiohttpSessionRequester
+from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client import UpnpRequester, UpnpService, UpnpStateVariable
 from async_upnp_client.client_factory import UpnpFactory
-from async_upnp_client.event_handler import UpnpEventHandler
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.search import async_search
-from async_upnp_client.utils import CaseInsensitiveDict, async_get_local_ip
+from async_upnp_client.utils import CaseInsensitiveDict
 
 from music_assistant.common.models.enums import (
     ContentType,
@@ -48,8 +46,7 @@ from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.server.models.player_provider import PlayerProvider
 
-DUMMY_PLAYER_ID = "dummy_player"
-PLAYER_CONFIG_ENTRIES = tuple()
+from .helpers import DLNANotifyServer
 
 PLAYER_FEATURES = (
     PlayerFeature.SET_MEMBERS,
@@ -94,14 +91,6 @@ def catch_request_errors(
     return wrapper
 
 
-class EventListenAddr(NamedTuple):
-    """Unique identifier for an event listener."""
-
-    host: str | None  # Specific local IP(v6) address for listening on
-    port: int  # Listening port, 0 means use an ephemeral port
-    callback_url: str | None
-
-
 @dataclass
 class DLNAPlayer:
     """Class that holds all dlna variables for a player."""
@@ -109,7 +98,6 @@ class DLNAPlayer:
     udn: str  # = player_id
     player: Player  # mass player
     description_url: str  # last known location (description.xml) url
-    event_addr: EventListenAddr
 
     device: DmrDevice | None = None
     lock: asyncio.Lock = field(
@@ -208,8 +196,7 @@ class DLNAPlayerProvider(PlayerProvider):
     lock: asyncio.Lock
     requester: UpnpRequester
     upnp_factory: UpnpFactory
-    event_notifiers: dict[EventListenAddr, AiohttpNotifyServer]
-    event_notifier_refs: defaultdict[EventListenAddr, int]
+    notify_server: DLNANotifyServer
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -220,21 +207,11 @@ class DLNAPlayerProvider(PlayerProvider):
         )
         # silence the async_upnp_client logger a bit
         logging.getLogger("async_upnp_client").setLevel(logging.INFO)
-        self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
-        self.event_notifiers = {}
-        self.event_notifier_refs = defaultdict(int)
-        self.mass.create_task(self._run_discovery())
+        logging.getLogger("charset_normalizer").setLevel(logging.INFO)
 
-    async def close(self) -> None:
-        """Handle close/cleanup of the provider."""
-        self.logger.debug("Cleaning up resources...")
-        async with self.lock:
-            tasks = (
-                server.async_stop_server() for server in self.event_notifiers.values()
-            )
-            asyncio.gather(*tasks)
-            self.event_notifiers = {}
-            self.event_notifier_refs = defaultdict(int)
+        self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
+        self.notify_server = DLNANotifyServer(self.requester, self.mass)
+        self.mass.create_task(self._run_discovery())
 
     @catch_request_errors
     async def cmd_stop(self, player_id: str) -> None:
@@ -456,7 +433,6 @@ class DLNAPlayerProvider(PlayerProvider):
                     ),
                 ),
                 description_url=description_url,
-                event_addr=EventListenAddr(None, 0, None),
             )
             self.dlnaplayers[udn] = dlna_player
 
@@ -477,18 +453,11 @@ class DLNAPlayerProvider(PlayerProvider):
             upnp_device = await self.upnp_factory.async_create_device(
                 dlna_player.description_url
             )
-            # Create/get event handler that is reachable by the device, using
-            # the connection's local IP to listen only on the relevant interface
-            _, event_ip = await async_get_local_ip(
-                dlna_player.description_url, self.mass.loop
-            )
-            dlna_player.event_addr = dlna_player.event_addr._replace(host=event_ip)
-            event_handler = await self._async_get_event_notifier(
-                dlna_player.event_addr,
-            )
 
             # Create profile wrapper
-            dlna_player.device = DmrDevice(upnp_device, event_handler)
+            dlna_player.device = DmrDevice(
+                upnp_device, self.notify_server.event_handler
+            )
 
             # Subscribe to event notifications
             try:
@@ -502,7 +471,6 @@ class DLNAPlayerProvider(PlayerProvider):
                 # Don't leave the device half-constructed
                 dlna_player.device.on_event = None
                 dlna_player.device = None
-                await self._async_release_event_notifier(dlna_player.event_addr)
                 self.logger.debug(
                     "Error while subscribing during device connect: %r", err
                 )
@@ -639,55 +607,6 @@ class DLNAPlayerProvider(PlayerProvider):
             )
             dlna_player.end_of_track_reached = False
             dlna_player.next_item = None
-
-    async def _async_get_event_notifier(
-        self, listen_addr: EventListenAddr
-    ) -> UpnpEventHandler:
-        """
-        Return existing event notifier for the listen_addr, or create one.
-        Only one event notify server is kept for each listen_addr. Must call
-        _async_release_event_notifier when done to cleanup resources.
-        """
-        self.logger.debug("Getting event handler for %s", listen_addr)
-
-        async with self.lock:
-
-            # Always increment the reference counter, for existing or new event handlers
-            self.event_notifier_refs[listen_addr] += 1
-
-            # Return an existing event handler if we can
-            if listen_addr in self.event_notifiers:
-                return self.event_notifiers[listen_addr].event_handler
-
-            # Start event handler
-            source = (listen_addr.host or "0.0.0.0", listen_addr.port)
-            server = AiohttpNotifyServer(
-                requester=self.requester,
-                source=source,
-                callback_url=listen_addr.callback_url,
-                loop=self.mass.loop,
-            )
-            await server.async_start_server()
-            self.logger.debug("Started event handler at %s", server.callback_url)
-
-            self.event_notifiers[listen_addr] = server
-
-        return server.event_handler
-
-    async def _async_release_event_notifier(self, listen_addr: EventListenAddr) -> None:
-        """
-        Indicate that the event notifier for listen_addr is not used anymore.
-        This is called once by each caller of _async_get_event_notifier, and will
-        stop the listening server when all users are done.
-        """
-        async with self.lock:
-            assert self.event_notifier_refs[listen_addr] > 0
-            self.event_notifier_refs[listen_addr] -= 1
-
-            # Shutdown the server when it has no more users
-            if self.event_notifier_refs[listen_addr] == 0:
-                server = self.event_notifiers.pop(listen_addr)
-                await server.async_stop_server()
 
 
 def _create_didl_metadata(url: str, queue_item: QueueItem, radio: bool = False) -> str:
