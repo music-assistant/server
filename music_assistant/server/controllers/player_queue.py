@@ -23,7 +23,11 @@ from music_assistant.common.models.errors import (
 from music_assistant.common.models.media_items import MediaItemType, media_from_dict
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import ROOT_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_FLOW_MODE,
+    FALLBACK_DURATION,
+    ROOT_LOGGER_NAME,
+)
 from music_assistant.server.helpers.api import api_command
 
 if TYPE_CHECKING:
@@ -469,11 +473,17 @@ class PlayerQueuesController:
         await self.mass.players.cmd_power(queue_id, True)
         # execute the play_media command on the player(s)
         player_prov = self.mass.players.get_player_provider(queue_id)
+        flow_mode = self.mass.config.get_player_config_value(
+            queue.queue_id, CONF_FLOW_MODE
+        )
+        queue.flow_mode = flow_mode.value
+        queue.flow_start_index = index
         await player_prov.cmd_play_media(
             queue_id,
             queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
+            flow_mode=flow_mode.value,
         )
 
     # Interaction with player
@@ -512,15 +522,6 @@ class PlayerQueuesController:
         player = self.players.get(queue_id)
         queue = self._queues[queue_id]
 
-        # determine if this queue is currently active for this player
-        queue.active = player.active_queue == queue.queue_id
-        if queue.active:
-            # update current item from player report
-            current_item_index = self.index_by_id(queue_id, player.current_item_id)
-            if current_item_index is not None:
-                queue.current_index = current_item_index
-            # TODO: account for flow mode / calculate index from elsaped time
-
         # copy most properties from the player
         queue.display_name = player.display_name
         queue.available = player.available
@@ -528,6 +529,20 @@ class PlayerQueuesController:
         queue.state = player.state
         queue.elapsed_time = int(player.corrected_elapsed_time)
         queue.elapsed_time_last_updated = time.time()
+
+        # determine if this queue is currently active for this player
+        queue.active = player.active_queue == queue.queue_id
+        if queue.active:
+            # update current item from player report
+            current_item_index = self.index_by_id(queue_id, player.current_item_id)
+            if current_item_index is not None:
+                if queue.flow_mode:
+                    # flow mode active, calculate current item
+                    current_item_index, queue.elapsed_time = self.__get_queue_stream_index(
+                        queue, player
+                    )
+                queue.current_index = current_item_index
+
         queue.current_item = self.get_item(queue_id, queue.current_index)
         queue.next_item = self.get_next_item(queue_id)
 
@@ -761,3 +776,41 @@ class PlayerQueuesController:
             queue_items,
             insert_at_index=len(self._queue_items[queue_id]) - 1,
         )
+
+    def __get_queue_stream_index(
+        self, queue: PlayerQueue, player: Player
+    ) -> tuple[int, int]:
+        """Calculate current queue index and current track elapsed time."""
+        # player is playing a constant stream so we need to do this the hard way
+        queue_index = 0
+        elapsed_time_queue = player.elapsed_time
+        total_time = 0
+        track_time = 0
+        queue_items = self._queue_items[queue.queue_id]
+        if queue_items and len(queue_items) > queue.flow_start_index:
+            # start_index: holds the position from which the flow stream started
+            queue_index = queue.flow_start_index
+            queue_track = None
+            while len(queue_items) > queue_index:
+                # keep enumerating the queue tracks to find current track
+                # starting from the start index
+                queue_track = queue_items[queue_index]
+                if not queue_track.streamdetails:
+                    track_time = elapsed_time_queue - total_time
+                    break
+                if queue_track.streamdetails.seconds_streamed is not None:
+                    track_duration = queue_track.streamdetails.seconds_streamed
+                else:
+                    track_duration = queue_track.duration or FALLBACK_DURATION
+                if elapsed_time_queue > (track_duration + total_time):
+                    # total elapsed time is more than (streamed) track duration
+                    # move index one up
+                    total_time += track_duration
+                    queue_index += 1
+                else:
+                    # no more seconds left to divide, this is our track
+                    # account for any seeking by adding the skipped seconds
+                    track_sec_skipped = queue_track.streamdetails.seconds_skipped or 0
+                    track_time = elapsed_time_queue + track_sec_skipped - total_time
+                    break
+        return queue_index, track_time

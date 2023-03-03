@@ -9,7 +9,7 @@
   "requirements": [],
   "documentation": "",
   "multi_instance": false,
-  "builtin": true,
+  "builtin": false,
   "load_by_default": true,
   "depends_on": "slimproto"
 }

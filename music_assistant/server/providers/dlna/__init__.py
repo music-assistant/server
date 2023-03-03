@@ -241,6 +241,7 @@ class DLNAPlayerProvider(PlayerProvider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
+        flow_mode: bool = False
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         dlna_player = self.dlnaplayers[player_id]
@@ -256,6 +257,7 @@ class DLNAPlayerProvider(PlayerProvider):
             seek_position=seek_position,
             fade_in=fade_in,
             content_type=ContentType.MP3 if is_radio else ContentType.FLAC,
+            flow_mode=flow_mode
         )
 
         didl_metadata = _create_didl_metadata(url, queue_item, is_radio)

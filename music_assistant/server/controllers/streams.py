@@ -5,21 +5,25 @@ import asyncio
 import logging
 import urllib.parse
 from typing import TYPE_CHECKING, Any, AsyncGenerator
+
 import shortuuid
 from aiohttp import web
-from music_assistant.common.helpers.util import empty_queue
 
+from music_assistant.common.helpers.util import empty_queue
 from music_assistant.common.models.enums import ContentType
+from music_assistant.common.models.errors import MediaNotFoundError, QueueEmpty
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import (
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
+    FALLBACK_DURATION,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.audio import (
     check_audio_support,
+    crossfade_pcm_parts,
     get_media_stream,
     get_preview_stream,
     get_stream_details,
@@ -48,10 +52,10 @@ class StreamJob:
     def __init__(
         self,
         queue_item: QueueItem,
-        audio_source: AsyncGenerator[bytes, None],
         pcm_sample_rate: int,
         pcm_bit_depth: int,
-        auto_start: bool = True,
+        audio_source: AsyncGenerator[bytes, None] | None = None,
+        flow_mode: bool = False,
     ) -> None:
         """Initialize MultiQueue instance."""
         self.queue_item = queue_item
@@ -61,8 +65,7 @@ class StreamJob:
         self.pcm_bit_depth = pcm_bit_depth
         self.stream_id = shortuuid.uuid()
         self.expected_consumers: set[str] = set()
-        if auto_start:
-            self._audio_task = asyncio.create_task(self._stream_job_runner())
+        self.flow_mode = flow_mode
         self._subscribers: list[asyncio.Queue[bytes]] = []
         self._all_clients_connected = asyncio.Event()
 
@@ -132,6 +135,10 @@ class StreamJob:
         # mark EOF with empty chunk
         await self._put_data(b"")
 
+    def start(self) -> None:
+        """Start running the stream job."""
+        self._audio_task = asyncio.create_task(self._stream_job_runner())
+
 
 class StreamsController:
     """Controller to stream audio to players."""
@@ -177,6 +184,7 @@ class StreamsController:
         fade_in: bool = False,
         content_type: ContentType = ContentType.WAV,
         auto_start_runner: bool = True,
+        flow_mode: bool = False,
     ) -> str:
         """
         Resolve the stream URL for the given QueueItem.
@@ -193,33 +201,52 @@ class StreamsController:
         - fade_in: fade in the music at start (e.g. at resume).
         - content_type: Encode the stream in the given format.
         - auto_start_runner: Start the audio stream in advance (stream track now).
+        - flow_mode: enable flow mode where the queue tracks are streamed as continuous stream.
         """
         # check if there is already a pending job
         for stream_job in self.stream_jobs.values():
-            if not stream_job.pending:
+            if stream_job.finished:
                 continue
-            if stream_job.queue_item != queue_item:
+            if stream_job.queue_item.queue_id != queue_item.queue_id:
+                continue
+            if stream_job.queue_item.queue_item_id != queue_item.queue_item_id:
                 continue
             # if we hit this point, we have a match
             stream_job.expected_consumers.add(player_id)
             break
         else:
             # register a new stream job
-            streamdetails = await get_stream_details(self.mass, queue_item)
-            stream_job = StreamJob(
-                queue_item=queue_item,
-                audio_source=get_media_stream(
-                    self.mass,
-                    streamdetails=streamdetails,
-                    seek_position=seek_position,
-                    fade_in=fade_in,
-                ),
-                pcm_sample_rate=streamdetails.sample_rate,
-                pcm_bit_depth=streamdetails.bit_depth,
-                auto_start=auto_start_runner,
-            )
+            if flow_mode:
+                # flow mode streamjob
+                sample_rate = 48000  # TODO: make this confgurable ?
+                bit_depth = 24
+                stream_job = StreamJob(
+                    queue_item=queue_item,
+                    pcm_sample_rate=sample_rate,
+                    pcm_bit_depth=bit_depth,
+                    flow_mode=True,
+                )
+                stream_job.audio_source = self._get_flow_stream(
+                    stream_job, seek_position=seek_position, fade_in=fade_in
+                )
+            else:
+                # regular streamjob
+                streamdetails = await get_stream_details(self.mass, queue_item)
+                stream_job = StreamJob(
+                    queue_item=queue_item,
+                    audio_source=get_media_stream(
+                        self.mass,
+                        streamdetails=streamdetails,
+                        seek_position=seek_position,
+                        fade_in=fade_in,
+                    ),
+                    pcm_sample_rate=streamdetails.sample_rate,
+                    pcm_bit_depth=streamdetails.bit_depth,
+                )
             stream_job.expected_consumers.add(player_id)
             self.stream_jobs[stream_job.stream_id] = stream_job
+            if auto_start_runner:
+                stream_job.start()
 
         # mark this queue item as the one in buffer
         queue = self.mass.players.queues.get(queue_item.queue_id)
@@ -346,10 +373,164 @@ class StreamsController:
                 except (BrokenPipeError, ConnectionResetError):
                     # connection lost
                     break
-                except Exception as err:
-                    LOGGER.exception(str(err), exc_info=err)
 
         return resp
+
+    async def _get_flow_stream(
+        self,
+        stream_job: StreamJob,
+        seek_position: int = 0,
+        fade_in: bool = False,
+    ) -> AsyncGenerator[bytes, None]:
+        """Get a flow stream of all tracks in the queue."""
+
+        queue = self.mass.players.queues.get(stream_job.queue_item.queue_id)
+        queue_track = None
+        last_fadeout_part = b""
+
+        LOGGER.info("Start Queue Flow stream for Queue %s", queue.display_name)
+
+        while True:
+            # get (next) queue item to stream
+            if queue_track is None:
+                queue_track = stream_job.queue_item
+                use_crossfade = queue.crossfade_enabled
+            else:
+                seek_position = 0
+                fade_in = False
+                try:
+                    (
+                        queue_track,
+                        use_crossfade,
+                    ) = self.mass.players.queues.player_ready_for_next_track(
+                        queue.queue_id, queue_track.queue_item_id
+                    )
+                except QueueEmpty:
+                    break
+
+            # store reference to the current queueitem on the streamjob
+            stream_job.queue_item = queue_track
+
+            # get streamdetails
+            try:
+                streamdetails = await get_stream_details(self.mass, queue_track)
+            except MediaNotFoundError as err:
+                # streamdetails retrieval failed, skip to next track instead of bailing out...
+                LOGGER.warning(
+                    "Skip track %s due to missing streamdetails",
+                    queue_track.name,
+                    exc_info=err,
+                )
+                continue
+
+            LOGGER.debug(
+                "Start Streaming queue track: %s (%s) for queue %s - crossfade: %s",
+                streamdetails.uri,
+                queue_track.name,
+                queue.display_name,
+                use_crossfade,
+            )
+
+            # set some basic vars
+            sample_rate = stream_job.pcm_sample_rate
+            bit_depth = stream_job.pcm_bit_depth
+            pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
+            crossfade_duration = 10
+            crossfade_size = int(pcm_sample_size * crossfade_duration)
+            queue_track.streamdetails.seconds_skipped = seek_position
+            # predict total size to expect for this track from duration
+            stream_duration = (
+                queue_track.duration or FALLBACK_DURATION
+            ) - seek_position
+            # buffer_duration has some overhead to account for padded silence
+            buffer_duration = (crossfade_duration + 4) if use_crossfade else 4
+
+            buffer = b""
+            bytes_written = 0
+            chunk_num = 0
+            # handle incoming audio chunks
+            async for chunk in get_media_stream(
+                self.mass,
+                streamdetails,
+                seek_position=seek_position,
+                fade_in=fade_in,
+                sample_rate=sample_rate,
+                bit_depth=bit_depth,
+            ):
+
+                chunk_num += 1
+                seconds_in_buffer = len(buffer) / pcm_sample_size
+
+                ####  HANDLE FIRST PART OF TRACK
+
+                # buffer full for crossfade
+                if last_fadeout_part and (seconds_in_buffer >= buffer_duration):
+                    first_part = buffer + chunk
+                    # perform crossfade
+                    fadein_part = first_part[:crossfade_size]
+                    remaining_bytes = first_part[crossfade_size:]
+                    crossfade_part = await crossfade_pcm_parts(
+                        fadein_part,
+                        last_fadeout_part,
+                        bit_depth,
+                        sample_rate,
+                    )
+                    # send crossfade_part
+                    yield crossfade_part
+                    bytes_written += len(crossfade_part)
+                    # also write the leftover bytes from the strip action
+                    if remaining_bytes:
+                        yield remaining_bytes
+                        bytes_written += len(remaining_bytes)
+
+                    # clear vars
+                    last_fadeout_part = b""
+                    buffer = b""
+                    continue
+
+                # first part of track and we need to crossfade: fill buffer
+                if last_fadeout_part:
+                    buffer += chunk
+                    continue
+
+                # last part of track: fill buffer
+                if buffer or (chunk_num >= (stream_duration - buffer_duration)):
+                    buffer += chunk
+                    continue
+
+                # all other: middle of track or no crossfade action, just yield the audio
+                yield chunk
+                bytes_written += len(chunk)
+                continue
+
+            #### HANDLE END OF TRACK
+
+            if bytes_written == 0:
+                # stream error: got empy first chunk ?!
+                LOGGER.warning("Stream error on %s", streamdetails.uri)
+                queue_track.streamdetails.seconds_streamed = 0
+                continue
+
+            if buffer:
+                if use_crossfade:
+                    # if crossfade is enabled, save fadeout part to pickup for next track
+                    last_fadeout_part = buffer
+                else:
+                    # no crossfade enabled, just yield the buffer last part
+                    yield buffer
+                    bytes_written += len(buffer)
+
+            # end of the track reached - store accurate duration
+            buffer = b""
+            queue_track.streamdetails.seconds_streamed = bytes_written / pcm_sample_size
+            LOGGER.debug(
+                "Finished Streaming queue track: %s (%s) on queue %s",
+                queue_track.streamdetails.uri,
+                queue_track.name,
+                queue.display_name,
+            )
+
+        LOGGER.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def _serve_preview(self, request: web.Request):
         """Serve short preview sample."""

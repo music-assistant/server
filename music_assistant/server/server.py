@@ -8,7 +8,6 @@ import logging
 import os
 from types import TracebackType
 from typing import Any, Awaitable, Callable, Coroutine, Type
-from uuid import uuid4
 
 from aiohttp import ClientSession, TCPConnector, web
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf

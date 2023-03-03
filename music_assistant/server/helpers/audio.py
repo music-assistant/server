@@ -396,6 +396,8 @@ async def get_media_stream(
     streamdetails: StreamDetails,
     seek_position: int = 0,
     fade_in: bool = False,
+    sample_rate: int | None = None,
+    bit_depth: int | None = None
 ) -> AsyncGenerator[bytes, None]:
     """
     Get the (PCM) audio stream for the given streamdetails.
@@ -406,8 +408,8 @@ async def get_media_stream(
     bytes_sent = 0
     streamdetails.seconds_skipped = seek_position
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
-    sample_rate = streamdetails.sample_rate
-    bit_depth = streamdetails.bit_depth
+    sample_rate = sample_rate or streamdetails.sample_rate
+    bit_depth = bit_depth or streamdetails.bit_depth
     # chunk size = 2 seconds of pcm audio
     pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
     chunk_size = pcm_sample_size * (1 if is_radio else 2)

@@ -145,6 +145,7 @@ class AirplayProvider(PlayerProvider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
+        flow_mode: bool = False
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         # simply forward to underlying slimproto player
@@ -154,6 +155,7 @@ class AirplayProvider(PlayerProvider):
             queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
+            flow_mode=flow_mode
         )
 
     async def cmd_pause(self, player_id: str) -> None:

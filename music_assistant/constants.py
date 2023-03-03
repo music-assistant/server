@@ -43,6 +43,7 @@ CONF_EQ_BASS = "eq_bass"
 CONF_EQ_MID = "eq_mid"
 CONF_EQ_TREBLE = "eq_treble"
 CONF_OUTPUT_CHANNELS = "output_channels"
+CONF_FLOW_MODE = "flow_mode"
 
 # config default values
 DEFAULT_HOST = "0.0.0.0"

@@ -9,6 +9,6 @@
   "requirements": ["PyChromecast==13.0.4"],
   "documentation": "",
   "multi_instance": false,
-  "builtin": true,
-  "load_by_default": false
+  "builtin": false,
+  "load_by_default": true
 }

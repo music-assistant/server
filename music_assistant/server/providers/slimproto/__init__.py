@@ -195,6 +195,7 @@ class SlimprotoProvider(PlayerProvider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
+        flow_mode: bool = False
     ) -> None:
         """
         Send PLAY MEDIA command to given player.
@@ -226,6 +227,7 @@ class SlimprotoProvider(PlayerProvider):
                 seek_position=seek_position,
                 fade_in=fade_in,
                 send_flush=True,
+                flow_mode=flow_mode
             )
 
     async def _handle_play_media(
@@ -236,6 +238,7 @@ class SlimprotoProvider(PlayerProvider):
         fade_in: bool = False,
         send_flush: bool = True,
         crossfade: bool = False,
+        flow_mode: bool = False
     ) -> None:
         """Handle PlayMedia on slimproto player(s)."""
         player_id = client.player_id
@@ -247,6 +250,7 @@ class SlimprotoProvider(PlayerProvider):
             # prefer wav/pcm to reduce stress on players and its the most compatible
             # TODO: create config toggle to send flac or mp3 ?
             content_type=ContentType.PCM,
+            flow_mode=flow_mode
         )
         await client.play_url(
             url=url,
@@ -374,6 +378,7 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_MUTE,
                     PlayerFeature.VOLUME_SET,
                 ),
+                max_sample_rate=client.max_sample_rate
             )
             if virtual_provider_info:
                 # if this player is part of a virtual provider run the callback

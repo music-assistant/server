@@ -13,6 +13,7 @@ from music_assistant.constants import (
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
+    CONF_FLOW_MODE,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALISATION,
     CONF_VOLUME_NORMALISATION_TARGET,
@@ -207,6 +208,14 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
         label="Enable volume normalization (EBU-R128 based)",
         default_value=True,
         description="Enable volume normalization based on the EBU-R128 standard without affecting dynamic range",
+    ),
+    ConfigEntry(
+        key=CONF_FLOW_MODE,
+        type=ConfigEntryType.BOOLEAN,
+        label="Enable queue flow mode",
+        default_value=False,
+        description="Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream. Use for players that do not natively support gapless and/or crossfading or if the player has trouble transitioning between tracks.",
+        advanced=True,
     ),
     ConfigEntry(
         key=CONF_VOLUME_NORMALISATION_TARGET,

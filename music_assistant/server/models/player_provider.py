@@ -66,6 +66,7 @@ class PlayerProvider(Provider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
+        flow_mode: bool = False
     ) -> None:
         """
         Send PLAY MEDIA command to given player.
@@ -78,6 +79,7 @@ class PlayerProvider(Provider):
             - queue_item: the QueueItem to start playing on the player.
             - seek_position: start playing from this specific position.
             - fade_in: fade in the music at start (e.g. at resume).
+            - flow_mode: enable flow mode where the queue tracks are streamed as continuous stream.
         """
         # default implementation is to simply resolve the url and send the url to the player
         # player/provider implementations may override this default.

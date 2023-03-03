@@ -89,14 +89,17 @@ class ChromecastProvider(PlayerProvider):
             self.mass.zeroconf,
         )
         # start discovery in executor
-        await asyncio.to_thread(self.browser.start_discovery)
+        # await asyncio.to_thread(self.browser.start_discovery)
+        await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 
     async def close(self) -> None:
         """Handle close/cleanup of the provider."""
         if not self.browser:
             return
         # stop discovery
-        await asyncio.to_thread(self.browser.stop_discovery)
+        self.browser.stop_discovery()
+        # await asyncio.to_thread(self.browser.stop_discovery)
+        await self.mass.loop.run_in_executor(None, self.browser.stop_discovery)
         # stop all chromecasts
         for castplayer in list(self.castplayers.values()):
             await self._disconnect_chromecast(castplayer)
@@ -123,6 +126,7 @@ class ChromecastProvider(PlayerProvider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
+        flow_mode: bool = False
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         castplayer = self.castplayers[player_id]
@@ -133,6 +137,7 @@ class ChromecastProvider(PlayerProvider):
             fade_in=fade_in,
             # prefer FLAC as it seems to work on all CC players
             content_type=ContentType.FLAC,
+            flow_mode=flow_mode
         )
         cc_queue_items = [self._create_queue_item(queue_item, url)]
         queuedata = {
@@ -191,7 +196,6 @@ class ChromecastProvider(PlayerProvider):
         """
         castplayer = self.castplayers[player_id]
         try:
-
             await asyncio.to_thread(castplayer.cc.media_controller.update_status)
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
@@ -246,6 +250,7 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.VOLUME_MUTE,
                         PlayerFeature.VOLUME_SET,
                     ),
+                    max_sample_rate=96000
                 ),
                 logger=self.logger.getChild(cast_info.friendly_name),
             )

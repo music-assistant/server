@@ -220,6 +220,7 @@ class SonosPlayerProvider(PlayerProvider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
+        flow_mode: bool = False
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         sonos_player = self.sonosplayers[player_id]
@@ -240,6 +241,7 @@ class SonosPlayerProvider(PlayerProvider):
             seek_position=seek_position,
             fade_in=fade_in,
             content_type=ContentType.MP3 if is_radio else ContentType.FLAC,
+            flow_mode=flow_mode
         )
         if is_radio:
             metadata = _create_didl_metadata(url, queue_item, True)
@@ -396,6 +398,7 @@ class SonosPlayerProvider(PlayerProvider):
                     address=speaker_info["mac_address"],
                     manufacturer=self.name,
                 ),
+                max_sample_rate=48000
             ),
             speaker_info=speaker_info,
             speaker_info_updated=time.time(),

@@ -68,6 +68,7 @@ class SamplePlayerProvider(PlayerProvider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
+        flow_mode: bool = False
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         url = await self.mass.streams.resolve_stream_url(
@@ -78,6 +79,7 @@ class SamplePlayerProvider(PlayerProvider):
             fade_in=fade_in,
             # request content_type that is supported by your player here
             content_type=ContentType.FLAC,
+            flow_mode=flow_mode
         )
         # Normally you would send a call to an actual player here
         player = self.mass.players.get(player_id)
