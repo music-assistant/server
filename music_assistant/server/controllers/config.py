@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 from typing import TYPE_CHECKING, Any, Dict
+from uuid import uuid4
 
 import aiofiles
 from aiofiles.os import wrap
+from cryptography.fernet import Fernet, InvalidToken
 
 from music_assistant.common.helpers.json import (
     JSON_DECODE_EXCEPTIONS,
@@ -20,12 +23,12 @@ from music_assistant.common.models.config_entries import (
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant.common.models.enums import EventType, ProviderType
+from music_assistant.common.models.enums import ConfigEntryType, EventType, ProviderType
 from music_assistant.common.models.errors import (
     PlayerUnavailableError,
     ProviderUnavailableError,
 )
-from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS
+from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID
 from music_assistant.server.helpers.api import api_command
 
 if TYPE_CHECKING:
@@ -42,6 +45,8 @@ rename = wrap(os.rename)
 class ConfigController:
     """Controller that handles storage of persistent configuration settings."""
 
+    _fernet: Fernet | None = None
+
     def __init__(self, mass: "MusicAssistant") -> None:
         """Initialize storage controller."""
         self.mass = mass
@@ -54,6 +59,10 @@ class ConfigController:
         """Async initialize of controller."""
         await self._load()
         self.initialized = True
+        # create default server ID if needed (also used for encrypting passwords)
+        server_id: str = self.get(CONF_SERVER_ID, uuid4().hex, True)
+        fernet_key = base64.urlsafe_b64encode(server_id.encode()[:32])
+        self._fernet = Fernet(fernet_key)
         LOGGER.debug("Started.")
 
     async def close(self) -> None:
@@ -64,7 +73,7 @@ class ConfigController:
         await self.async_save()
         LOGGER.debug("Stopped.")
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def get(self, key: str, default: Any = None, setdefault: bool = False) -> Any:
         """Get value(s) for a specific key/path in persistent storage."""
         assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
@@ -73,6 +82,9 @@ class ConfigController:
         subkeys = key.split("/")
         for index, subkey in enumerate(subkeys):
             if index == (len(subkeys) - 1):
+                if setdefault:
+                    parent.setdefault(subkey, default)
+                    self.save()
                 value = parent.get(subkey, default)
                 if value is None:
                     # replace None with default
@@ -85,11 +97,7 @@ class ConfigController:
                 parent = parent[subkey]
         return default
 
-    def set(
-        self,
-        key: str,
-        value: Any,
-    ) -> None:
+    def set(self, key: str, value: Any) -> None:
         """Set value(s) for a specific key/path in persistent storage."""
         assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
@@ -139,7 +147,11 @@ class ConfigController:
             x.domain: x.config_entries for x in self.mass.get_available_providers()
         }
         return [
-            ProviderConfig.parse(prov_entries[prov_conf["domain"]], prov_conf)
+            ProviderConfig.parse(
+                prov_entries[prov_conf["domain"]],
+                prov_conf,
+                decrypt_callback=self.decrypt_password,
+            )
             for prov_conf in raw_values.values()
             if (provider_type is None or prov_conf["type"] == provider_type)
             and (provider_domain is None or prov_conf["domain"] == provider_domain)
@@ -152,12 +164,21 @@ class ConfigController:
             for prov in self.mass.get_available_providers():
                 if prov.domain != raw_conf["domain"]:
                     continue
-                return ProviderConfig.parse(prov.config_entries, raw_conf)
+                return ProviderConfig.parse(
+                    prov.config_entries,
+                    raw_conf,
+                    decrypt_callback=self.decrypt_password,
+                )
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/set")
     def set_provider_config(self, config: ProviderConfig) -> None:
         """Create or update ProviderConfig."""
+        # encrypt any password values
+        for val in config.values.values():
+            if val.type == ConfigEntryType.PASSWORD:
+                val.value = self.encrypt_password(val.value)
+
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         existing = self.get(conf_key)
         config_dict = config.to_raw()
@@ -343,3 +364,11 @@ class ConfigController:
         async with aiofiles.open(self.filename, "w", encoding="utf-8") as _file:
             await _file.write(json_dumps(self._data))
         LOGGER.debug("Saved data to persistent storage")
+
+    def encrypt_password(self, str_value: str) -> str:
+        """Encrypt a (password)string with Fernet."""
+        return self._fernet.encrypt(str_value.encode()).decode()
+
+    def decrypt_password(self, encrypted_str: str) -> str:
+        """Decrypt a (password)string with Fernet."""
+        return self._fernet.decrypt(encrypted_str.encode()).decode()

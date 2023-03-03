@@ -13,3 +13,4 @@ xmltodict==0.13.0
 orjson==3.8.6
 shortuuid==1.0.11
 zeroconf==0.47.3
+cryptography==39.0.2

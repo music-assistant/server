@@ -8,10 +8,12 @@ import logging
 import os
 from types import TracebackType
 from typing import Any, Awaitable, Callable, Coroutine, Type
+from uuid import uuid4
 
 from aiohttp import ClientSession, TCPConnector, web
+from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 
-from music_assistant.common.helpers.util import get_ip, select_free_port, get_ip_pton
+from music_assistant.common.helpers.util import get_ip, get_ip_pton, select_free_port
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import (
@@ -19,23 +21,15 @@ from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     SetupFailedError,
 )
-from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
-from music_assistant.constants import (
-    CONF_WEB_IP,
-    CONF_WEB_PORT,
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    ROOT_LOGGER_NAME,
-)
+from music_assistant.constants import CONF_SERVER_ID, CONF_WEB_IP, ROOT_LOGGER_NAME
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
 from music_assistant.server.controllers.metadata.metadata import MetaDataController
 from music_assistant.server.controllers.music import MusicController
 from music_assistant.server.controllers.players import PlayerController
 from music_assistant.server.controllers.streams import StreamsController
-
 from music_assistant.server.helpers.api import (
     APICommandHandler,
     api_command,
@@ -103,18 +97,21 @@ class MusicAssistant:
             loop=self.loop,
             connector=TCPConnector(ssl=False),
         )
-        # setup core controllers
+        # setup config controller first and fetch important config values
         await self.config.setup()
+        if self.port is None:
+            # if port is None, we need to autoselect it
+            self.port = await select_free_port(8095, 9200)
+        # allow overriding of the base_ip if autodetect failed
+        self.base_ip = self.config.get(CONF_WEB_IP, self.base_ip)
+
+        # setup other core controllers
         await self.cache.setup()
         await self.music.setup()
         await self.metadata.setup()
         await self.players.setup()
         await self.streams.setup()
-        # if port is None, we need to autoselect it
-        if self.port is None:
-            self.port = await select_free_port(8095, 9200)
-        # allow overriding of the base_ip if autodetect failed
-        self.base_ip = self.config.get(CONF_WEB_IP, self.base_ip)
+
         # load providers
         await self._load_providers()
         # setup web server
@@ -160,6 +157,13 @@ class MusicAssistant:
     def base_url(self) -> str:
         """Return the (web)server's base url."""
         return f"http://{self.base_ip}:{self.port}"
+
+    @property
+    def server_id(self) -> str:
+        """Return unique ID of this server"""
+        if not self.config.initialized:
+            return ""
+        return self.config.get(CONF_SERVER_ID)
 
     @api_command("providers/available")
     def get_available_providers(self) -> list[ProviderManifest]:
@@ -430,7 +434,9 @@ class MusicAssistant:
                         continue
                     if prov_manifest.depends_on and not allow_depends_on:
                         continue
-                    default_conf = self.config.create_provider_config(prov_manifest.domain)
+                    default_conf = self.config.create_provider_config(
+                        prov_manifest.domain
+                    )
                     self.config.set_provider_config(default_conf)
 
     async def __load_available_providers(self) -> None:

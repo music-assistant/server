@@ -1,10 +1,10 @@
 """Model and helpers for Config entries."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from types import NoneType
-from typing import Any
-import logging
+from typing import Any, Callable, Self
 
 from mashumaro import DataClassDictMixin
 
@@ -85,7 +85,10 @@ class ConfigEntryValue(ConfigEntry):
 
     @classmethod
     def parse(
-        cls, entry: ConfigEntry, value: ConfigValueType, allow_none: bool = False
+        cls,
+        entry: ConfigEntry,
+        value: ConfigValueType,
+        allow_none: bool = False,
     ) -> "ConfigEntryValue":
         """Parse ConfigEntryValue from the config entry and plain value."""
         result = ConfigEntryValue.from_dict(entry.to_dict())
@@ -127,15 +130,20 @@ class Config(DataClassDictMixin):
 
     def get_value(self, key: str) -> ConfigValueType:
         """Return config value for given key."""
-        return self.values[key].value
+        config_value = self.values[key]
+        if config_value.type == ConfigEntryType.PASSWORD:
+            if decrypt_callback := self.get_decrypt_callback():
+                return decrypt_callback(config_value.value)
+        return config_value.value
 
     @classmethod
     def parse(
-        cls: object,
+        cls: Self,
         config_entries: list[ConfigEntry],
         raw: dict[str, Any],
         allow_none: bool = False,
-    ) -> "Config":
+        decrypt_callback: Callable[[str], str] | None = None
+    ) -> Self:
         """Parse Config from the raw values (as stored in persistent storage)."""
         values = {
             x.key: ConfigEntryValue.parse(
@@ -143,7 +151,10 @@ class Config(DataClassDictMixin):
             ).to_dict()
             for x in config_entries
         }
-        return cls.from_dict({**raw, "values": values})
+        conf = cls.from_dict({**raw, "values": values})
+        if decrypt_callback:
+            conf.set_decrypt_callback(decrypt_callback)
+        return conf
 
     def to_raw(self) -> dict[str, Any]:
         """Return minimized/raw dict to store in persistent storage."""
@@ -155,6 +166,14 @@ class Config(DataClassDictMixin):
                 if x.value != x.default_value
             },
         }
+
+    def set_decrypt_callback(self, callback: Callable[[str], str]) -> None:
+        """Register callback to decrypt (password) strings."""
+        setattr(self, "decrypt_callback", callback)
+
+    def get_decrypt_callback(self) -> Callable[[str], str] | None:
+        """Get optional callback to decrypt (password) strings."""
+        return getattr(self, "decrypt_callback", None)
 
 
 @dataclass
