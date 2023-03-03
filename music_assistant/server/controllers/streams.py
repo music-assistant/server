@@ -7,6 +7,7 @@ import urllib.parse
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 import shortuuid
 from aiohttp import web
+from music_assistant.common.helpers.util import empty_queue
 
 from music_assistant.common.models.enums import ContentType
 from music_assistant.common.models.queue_item import QueueItem
@@ -102,9 +103,10 @@ class StreamJob:
                     break
                 yield chunk
         finally:
-            # 1 second delay here to account for misbehaving (reconnecting) players
-            await asyncio.sleep(1)
+            empty_queue(sub_queue)
             self._subscribers.remove(sub_queue)
+            # 1 second delay here to account for misbehaving (reconnecting) players
+            await asyncio.sleep(2)
             # check if this was the last subscriber and we should cancel
             if len(self._subscribers) == 0 and self._audio_task and not self.finished:
                 self._audio_task.cancel()
@@ -251,6 +253,9 @@ class StreamsController:
                 "Got stream request for an already finished stream job for player %s",
                 player.display_name,
             )
+            queue = self.mass.players.queues.get_active_queue(player_id)
+            if queue.current_index is not None:
+                await self.mass.players.queues.resume(queue.queue_id)
             raise web.HTTPNotFound(reason=f"Unknown stream_id: {stream_id}")
 
         output_format_str = request.match_info["fmt"]
@@ -269,12 +274,19 @@ class StreamsController:
             )
 
         # prepare request, add some DLNA/UPNP compatible headers
+        wants_icy = request.headers.get("Icy-MetaData", "") == "1"
+        enable_icy = wants_icy and not output_format.is_lossless()
         headers = {
             "Content-Type": f"audio/{output_format_str}",
             "transferMode.dlna.org": "Streaming",
             "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
             "Cache-Control": "no-cache",
         }
+        if enable_icy:
+            headers["icy-name"] = "Music Assistant"
+            headers["icy-pub"] = "1"
+            headers["icy-metaint"] = "8192"
+
         resp = web.StreamResponse(
             status=200,
             reason="OK",
@@ -307,12 +319,35 @@ class StreamsController:
             ffmpeg_proc.attach_task(read_audio())
 
             # read final chunks from stdout
-            async for chunk in ffmpeg_proc.iter_any():
+            iterator = (
+                ffmpeg_proc.iter_chunked(8192) if enable_icy else ffmpeg_proc.iter_any()
+            )
+            async for chunk in iterator:
                 try:
                     await resp.write(chunk)
+                    if not enable_icy:
+                        continue
+
+                    # if icy metadata is enabled, send the icy metadata after the chunk
+                    item_in_buf = stream_job.queue_item
+                    if item_in_buf and item_in_buf.streamdetails.stream_title:
+                        title = item_in_buf.streamdetails.stream_title
+                    elif item_in_buf and item_in_buf.name:
+                        title = item_in_buf.name
+                    else:
+                        title = "Music Assistant"
+                    metadata = f"StreamTitle='{title}';".encode()
+                    while len(metadata) % 16 != 0:
+                        metadata += b"\x00"
+                    length = len(metadata)
+                    length_b = chr(int(length / 16)).encode()
+                    await resp.write(length_b + metadata)
+
                 except (BrokenPipeError, ConnectionResetError):
                     # connection lost
                     break
+                except Exception as err:
+                    LOGGER.exception(str(err), exc_info=err)
 
         return resp
 

@@ -10,6 +10,7 @@ from music_assistant.common.helpers.util import get_changed_keys
 from music_assistant.common.models.enums import (
     EventType,
     MediaType,
+    PlayerFeature,
     PlayerState,
     QueueOption,
     RepeatMode,
@@ -105,6 +106,15 @@ class PlayerQueuesController:
         if queue.repeat_mode == repeat_mode:
             return  # no change
         queue.repeat_mode = repeat_mode
+        self.signal_update(queue_id)
+
+    @api_command("players/queue/crossfade")
+    def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
+        """Configure crossfade setting on the the queue."""
+        queue = self._queues[queue_id]
+        if queue.crossfade_enabled == crossfade_enabled:
+            return  # no change
+        queue.crossfade_enabled = crossfade_enabled
         self.signal_update(queue_id)
 
     @api_command("players/queue/play_media")
@@ -391,6 +401,11 @@ class PlayerQueuesController:
         assert queue.current_item.media_item.media_type == MediaType.TRACK
         assert queue.current_item.duration
         assert position < queue.current_item.duration
+        player = self.mass.players.get(queue_id)
+        if PlayerFeature.SEEK in player.supported_features:
+            player_prov = self.mass.players.get_player_provider(queue_id)
+            await player_prov.cmd_seek(player.player_id, position)
+            return
         await self.play_index(queue_id, queue.current_index, position)
 
     @api_command("players/queue/resume")
@@ -502,10 +517,7 @@ class PlayerQueuesController:
         if queue.active:
             # update current item from player report
             current_item_index = self.index_by_id(queue_id, player.current_item_id)
-            if current_item_index is None:
-                # player is playing something else (not MA content)
-                queue.active = current_item_index is not None
-            else:
+            if current_item_index is not None:
                 queue.current_index = current_item_index
             # TODO: account for flow mode / calculate index from elsaped time
 
@@ -550,8 +562,8 @@ class PlayerQueuesController:
             # ignore
             return
 
-        # only send queue updated event if other properties than elapsed_time updated
-        self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
+        # only signal queue updated event if other properties than elapsed_time updated
+        self.signal_update(queue_id)
         # watch dynamic radio items refill if needed
         if "current_index" in changed_keys:
             fill_index = len(self._queue_items[queue_id]) - 5

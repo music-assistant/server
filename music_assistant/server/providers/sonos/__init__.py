@@ -197,7 +197,7 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
-        # clear queue instead of stop
+        await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
 
     async def cmd_play(self, player_id: str) -> None:
@@ -241,9 +241,13 @@ class SonosPlayerProvider(PlayerProvider):
             fade_in=fade_in,
             content_type=ContentType.MP3 if is_radio else ContentType.FLAC,
         )
-
-        await self._enqueue_item(sonos_player, queue_item=queue_item, url=url)
-        await asyncio.to_thread(sonos_player.soco.play_from_queue, 0)
+        if is_radio:
+            metadata = _create_didl_metadata(url, queue_item, True)
+            url = url.replace("http", "x-rincon-mp3radio")
+            await asyncio.to_thread(sonos_player.soco.play_uri, url, meta=metadata)
+        else:
+            await self._enqueue_item(sonos_player, queue_item=queue_item, url=url)
+            await asyncio.to_thread(sonos_player.soco.play_from_queue, 0)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
@@ -612,8 +616,6 @@ def _create_didl_metadata(url: str, queue_item: QueueItem, radio: bool = False) 
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
             f'<item id="{queue_item.queue_item_id}" parentID="0" restricted="1">'
             f"<dc:title>{_escape_str(queue_item.name)}</dc:title>"
-            "<dc:creator></dc:creator>"
-            "<upnp:album></upnp:album>"
             f"<upnp:albumArtURI>{queue_item.image.url}</upnp:albumArtURI>"
             "<upnp:channelName>Music Assistant</upnp:channelName>"
             "<upnp:channelNr>0</upnp:channelNr>"

@@ -290,10 +290,6 @@ class PlayerController:
         if not powered and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             await self.cmd_stop(player_id)
         if PlayerFeature.POWER not in player.supported_features:
-            LOGGER.warning(
-                "Power command called but player %s does not support setting power",
-                player_id,
-            )
             player.powered = powered
             self.update(player_id)
             return
