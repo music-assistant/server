@@ -1,4 +1,5 @@
 """Youtube Music support for MusicAssistant."""
+import asyncio
 import re
 from operator import itemgetter
 from time import time

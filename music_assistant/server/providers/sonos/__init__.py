@@ -38,7 +38,7 @@ PLAYER_CONFIG_ENTRIES = tuple()  # we don't have any player config entries (for 
 
 @dataclass
 class SonosPlayer:
-    """Wrapper around Sonos/soco.SoCo with some additional attributes."""
+    """Wrapper around Sonos/SoCo with some additional attributes."""
 
     player_id: str
     soco: soco.SoCo
@@ -179,6 +179,7 @@ class SonosPlayerProvider(PlayerProvider):
         self.sonosplayers = {}
         # silence the soco logger a bit
         logging.getLogger("soco").setLevel(logging.INFO)
+        logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
         self.mass.create_task(self._run_discovery())
 
     async def close(self) -> None:
@@ -272,6 +273,32 @@ class SonosPlayerProvider(PlayerProvider):
             sonos_player.soco.mute = muted
 
         await asyncio.to_thread(set_volume_mute, player_id, muted)
+
+    async def cmd_sync(self, player_id: str, target_player: str) -> None:
+        """
+        Handle SYNC command for given player.
+
+        Join/add the given player(id) to the given (master) player/sync group.
+
+            - player_id: player_id of the player to handle the command.
+            - target_player: player_id of the syncgroup master or group player.
+        """
+
+        sonos_player = self.sonosplayers[player_id]
+        await asyncio.to_thread(
+            sonos_player.soco.join, self.sonosplayers[target_player].soco
+        )
+
+    async def cmd_unsync(self, player_id: str) -> None:
+        """
+        Handle UNSYNC command for given player.
+
+        Remove the given player from any syncgroups it currently is synced to.
+
+            - player_id: player_id of the player to handle the command.
+        """
+        sonos_player = self.sonosplayers[player_id]
+        await asyncio.to_thread(sonos_player.soco.unjoin)
 
     async def poll_player(self, player_id: str) -> None:
         """
@@ -535,6 +562,9 @@ class SonosPlayerProvider(PlayerProvider):
         prev_url = sonos_player.player.current_url
         prev_state = sonos_player.player.state
         sonos_player.update_attributes()
+        sonos_player.player.can_sync_with = tuple(
+            x for x in self.sonosplayers if x != sonos_player.player_id
+        )
         current_url = sonos_player.player.current_url
         current_state = sonos_player.player.state
 

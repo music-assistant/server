@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import aiofiles
 from aiofiles.os import wrap
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 
 from music_assistant.common.helpers.json import (
     JSON_DECODE_EXCEPTIONS,
