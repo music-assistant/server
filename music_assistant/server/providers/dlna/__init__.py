@@ -260,7 +260,7 @@ class DLNAPlayerProvider(PlayerProvider):
             flow_mode=flow_mode
         )
 
-        didl_metadata = _create_didl_metadata(url, queue_item, is_radio)
+        didl_metadata = _create_didl_metadata(url, queue_item, is_radio, flow_mode)
         await dlna_player.device.async_set_transport_uri(
             url, queue_item.name, didl_metadata
         )
@@ -610,9 +610,29 @@ class DLNAPlayerProvider(PlayerProvider):
             dlna_player.next_item = None
 
 
-def _create_didl_metadata(url: str, queue_item: QueueItem, radio: bool = False) -> str:
+def _create_didl_metadata(url: str, queue_item: QueueItem, radio: bool = False, flow_mode: bool = False) -> str:
     """Create DIDL metadata string from url and QueueItem."""
     ext = url.split(".")[-1]
+
+    if flow_mode:
+        return (
+            '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
+            f'<item id="flow" parentID="0" restricted="1">'
+            f"<dc:title>Music Assistant</dc:title>"
+            "<dc:creator></dc:creator>"
+            "<upnp:album></upnp:album>"
+            "<upnp:channelName>Music Assistant</upnp:channelName>"
+            "<upnp:channelNr>0</upnp:channelNr>"
+             "<upnp:canSkip>false</upnp:canSkip>"
+            "<upnp:canPlay>true</upnp:canPlay>"
+            "<upnp:canPause>true</upnp:canPause>"
+            f"<upnp:duration>0</upnp:duration>"
+            f"<upnp:queueItemId>flow</upnp:queueItemId>"
+            "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
+            f'<res duration="00:00:00" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{url}</res>'
+            "</item>"
+            "</DIDL-Lite>"
+        )
     if radio:
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
@@ -623,6 +643,10 @@ def _create_didl_metadata(url: str, queue_item: QueueItem, radio: bool = False) 
             f"<upnp:albumArtURI>{queue_item.image.url}</upnp:albumArtURI>"
             "<upnp:channelName>Music Assistant</upnp:channelName>"
             "<upnp:channelNr>0</upnp:channelNr>"
+             "<upnp:canSkip>false</upnp:canSkip>"
+            "<upnp:canPlay>true</upnp:canPlay>"
+            "<upnp:canPause>true</upnp:canPause>"
+            f"<upnp:duration>0</upnp:duration>"
             f"<upnp:queueItemId>{queue_item.queue_item_id}</upnp:queueItemId>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
             f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{url}</res>'
@@ -651,7 +675,7 @@ def _create_didl_metadata(url: str, queue_item: QueueItem, radio: bool = False) 
         f"<upnp:albumArtURI>{queue_item.image.url}</upnp:albumArtURI>"
         f"<upnp:class>{item_class}</upnp:class>"
         f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
-        f'<res duration="{duration_str}" protocolInfo="http-get:*:audio/{ext}:*:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{url}</res>'
+        f'<res duration="{duration_str}" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{url}</res>'
         "</item>"
         "</DIDL-Lite>"
     )

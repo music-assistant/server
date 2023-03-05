@@ -260,7 +260,7 @@ class MusicAssistant:
         Tasks created by this helper will be properly cancelled on stop.
         """
 
-        if self.closed:
+        if self.closed and hasattr(target, "close"):
             target.close()
             return
 

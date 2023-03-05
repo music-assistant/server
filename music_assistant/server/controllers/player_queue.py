@@ -551,6 +551,7 @@ class PlayerQueuesController:
             queue.current_item
             and queue.current_item.streamdetails
             and queue.current_item.streamdetails.seconds_skipped
+            and not queue.flow_mode
         ):
             queue.elapsed_time += queue.current_item.streamdetails.seconds_skipped
 

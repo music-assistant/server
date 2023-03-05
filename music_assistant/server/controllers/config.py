@@ -257,7 +257,10 @@ class ConfigController:
         all_player_ids = set(player_configs.keys())
         for player in self.mass.players:
             all_player_ids.add(player.player_id)
-        return [self.get_player_config(x) for x in all_player_ids]
+        configs = [self.get_player_config(x) for x in all_player_ids]
+        if not provider:
+            return configs
+        return [x for x in configs if x.provider == provider]
 
     @api_command("config/players/get")
     def get_player_config(self, player_id: str) -> PlayerConfig:

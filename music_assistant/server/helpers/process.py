@@ -14,7 +14,6 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHUNKSIZE = 128000
 DEFAULT_TIMEOUT = 600
-DEFAULT_LIMIT = 64 * 1024 * 1024
 
 # pylint: disable=invalid-name
 
@@ -50,7 +49,6 @@ class AsyncProcess:
                 stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
                 stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
                 stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-                limit=DEFAULT_LIMIT,
                 close_fds=True,
             )
         else:
@@ -59,7 +57,6 @@ class AsyncProcess:
                 stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
                 stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
                 stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-                limit=DEFAULT_LIMIT,
                 close_fds=True,
             )
 

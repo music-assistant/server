@@ -89,7 +89,6 @@ class ChromecastProvider(PlayerProvider):
             self.mass.zeroconf,
         )
         # start discovery in executor
-        # await asyncio.to_thread(self.browser.start_discovery)
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 
     async def close(self) -> None:
@@ -97,8 +96,6 @@ class ChromecastProvider(PlayerProvider):
         if not self.browser:
             return
         # stop discovery
-        self.browser.stop_discovery()
-        # await asyncio.to_thread(self.browser.stop_discovery)
         await self.mass.loop.run_in_executor(None, self.browser.stop_discovery)
         # stop all chromecasts
         for castplayer in list(self.castplayers.values()):
@@ -204,6 +201,9 @@ class ChromecastProvider(PlayerProvider):
 
     def _on_chromecast_discovered(self, uuid, _):
         """Handle Chromecast discovered callback."""
+        if self.mass.closed:
+            return
+        
         disc_info: CastInfo = self.browser.devices[uuid]
 
         if disc_info.uuid is None:

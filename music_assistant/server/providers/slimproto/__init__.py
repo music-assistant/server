@@ -195,7 +195,7 @@ class SlimprotoProvider(PlayerProvider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
-        flow_mode: bool = False
+        flow_mode: bool = False,
     ) -> None:
         """
         Send PLAY MEDIA command to given player.
@@ -227,7 +227,7 @@ class SlimprotoProvider(PlayerProvider):
                 seek_position=seek_position,
                 fade_in=fade_in,
                 send_flush=True,
-                flow_mode=flow_mode
+                flow_mode=flow_mode,
             )
 
     async def _handle_play_media(
@@ -238,23 +238,36 @@ class SlimprotoProvider(PlayerProvider):
         fade_in: bool = False,
         send_flush: bool = True,
         crossfade: bool = False,
-        flow_mode: bool = False
+        flow_mode: bool = False,
     ) -> None:
         """Handle PlayMedia on slimproto player(s)."""
         player_id = client.player_id
+        # pick codec based on capabilities
+        codec_map = (
+            ("flc", ContentType.FLAC),
+            ("pcm", ContentType.PCM),
+            ("mp3", ContentType.MP3),
+        )
+        for fmt, fmt_type in codec_map:
+            if fmt in client.supported_codecs:
+                content_type = fmt_type
+                break
+        else:
+            self.logger.debug(
+                "Could not auto determine supported codec, fallback to PCM"
+            )
+            content_type = ContentType.PCM
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=player_id,
             seek_position=seek_position,
             fade_in=fade_in,
-            # prefer wav/pcm to reduce stress on players and its the most compatible
-            # TODO: create config toggle to send flac or mp3 ?
-            content_type=ContentType.PCM,
-            flow_mode=flow_mode
+            content_type=content_type,
+            flow_mode=flow_mode,
         )
         await client.play_url(
             url=url,
-            mime_type="audio/pcm",
+            mime_type=f"audio/{content_type.value}",
             metadata={"item_id": queue_item.queue_item_id},
             send_flush=send_flush,
             transition=SlimTransition.CROSSFADE if crossfade else SlimTransition.NONE,
@@ -378,7 +391,7 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_MUTE,
                     PlayerFeature.VOLUME_SET,
                 ),
-                max_sample_rate=client.max_sample_rate
+                max_sample_rate=int(client.max_sample_rate),
             )
             if virtual_provider_info:
                 # if this player is part of a virtual provider run the callback
