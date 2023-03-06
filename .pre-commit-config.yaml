@@ -5,26 +5,33 @@ repos:
       - id: check-yaml
       - id: end-of-file-fixer
       - id: trailing-whitespace
+      - id: no-commit-to-branch
+        args:
+          - --branch=main
   - repo: https://github.com/psf/black
-    rev: 22.10.0
+    rev: 23.1.0
     hooks:
       - id: black
         args:
           - --safe
           - --quiet
-  - repo: https://gitlab.com/pycqa/flake8
-    rev: 3.9.2
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.2.2
+    hooks:
+      - id: codespell
+        args: []
+        exclude_types: [csv, json]
+        exclude: ^tests/fixtures/
+  - repo: https://github.com/PyCQA/flake8
+    rev: 6.0.0
     hooks:
       - id: flake8
-        exclude: ^examples/
-        additional_dependencies:
-          - flake8-docstrings==1.3.1
-          - pydocstyle==4.0.0
-  - repo: https://github.com/pre-commit/mirrors-isort
-    rev: v5.10.1
+        files: ^(matter_server|scripts)/.+\.py$
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.12.0
     hooks:
       - id: isort
-        exclude: ^examples/
+        files: ^(matter_server|scripts)/.+\.py$
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v0.990
     hooks:
@@ -43,5 +50,12 @@ repos:
         entry: pylint
         language: system
         types: [python]
-        args: ["-rn", "-sn", "--rcfile=pylintrc", "--fail-on=I", "--disable=import-error"]
+        args: ["-rn", "-sn", "--fail-on=I", "--disable=import-error"]
         exclude: ^.venv/|^.vscode/
+      - id: mypy
+        name: mypy
+        entry: mypy
+        types: [python]
+        language: system
+        files: ^(music_assistant)/.+\.py$
+        require_serial: true
