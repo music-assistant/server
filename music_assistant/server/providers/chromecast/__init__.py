@@ -35,6 +35,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.constants import MASS_LOGO_ONLINE
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.chromecast.helpers import (
@@ -64,6 +65,7 @@ class CastPlayer:
     status_listener: CastStatusListener | None = None
     mz_controller: MultizoneController | None = None
     next_item: str | None = None
+    flow_mode_active: bool = False
 
 
 class ChromecastProvider(PlayerProvider):
@@ -123,7 +125,7 @@ class ChromecastProvider(PlayerProvider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
-        flow_mode: bool = False
+        flow_mode: bool = False,
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         castplayer = self.castplayers[player_id]
@@ -134,8 +136,26 @@ class ChromecastProvider(PlayerProvider):
             fade_in=fade_in,
             # prefer FLAC as it seems to work on all CC players
             content_type=ContentType.FLAC,
-            flow_mode=flow_mode
+            flow_mode=flow_mode,
         )
+        castplayer.flow_mode_active = flow_mode
+
+        # in flow mode, we just send the url and metadata is of no use
+        if flow_mode:
+            await asyncio.to_thread(
+                castplayer.cc.play_media,
+                url,
+                content_type="audio/flac",
+                title="Music Assistant",
+                thumb=MASS_LOGO_ONLINE,
+                media_info={
+                    "customData": {
+                        "queue_item_id": queue_item.queue_item_id,
+                    }
+                },
+            )
+            return
+
         cc_queue_items = [self._create_queue_item(queue_item, url)]
         queuedata = {
             "type": "QUEUE_LOAD",
@@ -203,7 +223,7 @@ class ChromecastProvider(PlayerProvider):
         """Handle Chromecast discovered callback."""
         if self.mass.closed:
             return
-        
+
         disc_info: CastInfo = self.browser.devices[uuid]
 
         if disc_info.uuid is None:
@@ -250,7 +270,7 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.VOLUME_MUTE,
                         PlayerFeature.VOLUME_SET,
                     ),
-                    max_sample_rate=96000
+                    max_sample_rate=96000,
                 ),
                 logger=self.logger.getChild(cast_info.friendly_name),
             )
@@ -409,6 +429,10 @@ class ChromecastProvider(PlayerProvider):
         self, castplayer: CastPlayer, current_queue_item_id: str
     ) -> None:
         """Enqueue the next track of the MA queue on the CC queue."""
+        if castplayer.flow_mode_active:
+            # not possible when we're in flow mode
+            return
+
         if not current_queue_item_id:
             return  # guard
         try:
@@ -466,7 +490,7 @@ class ChromecastProvider(PlayerProvider):
     async def _disconnect_chromecast(self, castplayer: CastPlayer) -> None:
         """Disconnect Chromecast object if it is set."""
         castplayer.logger.debug("Disconnecting from chromecast socket")
-        await asyncio.to_thread(castplayer.cc.disconnect)
+        await self.mass.loop.run_in_executor(None, castplayer.cc.disconnect, 10)
         castplayer.mz_controller = None
         castplayer.status_listener.invalidate()
         castplayer.status_listener = None

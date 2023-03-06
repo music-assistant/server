@@ -109,6 +109,8 @@ class SlimprotoProvider(PlayerProvider):
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         """Create player from new connection on the socket."""
+        if self.mass.closed:
+            return
         addr = writer.get_extra_info("peername")
         self.logger.debug("Socket client connected: %s", addr)
 
@@ -513,6 +515,8 @@ class SlimprotoProvider(PlayerProvider):
 
     async def _handle_decoder_ready(self, client: SlimClient) -> None:
         """Handle decoder ready event, player is ready for the next track."""
+        if not client.current_metadata:
+            return
         try:
             next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
                 client.player_id, client.current_metadata["item_id"]

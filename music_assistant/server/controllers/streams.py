@@ -10,7 +10,7 @@ import shortuuid
 from aiohttp import web
 
 from music_assistant.common.helpers.util import empty_queue
-from music_assistant.common.models.enums import ContentType
+from music_assistant.common.models.enums import ContentType, PlayerState
 from music_assistant.common.models.errors import MediaNotFoundError, QueueEmpty
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import (
@@ -30,6 +30,7 @@ from music_assistant.server.helpers.audio import (
 from music_assistant.server.helpers.process import AsyncProcess
 
 if TYPE_CHECKING:
+    from music_assistant.common.models.player import Player
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.streams")
@@ -60,13 +61,14 @@ class StreamJob:
         # internally all audio within MA is raw PCM, hence the pcm details
         self.pcm_sample_rate = pcm_sample_rate
         self.pcm_bit_depth = pcm_bit_depth
+        self.pcm_sample_size = int(pcm_sample_rate * (pcm_bit_depth / 8) * 2)
         self.stream_id = shortuuid.uuid()
         self.expected_consumers: set[str] = set()
         self.flow_mode = flow_mode
         self.subscribers: dict[str, asyncio.Queue[bytes]] = {}
         self._all_clients_connected = asyncio.Event()
         self._audio_task: asyncio.Task | None = None
-        self._bytes_streamed = 0
+        self.seen_players: set[str] = set()
 
     @property
     def finished(self) -> bool:
@@ -87,21 +89,10 @@ class StreamJob:
         """Return if this Job is running"""
         return not self.finished and not self.pending
 
-    @property
-    def bytes_streamed(self) -> int:
-        """Return how many bytes are streamed to connected client(s)."""
-        return self._bytes_streamed
-
-    @property
-    def seconds_streamed(self) -> int:
-        """Return how many seconds are streamed to connected client(s)."""
-        pcm_sample_size = int(self.pcm_sample_rate * (self.pcm_bit_depth / 8) * 2)
-        return int(self._bytes_streamed / pcm_sample_size)
-
     async def subscribe(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate incoming chunks on the queue."""
-        if not self._audio_task:
-            self._audio_task = asyncio.create_task(self._stream_job_runner())
+        self.start()
+        self.seen_players.add(player_id)
         try:
             sub_queue = asyncio.Queue(3)
 
@@ -168,13 +159,14 @@ class StreamJob:
                     )
 
             await self._put_data(chunk)
-            self._bytes_streamed += len(chunk)
 
         # mark EOF with empty chunk
         await self._put_data(b"")
 
     def start(self) -> None:
         """Start running the stream job."""
+        if self._audio_task:
+            return
         self._audio_task = asyncio.create_task(self._stream_job_runner())
 
 
@@ -188,6 +180,12 @@ class StreamsController:
         # there may be multiple jobs for the same queue item (e.g. when seeking)
         # the key is the (unique) stream_id for the StreamJob
         self.stream_jobs: dict[str, StreamJob] = {}
+        # some players do multiple GET requests for the same audio stream
+        # to determine content type or content length
+        # we try to detect/report these players and workaround it.
+        # if a player_id is in the below set of player_ids, the first GET request
+        # of that player will be ignored and audio is served only in the 2nd request
+        self.workaround_players: set[str] = set()
 
     async def setup(self) -> None:
         """Async initialize of module."""
@@ -243,14 +241,13 @@ class StreamsController:
         """
         # check if there is already a pending job
         for stream_job in self.stream_jobs.values():
-            if stream_job.finished:
+            if stream_job.finished or stream_job.running:
                 continue
             if stream_job.queue_item.queue_id != queue_item.queue_id:
                 continue
             if stream_job.queue_item.queue_item_id != queue_item.queue_item_id:
                 continue
             # if we hit this point, we have a match
-            stream_job.expected_consumers.add(player_id)
             break
         else:
             # register a new stream job
@@ -281,10 +278,11 @@ class StreamsController:
                     pcm_sample_rate=streamdetails.sample_rate,
                     pcm_bit_depth=streamdetails.bit_depth,
                 )
-            stream_job.expected_consumers.add(player_id)
-            self.stream_jobs[stream_job.stream_id] = stream_job
-            if auto_start_runner:
-                stream_job.start()
+
+        stream_job.expected_consumers.add(player_id)
+        self.stream_jobs[stream_job.stream_id] = stream_job
+        if auto_start_runner:
+            stream_job.start()
 
         # generate player-specific URL for the stream job
         fmt = content_type.value
@@ -314,15 +312,13 @@ class StreamsController:
         stream_id = request.match_info["stream_id"]
         stream_job = self.stream_jobs.get(stream_id)
         if not stream_job or stream_job.finished:
-            # Player is trying to resume a strean that already exited
-            # try to workaround that by just send a resume to the player queue
-            LOGGER.error(
+            # Player is trying to play a stream that already exited
+            if player.state == PlayerState.PAUSED:
+                await self.mass.players.queues.resume(player_id)
+            LOGGER.warning(
                 "Got stream request for an already finished stream job for player %s",
                 player.display_name,
             )
-            # queue = self.mass.players.queues.get_active_queue(player_id)
-            # if queue.current_index is not None:
-            #     await self.mass.players.queues.resume(queue.queue_id)
             raise web.HTTPNotFound(reason=f"Unknown stream_id: {stream_id}")
 
         output_format_str = request.match_info["fmt"]
@@ -341,29 +337,38 @@ class StreamsController:
             )
 
         # prepare request, add some DLNA/UPNP compatible headers
-        wants_icy = request.headers.get("Icy-MetaData", "") == "1"
-        enable_icy = wants_icy and not output_format.is_lossless()
+        enable_icy = request.headers.get("Icy-MetaData", "") == "1"
+        icy_meta_interval = 65536 if output_format.is_lossless() else 8192
         headers = {
             "Content-Type": f"audio/{output_format_str}",
             "transferMode.dlna.org": "Streaming",
             "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
             "Cache-Control": "no-cache",
+            "Connection": "close",
             "icy-name": "Music Assistant",
             "icy-pub": "1",
         }
         if enable_icy:
-            headers["icy-metaint"] = "8192"
+            headers["icy-metaint"] = str(icy_meta_interval)
 
         resp = web.StreamResponse(
             status=200,
             reason="OK",
             headers=headers,
         )
-        # resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         # return early if this is only a HEAD request
         if request.method == "HEAD":
+            return resp
+
+        # handler workaround for players that do 2 multiple GET requests
+        # for the same audio stream (because of the missing duration/length)
+        if (
+            player_id in self.workaround_players
+            and player_id not in stream_job.seen_players
+        ):
+            stream_job.seen_players.add(player_id)
             return resp
 
         # guard for the same player connecting multiple times for the same stream
@@ -373,10 +378,12 @@ class StreamsController:
                 " please create an issue report on the Music Assistant issue tracker.",
                 player.display_name,
             )
+            # add the player to the list of players that need the workaround
+            self.workaround_players.add(player_id)
             raise web.HTTPBadRequest(reason="Multiple connections are not allowed.")
         if stream_job.running:
             LOGGER.error(
-                "Player %s is making a request for an already finished stream,"
+                "Player %s is making a request for an already running stream,"
                 " please create an issue report on the Music Assistant issue tracker.",
                 player.display_name,
             )
@@ -387,7 +394,7 @@ class StreamsController:
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
         ffmpeg_args = self._get_player_ffmpeg_args(
-            player.player_id,
+            player,
             pcm_sample_rate=stream_job.pcm_sample_rate,
             pcm_bit_depth=stream_job.pcm_bit_depth,
             output_format=output_format,
@@ -405,11 +412,26 @@ class StreamsController:
 
             # read final chunks from stdout
             iterator = (
-                ffmpeg_proc.iter_chunked(8192) if enable_icy else ffmpeg_proc.iter_any()
+                ffmpeg_proc.iter_chunked(icy_meta_interval)
+                if enable_icy
+                else ffmpeg_proc.iter_any()
             )
+
+            bytes_streamed = 0
+
             async for chunk in iterator:
                 try:
                     await resp.write(chunk)
+                    bytes_streamed += len(chunk)
+
+                    # do not allow the player to prebuffer more than 10 seconds
+                    seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
+                    if (
+                        seconds_streamed > 10
+                        and (seconds_streamed - player.corrected_elapsed_time) > 10
+                    ):
+                        await asyncio.sleep(1)
+
                     if not enable_icy:
                         continue
 
@@ -443,7 +465,6 @@ class StreamsController:
         """Get a flow stream of all tracks in the queue."""
         queue_id = stream_job.queue_item.queue_id
         queue = self.mass.players.queues.get(queue_id)
-        player = self.mass.players.get(queue_id)
         queue_track = None
         last_fadeout_part = b""
 
@@ -509,13 +530,11 @@ class StreamsController:
                 fade_in=fade_in,
                 sample_rate=sample_rate,
                 bit_depth=bit_depth,
+                # only allow strip silence from begin if track is being crossfaded
+                strip_silence_begin=last_fadeout_part != b"",
             ):
 
                 chunk_num += 1
-
-                # do not allow the player to prebuffer more than 15 seconds
-                while (stream_job.seconds_streamed - player.corrected_elapsed_time) > 15:
-                    await asyncio.sleep(1)
 
                 ####  HANDLE FIRST PART OF TRACK
 
@@ -599,14 +618,13 @@ class StreamsController:
 
     def _get_player_ffmpeg_args(
         self,
-        player_id: str,
+        player: Player,
         pcm_sample_rate: int,
         pcm_bit_depth: int,
         output_format: ContentType,
     ) -> list[str]:
         """Get player specific arguments for the given (pcm) input and output details."""
-        player_conf = self.mass.config.get_player_config(player_id)
-        player = self.mass.players.get(player_id)
+        player_conf = self.mass.config.get_player_config(player.player_id)
         conf_channels = player_conf.get_value(CONF_OUTPUT_CHANNELS)
         # generic args
         generic_args = [

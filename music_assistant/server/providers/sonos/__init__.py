@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import logging
 import time
 import xml.etree.ElementTree as ET
@@ -25,6 +24,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
 PLAYER_FEATURES = (
@@ -220,7 +220,7 @@ class SonosPlayerProvider(PlayerProvider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
-        flow_mode: bool = False
+        flow_mode: bool = False,
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         sonos_player = self.sonosplayers[player_id]
@@ -234,21 +234,26 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player.next_item = None
         await asyncio.to_thread(sonos_player.soco.clear_queue)
 
-        is_radio = queue_item.media_type != MediaType.TRACK
+        is_radio = flow_mode or not queue_item.duration
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=sonos_player.player_id,
             seek_position=seek_position,
             fade_in=fade_in,
             content_type=ContentType.MP3 if is_radio else ContentType.FLAC,
-            flow_mode=flow_mode
+            flow_mode=flow_mode,
         )
         if is_radio:
-            metadata = _create_didl_metadata(url, queue_item, True)
             url = url.replace("http", "x-rincon-mp3radio")
+            metadata = create_didl_metadata(url, queue_item, flow_mode)
+            # sonos does multiple get requests if no duration is known
+            # our stream engine does not like that, hence the workaround
+            self.mass.streams.workaround_players.add(sonos_player.player_id)
             await asyncio.to_thread(sonos_player.soco.play_uri, url, meta=metadata)
         else:
-            await self._enqueue_item(sonos_player, queue_item=queue_item, url=url)
+            await self._enqueue_item(
+                sonos_player, queue_item=queue_item, url=url, flow_mode=flow_mode
+            )
             await asyncio.to_thread(sonos_player.soco.play_from_queue, 0)
 
     async def cmd_pause(self, player_id: str) -> None:
@@ -398,7 +403,7 @@ class SonosPlayerProvider(PlayerProvider):
                     address=speaker_info["mac_address"],
                     manufacturer=self.name,
                 ),
-                max_sample_rate=48000
+                max_sample_rate=48000,
             ),
             speaker_info=speaker_info,
             speaker_info_updated=time.time(),
@@ -539,11 +544,11 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player: SonosPlayer,
         queue_item: QueueItem,
         url: str,
+        flow_mode: bool = False,
     ) -> None:
         """Enqueue a queue item to the Sonos player Queue."""
-        is_radio = queue_item.media_type != MediaType.TRACK
 
-        metadata = _create_didl_metadata(url, queue_item, is_radio)
+        metadata = create_didl_metadata(url, queue_item, flow_mode)
         await asyncio.to_thread(
             sonos_player.soco.avTransport.AddURIToQueue,
             [
@@ -555,6 +560,8 @@ class SonosPlayerProvider(PlayerProvider):
             ],
             timeout=60,
         )
+        if sonos_player.player_id in self.mass.streams.workaround_players:
+            self.mass.streams.workaround_players.remove(sonos_player.player_id)
         self.logger.debug(
             "Enqued track (%s) to player %s",
             queue_item.name,
@@ -611,62 +618,11 @@ def _convert_state(sonos_state: str) -> PlayerState:
     return PlayerState.IDLE
 
 
-def _create_didl_metadata(url: str, queue_item: QueueItem, radio: bool = False) -> str:
-    """Create DIDL metadata string from url and QueueItem."""
-    ext = url.split(".")[-1]
-    if radio:
-        return (
-            '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
-            f'<item id="{queue_item.queue_item_id}" parentID="0" restricted="1">'
-            f"<dc:title>{_escape_str(queue_item.name)}</dc:title>"
-            f"<upnp:albumArtURI>{queue_item.image.url}</upnp:albumArtURI>"
-            "<upnp:channelName>Music Assistant</upnp:channelName>"
-            "<upnp:channelNr>0</upnp:channelNr>"
-            f"<upnp:queueItemId>{queue_item.queue_item_id}</upnp:queueItemId>"
-            "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
-            f'<res protocolInfo="x-rincon-mp3radio:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{url}</res>'
-            "</item>"
-            "</DIDL-Lite>"
-        )
-    title = _escape_str(queue_item.media_item.name)
-    artist = _escape_str(queue_item.media_item.artist.name)
-    album = _escape_str(queue_item.media_item.album.name)
-    item_class = "object.item.audioItem.musicTrack"
-    duration_str = str(datetime.timedelta(seconds=queue_item.duration))
-    return (
-        '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
-        f'<item id="{queue_item.queue_item_id}" parentID="0" restricted="1">'
-        f"<dc:title>{title}</dc:title>"
-        f"<dc:creator>{artist}</dc:creator>"
-        f"<upnp:album>{album}</upnp:album>"
-        f"<upnp:artist>{artist}</upnp:artist>"
-        "<upnp:canSkip>false</upnp:canSkip>"
-        f"<upnp:duration>{queue_item.duration}</upnp:duration>"
-        f"<upnp:channelName>Music Assistant</upnp:channelName>"
-        "<upnp:channelNr>0</upnp:channelNr>"
-        f"<upnp:queueItemId>{queue_item.queue_item_id}</upnp:queueItemId>"
-        f"<upnp:albumArtURI>{queue_item.image.url}</upnp:albumArtURI>"
-        f"<upnp:class>{item_class}</upnp:class>"
-        f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
-        f'<res duration="{duration_str}" protocolInfo="sonos.com-http:*:audio/{ext}:*:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{url}</res>'
-        "</item>"
-        "</DIDL-Lite>"
-    )
-
-
 def _timespan_secs(timespan):
     """Parse a time-span into number of seconds."""
     if timespan in ("", "NOT_IMPLEMENTED", None):
         return None
     return sum(60 ** x[0] * int(x[1]) for x in enumerate(reversed(timespan.split(":"))))
-
-
-def _escape_str(data: str) -> str:
-    """Create DIDL-safe string."""
-    data = data.replace("&", "&amp;")
-    data = data.replace(">", "&gt;")
-    data = data.replace("<", "&lt;")
-    return data
 
 
 class ProcessSonosEventQueue:

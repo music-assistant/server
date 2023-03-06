@@ -36,7 +36,6 @@ class PlayerQueue(DataClassDictMixin):
     radio_source: list[MediaItemType] = field(default_factory=list)
     announcement_in_progress: bool = False
     flow_mode: bool = False
-    flow_start_index: int = 0
 
     @property
     def corrected_elapsed_time(self) -> float:

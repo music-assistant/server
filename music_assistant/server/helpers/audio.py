@@ -114,58 +114,50 @@ async def strip_silence(
     sample_rate: int,
     bit_depth: int,
     reverse: bool = False,
-    cache_key: str | None = None,
 ) -> bytes:
-    """Strip silence from (a chunk of) pcm audio."""
-    if strip_info := await mass.cache.get(cache_key):
-        # we know how many bytes to strip from cache
-        if reverse:
-            stripped_data = audio_data[:-strip_info]
-        else:
-            stripped_data = audio_data[strip_info:]
-    else:
-        # strip silence from audio using ffmpeg
-        fmt = ContentType.from_bit_depth(bit_depth)
-        args = ["ffmpeg", "-hide_banner", "-loglevel", "quiet"]
+    """Strip silence from begin or end of pcm audio using ffmpeg."""
+    fmt = ContentType.from_bit_depth(bit_depth)
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "quiet"]
+    args += [
+        "-acodec",
+        fmt.name.lower(),
+        "-f",
+        fmt,
+        "-ac",
+        "2",
+        "-ar",
+        str(sample_rate),
+        "-i",
+        "-",
+    ]
+    # filter args
+    if reverse:
         args += [
-            "-acodec",
-            fmt.name.lower(),
-            "-f",
-            fmt,
-            "-ac",
-            "2",
-            "-ar",
-            str(sample_rate),
-            "-i",
-            "-",
+            "-af",
+            "areverse,atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02,areverse",
         ]
-        # filter args
-        if reverse:
-            args += [
-                "-af",
-                "areverse,atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02,areverse",
-            ]
-        else:
-            args += [
-                "-af",
-                "atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02",
-            ]
-        # output args
-        args += ["-f", fmt, "-"]
-        async with AsyncProcess(args, True) as proc:
-            stripped_data, _ = await proc.communicate(audio_data)
+    else:
+        args += [
+            "-af",
+            "atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02",
+        ]
+    # output args
+    args += ["-f", fmt, "-"]
+    async with AsyncProcess(args, True) as proc:
+        stripped_data, _ = await proc.communicate(audio_data)
 
     # return stripped audio
     bytes_stripped = len(audio_data) - len(stripped_data)
     if LOGGER.isEnabledFor(logging.DEBUG):
         pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
         seconds_stripped = round(bytes_stripped / pcm_sample_size, 2)
+        location = "end" if reverse else "begin"
         LOGGER.debug(
-            "stripped %s seconds of silence of pcm chunk. bytes stripped: %s",
+            "stripped %s seconds of silence from %s of pcm audio. bytes stripped: %s",
             seconds_stripped,
+            location,
             bytes_stripped,
         )
-    await mass.cache.set(cache_key, bytes_stripped)
     return stripped_data
 
 
@@ -397,7 +389,9 @@ async def get_media_stream(
     seek_position: int = 0,
     fade_in: bool = False,
     sample_rate: int | None = None,
-    bit_depth: int | None = None
+    bit_depth: int | None = None,
+    strip_silence_begin: bool = False,
+    strip_silence_end: bool = True,
 ) -> AsyncGenerator[bytes, None]:
     """
     Get the (PCM) audio stream for the given streamdetails.
@@ -408,12 +402,18 @@ async def get_media_stream(
     bytes_sent = 0
     streamdetails.seconds_skipped = seek_position
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
+    if is_radio or seek_position:
+        strip_silence_begin = False
+
     sample_rate = sample_rate or streamdetails.sample_rate
     bit_depth = bit_depth or streamdetails.bit_depth
     # chunk size = 2 seconds of pcm audio
     pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
     chunk_size = pcm_sample_size * (1 if is_radio else 2)
     expected_chunks = int((streamdetails.duration or 0) / 2)
+    if expected_chunks < 60:
+        strip_silence_end = False
+
     # collect all arguments for ffmpeg
     args = await _get_ffmpeg_args(
         streamdetails=streamdetails,
@@ -452,26 +452,21 @@ async def get_media_stream(
         try:
             async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
                 chunk_num += 1
-                if not is_radio and seek_position == 0 and chunk_num == 2:
+                if strip_silence_begin and chunk_num == 2:
                     # first 2 chunks received, strip silence of beginning
                     stripped_audio = await strip_silence(
                         mass,
                         prev_chunk + chunk,
                         sample_rate=sample_rate,
                         bit_depth=bit_depth,
-                        cache_key=f"{streamdetails.uri}.silence.start",
                     )
                     yield stripped_audio
                     bytes_sent += len(stripped_audio)
                     prev_chunk = b""
                     del stripped_audio
                     continue
-                if (
-                    not is_radio
-                    and expected_chunks > 60
-                    and chunk_num >= (expected_chunks - 6)
-                ):
-                    # last part of the track, collect chunks to strip silence later
+                if strip_silence_end and chunk_num >= (expected_chunks - 6):
+                    # last part of the track, collect multiple chunks to strip silence later
                     prev_chunk += chunk
                     continue
 
@@ -483,17 +478,21 @@ async def get_media_stream(
                 prev_chunk = chunk
 
             # all chunks received, strip silence of last part
-            stripped_audio = await strip_silence(
-                mass,
-                prev_chunk,
-                sample_rate=sample_rate,
-                bit_depth=bit_depth,
-                reverse=True,
-                cache_key="{streamdetails.uri}.silence.end",
-            )
-            yield stripped_audio
-            bytes_sent += len(stripped_audio)
-            del stripped_audio
+            if strip_silence_end:
+                stripped_audio = await strip_silence(
+                    mass,
+                    prev_chunk,
+                    sample_rate=sample_rate,
+                    bit_depth=bit_depth,
+                    reverse=True,
+                )
+                yield stripped_audio
+                bytes_sent += len(stripped_audio)
+                del stripped_audio
+            else:
+                yield prev_chunk
+                bytes_sent += len(prev_chunk)
+
             del prev_chunk
 
             # update duration details based on the actual pcm data we sent

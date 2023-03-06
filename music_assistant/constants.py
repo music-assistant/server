@@ -63,3 +63,6 @@ DB_TABLE_CACHE = "cache"
 DB_TABLE_SETTINGS = "settings"
 DB_TABLE_THUMBS = "thumbnails"
 DB_TABLE_PROVIDER_MAPPINGS = "provider_mappings"
+
+# all other
+MASS_LOGO_ONLINE = "https://github.com/home-assistant/brands/raw/master/custom_integrations/mass/icon%402x.png"

@@ -477,7 +477,6 @@ class PlayerQueuesController:
             queue.queue_id, CONF_FLOW_MODE
         )
         queue.flow_mode = flow_mode.value
-        queue.flow_start_index = index
         await player_prov.cmd_play_media(
             queue_id,
             queue_item=queue_item,
@@ -534,14 +533,15 @@ class PlayerQueuesController:
         queue.active = player.active_queue == queue.queue_id
         if queue.active:
             # update current item from player report
-            current_item_index = self.index_by_id(queue_id, player.current_item_id)
-            if current_item_index is not None:
+            player_item_index = self.index_by_id(queue_id, player.current_item_id)
+            if player_item_index is not None:
                 if queue.flow_mode:
                     # flow mode active, calculate current item
-                    current_item_index, queue.elapsed_time = self.__get_queue_stream_index(
-                        queue, player
+                    queue.current_index, queue.elapsed_time = self.__get_queue_stream_index(
+                        queue, player, player_item_index
                     )
-                queue.current_index = current_item_index
+                else:
+                    queue.current_index = player_item_index
 
         queue.current_item = self.get_item(queue_id, queue.current_index)
         queue.next_item = self.get_next_item(queue_id)
@@ -779,18 +779,18 @@ class PlayerQueuesController:
         )
 
     def __get_queue_stream_index(
-        self, queue: PlayerQueue, player: Player
+        self, queue: PlayerQueue, player: Player, start_index: int
     ) -> tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""
         # player is playing a constant stream so we need to do this the hard way
         queue_index = 0
-        elapsed_time_queue = player.elapsed_time
+        elapsed_time_queue = player.corrected_elapsed_time
         total_time = 0
         track_time = 0
         queue_items = self._queue_items[queue.queue_id]
-        if queue_items and len(queue_items) > queue.flow_start_index:
+        if queue_items and len(queue_items) > start_index:
             # start_index: holds the position from which the flow stream started
-            queue_index = queue.flow_start_index
+            queue_index = start_index
             queue_track = None
             while len(queue_items) > queue_index:
                 # keep enumerating the queue tracks to find current track

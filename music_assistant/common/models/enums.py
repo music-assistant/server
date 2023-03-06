@@ -244,6 +244,7 @@ class PlayerFeature(StrEnum):
     POWER = "power"
     VOLUME_SET = "volume_set"
     VOLUME_MUTE = "volume_mute"
+    PAUSE = "pause"
     SYNC = "sync"
     ACCURATE_TIME = "accurate_time"
     SEEK = "seek"
