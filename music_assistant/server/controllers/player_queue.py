@@ -48,6 +48,14 @@ class PlayerQueuesController:
         self._queue_items: dict[str, list[QueueItem]] = {}
         self._prev_states: dict[str, dict] = {}
 
+    async def close(self) -> None:
+        """Cleanup on exit."""
+        # stop all playback
+        for queue in self.all():
+            if queue.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
+                continue
+            await self.stop(queue.queue_id)
+
     def __iter__(self) -> Iterator[PlayerQueue]:
         """Iterate over (available) players."""
         return iter(self._queues.values())

@@ -24,7 +24,7 @@ def create_didl_metadata(
             f'<item id="{queue_item.queue_item_id}" parentID="0" restricted="1">'
             f"<dc:title>Music Assistant</dc:title>"
             f"<upnp:albumArtURI>{MASS_LOGO_ONLINE}</upnp:albumArtURI>"
-            f"<upnp:queueItemId>{queue_item.queue_item_id}</upnp:queueItemId>"
+            f"<dc:queueItemId>{queue_item.queue_item_id}</dc:queueItemId>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
             f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
             f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{url}</res>'
@@ -38,7 +38,7 @@ def create_didl_metadata(
             f'<item id="{queue_item.queue_item_id}" parentID="0" restricted="1">'
             f"<dc:title>{_escape_str(queue_item.name)}</dc:title>"
             f"<upnp:albumArtURI>{queue_item.image.url}</upnp:albumArtURI>"
-            f"<upnp:queueItemId>{queue_item.queue_item_id}</upnp:queueItemId>"
+            f"<dc:queueItemId>{queue_item.queue_item_id}</dc:queueItemId>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
             f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
             f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{url}</res>'

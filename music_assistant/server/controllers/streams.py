@@ -323,17 +323,20 @@ class StreamsController:
 
         output_format_str = request.match_info["fmt"]
         output_format = ContentType.try_parse(output_format_str)
+        output_sample_rate = min(stream_job.pcm_sample_rate, player.max_sample_rate)
+        player_max_bit_depth = 32 if player.supports_24bit else 16
+        output_bit_depth = min(stream_job.pcm_bit_depth, player_max_bit_depth)
         if output_format == ContentType.PCM:
             # resolve generic pcm type
-            output_format = ContentType.from_bit_depth(stream_job.pcm_bit_depth)
+            output_format = ContentType.from_bit_depth(output_bit_depth)
         if output_format.is_pcm() or output_format == ContentType.WAV:
             output_channels = self.mass.config.get_player_config_value(
                 player_id, CONF_OUTPUT_CHANNELS
             ).value
             channels = 1 if output_channels != "stereo" else 2
             output_format_str = (
-                f"x-wav;codec=pcm;rate={stream_job.pcm_sample_rate};"
-                f"bitrate={stream_job.pcm_bit_depth};channels={channels}"
+                f"x-wav;codec=pcm;rate={output_sample_rate};"
+                f"bitrate={output_bit_depth};channels={channels}"
             )
 
         # prepare request, add some DLNA/UPNP compatible headers
@@ -395,9 +398,10 @@ class StreamsController:
         # collect player specific ffmpeg args to re-encode the source PCM stream
         ffmpeg_args = self._get_player_ffmpeg_args(
             player,
-            pcm_sample_rate=stream_job.pcm_sample_rate,
-            pcm_bit_depth=stream_job.pcm_bit_depth,
+            input_sample_rate=stream_job.pcm_sample_rate,
+            input_bit_depth=stream_job.pcm_bit_depth,
             output_format=output_format,
+            output_sample_rate=output_sample_rate
         )
 
         async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
@@ -619,9 +623,10 @@ class StreamsController:
     def _get_player_ffmpeg_args(
         self,
         player: Player,
-        pcm_sample_rate: int,
-        pcm_bit_depth: int,
+        input_sample_rate: int,
+        input_bit_depth: int,
         output_format: ContentType,
+        output_sample_rate: int
     ) -> list[str]:
         """Get player specific arguments for the given (pcm) input and output details."""
         player_conf = self.mass.config.get_player_config(player.player_id)
@@ -634,15 +639,14 @@ class StreamsController:
             "quiet",
             "-ignore_unknown",
         ]
-        output_sample_rate = min(pcm_sample_rate, player.max_sample_rate)
         # input args
         input_args = [
             "-f",
-            ContentType.from_bit_depth(pcm_bit_depth).value,
+            ContentType.from_bit_depth(input_bit_depth).value,
             "-ac",
             "2",
             "-ar",
-            str(pcm_sample_rate),
+            str(input_sample_rate),
             "-i",
             "-",
         ]

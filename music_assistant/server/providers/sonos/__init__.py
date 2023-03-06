@@ -47,6 +47,7 @@ class SonosPlayer:
     next_item: str | None = None
     elapsed_time: int = 0
     current_item_id: str | None = None
+    radio_mode_started: float | None = None
 
     subscriptions: list[SubscriptionBase] = field(default_factory=list)
 
@@ -82,17 +83,28 @@ class SonosPlayer:
             self.track_info = self.soco.get_current_track_info()
             self.track_info_updated = time.time()
             self.elapsed_time = _timespan_secs(self.track_info["position"]) or 0
-            try:
+
+            if track_metadata := self.track_info.get("metadata"):
                 # extract queue_item_id from metadata xml
-                xml_root = ET.XML(self.track_info.get("metadata"))
-                for match in xml_root.iter(
-                    "{urn:schemas-upnp-org:metadata-1-0/upnp/}queueItemId"
-                ):
-                    item_id = match.text
-                    self.current_item_id = item_id
-                    break
-            except (ET.ParseError, AttributeError):
-                self.current_item_id = None
+                try:
+                    xml_root = ET.XML(track_metadata)
+                    for match in xml_root.iter(
+                        "{http://purl.org/dc/elements/1.1/}queueItemId"
+                    ):
+                        item_id = match.text
+                        self.current_item_id = item_id
+                        break
+                except (ET.ParseError, AttributeError):
+                    self.current_item_id = None
+
+            if (
+                self.current_item_id is None
+                and "/stream/" in self.track_info["uri"]
+                and self.player_id in self.track_info["uri"]
+            ):
+                # try to extract the item id from the uri
+                self.current_item_id = self.track_info["uri"].rsplit("/")[-2]
+
         # speaker info
         if update_speaker_info:
             self.speaker_info = self.soco.get_speaker_info()
@@ -122,8 +134,17 @@ class SonosPlayer:
         # media info (track info)
         self.player.current_url = self.track_info["uri"]
         self.player.current_item_id = self.current_item_id
-        self.player.elapsed_time = self.elapsed_time
-        self.player.elapsed_time_last_updated = self.track_info_updated
+
+        if self.radio_mode_started is not None:
+            # sonos reports bullshit elapsed time while playing radio,
+            # trying to be "smart" and resetting the counter when new ICY metadata is detected
+            if new_state == PlayerState.PLAYING:
+                now = time.time()
+                self.player.elapsed_time = int(now - self.radio_mode_started + 0.5)
+                self.player.elapsed_time_last_updated = now
+        else:
+            self.player.elapsed_time = self.elapsed_time
+            self.player.elapsed_time_last_updated = self.track_info_updated
 
         # zone topology (syncing/grouping) details
         if self.group_info.coordinator.uid == self.player_id:
@@ -184,6 +205,8 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def close(self) -> None:
         """Handle close/cleanup of the provider."""
+        for player in self.sonosplayers.values():
+            player.soco.end_direct_control_session
 
     async def cmd_stop(self, player_id: str) -> None:
         """
@@ -230,20 +253,22 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
-        # always clear queue first
+        # always stop and clear queue first
         sonos_player.next_item = None
+        await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
 
-        is_radio = flow_mode or not queue_item.duration
+        radio_mode = flow_mode or not queue_item.duration
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=sonos_player.player_id,
             seek_position=seek_position,
             fade_in=fade_in,
-            content_type=ContentType.MP3 if is_radio else ContentType.FLAC,
+            content_type=ContentType.MP3 if radio_mode else ContentType.FLAC,
             flow_mode=flow_mode,
         )
-        if is_radio:
+        if radio_mode:
+            sonos_player.radio_mode_started = time.time()
             url = url.replace("http", "x-rincon-mp3radio")
             metadata = create_didl_metadata(url, queue_item, flow_mode)
             # sonos does multiple get requests if no duration is known
@@ -251,6 +276,7 @@ class SonosPlayerProvider(PlayerProvider):
             self.mass.streams.workaround_players.add(sonos_player.player_id)
             await asyncio.to_thread(sonos_player.soco.play_uri, url, meta=metadata)
         else:
+            sonos_player.radio_mode_started = None
             await self._enqueue_item(
                 sonos_player, queue_item=queue_item, url=url, flow_mode=flow_mode
             )
@@ -428,6 +454,8 @@ class SonosPlayerProvider(PlayerProvider):
 
     def _handle_av_transport_event(self, sonos_player: SonosPlayer, event: SonosEvent):
         """Handle a soco.SoCo AVTransport event."""
+        if self.mass.closed:
+            return
         self.logger.debug(
             "Received AVTransport event for Player %s", sonos_player.soco.player_name
         )
@@ -450,6 +478,8 @@ class SonosPlayerProvider(PlayerProvider):
         self, sonos_player: SonosPlayer, event: SonosEvent
     ):
         """Handle a soco.SoCo RenderingControl event."""
+        if self.mass.closed:
+            return
         self.logger.debug(
             "Received RenderingControl event for Player %s",
             sonos_player.soco.player_name,
@@ -471,6 +501,8 @@ class SonosPlayerProvider(PlayerProvider):
         self, sonos_player: SonosPlayer, event: SonosEvent
     ):
         """Handle a soco.SoCo ZoneGroupTopology event."""
+        if self.mass.closed:
+            return
         self.logger.debug(
             "Received ZoneGroupTopology event for Player %s",
             sonos_player.soco.player_name,

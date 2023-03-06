@@ -63,6 +63,9 @@ class Player(DataClassDictMixin):
     # max_sample_rate: maximum supported sample rate the player supports
     max_sample_rate: int = 48000
 
+    # supports_24bit: bool if player supports 24bits (hi res) audio
+    supports_24bit: bool = True
+
     # enabled: if the player is enabled
     # will be set by the player manager based on config
     # a disabled player is hidden in the UI and updates will not be processed

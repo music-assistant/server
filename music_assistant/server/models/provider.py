@@ -29,9 +29,7 @@ class Provider:
         self.mass = mass
         self.manifest = manifest
         self.config = config
-        self.logger = logging.getLogger(
-            f"{ROOT_LOGGER_NAME}.{self.type.value}[{self.name}]"
-        )
+        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.providers.{self.domain}")
         self.cache = mass.cache
         self.available = False
         self.last_error = None
@@ -101,5 +99,5 @@ class Provider:
             "instance_id": self.instance_id,
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
-            "last_error": self.last_error
+            "last_error": self.last_error,
         }

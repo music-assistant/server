@@ -51,6 +51,7 @@ class PlayerController:
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        await self.queues.close()
 
     @property
     def providers(self) -> list[PlayerProvider]:

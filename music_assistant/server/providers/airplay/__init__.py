@@ -109,6 +109,7 @@ class AirplayProvider(PlayerProvider):
 
         async def update_config():
             # stop bridge (it will be auto restarted)
+            # TODO: only restart bridge if actual xml values changed
             await self._stop_bridge()
             # update the config
             await self._check_config_xml()
@@ -203,6 +204,7 @@ class AirplayProvider(PlayerProvider):
             address=player.device_info.address,
             manufacturer="Generic",
         )
+        player.supports_24bit = False
 
     def _handle_player_update_callback(self, player: Player) -> None:
         """Handle player update callback from slimproto source player."""
@@ -351,7 +353,7 @@ class AirplayProvider(PlayerProvider):
         # set codecs and sample rate to airplay default
         common_elem = xml_root.find("common")
         common_elem.find("codecs").text = "pcm"
-        common_elem.find("sample_rate").text = "48000"
+        common_elem.find("sample_rate").text = "44100"
         # get/set all device configs
         for device_elem in xml_root.findall("device"):
             player_id = device_elem.find("mac").text
