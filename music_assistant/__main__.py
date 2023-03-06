@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
-
+import coloredlogs
 from aiorun import run
 
 from music_assistant.server import MusicAssistant
@@ -42,9 +42,8 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     if not os.path.isdir(logs_dir):
         os.mkdir(logs_dir)
     logger = logging.getLogger()
-    log_formatter = logging.Formatter(
-        "%(asctime)-15s %(levelname)-5s %(name)s  -- %(message)s"
-    )
+    log_fmt =  "%(asctime)-15s %(levelname)-5s %(name)s  -- %(message)s"
+    log_formatter = logging.Formatter(log_fmt )
     consolehandler = logging.StreamHandler()
     consolehandler.setFormatter(log_formatter)
     consolehandler.setLevel(logging.DEBUG)
@@ -64,9 +63,9 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)
     logging.getLogger("databases").setLevel(logging.WARNING)
-    logging.getLogger("multipart.multipart").setLevel(logging.WARNING)
-    logging.getLogger("passlib.handlers.bcrypt").setLevel(logging.WARNING)
 
+    # enable coloredlogs
+    coloredlogs.install(level=level, fmt=log_fmt)
     return logger
 
 
