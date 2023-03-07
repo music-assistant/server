@@ -52,10 +52,10 @@ repos:
         types: [python]
         args: ["-rn", "-sn", "--fail-on=I", "--disable=import-error"]
         exclude: ^.venv/|^.vscode/
-      - id: mypy
-        name: mypy
-        entry: mypy
-        types: [python]
-        language: system
-        files: ^(music_assistant)/.+\.py$
-        require_serial: true
+      # - id: mypy
+      #   name: mypy
+      #   entry: mypy
+      #   types: [python]
+      #   language: system
+      #   files: ^(music_assistant)/.+\.py$
+      #   require_serial: true

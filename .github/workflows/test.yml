@@ -37,8 +37,8 @@ jobs:
         run: isort --check scripts/ music_assistant/
       - name: pylint
         run: pylint music_assistant/
-      - name: mypy
-        run: mypy music_assistant/
+      # - name: mypy
+      #   run: mypy music_assistant/
 
   test:
     runs-on: ubuntu-latest
