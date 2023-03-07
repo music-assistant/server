@@ -188,12 +188,13 @@ class SonosPlayer:
 class SonosPlayerProvider(PlayerProvider):
     """Sonos Player provider."""
 
-    sonosplayers: dict[str, SonosPlayer] | None = None
-    _discovery_running: bool = False
+    sonosplayers: dict[str, SonosPlayer]
+    _discovery_running: bool
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         self.sonosplayers = {}
+        self._discovery_running = False
         # silence the soco logger a bit
         logging.getLogger("soco").setLevel(logging.INFO)
         logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
@@ -201,8 +202,9 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def close(self) -> None:
         """Handle close/cleanup of the provider."""
-        for player in self.sonosplayers.values():
-            player.soco.end_direct_control_session
+        if hasattr(self, "sonosplayers"):
+            for player in self.sonosplayers.values():
+                player.soco.end_direct_control_session
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""

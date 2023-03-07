@@ -29,12 +29,9 @@ from music_assistant.server.controllers.metadata import MetaDataController
 from music_assistant.server.controllers.music import MusicController
 from music_assistant.server.controllers.players import PlayerController
 from music_assistant.server.controllers.streams import StreamsController
-from music_assistant.server.helpers.api import (
-    APICommandHandler,
-    api_command,
-    mount_websocket_api,
-)
+from music_assistant.server.helpers.api import APICommandHandler, api_command, mount_websocket_api
 from music_assistant.server.helpers.util import install_package
+from music_assistant.server.models.plugin import PluginProvider
 
 from .models.metadata_provider import MetadataProvider
 from .models.music_provider import MusicProvider
@@ -321,9 +318,13 @@ class MusicAssistant:
                 # lookup class to initialize
                 if name == prov_manifest.init_class or (
                     not prov_manifest.init_class
-                    and issubclass(obj, MusicProvider | PlayerProvider)
+                    and issubclass(
+                        obj, MusicProvider | PlayerProvider | MetadataProvider | PluginProvider
+                    )
                     and obj != MusicProvider
                     and obj != PlayerProvider
+                    and obj != MetadataProvider
+                    and obj != PluginProvider
                 ):
                     prov_cls = obj
                     break

@@ -20,9 +20,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.server.controllers.cache import use_cache
-from music_assistant.server.helpers.app_vars import (  # pylint: disable=no-name-in-module
-    app_var,
-)
+from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
@@ -66,16 +64,16 @@ class AudioDbMetadataProvider(MetadataProvider):
     """The AudioDB Metadata provider."""
 
     throttler: Throttler
-    _attr_supported_features = (
-        ProviderFeature.ARTIST_METADATA,
-        ProviderFeature.ALBUM_METADATA,
-        ProviderFeature.TRACK_METADATA,
-        ProviderFeature.GET_ARTIST_MBID,
-    )
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
+        self._attr_supported_features = (
+            ProviderFeature.ARTIST_METADATA,
+            ProviderFeature.ALBUM_METADATA,
+            ProviderFeature.TRACK_METADATA,
+            ProviderFeature.GET_ARTIST_MBID,
+        )
         self.throttler = Throttler(rate_limit=2, period=1)
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:

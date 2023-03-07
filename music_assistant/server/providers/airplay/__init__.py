@@ -209,7 +209,8 @@ class AirplayProvider(PlayerProvider):
         async def check_bridge_binary(bridge_binary_path: str) -> str | None:
             try:
                 bridge_binary = await asyncio.create_subprocess_exec(
-                    *[bridge_binary_path, "-t"], stdout=asyncio.subprocess.PIPE
+                    *[bridge_binary_path, "-t", "-x", self._config_file],
+                    stdout=asyncio.subprocess.PIPE,
                 )
                 stdout, _ = await bridge_binary.communicate()
                 if (

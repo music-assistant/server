@@ -226,7 +226,7 @@ class FileSystemProviderBase(MusicProvider):
         )
 
     async def sync_library(
-        self, media_types: tuple[MediaType] | None = None  # noqa: ARG002
+        self, media_types: tuple[MediaType, ...] | None = None  # noqa: ARG002
     ) -> None:
         """Run library sync for this provider."""
         cache_key = f"{self.instance_id}.checksums"

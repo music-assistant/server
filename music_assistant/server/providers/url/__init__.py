@@ -14,11 +14,7 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.server.helpers.audio import (
-    get_file_stream,
-    get_http_stream,
-    get_radio_stream,
-)
+from music_assistant.server.helpers.audio import get_file_stream, get_http_stream, get_radio_stream
 from music_assistant.server.helpers.playlists import fetch_playlist
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
@@ -27,15 +23,13 @@ from music_assistant.server.models.music_provider import MusicProvider
 class URLProvider(MusicProvider):
     """Music Provider for manual URL's/files added to the queue."""
 
-    _attr_available: bool = True
-    _full_url = {}
-
-    async def setup(self) -> bool:
+    async def setup(self) -> None:
         """Handle async initialization of the provider.
 
         Called when provider is registered.
         """
-        return True
+        self._attr_available = True
+        self._full_url = {}
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""

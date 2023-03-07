@@ -31,15 +31,15 @@ class FanartTvMetadataProvider(MetadataProvider):
     """Fanart.tv Metadata provider."""
 
     throttler: Throttler
-    _attr_supported_features = (
-        ProviderFeature.ARTIST_METADATA,
-        ProviderFeature.ALBUM_METADATA,
-    )
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
         self.throttler = Throttler(rate_limit=2, period=1)
+        self._attr_supported_features = (
+            ProviderFeature.ARTIST_METADATA,
+            ProviderFeature.ALBUM_METADATA,
+        )
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on fanart.tv."""

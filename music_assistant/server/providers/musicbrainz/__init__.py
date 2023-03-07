@@ -29,12 +29,12 @@ class MusicbrainzProvider(MetadataProvider):
     """The Musicbrainz Metadata provider."""
 
     throttler: Throttler
-    _attr_supported_features = (ProviderFeature.GET_ARTIST_MBID,)
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
         self.throttler = Throttler(rate_limit=1, period=1)
+        self._attr_supported_features = (ProviderFeature.GET_ARTIST_MBID,)
 
     async def get_musicbrainz_artist_id(
         self, artist: Artist, ref_albums: Iterable[Album], ref_tracks: Iterable[Track]

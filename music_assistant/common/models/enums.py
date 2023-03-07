@@ -49,8 +49,9 @@ class MediaType(StrEnum):
     FOLDER = "folder"
     UNKNOWN = "unknown"
 
+    @classmethod
     @property
-    def ALL(self: Self) -> tuple[MediaType, ...]:  # noqa: N802
+    def ALL(cls: Self) -> tuple[MediaType, ...]:  # noqa: N802
         """Return all (default) MediaTypes as tuple."""
         return (
             MediaType.ARTIST,

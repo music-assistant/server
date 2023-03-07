@@ -3,18 +3,14 @@ import asyncio
 import re
 from operator import itemgetter
 from time import time
-from typing import TYPE_CHECKING
+from typing import AsyncGenerator  # noqa: UP035
 from urllib.parse import unquote
 
 import pytube
 import ytmusicapi
 
 from music_assistant.common.models.enums import ProviderFeature
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    MediaNotFoundError,
-)
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -49,8 +45,8 @@ from .helpers import (
     search,
 )
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+# if TYPE_CHECKING:
+#     from collections.abc import AsyncGenerator
 
 CONF_COOKIE = "cookie"
 
@@ -70,20 +66,20 @@ class YoutubeMusicProvider(MusicProvider):
     _cookies = None
     _signature_timestamp = 0
     _cipher = None
-    _attr_supported_features = (
-        ProviderFeature.LIBRARY_ARTISTS,
-        ProviderFeature.LIBRARY_ALBUMS,
-        ProviderFeature.LIBRARY_TRACKS,
-        ProviderFeature.LIBRARY_PLAYLISTS,
-        ProviderFeature.BROWSE,
-        ProviderFeature.SEARCH,
-        ProviderFeature.ARTIST_ALBUMS,
-        ProviderFeature.ARTIST_TOPTRACKS,
-        ProviderFeature.SIMILAR_TRACKS,
-    )
 
     async def setup(self) -> None:
         """Set up the YTMusic provider."""
+        self._attr_supported_features = (
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+            ProviderFeature.BROWSE,
+            ProviderFeature.SEARCH,
+            ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.ARTIST_TOPTRACKS,
+            ProviderFeature.SIMILAR_TRACKS,
+        )
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_COOKIE):
             raise LoginFailed("Invalid login credentials")
         await self._initialize_headers(cookie=self.config.get_value(CONF_COOKIE))

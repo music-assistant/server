@@ -41,31 +41,31 @@ CACHE_DIR = gettempdir()
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
 
-    _auth_token = None
-    _sp_user = None
-    _librespot_bin = None
-    _throttler = Throttler(rate_limit=1, period=0.1)
-    _cache_dir = CACHE_DIR
-    _ap_workaround = False
-    _attr_supported_features = (
-        ProviderFeature.LIBRARY_ARTISTS,
-        ProviderFeature.LIBRARY_ALBUMS,
-        ProviderFeature.LIBRARY_TRACKS,
-        ProviderFeature.LIBRARY_PLAYLISTS,
-        ProviderFeature.LIBRARY_ARTISTS_EDIT,
-        ProviderFeature.LIBRARY_ALBUMS_EDIT,
-        ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-        ProviderFeature.LIBRARY_TRACKS_EDIT,
-        ProviderFeature.PLAYLIST_TRACKS_EDIT,
-        ProviderFeature.BROWSE,
-        ProviderFeature.SEARCH,
-        ProviderFeature.ARTIST_ALBUMS,
-        ProviderFeature.ARTIST_TOPTRACKS,
-        ProviderFeature.SIMILAR_TRACKS,
-    )
+    _auth_token: str | None = None
+    _sp_user: str | None = None
+    _librespot_bin: str | None = None
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
+        self._throttler = Throttler(rate_limit=1, period=0.1)
+        self._cache_dir = CACHE_DIR
+        self._ap_workaround = False
+        self._attr_supported_features = (
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+            ProviderFeature.LIBRARY_ARTISTS_EDIT,
+            ProviderFeature.LIBRARY_ALBUMS_EDIT,
+            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+            ProviderFeature.LIBRARY_TRACKS_EDIT,
+            ProviderFeature.PLAYLIST_TRACKS_EDIT,
+            ProviderFeature.BROWSE,
+            ProviderFeature.SEARCH,
+            ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.ARTIST_TOPTRACKS,
+            ProviderFeature.SIMILAR_TRACKS,
+        )
         # try to get a token, raise if that fails
         self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
         # try login which will raise if it fails

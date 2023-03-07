@@ -445,7 +445,7 @@ class MusicController:
             return self.playlists
         return None
 
-    def _start_provider_sync(self, provider_instance: str, media_types: tuple[MediaType]):
+    def _start_provider_sync(self, provider_instance: str, media_types: tuple[MediaType, ...]):
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
         for sync_task in self.in_progress_syncs:

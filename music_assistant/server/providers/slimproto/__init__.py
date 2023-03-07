@@ -22,7 +22,7 @@ from music_assistant.common.models.enums import (
     PlayerState,
     PlayerType,
 )
-from music_assistant.common.models.errors import QueueEmpty
+from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -73,11 +73,11 @@ SLIM_PLAYER_CONFIG_ENTRIES = (
 class SlimprotoProvider(PlayerProvider):
     """Base/builtin provider for players using the SLIM protocol (aka slimproto)."""
 
-    _socket_servers: tuple[asyncio.Server | asyncio.BaseTransport] | None = None
-    _socket_clients: dict[str, SlimClient] | None = None
-    _sync_playpoints: dict[str, deque[SyncPlayPoint]] = None
-    _sync_adjusts: dict[str, int] | None = None
-    _virtual_providers: dict[str, tuple[Callable, Callable]] | None = None
+    _socket_servers: tuple[asyncio.Server | asyncio.BaseTransport]
+    _socket_clients: dict[str, SlimClient]
+    _sync_playpoints: dict[str, deque[SyncPlayPoint]]
+    _sync_adjusts: dict[str, int]
+    _virtual_providers: dict[str, tuple[Callable, Callable]]
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -98,11 +98,11 @@ class SlimprotoProvider(PlayerProvider):
 
     async def close(self) -> None:
         """Handle close/cleanup of the provider."""
-        if self._socket_clients is not None:
+        if hasattr(self, "_socket_clients"):
             for client in list(self._socket_clients.values()):
                 client.disconnect()
         self._socket_clients = {}
-        if self._socket_servers is not None:
+        if hasattr(self, "_socket_servers"):
             for _server in self._socket_servers:
                 _server.close()
             self._socket_servers = None
@@ -298,7 +298,7 @@ class SlimprotoProvider(PlayerProvider):
         self.mass.players.update(parent_player.player_id)
         if parent_player.state == PlayerState.PLAYING:
             # playback needs to be restarted to get all players in sync
-            # TODO: In there is any need, we could make this smarter where the new
+            # TODO: If there is any need, we could make this smarter where the new
             # sync child waits for the next track.
             await self.mass.players.queues.resume(parent_player.player_id)
 
@@ -328,9 +328,11 @@ class SlimprotoProvider(PlayerProvider):
     def _handle_player_update(self, client: SlimClient) -> None:
         """Process SlimClient update/add to Player controller."""
         player_id = client.player_id
-        player = self.mass.players.get(player_id)
         virtual_provider_info = self._virtual_providers.get(client.device_model)
-        if not player:
+        try:
+            player = self.mass.players.get(player_id, raise_unavailable=False)
+        except PlayerUnavailableError:
+            # player does not yet exist, create it
             player = Player(
                 player_id=player_id,
                 provider=self.domain,

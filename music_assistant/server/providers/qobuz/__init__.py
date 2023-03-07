@@ -35,26 +35,27 @@ from music_assistant.server.models.music_provider import MusicProvider
 class QobuzProvider(MusicProvider):
     """Provider for the Qobux music service."""
 
-    _user_auth_info = None
-    _throttler = Throttler(rate_limit=4, period=1)
-    _attr_supported_features = (
-        ProviderFeature.LIBRARY_ARTISTS,
-        ProviderFeature.LIBRARY_ALBUMS,
-        ProviderFeature.LIBRARY_TRACKS,
-        ProviderFeature.LIBRARY_PLAYLISTS,
-        ProviderFeature.LIBRARY_ARTISTS_EDIT,
-        ProviderFeature.LIBRARY_ALBUMS_EDIT,
-        ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-        ProviderFeature.LIBRARY_TRACKS_EDIT,
-        ProviderFeature.PLAYLIST_TRACKS_EDIT,
-        ProviderFeature.BROWSE,
-        ProviderFeature.SEARCH,
-        ProviderFeature.ARTIST_ALBUMS,
-        ProviderFeature.ARTIST_TOPTRACKS,
-    )
+    _user_auth_info: str | None = None
+    _throttler: Throttler
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
+        self._throttler = Throttler(rate_limit=4, period=1)
+        self._attr_supported_features = (
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+            ProviderFeature.LIBRARY_ARTISTS_EDIT,
+            ProviderFeature.LIBRARY_ALBUMS_EDIT,
+            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+            ProviderFeature.LIBRARY_TRACKS_EDIT,
+            ProviderFeature.PLAYLIST_TRACKS_EDIT,
+            ProviderFeature.BROWSE,
+            ProviderFeature.SEARCH,
+            ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.ARTIST_TOPTRACKS,
+        )
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
             raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails

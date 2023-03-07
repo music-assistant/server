@@ -28,14 +28,15 @@ from music_assistant.server.models.music_provider import MusicProvider
 class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
-    _throttler = Throttler(rate_limit=1, period=1)
-    _attr_supported_features = (
-        ProviderFeature.LIBRARY_RADIOS,
-        ProviderFeature.BROWSE,
-    )
+    _throttler: Throttler
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
+        self._throttler = Throttler(rate_limit=1, period=1)
+        self._attr_supported_features = (
+            ProviderFeature.LIBRARY_RADIOS,
+            ProviderFeature.BROWSE,
+        )
         if not self.config.get_value(CONF_USERNAME):
             raise LoginFailed("Username is invalid")
         if "@" in self.config.get_value(CONF_USERNAME):
