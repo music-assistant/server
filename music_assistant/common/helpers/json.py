@@ -1,10 +1,11 @@
 """Helpers to work with (de)serializing of json."""
 
+import base64
 from types import MethodType
 from typing import Any
-import base64
-import orjson
+
 import aiofiles
+import orjson
 from _collections_abc import dict_keys, dict_values
 
 JSON_ENCODE_EXCEPTIONS = (TypeError, ValueError)
@@ -19,7 +20,7 @@ def json_encoder_default(obj: Any) -> Any:
     if getattr(obj, "do_not_serialize", None):
         return None
     if (
-        isinstance(obj, (list, set, filter, tuple, dict_values, dict_keys, dict_values))
+        isinstance(obj, list | set | filter | tuple | dict_values | dict_keys | dict_values)
         or obj.__class__ == "dict_valueiterator"
     ):
         return list(obj)

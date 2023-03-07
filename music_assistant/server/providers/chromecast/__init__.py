@@ -15,7 +15,6 @@ from pychromecast import (
     Chromecast,
     get_chromecast_from_cast_info,
 )
-from pychromecast.controllers.bubbleupnp import BubbleUPNPController
 from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE
 from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
@@ -73,7 +72,7 @@ class ChromecastProvider(PlayerProvider):
 
     mz_mgr: MultizoneManager | None = None
     browser: CastBrowser | None = None
-    castplayers: dict[str, CastPlayer] | None = None
+    castplayers: dict[str, CastPlayer]
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -104,18 +103,12 @@ class ChromecastProvider(PlayerProvider):
             await self._disconnect_chromecast(castplayer)
 
     async def cmd_stop(self, player_id: str) -> None:
-        """
-        Send STOP command to given player.
-            - player_id: player_id of the player to handle the command.
-        """
+        """Send STOP command to given player."""
         castplayer = self.castplayers[player_id]
         await asyncio.to_thread(castplayer.cc.media_controller.stop)
 
     async def cmd_play(self, player_id: str) -> None:
-        """
-        Send PLAY command to given player.
-            - player_id: player_id of the player to handle the command.
-        """
+        """Send PLAY command to given player."""
         castplayer = self.castplayers[player_id]
         await asyncio.to_thread(castplayer.cc.media_controller.play)
 
@@ -140,7 +133,7 @@ class ChromecastProvider(PlayerProvider):
         )
         castplayer.flow_mode_active = flow_mode
 
-        # in flow mode, we just send the url and metadata is of no use
+        # in flow mode, we just send the url and the metadata is of no use
         if flow_mode:
             await asyncio.to_thread(
                 castplayer.cc.play_media,
@@ -196,8 +189,7 @@ class ChromecastProvider(PlayerProvider):
         await asyncio.to_thread(castplayer.cc.set_volume_muted, muted)
 
     async def poll_player(self, player_id: str) -> None:
-        """
-        Poll player for state updates.
+        """Poll player for state updates.
 
         This is called by the Player Manager;
         - every 360 seconds if the player if not powered
@@ -208,7 +200,7 @@ class ChromecastProvider(PlayerProvider):
         to detect if the player is still alive.
         If this method raises the PlayerUnavailable exception,
         the player is marked as unavailable until
-        the next succesfull poll or event where it becomes available again.
+        the next successful poll or event where it becomes available again.
         If the player does not need any polling, simply do not override this method.
         """
         castplayer = self.castplayers[player_id]
@@ -221,7 +213,7 @@ class ChromecastProvider(PlayerProvider):
 
     def _on_chromecast_discovered(self, uuid, _):
         """Handle Chromecast discovered callback."""
-        if self.mass.closed:
+        if self.mass.closing:
             return
 
         disc_info: CastInfo = self.browser.devices[uuid]
@@ -238,9 +230,7 @@ class ChromecastProvider(PlayerProvider):
             cast_info = ChromecastInfo.from_cast_info(disc_info)
             cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
             if cast_info.is_dynamic_group:
-                self.logger.warning(
-                    "Discovered a dynamic cast group which will be ignored."
-                )
+                self.logger.warning("Discovered a dynamic cast group which will be ignored.")
                 return
 
             # Instantiate chromecast object
@@ -254,9 +244,7 @@ class ChromecastProvider(PlayerProvider):
                 player=Player(
                     player_id=player_id,
                     provider=self.domain,
-                    type=PlayerType.GROUP
-                    if cast_info.is_audio_group
-                    else PlayerType.PLAYER,
+                    type=PlayerType.GROUP if cast_info.is_audio_group else PlayerType.PLAYER,
                     name=cast_info.friendly_name,
                     available=False,
                     powered=False,
@@ -276,26 +264,22 @@ class ChromecastProvider(PlayerProvider):
             )
             self.castplayers[player_id] = castplayer
 
-            castplayer.status_listener = CastStatusListener(
-                self, castplayer, self.mz_mgr
-            )
+            castplayer.status_listener = CastStatusListener(self, castplayer, self.mz_mgr)
             if cast_info.is_audio_group:
                 mz_controller = MultizoneController(cast_info.uuid)
                 castplayer.cc.register_handler(mz_controller)
                 castplayer.mz_controller = mz_controller
             castplayer.cc.start()
 
-            self.mass.loop.call_soon_threadsafe(
-                self.mass.players.register, castplayer.player
-            )
+            self.mass.loop.call_soon_threadsafe(self.mass.players.register, castplayer.player)
 
         # if player was already added, the player will take care of reconnects itself.
         castplayer.cast_info.update(disc_info)
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, player_id)
 
-    def _on_chromecast_removed(self, uuid, service, cast_info):
+    def _on_chromecast_removed(self, uuid, service, cast_info):  # noqa: ARG002
         """Handle zeroconf discovery of a removed Chromecast."""
-        # pylint: disable=unused-argument
+        # noqa: ARG001
         player_id = str(service[1])
         friendly_name = service[3]
         self.logger.debug("Chromecast removed: %s - %s", friendly_name, player_id)
@@ -320,17 +304,13 @@ class ChromecastProvider(PlayerProvider):
             castplayer.cast_info.is_audio_group
             and castplayer.mz_controller
             and castplayer.mz_controller.members
-            and compare_strings(
-                castplayer.mz_controller.members[0], castplayer.player_id
-            )
+            and compare_strings(castplayer.mz_controller.members[0], castplayer.player_id)
         )
         castplayer.player.volume_level = int(status.volume_level * 100)
         castplayer.player.volume_muted = status.volume_muted
         if castplayer.is_stereo_pair:
             castplayer.player.type = PlayerType.PLAYER
-        self.mass.loop.call_soon_threadsafe(
-            self.mass.players.update, castplayer.player_id
-        )
+        self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
     def on_new_media_status(self, castplayer: CastPlayer, status: MediaStatus):
         """Handle updated MediaStatus."""
@@ -355,9 +335,7 @@ class ChromecastProvider(PlayerProvider):
         queue_item_id = status.media_custom_data.get("queue_item_id")
         castplayer.player.current_item_id = queue_item_id
         castplayer.player.current_url = status.content_id
-        self.mass.loop.call_soon_threadsafe(
-            self.mass.players.update, castplayer.player_id
-        )
+        self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
         # enqueue next item if needed
         if castplayer.player.state == PlayerState.PLAYING and (
@@ -369,19 +347,13 @@ class ChromecastProvider(PlayerProvider):
                 self._enqueue_next_track(castplayer, queue_item_id), self.mass.loop
             )
 
-    def on_new_connection_status(
-        self, castplayer: CastPlayer, status: ConnectionStatus
-    ) -> None:
+    def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
-        castplayer.logger.debug(
-            "Received connection status update - status: %s", status.status
-        )
+        castplayer.logger.debug("Received connection status update - status: %s", status.status)
 
         if status.status == CONNECTION_STATUS_DISCONNECTED:
             castplayer.player.available = False
-            self.mass.loop.call_soon_threadsafe(
-                self.mass.players.update, castplayer.player_id
-            )
+            self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
             return
 
         new_available = status.status == CONNECTION_STATUS_CONNECTED
@@ -397,17 +369,11 @@ class ChromecastProvider(PlayerProvider):
                 address=castplayer.cast_info.host,
                 manufacturer=castplayer.cast_info.manufacturer,
             )
-            self.mass.loop.call_soon_threadsafe(
-                self.mass.players.update, castplayer.player_id
-            )
+            self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
             if new_available and not castplayer.cast_info.is_audio_group:
                 # Poll current group status
-                for group_uuid in self.mz_mgr.get_multizone_memberships(
-                    castplayer.cast_info.uuid
-                ):
-                    group_media_controller = self.mz_mgr.get_multizone_mediacontroller(
-                        group_uuid
-                    )
+                for group_uuid in self.mz_mgr.get_multizone_memberships(castplayer.cast_info.uuid):
+                    group_media_controller = self.mz_mgr.get_multizone_mediacontroller(group_uuid)
                     if not group_media_controller:
                         continue
                     self.on_multizone_new_media_status(
@@ -415,7 +381,7 @@ class ChromecastProvider(PlayerProvider):
                     )
 
     def on_multizone_new_media_status(
-        self, castplayer: CastPlayer, group_uuid: UUID, media_status: MediaStatus
+        self, castplayer: CastPlayer, group_uuid: UUID, media_status: MediaStatus  # noqa: ARG002
     ):
         """Handle updates of audio group media status."""
         castplayer.logger.debug("Received multizone media status update")
@@ -425,9 +391,7 @@ class ChromecastProvider(PlayerProvider):
 
     ### Helpers / utils
 
-    async def _enqueue_next_track(
-        self, castplayer: CastPlayer, current_queue_item_id: str
-    ) -> None:
+    async def _enqueue_next_track(self, castplayer: CastPlayer, current_queue_item_id: str) -> None:
         """Enqueue the next track of the MA queue on the CC queue."""
         if castplayer.flow_mode_active:
             # not possible when we're in flow mode
@@ -479,12 +443,13 @@ class ChromecastProvider(PlayerProvider):
             self.mass.loop.call_soon_threadsafe(event.set)
 
         def launch():
-            controller = BubbleUPNPController()
-            castplayer.cc.register_handler(controller)
-            controller.launch(launched_callback)
+            # controller = BubbleUPNPController()
+            # castplayer.cc.register_handler(controller)
+            # controller.launch(launched_callback)
+            castplayer.cc.media_controller.launch(launched_callback)
 
         castplayer.logger.debug("Launching BubbleUPNPController as active app.")
-        await asyncio.to_thread(launch)
+        await self.mass.loop.run_in_executor(None, launch)
         await event.wait()
 
     async def _disconnect_chromecast(self, castplayer: CastPlayer) -> None:

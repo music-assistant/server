@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 from random import choice, random
 from time import time
@@ -9,10 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.models.enums import EventType, ProviderFeature
-from music_assistant.common.models.errors import (
-    MediaNotFoundError,
-    UnsupportedFeaturedException,
-)
+from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -69,9 +67,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            query_parts=[
-                "artists.sort_name in (select albums.sort_artist from albums)"
-            ],
+            query_parts=["artists.sort_name in (select albums.sort_artist from albums)"],
         )
 
     async def tracks(
@@ -158,14 +154,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         return db_item
 
     async def match_artist(self, db_artist: Artist):
-        """
-        Try to find matching artists on all providers for the provided (database) item_id.
+        """Try to find matching artists on all providers for the provided (database) item_id.
 
         This is used to link objects of different providers together.
         """
-        assert (
-            db_artist.provider == "database"
-        ), "Matching only supported for database items!"
+        assert db_artist.provider == "database", "Matching only supported for database items!"
         cur_provider_domains = {x.provider_domain for x in db_artist.provider_mappings}
         for provider in self.mass.music.providers:
             if provider.domain in cur_provider_domains:
@@ -214,9 +207,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 items = await self.mass.music.tracks.get_db_items_by_query(query)
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
-            )
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
         )
         return items
 
@@ -240,7 +231,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             items = await prov.get_artist_albums(item_id)
         else:
             # fallback implementation using the db
-            if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
+            if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(  # noqa: PLR5501
                 item_id,
                 provider_domain=provider_domain,
                 provider_instance=provider_instance,
@@ -255,15 +246,11 @@ class ArtistsController(MediaControllerBase[Artist]):
                 items = []
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
-            )
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
         )
         return items
 
-    async def add_db_item(
-        self, item: Artist, overwrite_existing: bool = False
-    ) -> Artist:
+    async def add_db_item(self, item: Artist, overwrite_existing: bool = False) -> Artist:
         """Add a new item record to the database."""
         assert isinstance(item, Artist), "Not a full Artist object"
         assert item.provider_mappings, "Artist is missing provider id(s)"
@@ -285,9 +272,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 # but the chance is so small it is not worth the additional overhead of grabbing
                 # the musicbrainz id upfront
                 match = {"sort_name": item.sort_name}
-                for row in await self.mass.music.database.get_rows(
-                    self.db_table, match
-                ):
+                for row in await self.mass.music.database.get_rows(self.db_table, match):
                     row_artist = Artist.from_db_row(row)
                     if row_artist.sort_name == item.sort_name:
                         cur_item = row_artist
@@ -301,9 +286,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             # insert item
             if item.in_library and not item.timestamp:
                 item.timestamp = int(time())
-            new_item = await self.mass.music.database.insert(
-                self.db_table, item.to_db_row()
-            )
+            new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
             item_id = new_item["item_id"]
             # update/set provider_mappings table
             await self._set_provider_mappings(item_id, item.provider_mappings)
@@ -358,12 +341,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         assert not (db_rows and not recursive), "Albums attached to artist"
         for db_row in db_rows:
-            try:
-                await self.mass.music.albums.delete_db_item(
-                    db_row["item_id"], recursive
-                )
-            except MediaNotFoundError:
-                pass
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
 
         # check artist tracks
         db_rows = await self.mass.music.database.get_rows_from_query(
@@ -372,12 +351,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         assert not (db_rows and not recursive), "Tracks attached to artist"
         for db_row in db_rows:
-            try:
-                await self.mass.music.albums.delete_db_item(
-                    db_row["item_id"], recursive
-                )
-            except MediaNotFoundError:
-                pass
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
 
         # delete the artist itself from db
         await super().delete_db_item(item_id)
@@ -410,13 +385,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         # Merge album content with similar tracks
         dynamic_playlist = [
-            *sorted(top_tracks, key=lambda n: random())[:no_of_artist_tracks],
-            *sorted(similar_tracks, key=lambda n: random())[:no_of_similar_tracks],
+            *sorted(top_tracks, key=lambda n: random())[:no_of_artist_tracks],  # noqa: ARG005
+            *sorted(similar_tracks, key=lambda n: random())[:no_of_similar_tracks],  # noqa: ARG005
         ]
-        return sorted(dynamic_playlist, key=lambda n: random())
+        return sorted(dynamic_playlist, key=lambda n: random())  # noqa: ARG005
 
     async def _get_dynamic_tracks(
-        self, media_item: Artist, limit: int = 25
+        self, media_item: Artist, limit: int = 25  # noqa: ARG002
     ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
@@ -426,16 +401,12 @@ class ArtistsController(MediaControllerBase[Artist]):
 
     async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""
-        self.logger.debug(
-            "Trying to match artist %s on provider %s", db_artist.name, provider.name
-        )
+        self.logger.debug("Trying to match artist %s on provider %s", db_artist.name, provider.name)
         # try to get a match with some reference tracks of this artist
-        for ref_track in await self.tracks(
-            db_artist.item_id, db_artist.provider, artist=db_artist
-        ):
+        for ref_track in await self.tracks(db_artist.item_id, db_artist.provider, artist=db_artist):
             # make sure we have a full track
             if isinstance(ref_track.album, ItemMapping):
-                ref_track = await self.mass.music.tracks.get(
+                ref_track = await self.mass.music.tracks.get(  # noqa: PLW2901
                     ref_track.item_id, ref_track.provider
                 )
             for search_str in (
@@ -443,9 +414,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"{db_artist.name} {ref_track.name}",
                 ref_track.name,
             ):
-                search_results = await self.mass.music.tracks.search(
-                    search_str, provider.domain
-                )
+                search_results = await self.mass.music.tracks.search(search_str, provider.domain)
                 for search_result_item in search_results:
                     if search_result_item.sort_name != ref_track.sort_name:
                         continue
@@ -461,9 +430,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                         await self.update_db_item(db_artist.item_id, prov_artist)
                         return True
         # try to get a match with some reference albums of this artist
-        artist_albums = await self.albums(
-            db_artist.item_id, db_artist.provider, artist=db_artist
-        )
+        artist_albums = await self.albums(db_artist.item_id, db_artist.provider, artist=db_artist)
         for ref_album in artist_albums:
             if ref_album.album_type == AlbumType.COMPILATION:
                 continue
@@ -474,19 +441,14 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"{db_artist.name} - {ref_album.name}",
                 f"{db_artist.name} {ref_album.name}",
             ):
-                search_result = await self.mass.music.albums.search(
-                    search_str, provider.domain
-                )
+                search_result = await self.mass.music.albums.search(search_str, provider.domain)
                 for search_result_item in search_result:
                     if search_result_item.artist is None:
                         continue
                     if search_result_item.sort_name != ref_album.sort_name:
                         continue
                     # artist must match 100%
-                    if (
-                        search_result_item.artist.sort_name
-                        != ref_album.artist.sort_name
-                    ):
+                    if search_result_item.artist.sort_name != ref_album.artist.sort_name:
                         continue
                     # 100% match
                     # get full artist details so we have all metadata

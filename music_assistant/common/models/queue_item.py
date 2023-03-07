@@ -56,7 +56,7 @@ class QueueItem(DataClassDictMixin):
     def from_media_item(cls, queue_id: str, media_item: Track | Radio):
         """Construct QueueItem from track/radio item."""
         if media_item.media_type == MediaType.TRACK:
-            artists = "/".join((x.name for x in media_item.artists))
+            artists = "/".join(x.name for x in media_item.artists)
             name = f"{artists} - {media_item.name}"
             # save a lot of data/bandwidth by simplifying nested objects
             media_item.artists = [ItemMapping.from_item(x) for x in media_item.artists]

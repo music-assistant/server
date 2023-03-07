@@ -1,17 +1,23 @@
 """All logic for metadata retrieval."""
 from __future__ import annotations
-import asyncio
 
+import asyncio
 import logging
 import os
 from base64 import b64encode
+from random import shuffle
 from time import time
 from typing import TYPE_CHECKING
 
 import aiofiles
 from aiohttp import web
 
-from music_assistant.common.models.enums import ImageType, MediaType
+from music_assistant.common.models.enums import (
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -25,14 +31,11 @@ from music_assistant.common.models.media_items import (
 from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.helpers.images import create_collage, get_image_thumb
 
-from .audiodb import TheAudioDb
-from .fanarttv import FanartTv
-from .musicbrainz import MusicBrainz
-
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.models.metadata_provider import MetadataProvider
 
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata")
 
 
 class MetaDataController:
@@ -42,13 +45,10 @@ class MetaDataController:
         """Initialize class."""
         self.mass = mass
         self.cache = mass.cache
-        self.fanarttv = FanartTv(mass)
-        self.musicbrainz = MusicBrainz(mass)
-        self.audiodb = TheAudioDb(mass)
         self._pref_lang: str | None = None
         self.scan_busy: bool = False
 
-    async def setup(self):
+    async def setup(self) -> None:
         """Async initialize of module."""
         self.mass.webapp.router.add_get("/imageproxy", self._handle_imageproxy)
 
@@ -56,9 +56,13 @@ class MetaDataController:
         """Handle logic on server stop."""
 
     @property
+    def providers(self) -> list[MetadataProvider]:
+        """Return all loaded/running MetadataProviders."""
+        return self.mass.get_providers(ProviderType.METADATA)  # type: ignore[return-value]
+
+    @property
     def preferred_language(self) -> str:
-        """
-        Return preferred language for metadata as 2 letter country code (uppercase).
+        """Return preferred language for metadata as 2 letter country code (uppercase).
 
         Defaults to English (EN).
         """
@@ -66,8 +70,7 @@ class MetaDataController:
 
     @preferred_language.setter
     def preferred_language(self, lang: str) -> None:
-        """
-        Set preferred language to 2 letter country code.
+        """Set preferred language to 2 letter country code.
 
         Can only be set once.
         """
@@ -76,12 +79,14 @@ class MetaDataController:
 
     def start_scan(self) -> None:
         """Start background scan for missing Artist metadata."""
-        if self.scan_busy:
-            return
 
         async def scan_artist_metadata():
-            """Background task that slowly scans for artists missing metadata on filesystem providers."""
+            """Background task that scans for artists missing metadata on filesystem providers."""
+            if self.scan_busy:
+                return
+
             LOGGER.info("Start scan for missing artist metadata")
+            self.scan_busy = True
             for prov in self.mass.music.providers:
                 if not prov.is_file():
                     continue
@@ -91,15 +96,12 @@ class MetaDataController:
                     if artist.metadata.last_refresh is not None:
                         continue
                     # simply grabbing the full artist will trigger a full fetch
-                    await self.mass.music.artists.get(
-                        artist.item_id, artist.provider, lazy=False
-                    )
+                    await self.mass.music.artists.get(artist.item_id, artist.provider, lazy=False)
                     # this is slow on purpose to not cause stress on the metadata providers
                     await asyncio.sleep(30)
             self.scan_busy = False
             LOGGER.info("Finished scan for missing artist metadata")
 
-        self.scan_busy = True
         self.mass.create_task(scan_artist_metadata)
 
     async def get_artist_metadata(self, artist: Artist) -> None:
@@ -110,23 +112,39 @@ class MetaDataController:
         if not artist.musicbrainz_id:
             artist.musicbrainz_id = await self.get_artist_musicbrainz_id(artist)
 
-        if artist.musicbrainz_id:
-            if metadata := await self.fanarttv.get_artist_metadata(artist):
+        if not artist.musicbrainz_id:
+            return
+
+        # collect metadata from all providers
+        for provider in self.providers:
+            if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
+                continue
+            if metadata := await provider.get_artist_metadata(artist):
                 artist.metadata.update(metadata)
-            if metadata := await self.audiodb.get_artist_metadata(artist):
-                artist.metadata.update(metadata)
+                LOGGER.debug(
+                    "Fetched metadata for Artist %s on provider %s",
+                    artist.name,
+                    provider.name,
+                )
 
     async def get_album_metadata(self, album: Album) -> None:
         """Get/update rich metadata for an album."""
         # set timestamp, used to determine when this function was last called
         album.metadata.last_refresh = int(time())
-
+        # ensure the album has a musicbrainz id or artist
         if not (album.musicbrainz_id or album.artist):
             return
-        if metadata := await self.audiodb.get_album_metadata(album):
-            album.metadata.update(metadata)
-        if metadata := await self.fanarttv.get_album_metadata(album):
-            album.metadata.update(metadata)
+        # collect metadata from all providers
+        for provider in self.providers:
+            if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
+                continue
+            if metadata := await provider.get_album_metadata(album):
+                album.metadata.update(metadata)
+                LOGGER.debug(
+                    "Fetched metadata for Album %s on provider %s",
+                    album.name,
+                    provider.name,
+                )
 
     async def get_track_metadata(self, track: Track) -> None:
         """Get/update rich metadata for a track."""
@@ -135,8 +153,17 @@ class MetaDataController:
 
         if not (track.album and track.artists):
             return
-        if metadata := await self.audiodb.get_track_metadata(track):
-            track.metadata.update(metadata)
+        # collect metadata from all providers
+        for provider in self.providers:
+            if ProviderFeature.TRACK_METADATA not in provider.supported_features:
+                continue
+            if metadata := await provider.get_track_metadata(track):
+                track.metadata.update(metadata)
+                LOGGER.debug(
+                    "Fetched metadata for Track %s on provider %s",
+                    track.name,
+                    provider.name,
+                )
 
     async def get_playlist_metadata(self, playlist: Playlist) -> None:
         """Get/update rich metadata for a playlist."""
@@ -146,14 +173,14 @@ class MetaDataController:
         # TODO: retrieve style/mood ?
         playlist.metadata.genres = set()
         image_urls = set()
-        for track in await self.mass.music.playlists.tracks(
-            playlist.item_id, playlist.provider
-        ):
+        for track in await self.mass.music.playlists.tracks(playlist.item_id, playlist.provider):
             if not playlist.image and track.image:
                 image_urls.add(track.image.url)
             if track.media_type != MediaType.TRACK:
                 # filter out radio items
                 continue
+            assert isinstance(track, Track)
+            assert isinstance(track.album, Album)
             if track.metadata.genres:
                 playlist.metadata.genres.update(track.metadata.genres)
             elif track.album and track.album.metadata.genres:
@@ -175,40 +202,26 @@ class MetaDataController:
     async def get_artist_musicbrainz_id(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         ref_albums = await self.mass.music.artists.albums(artist=artist)
-        # first try audiodb
-        if musicbrainz_id := await self.audiodb.get_musicbrainz_id(artist, ref_albums):
-            return musicbrainz_id
-        # try again with musicbrainz with albums with upc
-        for ref_album in ref_albums:
-            if ref_album.upc:
-                if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
-                    artist.name,
-                    album_upc=ref_album.upc,
-                ):
-                    return musicbrainz_id
-            if ref_album.musicbrainz_id:
-                if musicbrainz_id := await self.musicbrainz.search_artist_by_album_mbid(
-                    artist.name, ref_album.musicbrainz_id
-                ):
-                    return musicbrainz_id
-
-        # try again with matching on track isrc
         ref_tracks = await self.mass.music.artists.tracks(artist=artist)
-        for ref_track in ref_tracks:
-            for isrc in ref_track.isrcs:
-                if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
-                    artist.name,
-                    track_isrc=isrc,
-                ):
-                    return musicbrainz_id
 
-        # last restort: track matching by name
-        for ref_track in ref_tracks:
-            if musicbrainz_id := await self.musicbrainz.get_mb_artist_id(
-                artist.name,
-                trackname=ref_track.name,
+        # randomize providers so average the load
+        providers = self.providers
+        shuffle(providers)
+
+        # try all providers one by one until we have a match
+        for provider in providers:
+            if ProviderFeature.GET_ARTIST_MBID not in provider.supported_features:
+                continue
+            if musicbrainz_id := await provider.get_musicbrainz_artist_id(
+                artist, ref_albums=ref_albums, ref_tracks=ref_tracks
             ):
+                LOGGER.debug(
+                    "Fetched MusicBrainz ID for Artist %s on provider %s",
+                    artist.name,
+                    provider.name,
+                )
                 return musicbrainz_id
+
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
         ref_tracks_str = "/".join(x.name for x in ref_tracks) or "none"

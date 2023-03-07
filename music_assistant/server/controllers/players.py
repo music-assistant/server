@@ -1,8 +1,9 @@
 """Logic to play music from MusicProviders to supported players."""
 from __future__ import annotations
-import asyncio
 
+import asyncio
 import logging
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 
 from music_assistant.common.helpers.util import get_changed_keys
@@ -11,7 +12,6 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
-    ProviderFeature,
     ProviderType,
 )
 from music_assistant.common.models.errors import (
@@ -25,14 +25,12 @@ from music_assistant.constants import CONF_PLAYERS, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.player_provider import PlayerProvider
 
-from .player_queue import PlayerQueuesController
+from .player_queues import PlayerQueuesController
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
-
-# TODO: Implement volume fade effect (https://github.com/Logitech/slimserver/blob/public/8.4/Slim/Player/Player.pm#L373)
 
 
 class PlayerController:
@@ -55,10 +53,10 @@ class PlayerController:
 
     @property
     def providers(self) -> list[PlayerProvider]:
-        """Return all loaded/running MusicProviders (instances)."""
-        return self.mass.get_providers(ProviderType.MUSIC)
+        """Return all loaded/running MusicProviders."""
+        return self.mass.get_providers(ProviderType.MUSIC)  # type: ignore=return-value
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Player]:
         """Iterate over (available) players."""
         return iter(self._players.values())
 
@@ -71,16 +69,14 @@ class PlayerController:
     def get(
         self,
         player_id: str,
-        raise_not_found: bool = False,
         raise_unavailable: bool = False,
-    ) -> Player | None:
-        """Return Player by player_id or None if not found."""
-        player = self._players.get(player_id)
-        if player is None and raise_not_found:
-            raise PlayerUnavailableError(f"Player {player_id} does not exist")
-        if player and not player.available and raise_unavailable:
-            raise PlayerUnavailableError(f"Player {player_id} is not available")
-        return player
+    ) -> Player:
+        """Return Player by player_id."""
+        if player := self._players.get(player_id):
+            if not player.available and raise_unavailable:
+                raise PlayerUnavailableError(f"Player {player_id} is not available")
+            return player
+        raise PlayerUnavailableError(f"Player {player_id} does not exist")
 
     @api_command("players/get_by_name")
     def get_by_name(self, name: str) -> Player | None:
@@ -100,7 +96,7 @@ class PlayerController:
     @api_command("players/register")
     def register(self, player: Player) -> None:
         """Register a new player on the controller."""
-        if self.mass.closed:
+        if self.mass.closing:
             return
         player_id = player.player_id
 
@@ -117,14 +113,12 @@ class PlayerController:
             player_id,
             player.name,
         )
-        self.mass.signal_event(
-            EventType.PLAYER_ADDED, object_id=player.player_id, data=player
-        )
+        self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
 
     @api_command("players/register_or_update")
     def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
-        if self.mass.closed:
+        if self.mass.closing:
             return
 
         if player.player_id in self._players:
@@ -134,7 +128,7 @@ class PlayerController:
         self.register(player)
 
     @api_command("players/remove")
-    def remove(self, player_id: str):
+    def remove(self, player_id: str) -> None:
         """Remove a player from the registry."""
         player = self._players.pop(player_id, None)
         if player is None:
@@ -186,14 +180,12 @@ class PlayerController:
         if len(changed_keys) == 0:
             return
 
-        self.mass.signal_event(
-            EventType.PLAYER_UPDATED, object_id=player_id, data=player
-        )
+        self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
         if skip_forward:
             return
         if player.type == PlayerType.GROUP:
-            # update group player childs when parent updates
+            # update group player child's when parent updates
             for child_player_id in player.group_childs:
                 if child_player_id == player_id:
                     continue
@@ -213,9 +205,9 @@ class PlayerController:
 
     @api_command("players/cmd/stop")
     async def cmd_stop(self, player_id: str) -> None:
-        """
-        Send STOP command to given player.
-            - player_id: player_id of the player to handle the command.
+        """Send STOP command to given player.
+
+        - player_id: player_id of the player to handle the command.
         """
         player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
@@ -223,9 +215,9 @@ class PlayerController:
 
     @api_command("players/cmd/play")
     async def cmd_play(self, player_id: str) -> None:
-        """
-        Send PLAY (unpause) command to given player.
-            - player_id: player_id of the player to handle the command.
+        """Send PLAY (unpause) command to given player.
+
+        - player_id: player_id of the player to handle the command.
         """
         player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
@@ -233,15 +225,15 @@ class PlayerController:
 
     @api_command("players/cmd/pause")
     async def cmd_pause(self, player_id: str) -> None:
-        """
-        Send PAUSE command to given player.
-            - player_id: player_id of the player to handle the command.
+        """Send PAUSE command to given player.
+
+        - player_id: player_id of the player to handle the command.
         """
         player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_pause(player_id)
 
-        async def _watch_pause(_player_id):
+        async def _watch_pause(_player_id: str) -> None:
             player = self.get(_player_id)
             count = 0
             # wait for pause
@@ -264,11 +256,11 @@ class PlayerController:
 
     @api_command("players/cmd/play_pause")
     async def cmd_play_pause(self, player_id: str) -> None:
+        """Toggle play/pause on given player.
+
+        - player_id: player_id of the player to handle the command.
         """
-        Toggle play/pause on given player.
-            - player_id: player_id of the player to handle the command.
-        """
-        player = self.get(player_id, True, True)
+        player = self.get(player_id, True)
         if player.state == PlayerState.PLAYING:
             await self.cmd_pause(player_id)
         else:
@@ -276,15 +268,14 @@ class PlayerController:
 
     @api_command("players/cmd/power")
     async def cmd_power(self, player_id: str, powered: bool) -> None:
-        """
-        Send POWER command to given player.
-            - player_id: player_id of the player to handle the command.
-            - powered: bool if player should be powered on or off.
-        """
+        """Send POWER command to given player.
 
+        - player_id: player_id of the player to handle the command.
+        - powered: bool if player should be powered on or off.
+        """
         # TODO: Implement PlayerControl
         # TODO: Handle group power
-        player = self.get(player_id, True, True)
+        player = self.get(player_id, True)
         if player.powered == powered:
             return
         # stop player at power off
@@ -299,13 +290,13 @@ class PlayerController:
 
     @api_command("players/cmd/volume_set")
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """
-        Send VOLUME_SET command to given player.
-            - player_id: player_id of the player to handle the command.
-            - volume_level: volume level (0..100) to set on the player.
+        """Send VOLUME_SET command to given player.
+
+        - player_id: player_id of the player to handle the command.
+        - volume_level: volume level (0..100) to set on the player.
         """
         # TODO: Implement PlayerControl
-        player = self.get(player_id, True, True)
+        player = self.get(player_id, True)
         if PlayerFeature.VOLUME_SET not in player.supported_features:
             LOGGER.warning(
                 "Volume set command called but player %s does not support volume",
@@ -319,43 +310,37 @@ class PlayerController:
 
     @api_command("players/cmd/group_volume")
     async def cmd_group_volume(self, player_id: str, volume_level: int) -> None:
-        """
-        Send VOLUME_SET command to given playergroup.
+        """Send VOLUME_SET command to given playergroup.
 
-        Will send the new (average) volume level to group childs.
+        Will send the new (average) volume level to group child's.
             - player_id: player_id of the playergroup to handle the command.
             - volume_level: volume level (0..100) to set on the player.
         """
-        group_player = self.get(player_id, True, True)
+        group_player = self.get(player_id, True)
+        assert group_player
         # handle group volume by only applying the volume to powered members
         cur_volume = group_player.volume_level
         new_volume = volume_level
         volume_dif = new_volume - cur_volume
-        if cur_volume == 0:
-            volume_dif_percent = 1 + (new_volume / 100)
-        else:
-            volume_dif_percent = volume_dif / cur_volume
+        volume_dif_percent = 1 + new_volume / 100 if cur_volume == 0 else volume_dif / cur_volume
         coros = []
         for child_player in self._get_child_players(group_player, True):
             cur_child_volume = child_player.volume_level
-            new_child_volume = int(
-                cur_child_volume + (cur_child_volume * volume_dif_percent)
-            )
+            new_child_volume = int(cur_child_volume + (cur_child_volume * volume_dif_percent))
             coros.append(self.cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
     @api_command("players/cmd/volume_mute")
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
+        """Send VOLUME_MUTE command to given player.
+
+        - player_id: player_id of the player to handle the command.
+        - muted: bool if player should be muted.
         """
-        Send VOLUME_MUTE command to given player.
-            - player_id: player_id of the player to handle the command.
-            - muted: bool if player should be muted.
-        """
-        player = self.get(player_id, True, True)
+        player = self.get(player_id, True)
+        assert player
         if PlayerFeature.VOLUME_MUTE not in player.supported_features:
-            LOGGER.warning(
-                "Mute command called but player %s does not support muting", player_id
-            )
+            LOGGER.warning("Mute command called but player %s does not support muting", player_id)
             player.volume_muted = muted
             self.update(player_id)
             return
@@ -365,8 +350,7 @@ class PlayerController:
 
     @api_command("players/cmd/sync")
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
-        """
-        Handle SYNC command for given player.
+        """Handle SYNC command for given player.
 
         Join/add the given player(id) to the given (master) player/sync group.
         If the player is already synced to another player, it will be unsynced there first.
@@ -376,8 +360,10 @@ class PlayerController:
             - player_id: player_id of the player to handle the command.
             - target_player: player_id of the syncgroup master or group player.
         """
-        child_player = self.get(player_id, True, True)
-        parent_player = self.get(target_player, True, True)
+        child_player = self.get(player_id, True)
+        parent_player = self.get(target_player, True)
+        assert child_player
+        assert parent_player
         if PlayerFeature.SYNC not in child_player.supported_features:
             raise UnsupportedFeaturedException(
                 f"Player {child_player.name} does not support (un)sync commands"
@@ -391,9 +377,7 @@ class PlayerController:
                 f"Player {target_player} is already synced to another player."
             )
         if player_id not in parent_player.can_sync_with:
-            raise PlayerCommandFailed(
-                f"Player {player_id} can not be synced to {target_player}."
-            )
+            raise PlayerCommandFailed(f"Player {player_id} can not be synced to {target_player}.")
         if child_player.synced_to:
             if child_player.synced_to == parent_player.player_id:
                 # nothing to do: already synced to this parent
@@ -409,8 +393,7 @@ class PlayerController:
 
     @api_command("players/cmd/unsync")
     async def cmd_unsync(self, player_id: str) -> None:
-        """
-        Handle UNSYNC command for given player.
+        """Handle UNSYNC command for given player.
 
         Remove the given player from any syncgroups it currently is synced to.
         If the player is not currently synced to any other player,
@@ -418,11 +401,9 @@ class PlayerController:
 
             - player_id: player_id of the player to handle the command.
         """
-        player = self.get(player_id, True, True)
+        player = self.get(player_id, True)
         if PlayerFeature.SYNC not in player.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {player.name} does not support syncing"
-            )
+            raise UnsupportedFeaturedException(f"Player {player.name} does not support syncing")
         if not player.synced_to:
             LOGGER.info(
                 "Ignoring command to unsync player %s "
@@ -434,78 +415,11 @@ class PlayerController:
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_unsync(player_id)
 
-    @api_command("players/cmd/set_group_members")
-    async def cmd_set_group_members(self, player_id: str, members: list[str]) -> None:
-        """
-        Handle SET_GROUP_MEMBERS command for given playergroup.
-
-        Update the memberlist of the given PlayerGroup.
-
-            - player_id: player_id of the groupplayer to handle the command.
-            - members: list of player ids to set as members.
-        """
-        player = self.get(player_id, True, True)
-        if player.type != PlayerType.GROUP:
-            raise UnsupportedFeaturedException(f"{player.name} is not a PlayerGroup")
-        if PlayerFeature.SET_MEMBERS not in player.supported_features:
-            raise UnsupportedFeaturedException(
-                f"PlayerGroup {player.name} does not support updating the members"
-            )
-        for member_id in members:
-            member_player = self.get(member_id, True, True)
-            if (
-                member_player.player_id not in player.can_sync_with
-                and "*" not in player.can_sync_with
-            ):
-                raise PlayerCommandFailed(
-                    f"Player {member_id} can not be a member of {player_id}."
-                )
-
-        # all checks passed, forward command to the player provider
-        player_provider = self.get_player_provider(player_id)
-        await player_provider.cmd_set_group_members(
-            player_id,
-        )
-
-    @api_command("players/cmd/create_group")
-    async def create_group(
-        self, name: str, provider: str = "universal_group"
-    ) -> Player:
-        """
-        Handle CREATE_GROUP command on the given player provider.
-
-            - name: name for the new group.
-            - provider: provider domain or instance id of the player provider.
-              defaults to the `universal_group` provider
-
-        Returns the newly created PlayerGroup.
-        """
-        player_provider = self.mass.get_provider(provider)
-        if ProviderFeature.CREATE_GROUP not in player_provider.supported_features:
-            raise UnsupportedFeaturedException(
-                f"{player_provider.name} does not support group creation"
-            )
-        return await player_provider.cmd_create_group(name)
-
-    @api_command("players/cmd/delete_group")
-    async def cmd_delete_group(self, player_id: str) -> None:
-        """
-        Handle DELETE_GROUP command on the given player provider.
-
-            - player_id: id of the group player to remove.
-        """
-        player_provider = self.get_player_provider(player_id)
-        if ProviderFeature.DELETE_GROUP not in player_provider.supported_features:
-            raise UnsupportedFeaturedException(
-                f"{player_provider.name} does not support group deletions."
-            )
-        return await player_provider.cmd_delete_group(player_id)
-
     def _check_redirect(self, player_id: str) -> str:
         """Check if playback related command should be redirected."""
-        player = self.get(player_id, True, True)
+        player = self.get(player_id, True)
         if player.synced_to:
-            sync_master = self.get(player.synced_to, True, True)
+            sync_master = self.get(player.synced_to, True)
             LOGGER.warning(
                 "Player %s is synced to %s and can not accept "
                 "playback related commands itself, "
@@ -560,7 +474,7 @@ class PlayerController:
         only_playing: bool = False,
     ) -> list[Player]:
         """Get (child) players attached to a grouped player."""
-        child_players = []
+        child_players: list[Player] = []
         if not player.group_childs:
             # player is not a group
             return child_players
@@ -589,8 +503,7 @@ class PlayerController:
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
                 player_playing = (
-                    player.active_queue == player.player_id
-                    and player.state == PlayerState.PLAYING
+                    player.active_queue == player.player_id and player.state == PlayerState.PLAYING
                 )
                 if player_playing:
                     self.update(player_id)
@@ -609,7 +522,7 @@ class PlayerController:
                         except PlayerUnavailableError:
                             player.available = False
                             self.update(player_id)
-                        except Exception as err:
+                        except Exception as err:  # pylint: disable=broad-except
                             LOGGER.warning(
                                 "Error while requesting latest state from player %s: %s",
                                 player.display_name,

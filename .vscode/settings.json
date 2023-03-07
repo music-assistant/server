@@ -1,10 +1,10 @@
 {
-    "python.linting.pylintArgs": ["--rcfile=${workspaceFolder}/setup.cfg"],
-    "python.linting.enabled": true,
-    "python.linting.flake8Enabled": true,
-    "python.linting.flake8Args": ["--config=${workspaceFolder}/setup.cfg"],
-    "python.linting.mypyEnabled": true,
-    "python.testing.pytestArgs": [
-        "tests"
-    ]
+    "[python]": {
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.fixAll": true,
+            "source.organizeImports": true
+        }
+    },
+    "python.formatting.provider": "black"
 }

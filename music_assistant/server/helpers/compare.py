@@ -1,8 +1,6 @@
 """Several helper/utils to compare objects."""
 from __future__ import annotations
 
-from typing import List, Union
-
 from music_assistant.common.helpers.util import create_safe_string, create_sort_name
 from music_assistant.common.models.enums import AlbumType
 from music_assistant.common.models.media_items import (
@@ -69,8 +67,8 @@ def compare_explicit(left: MediaItemMetadata, right: MediaItemMetadata) -> bool:
 
 
 def compare_artist(
-    left_artist: Union[Artist, ItemMapping],
-    right_artist: Union[Artist, ItemMapping],
+    left_artist: Artist | ItemMapping,
+    right_artist: Artist | ItemMapping,
 ) -> bool:
     """Compare two artist items and return True if they match."""
     if left_artist is None or right_artist is None:
@@ -90,8 +88,8 @@ def compare_artist(
 
 
 def compare_artists(
-    left_artists: List[Union[Artist, ItemMapping]],
-    right_artists: List[Union[Artist, ItemMapping]],
+    left_artists: list[Artist | ItemMapping],
+    right_artists: list[Artist | ItemMapping],
     any_match: bool = False,
 ) -> bool:
     """Compare two lists of artist and return True if both lists match (exactly)."""
@@ -106,13 +104,10 @@ def compare_artists(
 
 
 def compare_item_ids(
-    left_item: Union[MediaItem, ItemMapping], right_item: Union[MediaItem, ItemMapping]
+    left_item: MediaItem | ItemMapping, right_item: MediaItem | ItemMapping
 ) -> bool:
     """Compare item_id(s) of two media items."""
-    if (
-        left_item.provider == right_item.provider
-        and left_item.item_id == right_item.item_id
-    ):
+    if left_item.provider == right_item.provider and left_item.item_id == right_item.item_id:
         return True
 
     left_prov_ids = getattr(left_item, "provider_mappings", None)
@@ -128,10 +123,7 @@ def compare_item_ids(
 
     if right_prov_ids is not None:
         for prov_r in right_item.provider_mappings:
-            if (
-                prov_r.provider_domain == left_item.provider
-                and prov_r.item_id == left_item.item_id
-            ):
+            if prov_r.provider_domain == left_item.provider and prov_r.item_id == left_item.item_id:
                 return True
 
     if left_prov_ids is not None and right_prov_ids is not None:
@@ -145,8 +137,8 @@ def compare_item_ids(
 
 
 def compare_albums(
-    left_albums: List[Union[Album, ItemMapping]],
-    right_albums: List[Union[Album, ItemMapping]],
+    left_albums: list[Album | ItemMapping],
+    right_albums: list[Album | ItemMapping],
 ):
     """Compare two lists of albums and return True if a match was found."""
     for left_album in left_albums:
@@ -157,8 +149,8 @@ def compare_albums(
 
 
 def compare_album(
-    left_album: Union[Album, ItemMapping],
-    right_album: Union[Album, ItemMapping],
+    left_album: Album | ItemMapping,
+    right_album: Album | ItemMapping,
 ):
     """Compare two album items and return True if they match."""
     if left_album is None or right_album is None:
@@ -168,14 +160,16 @@ def compare_album(
         return True
 
     # prefer match on UPC
-    if getattr(left_album, "upc", None) and getattr(right_album, "upc", None):
-        if (left_album.upc in right_album.upc) or (right_album.upc in left_album.upc):
-            return True
+    if (
+        getattr(left_album, "upc", None)
+        and getattr(right_album, "upc", None)
+        and (left_album.upc in right_album.upc)
+        or (right_album.upc in left_album.upc)
+    ):
+        return True
     # prefer match on musicbrainz_id
     # not present on ItemMapping
-    if getattr(left_album, "musicbrainz_id", None) and getattr(
-        right_album, "musicbrainz_id", None
-    ):
+    if getattr(left_album, "musicbrainz_id", None) and getattr(right_album, "musicbrainz_id", None):
         return left_album.musicbrainz_id == right_album.musicbrainz_id
 
     # fallback to comparing
@@ -185,9 +179,12 @@ def compare_album(
         return False
     # compare album artist
     # Note: Not present on ItemMapping
-    if hasattr(left_album, "artist") and hasattr(right_album, "artist"):
-        if not compare_artist(left_album.artist, right_album.artist):
-            return False
+    if (
+        hasattr(left_album, "artist")
+        and hasattr(right_album, "artist")
+        and not compare_artist(left_album.artist, right_album.artist)
+    ):
+        return False
     return left_album.sort_name == right_album.sort_name
 
 
@@ -203,10 +200,13 @@ def compare_track(left_track: Track, right_track: Track):
             # ISRC is always 100% accurate match
             if left_isrc == right_isrc:
                 return True
-    if left_track.musicbrainz_id and right_track.musicbrainz_id:
-        if left_track.musicbrainz_id == right_track.musicbrainz_id:
-            # musicbrainz_id is always 100% accurate match
-            return True
+    if (
+        left_track.musicbrainz_id
+        and right_track.musicbrainz_id
+        and left_track.musicbrainz_id == right_track.musicbrainz_id
+    ):
+        # musicbrainz_id is always 100% accurate match
+        return True
     # album is required for track linking
     if left_track.album is None or right_track.album is None:
         return False

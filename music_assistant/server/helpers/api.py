@@ -1,36 +1,22 @@
 """Several helpers for the WebSockets API."""
 from __future__ import annotations
-from enum import Enum
+
 import asyncio
-from datetime import datetime
 import inspect
 import logging
-from types import NoneType, UnionType
 import weakref
+from collections.abc import Callable, Coroutine
 from concurrent import futures
 from contextlib import suppress
 from dataclasses import MISSING, dataclass
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Coroutine,
-    Final,
-    TypeVar,
-    Union,
-    get_args,
-    get_origin,
-    get_type_hints,
-)
+from datetime import datetime
+from enum import Enum
+from types import NoneType, UnionType
+from typing import TYPE_CHECKING, Any, Final, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from aiohttp import WSMsgType, web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
-
-from music_assistant.common.models.errors import InvalidCommand
-from music_assistant.common.models.event import MassEvent
-from music_assistant.constants import __version__
-
 from music_assistant.common.models.api import (
     CommandMessage,
     ErrorResultMessage,
@@ -38,6 +24,9 @@ from music_assistant.common.models.api import (
     ServerInfoMessage,
     SuccessResultMessage,
 )
+from music_assistant.common.models.errors import InvalidCommand
+from music_assistant.common.models.event import MassEvent
+from music_assistant.constants import __version__
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
@@ -64,7 +53,7 @@ class APICommandHandler:
     @classmethod
     def parse(
         cls, command: str, func: Callable[..., Coroutine[Any, Any, Any]]
-    ) -> "APICommandHandler":
+    ) -> APICommandHandler:
         """Parse APICommandHandler by providing a function."""
         return APICommandHandler(
             command=command,
@@ -102,10 +91,7 @@ def parse_arguments(
     # parse arguments to correct type
     for name, param in func_sig.parameters.items():
         value = args.get(name)
-        if param.default is inspect.Parameter.empty:
-            default = MISSING
-        else:
-            default = param.default
+        default = MISSING if param.default is inspect.Parameter.empty else param.default
         final_args[name] = parse_value(name, value, func_types[name], default)
     return final_args
 
@@ -122,8 +108,7 @@ def mount_websocket_api(mass: MusicAssistant, path: str) -> None:
         finally:
             clients.remove(connection)
 
-    async def _handle_shutdown(app: web.Application) -> None:
-        # pylint: disable=unused-argument
+    async def _handle_shutdown(app: web.Application) -> None:  # noqa: ARG001
         for client in set(clients):
             await client.disconnect()
 
@@ -160,7 +145,7 @@ class WebsocketClientHandler:
 
     async def handle_client(self) -> web.WebSocketResponse:
         """Handle a websocket response."""
-        # pylint: disable=too-many-branches
+        # ruff: noqa: PLR0915
         request = self.request
         wsock = self.wsock
         try:
@@ -176,9 +161,7 @@ class WebsocketClientHandler:
 
         # send server(version) info when client connects
         self._send_message(
-            ServerInfoMessage(
-                server_version=__version__, schema_version=API_SCHEMA_VERSION
-            )
+            ServerInfoMessage(server_version=__version__, schema_version=API_SCHEMA_VERSION)
         )
 
         # forward all events to clients
@@ -259,9 +242,7 @@ class WebsocketClientHandler:
         # schedule task to handle the command
         asyncio.create_task(self._run_handler(handler, msg))
 
-    async def _run_handler(
-        self, handler: APICommandHandler, msg: CommandMessage
-    ) -> None:
+    async def _run_handler(self, handler: APICommandHandler, msg: CommandMessage) -> None:
         try:
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result = handler.target(**args)
@@ -271,9 +252,7 @@ class WebsocketClientHandler:
         except Exception as err:  # pylint: disable=broad-except
             self._logger.exception("Error handling message: %s", msg)
             self._send_message(
-                ErrorResultMessage(
-                    msg.message_id, getattr(err, "error_code", 999), str(err)
-                )
+                ErrorResultMessage(msg.message_id, getattr(err, "error_code", 999), str(err))
             )
 
     async def _writer(self) -> None:
@@ -293,8 +272,7 @@ class WebsocketClientHandler:
                 await self.wsock.send_str(message)
 
     def _send_message(self, message: MessageType) -> None:
-        """
-        Send a message to the client.
+        """Send a message to the client.
 
         Closes connection if the client is not reading the messages.
 
@@ -305,9 +283,7 @@ class WebsocketClientHandler:
         try:
             self._to_write.put_nowait(_message)
         except asyncio.QueueFull:
-            self._logger.error(
-                "Client exceeded max pending messages: %s", MAX_PENDING_MSG
-            )
+            self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
             self._cancel()
 
@@ -326,7 +302,6 @@ def parse_utc_timestamp(datetime_string: str) -> datetime:
 
 def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) -> Any:
     """Try to parse a value from raw (json) data and type annotations."""
-
     if isinstance(value, dict) and hasattr(value_type, "from_dict"):
         if "media_type" in value and value["media_type"] != value_type.media_type:
             raise ValueError("Invalid MediaType")

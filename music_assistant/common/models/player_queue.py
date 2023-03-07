@@ -1,13 +1,14 @@
 """Model(s) for PlayerQueue."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import time
+from dataclasses import dataclass, field
+
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.media_items import MediaItemType
-from .enums import PlayerState, RepeatMode
 
+from .enums import PlayerState, RepeatMode
 from .queue_item import QueueItem
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import random
 import time
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.util import get_changed_keys
 from music_assistant.common.models.enums import (
@@ -31,8 +31,11 @@ from music_assistant.constants import (
 from music_assistant.server.helpers.api import api_command
 
 if TYPE_CHECKING:
-    from .players import PlayerController
+    from collections.abc import Iterator
+
     from music_assistant.common.models.player import Player
+
+    from .players import PlayerController
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players.queue")
 
@@ -78,7 +81,7 @@ class PlayerQueuesController:
     @api_command("players/queue/get_active_queue")
     def get_active_queue(self, player_id: str) -> PlayerQueue:
         """Return the current active/synced queue for a player."""
-        player = self.mass.players.get(player_id, True)
+        player = self.mass.players.get(player_id)
         return self.get(player.active_queue)
 
     # Queue commands
@@ -136,14 +139,14 @@ class PlayerQueuesController:
         media: MediaItemType | list[MediaItemType] | str | list[str],
         option: QueueOption = QueueOption.PLAY,
         radio_mode: bool = False,
-    ) -> str:
-        """
-        Play media item(s) on the given queue.
+    ) -> None:
+        """Play media item(s) on the given queue.
 
         - media: Media that should be played (MediaItem(s) or uri's).
         - queue_opt: Which enqueue mode to use.
         - radio_mode: Enable radio mode for the given item(s).
         """
+        # pylint: disable=too-many-branches
         queue = self._queues[queue_id]
         if queue.announcement_in_progress:
             LOGGER.warning("Ignore queue command: An announcement is in progress")
@@ -154,9 +157,7 @@ class PlayerQueuesController:
             media = [media]
 
         # clear queue first if it was finished
-        if queue.current_index and queue.current_index >= (
-            len(self._queue_items[queue_id]) - 1
-        ):
+        if queue.current_index and queue.current_index >= (len(self._queue_items[queue_id]) - 1):
             queue.current_index = None
             self._queue_items[queue_id] = []
 
@@ -191,17 +192,13 @@ class PlayerQueuesController:
                 MediaType.ALBUM,
                 MediaType.PLAYLIST,
             ):
-                tracks += await ctrl.tracks(
-                    media_item.item_id, provider_domain=media_item.provider
-                )
+                tracks += await ctrl.tracks(media_item.item_id, provider_domain=media_item.provider)
             else:
                 # single track or radio item
                 tracks += [media_item]
 
         # only add valid/available items
-        queue_items = [
-            QueueItem.from_media_item(queue_id, x) for x in tracks if x and x.available
-        ]
+        queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x and x.available]
 
         # load the items into the queue
         cur_index = queue.index_in_buffer or 0
@@ -261,7 +258,7 @@ class PlayerQueuesController:
         - queue_item_id: the item_id of the queueitem that needs to be moved.
         - pos_shift: move item x positions down if positive value
         - pos_shift: move item x positions up if negative value
-        - pos_shift:  move item to top of queue as next item if 0
+        - pos_shift:  move item to top of queue as next item if 0.
         """
         queue = self._queues[queue_id]
         item_index = self.index_by_id(queue_id, queue_item_id)
@@ -287,7 +284,7 @@ class PlayerQueuesController:
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
         if isinstance(item_id_or_index, str):
-            item_index = self.index_by_id(item_id_or_index)
+            item_index = self.index_by_id(queue_id, item_id_or_index)
         else:
             item_index = item_id_or_index
         queue = self._queues[queue_id]
@@ -315,12 +312,11 @@ class PlayerQueuesController:
     async def stop(self, queue_id: str) -> None:
         """
         Handle STOP command for given queue.
-            - queue_id: queue_id of the playerqueue to handle the command.
+
+        - queue_id: queue_id of the playerqueue to handle the command.
         """
         if self._queues[queue_id].announcement_in_progress:
-            LOGGER.warning(
-                "Ignore queue command for %s because an announcement is in progress."
-            )
+            LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
             return
         # simply forward the command to underlying player
         await self.players.cmd_stop(queue_id)
@@ -329,12 +325,11 @@ class PlayerQueuesController:
     async def play(self, queue_id: str) -> None:
         """
         Handle PLAY command for given queue.
-            - queue_id: queue_id of the playerqueue to handle the command.
+
+        - queue_id: queue_id of the playerqueue to handle the command.
         """
         if self._queues[queue_id].announcement_in_progress:
-            LOGGER.warning(
-                "Ignore queue command for %s because an announcement is in progress."
-            )
+            LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
             return
         if self._queues[queue_id].state == PlayerState.PAUSED:
             # simply forward the command to underlying player
@@ -344,23 +339,21 @@ class PlayerQueuesController:
 
     @api_command("players/queue/pause")
     async def pause(self, queue_id: str) -> None:
-        """
-        Handle PAUSE command for given queue.
-            - queue_id: queue_id of the playerqueue to handle the command.
+        """Handle PAUSE command for given queue.
+
+        - queue_id: queue_id of the playerqueue to handle the command.
         """
         if self._queues[queue_id].announcement_in_progress:
-            LOGGER.warning(
-                "Ignore queue command for %s because an announcement is in progress."
-            )
+            LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
             return
         # simply forward the command to underlying player
         await self.players.cmd_pause(queue_id)
 
     @api_command("players/queue/play_pause")
     async def play_pause(self, queue_id: str) -> None:
-        """
-        Toggle play/pause on given playerqueue.
-            - queue_id: queue_id of the queue to handle the command.
+        """Toggle play/pause on given playerqueue.
+
+        - queue_id: queue_id of the queue to handle the command.
         """
         if self._queues[queue_id].state == PlayerState.PLAYING:
             await self.pause(queue_id)
@@ -369,21 +362,21 @@ class PlayerQueuesController:
 
     @api_command("players/queue/next")
     async def next(self, queue_id: str) -> None:
-        """
-        Handle NEXT TRACK command for given queue.
-            - queue_id: queue_id of the queue to handle the command.
+        """Handle NEXT TRACK command for given queue.
+
+        - queue_id: queue_id of the queue to handle the command.
         """
         current_index = self._queues[queue_id].current_index
         next_index = self.get_next_index(queue_id, current_index, True)
         if next_index is None:
-            return None
+            return
         await self.play_index(queue_id, next_index)
 
     @api_command("players/queue/previous")
     async def previous(self, queue_id: str) -> None:
-        """
-        Handle PREVIOUS TRACK command for given queue.
-            - queue_id: queue_id of the queue to handle the command.
+        """Handle PREVIOUS TRACK command for given queue.
+
+        - queue_id: queue_id of the queue to handle the command.
         """
         current_index = self._queues[queue_id].current_index
         if current_index is None:
@@ -392,21 +385,19 @@ class PlayerQueuesController:
 
     @api_command("players/queue/skip")
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
-        """
-        Handle SKIP command for given queue.
+        """Handle SKIP command for given queue.
 
-            - queue_id: queue_id of the queue to handle the command.
-            - seconds: number of seconds to skip in track. Use negative value to skip back.
+        - queue_id: queue_id of the queue to handle the command.
+        - seconds: number of seconds to skip in track. Use negative value to skip back.
         """
         await self.seek(queue_id, self._queues[queue_id].elapsed_time + seconds)
 
     @api_command("players/queue/seek")
     async def seek(self, queue_id: str, position: int = 10) -> None:
-        """
-        Handle SEEK command for given queue.
+        """Handle SEEK command for given queue.
 
-            - queue_id: queue_id of the queue to handle the command.
-            - position: position in seconds to seek to in the current playing item.
+        - queue_id: queue_id of the queue to handle the command.
+        - position: position in seconds to seek to in the current playing item.
         """
         queue = self._queues[queue_id]
         assert queue.current_item, "No item loaded"
@@ -422,10 +413,9 @@ class PlayerQueuesController:
 
     @api_command("players/queue/resume")
     async def resume(self, queue_id: str) -> None:
-        """
-        Handle RESUME command for given queue.
+        """Handle RESUME command for given queue.
 
-            - queue_id: queue_id of the queue to handle the command.
+        - queue_id: queue_id of the queue to handle the command.
         """
         queue = self._queues[queue_id]
         queue_items = self._queue_items[queue_id]
@@ -449,9 +439,7 @@ class PlayerQueuesController:
         if resume_item is not None:
             resume_pos = resume_pos if resume_pos > 10 else 0
             fade_in = resume_pos > 0
-            await self.play_index(
-                queue_id, resume_item.queue_item_id, resume_pos, fade_in
-            )
+            await self.play_index(queue_id, resume_item.queue_item_id, resume_pos, fade_in)
         else:
             raise QueueEmpty(f"Resume queue requested but queue {queue_id} is empty")
 
@@ -466,9 +454,7 @@ class PlayerQueuesController:
         """Play item at index (or item_id) X in queue."""
         queue = self._queues[queue_id]
         if queue.announcement_in_progress:
-            LOGGER.warning(
-                "Ignore queue command for %s because an announcement is in progress."
-            )
+            LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
             return
         if isinstance(index, str):
             index = self.index_by_id(queue_id, index)
@@ -481,9 +467,7 @@ class PlayerQueuesController:
         await self.mass.players.cmd_power(queue_id, True)
         # execute the play_media command on the player(s)
         player_prov = self.mass.players.get_player_provider(queue_id)
-        flow_mode = self.mass.config.get_player_config_value(
-            queue.queue_id, CONF_FLOW_MODE
-        )
+        flow_mode = self.mass.config.get_player_config_value(queue.queue_id, CONF_FLOW_MODE)
         queue.flow_mode = flow_mode.value
         await player_prov.cmd_play_media(
             queue_id,
@@ -501,9 +485,7 @@ class PlayerQueuesController:
         # try to restore previous state
         if prev_state := await self.mass.cache.get(f"queue.state.{queue_id}"):
             queue = PlayerQueue.from_dict(prev_state)
-            prev_items = await self.mass.cache.get(
-                f"queue.items.{queue_id}", default=[]
-            )
+            prev_items = await self.mass.cache.get(f"queue.items.{queue_id}", default=[])
             queue_items = [QueueItem.from_dict(x) for x in prev_items]
         else:
             queue = PlayerQueue(
@@ -545,9 +527,10 @@ class PlayerQueuesController:
             if player_item_index is not None:
                 if queue.flow_mode:
                     # flow mode active, calculate current item
-                    queue.current_index, queue.elapsed_time = self.__get_queue_stream_index(
-                        queue, player, player_item_index
-                    )
+                    (
+                        queue.current_index,
+                        queue.elapsed_time,
+                    ) = self.__get_queue_stream_index(queue, player, player_item_index)
                 else:
                     queue.current_index = player_item_index
 
@@ -579,10 +562,13 @@ class PlayerQueuesController:
                 data=queue.elapsed_time,
             )
         # do not send full updates if only time was updated
-        if changed_keys == {"elapsed_time_last_updated"} or changed_keys == {
-            "elapsed_time",
-            "elapsed_time_last_updated",
-        }:
+        if changed_keys in (
+            {"elapsed_time_last_updated"},
+            {
+                "elapsed_time",
+                "elapsed_time_last_updated",
+            },
+        ):
             # ignore
             return
 
@@ -604,8 +590,7 @@ class PlayerQueuesController:
     def player_ready_for_next_track(
         self, queue_or_player_id: str, current_item_id: str | None = None
     ) -> tuple[QueueItem, bool]:
-        """
-        Call when a player is ready to load the next track into the buffer.
+        """Call when a player is ready to load the next track into the buffer.
 
         The result is a tuple of the next QueueItem to Play,
         and a bool if the player should crossfade (if supported).
@@ -647,8 +632,7 @@ class PlayerQueuesController:
         keep_remaining: bool = True,
         shuffle: bool = False,
     ) -> None:
-        """
-        Load new items at index.
+        """Load new items at index.
 
         - queue_id: id of the queue to process this request.
         - queue_items: a list of QueueItems
@@ -656,7 +640,6 @@ class PlayerQueuesController:
         - keep_remaining: keep the remaining items after the insert
         - shuffle: (re)shuffle the items after insert index
         """
-
         # keep previous/played items, append the new ones
         prev_items = self._queue_items[queue_id][:insert_at_index]
         next_items = queue_items
@@ -680,9 +663,7 @@ class PlayerQueuesController:
 
     # Helper methods
 
-    def get_item(
-        self, queue_id: str, item_id_or_index: int | str | None
-    ) -> QueueItem | None:
+    def get_item(self, queue_id: str, item_id_or_index: int | str | None) -> QueueItem | None:
         """Get queue item by index or item_id."""
         if item_id_or_index is None:
             return None
@@ -690,9 +671,7 @@ class PlayerQueuesController:
         if isinstance(item_id_or_index, int) and len(queue_items) > item_id_or_index:
             return queue_items[item_id_or_index]
         if isinstance(item_id_or_index, str):
-            return next(
-                (x for x in queue_items if x.queue_item_id == item_id_or_index), None
-            )
+            return next((x for x in queue_items if x.queue_item_id == item_id_or_index), None)
         return None
 
     def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
@@ -703,9 +682,7 @@ class PlayerQueuesController:
                 return index
         return None
 
-    def get_next_index(
-        self, queue_id: str, cur_index: int | None, is_skip: bool = False
-    ) -> int:
+    def get_next_index(self, queue_id: str, cur_index: int | None, is_skip: bool = False) -> int:
         """Return the next index for the queue, accounting for repeat settings."""
         queue = self._queues[queue_id]
         queue_items = self._queue_items[queue_id]
@@ -726,9 +703,7 @@ class PlayerQueuesController:
         next_index = cur_index + 1
         return next_index
 
-    def get_next_item(
-        self, queue_id: str, cur_index: int | None = None
-    ) -> QueueItem | None:
+    def get_next_item(self, queue_id: str, cur_index: int | None = None) -> QueueItem | None:
         """Return next QueueItem for given queue."""
         queue = self._queues[queue_id]
         if cur_index is None:
@@ -740,9 +715,7 @@ class PlayerQueuesController:
         """Signal state changed of given queue."""
         queue = self._queues[queue_id]
         if items_changed:
-            self.mass.signal_event(
-                EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue
-            )
+            self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
             # save items in cache
             self.mass.create_task(
                 self.mass.cache.set(
@@ -777,9 +750,7 @@ class PlayerQueuesController:
             if len(tracks) >= 50:
                 break
         # fill queue - filter out unavailable items
-        queue_items = [
-            QueueItem.from_media_item(queue_id, x) for x in tracks if x.available
-        ]
+        queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
         self.load(
             queue_id,
             queue_items,

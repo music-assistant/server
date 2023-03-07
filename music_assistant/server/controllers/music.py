@@ -9,12 +9,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
-from music_assistant.common.models.enums import (
-    EventType,
-    MediaType,
-    ProviderFeature,
-    ProviderType,
-)
+from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature, ProviderType
 from music_assistant.common.models.errors import MusicAssistantError
 from music_assistant.common.models.media_items import (
     BrowseFolder,
@@ -88,8 +83,7 @@ class MusicController:
         media_types: list[MediaType] | None = None,
         providers: list[str] | None = None,
     ) -> None:
-        """
-        Start running the sync of (all or selected) musicproviders.
+        """Start running the sync of (all or selected) musicproviders.
 
         media_types: only sync these media types. None for all.
         providers: only sync these provider instances. None for all.
@@ -100,7 +94,7 @@ class MusicController:
             providers = [x.instance_id for x in self.providers]
 
         for provider in self.providers:
-            if not (provider.instance_id in providers):
+            if provider.instance_id not in providers:
                 continue
             self._start_provider_sync(provider.instance_id, media_types)
         # trgger metadata scan after provider sync completed
@@ -118,12 +112,11 @@ class MusicController:
         media_types: list[MediaType] = MediaType.ALL,
         limit: int = 10,
     ) -> list[MediaItemType]:
-        """
-        Perform global search for media items on all providers.
+        """Perform global search for media items on all providers.
 
-            :param search_query: Search query.
-            :param media_types: A list of media_types to include.
-            :param limit: number of items to return in the search (per type).
+        :param search_query: Search query.
+        :param media_types: A list of media_types to include.
+        :param limit: number of items to return in the search (per type).
         """
         # include results from all music providers
         provider_instances = (item.instance_id for item in self.providers)
@@ -152,14 +145,13 @@ class MusicController:
         provider_instance: str | None = None,
         limit: int = 10,
     ) -> list[MediaItemType]:
-        """
-        Perform search on given provider.
+        """Perform search on given provider.
 
-            :param search_query: Search query
-            :param provider_domain: domain of the provider to perform the search on.
-            :param provider_instance: instance id of the provider to perform the search on.
-            :param media_types: A list of media_types to include. All types if None.
-            :param limit: number of items to return in the search (per type).
+        :param search_query: Search query
+        :param provider_domain: domain of the provider to perform the search on.
+        :param provider_instance: instance id of the provider to perform the search on.
+        :param media_types: A list of media_types to include. All types if None.
+        :param limit: number of items to return in the search (per type).
         """
         assert provider_domain or provider_instance, "Provider needs to be supplied"
         prov = self.mass.get_provider(provider_instance or provider_domain)
@@ -171,7 +163,7 @@ class MusicController:
 
         # prefer cache items (if any)
         cache_key = f"{prov.instance_id}.search.{search_query}.{limit}"
-        cache_key += "".join((x for x in media_types))
+        cache_key += "".join(x for x in media_types)
 
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]
@@ -183,9 +175,7 @@ class MusicController:
         )
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], expiration=86400 * 7
-            )
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items], expiration=86400 * 7)
         )
         return items
 
@@ -278,7 +268,7 @@ class MusicController:
         tasks = []
         for item in items:
             if isinstance(item, str):
-                item = await self.get_item_by_uri(item)
+                item = await self.get_item_by_uri(item)  # noqa: PLW2901
             tasks.append(
                 self.mass.create_task(
                     self.add_to_library(
@@ -312,7 +302,7 @@ class MusicController:
         tasks = []
         for item in items:
             if isinstance(item, str):
-                item = await self.get_item_by_uri(item)
+                item = await self.get_item_by_uri(item)  # noqa: PLW2901
             tasks.append(
                 self.mass.create_task(
                     self.remove_from_library(
@@ -333,8 +323,7 @@ class MusicController:
         await ctrl.delete_db_item(db_item_id, recursive)
 
     async def refresh_items(self, items: list[MediaItem]) -> None:
-        """
-        Refresh MediaItems to force retrieval of full info and matches.
+        """Refresh MediaItems to force retrieval of full info and matches.
 
         Creates background tasks to process the action.
         """
@@ -359,23 +348,18 @@ class MusicController:
 
         for item in await self.search(media_item.name, [media_item.media_type], 20):
             if item.available:
-                await self.get_item(
-                    item.media_type, item.item_id, item.provider, lazy=False
-                )
+                await self.get_item(item.media_type, item.item_id, item.provider, lazy=False)
+        return None
 
-    async def set_track_loudness(
-        self, item_id: str, provider_domain: str, loudness: int
-    ):
-        """list integrated loudness for a track in db."""
+    async def set_track_loudness(self, item_id: str, provider_domain: str, loudness: int):
+        """List integrated loudness for a track in db."""
         await self.database.insert(
             DB_TABLE_TRACK_LOUDNESS,
             {"item_id": item_id, "provider": provider_domain, "loudness": loudness},
             allow_replace=True,
         )
 
-    async def get_track_loudness(
-        self, item_id: str, provider_domain: str
-    ) -> float | None:
+    async def get_track_loudness(self, item_id: str, provider_domain: str) -> float | None:
         """Get integrated loudness for a track in db."""
         if result := await self.database.get_row(
             DB_TABLE_TRACK_LOUDNESS,
@@ -418,21 +402,17 @@ class MusicController:
         )
 
     async def library_add_items(self, items: list[MediaItem]) -> None:
-        """
-        Add media item(s) to the library.
+        """Add media item(s) to the library.
 
         Creates background tasks to process the action.
         """
         for media_item in items:
             self.mass.create_task(
-                self.add_to_library(
-                    media_item.media_type, media_item.item_id, media_item.provider
-                )
+                self.add_to_library(media_item.media_type, media_item.item_id, media_item.provider)
             )
 
     async def library_remove_items(self, items: list[MediaItem]) -> None:
-        """
-        Remove media item(s) from the library.
+        """Remove media item(s) from the library.
 
         Creates background tasks to process the action.
         """
@@ -445,7 +425,13 @@ class MusicController:
 
     def get_controller(
         self, media_type: MediaType
-    ) -> ArtistsController | AlbumsController | TracksController | RadioController | PlaylistController:
+    ) -> (
+        ArtistsController
+        | AlbumsController
+        | TracksController
+        | RadioController
+        | PlaylistController
+    ):  # noqa: E501
         """Return controller for MediaType."""
         if media_type == MediaType.ARTIST:
             return self.artists
@@ -457,10 +443,9 @@ class MusicController:
             return self.radio
         if media_type == MediaType.PLAYLIST:
             return self.playlists
+        return None
 
-    def _start_provider_sync(
-        self, provider_instance: str, media_types: tuple[MediaType]
-    ):
+    def _start_provider_sync(self, provider_instance: str, media_types: tuple[MediaType]):
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
         for sync_task in self.in_progress_syncs:
@@ -485,15 +470,11 @@ class MusicController:
         )
         self.in_progress_syncs.append(sync_spec)
 
-        self.mass.signal_event(
-            EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs
-        )
+        self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
 
-        def on_sync_task_done(task: asyncio.Task):
+        def on_sync_task_done(task: asyncio.Task):  # noqa: ARG001
             self.in_progress_syncs.remove(sync_spec)
-            self.mass.signal_event(
-                EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs
-            )
+            self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
 
         task.add_done_callback(on_sync_task_done)
 
@@ -511,9 +492,7 @@ class MusicController:
             self.mass.music.albums,
             self.mass.music.artists,
         ):
-            prov_items = await ctrl.get_db_items_by_prov_id(
-                provider_instance=provider_instance
-            )
+            prov_items = await ctrl.get_db_items_by_prov_id(provider_instance=provider_instance)
             for item in prov_items:
                 await ctrl.remove_prov_mapping(item.item_id, provider_instance)
 
@@ -526,9 +505,7 @@ class MusicController:
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
         try:
-            if db_row := await self.database.get_row(
-                DB_TABLE_SETTINGS, {"key": "version"}
-            ):
+            if db_row := await self.database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
                 prev_version = int(db_row["value"])
             else:
                 prev_version = 0
@@ -547,9 +524,7 @@ class MusicController:
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ARTISTS}")
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ALBUMS}")
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACKS}")
-                await self.database.execute(
-                    f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLISTS}"
-                )
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLISTS}")
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_RADIOS}")
 
                 # recreate missing tables
@@ -667,7 +642,8 @@ class MusicController:
                     provider_domain TEXT NOT NULL,
                     provider_instance TEXT NOT NULL,
                     provider_item_id TEXT NOT NULL,
-                    UNIQUE(media_type, item_id, provider_instance, provider_item_id, provider_item_id)
+                    UNIQUE(media_type, item_id, provider_instance,
+                        provider_item_id, provider_item_id)
                 );"""
         )
 
@@ -711,9 +687,5 @@ class MusicController:
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS tracks_musicbrainz_id_idx on tracks(musicbrainz_id);"
         )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS tracks_isrc_idx on tracks(isrc);"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS albums_upc_idx on albums(upc);"
-        )
+        await self.database.execute("CREATE INDEX IF NOT EXISTS tracks_isrc_idx on tracks(isrc);")
+        await self.database.execute("CREATE INDEX IF NOT EXISTS albums_upc_idx on albums(upc);")

@@ -1,7 +1,8 @@
 """Database helpers and logic."""
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from databases import Database as Db
 from databases import DatabaseURL
@@ -9,7 +10,7 @@ from sqlalchemy.sql import ClauseElement
 
 
 class DatabaseConnection:
-    """Class that holds the (connection to the) database with some convience helper functions."""
+    """Class that holds the (connection to the) database with some convenience helper functions."""
 
     def __init__(self, url: DatabaseURL):
         """Initialize class."""
@@ -37,7 +38,7 @@ class DatabaseConnection:
         """Get all rows for given table."""
         sql_query = f"SELECT * FROM {table}"
         if match is not None:
-            sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
+            sql_query += " WHERE " + " AND ".join(f"{x} = :{x}" for x in match)
         if order_by is not None:
             sql_query += f" ORDER BY {order_by}"
         sql_query += f" LIMIT {limit} OFFSET {offset}"
@@ -75,9 +76,7 @@ class DatabaseConnection:
             return result[0]
         return 0
 
-    async def search(
-        self, table: str, search: str, column: str = "name"
-    ) -> list[Mapping]:
+    async def search(self, table: str, search: str, column: str = "name") -> list[Mapping]:
         """Search table by column."""
         sql_query = f"SELECT * FROM {table} WHERE {column} LIKE :search"
         params = {"search": f"%{search}%"}
@@ -86,7 +85,7 @@ class DatabaseConnection:
     async def get_row(self, table: str, match: dict[str, Any]) -> Mapping | None:
         """Get single row for given table where column matches keys/values."""
         sql_query = f"SELECT * FROM {table} WHERE "
-        sql_query += " AND ".join((f"{x} = :{x}" for x in match))
+        sql_query += " AND ".join(f"{x} = :{x}" for x in match)
         return await self._db.fetch_one(sql_query, match)
 
     async def insert(
@@ -105,9 +104,7 @@ class DatabaseConnection:
         await self.execute(sql_query, values)
         # return inserted/replaced item
         lookup_vals = {
-            key: value
-            for key, value in values.items()
-            if value is not None and value != ""
+            key: value for key, value in values.items() if value is not None and value != ""
         }
         return await self.get_row(table, lookup_vals)
 
@@ -124,19 +121,17 @@ class DatabaseConnection:
         """Update record."""
         keys = tuple(values.keys())
         sql_query = f'UPDATE {table} SET {",".join((f"{x}=:{x}" for x in keys))} WHERE '
-        sql_query += " AND ".join((f"{x} = :{x}" for x in match))
+        sql_query += " AND ".join(f"{x} = :{x}" for x in match)
         await self.execute(sql_query, {**match, **values})
         # return updated item
         return await self.get_row(table, match)
 
-    async def delete(
-        self, table: str, match: dict | None = None, query: str | None = None
-    ) -> None:
+    async def delete(self, table: str, match: dict | None = None, query: str | None = None) -> None:
         """Delete data in given table."""
         assert not (query and "where" in query.lower())
         sql_query = f"DELETE FROM {table} "
         if match:
-            sql_query += " WHERE " + " AND ".join((f"{x} = :{x}" for x in match))
+            sql_query += " WHERE " + " AND ".join(f"{x} = :{x}" for x in match)
         elif query and "query" not in query.lower():
             sql_query += "WHERE " + query
         elif query:

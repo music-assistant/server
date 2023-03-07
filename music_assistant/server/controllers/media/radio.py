@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from time import time
-from typing import List
 
 from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.models.enums import EventType, MediaType
@@ -36,21 +35,16 @@ class RadioController(MediaControllerBase[Radio]):
         item_id: str,
         provider_domain: str | None = None,
         provider_instance: str | None = None,
-    ) -> List[Radio]:
+    ) -> list[Radio]:
         """Return all versions of a radio station we can find on all providers."""
-        assert (
-            provider_domain or provider_instance
-        ), "Provider type or ID must be specified"
+        assert provider_domain or provider_instance, "Provider type or ID must be specified"
         radio = await self.get(item_id, provider_domain, provider_instance)
         # perform a search on all provider(types) to collect all versions/variants
         provider_domains = {prov.domain for prov in self.mass.music.providers}
         all_versions = {
             prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(
-                *[
-                    self.search(radio.name, provider_domain)
-                    for provider_domain in provider_domains
-                ]
+                *[self.search(radio.name, provider_domain) for provider_domain in provider_domains]
             )
             for prov_item in prov_items
             if loose_compare_strings(radio.name, prov_item.name)
@@ -96,9 +90,7 @@ class RadioController(MediaControllerBase[Radio]):
                 )
 
             # insert new item
-            new_item = await self.mass.music.database.insert(
-                self.db_table, item.to_db_row()
-            )
+            new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
             item_id = new_item["item_id"]
             # update/set provider_mappings table
             await self._set_provider_mappings(item_id, item.provider_mappings)
@@ -144,12 +136,10 @@ class RadioController(MediaControllerBase[Radio]):
         provider_domain: str | None = None,
         provider_instance: str | None = None,
         limit: int = 25,
-    ) -> List[Track]:
+    ) -> list[Track]:
         """Generate a dynamic list of tracks based on the item's content."""
         raise NotImplementedError("Dynamic tracks not supported for Radio MediaItem")
 
-    async def _get_dynamic_tracks(
-        self, media_item: Radio, limit: int = 25
-    ) -> List[Track]:
+    async def _get_dynamic_tracks(self, media_item: Radio, limit: int = 25) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         raise NotImplementedError("Dynamic tracks not supported for Radio MediaItem")

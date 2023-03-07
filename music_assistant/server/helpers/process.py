@@ -1,5 +1,4 @@
-"""
-Implementation of a (truly) non blocking subprocess.
+"""Implementation of a (truly) non blocking subprocess.
 
 The subprocess implementation in asyncio can (still) sometimes cause deadlocks,
 even when properly handling reading/writes from different tasks.
@@ -8,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import AsyncGenerator, Coroutine, List, Optional, Tuple, Union
+from collections.abc import AsyncGenerator, Coroutine
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +22,7 @@ class AsyncProcess:
 
     def __init__(
         self,
-        args: Union[List, str],
+        args: list | str,
         enable_stdin: bool = False,
         enable_stdout: bool = True,
         enable_stderr: bool = False,
@@ -37,12 +36,9 @@ class AsyncProcess:
         self._attached_task: asyncio.Task = None
         self.closed = False
 
-    async def __aenter__(self) -> "AsyncProcess":
+    async def __aenter__(self) -> AsyncProcess:
         """Enter context manager."""
-        if "|" in self._args:
-            args = " ".join(self._args)
-        else:
-            args = self._args
+        args = " ".join(self._args) if "|" in self._args else self._args
         if isinstance(args, str):
             self._proc = await asyncio.create_subprocess_shell(
                 args,
@@ -90,9 +86,7 @@ class AsyncProcess:
                 # just in case?
                 self._proc.kill()
 
-    async def iter_chunked(
-        self, n: int = DEFAULT_CHUNKSIZE
-    ) -> AsyncGenerator[bytes, None]:
+    async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
@@ -119,8 +113,7 @@ class AsyncProcess:
             return err.partial
 
     async def read(self, n: int, timeout: int = DEFAULT_TIMEOUT) -> bytes:
-        """
-        Read up to n bytes from the stdout stream.
+        """Read up to n bytes from the stdout stream.
 
         If n is positive, this function try to read n bytes,
         and may return less or equal bytes than requested, but at least one byte.
@@ -154,9 +147,7 @@ class AsyncProcess:
             # already exited, race condition
             return
 
-    async def communicate(
-        self, input_data: Optional[bytes] = None
-    ) -> Tuple[bytes, bytes]:
+    async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""
         return await self._proc.communicate(input_data)
 
@@ -166,7 +157,7 @@ class AsyncProcess:
         return task
 
 
-async def check_output(shell_cmd: str) -> Tuple[int, bytes]:
+async def check_output(shell_cmd: str) -> tuple[int, bytes]:
     """Run shell subprocess and return output."""
     proc = await asyncio.create_subprocess_shell(
         shell_cmd,

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
+
 import coloredlogs
 from aiorun import run
 
@@ -14,9 +15,7 @@ def get_arguments():
     """Arguments handling."""
     parser = argparse.ArgumentParser(description="MusicAssistant")
 
-    default_data_dir = (
-        os.getenv("APPDATA") if os.name == "nt" else os.path.expanduser("~")
-    )
+    default_data_dir = os.getenv("APPDATA") if os.name == "nt" else os.path.expanduser("~")
     default_data_dir = os.path.join(default_data_dir, ".musicassistant")
 
     parser.add_argument(
@@ -30,7 +29,8 @@ def get_arguments():
         "--log-level",
         type=str,
         default="info",
-        help="Provide logging level. Example --log-level debug, default=info, possible=(critical, error, warning, info, debug)",
+        help="Provide logging level. Example --log-level debug, "
+        "default=info, possible=(critical, error, warning, info, debug)",
     )
     arguments = parser.parse_args()
     return arguments
@@ -42,8 +42,8 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     if not os.path.isdir(logs_dir):
         os.mkdir(logs_dir)
     logger = logging.getLogger()
-    log_fmt =  "%(asctime)-15s %(levelname)-5s %(name)s  -- %(message)s"
-    log_formatter = logging.Formatter(log_fmt )
+    log_fmt = "%(asctime)-15s %(levelname)-5s %(name)s  -- %(message)s"
+    log_formatter = logging.Formatter(log_fmt)
     consolehandler = logging.StreamHandler()
     consolehandler.setFormatter(log_formatter)
     consolehandler.setLevel(logging.DEBUG)

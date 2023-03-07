@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import datetime
 
-LOCAL_TIMEZONE = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
+LOCAL_TIMEZONE = datetime.datetime.now(datetime.UTC).astimezone().tzinfo
 
 
 def utc() -> datetime.datetime:
     """Get current UTC datetime."""
-    return datetime.datetime.now(datetime.timezone.utc)
+    return datetime.datetime.now(datetime.UTC)
 
 
 def utc_timestamp() -> float:
@@ -33,7 +33,7 @@ def future_timestamp(**kwargs) -> float:
 
 def from_utc_timestamp(timestamp: float) -> datetime.datetime:
     """Return datetime from UTC timestamp."""
-    return datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+    return datetime.datetime.fromtimestamp(timestamp, datetime.UTC)
 
 
 def iso_from_utc_timestamp(timestamp: float) -> str:

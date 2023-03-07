@@ -1,5 +1,4 @@
-"""
-Helper module for parsing the Youtube Music API.
+"""Helper module for parsing the Youtube Music API.
 
 This helpers file is an async wrapper around the excellent ytmusicapi package.
 While the ytmusicapi package does an excellent job at parsing the Youtube Music results,
@@ -10,12 +9,11 @@ This also nicely separates the parsing logic from the Youtube Music provider log
 import asyncio
 import json
 from time import time
-from typing import Dict, List
 
 import ytmusicapi
 
 
-async def get_artist(prov_artist_id: str) -> Dict[str, str]:
+async def get_artist(prov_artist_id: str) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_artist function."""
 
     def _get_artist():
@@ -32,7 +30,7 @@ async def get_artist(prov_artist_id: str) -> Dict[str, str]:
     return await asyncio.to_thread(_get_artist)
 
 
-async def get_album(prov_album_id: str) -> Dict[str, str]:
+async def get_album(prov_album_id: str) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_album function."""
 
     def _get_album():
@@ -43,8 +41,8 @@ async def get_album(prov_album_id: str) -> Dict[str, str]:
 
 
 async def get_playlist(
-    prov_playlist_id: str, headers: Dict[str, str], username: str
-) -> Dict[str, str]:
+    prov_playlist_id: str, headers: dict[str, str], username: str
+) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_playlist():
@@ -57,7 +55,7 @@ async def get_playlist(
     return await asyncio.to_thread(_get_playlist)
 
 
-async def get_track(prov_track_id: str) -> Dict[str, str]:
+async def get_track(prov_track_id: str) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_song():
@@ -73,16 +71,16 @@ async def get_track(prov_track_id: str) -> Dict[str, str]:
             }
         ]
         track["duration"] = track_obj["videoDetails"]["lengthSeconds"]
-        track["thumbnails"] = track_obj["microformat"]["microformatDataRenderer"][
-            "thumbnail"
-        ]["thumbnails"]
+        track["thumbnails"] = track_obj["microformat"]["microformatDataRenderer"]["thumbnail"][
+            "thumbnails"
+        ]
         track["isAvailable"] = track_obj["playabilityStatus"]["status"] == "OK"
         return track
 
     return await asyncio.to_thread(_get_song)
 
 
-async def get_library_artists(headers: Dict[str, str], username: str) -> Dict[str, str]:
+async def get_library_artists(headers: dict[str, str], username: str) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_artists function."""
 
     def _get_library_artists():
@@ -100,7 +98,7 @@ async def get_library_artists(headers: Dict[str, str], username: str) -> Dict[st
     return await asyncio.to_thread(_get_library_artists)
 
 
-async def get_library_albums(headers: Dict[str, str], username: str) -> Dict[str, str]:
+async def get_library_albums(headers: dict[str, str], username: str) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_albums function."""
 
     def _get_library_albums():
@@ -111,9 +109,7 @@ async def get_library_albums(headers: Dict[str, str], username: str) -> Dict[str
     return await asyncio.to_thread(_get_library_albums)
 
 
-async def get_library_playlists(
-    headers: Dict[str, str], username: str
-) -> Dict[str, str]:
+async def get_library_playlists(headers: dict[str, str], username: str) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_playlists function."""
 
     def _get_library_playlists():
@@ -130,7 +126,7 @@ async def get_library_playlists(
     return await asyncio.to_thread(_get_library_playlists)
 
 
-async def get_library_tracks(headers: Dict[str, str], username: str) -> Dict[str, str]:
+async def get_library_tracks(headers: dict[str, str], username: str) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_tracks function."""
 
     def _get_library_tracks():
@@ -143,7 +139,7 @@ async def get_library_tracks(headers: Dict[str, str], username: str) -> Dict[str
 
 
 async def library_add_remove_artist(
-    headers: Dict[str, str], prov_artist_id: str, add: bool = True, username: str = None
+    headers: dict[str, str], prov_artist_id: str, add: bool = True, username: str = None
 ) -> bool:
     """Add or remove an artist to the user's library."""
 
@@ -154,12 +150,13 @@ async def library_add_remove_artist(
             return "actions" in ytm.subscribe_artists(channelIds=[prov_artist_id])
         if not add:
             return "actions" in ytm.unsubscribe_artists(channelIds=[prov_artist_id])
+        return None
 
     return await asyncio.to_thread(_library_add_remove_artist)
 
 
 async def library_add_remove_album(
-    headers: Dict[str, str], prov_item_id: str, add: bool = True, username: str = None
+    headers: dict[str, str], prov_item_id: str, add: bool = True, username: str = None
 ) -> bool:
     """Add or remove an album or playlist to the user's library."""
     album = await get_album(prov_album_id=prov_item_id)
@@ -172,12 +169,13 @@ async def library_add_remove_album(
             return ytm.rate_playlist(playlist_id, "LIKE")
         if not add:
             return ytm.rate_playlist(playlist_id, "INDIFFERENT")
+        return None
 
     return await asyncio.to_thread(_library_add_remove_album)
 
 
 async def library_add_remove_playlist(
-    headers: Dict[str, str], prov_item_id: str, add: bool = True, username: str = None
+    headers: dict[str, str], prov_item_id: str, add: bool = True, username: str = None
 ) -> bool:
     """Add or remove an album or playlist to the user's library."""
 
@@ -188,14 +186,15 @@ async def library_add_remove_playlist(
             return "actions" in ytm.rate_playlist(prov_item_id, "LIKE")
         if not add:
             return "actions" in ytm.rate_playlist(prov_item_id, "INDIFFERENT")
+        return None
 
     return await asyncio.to_thread(_library_add_remove_playlist)
 
 
 async def add_remove_playlist_tracks(
-    headers: Dict[str, str],
+    headers: dict[str, str],
     prov_playlist_id: str,
-    prov_track_ids: List[str],
+    prov_track_ids: list[str],
     add: bool,
     username: str = None,
 ) -> bool:
@@ -205,29 +204,24 @@ async def add_remove_playlist_tracks(
         user = username if is_brand_account(username) else None
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         if add:
-            return ytm.add_playlist_items(
-                playlistId=prov_playlist_id, videoIds=prov_track_ids
-            )
+            return ytm.add_playlist_items(playlistId=prov_playlist_id, videoIds=prov_track_ids)
         if not add:
-            return ytm.remove_playlist_items(
-                playlistId=prov_playlist_id, videos=prov_track_ids
-            )
+            return ytm.remove_playlist_items(playlistId=prov_playlist_id, videos=prov_track_ids)
+        return None
 
     return await asyncio.to_thread(_add_playlist_tracks)
 
 
 async def get_song_radio_tracks(
-    headers: Dict[str, str], username: str, prov_item_id: str, limit=25
-) -> Dict[str, str]:
+    headers: dict[str, str], username: str, prov_item_id: str, limit=25
+) -> dict[str, str]:
     """Async wrapper around the ytmusicapi radio function."""
     user = username if is_brand_account(username) else None
 
     def _get_song_radio_tracks():
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
         playlist_id = f"RDAMVM{prov_item_id}"
-        result = ytm.get_watch_playlist(
-            videoId=prov_item_id, playlistId=playlist_id, limit=limit
-        )
+        result = ytm.get_watch_playlist(videoId=prov_item_id, playlistId=playlist_id, limit=limit)
         # Replace inconsistensies for easier parsing
         for track in result["tracks"]:
             if track.get("thumbnail"):
@@ -240,7 +234,7 @@ async def get_song_radio_tracks(
     return await asyncio.to_thread(_get_song_radio_tracks)
 
 
-async def search(query: str, ytm_filter: str = None, limit: int = 20) -> List[Dict]:
+async def search(query: str, ytm_filter: str = None, limit: int = 20) -> list[dict]:
     """Async wrapper around the ytmusicapi search function."""
 
     def _search():

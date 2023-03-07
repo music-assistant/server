@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import os.path
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import aiofiles
 from aiofiles.os import wrap
@@ -55,15 +55,16 @@ class LocalFileSystemProvider(FileSystemProviderBase):
     async def listdir(
         self, path: str, recursive: bool = False
     ) -> AsyncGenerator[FileSystemItem, None]:
-        """
-        List contents of a given provider directory/path.
+        """List contents of a given provider directory/path.
 
-        Parameters:
-            - path: path of the directory (relative or absolute) to list contents of.
-              Empty string for provider's root.
-            - recursive: If True will recursively keep unwrapping subdirectories (scandir equivalent).
+        Parameters
+        ----------
+        - path: path of the directory (relative or absolute) to list contents of.
+            Empty string for provider's root.
+        - recursive: If True will recursively keep unwrapping subdirectories (scandir equivalent).
 
         Returns:
+        -------
             AsyncGenerator yielding FileSystemItem objects.
 
         """
@@ -83,10 +84,9 @@ class LocalFileSystemProvider(FileSystemProviderBase):
                 yield item
 
     async def resolve(
-        self, file_path: str, require_local: bool = False
+        self, file_path: str, require_local: bool = False  # noqa: ARG002
     ) -> FileSystemItem:
-        """
-        Resolve (absolute or relative) path to FileSystemItem.
+        """Resolve (absolute or relative) path to FileSystemItem.
 
         If require_local is True, we prefer to have the `local_path` attribute filled
         (e.g. with a tempfile), if supported by the provider/item.
@@ -117,9 +117,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         abs_path = get_absolute_path(self.config.get_value(CONF_PATH), file_path)
         return await exists(abs_path)
 
-    async def read_file_content(
-        self, file_path: str, seek: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
         abs_path = get_absolute_path(self.config.get_value(CONF_PATH), file_path)
         chunk_size = 512000

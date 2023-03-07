@@ -4,7 +4,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import urllib.parse
-from typing import TYPE_CHECKING, Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Any
 
 import shortuuid
 from aiohttp import web
@@ -37,8 +38,7 @@ LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.streams")
 
 
 class StreamJob:
-    """
-    Representation of a (multisubscriber) Audio Queue (item)stream job/task.
+    """Representation of a (multisubscriber) Audio Queue (item)stream job/task.
 
     The whole idea here is that in case of a player (sync)group,
     all players receive the exact same PCM audio chunks from the source audio.
@@ -86,7 +86,7 @@ class StreamJob:
 
     @property
     def running(self) -> bool:
-        """Return if this Job is running"""
+        """Return if this Job is running."""
         return not self.finished and not self.pending
 
     async def subscribe(self, player_id: str) -> AsyncGenerator[bytes, None]:
@@ -97,9 +97,7 @@ class StreamJob:
             sub_queue = asyncio.Queue(3)
 
             # some checks
-            assert (
-                player_id not in self.subscribers
-            ), "No duplicate subscriptions allowed"
+            assert player_id not in self.subscribers, "No duplicate subscriptions allowed"
             assert not self.finished, "Already finished"
             assert not self.running, "Already running"
 
@@ -150,9 +148,7 @@ class StreamJob:
                         await self._all_clients_connected.wait()
                 except TimeoutError as err:
                     if len(self.subscribers) == 0:
-                        raise TimeoutError(
-                            "Clients did not connect within 10 seconds."
-                        ) from err
+                        raise TimeoutError("Clients did not connect within 10 seconds.") from err
                     self._all_clients_connected.set()
                     LOGGER.warning(
                         "Starting stream job %s but not all clients connected within 10 seconds."
@@ -189,7 +185,6 @@ class StreamsController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-
         self.mass.webapp.router.add_get("/stream/preview", self._serve_preview)
         self.mass.webapp.router.add_get(
             "/stream/{player_id}/{queue_item_id}/{stream_id}.{fmt}",
@@ -198,9 +193,7 @@ class StreamsController:
 
         ffmpeg_present, libsoxr_support = await check_audio_support(True)
         if not ffmpeg_present:
-            LOGGER.error(
-                "FFmpeg binary not found on your system, playback will NOT work!."
-            )
+            LOGGER.error("FFmpeg binary not found on your system, playback will NOT work!.")
         elif not libsoxr_support:
             LOGGER.warning(
                 "FFmpeg version found without libsoxr support, "
@@ -222,8 +215,7 @@ class StreamsController:
         auto_start_runner: bool = True,
         flow_mode: bool = False,
     ) -> str:
-        """
-        Resolve the stream URL for the given QueueItem.
+        """Resolve the stream URL for the given QueueItem.
 
         This is called just-in-time by the player implementation to get the URL to the audio.
         It will create a StreamJob which is a background task responsible for feeding
@@ -286,15 +278,13 @@ class StreamsController:
 
         # generate player-specific URL for the stream job
         fmt = content_type.value
-        url = f"{self.mass.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"
+        url = f"{self.mass.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
         return url
 
     async def get_preview_url(self, provider: str, track_id: str) -> str:
         """Return url to short preview sample."""
         enc_track_id = urllib.parse.quote(track_id)
-        return (
-            f"{self.mass.base_url}/preview?provider={provider}&item_id={enc_track_id}"
-        )
+        return f"{self.mass.base_url}/preview?provider={provider}&item_id={enc_track_id}"
 
     async def _serve_queue_stream(self, request: web.Request) -> web.Response:
         """Serve Queue Stream audio to player(s)."""
@@ -345,7 +335,7 @@ class StreamsController:
         headers = {
             "Content-Type": f"audio/{output_format_str}",
             "transferMode.dlna.org": "Streaming",
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
             "Cache-Control": "no-cache",
             "Connection": "close",
             "icy-name": "Music Assistant",
@@ -367,10 +357,7 @@ class StreamsController:
 
         # handler workaround for players that do 2 multiple GET requests
         # for the same audio stream (because of the missing duration/length)
-        if (
-            player_id in self.workaround_players
-            and player_id not in stream_job.seen_players
-        ):
+        if player_id in self.workaround_players and player_id not in stream_job.seen_players:
             stream_job.seen_players.add(player_id)
             return resp
 
@@ -401,11 +388,10 @@ class StreamsController:
             input_sample_rate=stream_job.pcm_sample_rate,
             input_bit_depth=stream_job.pcm_bit_depth,
             output_format=output_format,
-            output_sample_rate=output_sample_rate
+            output_sample_rate=output_sample_rate,
         )
 
         async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
-
             # feed stdin with pcm audio chunks from origin
             async def read_audio():
                 async for chunk in stream_job.subscribe(player_id):
@@ -467,6 +453,7 @@ class StreamsController:
         fade_in: bool = False,
     ) -> AsyncGenerator[bytes, None]:
         """Get a flow stream of all tracks in the queue."""
+        # ruff: noqa: PLR0915
         queue_id = stream_job.queue_item.queue_id
         queue = self.mass.players.queues.get(queue_id)
         queue_track = None
@@ -537,7 +524,6 @@ class StreamsController:
                 # only allow strip silence from begin if track is being crossfaded
                 strip_silence_begin=last_fadeout_part != b"",
             ):
-
                 chunk_num += 1
 
                 ####  HANDLE FIRST PART OF TRACK
@@ -581,7 +567,7 @@ class StreamsController:
             #### HANDLE END OF TRACK
 
             if bytes_written == 0:
-                # stream error: got empy first chunk ?!
+                # stream error: got empty first chunk ?!
                 LOGGER.warning("Stream error on %s", streamdetails.uri)
                 queue_track.streamdetails.seconds_streamed = 0
                 continue
@@ -612,9 +598,7 @@ class StreamsController:
         """Serve short preview sample."""
         provider_mapping = request.query["provider_mapping"]
         item_id = urllib.parse.unquote(request.query["item_id"])
-        resp = web.StreamResponse(
-            status=200, reason="OK", headers={"Content-Type": "audio/mp3"}
-        )
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/mp3"})
         await resp.prepare(request)
         async for chunk in get_preview_stream(self.mass, provider_mapping, item_id):
             await resp.write(chunk)
@@ -626,7 +610,7 @@ class StreamsController:
         input_sample_rate: int,
         input_bit_depth: int,
         output_format: ContentType,
-        output_sample_rate: int
+        output_sample_rate: int,
     ) -> list[str]:
         """Get player specific arguments for the given (pcm) input and output details."""
         player_conf = self.mass.config.get_player_config(player.player_id)
@@ -668,15 +652,12 @@ class StreamsController:
         extra_args = []
         filter_params = []
 
-        # the below is a very basic 3-band equalizer, this could be a lot more sophisticated at some point
+        # the below is a very basic 3-band equalizer,
+        # this could be a lot more sophisticated at some point
         if eq_bass := player_conf.get_value(CONF_EQ_BASS):
-            filter_params.append(
-                f"equalizer=frequency=100:width=200:width_type=h:gain={eq_bass}"
-            )
+            filter_params.append(f"equalizer=frequency=100:width=200:width_type=h:gain={eq_bass}")
         if eq_mid := player_conf.get_value(CONF_EQ_MID):
-            filter_params.append(
-                f"equalizer=frequency=900:width=1800:width_type=h:gain={eq_mid}"
-            )
+            filter_params.append(f"equalizer=frequency=900:width=1800:width_type=h:gain={eq_mid}")
         if eq_treble := player_conf.get_value(CONF_EQ_TREBLE):
             filter_params.append(
                 f"equalizer=frequency=9000:width=18000:width_type=h:gain={eq_treble}"

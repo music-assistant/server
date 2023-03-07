@@ -1,5 +1,4 @@
-"""
-DLNA/uPNP Player provider for Music Assistant.
+"""DLNA/uPNP Player provider for Music Assistant.
 
 Most of this code is based on the implementation within Home Assistant:
 https://github.com/home-assistant/core/blob/dev/homeassistant/components/dlna_dmr
@@ -12,17 +11,9 @@ import asyncio
 import functools
 import logging
 import time
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
-from typing import (
-    Any,
-    Awaitable,
-    Callable,
-    Concatenate,
-    Coroutine,
-    ParamSpec,
-    Sequence,
-    TypeVar,
-)
+from typing import Any, Concatenate, ParamSpec, TypeVar
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client import UpnpRequester, UpnpService, UpnpStateVariable
@@ -32,12 +23,7 @@ from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.search import async_search
 from async_upnp_client.utils import CaseInsensitiveDict
 
-from music_assistant.common.models.enums import (
-    ContentType,
-    PlayerFeature,
-    PlayerState,
-    PlayerType,
-)
+from music_assistant.common.models.enums import ContentType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
@@ -65,19 +51,12 @@ def catch_request_errors(
     """Catch UpnpError errors."""
 
     @functools.wraps(func)
-    async def wrapper(
-        self: _DLNAPlayerProviderT, *args: _P.args, **kwargs: _P.kwargs
-    ) -> _R | None:
+    async def wrapper(self: _DLNAPlayerProviderT, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
         """Catch UpnpError errors and check availability before and after request."""
-        if "player_id" in kwargs:
-            player_id = kwargs["player_id"]
-        else:
-            player_id = args[0]
+        player_id = kwargs["player_id"] if "player_id" in kwargs else args[0]
         dlna_player = self.dlnaplayers[player_id]
         if not dlna_player.available:
-            self.logger.warning(
-                "Device disappeared when trying to call %s", func.__name__
-            )
+            self.logger.warning("Device disappeared when trying to call %s", func.__name__)
             return None
         try:
             return await func(self, *args, **kwargs)
@@ -128,9 +107,7 @@ class DLNAPlayer:
                 self.player.elapsed_time_last_updated = (
                     self.device.media_position_updated_at.timestamp()
                 )
-            self.player.current_item_id = self.device._get_current_track_meta_data(
-                "queue_item_id"
-            )
+            self.player.current_item_id = self.device._get_current_track_meta_data("queue_item_id")
             if self.device.media_duration and self.player.corrected_elapsed_time:
                 self.end_of_track_reached = (
                     self.device.media_duration - self.player.corrected_elapsed_time
@@ -167,8 +144,7 @@ class DLNAPlayer:
 
     @staticmethod
     def get_supported_features(device: DmrDevice) -> set(PlayerFeature):
-        """
-        Get player features that are supported at this moment.
+        """Get player features that are supported at this moment.
 
         Supported features may change as the device enters different states.
         """
@@ -200,9 +176,7 @@ class DLNAPlayerProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self.dlnaplayers = {}
         self.lock = asyncio.Lock()
-        self.requester = AiohttpSessionRequester(
-            self.mass.http_session, with_sleep=True
-        )
+        self.requester = AiohttpSessionRequester(self.mass.http_session, with_sleep=True)
         # silence the async_upnp_client logger a bit
         logging.getLogger("async_upnp_client").setLevel(logging.INFO)
         logging.getLogger("charset_normalizer").setLevel(logging.INFO)
@@ -213,10 +187,7 @@ class DLNAPlayerProvider(PlayerProvider):
 
     @catch_request_errors
     async def cmd_stop(self, player_id: str) -> None:
-        """
-        Send STOP command to given player.
-            - player_id: player_id of the player to handle the command.
-        """
+        """Send STOP command to given player."""
         dlna_player = self.dlnaplayers[player_id]
         dlna_player.end_of_track_reached = False
         dlna_player.next_item = None
@@ -225,10 +196,7 @@ class DLNAPlayerProvider(PlayerProvider):
 
     @catch_request_errors
     async def cmd_play(self, player_id: str) -> None:
-        """
-        Send PLAY command to given player.
-            - player_id: player_id of the player to handle the command.
-        """
+        """Send PLAY command to given player."""
         dlna_player = self.dlnaplayers[player_id]
         assert dlna_player.device is not None
         await dlna_player.device.async_play()
@@ -259,9 +227,7 @@ class DLNAPlayerProvider(PlayerProvider):
         )
 
         didl_metadata = create_didl_metadata(url, queue_item, flow_mode)
-        await dlna_player.device.async_set_transport_uri(
-            url, queue_item.name, didl_metadata
-        )
+        await dlna_player.device.async_set_transport_uri(url, queue_item.name, didl_metadata)
         # Play it
         await dlna_player.device.async_wait_for_can_play(10)
         await dlna_player.device.async_play()
@@ -284,7 +250,6 @@ class DLNAPlayerProvider(PlayerProvider):
     @catch_request_errors
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-
         dlna_player = self.dlnaplayers[player_id]
         assert dlna_player.device is not None
         await dlna_player.device.async_set_volume_level(volume_level / 100)
@@ -292,14 +257,12 @@ class DLNAPlayerProvider(PlayerProvider):
     @catch_request_errors
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
-
         dlna_player = self.dlnaplayers[player_id]
         assert dlna_player.device is not None
         await dlna_player.device.async_mute_volume(muted)
 
     async def poll_player(self, player_id: str) -> None:
-        """
-        Poll player for state updates.
+        """Poll player for state updates.
 
         This is called by the Player Manager;
         - every 360 seconds if the player if not powered
@@ -310,7 +273,7 @@ class DLNAPlayerProvider(PlayerProvider):
         to detect if the player is still alive.
         If this method raises the PlayerUnavailable exception,
         the player is marked as unavailable until
-        the next succesfull poll or event where it becomes available again.
+        the next successful poll or event where it becomes available again.
         If the player does not need any polling, simply do not override this method.
         """
         dlna_player = self.dlnaplayers[player_id]
@@ -384,7 +347,8 @@ class DLNAPlayerProvider(PlayerProvider):
     async def _device_disconnect(self, dlna_player: DLNAPlayer) -> None:
         """
         Destroy connections to the device now that it's not available.
-        Also call when removing this entity from hass to clean up connections.
+
+        Also call when removing this entity from MA to clean up connections.
         """
         async with dlna_player.lock:
             if not dlna_player.device:
@@ -404,10 +368,7 @@ class DLNAPlayerProvider(PlayerProvider):
         """Handle discovered DLNA player."""
         if dlna_player := self.dlnaplayers.get(udn):
             # existing player
-            if (
-                dlna_player.description_url == description_url
-                and dlna_player.player.available
-            ):
+            if dlna_player.description_url == description_url and dlna_player.player.available:
                 # nothing to do, device is already connected
                 return
             # update description url to newly discovered one
@@ -449,14 +410,10 @@ class DLNAPlayerProvider(PlayerProvider):
                 return
 
             # Connect to the base UPNP device
-            upnp_device = await self.upnp_factory.async_create_device(
-                dlna_player.description_url
-            )
+            upnp_device = await self.upnp_factory.async_create_device(dlna_player.description_url)
 
             # Create profile wrapper
-            dlna_player.device = DmrDevice(
-                upnp_device, self.notify_server.event_handler
-            )
+            dlna_player.device = DmrDevice(upnp_device, self.notify_server.event_handler)
 
             # Subscribe to event notifications
             try:
@@ -470,12 +427,10 @@ class DLNAPlayerProvider(PlayerProvider):
                 # Don't leave the device half-constructed
                 dlna_player.device.on_event = None
                 dlna_player.device = None
-                self.logger.debug(
-                    "Error while subscribing during device connect: %r", err
-                )
+                self.logger.debug("Error while subscribing during device connect: %r", err)
                 raise
             else:
-                # connect was successfull, update device info
+                # connect was successful, update device info
                 dlna_player.player.device_info = DeviceInfo(
                     model=dlna_player.device.model_name,
                     address=dlna_player.device.device.presentation_url
@@ -507,10 +462,9 @@ class DLNAPlayerProvider(PlayerProvider):
             for state_variable in state_variables:
                 # Force a state refresh when player begins or pauses playback
                 # to update the position info.
-                if (
-                    state_variable.name == "TransportState"
-                    and state_variable.value
-                    in (TransportState.PLAYING, TransportState.PAUSED_PLAYBACK)
+                if state_variable.name == "TransportState" and state_variable.value in (
+                    TransportState.PLAYING,
+                    TransportState.PAUSED_PLAYBACK,
                 ):
                     dlna_player.force_poll = True
                     self.mass.create_task(self.poll_player(dlna_player.udn))
@@ -524,9 +478,7 @@ class DLNAPlayerProvider(PlayerProvider):
         """Enqueue the next track of the MA queue on the CC queue."""
         if not current_queue_item_id:
             return  # guard
-        if not self.mass.players.queues.get_item(
-            dlna_player.udn, current_queue_item_id
-        ):
+        if not self.mass.players.queues.get_item(dlna_player.udn, current_queue_item_id):
             return  # guard
         try:
             next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
@@ -558,7 +510,7 @@ class DLNAPlayerProvider(PlayerProvider):
             )
         except UpnpError:
             dlna_player.supports_next_uri = False
-            self.logger.info("Player does not suport next uri")
+            self.logger.info("Player does not support next uri")
 
         self.logger.debug(
             "Enqued next track (%s) to player %s",
@@ -589,9 +541,7 @@ class DLNAPlayerProvider(PlayerProvider):
             or not dlna_player.next_item
             or dlna_player.next_item == current_item_id
         ):
-            self.mass.create_task(
-                self._enqueue_next_track(dlna_player, current_item_id)
-            )
+            self.mass.create_task(self._enqueue_next_track(dlna_player, current_item_id))
         # if player does not support next uri, manual play it
         if (
             not dlna_player.supports_next_uri
@@ -600,8 +550,6 @@ class DLNAPlayerProvider(PlayerProvider):
             and dlna_player.next_item
             and dlna_player.end_of_track_reached
         ):
-            await self.mass.players.queues.play_index(
-                dlna_player.udn, dlna_player.next_item
-            )
+            await self.mass.players.queues.play_index(dlna_player.udn, dlna_player.next_item)
             dlna_player.end_of_track_reached = False
             dlna_player.next_item = None

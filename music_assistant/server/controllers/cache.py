@@ -7,8 +7,8 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import MutableMapping
-from typing import TYPE_CHECKING, Any, Iterator
+from collections.abc import Iterator, MutableMapping
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.constants import (
     CONF_DB_CACHE,
@@ -45,48 +45,38 @@ class CacheController:
         """Cleanup on exit."""
 
     async def get(self, cache_key: str, checksum: str | None = None, default=None):
-        """
-        Get object from cache and return the results.
+        """Get object from cache and return the results.
 
         cache_key: the (unique) name of the cache object as reference
-        checkum: optional argument to check if the checksum in the
-                    cacheobject matches the checkum provided
+        checksum: optional argument to check if the checksum in the
+                    cacheobject matches the checksum provided
         """
         if not cache_key:
-            return
+            return None
         cur_time = int(time.time())
         if checksum is not None and not isinstance(checksum, str):
             checksum = str(checksum)
 
         # try memory cache first
         cache_data = self._mem_cache.get(cache_key)
-        if (
-            cache_data
-            and (not checksum or cache_data[1] == checksum)
-            and cache_data[2] >= cur_time
-        ):
+        if cache_data and (not checksum or cache_data[1] == checksum) and cache_data[2] >= cur_time:
             return cache_data[0]
         # fall back to db cache
-        if db_row := await self.database.get_row(DB_TABLE_CACHE, {"key": cache_key}):
-            if (
-                not checksum
-                or db_row["checksum"] == checksum
-                and db_row["expires"] >= cur_time
-            ):
-                try:
-                    data = await asyncio.to_thread(json.loads, db_row["data"])
-                except Exception as exc:  # pylint: disable=broad-except
-                    LOGGER.exception(
-                        "Error parsing cache data for %s", cache_key, exc_info=exc
-                    )
-                else:
-                    # also store in memory cache for faster access
-                    self._mem_cache[cache_key] = (
-                        data,
-                        db_row["checksum"],
-                        db_row["expires"],
-                    )
-                    return data
+        if (db_row := await self.database.get_row(DB_TABLE_CACHE, {"key": cache_key})) and (
+            not checksum or db_row["checksum"] == checksum and db_row["expires"] >= cur_time
+        ):
+            try:
+                data = await asyncio.to_thread(json.loads, db_row["data"])
+            except Exception as exc:  # pylint: disable=broad-except
+                LOGGER.exception("Error parsing cache data for %s", cache_key, exc_info=exc)
+            else:
+                # also store in memory cache for faster access
+                self._mem_cache[cache_key] = (
+                    data,
+                    db_row["checksum"],
+                    db_row["expires"],
+                )
+                return data
         return default
 
     async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
@@ -137,9 +127,7 @@ class CacheController:
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
         try:
-            if db_row := await self.database.get_row(
-                DB_TABLE_SETTINGS, {"key": "version"}
-            ):
+            if db_row := await self.database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
                 prev_version = int(db_row["value"])
             else:
                 prev_version = 0
@@ -179,7 +167,8 @@ class CacheController:
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_CACHE}(
-                    key TEXT UNIQUE NOT NULL, expires INTEGER NOT NULL, data TEXT, checksum TEXT NULL)"""
+                    key TEXT UNIQUE NOT NULL, expires INTEGER NOT NULL,
+                    data TEXT, checksum TEXT NULL)"""
         )
 
         # create indexes

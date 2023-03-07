@@ -1,13 +1,13 @@
-"""TheAudioDb Metadata provider."""
+"""The AudioDB Metadata provider for Music Assistant."""
 from __future__ import annotations
 
-import logging
-from json.decoder import JSONDecodeError
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from json import JSONDecodeError
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
+import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
 
+from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -19,17 +19,15 @@ from music_assistant.common.models.media_items import (
     MediaItemMetadata,
     Track,
 )
-from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.app_vars import (  # pylint: disable=no-name-in-module
     app_var,
 )
 from music_assistant.server.helpers.compare import compare_strings
+from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
-
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata.audiodb")
+    from collections.abc import Iterable
 
 IMG_MAPPING = {
     "strArtistThumb": ImageType.THUMB,
@@ -64,19 +62,25 @@ ALBUMTYPE_MAPPING = {
 }
 
 
-class TheAudioDb:
-    """TheAudioDb metadata provider."""
+class AudioDbMetadataProvider(MetadataProvider):
+    """The AudioDB Metadata provider."""
 
-    def __init__(self, mass: MusicAssistant):
-        """Initialize class."""
-        self.mass = mass
-        self.cache = mass.cache
+    throttler: Throttler
+    _attr_supported_features = (
+        ProviderFeature.ARTIST_METADATA,
+        ProviderFeature.ALBUM_METADATA,
+        ProviderFeature.TRACK_METADATA,
+        ProviderFeature.GET_ARTIST_MBID,
+    )
+
+    async def setup(self) -> None:
+        """Handle async initialization of the provider."""
+        self.cache = self.mass.cache
         self.throttler = Throttler(rate_limit=2, period=1)
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on theaudiodb."""
-        LOGGER.debug("Fetching metadata for Artist %s on TheAudioDb", artist.name)
-        if data := await self._get_data("artist-mb.php", i=artist.musicbrainz_id):
+        if data := await self._get_data("artist-mb.php", i=artist.musicbrainz_id):  # noqa: SIM102
             if data.get("artists"):
                 return self.__parse_artist(data["artists"][0])
         return None
@@ -90,20 +94,14 @@ class TheAudioDb:
                 adb_album = result["album"][0]
         elif album.artist:
             # lookup by name
-            result = await self._get_data(
-                "searchalbum.php", s=album.artist.name, a=album.name
-            )
+            result = await self._get_data("searchalbum.php", s=album.artist.name, a=album.name)
             if result and result.get("album"):
                 for item in result["album"]:
+                    assert isinstance(album.artist, Artist)
                     if album.artist.musicbrainz_id:
-                        if (
-                            album.artist.musicbrainz_id
-                            != item["strMusicBrainzArtistID"]
-                        ):
+                        if album.artist.musicbrainz_id != item["strMusicBrainzArtistID"]:
                             continue
-                    elif not compare_strings(
-                        album.artist.name, item["strArtistStripped"]
-                    ):
+                    elif not compare_strings(album.artist.name, item["strArtistStripped"]):
                         continue
                     if compare_strings(album.name, item["strAlbumStripped"]):
                         adb_album = item
@@ -113,6 +111,7 @@ class TheAudioDb:
                 album.year = int(adb_album.get("intYearReleased", "0"))
             if not album.musicbrainz_id:
                 album.musicbrainz_id = adb_album["strMusicBrainzID"]
+            assert isinstance(album.artist, Artist)
             if album.artist and not album.artist.musicbrainz_id:
                 album.artist.musicbrainz_id = adb_album["strMusicBrainzArtistID"]
             if album.album_type == AlbumType.UNKNOWN:
@@ -132,16 +131,12 @@ class TheAudioDb:
 
         # lookup by name
         for track_artist in track.artists:
-            result = await self._get_data(
-                "searchtrack.php?", s=track_artist.name, t=track.name
-            )
+            assert isinstance(track_artist, Artist)
+            result = await self._get_data("searchtrack.php?", s=track_artist.name, t=track.name)
             if result and result.get("track"):
                 for item in result["track"]:
                     if track_artist.musicbrainz_id:
-                        if (
-                            track_artist.musicbrainz_id
-                            != item["strMusicBrainzArtistID"]
-                        ):
+                        if track_artist.musicbrainz_id != item["strMusicBrainzArtistID"]:
                             continue
                     elif not compare_strings(track_artist.name, item["strArtist"]):
                         continue
@@ -151,6 +146,7 @@ class TheAudioDb:
             if adb_track:
                 if not track.musicbrainz_id:
                     track.musicbrainz_id = adb_track["strMusicBrainzID"]
+                assert isinstance(track.album, Album)
                 if track.album and not track.album.musicbrainz_id:
                     track.album.musicbrainz_id = adb_track["strMusicBrainzAlbumID"]
                 if not track_artist.musicbrainz_id:
@@ -159,11 +155,13 @@ class TheAudioDb:
                 return self.__parse_track(adb_track)
         return None
 
-    async def get_musicbrainz_id(
-        self, artist: Artist, ref_albums: List[Album]
+    async def get_musicbrainz_artist_id(
+        self,
+        artist: Artist,
+        ref_albums: Iterable[Album],
+        ref_tracks: Iterable[Track],  # noqa: ARG002
     ) -> str | None:
-        """Try to discover MusicBrainz ID for an artist given some reference albums."""
-        LOGGER.debug("Lookup MusicbrainzID for Artist %s on TheAudioDb", artist.name)
+        """Discover MusicBrainzArtistId for an artist given some reference albums/tracks."""
         musicbrainz_id = None
         if data := await self._get_data("searchalbum.php", s=artist.name):
             # NOTE: object is 'null' when no records found instead of empty array
@@ -179,11 +177,10 @@ class TheAudioDb:
                         ref_album.metadata = self.__parse_album(item)
                         await self.mass.music.albums.add_db_item(ref_album)
                     musicbrainz_id = item["strMusicBrainzArtistID"]
-        if musicbrainz_id:
-            LOGGER.debug("Found MusicBrainzID for artist %s on TheAudioDb", artist.name)
+
         return musicbrainz_id
 
-    def __parse_artist(self, artist_obj: Dict[str, Any]) -> MediaItemMetadata:
+    def __parse_artist(self, artist_obj: dict[str, Any]) -> MediaItemMetadata:
         """Parse audiodb artist object to MediaItemMetadata."""
         metadata = MediaItemMetadata()
         # generic data
@@ -198,9 +195,7 @@ class TheAudioDb:
             if link := artist_obj.get(key):
                 metadata.links.add(MediaItemLink(link_type, link))
         # description/biography
-        if desc := artist_obj.get(
-            f"strBiography{self.mass.metadata.preferred_language}"
-        ):
+        if desc := artist_obj.get(f"strBiography{self.mass.metadata.preferred_language}"):
             metadata.description = desc
         else:
             metadata.description = artist_obj.get("strBiographyEN")
@@ -214,7 +209,7 @@ class TheAudioDb:
                     break
         return metadata
 
-    def __parse_album(self, album_obj: Dict[str, Any]) -> MediaItemMetadata:
+    def __parse_album(self, album_obj: dict[str, Any]) -> MediaItemMetadata:
         """Parse audiodb album object to MediaItemMetadata."""
         metadata = MediaItemMetadata()
         # generic data
@@ -231,15 +226,11 @@ class TheAudioDb:
             )
         if link := album_obj.get("strAllMusicID"):
             metadata.links.add(
-                MediaItemLink(
-                    LinkType.ALLMUSIC, f"https://www.allmusic.com/album/{link}"
-                )
+                MediaItemLink(LinkType.ALLMUSIC, f"https://www.allmusic.com/album/{link}")
             )
 
         # description
-        if desc := album_obj.get(
-            f"strDescription{self.mass.metadata.preferred_language}"
-        ):
+        if desc := album_obj.get(f"strDescription{self.mass.metadata.preferred_language}"):
             metadata.description = desc
         else:
             metadata.description = album_obj.get("strDescriptionEN")
@@ -254,7 +245,7 @@ class TheAudioDb:
                     break
         return metadata
 
-    def __parse_track(self, track_obj: Dict[str, Any]) -> MediaItemMetadata:
+    def __parse_track(self, track_obj: dict[str, Any]) -> MediaItemMetadata:
         """Parse audiodb track object to MediaItemMetadata."""
         metadata = MediaItemMetadata()
         # generic data
@@ -264,9 +255,7 @@ class TheAudioDb:
             metadata.genres = {genre}
         metadata.mood = track_obj.get("strMood")
         # description
-        if desc := track_obj.get(
-            f"strDescription{self.mass.metadata.preferred_language}"
-        ):
+        if desc := track_obj.get(f"strDescription{self.mass.metadata.preferred_language}"):
             metadata.description = desc
         else:
             metadata.description = track_obj.get("strDescriptionEN")
@@ -281,30 +270,28 @@ class TheAudioDb:
         return metadata
 
     @use_cache(86400 * 14)
-    async def _get_data(self, endpoint, **kwargs) -> Optional[dict]:
+    async def _get_data(self, endpoint, **kwargs) -> dict | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
         async with self.throttler:
-            async with self.mass.http_session.get(
-                url, params=kwargs, verify_ssl=False
-            ) as response:
+            async with self.mass.http_session.get(url, params=kwargs, verify_ssl=False) as response:
                 try:
                     result = await response.json()
                 except (
-                    aiohttp.ContentTypeError,
+                    aiohttp.client_exceptions.ContentTypeError,
                     JSONDecodeError,
                 ):
-                    LOGGER.error("Failed to retrieve %s", endpoint)
+                    self.logger.error("Failed to retrieve %s", endpoint)
                     text_result = await response.text()
-                    LOGGER.debug(text_result)
+                    self.logger.debug(text_result)
                     return None
                 except (
-                    aiohttp.ClientConnectorError,
+                    aiohttp.client_exceptions.ClientConnectorError,
                     aiohttp.client_exceptions.ServerDisconnectedError,
                 ):
-                    LOGGER.warning("Failed to retrieve %s", endpoint)
+                    self.logger.warning("Failed to retrieve %s", endpoint)
                     return None
                 if "error" in result and "limit" in result["error"]:
-                    LOGGER.warning(result["error"])
+                    self.logger.warning(result["error"])
                     return None
                 return result

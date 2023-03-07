@@ -2,14 +2,14 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.helpers.json import load_json_file
 
 from .config_entries import ConfigEntry
-from .enums import ProviderFeature, ProviderType, MediaType
+from .enums import MediaType, ProviderFeature, ProviderType
 
 
 @dataclass

@@ -1,15 +1,13 @@
 """Helpers for creating/parsing URI's."""
 
 import os
-from typing import Tuple
 
 from music_assistant.common.models.enums import MediaType
 from music_assistant.common.models.errors import MusicAssistantError
 
 
-def parse_uri(uri: str) -> Tuple[MediaType, str, str]:
-    """
-    Try to parse URI to Mass identifiers.
+def parse_uri(uri: str) -> tuple[MediaType, str, str]:
+    """Try to parse URI to Mass identifiers.
 
     Returns Tuple: MediaType, provider_domain, item_id
     """

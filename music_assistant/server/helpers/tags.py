@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
-
 from json import JSONDecodeError
+from typing import Any
 
 from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.errors import InvalidDataError
@@ -20,7 +20,7 @@ from music_assistant.server.helpers.process import AsyncProcess
 TAG_SPLITTER = ";"
 
 
-def split_items(org_str: str) -> Tuple[str]:
+def split_items(org_str: str) -> tuple[str]:
     """Split up a tags string by common splitter."""
     if not org_str:
         return tuple()
@@ -29,12 +29,12 @@ def split_items(org_str: str) -> Tuple[str]:
     return tuple(x.strip() for x in org_str.split(TAG_SPLITTER))
 
 
-def split_artists(org_artists: Union[str, Tuple[str]]) -> Tuple[str]:
+def split_artists(org_artists: str | tuple[str]) -> tuple[str]:
     """Parse all artists from a string."""
     final_artists = set()
     # when not using the multi artist tag, the artist string may contain
-    # multiple artistsin freeform, even featuring artists may be included in this
-    # string. Try to parse the featuring artists and seperate them.
+    # multiple artists in freeform, even featuring artists may be included in this
+    # string. Try to parse the featuring artists and separate them.
     splitters = ("featuring", " feat. ", " feat ", "feat.")
     for item in split_items(org_artists):
         for splitter in splitters:
@@ -47,14 +47,14 @@ def split_artists(org_artists: Union[str, Tuple[str]]) -> Tuple[str]:
 class AudioTags:
     """Audio metadata parsed from an audio file."""
 
-    raw: Dict[str, Any]
+    raw: dict[str, Any]
     sample_rate: int
     channels: int
     bits_per_sample: int
     format: str
     bit_rate: int
-    duration: Optional[int]
-    tags: Dict[str, str]
+    duration: int | None
+    tags: dict[str, str]
     has_cover_image: bool
     filename: str
 
@@ -77,7 +77,7 @@ class AudioTags:
         return self.tags.get("album")
 
     @property
-    def artists(self) -> Tuple[str]:
+    def artists(self) -> tuple[str]:
         """Return track artists."""
         # prefer multi-artist tag
         if tag := self.tags.get("artists"):
@@ -96,7 +96,7 @@ class AudioTags:
         return (UNKNOWN_ARTIST,)
 
     @property
-    def album_artists(self) -> Tuple[str]:
+    def album_artists(self) -> tuple[str]:
         """Return (all) album artists (if any)."""
         # prefer multi-artist tag
         if tag := self.tags.get("albumartists"):
@@ -109,7 +109,7 @@ class AudioTags:
         return tuple()
 
     @property
-    def genres(self) -> Tuple[str]:
+    def genres(self) -> tuple[str]:
         """Return (all) genres, if any."""
         return split_items(self.tags.get("genre"))
 
@@ -139,12 +139,12 @@ class AudioTags:
         return None
 
     @property
-    def musicbrainz_artistids(self) -> Tuple[str]:
+    def musicbrainz_artistids(self) -> tuple[str]:
         """Return musicbrainz_artistid tag(s) if present."""
         return split_items(self.tags.get("musicbrainzartistid"))
 
     @property
-    def musicbrainz_albumartistids(self) -> Tuple[str]:
+    def musicbrainz_albumartistids(self) -> tuple[str]:
         """Return musicbrainz_albumartistid tag if present."""
         return split_items(self.tags.get("musicbrainzalbumartistid"))
 
@@ -168,17 +168,15 @@ class AudioTags:
         return self.tags.get("releasetype")
 
     @classmethod
-    def parse(cls, raw: dict) -> "AudioTags":
+    def parse(cls, raw: dict) -> AudioTags:
         """Parse instance from raw ffmpeg info output."""
         audio_stream = next(x for x in raw["streams"] if x["codec_type"] == "audio")
-        has_cover_image = any(
-            x for x in raw["streams"] if x["codec_name"] in ("mjpeg", "png")
-        )
+        has_cover_image = any(x for x in raw["streams"] if x["codec_name"] in ("mjpeg", "png"))
         # convert all tag-keys (gathered from all streams) to lowercase without spaces
         tags = {}
         for stream in raw["streams"] + [raw["format"]]:
             for key, value in stream.get("tags", {}).items():
-                key = key.lower().replace(" ", "").replace("_", "")
+                key = key.lower().replace(" ", "").replace("_", "")  # noqa: PLW2901
                 tags[key] = value
 
         return AudioTags(
@@ -186,10 +184,7 @@ class AudioTags:
             sample_rate=int(audio_stream.get("sample_rate", 44100)),
             channels=audio_stream.get("channels", 2),
             bits_per_sample=int(
-                audio_stream.get(
-                    "bits_per_raw_sample", audio_stream.get("bits_per_sample")
-                )
-                or 16
+                audio_stream.get("bits_per_raw_sample", audio_stream.get("bits_per_sample")) or 16
             ),
             format=raw["format"]["format_name"],
             bit_rate=int(raw["format"].get("bit_rate", 320)),
@@ -204,9 +199,8 @@ class AudioTags:
         return self.tags.get(key, default)
 
 
-async def parse_tags(input_file: Union[str, AsyncGenerator[bytes, None]]) -> AudioTags:
-    """
-    Parse tags from a media file.
+async def parse_tags(input_file: str | AsyncGenerator[bytes, None]) -> AudioTags:
+    """Parse tags from a media file.
 
     input_file may be a (local) filename/url accessible by ffmpeg or
     an AsyncGenerator which yields the file contents as bytes.
@@ -230,7 +224,6 @@ async def parse_tags(input_file: Union[str, AsyncGenerator[bytes, None]]) -> Aud
     async with AsyncProcess(
         args, enable_stdin=file_path == "-", enable_stdout=True, enable_stderr=False
     ) as proc:
-
         if file_path == "-":
             # feed the file contents to the process
             async def chunk_feeder():
@@ -250,16 +243,11 @@ async def parse_tags(input_file: Union[str, AsyncGenerator[bytes, None]]) -> Aud
                 raise InvalidDataError(error["string"])
             return AudioTags.parse(data)
         except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
-            raise InvalidDataError(
-                f"Unable to retrieve info for {file_path}: {str(err)}"
-            ) from err
+            raise InvalidDataError(f"Unable to retrieve info for {file_path}: {str(err)}") from err
 
 
-async def get_embedded_image(
-    input_file: Union[str, AsyncGenerator[bytes, None]]
-) -> bytes | None:
-    """
-    Return embedded image data.
+async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> bytes | None:
+    """Return embedded image data.
 
     input_file may be a (local) filename/url accessible by ffmpeg or
     an AsyncGenerator which yields the file contents as bytes.
@@ -284,7 +272,6 @@ async def get_embedded_image(
     async with AsyncProcess(
         args, enable_stdin=file_path == "-", enable_stdout=True, enable_stderr=False
     ) as proc:
-
         if file_path == "-":
             # feed the file contents to the process
             async for chunk in input_file:

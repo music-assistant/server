@@ -3,9 +3,9 @@
 from dataclasses import dataclass
 from typing import Any
 
-from music_assistant.common.models.enums import EventType
-
 from mashumaro import DataClassDictMixin
+
+from music_assistant.common.models.enums import EventType
 
 
 @dataclass

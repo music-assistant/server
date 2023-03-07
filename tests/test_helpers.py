@@ -9,7 +9,6 @@ from music_assistant.common.models.errors import MusicAssistantError
 
 def test_version_extract():
     """Test the extraction of version from title."""
-
     test_str = "Bam Bam (feat. Ed Sheeran) - Karaoke Version"
     title, version = util.parse_title_and_version(test_str)
     assert title == "Bam Bam"
@@ -31,9 +30,7 @@ def test_uri_parsing():
     assert provider == "spotify"
     assert item_id == "123456789"
     # test public play/open url
-    test_uri = (
-        "https://open.spotify.com/playlist/5lH9NjOeJvctAO92ZrKQNB?si=04a63c8234ac413e"
-    )
+    test_uri = "https://open.spotify.com/playlist/5lH9NjOeJvctAO92ZrKQNB?si=04a63c8234ac413e"
     media_type, provider, item_id = uri.parse_uri(test_uri)
     assert media_type == media_items.MediaType.PLAYLIST
     assert provider == "spotify"

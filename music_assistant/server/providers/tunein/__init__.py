@@ -1,8 +1,8 @@
 """Tune-In musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from time import time
-from typing import AsyncGenerator, List, Optional
 
 from asyncio_throttle import Throttler
 
@@ -47,18 +47,14 @@ class TuneInProvider(MusicProvider):
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
 
-        async def parse_items(
-            items: List[dict], folder: str = None
-        ) -> AsyncGenerator[Radio, None]:
+        async def parse_items(items: list[dict], folder: str = None) -> AsyncGenerator[Radio, None]:
             for item in items:
                 item_type = item.get("type", "")
                 if item_type == "audio":
                     if "preset_id" not in item:
                         continue
                     # each radio station can have multiple streams add each one as different quality
-                    stream_info = await self.__get_data(
-                        "Tune.ashx", id=item["preset_id"]
-                    )
+                    stream_info = await self.__get_data("Tune.ashx", id=item["preset_id"])
                     for stream in stream_info["body"]:
                         yield await self._parse_radio(item, stream, folder)
                 elif item_type == "link" and item.get("item") == "url":
@@ -67,9 +63,7 @@ class TuneInProvider(MusicProvider):
                 elif item_type == "link":
                     # stations are in sublevel (new style)
                     if sublevel := await self.__get_data(item["URL"], render="json"):
-                        async for subitem in parse_items(
-                            sublevel["body"], item["text"]
-                        ):
+                        async for subitem in parse_items(sublevel["body"], item["text"]):
                             yield subitem
                 elif item.get("children"):
                     # stations are in sublevel (old style ?)
@@ -101,7 +95,7 @@ class TuneInProvider(MusicProvider):
         return None
 
     async def _parse_radio(
-        self, details: dict, stream: Optional[dict] = None, folder: str | None = None
+        self, details: dict, stream: dict | None = None, folder: str | None = None
     ) -> Radio:
         """Parse Radio object from json obj returned from api."""
         if "name" in details:
@@ -167,7 +161,6 @@ class TuneInProvider(MusicProvider):
         item_id, media_type = item_id.split("--", 1)
         stream_info = await self.__get_data("Tune.ashx", id=item_id)
         for stream in stream_info["body"]:
-
             if stream["media_type"] != media_type:
                 continue
             # check if the radio stream is not a playlist
@@ -186,12 +179,10 @@ class TuneInProvider(MusicProvider):
         raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
 
     async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
+        self, streamdetails: StreamDetails, seek_position: int = 0  # noqa: ARG002
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        async for chunk in get_radio_stream(
-            self.mass, streamdetails.data, streamdetails
-        ):
+        async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
             yield chunk
 
     async def __get_data(self, endpoint: str, **kwargs):
@@ -205,9 +196,7 @@ class TuneInProvider(MusicProvider):
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
         async with self._throttler:
-            async with self.mass.http_session.get(
-                url, params=kwargs, verify_ssl=False
-            ) as response:
+            async with self.mass.http_session.get(url, params=kwargs, verify_ssl=False) as response:
                 result = await response.json()
                 if not result or "error" in result:
                     self.logger.error(url)

@@ -27,7 +27,6 @@ class DLNANotifyServer(UpnpNotifyServer):
 
     async def _handle_request(self, request: Request) -> Response:
         """Handle incoming requests."""
-
         headers = request.headers
         body = await request.text()
 

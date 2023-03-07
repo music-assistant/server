@@ -1,7 +1,7 @@
 """Helpers to deal with Cast devices."""
 from __future__ import annotations
-from dataclasses import dataclass
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Self
 from uuid import UUID
 
@@ -9,10 +9,10 @@ from pychromecast import dial
 from pychromecast.const import CAST_TYPE_GROUP
 
 if TYPE_CHECKING:
-    from pychromecast.models import CastInfo
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.multizone import MultizoneManager
     from pychromecast.controllers.receiver import CastStatus
+    from pychromecast.models import CastInfo
     from pychromecast.socket_client import ConnectionStatus
     from zeroconf import Zeroconf
 
@@ -23,8 +23,7 @@ DEFAULT_PORT = 8009
 
 @dataclass
 class ChromecastInfo:
-    """
-    Class to hold all data about a chromecast for creating connections.
+    """Class to hold all data about a chromecast for creating connections.
 
     This also has the same attributes as the mDNS fields by zeroconf.
     """
@@ -46,6 +45,7 @@ class ChromecastInfo:
 
     @classmethod
     def from_cast_info(cls: Self, cast_info: CastInfo) -> Self:
+        """Instantiate ChromecastInfo from CastInfo."""
         return cls(**cast_info._asdict())
 
     def update(self, cast_info: CastInfo) -> None:
@@ -56,7 +56,9 @@ class ChromecastInfo:
             setattr(self, key, value)
 
     def fill_out_missing_chromecast_info(self, zconf: Zeroconf) -> None:
-        """Return a new ChromecastInfo object with missing attributes filled in.
+        """
+        Return a new ChromecastInfo object with missing attributes filled in.
+
         Uses blocking HTTP / HTTPS.
         """
         if self.cast_type is None or self.manufacturer is None:
@@ -88,6 +90,7 @@ class ChromecastInfo:
 class CastStatusListener:
     """
     Helper class to handle pychromecast status callbacks.
+
     Necessary because a CastDevice entity can create a new socket client
     and therefore callbacks from multiple chromecast connections can
     potentially arrive. This class allows invalidating past chromecast objects.
@@ -144,11 +147,11 @@ class CastStatusListener:
             # self._cast_device.multizone_new_media_status(group_uuid, None)
             print("##### removed_from_multizone: %s" % group_uuid)
 
-    def multizone_new_cast_status(self, group_uuid, cast_status):
+    def multizone_new_cast_status(self, group_uuid, cast_status):  # noqa: ARG002
         """Handle reception of a new CastStatus for a group."""
         print("##### multizone_new_cast_status: %s" % group_uuid)
 
-    def multizone_new_media_status(self, group_uuid, media_status):
+    def multizone_new_media_status(self, group_uuid, media_status):  # noqa: ARG002
         """Handle reception of a new MediaStatus for a group."""
         if self._valid:
             # self._cast_device.multizone_new_media_status(group_uuid, media_status)
@@ -157,6 +160,7 @@ class CastStatusListener:
     def invalidate(self):
         """
         Invalidate this status listener.
+
         All following callbacks won't be forwarded.
         """
         # pylint: disable=protected-access

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import AsyncGenerator, Tuple
+from collections.abc import AsyncGenerator
 
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType
 from music_assistant.common.models.media_items import (
@@ -31,8 +31,7 @@ class URLProvider(MusicProvider):
     _full_url = {}
 
     async def setup(self) -> bool:
-        """
-        Handle async initialization of the provider.
+        """Handle async initialization of the provider.
 
         Called when provider is registered.
         """
@@ -71,13 +70,9 @@ class URLProvider(MusicProvider):
             return await self.parse_item(prov_item_id)
         raise NotImplementedError
 
-    async def parse_item(
-        self, item_id_or_url: str, force_refresh: bool = False
-    ) -> Track | Radio:
+    async def parse_item(self, item_id_or_url: str, force_refresh: bool = False) -> Track | Radio:
         """Parse plain URL to MediaItem of type Radio or Track."""
-        item_id, url, media_info = await self._get_media_info(
-            item_id_or_url, force_refresh
-        )
+        item_id, url, media_info = await self._get_media_info(item_id_or_url, force_refresh)
         is_radio = media_info.get("icy-name") or not media_info.duration
         if is_radio:
             # treat as radio
@@ -92,9 +87,7 @@ class URLProvider(MusicProvider):
                 provider=self.domain,
                 name=media_info.title,
                 duration=int(media_info.duration or 0),
-                artists=[
-                    await self.get_artist(artist) for artist in media_info.artists
-                ],
+                artists=[await self.get_artist(artist) for artist in media_info.artists],
             )
 
         media_item.provider_mappings = {
@@ -114,7 +107,7 @@ class URLProvider(MusicProvider):
 
     async def _get_media_info(
         self, item_id_or_url: str, force_refresh: bool = False
-    ) -> Tuple[str, str, AudioTags]:
+    ) -> tuple[str, str, AudioTags]:
         """Retrieve (cached) mediainfo for url."""
         # check if the radio stream is not a playlist
         if (
@@ -170,9 +163,7 @@ class URLProvider(MusicProvider):
         """Return the audio stream for the provider item."""
         if streamdetails.media_type == MediaType.RADIO:
             # radio stream url
-            async for chunk in get_radio_stream(
-                self.mass, streamdetails.data, streamdetails
-            ):
+            async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
                 yield chunk
         elif os.path.isfile(streamdetails.data):
             # local file

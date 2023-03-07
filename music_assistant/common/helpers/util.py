@@ -7,7 +7,8 @@ import platform
 import re
 import socket
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import memory_tempfile
 import unidecode
@@ -26,7 +27,7 @@ def filename_from_string(string: str) -> str:
     return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
 
 
-def try_parse_int(possible_int: Any, default: Optional[int] = 0) -> Optional[int]:
+def try_parse_int(possible_int: Any, default: int | None = 0) -> int | None:
     """Try to parse an int."""
     try:
         return int(possible_int)
@@ -34,9 +35,7 @@ def try_parse_int(possible_int: Any, default: Optional[int] = 0) -> Optional[int
         return default
 
 
-def try_parse_float(
-    possible_float: Any, default: Optional[float] = 0.0
-) -> Optional[float]:
+def try_parse_float(possible_float: Any, default: float | None = 0.0) -> float | None:
     """Try to parse a float."""
     try:
         return float(possible_float)
@@ -77,7 +76,7 @@ def parse_title_and_version(title: str, track_version: str = None):
                 # look for the end splitter
                 for end_splitter in [")", "]"]:
                     if end_splitter in title_part:
-                        title_part = title_part.split(end_splitter)[0]
+                        title_part = title_part.split(end_splitter)[0]  # noqa: PLW2901
                 for version_str in [
                     "version",
                     "live",
@@ -116,7 +115,7 @@ def clean_title(title: str) -> str:
                 # look for the end splitter
                 for end_splitter in [")", "]"]:
                     if end_splitter in title_part:
-                        title_part = title_part.split(end_splitter)[0]
+                        title_part = title_part.split(end_splitter)[0]  # noqa: PLW2901
                 for ignore_str in ["feat.", "featuring", "ft.", "with ", "explicit"]:
                     if ignore_str in title_part.lower():
                         return title.split(splitter + title_part)[0].strip()
@@ -138,9 +137,7 @@ def get_version_substitute(version_str: str):
         version_str = "video version"
     elif "spanglish" in version_str or "spanish" in version_str:
         version_str = "spanish version"
-    elif version_str.endswith("remaster"):
-        version_str = "remaster"
-    elif version_str.endswith("remastered"):
+    elif "remaster" in version_str:
         version_str = "remaster"
     return version_str.strip()
 
@@ -231,7 +228,7 @@ def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
     return final_dict
 
 
-def merge_tuples(base: tuple, new: tuple) -> Tuple:
+def merge_tuples(base: tuple, new: tuple) -> tuple:
     """Merge 2 tuples."""
     return tuple(x for x in base if x not in new) + tuple(new)
 
@@ -244,17 +241,15 @@ def merge_lists(base: list, new: list) -> list:
 def create_tempfile():
     """Return a (named) temporary file."""
     if platform.system() == "Linux":
-        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(
-            buffering=0
-        )
+        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
     return tempfile.NamedTemporaryFile(buffering=0)
 
 
 def get_changed_keys(
-    dict1: Dict[str, Any],
-    dict2: Dict[str, Any],
-    ignore_keys: Optional[List[str]] = None,
-) -> Set[str]:
+    dict1: dict[str, Any],
+    dict2: dict[str, Any],
+    ignore_keys: list[str] | None = None,
+) -> set[str]:
     """Compare 2 dicts and return set of changed keys."""
     if not dict1:
         return set(dict2.keys())

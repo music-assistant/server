@@ -7,11 +7,7 @@ from typing import Any
 
 from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.models.enums import (
-    EventType,
-    MediaType,
-    ProviderFeature,
-)
+from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -123,9 +119,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = set()
         count = 0
-        for item in await self.tracks(
-            playlist_prov.item_id, playlist_prov.provider_domain
-        ):
+        for item in await self.tracks(playlist_prov.item_id, playlist_prov.provider_domain):
             count += 1
             cur_playlist_track_ids.update(
                 {
@@ -140,17 +134,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 track_prov.provider_domain == playlist_prov.provider_domain
                 and track_prov.item_id in cur_playlist_track_ids
             ):
-                raise InvalidDataError(
-                    "Track already exists in playlist {playlist.name}"
-                )
+                raise InvalidDataError("Track already exists in playlist {playlist.name}")
         # add track to playlist
         # we can only add a track to a provider playlist if track is available on that provider
         # a track can contain multiple versions on the same provider
         # simply sort by quality and just add the first one (assuming track is still available)
         track_id_to_add = None
-        for track_version in sorted(
-            track.provider_mappings, key=lambda x: x.quality, reverse=True
-        ):
+        for track_version in sorted(track.provider_mappings, key=lambda x: x.quality, reverse=True):
             if not track.available:
                 continue
             if playlist_prov.provider_domain.startswith("filesystem"):
@@ -185,24 +175,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         for prov_mapping in playlist.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if (
-                ProviderFeature.PLAYLIST_TRACKS_EDIT
-                not in provider.supported_features
-            ):
+            if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
                 self.logger.warning(
                     "Provider %s does not support editing playlists",
                     prov_mapping.provider_domain,
                 )
                 continue
-            await provider.remove_playlist_tracks(
-                prov_mapping.item_id, positions_to_remove
-            )
+            await provider.remove_playlist_tracks(prov_mapping.item_id, positions_to_remove)
         # invalidate cache by updating the checksum
         await self.get(db_playlist_id, "database", force_refresh=True)
 
-    async def add_db_item(
-        self, item: Playlist, overwrite_existing: bool = False
-    ) -> Playlist:
+    async def add_db_item(self, item: Playlist, overwrite_existing: bool = False) -> Playlist:
         """Add a new record to the database."""
         async with self._db_add_lock:
             match = {"name": item.name, "owner": item.owner}
@@ -213,9 +196,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 )
 
             # insert new item
-            new_item = await self.mass.music.database.insert(
-                self.db_table, item.to_db_row()
-            )
+            new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
             item_id = new_item["item_id"]
             # update/set provider_mappings table
             await self._set_provider_mappings(item_id, item.provider_mappings)
@@ -275,14 +256,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         items = await provider.get_playlist_tracks(item_id)
         # double check if position set
         if items:
-            assert (
-                items[0].position is not None
-            ), "Playlist items require position to be set"
+            assert items[0].position is not None, "Playlist items require position to be set"
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
-            )
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
         )
         return items
 
@@ -295,10 +272,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
     ):
         """Generate a dynamic list of tracks based on the playlist content."""
         provider = self.mass.get_provider(provider_instance or provider_domain)
-        if (
-            not provider
-            or ProviderFeature.SIMILAR_TRACKS not in provider.supported_features
-        ):
+        if not provider or ProviderFeature.SIMILAR_TRACKS not in provider.supported_features:
             return []
         playlist_tracks = await self._get_provider_playlist_tracks(
             item_id=item_id,
@@ -330,7 +304,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return random.sample(final_items, len(final_items))
 
     async def _get_dynamic_tracks(
-        self, media_item: Playlist, limit: int = 25
+        self, media_item: Playlist, limit: int = 25  # noqa: ARG002
     ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)

@@ -2,28 +2,27 @@
 
 import contextvars
 import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from smb.base import SharedFile
 
 from music_assistant.common.helpers.util import get_ip_from_host
-from music_assistant.constants import (
-    CONF_PASSWORD,
-    CONF_PATH,
-    CONF_USERNAME,
+from music_assistant.constants import CONF_PASSWORD, CONF_PATH, CONF_USERNAME
+from music_assistant.server.providers.filesystem_local.base import (
+    FileSystemItem,
+    FileSystemProviderBase,
+)
+from music_assistant.server.providers.filesystem_local.helpers import (
+    get_absolute_path,
+    get_relative_path,
 )
 
-from ..filesystem_local.base import FileSystemItem, FileSystemProviderBase
-from ..filesystem_local.helpers import get_absolute_path, get_relative_path
 from .helpers import AsyncSMB
 
 
-async def create_item(
-    file_path: str, entry: SharedFile, root_path: str
-) -> FileSystemItem:
+async def create_item(file_path: str, entry: SharedFile, root_path: str) -> FileSystemItem:
     """Create FileSystemItem from smb.SharedFile."""
-
     rel_path = get_relative_path(root_path, file_path)
     abs_path = get_absolute_path(root_path, file_path)
     return FileSystemItem(
@@ -68,22 +67,23 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         self._target_ip = self.config.get_value("target_ip") or default_target_ip
         async with self._get_smb_connection():
             # test connection and return
-            return None
+            return
 
     async def listdir(
         self,
         path: str,
         recursive: bool = False,
     ) -> AsyncGenerator[FileSystemItem, None]:
-        """
-        List contents of a given provider directory/path.
+        """List contents of a given provider directory/path.
 
-        Parameters:
-            - path: path of the directory (relative or absolute) to list contents of.
-              Empty string for provider's root.
-            - recursive: If True will recursively keep unwrapping subdirectories (scandir equivalent).
+        Parameters
+        ----------
+        - path: path of the directory (relative or absolute) to list contents of.
+            Empty string for provider's root.
+        - recursive: If True will recursively keep unwrapping subdirectories (scandir equivalent)
 
         Returns:
+        -------
             AsyncGenerator yielding FileSystemItem objects.
 
         """
@@ -127,9 +127,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         async with self._get_smb_connection() as smb_conn:
             return await smb_conn.path_exists(abs_path)
 
-    async def read_file_content(
-        self, file_path: str, seek: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
         abs_path = get_absolute_path(self._root_path, file_path)
 
@@ -146,7 +144,6 @@ class SMBFileSystemProvider(FileSystemProviderBase):
     @asynccontextmanager
     async def _get_smb_connection(self) -> AsyncGenerator[AsyncSMB, None]:
         """Get instance of AsyncSMB."""
-
         # for a task that consists of multiple steps,
         # the smb connection may be reused (shared through a contextvar)
         if existing := smb_conn_ctx.get():

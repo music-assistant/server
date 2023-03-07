@@ -10,10 +10,10 @@ from music_assistant.constants import MASS_LOGO_ONLINE
 if TYPE_CHECKING:
     from music_assistant.common.models.queue_item import QueueItem
 
+# ruff: noqa: E501
 
-def create_didl_metadata(
-    url: str, queue_item: QueueItem, flow_mode: bool = False
-) -> str:
+
+def create_didl_metadata(url: str, queue_item: QueueItem, flow_mode: bool = False) -> str:
     """Create DIDL metadata string from url and QueueItem."""
     ext = url.split(".")[-1]
     is_radio = queue_item.media_type != MediaType.TRACK or not queue_item.duration

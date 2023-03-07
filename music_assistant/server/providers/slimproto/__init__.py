@@ -4,16 +4,17 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
-from typing import Any, Callable, Generator, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aioslimproto.client import PlayerState as SlimPlayerState
 from aioslimproto.client import SlimClient
 from aioslimproto.client import TransitionType as SlimTransition
 from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
-from music_assistant.common.models.config_entries import ConfigEntry
 
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
@@ -62,7 +63,8 @@ SLIM_PLAYER_CONFIG_ENTRIES = (
         range=(0, 1500),
         default_value=0,
         label="Correct synchronization delay",
-        description="If this player is playing audio synced with other players and you always hear the audio too late on this player, you can shift the audio a bit.",
+        description="If this player is playing audio synced with other players "
+        "and you always hear the audio too late on this player, you can shift the audio a bit.",
         advanced=True,
     ),
 )
@@ -109,15 +111,14 @@ class SlimprotoProvider(PlayerProvider):
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         """Create player from new connection on the socket."""
-        if self.mass.closed:
+        if self.mass.closing:
             return
         addr = writer.get_extra_info("peername")
         self.logger.debug("Socket client connected: %s", addr)
 
         def client_callback(
-            event_type: SlimEventType, client: SlimClient, data: Any = None
+            event_type: SlimEventType, client: SlimClient, data: Any = None  # noqa: ARG001
         ):
-
             if event_type == SlimEventType.PLAYER_DISCONNECTED:
                 self._handle_disconnected(client)
                 return
@@ -146,7 +147,7 @@ class SlimprotoProvider(PlayerProvider):
         # construct SlimClient from socket client
         SlimClient(reader, writer, client_callback)
 
-    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
+    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return SLIM_PLAYER_CONFIG_ENTRIES
 
@@ -157,11 +158,8 @@ class SlimprotoProvider(PlayerProvider):
         self._sync_adjusts[config.player_id] = config.get_value(CONF_SYNC_ADJUST)
 
     async def cmd_stop(self, player_id: str) -> None:
-        """
-        Send STOP command to given player.
-            - player_id: player_id of the player to handle the command.
-        """
-        # forward command to player and any connected sync childs
+        """Send STOP command to given player."""
+        # forward command to player and any connected sync child's
         for client in self._get_sync_clients(player_id):
             if client.state == SlimPlayerState.STOPPED:
                 continue
@@ -170,11 +168,8 @@ class SlimprotoProvider(PlayerProvider):
             client._process_stat_stmu(b"")
 
     async def cmd_play(self, player_id: str) -> None:
-        """
-        Send PLAY command to given player.
-            - player_id: player_id of the player to handle the command.
-        """
-        # forward command to player and any connected sync childs
+        """Send PLAY command to given player."""
+        # forward command to player and any connected sync child's
         for client in self._get_sync_clients(player_id):
             if client.state not in (
                 SlimPlayerState.PAUSED,
@@ -182,14 +177,6 @@ class SlimprotoProvider(PlayerProvider):
             ):
                 continue
             await client.play()
-
-    async def cmd_play_url(self, player_id: str, url: str) -> None:
-        """
-        Send PLAY MEDIA command to given player.
-            - player_id: player_id of the player to handle the command.
-            - url: the url to start playing on the player.
-        """
-        raise NotImplementedError("Use play_media only")
 
     async def cmd_play_media(
         self,
@@ -199,8 +186,7 @@ class SlimprotoProvider(PlayerProvider):
         fade_in: bool = False,
         flow_mode: bool = False,
     ) -> None:
-        """
-        Send PLAY MEDIA command to given player.
+        """Send PLAY MEDIA command to given player.
 
         This is called when the Queue wants the player to start playing a specific QueueItem.
         The player implementation can decide how to process the request, such as playing
@@ -220,9 +206,8 @@ class SlimprotoProvider(PlayerProvider):
         if not player.synced_to:
             await self._socket_clients[player_id].power(True)
 
-        # forward command to player and any connected sync childs
+        # forward command to player and any connected sync child's
         for client in self._get_sync_clients(player_id):
-
             await self._handle_play_media(
                 client,
                 queue_item=queue_item,
@@ -255,9 +240,7 @@ class SlimprotoProvider(PlayerProvider):
                 content_type = fmt_type
                 break
         else:
-            self.logger.debug(
-                "Could not auto determine supported codec, fallback to PCM"
-            )
+            self.logger.debug("Could not auto determine supported codec, fallback to PCM")
             content_type = ContentType.PCM
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
@@ -277,11 +260,8 @@ class SlimprotoProvider(PlayerProvider):
         )
 
     async def cmd_pause(self, player_id: str) -> None:
-        """
-        Send PAUSE command to given player.
-            - player_id: player_id of the player to handle the command.
-        """
-        # forward command to player and any connected sync childs
+        """Send PAUSE command to given player."""
+        # forward command to player and any connected sync child's
         for client in self._get_sync_clients(player_id):
             if client.state not in (
                 SlimPlayerState.PLAYING,
@@ -291,44 +271,27 @@ class SlimprotoProvider(PlayerProvider):
             await client.pause()
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
-        """
-        Send POWER command to given player.
-            - player_id: player_id of the player to handle the command.
-            - powered: bool if player should be powered on or off.
-        """
+        """Send POWER command to given player."""
         if client := self._socket_clients.get(player_id):
             await client.power(powered)
         # TODO: unsync client at poweroff if synced
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """
-        Send VOLUME_SET command to given player.
-            - player_id: player_id of the player to handle the command.
-            - volume_level: volume level (0..100) to set on the player.
-        """
+        """Send VOLUME_SET command to given player."""
         if client := self._socket_clients.get(player_id):
             await client.volume_set(volume_level)
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
-        """
-        Send VOLUME MUTE command to given player.
-            - player_id: player_id of the player to handle the command.
-            - muted: bool if player should be muted.
-        """
+        """Send VOLUME MUTE command to given player."""
         if client := self._socket_clients.get(player_id):
             await client.mute(muted)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
-        """
-        Handle SYNC command for given player.
-
-        Join/add the given player(id) to the given (master) player/sync group.
-
-            - player_id: player_id of the player to handle the command.
-            - target_player: player_id of the syncgroup master or group player.
-        """
+        """Handle SYNC command for given player."""
         child_player = self.mass.players.get(player_id)
+        assert child_player
         parent_player = self.mass.players.get(target_player)
+        assert parent_player
         parent_player.group_childs.append(child_player.player_id)
         child_player.synced_to = parent_player.player_id
         self.mass.players.update(child_player.player_id)
@@ -340,15 +303,9 @@ class SlimprotoProvider(PlayerProvider):
             await self.mass.players.queues.resume(parent_player.player_id)
 
     async def cmd_unsync(self, player_id: str) -> None:
-        """
-        Handle UNSYNC command for given player.
-
-        Remove the given player from the syncgroup/player it currently is synced to.
-
-            - player_id: player_id of the player to handle the command.
-        """
-        child_player = self.mass.players.get(player_id, True)
-        parent_player = self.mass.players.get(child_player.synced_to, True)
+        """Handle UNSYNC command for given player."""
+        child_player = self.mass.players.get(player_id)
+        parent_player = self.mass.players.get(child_player.synced_to)
         if child_player.state == PlayerState.PLAYING:
             await self.cmd_stop(child_player.player_id)
         child_player.synced_to = None
@@ -413,9 +370,7 @@ class SlimprotoProvider(PlayerProvider):
         player.volume_muted = client.muted
         # set all existing player ids in `can_sync_with` field
         player.can_sync_with = tuple(
-            x.player_id
-            for x in self._socket_clients.values()
-            if x.player_id != player_id
+            x.player_id for x in self._socket_clients.values() if x.player_id != player_id
         )
         if virtual_provider_info:
             # if this player is part of a virtual provider run the callback
@@ -424,7 +379,6 @@ class SlimprotoProvider(PlayerProvider):
 
     def _handle_player_time_update(self, client: SlimClient) -> None:
         """Process SlimClient elapsed_time update."""
-
         if client.state != SlimPlayerState.PLAYING:
             # ignore server heartbeats
             return
@@ -439,7 +393,7 @@ class SlimprotoProvider(PlayerProvider):
 
         # handle sync
         if not sync_master_id:
-            # we only correct sync childs, not the sync master itself
+            # we only correct sync child's, not the sync master itself
             return
         if sync_master_id not in self._socket_clients:
             return  # just here as a guard as bad things can happen
@@ -453,13 +407,9 @@ class SlimprotoProvider(PlayerProvider):
         )
 
         # make sure client has loaded the same track as sync master
-        client_item_id = (
-            client.current_metadata["item_id"] if client.current_metadata else None
-        )
+        client_item_id = client.current_metadata["item_id"] if client.current_metadata else None
         master_item_id = (
-            sync_master.current_metadata["item_id"]
-            if sync_master.current_metadata
-            else None
+            sync_master.current_metadata["item_id"] if sync_master.current_metadata else None
         )
         if client_item_id != master_item_id:
             sync_playpoints.clear()
@@ -469,10 +419,7 @@ class SlimprotoProvider(PlayerProvider):
         if last_playpoint and (time.time() - last_playpoint.timestamp) > 10:
             # last playpoint is too old, invalidate
             sync_playpoints.clear()
-        if (
-            last_playpoint
-            and last_playpoint.item_id != client.current_metadata["item_id"]
-        ):
+        if last_playpoint and last_playpoint.item_id != client.current_metadata["item_id"]:
             # item has changed, invalidate
             sync_playpoints.clear()
 
@@ -487,9 +434,7 @@ class SlimprotoProvider(PlayerProvider):
             return
 
         # we can now append the current playpoint to our list
-        sync_playpoints.append(
-            SyncPlayPoint(time.time(), client.current_metadata["item_id"], diff)
-        )
+        sync_playpoints.append(SyncPlayPoint(time.time(), client.current_metadata["item_id"], diff))
 
         if len(sync_playpoints) < MIN_REQ_PLAYPOINTS:
             return
@@ -521,9 +466,7 @@ class SlimprotoProvider(PlayerProvider):
             next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
                 client.player_id, client.current_metadata["item_id"]
             )
-            await self._handle_play_media(
-                client, next_item, send_flush=False, crossfade=crossfade
-            )
+            await self._handle_play_media(client, next_item, send_flush=False, crossfade=crossfade)
         except QueueEmpty:
             pass
 
@@ -571,12 +514,12 @@ class SlimprotoProvider(PlayerProvider):
         for child_id in [player.player_id] + player.group_childs:
             if client := self._socket_clients.get(child_id):
                 if not player_id and not client.powered:
-                    # only powered childs
+                    # only powered child's
                     continue
                 yield client
 
     def _get_corrected_elapsed_milliseconds(self, client: SlimClient) -> int:
-        """Return corrected elapsed milliseconds"""
+        """Return corrected elapsed milliseconds."""
         sync_delay = self._sync_adjusts[client.player_id]
         if sync_delay != 0:
             return client.elapsed_milliseconds - sync_delay

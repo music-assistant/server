@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "music_assistant"
-version = attr: music_assistant.constants.__version__
+dynamic = ["version"]
 license     = "Apache-2.0"
 description = "Music Assistant"
 readme = "README.md"
 requires-python = ">=3.11"
-author = marcelveldt
-author_email = marcelveldt@users.noreply.github.com
+author = "marcelveldt"
+author_email = "marcelveldt@users.noreply.github.com"
 classifiers = [
   "Environment :: Console",
   "Programming Language :: Python :: 3.11",
@@ -43,12 +43,9 @@ server = [
 ]
 test = [
   "black==23.1.0",
-  "flake8==6.0.0",
-  "flake8-docstrings==1.7.0",
-  "isort==5.12.0",
+  "codespell==2.2.2",
   "mypy==1.0.1",
-  "pydocstyle==6.1.1",
-  "pylint==2.16.2",
+  "ruff==0.0.254",
   "pytest==7.2.1",
   "pytest-aiohttp==1.0.4",
   "pytest-cov==4.0.0",
@@ -58,12 +55,22 @@ test = [
 [project.scripts]
 mass = "music_assistant.server.__main__:main"
 
+[tool.setuptools.dynamic]
+version = {attr = "music_assistant.constants.__version__"}
+
+[tool.black]
+target-version = ['py311']
+line-length = 100
+
+[tool.codespell]
+ignore-words-list = "provid"
+
 [tool.mypy]
 python_version = "3.11"
 check_untyped_defs = true
 #disallow_any_generics = true
 disallow_incomplete_defs = true
-disallow_untyped_calls = true
+disallow_untyped_calls = false
 disallow_untyped_defs = true
 mypy_path = "music_assistant/"
 no_implicit_optional = true
@@ -96,53 +103,31 @@ music_assistant = ["py.typed"]
 [tool.setuptools.packages.find]
 include = ["music_assistant*"]
 
+[tool.ruff]
+fix = true
+show-fixes = true
 
-[tool.pylint.master]
-ignore-patterns=["app_vars"]
-# Use a conservative default here; 2 should speed up most setups and not hurt
-# any too bad. Override on command line as appropriate.
-jobs=2
-persistent=no
-suggestion-mode=yes
-extension-pkg-whitelist=["orjson"]
+# enable later: "C90", "PTH", "TCH", "RET", "ANN"
+select = ["E", "F", "W", "I", "N", "D", "UP", "PL", "Q", "SIM", "TID", "ARG"]
+ignore = ["PLR2004", "N818"]
+extend-exclude = ["app_vars.py"]
+line-length = 100
+target-version = "py311"
 
-[tool.pylint.BASIC]
-class-const-naming-style = "any"
-good-names = [
-    "_",
-    "ev",
-    "ex",
-    "fp",
-    "i",
-    "id",
-    "j",
-    "k",
-    "Run",
-    "ip",
-    "db
-]
+[tool.ruff.flake8-annotations]
+allow-star-arg-any = true
+suppress-dummy-args = true
 
-[tool.pylint."MESSAGES CONTROL"]
-# fixme - we are still a work in progress
-# too-many-instance-attributes - just because it is unavoidable
-# too-few-public-methods - just because it is unavoidable
-# too-many-arguments - just because it is unavoidable
-disable = [
-    "fixme",
-    "too-many-instance-attributes",
-    "too-few-public-methods",
-    "too-many-arguments"
-]
+[tool.ruff.flake8-builtins]
+builtins-ignorelist = ["id"]
 
-[tool.isort]
-# https://github.com/PyCQA/isort/wiki/isort-Settings
-profile = black
-multi_line_output = 3
-include_trailing_comma = True
-force_grid_wrap = 0
-use_parentheses = True
-line_length = 88
+[tool.ruff.pydocstyle]
+# Use Google-style docstrings.
+convention = "pep257"
 
-[tool.pydocstyle]
-add-ignore = D202
+[tool.ruff.pylint]
 
+max-branches=25
+max-returns=15
+max-args=10
+max-statements=50

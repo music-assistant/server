@@ -1,9 +1,10 @@
 """Models and helpers for media items."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from time import time
-from typing import Any, Mapping
+from typing import Any
 
 from mashumaro import DataClassDictMixin
 
@@ -67,7 +68,7 @@ class MediaItemLink(DataClassDictMixin):
 
     def __hash__(self):
         """Return custom hash."""
-        return hash((self.type))
+        return hash(self.type)
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ class MediaItemImage(DataClassDictMixin):
 
     def __hash__(self):
         """Return custom hash."""
-        return hash((self.url))
+        return hash(self.url)
 
 
 @dataclass
@@ -110,9 +111,9 @@ class MediaItemMetadata(DataClassDictMixin):
 
     def update(
         self,
-        new_values: "MediaItemMetadata",
+        new_values: MediaItemMetadata,
         allow_overwrite: bool = False,
-    ) -> "MediaItemMetadata":
+    ) -> MediaItemMetadata:
         """Update metadata (in-place) with new values."""
         for fld in fields(self):
             new_val = getattr(new_values, fld.name)
@@ -125,10 +126,11 @@ class MediaItemMetadata(DataClassDictMixin):
             elif isinstance(cur_val, set):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
-            elif cur_val is None or allow_overwrite:
+            elif cur_val is None or allow_overwrite:  # noqa: SIM114
                 setattr(self, fld.name, new_val)
             elif new_val and fld.name in ("checksum", "popularity", "last_refresh"):
-                # some fields are always allowed to be overwritten (such as checksum and last_refresh)
+                # some fields are always allowed to be overwritten
+                # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
         return self
 
@@ -204,9 +206,7 @@ class MediaItem(DataClassDictMixin):
         """Return (first/random) image/thumb from metadata (if any)."""
         if self.metadata is None or self.metadata.images is None:
             return None
-        return next(
-            (x for x in self.metadata.images if x.type == ImageType.THUMB), None
-        )
+        return next((x for x in self.metadata.images if x.type == ImageType.THUMB), None)
 
     def add_provider_mapping(self, prov_mapping: ProviderMapping) -> None:
         """Add provider ID, overwrite existing entry."""
@@ -243,7 +243,7 @@ class ItemMapping(DataClassDictMixin):
     version: str = ""
 
     @classmethod
-    def from_item(cls, item: "MediaItem"):
+    def from_item(cls, item: MediaItem):
         """Create ItemMapping object from regular item."""
         return cls.from_dict(item.to_dict())
 
@@ -285,7 +285,7 @@ class Album(MediaItem):
 
     @artist.setter
     def artist(self, artist: Artist | ItemMapping) -> None:
-        """set (first/only) artist of album."""
+        """Set (first/only) artist of album."""
         self.artists = [artist]
 
     def __hash__(self):
@@ -336,7 +336,7 @@ class Track(MediaItem):
     @property
     def isrcs(self) -> tuple[str]:
         """Split multiple values in isrc field."""
-        # sometimes the isrc contains multiple values, splitted by semicolon
+        # sometimes the isrc contains multiple values, split by semicolon
         if not self.isrc:
             return tuple()
         return tuple(self.isrc.split(";"))
@@ -350,7 +350,7 @@ class Track(MediaItem):
 
     @artist.setter
     def artist(self, artist: Artist | ItemMapping) -> None:
-        """set (first/only) artist of track."""
+        """Set (first/only) artist of track."""
         self.artists = [artist]
 
 

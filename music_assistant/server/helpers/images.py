@@ -1,10 +1,10 @@
 """Utilities for image manipulation and retrieval."""
 from __future__ import annotations
-import asyncio
 
+import asyncio
 import random
 from io import BytesIO
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING
 
 from PIL import Image
 
@@ -34,9 +34,7 @@ async def get_image_data(mass: MusicAssistant, path: str) -> bytes:
     raise FileNotFoundError(f"Image not found: {path}")
 
 
-async def get_image_thumb(
-    mass: MusicAssistant, path: str, size: Optional[int]
-) -> bytes:
+async def get_image_thumb(mass: MusicAssistant, path: str, size: int | None) -> bytes:
     """Get (optimized) PNG thumbnail from image url."""
     img_data = await get_image_data(mass, path)
 
@@ -51,7 +49,7 @@ async def get_image_thumb(
     return await asyncio.to_thread(_create_image)
 
 
-async def create_collage(mass: MusicAssistant, images: List[str]) -> bytes:
+async def create_collage(mass: MusicAssistant, images: list[str]) -> bytes:
     """Create a basic collage image from multiple image urls."""
 
     def _new_collage():

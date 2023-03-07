@@ -2,15 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from random import choice, random
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.json import json_dumps
 from music_assistant.common.models.enums import EventType, ProviderFeature
-from music_assistant.common.models.errors import (
-    MediaNotFoundError,
-    UnsupportedFeaturedException,
-)
+from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -19,9 +17,8 @@ from music_assistant.common.models.media_items import (
     MediaType,
     Track,
 )
-from music_assistant.constants import VARIOUS_ARTISTS
+from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_TRACKS, VARIOUS_ARTISTS
 from music_assistant.server.controllers.media.base import MediaControllerBase
-from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_TRACKS
 from music_assistant.server.helpers.compare import compare_album, loose_compare_strings
 
 if TYPE_CHECKING:
@@ -83,7 +80,6 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_instance: str | None = None,
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
-
         if "database" not in (provider_domain, provider_instance):
             # return provider album tracks
             return await self._get_provider_album_tracks(
@@ -100,9 +96,7 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_instance: str | None = None,
     ) -> list[Album]:
         """Return all versions of an album we can find on all providers."""
-        assert (
-            provider_domain or provider_instance
-        ), "Provider type or ID must be specified"
+        assert provider_domain or provider_instance, "Provider type or ID must be specified"
         album = await self.get(item_id, provider_domain or provider_instance)
         # perform a search on all provider(types) to collect all versions/variants
         provider_domains = {item.domain for item in self.mass.music.providers}
@@ -172,9 +166,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 cur_item = await self.mass.music.database.get_row(self.db_table, match)
             if not cur_item:
                 # fallback to search and match
-                for row in await self.mass.music.database.search(
-                    self.db_table, item.name
-                ):
+                for row in await self.mass.music.database.search(self.db_table, item.name):
                     row_album = Album.from_db_row(row)
                     if compare_album(row_album, item):
                         cur_item = row_album
@@ -187,10 +179,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
             # insert new item
             album_artists = await self._get_album_artists(item, cur_item)
-            if album_artists:
-                sort_artist = album_artists[0].sort_name
-            else:
-                sort_artist = ""
+            sort_artist = album_artists[0].sort_name if album_artists else ""
             new_item = await self.mass.music.database.insert(
                 self.db_table,
                 {
@@ -233,10 +222,7 @@ class AlbumsController(MediaControllerBase[Album]):
         else:
             album_type = cur_item.album_type
 
-        if album_artists:
-            sort_artist = album_artists[0].sort_name
-        else:
-            sort_artist = ""
+        sort_artist = album_artists[0].sort_name if album_artists else ""
 
         await self.mass.music.database.update(
             self.db_table,
@@ -269,12 +255,8 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         assert not (db_rows and not recursive), "Tracks attached to album"
         for db_row in db_rows:
-            try:
-                await self.mass.music.albums.delete_db_item(
-                    db_row["item_id"], recursive
-                )
-            except MediaNotFoundError:
-                pass
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
 
         # delete the album itself from db
         await super().delete_db_item(item_id)
@@ -289,9 +271,7 @@ class AlbumsController(MediaControllerBase[Album]):
         prov = self.mass.get_provider(provider_instance or provider_domain)
         if not prov:
             return []
-        full_album = await self.get_provider_item(
-            item_id, provider_instance or provider_domain
-        )
+        full_album = await self.get_provider_item(item_id, provider_instance or provider_domain)
         # prefer cache items (if any)
         cache_key = f"{prov.instance_id}.albumtracks.{item_id}"
         cache_checksum = full_album.metadata.checksum
@@ -307,9 +287,7 @@ class AlbumsController(MediaControllerBase[Album]):
             items.append(track)
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
-            )
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
         )
         return items
 
@@ -340,13 +318,16 @@ class AlbumsController(MediaControllerBase[Album]):
             prov_track_id=track.item_id, limit=no_of_similar_tracks
         )
         # Merge album content with similar tracks
+        # ruff: noqa: ARG005
         dynamic_playlist = [
             *sorted(album_tracks, key=lambda n: random())[:no_of_album_tracks],
             *sorted(similar_tracks, key=lambda n: random())[:no_of_similar_tracks],
         ]
         return sorted(dynamic_playlist, key=lambda n: random())
 
-    async def _get_dynamic_tracks(self, media_item: Album, limit=25) -> list[Track]:
+    async def _get_dynamic_tracks(
+        self, media_item: Album, limit: int = 25  # noqa: ARG002
+    ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
         raise UnsupportedFeaturedException(
@@ -378,8 +359,7 @@ class AlbumsController(MediaControllerBase[Album]):
         return sorted(result, key=lambda x: (x.disc_number or 0, x.track_number or 0))
 
     async def _match(self, db_album: Album) -> None:
-        """
-        Try to find matching album on all providers for the provided (database) album.
+        """Try to find matching album on all providers for the provided (database) album.
 
         This is used to link objects of different providers/qualities together.
         """
@@ -454,9 +434,7 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> ItemMapping:
         """Extract (database) track artist as ItemMapping."""
         if overwrite:
-            artist = await self.mass.music.artists.add_db_item(
-                artist, overwrite_existing=True
-            )
+            artist = await self.mass.music.artists.add_db_item(artist, overwrite_existing=True)
         if artist.provider == "database":
             if isinstance(artist, ItemMapping):
                 return artist

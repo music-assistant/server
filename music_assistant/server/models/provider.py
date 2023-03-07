@@ -2,13 +2,9 @@
 from __future__ import annotations
 
 import logging
-from abc import abstractmethod
 from typing import TYPE_CHECKING
 
-from music_assistant.common.models.config_entries import (
-    ConfigEntryValue,
-    ProviderConfig,
-)
+from music_assistant.common.models.config_entries import ConfigEntryValue, ProviderConfig
 from music_assistant.common.models.enums import ProviderFeature, ProviderType
 from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
 from music_assistant.constants import ROOT_LOGGER_NAME
@@ -16,11 +12,13 @@ from music_assistant.constants import ROOT_LOGGER_NAME
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
+# noqa: ARG001
+
 
 class Provider:
     """Base representation of a Provider implementation within Music Assistant."""
 
-    _attr_supported_features: tuple[ProviderFeature] = tuple()
+    _attr_supported_features: tuple[ProviderFeature, ...] = tuple()
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -35,21 +33,18 @@ class Provider:
         self.last_error = None
 
     @property
-    def supported_features(self) -> tuple[ProviderFeature]:
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this MusicProvider."""
         return self._attr_supported_features
 
-    @abstractmethod
     async def setup(self) -> None:
-        """
-        Handle async initialization of the provider.
+        """Handle async initialization of the provider.
 
         Called when provider is registered (or its config updated).
         """
 
     async def close(self) -> None:
-        """
-        Handle close/cleanup of the provider.
+        """Handle close/cleanup of the provider.
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
@@ -74,9 +69,7 @@ class Provider:
         """Return (custom) friendly name for this provider instance."""
         if self.config.name:
             return self.config.name
-        inst_count = len(
-            [x for x in self.mass.music.providers if x.domain == self.domain]
-        )
+        inst_count = len([x for x in self.mass.music.providers if x.domain == self.domain])
         if inst_count > 1:
             postfix = self.instance_id[:-8]
             return f"{self.manifest.name}.{postfix}"
@@ -90,7 +83,7 @@ class Provider:
             for x in self.manifest.config_entries
         ]
 
-    def to_dict(self, *args, **kwargs) -> ProviderInstance:
+    def to_dict(self, *args, **kwargs) -> ProviderInstance:  # noqa: ARG002
         """Return Provider(instance) as serializable dict."""
         return {
             "type": self.type.value,

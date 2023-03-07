@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any, Self, TypeVar
 
+# pylint:disable=ungrouped-imports
 try:
     from enum import StrEnum
 except AttributeError:
@@ -27,10 +28,9 @@ except AttributeError:
 
         @staticmethod
         def _generate_next_value_(
-            name: str, start: int, count: int, last_values: list[Any]
+            name: str, start: int, count: int, last_values: list[Any]  # noqa
         ) -> Any:
-            """
-            Make `auto()` explicitly unsupported.
+            """Make `auto()` explicitly unsupported.
 
             We may revisit this when it's very clear that Python 3.11's
             `StrEnum.auto()` behavior will no longer change.
@@ -49,9 +49,8 @@ class MediaType(StrEnum):
     FOLDER = "folder"
     UNKNOWN = "unknown"
 
-    @classmethod
     @property
-    def ALL(cls) -> tuple["MediaType"]:  # pylint: disable=invalid-name
+    def ALL(self: Self) -> tuple[MediaType, ...]:  # noqa: N802
         """Return all (default) MediaTypes as tuple."""
         return (
             MediaType.ARTIST,
@@ -63,7 +62,7 @@ class MediaType(StrEnum):
 
 
 class LinkType(StrEnum):
-    """StrEnum wth link types."""
+    """StrEnum with link types."""
 
     WEBSITE = "website"
     FACEBOOK = "facebook"
@@ -79,7 +78,7 @@ class LinkType(StrEnum):
 
 
 class ImageType(StrEnum):
-    """StrEnum wth image types."""
+    """StrEnum with image types."""
 
     THUMB = "thumb"
     LANDSCAPE = "landscape"
@@ -128,7 +127,7 @@ class ContentType(StrEnum):
     UNKNOWN = "?"
 
     @classmethod
-    def try_parse(cls: "ContentType", string: str) -> "ContentType":
+    def try_parse(cls: ContentType, string: str) -> ContentType:
         """Try to parse ContentType from (url)string/extension."""
         tempstr = string.lower()
         if "audio/" in tempstr:
@@ -165,9 +164,7 @@ class ContentType(StrEnum):
         )
 
     @classmethod
-    def from_bit_depth(
-        cls, bit_depth: int, floating_point: bool = False
-    ) -> "ContentType":
+    def from_bit_depth(cls, bit_depth: int, floating_point: bool = False) -> ContentType:
         """Return (PCM) Contenttype from PCM bit depth."""
         if floating_point and bit_depth > 32:
             return cls.PCM_F64LE
@@ -181,8 +178,7 @@ class ContentType(StrEnum):
 
 
 class QueueOption(StrEnum):
-    """
-    StrEnum representation of the queue (play) options.
+    """StrEnum representation of the queue (play) options.
 
     - PLAY -> Insert new item(s) in queue at the current position and start playing.
     - REPLACE -> Replace entire queue contents with the new items and start playing from index 0.
@@ -216,8 +212,7 @@ class PlayerState(StrEnum):
 
 
 class PlayerType(StrEnum):
-    """
-    Enum with possible Player Types.
+    """Enum with possible Player Types.
 
     player: A regular player.
     group: A (dedicated) group player or playergroup.
@@ -228,8 +223,7 @@ class PlayerType(StrEnum):
 
 
 class PlayerFeature(StrEnum):
-    """
-    Enum with possible Player features.
+    """Enum with possible Player features.
 
     power: The player has a dedicated power control.
     volume: The player supports adjusting the volume.
@@ -276,34 +270,57 @@ class EventType(StrEnum):
 class ProviderFeature(StrEnum):
     """Enum with features for a Provider."""
 
+    #
+    # MUSICPROVIDER FEATURES
+    #
+
     # browse/explore/recommendations
     BROWSE = "browse"
     SEARCH = "search"
     RECOMMENDATIONS = "recommendations"
+
     # library feature per mediatype
     LIBRARY_ARTISTS = "library_artists"
     LIBRARY_ALBUMS = "library_albums"
     LIBRARY_TRACKS = "library_tracks"
     LIBRARY_PLAYLISTS = "library_playlists"
     LIBRARY_RADIOS = "library_radios"
+
     # additional library features
     ARTIST_ALBUMS = "artist_albums"
     ARTIST_TOPTRACKS = "artist_toptracks"
+
     # library edit (=add/remove) feature per mediatype
     LIBRARY_ARTISTS_EDIT = "library_artists_edit"
     LIBRARY_ALBUMS_EDIT = "library_albums_edit"
     LIBRARY_TRACKS_EDIT = "library_tracks_edit"
     LIBRARY_PLAYLISTS_EDIT = "library_playlists_edit"
     LIBRARY_RADIOS_EDIT = "library_radios_edit"
+
     # if we can grab 'similar tracks' from the music provider
     # used to generate dynamic playlists
     SIMILAR_TRACKS = "similar_tracks"
+
     # playlist-specific features
     PLAYLIST_TRACKS_EDIT = "playlist_tracks_edit"
     PLAYLIST_CREATE = "playlist_create"
-    # player provider specific features
-    CREATE_GROUP = "create_group"
-    DELETE_GROUP = "delete_group"
+
+    #
+    # PLAYERPROVIDER FEATURES
+    #
+    CREATE_PLAYER_CONFIG = "create_player_config"
+
+    #
+    # METADATAPROVIDER FEATURES
+    #
+    ARTIST_METADATA = "artist_metadata"
+    ALBUM_METADATA = "album_metadata"
+    TRACK_METADATA = "track_metadata"
+    GET_ARTIST_MBID = "get_artist_mbid"
+
+    #
+    # PLUGIN FEATURES
+    #
 
 
 class ProviderType(StrEnum):

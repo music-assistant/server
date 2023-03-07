@@ -1,5 +1,4 @@
-"""
-Airplay Player provider.
+"""Airplay Player provider.
 
 This is more like a "virtual" player provider, running on top of slimproto.
 It uses the amazing work of Philippe44 who created a bridge from airplay to slimoproto.
@@ -10,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # noqa: N817
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -24,8 +23,7 @@ from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import PlayerConfig
-
-    from ..slimproto import SlimprotoProvider
+    from music_assistant.server.providers.slimproto import SlimprotoProvider
 
 
 PLAYER_CONFIG_ENTRIES = (
@@ -33,7 +31,8 @@ PLAYER_CONFIG_ENTRIES = (
         key="airplay_label",
         type=ConfigEntryType.LABEL,
         label="Airplay specific settings",
-        description="Configure Airplay specific settings. Note that changing any airplay specific setting, will reconnect all players.",
+        description="Configure Airplay specific settings. "
+        "Note that changing any airplay specific setting, will reconnect all players.",
         advanced=True,
     ),
     ConfigEntry(
@@ -42,7 +41,10 @@ PLAYER_CONFIG_ENTRIES = (
         range=(0, 2000),
         default_value=500,
         label="Read ahead buffer",
-        description="Sets the number of milliseconds of audio buffer in the player. This is important to absorb network throughput jitter Note that the resume after pause will be skipping that amount of time and volume changes will be delayed by the same amount, when using digital volume.",
+        description="Sets the number of milliseconds of audio buffer in the player. "
+        "This is important to absorb network throughput jitter. "
+        "Note that the resume after pause will be skipping that amount of time "
+        "and volume changes will be delayed by the same amount, when using digital volume.",
         advanced=True,
     ),
     ConfigEntry(
@@ -50,7 +52,8 @@ PLAYER_CONFIG_ENTRIES = (
         type=ConfigEntryType.BOOLEAN,
         default_value=False,
         label="Enable encryption",
-        description="Enable encrypted communication with the player, some (3rd party) players require this.",
+        description="Enable encrypted communication with the player, "
+        "some (3rd party) players require this.",
         advanced=True,
     ),
     ConfigEntry(
@@ -58,7 +61,8 @@ PLAYER_CONFIG_ENTRIES = (
         type=ConfigEntryType.BOOLEAN,
         default_value=True,
         label="Enable compression",
-        description="Save some network bandwidth by sending the audio as (lossless) ALAC at the cost of a bit CPU.",
+        description="Save some network bandwidth by sending the audio as "
+        "(lossless) ALAC at the cost of a bit CPU.",
         advanced=True,
     ),
 )
@@ -117,28 +121,16 @@ class AirplayProvider(PlayerProvider):
         asyncio.create_task(update_config())
 
     async def cmd_stop(self, player_id: str) -> None:
-        """
-        Send STOP command to given player.
-            - player_id: player_id of the player to handle the command.
-        """
+        """Send STOP command to given player."""
         # simply forward to underlying slimproto player
         slimproto_prov = self.mass.get_provider("slimproto")
         await slimproto_prov.cmd_stop(player_id)
 
     async def cmd_play(self, player_id: str) -> None:
-        """
-        Send PLAY command to given player.
-            - player_id: player_id of the player to handle the command.
-        """
+        """Send PLAY command to given player."""
         # simply forward to underlying slimproto player
         slimproto_prov = self.mass.get_provider("slimproto")
         await slimproto_prov.cmd_play(player_id)
-
-    async def cmd_play_url(self, player_id: str, url: str) -> None:
-        """Send PLAY MEDIA command to given player."""
-        # simply forward to underlying slimproto player
-        slimproto_prov = self.mass.get_provider("slimproto")
-        await slimproto_prov.cmd_play_url(player_id, url)
 
     async def cmd_play_media(
         self,
@@ -146,7 +138,7 @@ class AirplayProvider(PlayerProvider):
         queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
-        flow_mode: bool = False
+        flow_mode: bool = False,
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         # simply forward to underlying slimproto player
@@ -156,7 +148,7 @@ class AirplayProvider(PlayerProvider):
             queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
-            flow_mode=flow_mode
+            flow_mode=flow_mode,
         )
 
     async def cmd_pause(self, player_id: str) -> None:
@@ -212,6 +204,7 @@ class AirplayProvider(PlayerProvider):
 
     async def _get_bridge_binary(self):
         """Find the correct bridge binary belonging to the platform."""
+        # ruff: noqa: SIM102
 
         async def check_bridge_binary(bridge_binary_path: str) -> str | None:
             try:
@@ -230,11 +223,12 @@ class AirplayProvider(PlayerProvider):
                 return None
 
         base_path = os.path.join(os.path.dirname(__file__), "bin")
-        if platform.system() == "Windows":
-            if bridge_binary := await check_bridge_binary(
+        if platform.system() == "Windows" and (
+            bridge_binary := await check_bridge_binary(
                 os.path.join(base_path, "squeeze2raop-static.exe")
-            ):
-                return bridge_binary
+            )
+        ):
+            return bridge_binary
         if platform.system() == "Darwin":
             # macos binary is autoselect x86_64/arm64
             if bridge_binary := await check_bridge_binary(

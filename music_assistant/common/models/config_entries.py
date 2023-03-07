@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from types import NoneType
-from typing import Any, Callable, Self
+from typing import Any
 
 from mashumaro import DataClassDictMixin
 
@@ -37,7 +38,7 @@ ConfigEntryTypeMap = {
 
 @dataclass
 class ConfigValueOption(DataClassDictMixin):
-    """Model for a value with seperated name/value."""
+    """Model for a value with separated name/value."""
 
     title: str
     value: ConfigValueType
@@ -45,10 +46,9 @@ class ConfigValueOption(DataClassDictMixin):
 
 @dataclass
 class ConfigEntry(DataClassDictMixin):
-    """
-    Model for a Config Entry.
+    """Model for a Config Entry.
 
-    The definition of something that can be configured for an opbject (e.g. provider or player)
+    The definition of something that can be configured for an object (e.g. provider or player)
     within Music Assistant (without the value).
     """
 
@@ -89,7 +89,7 @@ class ConfigEntryValue(ConfigEntry):
         entry: ConfigEntry,
         value: ConfigValueType,
         allow_none: bool = False,
-    ) -> "ConfigEntryValue":
+    ) -> ConfigEntryValue:
         """Parse ConfigEntryValue from the config entry and plain value."""
         result = ConfigEntryValue.from_dict(entry.to_dict())
         result.value = value
@@ -104,7 +104,7 @@ class ConfigEntryValue(ConfigEntry):
             if result.value is None and allow_none:
                 # In some cases we allow this (e.g. create default config), hence the allow_none
                 return result
-            # handle common coversions/mistakes
+            # handle common conversions/mistakes
             if expected_type == float and isinstance(result.value, int):
                 result.value = float(result.value)
                 return result
@@ -131,24 +131,22 @@ class Config(DataClassDictMixin):
     def get_value(self, key: str) -> ConfigValueType:
         """Return config value for given key."""
         config_value = self.values[key]
-        if config_value.type == ConfigEntryType.PASSWORD:
+        if config_value.type == ConfigEntryType.PASSWORD:  # noqa: SIM102
             if decrypt_callback := self.get_decrypt_callback():
                 return decrypt_callback(config_value.value)
         return config_value.value
 
     @classmethod
     def parse(
-        cls: Self,
-        config_entries: list[ConfigEntry],
+        cls,
+        config_entries: Iterable[ConfigEntry],
         raw: dict[str, Any],
         allow_none: bool = False,
-        decrypt_callback: Callable[[str], str] | None = None
-    ) -> Self:
+        decrypt_callback: Callable[[str], str] | None = None,
+    ) -> Config:
         """Parse Config from the raw values (as stored in persistent storage)."""
         values = {
-            x.key: ConfigEntryValue.parse(
-                x, raw.get("values", {}).get(x.key), allow_none
-            ).to_dict()
+            x.key: ConfigEntryValue.parse(x, raw.get("values", {}).get(x.key), allow_none).to_dict()
             for x in config_entries
         }
         conf = cls.from_dict({**raw, "values": values})
@@ -160,11 +158,7 @@ class Config(DataClassDictMixin):
         """Return minimized/raw dict to store in persistent storage."""
         return {
             **self.to_dict(),
-            "values": {
-                x.key: x.value
-                for x in self.values.values()
-                if x.value != x.default_value
-            },
+            "values": {x.key: x.value for x in self.values.values() if x.value != x.default_value},
         }
 
     def set_decrypt_callback(self, callback: Callable[[str], str]) -> None:
@@ -207,14 +201,17 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
         type=ConfigEntryType.BOOLEAN,
         label="Enable volume normalization (EBU-R128 based)",
         default_value=True,
-        description="Enable volume normalization based on the EBU-R128 standard without affecting dynamic range",
+        description="Enable volume normalization based on the EBU-R128 "
+        "standard without affecting dynamic range",
     ),
     ConfigEntry(
         key=CONF_FLOW_MODE,
         type=ConfigEntryType.BOOLEAN,
         label="Enable queue flow mode",
         default_value=False,
-        description="Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream. Use for players that do not natively support gapless and/or crossfading or if the player has trouble transitioning between tracks.",
+        description='Enable "flow" mode where all queue tracks are sent as a continuous '
+        "audio stream. Use for players that do not natively support gapless and/or "
+        "crossfading or if the player has trouble transitioning between tracks.",
         advanced=True,
     ),
     ConfigEntry(
@@ -223,7 +220,8 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
         range=(-30, 0),
         default_value=-14,
         label="Target level for volume normalisation",
-        description="Adjust average (perceived) loudness to this target level, default is -14 LUFS",
+        description="Adjust average (perceived) loudness to this target level, "
+        "default is -14 LUFS",
         depends_on=CONF_VOLUME_NORMALISATION,
         advanced=True,
     ),
@@ -265,7 +263,8 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
         ],
         default_value="stereo",
         label="Output Channel Mode",
-        description="You can configure this player to play only the left or right channel, for example to a create a stereo pair with 2 players.",
+        description="You can configure this player to play only the left or right channel, "
+        "for example to a create a stereo pair with 2 players.",
         advanced=True,
     ),
 )

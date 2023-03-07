@@ -5,18 +5,14 @@ import asyncio
 import base64
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import aiofiles
 from aiofiles.os import wrap
 from cryptography.fernet import Fernet
 
-from music_assistant.common.helpers.json import (
-    JSON_DECODE_EXCEPTIONS,
-    json_dumps,
-    json_loads,
-)
+from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.common.models.config_entries import (
     DEFAULT_PLAYER_CONFIG_ENTRIES,
     ConfigEntryValue,
@@ -24,15 +20,13 @@ from music_assistant.common.models.config_entries import (
     ProviderConfig,
 )
 from music_assistant.common.models.enums import ConfigEntryType, EventType, ProviderType
-from music_assistant.common.models.errors import (
-    PlayerUnavailableError,
-    ProviderUnavailableError,
-)
+from music_assistant.common.models.errors import PlayerUnavailableError, ProviderUnavailableError
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID
 from music_assistant.server.helpers.api import api_command
 
 if TYPE_CHECKING:
-    from ..server import MusicAssistant
+    from music_assistant.server.models.player_provider import PlayerProvider
+    from music_assistant.server.server import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_SAVE_DELAY = 120
@@ -47,11 +41,11 @@ class ConfigController:
 
     _fernet: Fernet | None = None
 
-    def __init__(self, mass: "MusicAssistant") -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize storage controller."""
         self.mass = mass
         self.initialized = False
-        self._data: Dict[str, Any] = {}
+        self._data: dict[str, Any] = {}
         self.filename = os.path.join(self.mass.storage_path, "settings.json")
         self._timer_handle: asyncio.TimerHandle | None = None
 
@@ -143,9 +137,7 @@ class ConfigController:
     ) -> list[ProviderConfig]:
         """Return all known provider configurations, optionally filtered by ProviderType."""
         raw_values: dict[str, dict] = self.get(CONF_PROVIDERS, {})
-        prov_entries = {
-            x.domain: x.config_entries for x in self.mass.get_available_providers()
-        }
+        prov_entries = {x.domain: x.config_entries for x in self.mass.get_available_providers()}
         return [
             ProviderConfig.parse(
                 prov_entries[prov_conf["domain"]],
@@ -192,14 +184,13 @@ class ConfigController:
 
     @api_command("config/providers/create")
     def create_provider_config(self, provider_domain: str) -> ProviderConfig:
-        """
-        Create default/empty ProviderConfig.
+        """Create default/empty ProviderConfig.
 
         This is intended to be used as helper method to add a new provider,
         and it performs some quick sanity checks as well as handling the
         instance_id generation.
         """
-        # lookup provider manifesr
+        # lookup provider manifest
         for prov in self.mass.get_available_providers():
             if prov.domain == provider_domain:
                 manifest = prov
@@ -210,9 +201,7 @@ class ConfigController:
         # determine instance id based on previous configs
         existing = self.get_provider_configs(provider_domain=provider_domain)
         if existing and not manifest.multi_instance:
-            raise ValueError(
-                f"Provider {manifest.name} does not support multiple instances"
-            )
+            raise ValueError(f"Provider {manifest.name} does not support multiple instances")
 
         count = len(existing)
         if count == 0:
@@ -290,9 +279,7 @@ class ConfigController:
                 raise PlayerUnavailableError(f"Player {player_id} is not available")
             conf = {"provider": player.provider, "player_id": player_id, "values": {}}
         prov = self.mass.get_provider(conf["provider"])
-        entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(
-            player_id
-        )
+        entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(player_id)
         for entry in entries:
             if entry.key == key:
                 return ConfigEntryValue.parse(entry, conf["values"].get(key))
@@ -320,7 +307,28 @@ class ConfigController:
             self.mass.players.update(config.player_id)
         # signal player provider that the config changed
         if provider := self.mass.get_provider(config.provider):
+            assert isinstance(provider, PlayerProvider)
             provider.on_player_config_changed(config)
+
+    @api_command("config/players/create")
+    async def create_player_config(
+        self, provider_domain: str, config: PlayerConfig | None = None
+    ) -> PlayerConfig:
+        """Register a new Player(config) if the provider supports this."""
+        provider: PlayerProvider = self.mass.get_provider(provider_domain)
+        return await provider.create_player_config(config)
+
+    @api_command("config/players/remove")
+    async def remove_player_config(self, player_id: str) -> None:
+        """Remove PlayerConfig."""
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        existing = self.get(conf_key)
+        if not existing:
+            raise KeyError(f"Player {player_id} does not exist")
+        self.remove(conf_key)
+        if provider := self.mass.get_provider(existing["provider"]):
+            assert isinstance(provider, PlayerProvider)
+            provider.on_player_config_removed(player_id)
 
     async def _load(self) -> None:
         """Load data from persistent storage."""
@@ -356,7 +364,6 @@ class ConfigController:
 
     async def async_save(self):
         """Save persistent data to disk."""
-
         filename_backup = f"{self.filename}.backup"
         # make backup before we write a new file
         if await isfile(self.filename):
