@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "music_assistant"
 dynamic = ["version"]
-license     = "Apache-2.0"
+license     = {text = "Apache-2.0"}
 description = "Music Assistant"
 readme = "README.md"
 requires-python = ">=3.11"
-author = "marcelveldt"
-author_email = "marcelveldt@users.noreply.github.com"
+authors     = [
+    {name = "The usic Assistant Authors", email = "marcelveldt@users.noreply.github.com"}
+]
 classifiers = [
   "Environment :: Console",
   "Programming Language :: Python :: 3.11",
