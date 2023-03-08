@@ -1,0 +1,14 @@
+{
+  "type": "player",
+  "domain": "sonos",
+  "name": "SONOS",
+  "description": "SONOS Playerprovider for Music Assistant.",
+  "codeowners": ["@music-assistant"],
+  "config_entries": [
+  ],
+  "requirements": ["soco==0.29.1"],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": false,
+  "load_by_default": true
+}

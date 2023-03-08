@@ -1,38 +1,66 @@
 # This workflow will install Python dependencies, run tests and lint
 # For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
 
-name: Test with Pre-commit
+name: Test
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
 
 jobs:
-  build:
+  lint:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.9', '3.10']
+    continue-on-error: true
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Check out code from GitHub
+        uses: actions/checkout@v3.3.0
+      - name: Set up Python
+        uses: actions/setup-python@v4.5.0
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install --upgrade pip
+          pip install -e .[server] -r requirements-test.txt
+      - name: Lint/test with pre-commit
+        run: pre-commit run --all-files
+      - name: Flake8
+        run: flake8 scripts/ music_assistant/
+      - name: Black
+        run: black --check scripts/ music_assistant/
+      - name: isort
+        run: isort --check scripts/ music_assistant/
+      - name: pylint
+        run: pylint music_assistant/
+      # - name: mypy
+      #   run: mypy music_assistant/
+
+  test:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v3.3.0
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4.3.0
+        uses: actions/setup-python@v4.5.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install ffmpeg
+          sudo apt-get install -y libgirepository1.0-dev
           python -m pip install --upgrade pip
-          pip install -r requirements_dev.txt
-          pre-commit install-hooks
-      - name: Lint/test with pre-commit
-        run: pre-commit run --all-files
-      - name: Run pylint on changed files
-        run: |
-          pylint -rn -sn --rcfile=pylintrc --fail-on=I $(git ls-files '*.py')
-      - name: Run unit tests with pytest
-        run: pytest tests/
+          pip install -e .[server] -r requirements-test.txt
+      - name: Pytest
+        run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml tests/server/

@@ -1,0 +1,15 @@
+{
+  "type": "plugin",
+  "domain": "json_rpc",
+  "name": "JSON-RPC API",
+  "description": "Basic JSON-RPC API implementation, (partly) compatible with Logitech Media Server.",
+  "codeowners": ["@marcelveldt"],
+  "config_entries": [
+  ],
+
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": true,
+  "load_by_default": true
+}

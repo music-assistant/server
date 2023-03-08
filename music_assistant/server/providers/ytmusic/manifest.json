@@ -1,0 +1,23 @@
+{
+  "type": "music",
+  "domain": "ytmusic",
+  "name": "YouTube Music",
+  "description": "Support for the YouTube Music streaming provider in Music Assistant.",
+  "codeowners": ["@MarvinSchenkel"],
+  "config_entries": [
+    {
+      "key": "username",
+      "type": "string",
+      "label": "Username"
+    },
+    {
+      "key": "cookie",
+      "type": "string",
+      "label": "Cookie"
+    }
+  ],
+
+  "requirements": ["ytmusicapi==0.25.0", "pytube==12.1.2"],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/606",
+  "multi_instance": true
+}

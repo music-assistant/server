@@ -1,0 +1,14 @@
+{
+  "type": "player",
+  "domain": "slimproto",
+  "name": "Slimproto",
+  "description": "Support for slimproto based players (e.g. squeezebox, squeezelite). Music Assistant emulates a Logitech Media Server.",
+  "codeowners": ["@marcelveldt"],
+  "config_entries": [
+  ],
+  "requirements": ["aioslimproto==2.2.0"],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": true,
+  "load_by_default": true
+}

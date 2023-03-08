@@ -1,0 +1,15 @@
+{
+  "type": "player",
+  "domain": "airplay",
+  "name": "Airplay",
+  "description": "Support for players that support the Airplay protocol.",
+  "codeowners": ["@marcelveldt"],
+  "config_entries": [
+  ],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": false,
+  "load_by_default": true,
+  "depends_on": "slimproto"
+}
