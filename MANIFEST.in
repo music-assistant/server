@@ -1,0 +1,6 @@
+include *.txt
+include README.rst
+include LICENSE.md
+graft music_assistant
+recursive-exclude * *.py[co]
+recursive-exclude * *.DS_Store
