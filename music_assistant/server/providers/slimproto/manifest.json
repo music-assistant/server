@@ -6,7 +6,7 @@
   "codeowners": ["@marcelveldt"],
   "config_entries": [
   ],
-  "requirements": ["aioslimproto==2.1.1"],
+  "requirements": ["aioslimproto==2.2.0"],
   "documentation": "",
   "multi_instance": false,
   "builtin": true,

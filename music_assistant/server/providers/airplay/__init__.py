@@ -349,6 +349,7 @@ class AirplayProvider(PlayerProvider):
         common_elem = xml_root.find("common")
         common_elem.find("codecs").text = "pcm"
         common_elem.find("sample_rate").text = "44100"
+        common_elem.find("resample").text = "0"
         # get/set all device configs
         for device_elem in xml_root.findall("device"):
             player_id = device_elem.find("mac").text

@@ -111,6 +111,7 @@ show-fixes = true
 select = ["E", "F", "W", "I", "N", "D", "UP", "PL", "Q", "SIM", "TID", "ARG"]
 ignore = ["PLR2004", "N818"]
 extend-exclude = ["app_vars.py"]
+unfixable = ["F841"]
 line-length = 100
 target-version = "py311"
 

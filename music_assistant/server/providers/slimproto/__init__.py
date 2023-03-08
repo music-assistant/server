@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import urllib.parse
 from collections import deque
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from aioslimproto.client import TransitionType as SlimTransition
 from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
 
+from music_assistant.common.helpers.util import select_free_port
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -26,9 +28,11 @@ from music_assistant.common.models.errors import PlayerUnavailableError, QueueEm
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.server.models.player_provider import PlayerProvider
+from music_assistant.server.providers.json_rpc import parse_args
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import PlayerConfig
+    from music_assistant.server.providers.json_rpc import JSONRPCApi
 
 # sync constants
 MIN_DEVIATION_ADJUST = 10  # 10 milliseconds
@@ -88,12 +92,15 @@ class SlimprotoProvider(PlayerProvider):
         # autodiscovery of the slimproto server does not work
         # when the port is not the default (3483) so we hardcode it for now
         slimproto_port = 3483
+        cli_port = await select_free_port(9090, 9190)
         self.logger.info("Starting SLIMProto server on port %s", slimproto_port)
         self._socket_servers = (
             # start slimproto server
             await asyncio.start_server(self._create_client, "0.0.0.0", slimproto_port),
             # setup discovery
-            await start_discovery(slimproto_port, None, self.mass.port),
+            await start_discovery(slimproto_port, cli_port, self.mass.port),
+            # setup (telnet) cli for players requesting basic info on that port
+            await asyncio.start_server(self._handle_cli_client, "0.0.0.0", cli_port),
         )
 
     async def close(self) -> None:
@@ -130,8 +137,8 @@ class SlimprotoProvider(PlayerProvider):
                 self.mass.create_task(self._handle_decoder_ready(client))
                 return
 
-            if event_type == SlimEventType.PLAYER_TIME_UPDATED:
-                self._handle_player_time_update(client)
+            if event_type == SlimEventType.PLAYER_HEARTBEAT:
+                self._handle_player_heartbeat(client)
                 return
 
             # ignore some uninteresting events
@@ -379,7 +386,7 @@ class SlimprotoProvider(PlayerProvider):
             virtual_provider_info[1](player)
         self.mass.players.update(player_id)
 
-    def _handle_player_time_update(self, client: SlimClient) -> None:
+    def _handle_player_heartbeat(self, client: SlimClient) -> None:
         """Process SlimClient elapsed_time update."""
         if client.state != SlimPlayerState.PLAYING:
             # ignore server heartbeats
@@ -526,3 +533,90 @@ class SlimprotoProvider(PlayerProvider):
         if sync_delay != 0:
             return client.elapsed_milliseconds - sync_delay
         return client.elapsed_milliseconds
+
+    async def _handle_cli_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """Handle new connection on the legacy CLI."""
+        # https://raw.githubusercontent.com/Logitech/slimserver/public/7.8/HTML/EN/html/docs/cli-api.html
+        self.logger.info("Client connected on Telnet CLI")
+        try:
+            while True:
+                raw_request = await reader.readline()
+                raw_request = raw_request.strip().decode("utf-8")
+                # request comes in as url encoded strings, separated by space
+                raw_params = [urllib.parse.unquote(x) for x in raw_request.split(" ")]
+                # the first param is either a macaddress or a command
+                if ":" in raw_params[0]:
+                    # assume this is a mac address (=player_id)
+                    player_id = raw_params[0]
+                    command = raw_params[1]
+                    command_params = raw_params[2:]
+                else:
+                    player_id = ""
+                    command = raw_params[0]
+                    command_params = raw_params[1:]
+
+                args, kwargs = parse_args(command_params)
+
+                response: str = raw_request
+
+                # check if we have a handler for this command
+                # note that we only have support for very limited commands
+                # just enough for compatibility with players but not to be used as api
+                # with 3rd party tools!
+                json_rpc: JSONRPCApi = self.mass.get_provider("json_rpc")
+                assert json_rpc is not None
+                if handler := getattr(json_rpc, f"_handle_{command}", None):
+                    self.logger.debug(
+                        "Handling CLI-request (player: %s command: %s - args: %s - kwargs: %s)",
+                        player_id,
+                        command,
+                        str(args),
+                        str(kwargs),
+                    )
+                    cmd_result: list[str] = handler(player_id, *args, **kwargs)
+                    if isinstance(cmd_result, dict):
+                        result_parts = dict_to_strings(cmd_result)
+                        result_str = " ".join(urllib.parse.quote(x) for x in result_parts)
+                    elif not cmd_result:
+                        result_str = ""
+                    else:
+                        result_str = str(cmd_result)
+                    response += " " + result_str
+                else:
+                    self.logger.warning(
+                        "No handler for %s (player: %s - args: %s - kwargs: %s)",
+                        command,
+                        player_id,
+                        str(args),
+                        str(kwargs),
+                    )
+                # echo back the request and the result (if any)
+                response += "\n"
+                writer.write(response.encode("utf-8"))
+                await writer.drain()
+        except Exception as err:
+            self.logger.exception("Error handling CLI command", exc_info=err)
+        finally:
+            self.logger.debug("Client disconnected from Telnet CLI")
+
+
+def dict_to_strings(source: dict) -> list[str]:
+    """Convert dict to key:value strings (used in slimproto cli)."""
+    result: list[str] = []
+
+    for key, value in source.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, list):
+            for subval in value:
+                if isinstance(subval, dict):
+                    result += dict_to_strings(subval)
+                else:
+                    result.append(str(subval))
+        elif isinstance(value, dict):
+            result += dict_to_strings(subval)
+        else:
+            result.append(f"{key}:{str(value)}")
+    return result
