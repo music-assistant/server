@@ -161,10 +161,11 @@ def compare_album(
 
     # prefer match on UPC
     if (
-        getattr(left_album, "upc", None)
-        and getattr(right_album, "upc", None)
-        and (left_album.upc in right_album.upc)
-        or (right_album.upc in left_album.upc)
+        isinstance(left_album, Album)
+        and isinstance(right_album, Album)
+        and left_album.upc
+        and right_album.upc
+        and ((left_album.upc in right_album.upc) or (right_album.upc in left_album.upc))
     ):
         return True
     # prefer match on musicbrainz_id
