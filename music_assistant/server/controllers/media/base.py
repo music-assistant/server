@@ -237,7 +237,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             if prov := self.mass.get_provider(prov_mapping.provider_instance):
                 if not prov.library_edit_supported(self.media_type):
                     continue
-                await prov.library_add(provider_instance.item_id, self.media_type)
+                await prov.library_add(prov_mapping.item_id, self.media_type)
         # mark as library item in internal db if db item
         if prov_item.provider == "database" and not prov_item.in_library:
             prov_item.in_library = True
