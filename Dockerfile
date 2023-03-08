@@ -6,18 +6,18 @@ ENV WHEELS_LINKS=https://wheels.home-assistant.io/musllinux/
 # Install component packages
 RUN \
     apk add --no-cache \
-        curl \
-        ffmpeg \
-        ffmpeg-libs \
-        git \
-        libjpeg-turbo \
-        mariadb-connector-c
+    curl \
+    ffmpeg \
+    ffmpeg-libs \
+    git \
+    libjpeg-turbo \
+    mariadb-connector-c
 
 COPY . ./
 
 # Install mass wheel and dependencies
-RUN pip3 install --no-cache-dir --no-index --only-binary=:all: --find-links ${WHEELS_LINKS} \
-     .[server]
+RUN pip3 install --no-cache-dir --find-links ${WHEELS_LINKS} \
+    .[server]
 
 
 EXPOSE 8095/tcp
