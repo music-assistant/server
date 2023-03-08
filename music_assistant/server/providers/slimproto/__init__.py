@@ -597,7 +597,7 @@ class SlimprotoProvider(PlayerProvider):
                 writer.write(response.encode("utf-8"))
                 await writer.drain()
         except Exception as err:
-            self.logger.exception("Error handling CLI command", exc_info=err)
+            self.logger.debug("Error handling CLI command", exc_info=err)
         finally:
             self.logger.debug("Client disconnected from Telnet CLI")
 
