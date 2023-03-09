@@ -8,35 +8,20 @@ ARG PYTHON_VERSION="3.11"
 # Build Wheels                                                      #
 #                                                                   #
 #####################################################################
-FROM python:${PYTHON_VERSION}-alpine3.16 as wheels-builder
+FROM python:${PYTHON_VERSION}-slim as wheels-builder
 ARG TARGETPLATFORM
 
 # Install buildtime packages
 RUN set -x \
-    && apk add --no-cache \
-        alpine-sdk \
-        ca-certificates \
-        openssh-client \
-        patchelf \
-        build-base \
-        cmake \
-        git \
-        gcc \
-        g++ \
-        musl-dev \
-        linux-headers \
-        autoconf \
-        automake \
-        libffi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
         libffi-dev \
-        openssl-dev \
-        pkgconfig
+        cargo
 
 WORKDIR /wheels
 COPY requirements_all.txt .
 
-
-ENV PATH="/root/.cargo/bin:${PATH}"
 
 # build python wheels for all dependencies
 RUN set -x \
@@ -55,20 +40,20 @@ RUN python3 -m build --wheel --outdir /wheels --skip-dependency-check
 # Final Image                                                       #
 #                                                                   #
 #####################################################################
-FROM python:${PYTHON_VERSION}-alpine3.16 AS final-build
+FROM python:${PYTHON_VERSION}-slim AS final-build
 WORKDIR /app
 
 RUN set -x \
-    && apk add --no-cache \
-        ca-certificates \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
         curl \
         git \
-        jq \
-        openssl \
+        wget \
         tzdata \
         ffmpeg \
-        ffmpeg-libs \
-        libjpeg-turbo \
+        libsox-fmt-all \
+        libsox3 \
+        sox \
     # cleanup
     && rm -rf /tmp/* \
     && rm -rf /var/lib/apt/lists/*
