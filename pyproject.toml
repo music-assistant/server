@@ -54,7 +54,7 @@ test = [
 ]
 
 [project.scripts]
-mass = "music_assistant.server.__main__:main"
+mass = "music_assistant.__main__:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "music_assistant.constants.__version__"}

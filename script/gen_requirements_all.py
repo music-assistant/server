@@ -16,9 +16,10 @@ def gather_core_requirements() -> list[str]:
     """Gather core requirements out of pyproject.toml."""
     with open("pyproject.toml", "rb") as fp:
         data = tomllib.load(fp)
+    # server deps
     dependencies: list[str] = data["project"]["optional-dependencies"]["server"]
+    # regular/client deps
     dependencies += data["project"]["dependencies"]
-    dependencies += data["project"]["optional-dependencies"]["test"]
     return dependencies
 
 
