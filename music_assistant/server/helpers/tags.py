@@ -233,6 +233,7 @@ async def parse_tags(input_file: str | AsyncGenerator[bytes, None]) -> AudioTags
                         await proc.write(chunk)
                     except BrokenPipeError:
                         break  # race-condition: read enough data for tags
+                proc.write_eof()
 
             proc.attach_task(chunk_feeder())
 
@@ -274,14 +275,19 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
     ) as proc:
         if file_path == "-":
             # feed the file contents to the process
-            async for chunk in input_file:
-                await proc.write(chunk)
-
-        if file_path == "-":
-            # feed the file contents to the process
             async def chunk_feeder():
+                bytes_written = 0
                 async for chunk in input_file:
-                    await proc.write(chunk)
+                    try:
+                        await proc.write(chunk)
+                    except BrokenPipeError:
+                        break  # race-condition: read enough data for tags
+
+                    # grabbing the first 5MB is enough to get the embedded image
+                    bytes_written += len(chunk)
+                    if bytes_written > (5 * 1024000):
+                        break
+                proc.write_eof()
 
             proc.attach_task(chunk_feeder())
 

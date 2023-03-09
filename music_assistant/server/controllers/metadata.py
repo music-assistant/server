@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import urllib.parse
 from base64 import b64encode
 from random import shuffle
 from time import time
@@ -12,12 +13,7 @@ from typing import TYPE_CHECKING
 import aiofiles
 from aiohttp import web
 
-from music_assistant.common.models.enums import (
-    ImageType,
-    MediaType,
-    ProviderFeature,
-    ProviderType,
-)
+from music_assistant.common.models.enums import ImageType, MediaType, ProviderFeature, ProviderType
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -310,7 +306,15 @@ class MetaDataController:
         """Handle request for image proxy."""
         path = request.query["path"]
         size = int(request.query.get("size", "0"))
-        image_data = await self.get_thumbnail(path, size)
+        if "%" in path:
+            # assume (double) encoded url, decode it
+            path = urllib.parse.unquote(path)
+
+        try:
+            image_data = await self.get_thumbnail(path, size)
+        except Exception as err:
+            LOGGER.exception(str(err), exc_info=err)
+
         # we set the cache header to 1 year (forever)
         # the client can use the checksum value to refresh when content changes
         return web.Response(

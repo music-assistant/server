@@ -27,8 +27,7 @@ async def get_image_data(mass: MusicAssistant, path: str) -> bytes:
             continue
         if not await prov.exists(path):
             continue
-        path = await prov.resolve(path)
-        img_data = await get_embedded_image(path.local_path)
+        img_data = await get_embedded_image(prov.read_file_content(path))
         if img_data:
             return img_data
     raise FileNotFoundError(f"Image not found: {path}")
