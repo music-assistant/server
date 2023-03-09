@@ -1,6 +1,7 @@
 """SMB filesystem provider for Music Assistant."""
 
 import contextvars
+import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -49,6 +50,8 @@ class SMBFileSystemProvider(FileSystemProviderBase):
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
+        # silence SMB.SMBConnection logger a bit
+        logging.getLogger("SMB.SMBConnection").setLevel("INFO")
         # extract params from path
         if self.config.get_value(CONF_PATH).startswith("\\\\"):
             path_parts = self.config.get_value(CONF_PATH)[2:].split("\\", 2)
