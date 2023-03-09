@@ -23,7 +23,7 @@ jobs:
       - name: Prepare
         id: prep
         run: |
-          DOCKER_IMAGE=musicassistant/music-assistant-server
+          DOCKER_IMAGE=music-assistant/server
           VERSION=latest
           SHORTREF=${GITHUB_SHA::8}
           MANUAL_TAG=${{ github.event.inputs.tag }}

@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/music-assistant/core:latest # <<< Desired release version here
+    image: ghcr.io/music-assistant/server:latest # <<< Desired release version here
     container_name: music-assistant-server
     restart: unless-stopped
     # Network mode must be set to host for MA to work correctly
