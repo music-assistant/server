@@ -21,13 +21,16 @@ RUN set -x \
         build-base \
         cmake \
         git \
+        gcc \
+        musl-dev \
         linux-headers \
         autoconf \
         automake \
         cargo \
         libffi \
         libffi-dev \
-        git
+        openssl-dev \
+        pkgconfig
 
 WORKDIR /wheels
 COPY requirements_all.txt .
