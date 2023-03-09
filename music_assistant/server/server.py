@@ -87,6 +87,7 @@ class MusicAssistant:
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
+
         # create shared aiohttp ClientSession
         self.http_session = ClientSession(
             loop=self.loop,
@@ -99,6 +100,11 @@ class MusicAssistant:
             self.port = await select_free_port(8095, 9200)
         # allow overriding of the base_ip if autodetect failed
         self.base_ip = self.config.get(CONF_WEB_IP, self.base_ip)
+        LOGGER.info(
+            "Starting Music Assistant Server on port: %s" " - autodetected IP-address: %s",
+            self.port,
+            self.base_ip,
+        )
 
         # setup other core controllers
         await self.cache.setup()
@@ -289,6 +295,7 @@ class MusicAssistant:
         # if provider is already loaded, stop and unload it first
         await self.unload_provider(conf.instance_id)
 
+        LOGGER.debug("Loading provider %s", conf.name or conf.domain)
         # abort if provider is disabled
         if not conf.enabled:
             LOGGER.debug(
@@ -353,8 +360,9 @@ class MusicAssistant:
                 str(exc),
             )
         else:
-            LOGGER.debug(
-                "Successfully loaded provider %s",
+            LOGGER.info(
+                "Loaded %s provider %s",
+                provider.type.value,
                 conf.name or conf.domain,
             )
         # always signal event, regardless if the loading succeeded or not
