@@ -99,10 +99,10 @@ zip-safe  = false
 include-package-data = true
 
 [tool.setuptools.package-data]
-music_assistant = ["py.typed"]
+"*" = ["*.*"]
 
 [tool.setuptools.packages.find]
-include = ["music_assistant*"]
+where = ["."]
 
 [tool.ruff]
 fix = true
