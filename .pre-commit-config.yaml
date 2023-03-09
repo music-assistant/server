@@ -30,9 +30,18 @@ repos:
         additional_dependencies:
           - tomli
 
-  # - repo: https://github.com/pre-commit/mirrors-mypy
-  #   rev: v0.990
-  #   hooks:
-  #     - id: mypy
-  #       additional_dependencies: [types-all]
-  #       exclude: ^examples/
+  - repo: local
+    hooks:
+      # - id: pylint
+      #   name: pylint
+      #   entry: script/run-in-env.sh pylint -j 0 --ignore-missing-annotations=y
+      #   language: script
+      #   types: [python]
+      #   files: ^music_assistant/.+\.py$
+      - id: gen_requirements_all
+        name: gen_requirements_all
+        entry: script/run-in-env.sh python3 -m script.gen_requirements_all
+        pass_filenames: false
+        language: script
+        types: [text]
+        files: ^(music_assistant/.+/manifest\.json|pyproject\.toml|\.pre-commit-config\.yaml|script/gen_requirements_all\.py)$

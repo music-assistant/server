@@ -8,55 +8,52 @@ ARG PYTHON_VERSION="3.11"
 # Build Wheels                                                      #
 #                                                                   #
 #####################################################################
-FROM python:${PYTHON_VERSION}-slim as wheels-builder
+FROM python:${PYTHON_VERSION}-alpine as wheels-builder
 ARG HASS_ARCH
 
-ENV PIP_EXTRA_INDEX_URL=https://www.piwheels.org/simple
 ENV PATH="${PATH}:/root/.cargo/bin"
 
 # Install buildtime packages
 RUN set -x \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        curl \
-        gcc \
+    && apk add --no-cache \
+        alpine-sdk \
+        patchelf \
+        build-base \
+        cmake \
         git \
+        linux-headers \
+        autoconf \
+        automake \
+        cargo \
+        libffi \
         libffi-dev \
-        libssl-dev
-
-RUN set -x \
-    \
-    && if [ ${HASS_ARCH} = "amd64" ]; then RUST_ARCH="x86_64-unknown-linux-gnu"; fi \
-    && if [ ${HASS_ARCH} = "armv7" ]; then RUST_ARCH="armv7-unknown-linux-gnueabihf"; fi \
-    && if [ ${HASS_ARCH} = "aarch64" ]; then RUST_ARCH="aarch64-unknown-linux-gnu"; fi \
-    \
-    && curl -o rustup-init https://static.rust-lang.org/rustup/dist/${RUST_ARCH}/rustup-init \
-    && chmod +x rustup-init \
-    && ./rustup-init -y --no-modify-path --profile minimal --default-host ${RUST_ARCH}
+        git
 
 WORKDIR /wheels
-COPY requirements.txt .
+COPY requirements_all.txt .
 
-# build python wheels
+# build python wheels for all dependencies
 RUN set -x \
-    && pip wheel -r .[server]
+    && pip install --upgrade pip \
+    && pip install build \
+    && pip wheel -r requirements_all.txt --find-links "https://wheels.home-assistant.io/musllinux/"
 
+# build music assistant wheel
+COPY music_assistant music_assistant
+COPY pyproject.toml .
+COPY MANIFEST.in .
+RUN python3 -m build --wheel --outdir /wheels --skip-dependency-check
 
 #####################################################################
 #                                                                   #
 # Final Image                                                       #
 #                                                                   #
 #####################################################################
-FROM python:${PYTHON_VERSION}-slim AS final-build
+FROM python:${PYTHON_VERSION}-alpine AS final-build
 WORKDIR /app
 
-ENV DEBIAN_FRONTEND="noninteractive"
-
 RUN set -x \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && apk add --no-cache \
         ca-certificates \
         curl \
         git \
@@ -75,7 +72,8 @@ RUN set -x \
 # Install all built wheels
 RUN --mount=type=bind,target=/tmp/wheels,source=/wheels,from=wheels-builder,rw \
     set -x \
-    && pip install --no-cache-dir -f /tmp/wheels -r /tmp/wheels/requirements.txt
+    && pip install --upgrade pip \
+    && pip install --no-cache-dir /tmp/wheels/*.whl
 
 # Required to persist build arg
 ARG BUILD_VERSION
