@@ -2,7 +2,7 @@ version: "3"
 services:
   music-assistant-server:
     build:
-      context: ./docker/
+      context: .
       dockerfile: Dockerfile
     image: ghcr.io/music-assistant/core:latest # <<< Desired release version here
     container_name: music-assistant-server

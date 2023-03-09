@@ -1,5 +1,5 @@
-# syntax=docker/dockerfile:experimental
-ARG HASS_ARCH=amd64
+# syntax=docker/dockerfile:1
+ARG TARGETPLATFORM="linux/amd64"
 ARG BUILD_VERSION=latest
 ARG PYTHON_VERSION="3.11"
 
@@ -9,7 +9,7 @@ ARG PYTHON_VERSION="3.11"
 #                                                                   #
 #####################################################################
 FROM python:${PYTHON_VERSION}-alpine as wheels-builder
-ARG HASS_ARCH
+ARG TARGETPLATFORM
 
 ENV PATH="${PATH}:/root/.cargo/bin"
 
@@ -17,20 +17,24 @@ ENV PATH="${PATH}:/root/.cargo/bin"
 RUN set -x \
     && apk add --no-cache \
         alpine-sdk \
+        ca-certificates \
+        openssh-client \
         patchelf \
         build-base \
         cmake \
         git \
         gcc \
+        g++ \
         musl-dev \
         linux-headers \
         autoconf \
         automake \
-        cargo \
         libffi \
         libffi-dev \
         openssl-dev \
-        pkgconfig
+        pkgconfig \
+        rust \
+        cargo
 
 WORKDIR /wheels
 COPY requirements_all.txt .
@@ -80,14 +84,14 @@ RUN --mount=type=bind,target=/tmp/wheels,source=/wheels,from=wheels-builder,rw \
 
 # Required to persist build arg
 ARG BUILD_VERSION
-ARG HASS_ARCH
+ARG TARGETPLATFORM
 
 # Set some labels for the Home Assistant add-on
 LABEL \
     io.hass.version=${BUILD_VERSION} \
     io.hass.name="Music Assistant" \
     io.hass.description="Music Assistant Server/Core" \
-    io.hass.arch="${HASS_ARCH}" \
+    io.hass.platform="${TARGETPLATFORM}" \
     io.hass.type="addon"
 
 EXPOSE 8095/tcp
