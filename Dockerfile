@@ -8,7 +8,7 @@ ARG PYTHON_VERSION="3.11"
 # Build Wheels                                                      #
 #                                                                   #
 #####################################################################
-FROM python:${PYTHON_VERSION}-alpine as wheels-builder
+FROM python:${PYTHON_VERSION}-alpine3.16 as wheels-builder
 ARG TARGETPLATFORM
 
 # Install buildtime packages
@@ -30,12 +30,13 @@ RUN set -x \
         libffi \
         libffi-dev \
         openssl-dev \
-        pkgconfig \
-        rust \
-        cargo
+        pkgconfig
 
 WORKDIR /wheels
 COPY requirements_all.txt .
+
+
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # build python wheels for all dependencies
 RUN set -x \
@@ -54,7 +55,7 @@ RUN python3 -m build --wheel --outdir /wheels --skip-dependency-check
 # Final Image                                                       #
 #                                                                   #
 #####################################################################
-FROM python:${PYTHON_VERSION}-alpine AS final-build
+FROM python:${PYTHON_VERSION}-alpine3.16 AS final-build
 WORKDIR /app
 
 RUN set -x \
