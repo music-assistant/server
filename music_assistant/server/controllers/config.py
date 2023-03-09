@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from music_assistant.server.server import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_SAVE_DELAY = 120
+DEFAULT_SAVE_DELAY = 30
 
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
