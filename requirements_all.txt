@@ -12,7 +12,7 @@ databases==0.7.0
 getmac==0.8.2
 mashumaro==3.5
 memory-tempfile==2.2.3
-music-assistant-frontend==20230308.0
+music-assistant-frontend==20230309.0
 orjson==3.8.6
 pillow==9.4.0
 PyChromecast==13.0.4
