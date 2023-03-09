@@ -1,13 +1,13 @@
-version: "3.8"
+version: "3"
 services:
   music-assistant-server:
     build:
-      context: ./
+      context: ./docker/
       dockerfile: Dockerfile
-    image: music-assistant-server:latest
+    image: ghcr.io/music-assistant/core:latest # <<< Desired release version here
     container_name: music-assistant-server
     restart: unless-stopped
-    # Required for player discovery to work correctly
+    # Network mode must be set to host for MA to work correctly
     network_mode: host
     volumes:
       - ${USERDIR:-$HOME}/docker/music-assistant-server/data:/data/
