@@ -42,7 +42,7 @@ COPY requirements_all.txt .
 # build python wheels for all dependencies
 RUN set -x \
     && pip install --upgrade pip \
-    && pip install build \
+    && pip install build maturin \
     && pip wheel -r requirements_all.txt --find-links "https://wheels.home-assistant.io/musllinux/"
 
 # build music assistant wheel
