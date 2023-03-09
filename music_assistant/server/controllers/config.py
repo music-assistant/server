@@ -164,7 +164,7 @@ class ConfigController:
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/set")
-    def set_provider_config(self, config: ProviderConfig, skip_reload=False) -> None:
+    def set_provider_config(self, config: ProviderConfig, skip_reload: bool = False) -> None:
         """Create or update ProviderConfig."""
         # encrypt any password values
         for val in config.values.values():
