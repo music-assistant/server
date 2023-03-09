@@ -394,31 +394,30 @@ class MusicAssistant:
         """Load providers from config."""
         # load all available providers from manifest files
         await self.__load_available_providers()
-        loaded_providers = set()
-        async with asyncio.TaskGroup() as tg:
-            # we loop twice to solve any dependencies
-            for allow_depends_on in (False, True):
-                # load all configured (and enabled) providers
-                for prov_conf in self.config.get_provider_configs():
-                    prov_manifest = self._available_providers[prov_conf.domain]
-                    if prov_manifest.depends_on and not allow_depends_on:
-                        continue
-                    if prov_conf.instance_id in loaded_providers:
-                        continue
-                    loaded_providers.add(prov_conf.domain)
-                    loaded_providers.add(prov_conf.instance_id)
-                    tg.create_task(self.load_provider(prov_conf))
-                # create default config for any 'load_by_default' providers (e.g. URL provider)
-                # NOTE: this will auto load any not yet existing providers
-                for prov_manifest in self._available_providers.values():
-                    if prov_manifest.domain in loaded_providers:
-                        continue
-                    if not prov_manifest.load_by_default:
-                        continue
-                    if prov_manifest.depends_on and not allow_depends_on:
-                        continue
-                    default_conf = self.config.create_provider_config(prov_manifest.domain)
-                    self.config.set_provider_config(default_conf)
+
+        # create default config for any 'load_by_default' providers (e.g. URL provider)
+        # we must do this first to resolve any dependencies
+        # NOTE: this will auto load any not yet existing providers
+        provider_configs = self.config.get_provider_configs()
+        for prov_manifest in self._available_providers.values():
+            if not prov_manifest.load_by_default:
+                continue
+            existing = any(x for x in provider_configs if x.domain == prov_manifest.domain)
+            if existing:
+                continue
+            default_conf = self.config.create_provider_config(prov_manifest.domain)
+            # skip_reload to prevent race condition
+            self.config.set_provider_config(default_conf, skip_reload=True)
+
+        # load all configured (and enabled) providers
+        for allow_depends_on in (False, True):
+            for prov_conf in self.config.get_provider_configs():
+                prov_manifest = self._available_providers[prov_conf.domain]
+                if prov_manifest.depends_on and not allow_depends_on:
+                    continue
+                if prov_conf.instance_id in self._providers:
+                    continue
+                await self.load_provider(prov_conf)
 
     async def __load_available_providers(self) -> None:
         """Preload all available provider manifest files."""

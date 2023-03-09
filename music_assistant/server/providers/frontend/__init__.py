@@ -22,7 +22,6 @@ class Frontend(PluginProvider):
             filepath = os.path.join(frontend_dir, filename)
             handler = partial(self.serve_static, filepath)
             self.mass.webapp.router.add_get(f"/{filename}", handler)
-            print(filename)
 
         # add assets subdir as static
         self.mass.webapp.router.add_static(

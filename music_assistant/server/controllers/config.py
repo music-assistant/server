@@ -164,7 +164,7 @@ class ConfigController:
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/set")
-    def set_provider_config(self, config: ProviderConfig) -> None:
+    def set_provider_config(self, config: ProviderConfig, skip_reload=False) -> None:
         """Create or update ProviderConfig."""
         # encrypt any password values
         for val in config.values.values():
@@ -179,8 +179,9 @@ class ConfigController:
             return
         self.set(conf_key, config_dict)
         # (re)load provider
-        updated_config = self.get_provider_config(config.instance_id)
-        self.mass.create_task(self.mass.load_provider(updated_config))
+        if not skip_reload:
+            updated_config = self.get_provider_config(config.instance_id)
+            self.mass.create_task(self.mass.load_provider(updated_config))
 
     @api_command("config/providers/create")
     def create_provider_config(self, provider_domain: str) -> ProviderConfig:

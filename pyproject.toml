@@ -96,13 +96,11 @@ asyncio_mode = "auto"
 [tool.setuptools]
 platforms = ["any"]
 zip-safe  = false
+packages = ["music_assistant"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-"*" = ["*.*"]
-
-[tool.setuptools.packages.find]
-where = ["."]
+music_assistant = ["py.typed"]
 
 [tool.ruff]
 fix = true

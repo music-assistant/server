@@ -112,7 +112,7 @@ class SlimprotoProvider(PlayerProvider):
         if hasattr(self, "_socket_servers"):
             for _server in self._socket_servers:
                 _server.close()
-            self._socket_servers = None
+        self._socket_servers = None
 
     async def _create_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
