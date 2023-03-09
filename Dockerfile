@@ -11,8 +11,6 @@ ARG PYTHON_VERSION="3.11"
 FROM python:${PYTHON_VERSION}-alpine as wheels-builder
 ARG TARGETPLATFORM
 
-ENV PATH="${PATH}:/root/.cargo/bin"
-
 # Install buildtime packages
 RUN set -x \
     && apk add --no-cache \
