@@ -342,7 +342,7 @@ class DLNAPlayerProvider(PlayerProvider):
 
                 await self._device_discovered(ssdp_udn, discovery_info["location"])
 
-            await async_search(on_response, 30)
+            await async_search(on_response, 60)
 
         finally:
             self._discovery_running = False

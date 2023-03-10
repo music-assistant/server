@@ -9,6 +9,7 @@ from base64 import b64encode
 from random import shuffle
 from time import time
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import aiofiles
 from aiohttp import web
@@ -169,26 +170,33 @@ class MetaDataController:
         # TODO: retrieve style/mood ?
         playlist.metadata.genres = set()
         image_urls = set()
-        for track in await self.mass.music.playlists.tracks(playlist.item_id, playlist.provider):
-            if not playlist.image and track.image:
-                image_urls.add(track.image.url)
-            if track.media_type != MediaType.TRACK:
-                # filter out radio items
-                continue
-            assert isinstance(track, Track)
-            assert isinstance(track.album, Album)
-            if track.metadata.genres:
-                playlist.metadata.genres.update(track.metadata.genres)
-            elif track.album and track.album.metadata.genres:
-                playlist.metadata.genres.update(track.album.metadata.genres)
-        # create collage thumb/fanart from playlist tracks
-        if image_urls:
-            img_path = f"playlist.{playlist.provider}.{playlist.item_id}.png"
-            img_path = os.path.join(self.mass.storage_path, img_path)
-            img_data = await create_collage(self.mass, list(image_urls))
-            async with aiofiles.open(img_path, "wb") as _file:
-                await _file.write(img_data)
-            playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img_path, True)]
+        try:
+            for track in await self.mass.music.playlists.tracks(
+                playlist.item_id, playlist.provider
+            ):
+                if not playlist.image and track.image:
+                    image_urls.add(track.image.url)
+                if track.media_type != MediaType.TRACK:
+                    # filter out radio items
+                    continue
+                assert isinstance(track, Track)
+                assert isinstance(track.album, Album)
+                if track.metadata.genres:
+                    playlist.metadata.genres.update(track.metadata.genres)
+                elif track.album and track.album.metadata.genres:
+                    playlist.metadata.genres.update(track.album.metadata.genres)
+            # create collage thumb/fanart from playlist tracks
+            if image_urls:
+                if playlist.image and self.mass.storage_path in playlist.image:
+                    img_path = playlist.image
+                else:
+                    img_path = os.path.join(self.mass.storage_path, f"{uuid4().hex}.png")
+                    img_data = await create_collage(self.mass, list(image_urls))
+                async with aiofiles.open(img_path, "wb") as _file:
+                    await _file.write(img_data)
+                playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img_path, True)]
+        except Exception as err:
+            LOGGER.debug("Error while creating playlist image", exc_info=err)
 
     async def get_radio_metadata(self, radio: Radio) -> None:
         """Get/update rich metadata for a radio station."""
@@ -314,6 +322,10 @@ class MetaDataController:
             image_data = await self.get_thumbnail(path, size)
         except Exception as err:
             LOGGER.exception(str(err), exc_info=err)
+            image_data = None
+
+        if not image_data:
+            return web.Response(status=404)
 
         # we set the cache header to 1 year (forever)
         # the client can use the checksum value to refresh when content changes

@@ -9,7 +9,7 @@
       "key": "path",
       "type": "string",
       "label": "Path",
-      "description": "Full SMB path to the files, e.g. \\\\server\\share\folder or smb://server/share"
+      "description": "Full SMB path to the files, e.g. \\\\server\\share\\folder or smb://server/share"
     },
     {
       "key": "username",
@@ -42,7 +42,7 @@
       "key": "use_ntlm_v2",
       "type": "boolean",
       "label": "Use NTLM v2",
-      "default_value": false,
+      "default_value": true,
       "description": "Indicates whether pysmb should be NTLMv1 or NTLMv2 authentication algorithm for authentication. The choice of NTLMv1 and NTLMv2 is configured on the remote server, and there is no mechanism to auto-detect which algorithm has been configured. Hence, we can only “guess” or try both algorithms. On Sambda, Windows Vista and Windows 7, NTLMv2 is enabled by default. On Windows XP, we can use NTLMv1 before NTLMv2.",
       "advanced": true,
       "required": false
