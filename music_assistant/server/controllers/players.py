@@ -114,7 +114,7 @@ class PlayerController:
         if player_id in self._players:
             raise AlreadyRegisteredError(f"Player {player_id} is already registered")
 
-        player.enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled")
+        player.enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
 
         # register playerqueue for this player
         self.mass.create_task(self.queues.on_player_register(player))

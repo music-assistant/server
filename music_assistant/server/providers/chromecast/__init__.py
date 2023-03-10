@@ -230,7 +230,7 @@ class ChromecastProvider(PlayerProvider):
 
         player_id = str(disc_info.uuid)
 
-        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled")
+        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
         if not enabled:
             self.logger.debug("Ignoring disabled player: %s", player_id)
             return
