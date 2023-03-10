@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_SAVE_DELAY = 30
+ENCRYPT_SUFFIX = "_encrypted_"
 
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
@@ -407,8 +408,13 @@ class ConfigController:
 
     def encrypt_password(self, str_value: str) -> str:
         """Encrypt a (password)string with Fernet."""
-        return self._fernet.encrypt(str_value.encode()).decode()
+        if str_value.startswith(ENCRYPT_SUFFIX):
+            return str_value
+        return ENCRYPT_SUFFIX + self._fernet.encrypt(str_value.encode()).decode()
 
     def decrypt_password(self, encrypted_str: str) -> str:
         """Decrypt a (password)string with Fernet."""
+        if not encrypted_str.startswith(ENCRYPT_SUFFIX):
+            return encrypted_str
+        encrypted_str = encrypted_str.replace(ENCRYPT_SUFFIX, "")
         return self._fernet.decrypt(encrypted_str.encode()).decode()
