@@ -325,13 +325,20 @@ class ConfigController:
             data=config,
         )
         # signal update to the player manager
-        if player := self.mass.players.get(config.player_id):
+        try:
+            player = self.mass.players.get(config.player_id)
             player.enabled = config.enabled
             self.mass.players.update(config.player_id)
+        except PlayerUnavailableError:
+            pass
+
         # signal player provider that the config changed
-        if provider := self.mass.get_provider(config.provider):
-            assert isinstance(provider, PlayerProvider)
-            provider.on_player_config_changed(config)
+        try:
+            if provider := self.mass.get_provider(config.provider):
+                assert isinstance(provider, PlayerProvider)
+                provider.on_player_config_changed(config)
+        except PlayerUnavailableError:
+            pass
 
     @api_command("config/players/create")
     async def create_player_config(
