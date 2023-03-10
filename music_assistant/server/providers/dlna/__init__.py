@@ -27,6 +27,7 @@ from music_assistant.common.models.enums import ContentType, PlayerFeature, Play
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -375,6 +376,16 @@ class DLNAPlayerProvider(PlayerProvider):
             dlna_player.description_url = description_url
         else:
             # new player detected, setup our DLNAPlayer wrapper
+
+            conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
+            # disable sonos players by default in dlna provider to
+            # prevent duplicate with sonos provider
+            enabled_default = "rincon" not in udn.lower()
+            enabled = self.mass.config.get(conf_key, default=enabled_default, setdefault=True)
+            if not enabled:
+                self.logger.debug("Ignoring disabled player: %s", udn)
+                return
+
             dlna_player = DLNAPlayer(
                 udn=udn,
                 player=Player(
@@ -397,6 +408,7 @@ class DLNAPlayerProvider(PlayerProvider):
             self.dlnaplayers[udn] = dlna_player
 
         await self._device_connect(dlna_player)
+
         dlna_player.update_attributes()
         self.mass.players.register_or_update(dlna_player.player)
 

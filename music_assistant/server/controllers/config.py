@@ -23,9 +23,9 @@ from music_assistant.common.models.enums import ConfigEntryType, EventType, Prov
 from music_assistant.common.models.errors import PlayerUnavailableError, ProviderUnavailableError
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID
 from music_assistant.server.helpers.api import api_command
+from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant.server.models.player_provider import PlayerProvider
     from music_assistant.server.server import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
@@ -76,17 +76,19 @@ class ConfigController:
         subkeys = key.split("/")
         for index, subkey in enumerate(subkeys):
             if index == (len(subkeys) - 1):
-                if setdefault:
-                    parent.setdefault(subkey, default)
-                    self.save()
                 value = parent.get(subkey, default)
+                if value is None and subkey not in parent and setdefault:
+                    parent[subkey] = default
+                    self.save()
                 if value is None:
                     # replace None with default
                     return default
                 return value
             elif subkey not in parent:
                 # requesting subkey from a non existing parent
-                return default
+                if not setdefault:
+                    return default
+                parent.setdefault(subkey, {})
             else:
                 parent = parent[subkey]
         return default

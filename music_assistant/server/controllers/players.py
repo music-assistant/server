@@ -61,9 +61,20 @@ class PlayerController:
         return iter(self._players.values())
 
     @api_command("players/all")
-    def all(self) -> tuple[Player]:
+    def all(
+        self,
+        return_unavailable: bool = True,
+        return_hidden: bool = True,
+        return_disabled: bool = False,
+    ) -> tuple[Player]:
         """Return all registered players."""
-        return tuple(self._players.values())
+        return tuple(
+            player
+            for player in self._players.values()
+            if (player.available or return_unavailable)
+            and (not player.hidden_by or return_hidden)
+            and (player.enabled or return_disabled)
+        )
 
     @api_command("players/get")
     def get(
