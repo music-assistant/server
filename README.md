@@ -39,7 +39,7 @@ By far the most convenient way to run the Music Assistant Server is to install t
 An alternative way to run the Music Assistant server is by running the docker image:
 
 ```
-docker run --network host music-assistant/server -v localpathhere/data:/data musicassistant/server
+docker run --network host ghcr.io/music-assistant/server
 ```
 
 You must run the docker container with host network mode and the data volume is `/data`.
