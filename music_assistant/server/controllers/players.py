@@ -84,10 +84,10 @@ class PlayerController:
     ) -> Player:
         """Return Player by player_id."""
         if player := self._players.get(player_id):
-            if not player.available and raise_unavailable:
+            if (not player.available or not player.enabled) and raise_unavailable:
                 raise PlayerUnavailableError(f"Player {player_id} is not available")
             return player
-        raise PlayerUnavailableError(f"Player {player_id} does not exist")
+        raise PlayerUnavailableError(f"Player {player_id} is not available")
 
     @api_command("players/get_by_name")
     def get_by_name(self, name: str) -> Player | None:
@@ -114,10 +114,16 @@ class PlayerController:
         if player_id in self._players:
             raise AlreadyRegisteredError(f"Player {player_id} is already registered")
 
+        player.enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled")
+
         # register playerqueue for this player
         self.mass.create_task(self.queues.on_player_register(player))
 
         self._players[player_id] = player
+
+        # ignore disabled players
+        if not player.enabled:
+            return
 
         LOGGER.info(
             "Player registered: %s/%s",

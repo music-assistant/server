@@ -242,31 +242,51 @@ class ConfigController:
     @api_command("config/players")
     def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
-        player_configs: dict[str, dict] = self.get(CONF_PLAYERS, {})
-        # we build a list of all playerids to cover both edge cases:
+        result: dict[str, PlayerConfig] = {}
+        # we use an intermediate dict to cover both edge cases:
         # - player does not yet have a config stored persistently
         # - player is disabled in config and not available
-        all_player_ids = set(player_configs.keys())
+
+        # do all existing players first
         for player in self.mass.players:
-            all_player_ids.add(player.player_id)
-        configs = [self.get_player_config(x) for x in all_player_ids]
-        if not provider:
-            return configs
-        return [x for x in configs if x.provider == provider]
+            if provider is not None and player.provider != provider:
+                continue
+            result[player.player_id] = self.get_player_config(player.player_id)
+
+        # add remaining configs that do have a config stored but are not (yet) available now
+        raw_configs = self.get(CONF_PLAYERS, {})
+        for player_id, raw_conf in raw_configs.items():
+            if player_id in result:
+                continue
+            if provider is not None and raw_conf["provider"] != provider:
+                continue
+            try:
+                prov = self.mass.get_provider(raw_conf["provider"])
+                prov_entries = prov.get_player_config_entries(player_id)
+            except (ProviderUnavailableError, PlayerUnavailableError):
+                prov_entries = tuple()
+
+            entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
+            result[player.player_id] = PlayerConfig.parse(entries, raw_conf)
+
+        return list(result.values())
 
     @api_command("config/players/get")
     def get_player_config(self, player_id: str) -> PlayerConfig:
         """Return configuration for a single player."""
         conf = self.get(f"{CONF_PLAYERS}/{player_id}")
         if not conf:
-            player = self.mass.players.get(player_id)
-            if not player:
-                raise PlayerUnavailableError(f"Player {player_id} is not available")
-            conf = {"provider": player.provider, "player_id": player_id}
+            player = self.mass.players.get(player_id, raise_unavailable=False)
+            conf = {
+                "provider": player.provider,
+                "player_id": player_id,
+                "enabled": player.enabled_by_default,
+            }
+
         try:
             prov = self.mass.get_provider(conf["provider"])
             prov_entries = prov.get_player_config_entries(player_id)
-        except ProviderUnavailableError:
+        except (ProviderUnavailableError, PlayerUnavailableError):
             prov_entries = tuple()
 
         entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries

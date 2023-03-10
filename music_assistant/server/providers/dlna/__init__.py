@@ -388,8 +388,8 @@ class DLNAPlayerProvider(PlayerProvider):
             conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
             # disable sonos players by default in dlna provider to
             # prevent duplicate with sonos provider
-            enabled_default = "rincon" not in udn.lower()
-            enabled = self.mass.config.get(conf_key, default=enabled_default, setdefault=True)
+            enabled_by_default = "rincon" not in udn.lower()
+            enabled = self.mass.config.get(conf_key, default=enabled_by_default)
             if not enabled:
                 self.logger.debug("Ignoring disabled player: %s", udn)
                 return
@@ -410,6 +410,7 @@ class DLNAPlayerProvider(PlayerProvider):
                         address=description_url,
                         manufacturer="unknown",
                     ),
+                    enabled_by_default=enabled_by_default,
                 ),
                 description_url=description_url,
             )

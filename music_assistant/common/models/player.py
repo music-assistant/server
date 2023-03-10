@@ -66,6 +66,14 @@ class Player(DataClassDictMixin):
     # supports_24bit: bool if player supports 24bits (hi res) audio
     supports_24bit: bool = True
 
+    # enabled_by_default: if the player is enabled by default
+    # can be used by a player provider to exclude some sort of players
+    enabled_by_default: bool = True
+
+    #
+    # THE BELOW ATTRIBUTES ARE MANAGED BY CONFIG AND THE PLAYER MANAGER
+    #
+
     # enabled: if the player is enabled
     # will be set by the player manager based on config
     # a disabled player is hidden in the UI and updates will not be processed
