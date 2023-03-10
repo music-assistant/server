@@ -7,7 +7,7 @@
   "config_entries": [
   ],
 
-  "requirements": ["music-assistant-frontend==20230309.0"],
+  "requirements": ["music-assistant-frontend==20230310.0"],
   "documentation": "",
   "multi_instance": false,
   "builtin": true,
