@@ -8,7 +8,6 @@ Music Assistant
 
 Music Assistant is a free, opensource Media library manager that connects to your streaming services and a wide range of connected speakers. The server is the beating heart, the core of Music Assistant and must run on an always-on device like a Raspberry Pi, a NAS or an Intel NUC or alike.
 
-Music Assistant can be operated as a complete standalone product but it is actually tailored to use side by side with Home Assistant, it is meant with automation in mind, hence our recommended installation method is to run the server as Home assistant Add-on.
 
 
 **Documentation and support**
@@ -22,7 +21,8 @@ ____________
 
 ## Running the server
 
-The Music Assistant Server is the "brain" of the Music Assistant set-up. It maintains connections to your files and streaming providers and connects to speakers.
+Music Assistant can be operated as a complete standalone product but it is actually tailored to use side by side with Home Assistant, it is meant with automation in mind, hence our recommended installation method is to run the server as Home assistant Add-on.
+
 
 ### Preferred method: Home Assistant Add-on
 
@@ -51,11 +51,11 @@ ____________
 
 - Because the server heavily relies on multicast techniques like mDNS and uPNP to discover players in your network it MUST be run in the same Layer 2 network as your player devices.
 
-- The server itself hosts a very simple webserver to stream audio to devices. This webinterface must be run at HTTP (so no HTTPS) and accessible by IP-address from local players.
+- The server itself hosts a very simple webserver to stream audio to devices. This webinterface must be run at HTTP (so no HTTPS) and accessible by IP-address from local players. See the server's logging at startup if it correctly auto-detected the locl IP.
 
 - The server itself hosts a websocket API and a JSON RPC API which is more or less compatible with LMS. The Music Assistant fronted communicates with the serer using the websockets API.
 
-- The webinterface of the server can be reached on the tcp port 8095 by default (unless that port is occupied, then it picks the next available port).
+- The webinterface of the server can be reached on the tcp port 8095 by default (unless that port is occupied, then it picks the next available port). See the server's logging to confirm the port.
 
 
 [repository-badge]: https://img.shields.io/badge/Add%20repository%20to%20my-Home%20Assistant-41BDF5?logo=home-assistant&style=for-the-badge
