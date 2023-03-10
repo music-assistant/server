@@ -18,9 +18,8 @@ classifiers = [
 ]
 dependencies = [
   "aiohttp",
-  "coloredlogs>=15.0.1",
   "orjson",
-  "mashumaro>=3.5"
+  "mashumaro"
 ]
 
 [project.optional-dependencies]
@@ -29,13 +28,14 @@ server = [
   "asyncio-throttle==1.0.2",
   "aiofiles==23.1.0",
   "aiorun==2022.11.1",
+  "coloredlogs==15.0.1",
   "databases==0.7.0",
   "aiosqlite==0.18.0",
   "python-slugify==7.0.0",
+  "mashumaro==3.5.0",
   "memory-tempfile==2.2.3",
   "pillow==9.4.0",
   "unidecode==1.3.6",
-  "mashumaro==3.5",
   "xmltodict==0.13.0",
   "orjson==3.8.6",
   "shortuuid==1.0.11",

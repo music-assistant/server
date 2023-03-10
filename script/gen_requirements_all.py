@@ -60,16 +60,17 @@ def main() -> int:
     for req_str in core_reqs + extra_reqs:
         if match := PACKAGE_REGEX.search(req_str):
             package_name = match.group(1).lower().replace("_", "-")
-        elif package_name in final_requirements:
-            # duplicate package without version is safe to ignore
-            continue
+            if package_name in final_requirements:
+                # duplicate package without version is safe to ignore
+                print("ignoring %s" % package_name)
+                continue
         else:
             print("Found requirement without version specifier: %s" % req_str)
             package_name = req_str
 
         existing = final_requirements.get(package_name)
         if existing:
-            print("WARNING: ignore duplicate package: %s - existing: %s" % package_name, existing)
+            print(f"WARNING: ignore duplicate package: {package_name} - existing: {existing}")
             continue
         final_requirements[package_name] = req_str
 
