@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from logging import Logger
@@ -69,9 +70,11 @@ class ChromecastProvider(PlayerProvider):
     mz_mgr: MultizoneManager | None = None
     browser: CastBrowser | None = None
     castplayers: dict[str, CastPlayer]
+    _discover_lock: threading.Lock
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
+        self._discover_lock = threading.Lock()
         self.castplayers = {}
         # silence the cast logger a bit
         logging.getLogger("pychromecast.socket_client").setLevel(logging.INFO)
@@ -226,72 +229,73 @@ class ChromecastProvider(PlayerProvider):
         if self.mass.closing:
             return
 
-        disc_info: CastInfo = self.browser.devices[uuid]
+        with self._discover_lock:
+            disc_info: CastInfo = self.browser.devices[uuid]
 
-        if disc_info.uuid is None:
-            self.logger.error("Discovered chromecast without uuid %s", disc_info)
-            return
-
-        player_id = str(disc_info.uuid)
-
-        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
-        if not enabled:
-            self.logger.debug("Ignoring disabled player: %s", player_id)
-            return
-
-        self.logger.debug("Discovered new or updated chromecast %s", disc_info)
-
-        castplayer = self.castplayers.get(player_id)
-        if not castplayer:
-            cast_info = ChromecastInfo.from_cast_info(disc_info)
-            cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
-            if cast_info.is_dynamic_group:
-                self.logger.warning("Discovered a dynamic cast group which will be ignored.")
+            if disc_info.uuid is None:
+                self.logger.error("Discovered chromecast without uuid %s", disc_info)
                 return
 
-            # Instantiate chromecast object
-            castplayer = CastPlayer(
-                player_id,
-                cast_info=cast_info,
-                cc=get_chromecast_from_cast_info(
-                    disc_info,
-                    self.mass.zeroconf,
-                ),
-                player=Player(
-                    player_id=player_id,
-                    provider=self.domain,
-                    type=PlayerType.GROUP if cast_info.is_audio_group else PlayerType.PLAYER,
-                    name=cast_info.friendly_name,
-                    available=False,
-                    powered=False,
-                    device_info=DeviceInfo(
-                        model=cast_info.model_name,
-                        address=cast_info.host,
-                        manufacturer=cast_info.manufacturer,
+            player_id = str(disc_info.uuid)
+
+            enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
+            if not enabled:
+                self.logger.debug("Ignoring disabled player: %s", player_id)
+                return
+
+            self.logger.debug("Discovered new or updated chromecast %s", disc_info)
+
+            castplayer = self.castplayers.get(player_id)
+            if not castplayer:
+                cast_info = ChromecastInfo.from_cast_info(disc_info)
+                cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
+                if cast_info.is_dynamic_group:
+                    self.logger.warning("Discovered a dynamic cast group which will be ignored.")
+                    return
+
+                # Instantiate chromecast object
+                castplayer = CastPlayer(
+                    player_id,
+                    cast_info=cast_info,
+                    cc=get_chromecast_from_cast_info(
+                        disc_info,
+                        self.mass.zeroconf,
                     ),
-                    supported_features=(
-                        PlayerFeature.POWER,
-                        PlayerFeature.VOLUME_MUTE,
-                        PlayerFeature.VOLUME_SET,
+                    player=Player(
+                        player_id=player_id,
+                        provider=self.domain,
+                        type=PlayerType.GROUP if cast_info.is_audio_group else PlayerType.PLAYER,
+                        name=cast_info.friendly_name,
+                        available=False,
+                        powered=False,
+                        device_info=DeviceInfo(
+                            model=cast_info.model_name,
+                            address=cast_info.host,
+                            manufacturer=cast_info.manufacturer,
+                        ),
+                        supported_features=(
+                            PlayerFeature.POWER,
+                            PlayerFeature.VOLUME_MUTE,
+                            PlayerFeature.VOLUME_SET,
+                        ),
+                        max_sample_rate=96000,
                     ),
-                    max_sample_rate=96000,
-                ),
-                logger=self.logger.getChild(cast_info.friendly_name),
-            )
-            self.castplayers[player_id] = castplayer
+                    logger=self.logger.getChild(cast_info.friendly_name),
+                )
+                self.castplayers[player_id] = castplayer
 
-            castplayer.status_listener = CastStatusListener(self, castplayer, self.mz_mgr)
-            if cast_info.is_audio_group:
-                mz_controller = MultizoneController(cast_info.uuid)
-                castplayer.cc.register_handler(mz_controller)
-                castplayer.mz_controller = mz_controller
-            castplayer.cc.start()
+                castplayer.status_listener = CastStatusListener(self, castplayer, self.mz_mgr)
+                if cast_info.is_audio_group:
+                    mz_controller = MultizoneController(cast_info.uuid)
+                    castplayer.cc.register_handler(mz_controller)
+                    castplayer.mz_controller = mz_controller
+                castplayer.cc.start()
 
-            self.mass.loop.call_soon_threadsafe(self.mass.players.register, castplayer.player)
+                self.mass.loop.call_soon_threadsafe(self.mass.players.register, castplayer.player)
 
-        # if player was already added, the player will take care of reconnects itself.
-        castplayer.cast_info.update(disc_info)
-        self.mass.loop.call_soon_threadsafe(self.mass.players.update, player_id)
+            # if player was already added, the player will take care of reconnects itself.
+            castplayer.cast_info.update(disc_info)
+            self.mass.loop.call_soon_threadsafe(self.mass.players.update, player_id)
 
     def _on_chromecast_removed(self, uuid, service, cast_info):  # noqa: ARG002
         """Handle zeroconf discovery of a removed Chromecast."""

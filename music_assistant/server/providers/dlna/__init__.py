@@ -375,51 +375,52 @@ class DLNAPlayerProvider(PlayerProvider):
 
     async def _device_discovered(self, udn: str, description_url: str) -> None:
         """Handle discovered DLNA player."""
-        if dlna_player := self.dlnaplayers.get(udn):
-            # existing player
-            if dlna_player.description_url == description_url and dlna_player.player.available:
-                # nothing to do, device is already connected
-                return
-            # update description url to newly discovered one
-            dlna_player.description_url = description_url
-        else:
-            # new player detected, setup our DLNAPlayer wrapper
+        async with self.lock:
+            if dlna_player := self.dlnaplayers.get(udn):
+                # existing player
+                if dlna_player.description_url == description_url and dlna_player.player.available:
+                    # nothing to do, device is already connected
+                    return
+                # update description url to newly discovered one
+                dlna_player.description_url = description_url
+            else:
+                # new player detected, setup our DLNAPlayer wrapper
 
-            conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
-            # disable sonos players by default in dlna provider to
-            # prevent duplicate with sonos provider
-            enabled_by_default = "rincon" not in udn.lower()
-            enabled = self.mass.config.get(conf_key, default=enabled_by_default)
-            if not enabled:
-                self.logger.debug("Ignoring disabled player: %s", udn)
-                return
+                conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
+                # disable sonos players by default in dlna provider to
+                # prevent duplicate with sonos provider
+                enabled_by_default = "rincon" not in udn.lower()
+                enabled = self.mass.config.get(conf_key, default=enabled_by_default)
+                if not enabled:
+                    self.logger.debug("Ignoring disabled player: %s", udn)
+                    return
 
-            dlna_player = DLNAPlayer(
-                udn=udn,
-                player=Player(
-                    player_id=udn,
-                    provider=self.domain,
-                    type=PlayerType.PLAYER,
-                    name=udn,
-                    available=False,
-                    powered=False,
-                    supported_features=PLAYER_FEATURES,
-                    # device info will be discovered later after connect
-                    device_info=DeviceInfo(
-                        model="unknown",
-                        address=description_url,
-                        manufacturer="unknown",
+                dlna_player = DLNAPlayer(
+                    udn=udn,
+                    player=Player(
+                        player_id=udn,
+                        provider=self.domain,
+                        type=PlayerType.PLAYER,
+                        name=udn,
+                        available=False,
+                        powered=False,
+                        supported_features=PLAYER_FEATURES,
+                        # device info will be discovered later after connect
+                        device_info=DeviceInfo(
+                            model="unknown",
+                            address=description_url,
+                            manufacturer="unknown",
+                        ),
+                        enabled_by_default=enabled_by_default,
                     ),
-                    enabled_by_default=enabled_by_default,
-                ),
-                description_url=description_url,
-            )
-            self.dlnaplayers[udn] = dlna_player
+                    description_url=description_url,
+                )
+                self.dlnaplayers[udn] = dlna_player
 
-        await self._device_connect(dlna_player)
+            await self._device_connect(dlna_player)
 
-        dlna_player.update_attributes()
-        self.mass.players.register_or_update(dlna_player.player)
+            dlna_player.update_attributes()
+            self.mass.players.register_or_update(dlna_player.player)
 
     async def _device_connect(self, dlna_player: DLNAPlayer) -> None:
         """Connect DLNA/DMR Device."""
