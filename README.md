@@ -43,7 +43,8 @@ docker run --network host ghcr.io/music-assistant/server
 ```
 
 You must run the docker container with host network mode and the data volume is `/data`.
-
+If you want access to your local music files from within MA, make sure to also mount that, e.g. /media.
+Note that accessing remote (SMB) shares can be done from within MA itself using the SMB File provider.
 
 ____________
 
