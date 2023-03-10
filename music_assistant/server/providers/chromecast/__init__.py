@@ -210,6 +210,10 @@ class ChromecastProvider(PlayerProvider):
         If the player does not need any polling, simply do not override this method.
         """
         castplayer = self.castplayers[player_id]
+        # only update status of media controller if player is on
+        if not castplayer.player.powered:
+            return
+
         try:
             await asyncio.to_thread(castplayer.cc.media_controller.update_status)
         except ConnectionResetError as err:
