@@ -376,12 +376,6 @@ class SonosPlayerProvider(PlayerProvider):
                     continue
                 await self._device_discovered(device)
 
-            # handle groups
-            # if soco_player := next(iter(discovered_devices), None):
-            #     self._process_groups(soco_player.all_groups)
-            # else:
-            #         self._process_groups(set())
-
         finally:
             self._discovery_running = False
 
@@ -482,23 +476,6 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player.group_info = sonos_player.soco.group
         sonos_player.group_info_updated = time.time()
         asyncio.run_coroutine_threadsafe(self._update_player(sonos_player), self.mass.loop)
-
-    def _process_groups(self, sonos_groups: list[soco.SoCo]) -> None:
-        """Process all sonos groups."""
-        all_group_ids = set()
-        for sonos_player in sonos_groups:
-            all_group_ids.add(sonos_player.uid)
-            if sonos_player.uid not in self.sonosplayers:
-                # unknown player ?!
-                continue
-
-            # mass_player = self.mass.players.get(sonos_player.uid)
-            # sonos_player.is_coordinator
-            # # check members
-            # group_player.is_group_player = True
-            # group_player.name = group.label
-            # group_player.group_childs = [item.uid for item in group.members]
-            # create_task(self.mass.players.update_player(group_player))
 
     async def _enqueue_next_track(
         self, sonos_player: SonosPlayer, current_queue_item_id: str
