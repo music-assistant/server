@@ -23,13 +23,14 @@ from music_assistant.common.models.enums import ConfigEntryType, EventType, Prov
 from music_assistant.common.models.errors import PlayerUnavailableError, ProviderUnavailableError
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID
 from music_assistant.server.helpers.api import api_command
+from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant.server.models.player_provider import PlayerProvider
     from music_assistant.server.server import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_SAVE_DELAY = 30
+ENCRYPT_SUFFIX = "_encrypted_"
 
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
@@ -76,17 +77,19 @@ class ConfigController:
         subkeys = key.split("/")
         for index, subkey in enumerate(subkeys):
             if index == (len(subkeys) - 1):
-                if setdefault:
-                    parent.setdefault(subkey, default)
-                    self.save()
                 value = parent.get(subkey, default)
+                if value is None and subkey not in parent and setdefault:
+                    parent[subkey] = default
+                    self.save()
                 if value is None:
                     # replace None with default
                     return default
                 return value
             elif subkey not in parent:
                 # requesting subkey from a non existing parent
-                return default
+                if not setdefault:
+                    return default
+                parent.setdefault(subkey, {})
             else:
                 parent = parent[subkey]
         return default
@@ -240,31 +243,51 @@ class ConfigController:
     @api_command("config/players")
     def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
-        player_configs: dict[str, dict] = self.get(CONF_PLAYERS, {})
-        # we build a list of all playerids to cover both edge cases:
+        result: dict[str, PlayerConfig] = {}
+        # we use an intermediate dict to cover both edge cases:
         # - player does not yet have a config stored persistently
         # - player is disabled in config and not available
-        all_player_ids = set(player_configs.keys())
+
+        # do all existing players first
         for player in self.mass.players:
-            all_player_ids.add(player.player_id)
-        configs = [self.get_player_config(x) for x in all_player_ids]
-        if not provider:
-            return configs
-        return [x for x in configs if x.provider == provider]
+            if provider is not None and player.provider != provider:
+                continue
+            result[player.player_id] = self.get_player_config(player.player_id)
+
+        # add remaining configs that do have a config stored but are not (yet) available now
+        raw_configs = self.get(CONF_PLAYERS, {})
+        for player_id, raw_conf in raw_configs.items():
+            if player_id in result:
+                continue
+            if provider is not None and raw_conf["provider"] != provider:
+                continue
+            try:
+                prov = self.mass.get_provider(raw_conf["provider"])
+                prov_entries = prov.get_player_config_entries(player_id)
+            except (ProviderUnavailableError, PlayerUnavailableError):
+                prov_entries = tuple()
+
+            entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
+            result[player.player_id] = PlayerConfig.parse(entries, raw_conf)
+
+        return list(result.values())
 
     @api_command("config/players/get")
     def get_player_config(self, player_id: str) -> PlayerConfig:
         """Return configuration for a single player."""
         conf = self.get(f"{CONF_PLAYERS}/{player_id}")
         if not conf:
-            player = self.mass.players.get(player_id)
-            if not player:
-                raise PlayerUnavailableError(f"Player {player_id} is not available")
-            conf = {"provider": player.provider, "player_id": player_id}
+            player = self.mass.players.get(player_id, raise_unavailable=False)
+            conf = {
+                "provider": player.provider,
+                "player_id": player_id,
+                "enabled": player.enabled_by_default,
+            }
+
         try:
             prov = self.mass.get_provider(conf["provider"])
             prov_entries = prov.get_player_config_entries(player_id)
-        except ProviderUnavailableError:
+        except (ProviderUnavailableError, PlayerUnavailableError):
             prov_entries = tuple()
 
         entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
@@ -303,13 +326,20 @@ class ConfigController:
             data=config,
         )
         # signal update to the player manager
-        if player := self.mass.players.get(config.player_id):
+        try:
+            player = self.mass.players.get(config.player_id)
             player.enabled = config.enabled
             self.mass.players.update(config.player_id)
+        except PlayerUnavailableError:
+            pass
+
         # signal player provider that the config changed
-        if provider := self.mass.get_provider(config.provider):
-            assert isinstance(provider, PlayerProvider)
-            provider.on_player_config_changed(config)
+        try:
+            if provider := self.mass.get_provider(config.provider):
+                assert isinstance(provider, PlayerProvider)
+                provider.on_player_config_changed(config)
+        except PlayerUnavailableError:
+            pass
 
     @api_command("config/players/create")
     async def create_player_config(
@@ -378,8 +408,13 @@ class ConfigController:
 
     def encrypt_password(self, str_value: str) -> str:
         """Encrypt a (password)string with Fernet."""
-        return self._fernet.encrypt(str_value.encode()).decode()
+        if str_value.startswith(ENCRYPT_SUFFIX):
+            return str_value
+        return ENCRYPT_SUFFIX + self._fernet.encrypt(str_value.encode()).decode()
 
     def decrypt_password(self, encrypted_str: str) -> str:
         """Decrypt a (password)string with Fernet."""
+        if not encrypted_str.startswith(ENCRYPT_SUFFIX):
+            return encrypted_str
+        encrypted_str = encrypted_str.replace(ENCRYPT_SUFFIX, "")
         return self._fernet.decrypt(encrypted_str.encode()).decode()

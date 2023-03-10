@@ -13,7 +13,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Concatenate, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client import UpnpRequester, UpnpService, UpnpStateVariable
@@ -27,10 +27,14 @@ from music_assistant.common.models.enums import ContentType, PlayerFeature, Play
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import DLNANotifyServer
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import PlayerConfig
 
 PLAYER_FEATURES = (
     PlayerFeature.SET_MEMBERS,
@@ -185,6 +189,11 @@ class DLNAPlayerProvider(PlayerProvider):
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
         self.mass.create_task(self._run_discovery())
 
+    def on_player_config_changed(self, config: PlayerConfig) -> None:  # noqa: ARG002
+        """Call (by config manager) when the configuration of a player changes."""
+        # run discovery to catch any re-enabled players
+        self.mass.create_task(self._run_discovery())
+
     @catch_request_errors
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -333,7 +342,7 @@ class DLNAPlayerProvider(PlayerProvider):
 
                 await self._device_discovered(ssdp_udn, discovery_info["location"])
 
-            await async_search(on_response, 30)
+            await async_search(on_response, 60)
 
         finally:
             self._discovery_running = False
@@ -366,39 +375,52 @@ class DLNAPlayerProvider(PlayerProvider):
 
     async def _device_discovered(self, udn: str, description_url: str) -> None:
         """Handle discovered DLNA player."""
-        if dlna_player := self.dlnaplayers.get(udn):
-            # existing player
-            if dlna_player.description_url == description_url and dlna_player.player.available:
-                # nothing to do, device is already connected
-                return
-            # update description url to newly discovered one
-            dlna_player.description_url = description_url
-        else:
-            # new player detected, setup our DLNAPlayer wrapper
-            dlna_player = DLNAPlayer(
-                udn=udn,
-                player=Player(
-                    player_id=udn,
-                    provider=self.domain,
-                    type=PlayerType.PLAYER,
-                    name=udn,
-                    available=False,
-                    powered=False,
-                    supported_features=PLAYER_FEATURES,
-                    # device info will be discovered later after connect
-                    device_info=DeviceInfo(
-                        model="unknown",
-                        address=description_url,
-                        manufacturer="unknown",
-                    ),
-                ),
-                description_url=description_url,
-            )
-            self.dlnaplayers[udn] = dlna_player
+        async with self.lock:
+            if dlna_player := self.dlnaplayers.get(udn):
+                # existing player
+                if dlna_player.description_url == description_url and dlna_player.player.available:
+                    # nothing to do, device is already connected
+                    return
+                # update description url to newly discovered one
+                dlna_player.description_url = description_url
+            else:
+                # new player detected, setup our DLNAPlayer wrapper
 
-        await self._device_connect(dlna_player)
-        dlna_player.update_attributes()
-        self.mass.players.register_or_update(dlna_player.player)
+                conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
+                # disable sonos players by default in dlna provider to
+                # prevent duplicate with sonos provider
+                enabled_by_default = "rincon" not in udn.lower()
+                enabled = self.mass.config.get(conf_key, default=enabled_by_default)
+                if not enabled:
+                    self.logger.debug("Ignoring disabled player: %s", udn)
+                    return
+
+                dlna_player = DLNAPlayer(
+                    udn=udn,
+                    player=Player(
+                        player_id=udn,
+                        provider=self.domain,
+                        type=PlayerType.PLAYER,
+                        name=udn,
+                        available=False,
+                        powered=False,
+                        supported_features=PLAYER_FEATURES,
+                        # device info will be discovered later after connect
+                        device_info=DeviceInfo(
+                            model="unknown",
+                            address=description_url,
+                            manufacturer="unknown",
+                        ),
+                        enabled_by_default=enabled_by_default,
+                    ),
+                    description_url=description_url,
+                )
+                self.dlnaplayers[udn] = dlna_player
+
+            await self._device_connect(dlna_player)
+
+            dlna_player.update_attributes()
+            self.mass.players.register_or_update(dlna_player.player)
 
     async def _device_connect(self, dlna_player: DLNAPlayer) -> None:
         """Connect DLNA/DMR Device."""

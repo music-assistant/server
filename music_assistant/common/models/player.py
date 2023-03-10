@@ -40,7 +40,7 @@ class Player(DataClassDictMixin):
     volume_level: int = 100
     volume_muted: bool = False
 
-    # group_childs: Return list of player group child id's or synced childs.
+    # group_childs: Return list of player group child id's or synced child`s.
     # - If this player is a dedicated group player,
     #   returns all child id's of the players in the group.
     # - If this is a syncgroup of players from the same platform (e.g. sonos),
@@ -53,7 +53,7 @@ class Player(DataClassDictMixin):
     active_queue: str = ""
 
     # can_sync_with: return tuple of player_ids that can be synced to/with this player
-    # ususally this is just a list of all player_ids within the playerprovider
+    # usually this is just a list of all player_ids within the playerprovider
     can_sync_with: tuple[str, ...] = field(default=tuple())
 
     # synced_to: player_id of the player this player is currently synced to
@@ -66,10 +66,23 @@ class Player(DataClassDictMixin):
     # supports_24bit: bool if player supports 24bits (hi res) audio
     supports_24bit: bool = True
 
+    # enabled_by_default: if the player is enabled by default
+    # can be used by a player provider to exclude some sort of players
+    enabled_by_default: bool = True
+
+    #
+    # THE BELOW ATTRIBUTES ARE MANAGED BY CONFIG AND THE PLAYER MANAGER
+    #
+
     # enabled: if the player is enabled
     # will be set by the player manager based on config
     # a disabled player is hidden in the UI and updates will not be processed
     enabled: bool = True
+
+    # hidden_by: if the player is enabled
+    # will be set by the player manager based on config
+    # a disabled player is hidden in the UI only
+    hidden_by: set = field(default_factory=set)
 
     # group_volume: if the player is a player group or syncgroup master,
     # this will return the average volume of all child players

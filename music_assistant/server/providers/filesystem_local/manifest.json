@@ -9,7 +9,7 @@
       "key": "path",
       "type": "string",
       "label": "Path",
-      "default_value": "/music"
+      "default_value": "/media"
     }
   ],
 
