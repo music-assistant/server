@@ -13,7 +13,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Concatenate, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client import UpnpRequester, UpnpService, UpnpStateVariable
@@ -32,6 +32,9 @@ from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import DLNANotifyServer
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import PlayerConfig
 
 PLAYER_FEATURES = (
     PlayerFeature.SET_MEMBERS,
@@ -184,6 +187,11 @@ class DLNAPlayerProvider(PlayerProvider):
 
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
+        self.mass.create_task(self._run_discovery())
+
+    def on_player_config_changed(self, config: PlayerConfig) -> None:  # noqa: ARG002
+        """Call (by config manager) when the configuration of a player changes."""
+        # run discovery to catch any re-enabled players
         self.mass.create_task(self._run_discovery())
 
     @catch_request_errors

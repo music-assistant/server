@@ -7,7 +7,7 @@ import time
 import xml.etree.ElementTree as ET  # noqa: N817
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import soco
 from soco.events_base import Event as SonosEvent
@@ -24,8 +24,13 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import PlayerConfig
+
 
 PLAYER_FEATURES = (
     PlayerFeature.SET_MEMBERS,
@@ -205,6 +210,11 @@ class SonosPlayerProvider(PlayerProvider):
         if hasattr(self, "sonosplayers"):
             for player in self.sonosplayers.values():
                 player.soco.end_direct_control_session
+
+    def on_player_config_changed(self, config: PlayerConfig) -> None:  # noqa: ARG002
+        """Call (by config manager) when the configuration of a player changes."""
+        # run discovery to catch any re-enabled players
+        self.mass.create_task(self._run_discovery())
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -388,6 +398,12 @@ class SonosPlayerProvider(PlayerProvider):
     async def _device_discovered(self, soco_device: soco.SoCo) -> None:
         """Handle discovered Sonos player."""
         player_id = soco_device.uid
+
+        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled")
+        if not enabled:
+            self.logger.debug("Ignoring disabled player: %s", player_id)
+            return
+
         speaker_info = await asyncio.to_thread(soco_device.get_speaker_info, True)
         assert player_id not in self.sonosplayers
 

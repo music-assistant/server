@@ -19,10 +19,7 @@ from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIV
 from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
 from pychromecast.models import CastInfo
-from pychromecast.socket_client import (
-    CONNECTION_STATUS_CONNECTED,
-    CONNECTION_STATUS_DISCONNECTED,
-)
+from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
 from music_assistant.common.models.enums import (
     ContentType,
@@ -34,18 +31,17 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import MASS_LOGO_ONLINE
+from music_assistant.constants import CONF_PLAYERS, MASS_LOGO_ONLINE
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.player_provider import PlayerProvider
-from music_assistant.server.providers.chromecast.helpers import (
-    CastStatusListener,
-    ChromecastInfo,
-)
+from music_assistant.server.providers.chromecast.helpers import CastStatusListener, ChromecastInfo
 
 if TYPE_CHECKING:
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.socket_client import ConnectionStatus
+
+    from music_assistant.common.models.config_entries import PlayerConfig
 
 
 PLAYER_CONFIG_ENTRIES = tuple()
@@ -101,6 +97,16 @@ class ChromecastProvider(PlayerProvider):
         # stop all chromecasts
         for castplayer in list(self.castplayers.values()):
             await self._disconnect_chromecast(castplayer)
+
+    def on_player_config_changed(self, config: PlayerConfig) -> None:  # noqa: ARG002
+        """Call (by config manager) when the configuration of a player changes."""
+
+        # run discovery to catch any re-enabled players
+        async def restart_discovery():
+            await self.mass.loop.run_in_executor(None, self.browser.stop_discovery)
+            await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
+
+        self.mass.create_task(restart_discovery())
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -222,8 +228,14 @@ class ChromecastProvider(PlayerProvider):
             self.logger.error("Discovered chromecast without uuid %s", disc_info)
             return
 
-        self.logger.debug("Discovered new or updated chromecast %s", disc_info)
         player_id = str(disc_info.uuid)
+
+        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled")
+        if not enabled:
+            self.logger.debug("Ignoring disabled player: %s", player_id)
+            return
+
+        self.logger.debug("Discovered new or updated chromecast %s", disc_info)
 
         castplayer = self.castplayers.get(player_id)
         if not castplayer:
