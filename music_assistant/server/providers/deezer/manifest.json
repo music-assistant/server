@@ -8,7 +8,7 @@
     {
       "key": "token",
       "type": "string",
-      "label": "Access token"
+      "label": "API token"
     }
   ],
 
