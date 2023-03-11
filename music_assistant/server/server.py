@@ -101,7 +101,8 @@ class MusicAssistant:
         # allow overriding of the base_ip if autodetect failed
         self.base_ip = self.config.get(CONF_WEB_IP, self.base_ip)
         LOGGER.info(
-            "Starting Music Assistant Server on port: %s" " - autodetected IP-address: %s",
+            "Starting Music Assistant Server (%s) on port: %s - autodetected IP-address: %s",
+            self.server_id,
             self.port,
             self.base_ip,
         )
@@ -454,35 +455,31 @@ class MusicAssistant:
                         exc_info=exc,
                     )
 
-    async def _setup_discovery(self) -> None:
+    def _setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
+        zeroconf_type = "_music-assistant._tcp.local."
+        server_id = self.server_id
 
-        def setup_discovery():
-            zeroconf_type = "_music-assistant._tcp.local."
-            server_id = "mass"  # TODO ?
-
-            info = ServiceInfo(
-                zeroconf_type,
-                name=f"{server_id}.{zeroconf_type}",
-                addresses=[get_ip_pton()],
-                port=self.port,
-                properties={},
-                server=f"mass_{server_id}.local.",
+        info = ServiceInfo(
+            zeroconf_type,
+            name=f"{server_id}.{zeroconf_type}",
+            addresses=[get_ip_pton()],
+            port=self.port,
+            properties={},
+            server=f"mass_{server_id}.local.",
+        )
+        LOGGER.debug("Starting Zeroconf broadcast...")
+        try:
+            existing = getattr(self, "mass_zc_service_set", None)
+            if existing:
+                self.zeroconf.update_service(info)
+            else:
+                self.zeroconf.register_service(info)
+            setattr(self, "mass_zc_service_set", True)
+        except NonUniqueNameException:
+            LOGGER.error(
+                "Music Assistant instance with identical name present in the local network!"
             )
-            LOGGER.debug("Starting Zeroconf broadcast...")
-            try:
-                existing = getattr(self, "mass_zc_service_set", None)
-                if existing:
-                    self.zeroconf.update_service(info)
-                else:
-                    self.zeroconf.register_service(info)
-                setattr(self, "mass_zc_service_set", True)
-            except NonUniqueNameException:
-                LOGGER.error(
-                    "Music Assistant instance with identical name present in the local network!"
-                )
-
-        await asyncio.to_thread(setup_discovery)
 
     async def __aenter__(self) -> MusicAssistant:
         """Return Context manager."""
