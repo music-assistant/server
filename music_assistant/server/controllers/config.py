@@ -150,6 +150,8 @@ class ConfigController:
             for prov_conf in raw_values.values()
             if (provider_type is None or prov_conf["type"] == provider_type)
             and (provider_domain is None or prov_conf["domain"] == provider_domain)
+            # guard for deleted providers
+            and prov_conf["domain"] in prov_entries
         ]
 
     @api_command("config/providers/get")
@@ -234,11 +236,11 @@ class ConfigController:
         existing = self.get(conf_key)
         if not existing:
             raise KeyError(f"Provider {instance_id} does not exist")
+        self.remove(conf_key)
         await self.mass.unload_provider(instance_id)
         if existing["type"] == "music":
             # cleanup entries in library
             await self.mass.music.cleanup_provider(instance_id)
-        self.remove(conf_key)
 
     @api_command("config/players")
     def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
