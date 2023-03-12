@@ -169,7 +169,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # in 99% of the cases we just return lazy because we want the details as fast as possible
         # only if we really need to wait for the result (e.g. to prevent race conditions), we
         # can set lazy to false and we await to job to complete.
-        add_task = self.mass.create_task(self.add(details))
+        task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
+        add_task = self.mass.create_task(self.add, details, task_id=task_id)
         if not lazy:
             await add_task
             return add_task.result()

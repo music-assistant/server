@@ -8,6 +8,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from aiohttp import ClientSession, TCPConnector, web
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
@@ -79,7 +80,7 @@ class MusicAssistant:
         self.music = MusicController(self)
         self.players = PlayerController(self)
         self.streams = StreamsController(self)
-        self._tracked_tasks: list[asyncio.Task] = []
+        self._tracked_tasks: dict[str, asyncio.Task] = {}
         self.closing = False
         # register all api commands (methods with decorator)
         self._register_api_commands()
@@ -132,7 +133,7 @@ class MusicAssistant:
         self.signal_event(EventType.SHUTDOWN)
         self.closing = True
         # cancel all running tasks
-        for task in self._tracked_tasks:
+        for task in self._tracked_tasks.values():
             task.cancel()
         # stop/clean streams controller
         await self.streams.close()
@@ -249,12 +250,16 @@ class MusicAssistant:
         self,
         target: Coroutine | Awaitable | Callable | asyncio.Future,
         *args: Any,
+        task_id: str | None = None,
         **kwargs: Any,
     ) -> asyncio.Task | asyncio.Future:
         """Create Task on (main) event loop from Coroutine(function).
 
         Tasks created by this helper will be properly cancelled on stop.
         """
+        if existing := self._tracked_tasks.get(task_id):
+            # prevent duplicate tasks if task_id is given and already present
+            return existing
         if asyncio.iscoroutinefunction(target):
             task = self.loop.create_task(target(*args, **kwargs))
         elif isinstance(target, asyncio.Future):
@@ -265,20 +270,22 @@ class MusicAssistant:
             # assume normal callable (non coroutine or awaitable)
             task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))
 
-        def task_done_callback(*args, **kwargs):  # noqa: ARG001
-            self._tracked_tasks.remove(task)
-            if LOGGER.isEnabledFor(logging.DEBUG):
-                # print unhandled exceptions
-                task_name = getattr(task, "name", "")
-                if not task.cancelled() and task.exception():
-                    task_name = task.get_name() if hasattr(task, "get_name") else task
-                    LOGGER.exception(
-                        "Exception in task %s",
-                        task_name,
-                        exc_info=task.exception(),
-                    )
+        def task_done_callback(_task: asyncio.Future | asyncio.Task):  # noqa: ARG001
+            _task_id = getattr(task, "task_id")
+            self._tracked_tasks.pop(_task_id)
+            # print unhandled exceptions
+            if LOGGER.isEnabledFor(logging.DEBUG) and not _task.cancelled() and _task.exception():
+                task_name = _task.get_name() if hasattr(_task, "get_name") else _task
+                LOGGER.exception(
+                    "Exception in task %s",
+                    task_name,
+                    exc_info=task.exception(),
+                )
 
-        self._tracked_tasks.append(task)
+        if task_id is None:
+            task_id = uuid4().hex
+        setattr(task, "task_id", task_id)
+        self._tracked_tasks[task_id] = task
         task.add_done_callback(task_done_callback)
         return task
 
