@@ -1,0 +1,28 @@
+{
+  "type": "music",
+  "domain": "plex",
+  "name": "Plex Media Server Library",
+  "description": "Support for the Plex streaming provider in Music Assistant.",
+  "codeowners": ["@micha91"],
+  "config_entries": [
+    {
+      "key": "server",
+      "type": "string",
+      "label": "Server Name"
+    },
+    {
+      "key": "library",
+      "type": "string",
+      "label": "Library"
+    },
+    {
+      "key": "token",
+      "type": "password",
+      "label": "Token"
+    }
+  ],
+
+  "requirements": ["plexapi==4.13.2"],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/816",
+  "multi_instance": true
+}
