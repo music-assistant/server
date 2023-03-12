@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from music_assistant.server.server import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_SAVE_DELAY = 30
+DEFAULT_SAVE_DELAY = 5
 ENCRYPT_SUFFIX = "_encrypted_"
 
 isfile = wrap(os.path.isfile)
@@ -332,6 +332,10 @@ class ConfigController:
             player = self.mass.players.get(config.player_id)
             player.enabled = config.enabled
             self.mass.players.update(config.player_id)
+            # copy playername to find back the playername if its disabled
+            if not config.enabled and not config.name:
+                config.name = player.display_name
+                self.set(conf_key, config.to_raw())
         except PlayerUnavailableError:
             pass
 
