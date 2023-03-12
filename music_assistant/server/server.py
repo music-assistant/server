@@ -124,7 +124,7 @@ class MusicAssistant:
         host = None
         self._web_tcp = web.TCPSite(self._web_apprunner, host=host, port=self.port)
         await self._web_tcp.start()
-        await self._setup_discovery()
+        self._setup_discovery()
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
