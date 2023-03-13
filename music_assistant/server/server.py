@@ -10,26 +10,28 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientSession, TCPConnector, web
-from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
+from zeroconf import (InterfaceChoice, NonUniqueNameException, ServiceInfo,
+                      Zeroconf)
 
-from music_assistant.common.helpers.util import get_ip, get_ip_pton, select_free_port
+from music_assistant.common.helpers.util import (get_ip, get_ip_pton,
+                                                 select_free_port)
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
-from music_assistant.common.models.errors import (
-    MusicAssistantError,
-    ProviderUnavailableError,
-    SetupFailedError,
-)
+from music_assistant.common.models.errors import (MusicAssistantError,
+                                                  ProviderUnavailableError,
+                                                  SetupFailedError)
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
-from music_assistant.constants import CONF_SERVER_ID, CONF_WEB_IP, ROOT_LOGGER_NAME
+from music_assistant.constants import (CONF_SERVER_ID, CONF_WEB_IP,
+                                       ROOT_LOGGER_NAME)
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
 from music_assistant.server.controllers.metadata import MetaDataController
 from music_assistant.server.controllers.music import MusicController
 from music_assistant.server.controllers.players import PlayerController
 from music_assistant.server.controllers.streams import StreamsController
-from music_assistant.server.helpers.api import APICommandHandler, api_command, mount_websocket_api
+from music_assistant.server.helpers.api import (APICommandHandler, api_command,
+                                                mount_websocket_api)
 from music_assistant.server.helpers.util import install_package
 from music_assistant.server.models.plugin import PluginProvider
 
