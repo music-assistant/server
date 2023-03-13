@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
@@ -250,8 +250,8 @@ class TracksController(MediaControllerBase[Track]):
                 self.db_table,
                 {
                     **item.to_db_row(),
-                    "artists": json_dumps(track_artists),
-                    "albums": json_dumps(track_albums),
+                    "artists": serialize_to_json(track_artists),
+                    "albums": serialize_to_json(track_albums),
                     "sort_artist": sort_artist,
                     "sort_album": sort_album,
                 },
@@ -293,10 +293,10 @@ class TracksController(MediaControllerBase[Track]):
                 "sort_name": item.sort_name if overwrite else cur_item.sort_name,
                 "version": item.version if overwrite else cur_item.version,
                 "duration": item.duration if overwrite else cur_item.duration,
-                "artists": json_dumps(track_artists),
-                "albums": json_dumps(track_albums),
-                "metadata": json_dumps(metadata),
-                "provider_mappings": json_dumps(provider_mappings),
+                "artists": serialize_to_json(track_artists),
+                "albums": serialize_to_json(track_albums),
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
                 "isrc": item.isrc or cur_item.isrc,
             },
         )

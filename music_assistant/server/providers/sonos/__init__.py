@@ -211,7 +211,9 @@ class SonosPlayerProvider(PlayerProvider):
             for player in self.sonosplayers.values():
                 player.soco.end_direct_control_session
 
-    def on_player_config_changed(self, config: PlayerConfig) -> None:  # noqa: ARG002
+    def on_player_config_changed(
+        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+    ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         # run discovery to catch any re-enabled players
         self.mass.create_task(self._run_discovery())
@@ -399,7 +401,7 @@ class SonosPlayerProvider(PlayerProvider):
         """Handle discovered Sonos player."""
         player_id = soco_device.uid
 
-        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
+        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled")
         if not enabled:
             self.logger.debug("Ignoring disabled player: %s", player_id)
             return

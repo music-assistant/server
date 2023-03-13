@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, Final, TypeVar, Union, get_args, get_orig
 
 from aiohttp import WSMsgType, web
 
-from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.models.api import (
     CommandMessage,
     ErrorResultMessage,
@@ -187,7 +186,7 @@ class WebsocketClientHandler:
                     self._logger.debug("Received: %s", msg.data)
 
                 try:
-                    command_msg = CommandMessage.from_dict(json_loads(msg.data))
+                    command_msg = CommandMessage.from_json(msg.data)
                 except ValueError:
                     disconnect_warn = f"Received invalid JSON: {msg.data}"
                     break
@@ -278,7 +277,7 @@ class WebsocketClientHandler:
 
         Async friendly.
         """
-        _message = json_dumps(message)
+        _message = message.to_json()
 
         try:
             self._to_write.put_nowait(_message)

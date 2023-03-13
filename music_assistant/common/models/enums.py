@@ -338,7 +338,7 @@ class ConfigEntryType(StrEnum):
 
     BOOLEAN = "boolean"
     STRING = "string"
-    PASSWORD = "password"
+    SECURE_STRING = "secure_string"
     INTEGER = "integer"
     FLOAT = "float"
     LABEL = "label"

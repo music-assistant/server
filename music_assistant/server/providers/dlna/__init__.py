@@ -189,7 +189,9 @@ class DLNAPlayerProvider(PlayerProvider):
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
         self.mass.create_task(self._run_discovery())
 
-    def on_player_config_changed(self, config: PlayerConfig) -> None:  # noqa: ARG002
+    def on_player_config_changed(
+        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+    ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         # run discovery to catch any re-enabled players
         self.mass.create_task(self._run_discovery())
@@ -386,11 +388,9 @@ class DLNAPlayerProvider(PlayerProvider):
             else:
                 # new player detected, setup our DLNAPlayer wrapper
 
+                # ignore disabled players
                 conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
-                # disable sonos players by default in dlna provider to
-                # prevent duplicate with sonos provider
-                enabled_by_default = "rincon" not in udn.lower()
-                enabled = self.mass.config.get(conf_key, default=enabled_by_default)
+                enabled = self.mass.config.get(conf_key)
                 if not enabled:
                     self.logger.debug("Ignoring disabled player: %s", udn)
                     return
@@ -411,7 +411,8 @@ class DLNAPlayerProvider(PlayerProvider):
                             address=description_url,
                             manufacturer="unknown",
                         ),
-                        enabled_by_default=enabled_by_default,
+                        # disable sonos players by default in dlna
+                        enabled_by_default="rincon" not in udn.lower(),
                     ),
                     description_url=description_url,
                 )

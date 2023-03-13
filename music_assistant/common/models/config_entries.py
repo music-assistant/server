@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from types import NoneType
 from typing import Any
@@ -18,18 +18,22 @@ from music_assistant.constants import (
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALISATION,
     CONF_VOLUME_NORMALISATION_TARGET,
+    SECURE_STRING_SUBSTITUTE,
 )
 
 from .enums import ConfigEntryType
 
 LOGGER = logging.getLogger(__name__)
 
+ENCRYPT_CALLBACK: callable[[str], str] | None = None
+DECRYPT_CALLBACK: callable[[str], str] | None = None
+
 ConfigValueType = str | int | float | bool | None
 
 ConfigEntryTypeMap = {
     ConfigEntryType.BOOLEAN: bool,
     ConfigEntryType.STRING: str,
-    ConfigEntryType.PASSWORD: str,
+    ConfigEntryType.SECURE_STRING: str,
     ConfigEntryType.INTEGER: int,
     ConfigEntryType.FLOAT: float,
     ConfigEntryType.LABEL: str,
@@ -75,6 +79,8 @@ class ConfigEntry(DataClassDictMixin):
     hidden: bool = False
     # advanced: this is an advanced setting (frontend hides it in some corner)
     advanced: bool = False
+    # encrypt: store string value encrypted and do not send its value in the api
+    encrypt: bool = False
 
 
 @dataclass
@@ -131,9 +137,9 @@ class Config(DataClassDictMixin):
     def get_value(self, key: str) -> ConfigValueType:
         """Return config value for given key."""
         config_value = self.values[key]
-        if config_value.type == ConfigEntryType.PASSWORD:  # noqa: SIM102
-            if decrypt_callback := self.get_decrypt_callback():
-                return decrypt_callback(config_value.value)
+        if config_value.type == ConfigEntryType.SECURE_STRING:
+            assert DECRYPT_CALLBACK is not None
+            return DECRYPT_CALLBACK(config_value.value)
         return config_value.value
 
     @classmethod
@@ -142,7 +148,6 @@ class Config(DataClassDictMixin):
         config_entries: Iterable[ConfigEntry],
         raw: dict[str, Any],
         allow_none: bool = False,
-        decrypt_callback: Callable[[str], str] | None = None,
     ) -> Config:
         """Parse Config from the raw values (as stored in persistent storage)."""
         values = {
@@ -150,24 +155,57 @@ class Config(DataClassDictMixin):
             for x in config_entries
         }
         conf = cls.from_dict({**raw, "values": values})
-        if decrypt_callback:
-            conf.set_decrypt_callback(decrypt_callback)
         return conf
 
     def to_raw(self) -> dict[str, Any]:
         """Return minimized/raw dict to store in persistent storage."""
+
+        def _handle_value(value: ConfigEntryValue):
+            if value.type == ConfigEntryType.SECURE_STRING:
+                assert ENCRYPT_CALLBACK is not None
+                return ENCRYPT_CALLBACK(value.value)
+            return value.value
+
         return {
             **self.to_dict(),
-            "values": {x.key: x.value for x in self.values.values() if x.value != x.default_value},
+            "values": {
+                x.key: _handle_value(x) for x in self.values.values() if x.value != x.default_value
+            },
         }
 
-    def set_decrypt_callback(self, callback: Callable[[str], str]) -> None:
-        """Register callback to decrypt (password) strings."""
-        setattr(self, "decrypt_callback", callback)
+    def __post_serialize__(self, d: dict[str, Any]) -> dict[str, Any]:
+        """Adjust dict object after it has been serialized."""
+        for key, value in self.values.items():
+            # drop all password values from the serialized dict
+            # API consumers (including the frontend) are not allowed to retrieve it
+            # (even if its encrypted) but they can only set it.
+            if value.value and value.type == ConfigEntryType.SECURE_STRING:
+                d["values"][key]["value"] = SECURE_STRING_SUBSTITUTE
+        return d
 
-    def get_decrypt_callback(self) -> Callable[[str], str] | None:
-        """Get optional callback to decrypt (password) strings."""
-        return getattr(self, "decrypt_callback", None)
+    def update(self, update: ConfigUpdate) -> set[str]:
+        """Update Config with updated values."""
+        changed_keys: set[str] = set()
+
+        # root values (enabled, name)
+        for key in ("enabled", "name"):
+            cur_val = getattr(self, key, None)
+            new_val = getattr(update, key, None)
+            if new_val == cur_val:
+                continue
+            setattr(self, key, new_val)
+            changed_keys.add(key)
+
+        # update values
+        if update.values is not None:
+            for key, new_val in update.values.items():
+                cur_val = self.values[key].value
+                if cur_val == new_val:
+                    continue
+                self.values[key].value = new_val
+                changed_keys.add(f"values.{key}")
+
+        return changed_keys
 
 
 @dataclass
@@ -193,6 +231,15 @@ class PlayerConfig(Config):
     enabled: bool = True
     # name: an (optional) custom name for this player
     name: str | None = None
+
+
+@dataclass
+class ConfigUpdate(DataClassDictMixin):
+    """Config object to send when updating some/all values through the API."""
+
+    enabled: bool | None = None
+    name: str | None = None
+    values: dict[str, ConfigValueType] | None = None
 
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
