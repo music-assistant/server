@@ -44,7 +44,7 @@ server = [
 ]
 test = [
   "black==23.1.0",
-  "codespell==2.2.2",
+  "codespell==2.2.4",
   "mypy==1.0.1",
   "ruff==0.0.254",
   "pytest==7.2.1",
