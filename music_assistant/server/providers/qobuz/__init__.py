@@ -31,6 +31,22 @@ from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
 from music_assistant.server.models.music_provider import MusicProvider
 
+SUPPORTED_FEATURES = (
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+)
+
 
 class QobuzProvider(MusicProvider):
     """Provider for the Qobux music service."""
@@ -41,27 +57,18 @@ class QobuzProvider(MusicProvider):
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=4, period=1)
-        self._attr_supported_features = (
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.LIBRARY_ARTISTS_EDIT,
-            ProviderFeature.LIBRARY_ALBUMS_EDIT,
-            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            ProviderFeature.LIBRARY_TRACKS_EDIT,
-            ProviderFeature.PLAYLIST_TRACKS_EDIT,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-        )
+
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
             raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails
         token = await self._auth_token()
         if not token:
             raise LoginFailed(f"Login failed for user {self.config.get_value(CONF_USERNAME)}")
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5

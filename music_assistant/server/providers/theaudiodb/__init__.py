@@ -27,6 +27,13 @@ from music_assistant.server.models.metadata_provider import MetadataProvider
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+SUPPORTED_FEATURES = (
+    ProviderFeature.ARTIST_METADATA,
+    ProviderFeature.ALBUM_METADATA,
+    ProviderFeature.TRACK_METADATA,
+    ProviderFeature.GET_ARTIST_MBID,
+)
+
 IMG_MAPPING = {
     "strArtistThumb": ImageType.THUMB,
     "strArtistLogo": ImageType.LOGO,
@@ -68,13 +75,12 @@ class AudioDbMetadataProvider(MetadataProvider):
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
-        self._attr_supported_features = (
-            ProviderFeature.ARTIST_METADATA,
-            ProviderFeature.ALBUM_METADATA,
-            ProviderFeature.TRACK_METADATA,
-            ProviderFeature.GET_ARTIST_MBID,
-        )
         self.throttler = Throttler(rate_limit=2, period=1)
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on theaudiodb."""
