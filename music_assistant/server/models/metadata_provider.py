@@ -13,6 +13,13 @@ if TYPE_CHECKING:
 
 # ruff: noqa: ARG001, ARG002
 
+DEFAULT_SUPPORTED_FEATURES = (
+    ProviderFeature.ARTIST_METADATA,
+    ProviderFeature.ALBUM_METADATA,
+    ProviderFeature.TRACK_METADATA,
+    ProviderFeature.GET_ARTIST_MBID,
+)
+
 
 class MetadataProvider(Provider):
     """Base representation of a Metadata Provider (controller).
@@ -20,12 +27,10 @@ class MetadataProvider(Provider):
     Metadata Provider implementations should inherit from this base model.
     """
 
-    _attr_supported_features: tuple[ProviderFeature, ...] = (
-        ProviderFeature.ARTIST_METADATA,
-        ProviderFeature.ALBUM_METADATA,
-        ProviderFeature.TRACK_METADATA,
-        ProviderFeature.GET_ARTIST_MBID,
-    )
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return DEFAULT_SUPPORTED_FEATURES
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for an artist on this Metadata provider."""

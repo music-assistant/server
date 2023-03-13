@@ -2,7 +2,7 @@ name: Build multiarch Docker image
 
 on:
   release:
-    types: [published, prereleased]
+    types: [published]
   workflow_dispatch:
     inputs:
       logLevel:

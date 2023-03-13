@@ -28,7 +28,6 @@ class URLProvider(MusicProvider):
 
         Called when provider is registered.
         """
-        self._attr_available = True
         self._full_url = {}
 
     async def get_track(self, prov_track_id: str) -> Track:

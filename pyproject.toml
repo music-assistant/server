@@ -44,13 +44,13 @@ server = [
 ]
 test = [
   "black==23.1.0",
-  "codespell==2.2.2",
+  "codespell==2.2.4",
   "mypy==1.0.1",
   "ruff==0.0.254",
   "pytest==7.2.1",
   "pytest-aiohttp==1.0.4",
   "pytest-cov==4.0.0",
-  "pre-commit==2.20.0"
+  "pre-commit==3.1.1"
 ]
 
 [project.scripts]
