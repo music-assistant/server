@@ -13,15 +13,17 @@ from aiofiles.os import wrap
 from cryptography.fernet import Fernet
 
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
+from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
     DEFAULT_PLAYER_CONFIG_ENTRIES,
     ConfigEntryValue,
+    ConfigUpdate,
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant.common.models.enums import ConfigEntryType, EventType, ProviderType
+from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import PlayerUnavailableError, ProviderUnavailableError
-from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID
+from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID, ENCRYPT_SUFFIX
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -30,7 +32,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_SAVE_DELAY = 5
-ENCRYPT_SUFFIX = "_encrypted_"
+
 
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
@@ -58,6 +60,9 @@ class ConfigController:
         server_id: str = self.get(CONF_SERVER_ID, uuid4().hex, True)
         fernet_key = base64.urlsafe_b64encode(server_id.encode()[:32])
         self._fernet = Fernet(fernet_key)
+        config_entries.ENCRYPT_CALLBACK = self.encrypt_string
+        config_entries.DECRYPT_CALLBACK = self.decrypt_string
+
         LOGGER.debug("Started.")
 
     async def close(self) -> None:
@@ -145,7 +150,6 @@ class ConfigController:
             ProviderConfig.parse(
                 prov_entries[prov_conf["domain"]],
                 prov_conf,
-                decrypt_callback=self.decrypt_password,
             )
             for prov_conf in raw_values.values()
             if (provider_type is None or prov_conf["type"] == provider_type)
@@ -164,25 +168,23 @@ class ConfigController:
                 return ProviderConfig.parse(
                     prov.config_entries,
                     raw_conf,
-                    decrypt_callback=self.decrypt_password,
                 )
         raise KeyError(f"No config found for provider id {instance_id}")
 
-    @api_command("config/providers/set")
-    def set_provider_config(self, config: ProviderConfig, skip_reload: bool = False) -> None:
-        """Create or update ProviderConfig."""
-        # encrypt any password values
-        for val in config.values.values():
-            if val.type == ConfigEntryType.PASSWORD:
-                val.value = self.encrypt_password(val.value)
+    @api_command("config/providers/update")
+    def update_provider_config(
+        self, instance_id: str, update: ConfigUpdate, skip_reload: bool = False
+    ) -> None:
+        """Update ProviderConfig."""
+        config = self.get_provider_config(instance_id)
+        changed_keys = config.update(update)
 
-        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
-        existing = self.get(conf_key)
-        config_dict = config.to_raw()
-        if existing == config_dict:
+        if not changed_keys:
             # no changes
             return
-        self.set(conf_key, config_dict)
+
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        self.set(conf_key, config.to_dict())
         # (re)load provider
         if not skip_reload:
             updated_config = self.get_provider_config(config.instance_id)
@@ -311,16 +313,18 @@ class ConfigController:
                 return ConfigEntryValue.parse(entry, conf["values"].get(key))
         raise KeyError(f"ConfigEntry {key} is invalid")
 
-    @api_command("config/players/set")
-    def set_player_config(self, config: PlayerConfig) -> None:
-        """Create or update PlayerConfig."""
-        conf_key = f"{CONF_PLAYERS}/{config.player_id}"
-        existing = self.get(conf_key)
-        config_dict = config.to_raw()
-        if existing == config_dict:
+    @api_command("config/players/update")
+    def update_player_config(self, player_id: str, update: ConfigUpdate) -> None:
+        """Update PlayerConfig."""
+        config = self.get_player_config(player_id)
+        changed_keys = config.update(update)
+
+        if not changed_keys:
             # no changes
             return
-        self.set(conf_key, config_dict)
+
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        self.set(conf_key, config.to_dict())
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
@@ -409,16 +413,16 @@ class ConfigController:
             await rename(self.filename, filename_backup)
 
         async with aiofiles.open(self.filename, "w", encoding="utf-8") as _file:
-            await _file.write(json_dumps(self._data))
+            await _file.write(json_dumps(self._data, indent=True))
         LOGGER.debug("Saved data to persistent storage")
 
-    def encrypt_password(self, str_value: str) -> str:
+    def encrypt_string(self, str_value: str) -> str:
         """Encrypt a (password)string with Fernet."""
         if str_value.startswith(ENCRYPT_SUFFIX):
             return str_value
         return ENCRYPT_SUFFIX + self._fernet.encrypt(str_value.encode()).decode()
 
-    def decrypt_password(self, encrypted_str: str) -> str:
+    def decrypt_string(self, encrypted_str: str) -> str:
         """Decrypt a (password)string with Fernet."""
         if not encrypted_str.startswith(ENCRYPT_SUFFIX):
             return encrypted_str

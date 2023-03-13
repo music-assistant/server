@@ -18,7 +18,7 @@
     },
     {
       "key": "password",
-      "type": "password",
+      "type": "secure_string",
       "label": "Password"
     },
     {

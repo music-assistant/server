@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING, Generic, TypeVar
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
@@ -438,7 +438,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         await self.mass.music.database.update(
             self.db_table,
             match,
-            {"provider_mappings": json_dumps(db_item.provider_mappings)},
+            {"provider_mappings": serialize_to_json(db_item.provider_mappings)},
         )
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 

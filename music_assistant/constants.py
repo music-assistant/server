@@ -71,3 +71,5 @@ DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
 MASS_LOGO_ONLINE: Final[str] = (
     "https://github.com/home-assistant/brands/" "raw/master/custom_integrations/mass/icon%402x.png"
 )
+ENCRYPT_SUFFIX = "_encrypted_"
+SECURE_STRING_SUBSTITUTE = "this_value_is_encrypted"
