@@ -179,7 +179,7 @@ class Config(DataClassDictMixin):
             # drop all password values from the serialized dict
             # API consumers (including the frontend) are not allowed to retrieve it
             # (even if its encrypted) but they can only set it.
-            if value.type == ConfigEntryType.SECURE_STRING:
+            if value.value and value.type == ConfigEntryType.SECURE_STRING:
                 d["values"][key]["value"] = SECURE_STRING_SUBSTITUTE
         return d
 
@@ -242,7 +242,7 @@ class ConfigUpdate(DataClassDictMixin):
 
     enabled: bool | None = None
     name: str | None = None
-    values: dict[str, ConfigEntryValue, ConfigValueType] | None = None
+    values: dict[str, ConfigValueType] | None = None
 
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
