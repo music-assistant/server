@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import aiofiles
 from aiofiles.os import wrap
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.common.models import config_entries
@@ -22,7 +22,11 @@ from music_assistant.common.models.config_entries import (
     ProviderConfig,
 )
 from music_assistant.common.models.enums import EventType, ProviderType
-from music_assistant.common.models.errors import PlayerUnavailableError, ProviderUnavailableError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    PlayerUnavailableError,
+    ProviderUnavailableError,
+)
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID, ENCRYPT_SUFFIX
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -347,7 +351,7 @@ class ConfigController:
         try:
             if provider := self.mass.get_provider(config.provider):
                 assert isinstance(provider, PlayerProvider)
-                provider.on_player_config_changed(config)
+                provider.on_player_config_changed(config, changed_keys)
         except PlayerUnavailableError:
             pass
 
@@ -427,4 +431,7 @@ class ConfigController:
         if not encrypted_str.startswith(ENCRYPT_SUFFIX):
             return encrypted_str
         encrypted_str = encrypted_str.replace(ENCRYPT_SUFFIX, "")
-        return self._fernet.decrypt(encrypted_str.encode()).decode()
+        try:
+            return self._fernet.decrypt(encrypted_str.encode()).decode()
+        except InvalidToken as err:
+            raise InvalidDataError("Password decryption failed") from err

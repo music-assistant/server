@@ -16,11 +16,7 @@ from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroc
 from music_assistant.common.helpers.util import get_ip, get_ip_pton, select_free_port
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
-from music_assistant.common.models.errors import (
-    MusicAssistantError,
-    ProviderUnavailableError,
-    SetupFailedError,
-)
+from music_assistant.common.models.errors import ProviderUnavailableError, SetupFailedError
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import CONF_SERVER_ID, CONF_WEB_IP, ROOT_LOGGER_NAME
@@ -349,7 +345,7 @@ class MusicAssistant:
             self._providers[provider.instance_id] = provider
             try:
                 await provider.setup()
-            except MusicAssistantError as err:
+            except Exception as err:
                 provider.last_error = str(err)
                 provider.available = False
                 raise err
