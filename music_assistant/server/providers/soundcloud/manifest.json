@@ -22,7 +22,7 @@
     }
   ],
 
-  "requirements": ["soundcloud-lib", "soundcloud-v2"],
+  "requirements": ["soundcloud-lib", "soundcloud-v2", "bs4", "requests"],
   "documentation": "",
   "multi_instance": true
 }

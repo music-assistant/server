@@ -6,8 +6,6 @@ from time import time
 from typing import AsyncGenerator  # noqa: UP035
 from urllib.parse import unquote
 
-from soundcloud import SoundCloud
-
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
@@ -30,6 +28,11 @@ from music_assistant.constants import CONF_USERNAME
 # from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
+
+from .soundcloudpy.soundcloudpy import Soundcloud
+
+# from soundcloud import SoundCloud
+
 
 # from .helpers import (add_remove_playlist_tracks, get_album, get_artist,
 #                       get_library_albums, get_library_artists,
@@ -70,12 +73,12 @@ class SoundcloudMusicProvider(MusicProvider):
         """Set up the Soundcloud provider."""
         self._attr_supported_features = (
             ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
+            # ProviderFeature.LIBRARY_ALBUMS,
+            # ProviderFeature.LIBRARY_TRACKS,
             ProviderFeature.LIBRARY_PLAYLISTS,
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
+            # ProviderFeature.ARTIST_ALBUMS,
         )
         if not self.config.get_value(CONF_CLIENT_ID) or not self.config.get_value(
             CONF_AUTHORIZATION
@@ -86,17 +89,13 @@ class SoundcloudMusicProvider(MusicProvider):
         client_id = self.config.get_value(CONF_CLIENT_ID)
         auth_token = self.config.get_value(CONF_AUTHORIZATION)
 
-        self.sc = SoundCloud(client_id, auth_token)
-        assert self.sc.is_client_id_valid()
-        assert self.sc.is_auth_token_valid()
-        self.me = self.sc.get_user_by_username(username)
-        self.username = self.me.id
-        print(self.me)
-        print(self.me.id)
-        print(type(self.me))
-        # await self.login()
-        # self._cookies = {"CONSENT": "YES+1"}
-        # self._signature_timestamp = await self._get_signature_timestamp()
+        self.sc = Soundcloud(auth_token, client_id)
+        self.me = self.sc.get_account_details()
+        self.user_id = self.me["id"]
+        # assert me.permalink == username
+        # print(self.me["id"])
+        # print(type(self.me))
+        return None
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
@@ -136,7 +135,13 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Soundcloud."""
-        following = self.sc.get_user_following(self._user_id)
+        following = self.sc.get_following(self.user_id)
+        for item in following["collection"]:
+            # print(item)
+            if item and item["id"]:
+                # print(item)
+                yield await self._parse_artist(item)
+
         # artists_obj = await get_library_artists(
         #     headers=self._headers, username=self.config.get_value(CONF_USERNAME)
         # )
@@ -151,13 +156,27 @@ class SoundcloudMusicProvider(MusicProvider):
     #     for album in albums_obj:
     #         yield await self._parse_album(album, album["browseId"])
 
-    # async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-    #     """Retrieve all library playlists from the provider."""
-    #     playlists_obj = await get_library_playlists(
-    #         headers=self._headers, username=self.config.get_value(CONF_USERNAME)
-    #     )
-    #     for playlist in playlists_obj:
-    #         yield await self._parse_playlist(playlist)
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+        """Retrieve all library playlists from the provider."""
+        playlists = self.sc.get_account_playlists()
+        # print(playlists)
+        for item in playlists["collection"]:
+            # print(item)
+            if "playlist" in item:
+                if item:
+                    if item["playlist"]["title"]:
+                        yield await self._parse_playlist(item)
+                    elif item["system_playlist"]["title"]:
+                        yield await self._parse_playlist(item)
+            elif "system_playlist" in item:
+                if item:
+                    if item["system_playlist"]["title"]:
+                        yield await self._parse_playlist(item)
+            # elif item and item["system_playlist"]["title"]:
+            #     # print(item)
+            #     yield await self._parse_playlist(item)
+        # for playlist in playlists_obj:
+        #     yield await self._parse_playlist(playlist)
 
     # async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
     #     """Retrieve library tracks from Youtube Music."""
@@ -454,15 +473,22 @@ class SoundcloudMusicProvider(MusicProvider):
         client_id = self.config.get_value(CONF_CLIENT_ID)
         auth_token = self.config.get_value(CONF_AUTHORIZATION)
 
-        self.sc = SoundCloud(client_id, auth_token)
-        assert sc.is_client_id_valid()
-        assert sc.is_auth_token_valid()
-        self.me = sc.get_user_by_username(username)
+        self.sc = Soundcloud(client_id, auth_token)
+        self.me = self.sc.get_account_details()
         # assert me.permalink == username
-        print(self.me)
-        print(self.me.id)
-        print(type(self.me))
+        # print(self.me)
+        # print(self.me.id)
+        # print(type(self.me))
         return None
+        # self.sc = SoundCloud(client_id, auth_token)
+        # assert sc.is_client_id_valid()
+        # assert sc.is_auth_token_valid()
+        # self.me = sc.get_user_by_username(username)
+        # # assert me.permalink == username
+        # print(self.me)
+        # print(self.me.id)
+        # print(type(self.me))
+        # return None
 
     async def _initialize_context(self) -> dict[str, str]:
         """Return a dict to use as a context in requests."""
@@ -522,45 +548,56 @@ class SoundcloudMusicProvider(MusicProvider):
     async def _parse_artist(self, artist_obj: dict) -> Artist:
         """Parse a YT Artist response to Artist model object."""
         artist_id = None
+        permalink = artist_obj["permalink"]
         if "channelId" in artist_obj:
-            artist_id = artist_obj["channelId"]
+            artist_id = artist_obj["id"]
         elif "id" in artist_obj and artist_obj["id"]:
             artist_id = artist_obj["id"]
-        elif artist_obj["name"] == "Various Artists":
-            artist_id = "UCUTXlgdcKU5vfzFqHOWIvkA"
+        # elif artist_obj["name"] == "Various Artists":
+        #     artist_id = "UCUTXlgdcKU5vfzFqHOWIvkA"
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
-        artist = Artist(item_id=artist_id, name=artist_obj["name"], provider=self.domain)
+        artist = Artist(item_id=artist_id, name=artist_obj["username"], provider=self.domain)
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
-        if "thumbnails" in artist_obj and artist_obj["thumbnails"]:
-            artist.metadata.images = await self._parse_thumbnails(artist_obj["thumbnails"])
+        # print(artist_obj)
+        if artist_obj.get("avatar_url"):
+            img_url = artist_obj["avatar_url"]
+            if "2a96cbd8b46e442fc41c2b86b821562f" not in img_url:
+                artist.metadata.images = [MediaItemImage(ImageType.THUMB, img_url)]
+        # if "avatar_url" in artist_obj and artist_obj["avatar_url"]:
+        #     artist.metadata.images = await self._parse_thumbnails(artist_obj["avatar_url"])
         artist.add_provider_mapping(
             ProviderMapping(
                 item_id=str(artist_id),
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                url=f"https://music.youtube.com/channel/{artist_id}",
+                url=f"https://soundcloud.com/{permalink}",
             )
         )
         return artist
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
+        print(playlist_obj)
         playlist = Playlist(
-            item_id=playlist_obj["id"], provider=self.domain, name=playlist_obj["title"]
+            item_id=playlist_obj["playlist"]["id"],
+            provider=self.domain,
+            name=playlist_obj["playlist"]["title"],
         )
-        if "description" in playlist_obj:
-            playlist.metadata.description = playlist_obj["description"]
-        if "thumbnails" in playlist_obj and playlist_obj["thumbnails"]:
-            playlist.metadata.images = await self._parse_thumbnails(playlist_obj["thumbnails"])
+        if "description" in playlist_obj["playlist"]:
+            playlist.metadata.description = playlist_obj["playlist"]["description"]
+        if "avatar_url" in playlist_obj["playlist"] and playlist_obj["playlist"]["artwork_url"]:
+            playlist.metadata.images = await self._parse_thumbnails(
+                playlist_obj["playlist"]["artwork_url"]
+            )
         is_editable = False
-        if playlist_obj.get("privacy") and playlist_obj.get("privacy") == "PRIVATE":
-            is_editable = True
+        # if playlist_obj.get("sharing") and playlist_obj.get("sharing") == "private":
+        #     is_editable = True
         playlist.is_editable = is_editable
         playlist.add_provider_mapping(
             ProviderMapping(
-                item_id=playlist_obj["id"],
+                item_id=playlist_obj["playlist"]["id"],
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
             )
