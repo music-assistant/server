@@ -3,7 +3,7 @@
 import pathlib
 from typing import Final
 
-__version__: Final[str] = "2.0.0b1"
+__version__: Final[str] = "2.0.0b2"
 
 SCHEMA_VERSION: Final[int] = 19
 
@@ -68,6 +68,8 @@ DB_TABLE_THUMBS: Final[str] = "thumbnails"
 DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
 
 # all other
-MASS_LOGO_ONLINE: Final[str] = (
-    "https://github.com/home-assistant/brands/" "raw/master/custom_integrations/mass/icon%402x.png"
-)
+MASS_LOGO_ONLINE: Final[
+    str
+] = "https://github.com/home-assistant/brands/raw/master/custom_integrations/mass/icon%402x.png"
+ENCRYPT_SUFFIX = "_encrypted_"
+SECURE_STRING_SUBSTITUTE = "this_value_is_encrypted"

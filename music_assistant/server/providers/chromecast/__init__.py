@@ -42,8 +42,6 @@ if TYPE_CHECKING:
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.socket_client import ConnectionStatus
 
-    from music_assistant.common.models.config_entries import PlayerConfig
-
 
 PLAYER_CONFIG_ENTRIES = tuple()
 
@@ -100,16 +98,6 @@ class ChromecastProvider(PlayerProvider):
         # stop all chromecasts
         for castplayer in list(self.castplayers.values()):
             await self._disconnect_chromecast(castplayer)
-
-    def on_player_config_changed(self, config: PlayerConfig) -> None:  # noqa: ARG002
-        """Call (by config manager) when the configuration of a player changes."""
-
-        # run discovery to catch any re-enabled players
-        async def restart_discovery():
-            await self.mass.loop.run_in_executor(None, self.browser.stop_discovery)
-            await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
-
-        self.mass.create_task(restart_discovery())
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""

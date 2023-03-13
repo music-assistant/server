@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING, Generic, TypeVar
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
@@ -169,7 +169,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # in 99% of the cases we just return lazy because we want the details as fast as possible
         # only if we really need to wait for the result (e.g. to prevent race conditions), we
         # can set lazy to false and we await to job to complete.
-        add_task = self.mass.create_task(self.add(details))
+        task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
+        add_task = self.mass.create_task(self.add, details, task_id=task_id)
         if not lazy:
             await add_task
             return add_task.result()
@@ -437,7 +438,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         await self.mass.music.database.update(
             self.db_table,
             match,
-            {"provider_mappings": json_dumps(db_item.provider_mappings)},
+            {"provider_mappings": serialize_to_json(db_item.provider_mappings)},
         )
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 

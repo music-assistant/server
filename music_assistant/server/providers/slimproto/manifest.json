@@ -2,7 +2,7 @@
   "type": "player",
   "domain": "slimproto",
   "name": "Slimproto",
-  "description": "Support for slimproto based players (e.g. squeezebox, squeezelite). Music Assistant emulates a Logitech Media Server.",
+  "description": "Support for slimproto based players (e.g. squeezebox, squeezelite).",
   "codeowners": ["@marcelveldt"],
   "config_entries": [
   ],
