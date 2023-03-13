@@ -421,9 +421,7 @@ class MusicAssistant:
             existing = any(x for x in provider_configs if x.domain == prov_manifest.domain)
             if existing:
                 continue
-            default_conf = self.config.create_provider_config(prov_manifest.domain)
-            # skip_reload to prevent race condition
-            self.config.update_provider_config(default_conf, skip_reload=True)
+            self.config.create_provider_config(prov_manifest.domain)
 
         # load all configured (and enabled) providers
         for allow_depends_on in (False, True):

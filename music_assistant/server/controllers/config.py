@@ -173,16 +173,11 @@ class ConfigController:
             for prov in self.mass.get_available_providers():
                 if prov.domain != raw_conf["domain"]:
                     continue
-                return ProviderConfig.parse(
-                    prov.config_entries,
-                    raw_conf,
-                )
+                return ProviderConfig.parse(prov.config_entries, raw_conf, allow_none=True)
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/update")
-    def update_provider_config(
-        self, instance_id: str, update: ConfigUpdate, skip_reload: bool = False
-    ) -> None:
+    def update_provider_config(self, instance_id: str, update: ConfigUpdate) -> None:
         """Update ProviderConfig."""
         config = self.get_provider_config(instance_id)
         changed_keys = config.update(update)
@@ -193,10 +188,8 @@ class ConfigController:
 
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
         self.set(conf_key, config.to_raw())
-        # (re)load provider
-        if not skip_reload:
-            updated_config = self.get_provider_config(config.instance_id)
-            self.mass.create_task(self.mass.load_provider(updated_config))
+        updated_config = self.get_provider_config(config.instance_id)
+        self.mass.create_task(self.mass.load_provider(updated_config))
 
     @api_command("config/providers/create")
     def create_provider_config(self, provider_domain: str) -> ProviderConfig:
@@ -215,29 +208,38 @@ class ConfigController:
             raise KeyError(f"Unknown provider domain: {provider_domain}")
 
         # determine instance id based on previous configs
-        existing = self.get_provider_configs(provider_domain=provider_domain)
+        existing = {
+            x.instance_id for x in self.get_provider_configs(provider_domain=provider_domain)
+        }
+
         if existing and not manifest.multi_instance:
             raise ValueError(f"Provider {manifest.name} does not support multiple instances")
 
-        count = len(existing)
-        if count == 0:
+        if len(existing) == 0:
             instance_id = provider_domain
             name = manifest.name
         else:
-            instance_id = f"{provider_domain}{count+1}"
-            name = f"{manifest.name} {count+1}"
+            instance_id = f"{provider_domain}{len(existing)+1}"
+            name = f"{manifest.name} {len(existing)+1}"
 
-        return ProviderConfig.parse(
+        # all checks passed, return a default config
+        default_config = ProviderConfig.parse(
             prov.config_entries,
             {
                 "type": manifest.type.value,
                 "domain": manifest.domain,
                 "instance_id": instance_id,
                 "name": name,
-                "values": dict(),
+                "values": {},
             },
             allow_none=True,
         )
+
+        # config provided and checks passed, storeconfig
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        self.set(conf_key, default_config.to_raw())
+
+        return default_config
 
     @api_command("config/providers/remove")
     async def remove_provider_config(self, instance_id: str) -> None:
