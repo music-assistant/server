@@ -6,6 +6,11 @@
   "codeowners": ["@gieljnssns"],
   "config_entries": [
     {
+      "key": "username",
+      "type": "string",
+      "label": "Username"
+    },
+    {
       "key": "client_id",
       "type": "string",
       "label": "Client id"
@@ -17,7 +22,7 @@
     }
   ],
 
-  "requirements": [],
+  "requirements": ["soundcloud-lib", "soundcloud-v2"],
   "documentation": "",
   "multi_instance": true
 }

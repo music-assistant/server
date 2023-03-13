@@ -1,4 +1,4 @@
-"""Youtube Music support for MusicAssistant."""
+"""Soundcloud support for MusicAssistant."""
 import asyncio
 import re
 from operator import itemgetter
@@ -6,9 +6,9 @@ from time import time
 from typing import AsyncGenerator  # noqa: UP035
 from urllib.parse import unquote
 
-import pytube
-import ytmusicapi
+from soundcloud import SoundCloud
 
+from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
@@ -26,49 +26,48 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.constants import CONF_USERNAME
+
+# from music_assistant.server.helpers.app_vars import app_var
+from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
-from .helpers import (
-    add_remove_playlist_tracks,
-    get_album,
-    get_artist,
-    get_library_albums,
-    get_library_artists,
-    get_library_playlists,
-    get_library_tracks,
-    get_playlist,
-    get_song_radio_tracks,
-    get_track,
-    library_add_remove_album,
-    library_add_remove_artist,
-    library_add_remove_playlist,
-    search,
-)
+# from .helpers import (add_remove_playlist_tracks, get_album, get_artist,
+#                       get_library_albums, get_library_artists,
+#                       get_library_playlists, get_library_tracks, get_playlist,
+#                       get_song_radio_tracks, get_track,
+#                       library_add_remove_album, library_add_remove_artist,
+#                       library_add_remove_playlist, search)
+
+# import pytube
+# import ytmusicapi
+
 
 # if TYPE_CHECKING:
 #     from collections.abc import AsyncGenerator
 
-CONF_COOKIE = "cookie"
+CONF_CLIENT_ID = "client_id"
+CONF_AUTHORIZATION = "authorization"
 
-YT_DOMAIN = "https://www.youtube.com"
-YTM_DOMAIN = "https://music.youtube.com"
-YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
+# YT_DOMAIN = "https://www.youtube.com"
+# YTM_DOMAIN = "https://music.youtube.com"
+# YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
 
 # TODO: fix disabled tests
 # ruff: noqa: PLW2901, RET504
 
 
-class YoutubeMusicProvider(MusicProvider):
-    """Provider for Youtube Music."""
+class SoundcloudMusicProvider(MusicProvider):
+    """Provider for Soundcloud."""
 
     _headers = None
     _context = None
     _cookies = None
     _signature_timestamp = 0
     _cipher = None
+    _user_id = None
 
     async def setup(self) -> None:
-        """Set up the YTMusic provider."""
+        """Set up the Soundcloud provider."""
         self._attr_supported_features = (
             ProviderFeature.LIBRARY_ARTISTS,
             ProviderFeature.LIBRARY_ALBUMS,
@@ -77,15 +76,27 @@ class YoutubeMusicProvider(MusicProvider):
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
             ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-            ProviderFeature.SIMILAR_TRACKS,
         )
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_COOKIE):
+        if not self.config.get_value(CONF_CLIENT_ID) or not self.config.get_value(
+            CONF_AUTHORIZATION
+        ):
             raise LoginFailed("Invalid login credentials")
-        await self._initialize_headers(cookie=self.config.get_value(CONF_COOKIE))
-        await self._initialize_context()
-        self._cookies = {"CONSENT": "YES+1"}
-        self._signature_timestamp = await self._get_signature_timestamp()
+        # await self._initialize_headers(cookie=self.config.get_value(CONF_COOKIE))
+        username = self.config.get_value(CONF_USERNAME)
+        client_id = self.config.get_value(CONF_CLIENT_ID)
+        auth_token = self.config.get_value(CONF_AUTHORIZATION)
+
+        self.sc = SoundCloud(client_id, auth_token)
+        assert self.sc.is_client_id_valid()
+        assert self.sc.is_auth_token_valid()
+        self.me = self.sc.get_user_by_username(username)
+        self.username = self.me.id
+        print(self.me)
+        print(self.me.id)
+        print(type(self.me))
+        # await self.login()
+        # self._cookies = {"CONSENT": "YES+1"}
+        # self._signature_timestamp = await self._get_signature_timestamp()
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
@@ -124,132 +135,133 @@ class YoutubeMusicProvider(MusicProvider):
         return parsed_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
-        """Retrieve all library artists from Youtube Music."""
-        artists_obj = await get_library_artists(
-            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
-        )
-        for artist in artists_obj:
-            yield await self._parse_artist(artist)
+        """Retrieve all library artists from Soundcloud."""
+        following = self.sc.get_user_following(self._user_id)
+        # artists_obj = await get_library_artists(
+        #     headers=self._headers, username=self.config.get_value(CONF_USERNAME)
+        # )
+        # for artist in artists_obj:
+        #     yield await self._parse_artist(artist)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-        """Retrieve all library albums from Youtube Music."""
-        albums_obj = await get_library_albums(
-            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
-        )
-        for album in albums_obj:
-            yield await self._parse_album(album, album["browseId"])
+    # async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    #     """Retrieve all library albums from Youtube Music."""
+    #     albums_obj = await get_library_albums(
+    #         headers=self._headers, username=self.config.get_value(CONF_USERNAME)
+    #     )
+    #     for album in albums_obj:
+    #         yield await self._parse_album(album, album["browseId"])
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-        """Retrieve all library playlists from the provider."""
-        playlists_obj = await get_library_playlists(
-            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
-        )
-        for playlist in playlists_obj:
-            yield await self._parse_playlist(playlist)
+    # async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    #     """Retrieve all library playlists from the provider."""
+    #     playlists_obj = await get_library_playlists(
+    #         headers=self._headers, username=self.config.get_value(CONF_USERNAME)
+    #     )
+    #     for playlist in playlists_obj:
+    #         yield await self._parse_playlist(playlist)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
-        """Retrieve library tracks from Youtube Music."""
-        tracks_obj = await get_library_tracks(
-            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
-        )
-        for track in tracks_obj:
-            # Library tracks sometimes do not have a valid artist id
-            # In that case, call the API for track details based on track id
-            try:
-                yield await self._parse_track(track)
-            except InvalidDataError:
-                track = await self.get_track(track["videoId"])
-                yield track
+    # async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    #     """Retrieve library tracks from Youtube Music."""
+    #     tracks_obj = await get_library_tracks(
+    #         headers=self._headers, username=self.config.get_value(CONF_USERNAME)
+    #     )
+    #     for track in tracks_obj:
+    #         # Library tracks sometimes do not have a valid artist id
+    #         # In that case, call the API for track details based on track id
+    #         try:
+    #             yield await self._parse_track(track)
+    #         except InvalidDataError:
+    #             track = await self.get_track(track["videoId"])
+    #             yield track
 
-    async def get_album(self, prov_album_id) -> Album:
-        """Get full album details by id."""
-        album_obj = await get_album(prov_album_id=prov_album_id)
-        return (
-            await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
-            if album_obj
-            else None
-        )
+    # async def get_album(self, prov_album_id) -> Album:
+    #     """Get full album details by id."""
+    #     album_obj = await get_album(prov_album_id=prov_album_id)
+    #     return (
+    #         await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
+    #         if album_obj
+    #         else None
+    #     )
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """Get album tracks for given album id."""
-        album_obj = await get_album(prov_album_id=prov_album_id)
-        if not album_obj.get("tracks"):
-            return []
-        tracks = []
-        for idx, track_obj in enumerate(album_obj["tracks"], 1):
-            track = await self._parse_track(track_obj=track_obj)
-            track.disc_number = 0
-            track.track_number = idx
-            tracks.append(track)
-        return tracks
+    # async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+    #     """Get album tracks for given album id."""
+    #     album_obj = await get_album(prov_album_id=prov_album_id)
+    #     if not album_obj.get("tracks"):
+    #         return []
+    #     tracks = []
+    #     for idx, track_obj in enumerate(album_obj["tracks"], 1):
+    #         track = await self._parse_track(track_obj=track_obj)
+    #         track.disc_number = 0
+    #         track.track_number = idx
+    #         tracks.append(track)
+    #     return tracks
 
-    async def get_artist(self, prov_artist_id) -> Artist:
-        """Get full artist details by id."""
-        artist_obj = await get_artist(prov_artist_id=prov_artist_id)
-        return await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
+    # async def get_artist(self, prov_artist_id) -> Artist:
+    #     """Get full artist details by id."""
+    #     artist_obj = await get_artist(prov_artist_id=prov_artist_id)
+    #     return await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
 
-    async def get_track(self, prov_track_id) -> Track:
-        """Get full track details by id."""
-        track_obj = await get_track(prov_track_id=prov_track_id)
-        return await self._parse_track(track_obj)
+    # async def get_track(self, prov_track_id) -> Track:
+    #     """Get full track details by id."""
+    #     track_obj = await get_track(prov_track_id=prov_track_id)
+    #     return await self._parse_track(track_obj)
 
-    async def get_playlist(self, prov_playlist_id) -> Playlist:
-        """Get full playlist details by id."""
-        playlist_obj = await get_playlist(
-            prov_playlist_id=prov_playlist_id,
-            headers=self._headers,
-            username=self.config.get_value(CONF_USERNAME),
-        )
-        return await self._parse_playlist(playlist_obj)
+    # async def get_playlist(self, prov_playlist_id) -> Playlist:
+    #     """Get full playlist details by id."""
+    #     playlist_obj = await get_playlist(
+    #         prov_playlist_id=prov_playlist_id,
+    #         headers=self._headers,
+    #         username=self.config.get_value(CONF_USERNAME),
+    #     )
+    #     return await self._parse_playlist(playlist_obj)
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
-        """Get all playlist tracks for given playlist id."""
-        playlist_obj = await get_playlist(
-            prov_playlist_id=prov_playlist_id,
-            headers=self._headers,
-            username=self.config.get_value(CONF_USERNAME),
-        )
-        if "tracks" not in playlist_obj:
-            return []
-        tracks = []
-        for index, track in enumerate(playlist_obj["tracks"]):
-            if track["isAvailable"]:
-                # Playlist tracks sometimes do not have a valid artist id
-                # In that case, call the API for track details based on track id
-                try:
-                    track = await self._parse_track(track)
-                    if track:
-                        track.position = index
-                        tracks.append(track)
-                except InvalidDataError:
-                    track = await self.get_track(track["videoId"])
-                    if track:
-                        track.position = index
-                        tracks.append(track)
-        return tracks
+    # async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    #     """Get all playlist tracks for given playlist id."""
+    #     playlist_obj = await get_playlist(
+    #         prov_playlist_id=prov_playlist_id,
+    #         headers=self._headers,
+    #         username=self.config.get_value(CONF_USERNAME),
+    #     )
+    #     if "tracks" not in playlist_obj:
+    #         return []
+    #     tracks = []
+    #     for index, track in enumerate(playlist_obj["tracks"]):
+    #         if track["isAvailable"]:
+    #             # Playlist tracks sometimes do not have a valid artist id
+    #             # In that case, call the API for track details based on track id
+    #             try:
+    #                 track = await self._parse_track(track)
+    #                 if track:
+    #                     track.position = index
+    #                     tracks.append(track)
+    #             except InvalidDataError:
+    #                 track = await self.get_track(track["videoId"])
+    #                 if track:
+    #                     track.position = index
+    #                     tracks.append(track)
+    #     return tracks
 
-    async def get_artist_albums(self, prov_artist_id) -> list[Album]:
-        """Get a list of albums for the given artist."""
-        artist_obj = await get_artist(prov_artist_id=prov_artist_id)
-        if "albums" in artist_obj and "results" in artist_obj["albums"]:
-            albums = []
-            for album_obj in artist_obj["albums"]["results"]:
-                if "artists" not in album_obj:
-                    album_obj["artists"] = [
-                        {"id": artist_obj["channelId"], "name": artist_obj["name"]}
-                    ]
-                albums.append(await self._parse_album(album_obj, album_obj["browseId"]))
-            return albums
-        return []
+    # async def get_artist_albums(self, prov_artist_id) -> list[Album]:
+    #     """Get a list of albums for the given artist."""
+    #     artist_obj = await get_artist(prov_artist_id=prov_artist_id)
+    #     if "albums" in artist_obj and "results" in artist_obj["albums"]:
+    #         albums = []
+    #         for album_obj in artist_obj["albums"]["results"]:
+    #             if "artists" not in album_obj:
+    #                 album_obj["artists"] = [
+    #                     {"id": artist_obj["channelId"], "name": artist_obj["name"]}
+    #                 ]
+    #             albums.append(await self._parse_album(album_obj, album_obj["browseId"]))
+    #         return albums
+    #     return []
 
-    async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
-        """Get a list of 25 most popular tracks for the given artist."""
-        artist_obj = await get_artist(prov_artist_id=prov_artist_id)
-        if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
-            prov_playlist_id = artist_obj["songs"]["browseId"]
-            playlist_tracks = await self.get_playlist_tracks(prov_playlist_id=prov_playlist_id)
-            return playlist_tracks[:25]
-        return []
+    # async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
+    #     """Get a list of 25 most popular tracks for the given artist."""
+    #     artist_obj = await get_artist(prov_artist_id=prov_artist_id)
+    #     if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
+    #         prov_playlist_id = artist_obj["songs"]["browseId"]
+    #         playlist_tracks = await self.get_playlist_tracks(prov_playlist_id=prov_playlist_id)
+    #         return playlist_tracks[:25]
+    #     return []
 
     async def library_add(self, prov_item_id, media_type: MediaType) -> None:
         """Add an item to the library."""
@@ -434,6 +446,23 @@ class YoutubeMusicProvider(MusicProvider):
         origin = headers.get("origin", headers.get("x-origin"))
         headers["Authorization"] = ytmusicapi.helpers.get_authorization(sapisid + " " + origin)
         self._headers = headers
+
+    async def login(self):
+        """Login to soundcloud."""
+
+        username = self.config.get_value(CONF_USERNAME)
+        client_id = self.config.get_value(CONF_CLIENT_ID)
+        auth_token = self.config.get_value(CONF_AUTHORIZATION)
+
+        self.sc = SoundCloud(client_id, auth_token)
+        assert sc.is_client_id_valid()
+        assert sc.is_auth_token_valid()
+        self.me = sc.get_user_by_username(username)
+        # assert me.permalink == username
+        print(self.me)
+        print(self.me.id)
+        print(type(self.me))
+        return None
 
     async def _initialize_context(self) -> dict[str, str]:
         """Return a dict to use as a context in requests."""
