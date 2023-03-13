@@ -419,7 +419,7 @@ class MusicAssistant:
                 continue
             default_conf = self.config.create_provider_config(prov_manifest.domain)
             # skip_reload to prevent race condition
-            self.config.set_provider_config(default_conf, skip_reload=True)
+            self.config.update_provider_config(default_conf, skip_reload=True)
 
         # load all configured (and enabled) providers
         for allow_depends_on in (False, True):
