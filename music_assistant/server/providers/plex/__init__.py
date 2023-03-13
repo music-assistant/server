@@ -218,7 +218,6 @@ class PlexProvider(MusicProvider):
         search_results = await asyncio.gather(*tasks)
 
         results = []
-        print("search!")
         for task_result in search_results:
             for plex_result in task_result:
                 results.append(await self._parse(plex_result))
