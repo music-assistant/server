@@ -61,7 +61,9 @@ class ConfigController:
         await self._load()
         self.initialized = True
         # create default server ID if needed (also used for encrypting passwords)
-        server_id: str = self.get(CONF_SERVER_ID, uuid4().hex, True)
+        self.set_default(CONF_SERVER_ID, uuid4().hex)
+        server_id: str = self.get(CONF_SERVER_ID)
+        assert server_id
         fernet_key = base64.urlsafe_b64encode(server_id.encode()[:32])
         self._fernet = Fernet(fernet_key)
         config_entries.ENCRYPT_CALLBACK = self.encrypt_string
@@ -77,7 +79,7 @@ class ConfigController:
         await self.async_save()
         LOGGER.debug("Stopped.")
 
-    def get(self, key: str, default: Any = None, setdefault: bool = False) -> Any:
+    def get(self, key: str, default: Any = None) -> Any:
         """Get value(s) for a specific key/path in persistent storage."""
         assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
@@ -87,18 +89,13 @@ class ConfigController:
         for index, subkey in enumerate(subkeys):
             if index == (len(subkeys) - 1):
                 value = parent.get(subkey, default)
-                if value is None and subkey not in parent and setdefault:
-                    parent[subkey] = default
-                    self.save()
                 if value is None:
                     # replace None with default
                     return default
                 return value
             elif subkey not in parent:
                 # requesting subkey from a non existing parent
-                if not setdefault:
-                    return default
-                parent.setdefault(subkey, {})
+                return default
             else:
                 parent = parent[subkey]
         return default
@@ -121,6 +118,13 @@ class ConfigController:
             else:
                 parent.setdefault(subkey, {})
                 parent = parent[subkey]
+
+    def set_default(self, key: str, default_value: Any) -> None:
+        """Set default value(s) for a specific key/path in persistent storage."""
+        assert self.initialized, "Not yet (async) initialized"
+        cur_value = self.get(key, "__MISSING__")
+        if cur_value == "__MISSING__":
+            self.set(key, default_value)
 
     def remove(
         self,
@@ -188,7 +192,7 @@ class ConfigController:
             return
 
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
-        self.set(conf_key, config.to_dict())
+        self.set(conf_key, config.to_raw())
         # (re)load provider
         if not skip_reload:
             updated_config = self.get_provider_config(config.instance_id)
@@ -328,7 +332,7 @@ class ConfigController:
             return
 
         conf_key = f"{CONF_PLAYERS}/{player_id}"
-        self.set(conf_key, config.to_dict())
+        self.set(conf_key, config.to_raw())
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,

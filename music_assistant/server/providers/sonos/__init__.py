@@ -401,7 +401,7 @@ class SonosPlayerProvider(PlayerProvider):
         """Handle discovered Sonos player."""
         player_id = soco_device.uid
 
-        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
+        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled")
         if not enabled:
             self.logger.debug("Ignoring disabled player: %s", player_id)
             return

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from types import NoneType
 from typing import Any
 
@@ -187,25 +187,22 @@ class Config(DataClassDictMixin):
         """Update Config with updated values."""
         changed_keys: set[str] = set()
 
-        # root values (enabled, name etc.)
-        for f in fields(ConfigUpdate):
-            new_val = getattr(update, f.name, None)
-            if new_val is not None:
-                cur_val = getattr(self, f.name, None)
-                if new_val == cur_val:
-                    continue
-                setattr(self, f.name, new_val)
-                changed_keys.add(f.name)
+        # root values (enabled, name)
+        for key in ("enabled", "name"):
+            cur_val = getattr(self, key, None)
+            new_val = getattr(update, key, None)
+            if new_val == cur_val:
+                continue
+            setattr(self, key, new_val)
+            changed_keys.add(key)
 
-            return
         # update values
         if update.values is not None:
-            for key, value in update.values.items():
-                new_val = value.value if isinstance(value, ConfigEntryValue) else value
-                cur_val = self.values[key]
+            for key, new_val in update.values.items():
+                cur_val = self.values[key].value
                 if cur_val == new_val:
                     continue
-                self.values[key] = new_val
+                self.values[key].value = new_val
                 changed_keys.add(f"values.{key}")
 
         return changed_keys
