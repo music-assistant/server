@@ -23,22 +23,10 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          python -m pip install --upgrade pip
-          pip install -e .[server] -r requirements-test.txt
+          python -m pip install --upgrade pip build setuptools
+          pip install . .[test]
       - name: Lint/test with pre-commit
         run: pre-commit run --all-files
-      - name: Flake8
-        run: flake8 scripts/ music_assistant/
-      - name: Black
-        run: black --check scripts/ music_assistant/
-      - name: isort
-        run: isort --check scripts/ music_assistant/
-      - name: pylint
-        run: pylint music_assistant/
-      # - name: mypy
-      #   run: mypy music_assistant/
 
   test:
     runs-on: ubuntu-latest
@@ -58,9 +46,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgirepository1.0-dev
-          python -m pip install --upgrade pip
-          pip install -e .[server] -r requirements-test.txt
+          python -m pip install --upgrade pip build setuptools
+          pip install . .[test]
       - name: Pytest
-        run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml tests/server/
+        run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml tests/

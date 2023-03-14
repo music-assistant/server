@@ -39,9 +39,9 @@ By far the most convenient way to run the Music Assistant Server is to install t
 An alternative way to run the Music Assistant server is by running the docker image:
 
 ```
-docker run --network host ghcr.io/music-assistant/server
+docker run --network host ghcr.io/music-assistant/server:2.0.0b4
 ```
-
+Replace the 2.0.0b4 tag with the correct version.
 You must run the docker container with host network mode and the data volume is `/data`.
 If you want access to your local music files from within MA, make sure to also mount that, e.g. /media.
 Note that accessing remote (SMB) shares can be done from within MA itself using the SMB File provider.
@@ -57,6 +57,11 @@ ____________
 - The server itself hosts a websocket API and a JSON RPC API which is more or less compatible with LMS. The Music Assistant fronted communicates with the server using the websockets API.
 
 - The webinterface of the server can be reached on the tcp port 8095 by default (unless that port is occupied, then it picks the next available port). See the server's logging to confirm the port.
+
+
+## Support, documentation
+Because this project originated out of a Home Assistant integration, we maintain all our documentatation and enduser support in a separate reposity:
+https://github.com/music-assistant/hass-music-assistant
 
 
 [repository-badge]: https://img.shields.io/badge/Add%20repository%20to%20my-Home%20Assistant-41BDF5?logo=home-assistant&style=for-the-badge

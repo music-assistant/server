@@ -593,7 +593,7 @@ async def get_file_stream(
             yield data
 
 
-async def check_audio_support(try_install: bool = False) -> tuple[bool, bool]:
+async def check_audio_support() -> tuple[bool, bool, str]:
     """Check if ffmpeg is present (with/without libsoxr support)."""
     cache_key = "audio_support_cache"
     if cache := globals().get(cache_key):
@@ -602,18 +602,11 @@ async def check_audio_support(try_install: bool = False) -> tuple[bool, bool]:
     # check for FFmpeg presence
     returncode, output = await check_output("ffmpeg -version")
     ffmpeg_present = returncode == 0 and "FFmpeg" in output.decode()
-    if not ffmpeg_present and try_install:
-        # try a few common ways to install ffmpeg
-        # this all assumes we have enough rights and running on a linux based platform (or docker)
-        await check_output("apt-get update && apt-get install ffmpeg")
-        await check_output("apk add ffmpeg")
-        # test again
-        returncode, output = await check_output("ffmpeg -version")
-        ffmpeg_present = returncode == 0 and "FFmpeg" in output.decode()
 
     # use globals as in-memory cache
+    version = output.decode().split("ffmpeg version ")[1].split(" ")[0].split("-")[0]
     libsoxr_support = "enable-libsoxr" in output.decode()
-    result = (ffmpeg_present, libsoxr_support)
+    result = (ffmpeg_present, libsoxr_support, version)
     globals()[cache_key] = result
     return result
 
@@ -732,13 +725,16 @@ async def _get_ffmpeg_args(
     """Collect all args to send to the ffmpeg process."""
     input_format = streamdetails.content_type
 
-    ffmpeg_present, libsoxr_support = await check_audio_support()
+    ffmpeg_present, libsoxr_support, version = await check_audio_support()
 
     if not ffmpeg_present:
         raise AudioError(
             "FFmpeg binary is missing from system."
             "Please install ffmpeg on your OS to enable playback.",
         )
+
+    major_version = int(version.split(".")[0])
+
     # generic args
     generic_args = [
         "ffmpeg",
@@ -758,13 +754,18 @@ async def _get_ffmpeg_args(
                 "1",
                 "-reconnect_streamed",
                 "1",
-                "-reconnect_on_network_error",
-                "1",
-                "-reconnect_on_http_error",
-                "5xx",
                 "-reconnect_delay_max",
                 "10",
             ]
+            if major_version > 4:
+                # these options are only supported in ffmpeg > 5
+                input_args += [
+                    "-reconnect_on_network_error",
+                    "1",
+                    "-reconnect_on_http_error",
+                    "5xx",
+                ]
+
         if seek_position:
             input_args += ["-ss", str(seek_position)]
         input_args += ["-i", streamdetails.direct]
