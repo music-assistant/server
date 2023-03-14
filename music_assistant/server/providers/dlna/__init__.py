@@ -390,7 +390,7 @@ class DLNAPlayerProvider(PlayerProvider):
 
                 # ignore disabled players
                 conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
-                enabled = self.mass.config.get(conf_key)
+                enabled = self.mass.config.get(conf_key, True)
                 if not enabled:
                     self.logger.debug("Ignoring disabled player: %s", udn)
                     return
