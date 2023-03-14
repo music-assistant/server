@@ -602,7 +602,7 @@ class SoundcloudMusicProvider(MusicProvider):
         #     playlist.metadata.images = await self._parse_thumbnails(
         #         playlist_obj["playlist"]["artwork_url"]
         #     )
-        if not playlist_obj["playlist"]:
+        if not "playlist" in playlist_obj:
             playlist = Playlist(
                 item_id=playlist_obj["id"],
                 provider=self.domain,
