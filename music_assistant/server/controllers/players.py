@@ -529,8 +529,8 @@ class PlayerController:
                 # - every 30 seconds if the player is powered
                 # - every 10 seconds if the player is playing
                 if (
-                    (player.powered and count % 30 == 0)
-                    or (player_playing and count % 10 == 0)
+                    (player.available and player.powered and count % 30 == 0)
+                    or (player.available and player_playing and count % 10 == 0)
                     or count == 360
                 ):
                     if player_prov := self.get_player_provider(player_id):
@@ -538,6 +538,8 @@ class PlayerController:
                             await player_prov.poll_player(player_id)
                         except PlayerUnavailableError:
                             player.available = False
+                            player.state = PlayerState.IDLE
+                            player.powered = False
                             self.update(player_id)
                         except Exception as err:  # pylint: disable=broad-except
                             LOGGER.warning(

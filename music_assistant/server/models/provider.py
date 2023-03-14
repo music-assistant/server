@@ -18,8 +18,6 @@ if TYPE_CHECKING:
 class Provider:
     """Base representation of a Provider implementation within Music Assistant."""
 
-    _attr_supported_features: tuple[ProviderFeature, ...] = tuple()
-
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
@@ -34,8 +32,8 @@ class Provider:
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
-        """Return the features supported by this MusicProvider."""
-        return self._attr_supported_features
+        """Return the features supported by this Provider."""
+        return tuple()
 
     async def setup(self) -> None:
         """Handle async initialization of the provider.

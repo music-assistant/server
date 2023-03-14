@@ -6,7 +6,7 @@ import contextlib
 from random import choice, random
 from typing import TYPE_CHECKING
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
@@ -184,7 +184,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 self.db_table,
                 {
                     **item.to_db_row(),
-                    "artists": json_dumps(album_artists) or None,
+                    "artists": serialize_to_json(album_artists) or None,
                     "sort_artist": sort_artist,
                 },
             )
@@ -235,9 +235,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 "year": item.year or cur_item.year,
                 "upc": item.upc or cur_item.upc,
                 "album_type": album_type,
-                "artists": json_dumps(album_artists) or None,
-                "metadata": json_dumps(metadata),
-                "provider_mappings": json_dumps(provider_mappings),
+                "artists": serialize_to_json(album_artists) or None,
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
                 "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
             },
         )

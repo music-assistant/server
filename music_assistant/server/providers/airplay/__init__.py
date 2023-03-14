@@ -105,11 +105,11 @@ class AirplayProvider(PlayerProvider):
         base_entries = slimproto_prov.get_player_config_entries(player_id)
         return tuple(base_entries + PLAYER_CONFIG_ENTRIES)
 
-    def on_player_config_changed(self, config: PlayerConfig) -> None:
+    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         # forward to slimproto too
         slimproto_prov = self.mass.get_provider("slimproto")
-        slimproto_prov.on_player_config_changed(config)
+        slimproto_prov.on_player_config_changed(config, changed_keys)
 
         async def update_config():
             # stop bridge (it will be auto restarted)
@@ -350,6 +350,7 @@ class AirplayProvider(PlayerProvider):
         common_elem.find("codecs").text = "pcm"
         common_elem.find("sample_rate").text = "44100"
         common_elem.find("resample").text = "0"
+        common_elem.find("player_volume").text = "20"
         # get/set all device configs
         for device_elem in xml_root.findall("device"):
             player_id = device_elem.find("mac").text

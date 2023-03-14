@@ -10,18 +10,24 @@ from uuid import uuid4
 
 import aiofiles
 from aiofiles.os import wrap
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
+from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
     DEFAULT_PLAYER_CONFIG_ENTRIES,
     ConfigEntryValue,
+    ConfigUpdate,
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant.common.models.enums import ConfigEntryType, EventType, ProviderType
-from music_assistant.common.models.errors import PlayerUnavailableError, ProviderUnavailableError
-from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID
+from music_assistant.common.models.enums import EventType, ProviderType
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    PlayerUnavailableError,
+    ProviderUnavailableError,
+)
+from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID, ENCRYPT_SUFFIX
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -29,8 +35,8 @@ if TYPE_CHECKING:
     from music_assistant.server.server import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_SAVE_DELAY = 30
-ENCRYPT_SUFFIX = "_encrypted_"
+DEFAULT_SAVE_DELAY = 5
+
 
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
@@ -55,9 +61,14 @@ class ConfigController:
         await self._load()
         self.initialized = True
         # create default server ID if needed (also used for encrypting passwords)
-        server_id: str = self.get(CONF_SERVER_ID, uuid4().hex, True)
+        self.set_default(CONF_SERVER_ID, uuid4().hex)
+        server_id: str = self.get(CONF_SERVER_ID)
+        assert server_id
         fernet_key = base64.urlsafe_b64encode(server_id.encode()[:32])
         self._fernet = Fernet(fernet_key)
+        config_entries.ENCRYPT_CALLBACK = self.encrypt_string
+        config_entries.DECRYPT_CALLBACK = self.decrypt_string
+
         LOGGER.debug("Started.")
 
     async def close(self) -> None:
@@ -68,7 +79,7 @@ class ConfigController:
         await self.async_save()
         LOGGER.debug("Stopped.")
 
-    def get(self, key: str, default: Any = None, setdefault: bool = False) -> Any:
+    def get(self, key: str, default: Any = None) -> Any:
         """Get value(s) for a specific key/path in persistent storage."""
         assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
@@ -78,18 +89,13 @@ class ConfigController:
         for index, subkey in enumerate(subkeys):
             if index == (len(subkeys) - 1):
                 value = parent.get(subkey, default)
-                if value is None and subkey not in parent and setdefault:
-                    parent[subkey] = default
-                    self.save()
                 if value is None:
                     # replace None with default
                     return default
                 return value
             elif subkey not in parent:
                 # requesting subkey from a non existing parent
-                if not setdefault:
-                    return default
-                parent.setdefault(subkey, {})
+                return default
             else:
                 parent = parent[subkey]
         return default
@@ -112,6 +118,13 @@ class ConfigController:
             else:
                 parent.setdefault(subkey, {})
                 parent = parent[subkey]
+
+    def set_default(self, key: str, default_value: Any) -> None:
+        """Set default value(s) for a specific key/path in persistent storage."""
+        assert self.initialized, "Not yet (async) initialized"
+        cur_value = self.get(key, "__MISSING__")
+        if cur_value == "__MISSING__":
+            self.set(key, default_value)
 
     def remove(
         self,
@@ -145,11 +158,12 @@ class ConfigController:
             ProviderConfig.parse(
                 prov_entries[prov_conf["domain"]],
                 prov_conf,
-                decrypt_callback=self.decrypt_password,
             )
             for prov_conf in raw_values.values()
             if (provider_type is None or prov_conf["type"] == provider_type)
             and (provider_domain is None or prov_conf["domain"] == provider_domain)
+            # guard for deleted providers
+            and prov_conf["domain"] in prov_entries
         ]
 
     @api_command("config/providers/get")
@@ -159,32 +173,23 @@ class ConfigController:
             for prov in self.mass.get_available_providers():
                 if prov.domain != raw_conf["domain"]:
                     continue
-                return ProviderConfig.parse(
-                    prov.config_entries,
-                    raw_conf,
-                    decrypt_callback=self.decrypt_password,
-                )
+                return ProviderConfig.parse(prov.config_entries, raw_conf, allow_none=True)
         raise KeyError(f"No config found for provider id {instance_id}")
 
-    @api_command("config/providers/set")
-    def set_provider_config(self, config: ProviderConfig, skip_reload: bool = False) -> None:
-        """Create or update ProviderConfig."""
-        # encrypt any password values
-        for val in config.values.values():
-            if val.type == ConfigEntryType.PASSWORD:
-                val.value = self.encrypt_password(val.value)
+    @api_command("config/providers/update")
+    def update_provider_config(self, instance_id: str, update: ConfigUpdate) -> None:
+        """Update ProviderConfig."""
+        config = self.get_provider_config(instance_id)
+        changed_keys = config.update(update)
 
-        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
-        existing = self.get(conf_key)
-        config_dict = config.to_raw()
-        if existing == config_dict:
+        if not changed_keys:
             # no changes
             return
-        self.set(conf_key, config_dict)
-        # (re)load provider
-        if not skip_reload:
-            updated_config = self.get_provider_config(config.instance_id)
-            self.mass.create_task(self.mass.load_provider(updated_config))
+
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        self.set(conf_key, config.to_raw())
+        updated_config = self.get_provider_config(config.instance_id)
+        self.mass.create_task(self.mass.load_provider(updated_config))
 
     @api_command("config/providers/create")
     def create_provider_config(self, provider_domain: str) -> ProviderConfig:
@@ -203,29 +208,38 @@ class ConfigController:
             raise KeyError(f"Unknown provider domain: {provider_domain}")
 
         # determine instance id based on previous configs
-        existing = self.get_provider_configs(provider_domain=provider_domain)
+        existing = {
+            x.instance_id for x in self.get_provider_configs(provider_domain=provider_domain)
+        }
+
         if existing and not manifest.multi_instance:
             raise ValueError(f"Provider {manifest.name} does not support multiple instances")
 
-        count = len(existing)
-        if count == 0:
+        if len(existing) == 0:
             instance_id = provider_domain
             name = manifest.name
         else:
-            instance_id = f"{provider_domain}{count+1}"
-            name = f"{manifest.name} {count+1}"
+            instance_id = f"{provider_domain}{len(existing)+1}"
+            name = f"{manifest.name} {len(existing)+1}"
 
-        return ProviderConfig.parse(
+        # all checks passed, return a default config
+        default_config = ProviderConfig.parse(
             prov.config_entries,
             {
                 "type": manifest.type.value,
                 "domain": manifest.domain,
                 "instance_id": instance_id,
                 "name": name,
-                "values": dict(),
+                "values": {},
             },
             allow_none=True,
         )
+
+        # config provided and checks passed, storeconfig
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        self.set(conf_key, default_config.to_raw())
+
+        return default_config
 
     @api_command("config/providers/remove")
     async def remove_provider_config(self, instance_id: str) -> None:
@@ -234,11 +248,11 @@ class ConfigController:
         existing = self.get(conf_key)
         if not existing:
             raise KeyError(f"Provider {instance_id} does not exist")
+        self.remove(conf_key)
         await self.mass.unload_provider(instance_id)
         if existing["type"] == "music":
             # cleanup entries in library
             await self.mass.music.cleanup_provider(instance_id)
-        self.remove(conf_key)
 
     @api_command("config/players")
     def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
@@ -309,16 +323,18 @@ class ConfigController:
                 return ConfigEntryValue.parse(entry, conf["values"].get(key))
         raise KeyError(f"ConfigEntry {key} is invalid")
 
-    @api_command("config/players/set")
-    def set_player_config(self, config: PlayerConfig) -> None:
-        """Create or update PlayerConfig."""
-        conf_key = f"{CONF_PLAYERS}/{config.player_id}"
-        existing = self.get(conf_key)
-        config_dict = config.to_raw()
-        if existing == config_dict:
+    @api_command("config/players/update")
+    def update_player_config(self, player_id: str, update: ConfigUpdate) -> None:
+        """Update PlayerConfig."""
+        config = self.get_player_config(player_id)
+        changed_keys = config.update(update)
+
+        if not changed_keys:
             # no changes
             return
-        self.set(conf_key, config_dict)
+
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        self.set(conf_key, config.to_raw())
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
@@ -330,6 +346,10 @@ class ConfigController:
             player = self.mass.players.get(config.player_id)
             player.enabled = config.enabled
             self.mass.players.update(config.player_id)
+            # copy playername to find back the playername if its disabled
+            if not config.enabled and not config.name:
+                config.name = player.display_name
+                self.set(conf_key, config.to_raw())
         except PlayerUnavailableError:
             pass
 
@@ -337,7 +357,7 @@ class ConfigController:
         try:
             if provider := self.mass.get_provider(config.provider):
                 assert isinstance(provider, PlayerProvider)
-                provider.on_player_config_changed(config)
+                provider.on_player_config_changed(config, changed_keys)
         except PlayerUnavailableError:
             pass
 
@@ -403,18 +423,21 @@ class ConfigController:
             await rename(self.filename, filename_backup)
 
         async with aiofiles.open(self.filename, "w", encoding="utf-8") as _file:
-            await _file.write(json_dumps(self._data))
+            await _file.write(json_dumps(self._data, indent=True))
         LOGGER.debug("Saved data to persistent storage")
 
-    def encrypt_password(self, str_value: str) -> str:
+    def encrypt_string(self, str_value: str) -> str:
         """Encrypt a (password)string with Fernet."""
         if str_value.startswith(ENCRYPT_SUFFIX):
             return str_value
         return ENCRYPT_SUFFIX + self._fernet.encrypt(str_value.encode()).decode()
 
-    def decrypt_password(self, encrypted_str: str) -> str:
+    def decrypt_string(self, encrypted_str: str) -> str:
         """Decrypt a (password)string with Fernet."""
         if not encrypted_str.startswith(ENCRYPT_SUFFIX):
             return encrypted_str
         encrypted_str = encrypted_str.replace(ENCRYPT_SUFFIX, "")
-        return self._fernet.decrypt(encrypted_str.encode()).decode()
+        try:
+            return self._fernet.decrypt(encrypted_str.encode()).decode()
+        except InvalidToken as err:
+            raise InvalidDataError("Password decryption failed") from err

@@ -8,6 +8,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from aiohttp import ClientSession, TCPConnector, web
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
@@ -15,11 +16,7 @@ from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroc
 from music_assistant.common.helpers.util import get_ip, get_ip_pton, select_free_port
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
-from music_assistant.common.models.errors import (
-    MusicAssistantError,
-    ProviderUnavailableError,
-    SetupFailedError,
-)
+from music_assistant.common.models.errors import ProviderUnavailableError, SetupFailedError
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import CONF_SERVER_ID, CONF_WEB_IP, ROOT_LOGGER_NAME
@@ -79,7 +76,7 @@ class MusicAssistant:
         self.music = MusicController(self)
         self.players = PlayerController(self)
         self.streams = StreamsController(self)
-        self._tracked_tasks: list[asyncio.Task] = []
+        self._tracked_tasks: dict[str, asyncio.Task] = {}
         self.closing = False
         # register all api commands (methods with decorator)
         self._register_api_commands()
@@ -101,7 +98,8 @@ class MusicAssistant:
         # allow overriding of the base_ip if autodetect failed
         self.base_ip = self.config.get(CONF_WEB_IP, self.base_ip)
         LOGGER.info(
-            "Starting Music Assistant Server on port: %s" " - autodetected IP-address: %s",
+            "Starting Music Assistant Server (%s) on port: %s - autodetected IP-address: %s",
+            self.server_id,
             self.port,
             self.base_ip,
         )
@@ -123,7 +121,7 @@ class MusicAssistant:
         host = None
         self._web_tcp = web.TCPSite(self._web_apprunner, host=host, port=self.port)
         await self._web_tcp.start()
-        await self._setup_discovery()
+        self._setup_discovery()
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -131,7 +129,7 @@ class MusicAssistant:
         self.signal_event(EventType.SHUTDOWN)
         self.closing = True
         # cancel all running tasks
-        for task in self._tracked_tasks:
+        for task in self._tracked_tasks.values():
             task.cancel()
         # stop/clean streams controller
         await self.streams.close()
@@ -248,12 +246,16 @@ class MusicAssistant:
         self,
         target: Coroutine | Awaitable | Callable | asyncio.Future,
         *args: Any,
+        task_id: str | None = None,
         **kwargs: Any,
     ) -> asyncio.Task | asyncio.Future:
         """Create Task on (main) event loop from Coroutine(function).
 
         Tasks created by this helper will be properly cancelled on stop.
         """
+        if existing := self._tracked_tasks.get(task_id):
+            # prevent duplicate tasks if task_id is given and already present
+            return existing
         if asyncio.iscoroutinefunction(target):
             task = self.loop.create_task(target(*args, **kwargs))
         elif isinstance(target, asyncio.Future):
@@ -264,20 +266,22 @@ class MusicAssistant:
             # assume normal callable (non coroutine or awaitable)
             task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))
 
-        def task_done_callback(*args, **kwargs):  # noqa: ARG001
-            self._tracked_tasks.remove(task)
-            if LOGGER.isEnabledFor(logging.DEBUG):
-                # print unhandled exceptions
-                task_name = getattr(task, "name", "")
-                if not task.cancelled() and task.exception():
-                    task_name = task.get_name() if hasattr(task, "get_name") else task
-                    LOGGER.exception(
-                        "Exception in task %s",
-                        task_name,
-                        exc_info=task.exception(),
-                    )
+        def task_done_callback(_task: asyncio.Future | asyncio.Task):  # noqa: ARG001
+            _task_id = getattr(task, "task_id")
+            self._tracked_tasks.pop(_task_id)
+            # print unhandled exceptions
+            if LOGGER.isEnabledFor(logging.DEBUG) and not _task.cancelled() and _task.exception():
+                task_name = _task.get_name() if hasattr(_task, "get_name") else _task
+                LOGGER.exception(
+                    "Exception in task %s",
+                    task_name,
+                    exc_info=task.exception(),
+                )
 
-        self._tracked_tasks.append(task)
+        if task_id is None:
+            task_id = uuid4().hex
+        setattr(task, "task_id", task_id)
+        self._tracked_tasks[task_id] = task
         task.add_done_callback(task_done_callback)
         return task
 
@@ -341,7 +345,7 @@ class MusicAssistant:
             self._providers[provider.instance_id] = provider
             try:
                 await provider.setup()
-            except MusicAssistantError as err:
+            except Exception as err:
                 provider.last_error = str(err)
                 provider.available = False
                 raise err
@@ -413,9 +417,7 @@ class MusicAssistant:
             existing = any(x for x in provider_configs if x.domain == prov_manifest.domain)
             if existing:
                 continue
-            default_conf = self.config.create_provider_config(prov_manifest.domain)
-            # skip_reload to prevent race condition
-            self.config.set_provider_config(default_conf, skip_reload=True)
+            self.config.create_provider_config(prov_manifest.domain)
 
         # load all configured (and enabled) providers
         for allow_depends_on in (False, True):
@@ -454,35 +456,31 @@ class MusicAssistant:
                         exc_info=exc,
                     )
 
-    async def _setup_discovery(self) -> None:
+    def _setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
+        zeroconf_type = "_music-assistant._tcp.local."
+        server_id = self.server_id
 
-        def setup_discovery():
-            zeroconf_type = "_music-assistant._tcp.local."
-            server_id = "mass"  # TODO ?
-
-            info = ServiceInfo(
-                zeroconf_type,
-                name=f"{server_id}.{zeroconf_type}",
-                addresses=[get_ip_pton()],
-                port=self.port,
-                properties={},
-                server=f"mass_{server_id}.local.",
+        info = ServiceInfo(
+            zeroconf_type,
+            name=f"{server_id}.{zeroconf_type}",
+            addresses=[get_ip_pton()],
+            port=self.port,
+            properties={},
+            server=f"mass_{server_id}.local.",
+        )
+        LOGGER.debug("Starting Zeroconf broadcast...")
+        try:
+            existing = getattr(self, "mass_zc_service_set", None)
+            if existing:
+                self.zeroconf.update_service(info)
+            else:
+                self.zeroconf.register_service(info)
+            setattr(self, "mass_zc_service_set", True)
+        except NonUniqueNameException:
+            LOGGER.error(
+                "Music Assistant instance with identical name present in the local network!"
             )
-            LOGGER.debug("Starting Zeroconf broadcast...")
-            try:
-                existing = getattr(self, "mass_zc_service_set", None)
-                if existing:
-                    self.zeroconf.update_service(info)
-                else:
-                    self.zeroconf.register_service(info)
-                setattr(self, "mass_zc_service_set", True)
-            except NonUniqueNameException:
-                LOGGER.error(
-                    "Music Assistant instance with identical name present in the local network!"
-                )
-
-        await asyncio.to_thread(setup_discovery)
 
     async def __aenter__(self) -> MusicAssistant:
         """Return Context manager."""

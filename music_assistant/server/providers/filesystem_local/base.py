@@ -43,6 +43,17 @@ PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
 
+SUPPORTED_FEATURES = (
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+)
+
 
 @dataclass
 class FileSystemItem:
@@ -85,16 +96,10 @@ class FileSystemProviderBase(MusicProvider):
     Supports having URI's from streaming providers within m3u playlist.
     """
 
-    _attr_supported_features = (
-        ProviderFeature.LIBRARY_ARTISTS,
-        ProviderFeature.LIBRARY_ALBUMS,
-        ProviderFeature.LIBRARY_TRACKS,
-        ProviderFeature.LIBRARY_PLAYLISTS,
-        ProviderFeature.PLAYLIST_TRACKS_EDIT,
-        ProviderFeature.PLAYLIST_CREATE,
-        ProviderFeature.BROWSE,
-        ProviderFeature.SEARCH,
-    )
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
 
     @abstractmethod
     async def setup(self) -> None:

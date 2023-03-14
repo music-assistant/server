@@ -414,11 +414,11 @@ class StreamsController:
                     await resp.write(chunk)
                     bytes_streamed += len(chunk)
 
-                    # do not allow the player to prebuffer more than 10 seconds
+                    # do not allow the player to prebuffer more than 30 seconds
                     seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
                     if (
-                        seconds_streamed > 10
-                        and (seconds_streamed - player.corrected_elapsed_time) > 10
+                        seconds_streamed > 30
+                        and (seconds_streamed - player.corrected_elapsed_time) > 30
                     ):
                         await asyncio.sleep(1)
 

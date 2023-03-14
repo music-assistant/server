@@ -45,14 +45,23 @@ from .helpers import (
     search,
 )
 
-# if TYPE_CHECKING:
-#     from collections.abc import AsyncGenerator
-
 CONF_COOKIE = "cookie"
 
 YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
+
+SUPPORTED_FEATURES = (
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_TRACKS,
+)
 
 # TODO: fix disabled tests
 # ruff: noqa: PLW2901, RET504
@@ -69,23 +78,17 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def setup(self) -> None:
         """Set up the YTMusic provider."""
-        self._attr_supported_features = (
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-            ProviderFeature.SIMILAR_TRACKS,
-        )
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_COOKIE):
             raise LoginFailed("Invalid login credentials")
         await self._initialize_headers(cookie=self.config.get_value(CONF_COOKIE))
         await self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
         self._signature_timestamp = await self._get_signature_timestamp()
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5

@@ -24,19 +24,26 @@ from music_assistant.server.helpers.playlists import fetch_playlist
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
+SUPPORTED_FEATURES = (
+    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.BROWSE,
+)
+
 
 class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
     _throttler: Throttler
 
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
+
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=1)
-        self._attr_supported_features = (
-            ProviderFeature.LIBRARY_RADIOS,
-            ProviderFeature.BROWSE,
-        )
+
         if not self.config.get_value(CONF_USERNAME):
             raise LoginFailed("Username is invalid")
         if "@" in self.config.get_value(CONF_USERNAME):

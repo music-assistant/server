@@ -5,7 +5,7 @@ import random
 from time import time
 from typing import Any
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import (
@@ -228,8 +228,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "sort_name": item.sort_name,
                 "owner": item.owner,
                 "is_editable": item.is_editable,
-                "metadata": json_dumps(metadata),
-                "provider_mappings": json_dumps(provider_mappings),
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
             },
         )
         # update/set provider_mappings table

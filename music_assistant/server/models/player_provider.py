@@ -26,7 +26,7 @@ class PlayerProvider(Provider):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return tuple()
 
-    def on_player_config_changed(self, config: PlayerConfig) -> None:
+    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
 
     def on_player_config_removed(self, player_id: str) -> None:
