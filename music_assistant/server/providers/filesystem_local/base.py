@@ -343,7 +343,7 @@ class FileSystemProviderBase(MusicProvider):
 
         # parse tags
         input_file = file_item.local_path or self.read_file_content(file_item.absolute_path)
-        tags = await parse_tags(input_file)
+        tags = await parse_tags(input_file, file_item.file_size)
 
         name, version = parse_title_and_version(tags.title)
         track = Track(

@@ -65,7 +65,7 @@
       "key": "is_direct_tcp",
       "type": "boolean",
       "label": "Use Direct TCP",
-      "default_value": false,
+      "default_value": true,
       "description": "Controls whether the NetBIOS over TCP/IP (is_direct_tcp=False) or the newer Direct hosting of SMB over TCP/IP (is_direct_tcp=True) will be used for the communication. The default parameter is False which will use NetBIOS over TCP/IP for wider compatibility (TCP port: 139).",
       "advanced": true,
       "required": false
