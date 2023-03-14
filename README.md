@@ -59,5 +59,10 @@ ____________
 - The webinterface of the server can be reached on the tcp port 8095 by default (unless that port is occupied, then it picks the next available port). See the server's logging to confirm the port.
 
 
+## Support, documentation
+Because this project originated out of a Home Assistant integration, we maintain all our documentatation and enduser support in a separate reposity:
+https://github.com/music-assistant/hass-music-assistant
+
+
 [repository-badge]: https://img.shields.io/badge/Add%20repository%20to%20my-Home%20Assistant-41BDF5?logo=home-assistant&style=for-the-badge
 [repository-url]: https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmusic-assistant%2Fhome-assistant-addon
