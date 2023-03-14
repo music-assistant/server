@@ -609,7 +609,7 @@ def dict_to_strings(source: dict) -> list[str]:
     result: list[str] = []
 
     for key, value in source.items():
-        if value is None or value == "":
+        if value in (None, ""):
             continue
         if isinstance(value, list):
             for subval in value:

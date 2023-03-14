@@ -103,9 +103,7 @@ class DatabaseConnection:
         sql_query += f' VALUES ({",".join((f":{x}" for x in keys))})'
         await self.execute(sql_query, values)
         # return inserted/replaced item
-        lookup_vals = {
-            key: value for key, value in values.items() if value is not None and value != ""
-        }
+        lookup_vals = {key: value for key, value in values.items() if value not in (None, "")}
         return await self.get_row(table, lookup_vals)
 
     async def insert_or_replace(self, table: str, values: dict[str, Any]) -> Mapping:
