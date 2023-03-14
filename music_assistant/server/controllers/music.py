@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature, ProviderType
-from music_assistant.common.models.errors import MusicAssistantError
+from music_assistant.common.models.errors import MusicAssistantError, ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     BrowseFolder,
     MediaItem,
@@ -154,7 +154,10 @@ class MusicController:
         :param limit: number of items to return in the search (per type).
         """
         assert provider_domain or provider_instance, "Provider needs to be supplied"
-        prov = self.mass.get_provider(provider_instance or provider_domain)
+        try:
+            prov = self.mass.get_provider(provider_instance or provider_domain)
+        except ProviderUnavailableError:
+            return []
         if ProviderFeature.SEARCH not in prov.supported_features:
             return []
 

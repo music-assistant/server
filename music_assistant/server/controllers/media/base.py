@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     MediaItemType,
     PagedItems,
@@ -193,8 +193,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 for db_row in await self.mass.music.database.search(self.db_table, search_query)
             ]
 
-        prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov or ProviderFeature.SEARCH not in prov.supported_features:
+        try:
+            prov = self.mass.get_provider(provider_instance or provider_domain)
+        except ProviderUnavailableError:
+            return []
+        if ProviderFeature.SEARCH not in prov.supported_features:
             return []
         if not prov.library_supported(self.media_type):
             # assume library supported also means that this mediatype is supported
@@ -476,7 +479,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Return a dynamic list of tracks based on the given item."""
         ref_item = await self.get(item_id, provider_domain, provider_instance)
         for prov_mapping in ref_item.provider_mappings:
-            prov = self.mass.get_provider(prov_mapping.provider_instance)
+            try:
+                prov = self.mass.get_provider(prov_mapping.provider_instance)
+            except ProviderUnavailableError:
+                continue
             if not prov.available:
                 continue
             if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
