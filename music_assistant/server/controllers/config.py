@@ -192,7 +192,9 @@ class ConfigController:
         self.mass.create_task(self.mass.load_provider(updated_config))
 
     @api_command("config/providers/create")
-    def create_provider_config(self, provider_domain: str) -> ProviderConfig:
+    def create_provider_config(
+        self, provider_domain: str, default_enabled: bool = False
+    ) -> ProviderConfig:
         """Create default/empty ProviderConfig.
 
         This is intended to be used as helper method to add a new provider,
@@ -230,6 +232,7 @@ class ConfigController:
                 "domain": manifest.domain,
                 "instance_id": instance_id,
                 "name": name,
+                "enabled": default_enabled,
                 "values": {},
             },
         )
