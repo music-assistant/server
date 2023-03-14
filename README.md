@@ -39,9 +39,9 @@ By far the most convenient way to run the Music Assistant Server is to install t
 An alternative way to run the Music Assistant server is by running the docker image:
 
 ```
-docker run --network host ghcr.io/music-assistant/server
+docker run --network host ghcr.io/music-assistant/server:2.0.0b4
 ```
-
+Replace the 2.0.0b4 tag with the correct version.
 You must run the docker container with host network mode and the data volume is `/data`.
 If you want access to your local music files from within MA, make sure to also mount that, e.g. /media.
 Note that accessing remote (SMB) shares can be done from within MA itself using the SMB File provider.
