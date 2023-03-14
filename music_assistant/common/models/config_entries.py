@@ -202,7 +202,7 @@ class Config(DataClassDictMixin):
                 if cur_val == new_val:
                     continue
                 self.values[key].value = new_val
-                changed_keys.add(f"values.{key}")
+                changed_keys.add(f"values/{key}")
 
         return changed_keys
 
