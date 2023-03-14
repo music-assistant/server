@@ -173,7 +173,7 @@ class ConfigController:
             for prov in self.mass.get_available_providers():
                 if prov.domain != raw_conf["domain"]:
                     continue
-                return ProviderConfig.parse(prov.config_entries, raw_conf, allow_none=True)
+                return ProviderConfig.parse(prov.config_entries, raw_conf)
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/update")
@@ -232,7 +232,6 @@ class ConfigController:
                 "name": name,
                 "values": {},
             },
-            allow_none=True,
         )
 
         # config provided and checks passed, storeconfig
