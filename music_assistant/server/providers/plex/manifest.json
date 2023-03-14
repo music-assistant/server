@@ -17,7 +17,7 @@
     },
     {
       "key": "token",
-      "type": "password",
+      "type": "secure_string",
       "label": "Token"
     }
   ],

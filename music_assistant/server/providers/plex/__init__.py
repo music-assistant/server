@@ -15,28 +15,26 @@ from music_assistant.common.models.media_items import StreamDetails, Track, Play
 from music_assistant.server.models.music_provider import MusicProvider
 from plexapi.server import PlexServer
 
-
 AUTH_TOKEN = "token"
 SERVER_NAME = "server"
 LIBRARY_NAME = "library"
 
+SUPPORTED_FEATURES = (
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+)
+
 
 class PlexProvider(MusicProvider):
-
     _plex_server: PlexServer = None
     _plex_library: PlexMusicSection = None
 
     async def setup(self) -> None:
-        self._attr_supported_features = (
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
-        )
-
         if not self.config.get_value(AUTH_TOKEN):
             raise LoginFailed("Invalid login credentials")
 
@@ -45,7 +43,12 @@ class PlexProvider(MusicProvider):
             return plex_account.resource(self.config.get_value(SERVER_NAME)).connect()
 
         self._plex_server = await self._run_async(connect)
-        self._plex_library = await self._run_async(self._plex_server.library.section, self.config.get_value(LIBRARY_NAME))
+        self._plex_library = await self._run_async(self._plex_server.library.section,
+                                                   self.config.get_value(LIBRARY_NAME))
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        return SUPPORTED_FEATURES
 
     @classmethod
     async def _run_async(cls, call: Callable, *args, **kwargs):
@@ -170,7 +173,7 @@ class PlexProvider(MusicProvider):
         if plex_album := await self._run_async(plex_track.album):
             track.album = await self._parse_album(plex_album)
         if plex_track.duration:
-            track.duration = int(plex_track.duration/1000)
+            track.duration = int(plex_track.duration / 1000)
         if plex_track.trackNumber:
             track.track_number = plex_track.trackNumber
         if plex_track.parentIndex:
@@ -195,10 +198,10 @@ class PlexProvider(MusicProvider):
         return track
 
     async def search(
-        self,
-        search_query: str,
-        media_types: list[MediaType] | None = None,
-        limit: int = 5,
+            self,
+            search_query: str,
+            media_types: list[MediaType] | None = None,
+            limit: int = 5,
     ) -> list[MediaItemType]:
         if not media_types:
             media_types = [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST]
