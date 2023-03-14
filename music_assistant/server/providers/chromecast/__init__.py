@@ -473,13 +473,15 @@ class ChromecastProvider(PlayerProvider):
     def _create_queue_item(queue_item: QueueItem, stream_url: str):
         """Create CC queue item from MA QueueItem."""
         duration = int(queue_item.duration) if queue_item.duration else None
-        if queue_item.media_type == MediaType.TRACK:
+        if queue_item.media_type == MediaType.TRACK and queue_item.media_item:
             stream_type = STREAM_TYPE_BUFFERED
             metadata = {
                 "metadataType": 3,
-                "albumName": queue_item.media_item.album.name,
+                "albumName": queue_item.media_item.album.name
+                if queue_item.media_item.album
+                else "",
                 "songName": queue_item.media_item.name,
-                "artist": queue_item.media_item.artist.name,
+                "artist": queue_item.media_item.artist.name if queue_item.media_item.artist else "",
                 "title": queue_item.name,
                 "images": [{"url": queue_item.image.url}] if queue_item.image else None,
             }
