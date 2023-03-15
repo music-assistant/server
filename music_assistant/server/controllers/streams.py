@@ -191,7 +191,7 @@ class StreamsController:
             self._serve_queue_stream,
         )
 
-        ffmpeg_present, libsoxr_support = await check_audio_support(True)
+        ffmpeg_present, libsoxr_support, version = await check_audio_support()
         if not ffmpeg_present:
             LOGGER.error("FFmpeg binary not found on your system, playback will NOT work!.")
         elif not libsoxr_support:
@@ -200,7 +200,11 @@ class StreamsController:
                 "highest quality audio not available. "
             )
         await self._cleanup_stale()
-        LOGGER.info("Started stream controller")
+        LOGGER.info(
+            "Started stream controller (using ffmpeg version %s %s)",
+            version,
+            "with libsoxr support" if libsoxr_support else "",
+        )
 
     async def close(self) -> None:
         """Cleanup on exit."""

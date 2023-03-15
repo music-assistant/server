@@ -5,7 +5,11 @@ import asyncio
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
+from music_assistant.common.models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    UnsupportedFeaturedException,
+)
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -196,8 +200,11 @@ class TracksController(MediaControllerBase[Track]):
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the track."""
-        prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
+        try:
+            prov = self.mass.get_provider(provider_instance or provider_domain)
+        except ProviderUnavailableError:
+            return []
+        if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []
         # Grab similar tracks from the music provider
         similar_tracks = await prov.get_similar_tracks(prov_track_id=item_id, limit=limit)

@@ -94,7 +94,7 @@ class ConfigEntryValue(ConfigEntry):
         cls,
         entry: ConfigEntry,
         value: ConfigValueType,
-        allow_none: bool = False,
+        allow_none: bool = True,
     ) -> ConfigEntryValue:
         """Parse ConfigEntryValue from the config entry and plain value."""
         result = ConfigEntryValue.from_dict(entry.to_dict())
@@ -108,7 +108,7 @@ class ConfigEntryValue(ConfigEntry):
             result.value = result.label
         if not isinstance(result.value, expected_type):
             if result.value is None and allow_none:
-                # In some cases we allow this (e.g. create default config), hence the allow_none
+                # In some cases we allow this (e.g. create default config)
                 return result
             # handle common conversions/mistakes
             if expected_type == float and isinstance(result.value, int):
@@ -147,11 +147,10 @@ class Config(DataClassDictMixin):
         cls,
         config_entries: Iterable[ConfigEntry],
         raw: dict[str, Any],
-        allow_none: bool = False,
     ) -> Config:
         """Parse Config from the raw values (as stored in persistent storage)."""
         values = {
-            x.key: ConfigEntryValue.parse(x, raw.get("values", {}).get(x.key), allow_none).to_dict()
+            x.key: ConfigEntryValue.parse(x, raw.get("values", {}).get(x.key)).to_dict()
             for x in config_entries
         }
         conf = cls.from_dict({**raw, "values": values})
@@ -203,7 +202,7 @@ class Config(DataClassDictMixin):
                 if cur_val == new_val:
                     continue
                 self.values[key].value = new_val
-                changed_keys.add(f"values.{key}")
+                changed_keys.add(f"values/{key}")
 
         return changed_keys
 
