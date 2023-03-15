@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
+from music_assistant.common.models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    UnsupportedFeaturedException,
+)
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -268,9 +272,11 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_instance: str | None = None,
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
-        prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov:
+        try:
+            prov = self.mass.get_provider(provider_instance or provider_domain)
+        except ProviderUnavailableError:
             return []
+
         full_album = await self.get_provider_item(item_id, provider_instance or provider_domain)
         # prefer cache items (if any)
         cache_key = f"{prov.instance_id}.albumtracks.{item_id}"
@@ -299,8 +305,11 @@ class AlbumsController(MediaControllerBase[Album]):
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the album content."""
-        prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
+        try:
+            prov = self.mass.get_provider(provider_instance or provider_domain)
+        except ProviderUnavailableError:
+            return []
+        if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []
         album_tracks = await self._get_provider_album_tracks(
             item_id=item_id,
