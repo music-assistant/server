@@ -3,11 +3,11 @@ import asyncio
 import re
 from operator import itemgetter
 from time import time
-from typing import AsyncGenerator, Callable  # noqa: UP035
+from typing import AsyncGenerator  # noqa: UP035
 from urllib.parse import unquote
 
 from music_assistant.common.helpers.util import parse_title_and_version
-from music_assistant.common.models.enums import ContentType, ImageType, MediaType, ProviderFeature
+from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -56,45 +56,39 @@ class SoundcloudMusicProvider(MusicProvider):
     _signature_timestamp = 0
     _cipher = None
     _user_id = None
-    _soundcloud = None
 
     async def setup(self) -> None:
         """Set up the Soundcloud provider."""
-        if (
-            not self.config.get_value(CONF_CLIENT_ID)
-            or not self.config.get_value(CONF_AUTHORIZATION)
-            or not self.config.get_value(CONF_USERNAME)
+        # self._attr_supported_features = (
+        #     ProviderFeature.LIBRARY_ARTISTS,
+        #     # ProviderFeature.LIBRARY_ALBUMS,
+        #     # ProviderFeature.LIBRARY_TRACKS,
+        #     ProviderFeature.LIBRARY_PLAYLISTS,
+        #     ProviderFeature.BROWSE,
+        #     ProviderFeature.SEARCH,
+        #     # ProviderFeature.ARTIST_ALBUMS,
+        # )
+        if not self.config.get_value(CONF_CLIENT_ID) or not self.config.get_value(
+            CONF_AUTHORIZATION
         ):
             raise LoginFailed("Invalid login credentials")
-
-        def connect():
-            soundcloud_account = Soundcloud(
-                o_auth=self.config.get_value(CONF_AUTHORIZATION),
-                client_id=self.config.get_value(CONF_CLIENT_ID),
-            )
-            return soundcloud_account.get_account_details()
-
-        self._soundcloud = await self._run_async(connect)
+        # await self._initialize_headers(cookie=self.config.get_value(CONF_COOKIE))
         username = self.config.get_value(CONF_USERNAME)
         client_id = self.config.get_value(CONF_CLIENT_ID)
         auth_token = self.config.get_value(CONF_AUTHORIZATION)
 
-        # self._soundcloud = Soundcloud(auth_token, client_id)
-        # self.me = self._soundcloud.get_account_details()
-        # self.user_id = self.me["id"]
+        self.sc = Soundcloud(auth_token, client_id)
+        self.me = self.sc.get_account_details()
+        self.user_id = self.me["id"]
         # assert me.permalink == username
-        # print(self.me["id"])
+        print(self.me["id"])
         # print(type(self.me))
-        # return None
+        return None
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
         return SUPPORTED_FEATURES
-
-    @classmethod
-    async def _run_async(cls, call: Callable, *args, **kwargs):
-        return await asyncio.to_thread(call, *args, **kwargs)
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
@@ -134,7 +128,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Soundcloud."""
-        following = self._soundcloud.get_following(self.user_id)
+        following = self.sc.get_following(self.user_id)
         for item in following["collection"]:
             # print(item)
             if item and item["id"]:
@@ -157,7 +151,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
-        playlists = self._soundcloud.get_account_playlists()
+        playlists = self.sc.get_account_playlists()
         # print(playlists)
         for item in playlists["collection"]:
             # print(item)
@@ -179,13 +173,13 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Youtube Music."""
-        tracks_obj = self._soundcloud.get_tracks_liked()
+        tracks_obj = self.sc.get_tracks_liked()
         print(tracks_obj["collection"])
         # tracks_obj = await get_library_tracks(
         #     headers=self._headers, username=self.config.get_value(CONF_USERNAME)
         # )
         for item in tracks_obj["collection"]:
-            track = self._soundcloud.get_track_details(item)
+            track = self.sc.get_track_details(item)
             print(track)
             # Library tracks sometimes do not have a valid artist id
             # In that case, call the API for track details based on track id
@@ -213,7 +207,7 @@ class SoundcloudMusicProvider(MusicProvider):
     #     tracks = []
     #     for idx, track_obj in enumerate(album_obj["tracks"], 1):
     #         track = await self._parse_track(track_obj=track_obj)
-    #         track.di_soundcloud_number = 0
+    #         track.disc_number = 0
     #         track.track_number = idx
     #         tracks.append(track)
     #     return tracks
@@ -221,7 +215,7 @@ class SoundcloudMusicProvider(MusicProvider):
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         # print(prov_artist_id)
-        artist_obj = self._soundcloud.get_user_details(user_id=prov_artist_id)
+        artist_obj = self.sc.get_user_details(user_id=prov_artist_id)
 
         return await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
 
@@ -232,13 +226,13 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        playlist_obj = self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
+        playlist_obj = self.sc.get_playlist_details(playlist_id=prov_playlist_id)
         print(playlist_obj)
         return await self._parse_playlist(playlist_obj)
 
     async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
-        playlist_obj = self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
+        playlist_obj = self.sc.get_playlist_details(playlist_id=prov_playlist_id)
         if "tracks" not in playlist_obj:
             return []
         tracks = []
@@ -472,17 +466,17 @@ class SoundcloudMusicProvider(MusicProvider):
     #     client_id = self.config.get_value(CONF_CLIENT_ID)
     #     auth_token = self.config.get_value(CONF_AUTHORIZATION)
 
-    #     self._soundcloud = Soundcloud(client_id, auth_token)
-    #     self.me = self._soundcloud.get_account_details()
+    #     self.sc = Soundcloud(client_id, auth_token)
+    #     self.me = self.sc.get_account_details()
     # assert me.permalink == username
     # print(self.me)
     # print(self.me.id)
     # print(type(self.me))
     # return None
-    # self._soundcloud = SoundCloud(client_id, auth_token)
-    # assert _soundcloud.is_client_id_valid()
-    # assert _soundcloud.is_auth_token_valid()
-    # self.me = _soundcloud.get_user_by_username(username)
+    # self.sc = SoundCloud(client_id, auth_token)
+    # assert sc.is_client_id_valid()
+    # assert sc.is_auth_token_valid()
+    # self.me = sc.get_user_by_username(username)
     # # assert me.permalink == username
     # print(self.me)
     # print(self.me.id)
