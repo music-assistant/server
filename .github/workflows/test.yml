@@ -46,7 +46,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
-          apt-get update && apt-get install -y ffmpeg
+          sudo apt-get update
+          sudo apt-get install ffmpeg
           python -m pip install --upgrade pip build setuptools
           pip install .[server] .[test]
       - name: Pytest
