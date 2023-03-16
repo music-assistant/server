@@ -253,7 +253,6 @@ class FileSystemProviderBase(MusicProvider):
                 continue
 
             try:
-                cur_checksums[item.path] = item.checksum
                 if item.checksum == prev_checksums.get(item.path):
                     continue
 
@@ -275,6 +274,9 @@ class FileSystemProviderBase(MusicProvider):
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", item.path, str(err))
+            else:
+                # save item's checksum only if the parse succeeded
+                cur_checksums[item.path] = item.checksum
 
             # save checksums every 100 processed items
             # this allows us to pickup where we leftoff when initial scan gets interrupted

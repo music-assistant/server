@@ -9,8 +9,9 @@ from contextlib import asynccontextmanager
 from smb.base import SharedFile
 
 from music_assistant.common.helpers.util import get_ip_from_host
-from music_assistant.common.models.errors import LoginFailed, SetupFailedError
+from music_assistant.common.models.errors import LoginFailed
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.providers.filesystem_local.base import (
     FileSystemItem,
     FileSystemProviderBase,
@@ -24,7 +25,7 @@ from .helpers import AsyncSMB
 
 CONF_HOST = "host"
 CONF_SHARE = "share"
-CONF_ROOT_PATH = "root_path"
+CONF_SUBFOLDER = "subfolder"
 
 
 async def create_item(file_path: str, entry: SharedFile, root_path: str) -> FileSystemItem:
@@ -62,10 +63,13 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         self._service_name = self.config.get_value(CONF_SHARE)
 
         # validate provided path
-        root_path: str = self.config.get_value(CONF_ROOT_PATH)
-        if not root_path.startswith("/") or "\\" in root_path:
-            raise SetupFailedError("Invalid path provided")
-        self._root_path = self.config.get_value(CONF_ROOT_PATH)
+        subfolder: str = self.config.get_value(CONF_SUBFOLDER)
+        subfolder.replace("\\", "/")
+        if not subfolder.startswith("/"):
+            subfolder = "/" + subfolder
+        if not subfolder.endswith("/"):
+            subfolder += "/"
+        self._root_path = subfolder
 
         # resolve dns name to IP
         target_ip = await get_ip_from_host(self._remote_name)
@@ -133,6 +137,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
                 file_size=entry.file_size,
             )
 
+    @use_cache(15 * 60)
     async def exists(self, file_path: str) -> bool:
         """Return bool if this FileSystem musicprovider has given file/dir."""
         abs_path = get_absolute_path(self._root_path, file_path)
@@ -168,7 +173,9 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             username=self.config.get_value(CONF_USERNAME),
             password=self.config.get_value(CONF_PASSWORD),
             target_ip=self._target_ip,
-            options={key: value.value for key, value in self.config.values.items()},
+            use_ntlm_v2=self.config.get_value("use_ntlm_v2"),
+            sign_options=self.config.get_value("sign_options"),
+            is_direct_tcp=self.config.get_value("is_direct_tcp"),
         ) as smb_conn:
             token = smb_conn_ctx.set(smb_conn)
             yield smb_conn

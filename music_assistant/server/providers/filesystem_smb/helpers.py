@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from io import BytesIO
+from uuid import uuid4
 
 from smb.base import SharedFile, SMBTimeout
 from smb.smb_structs import OperationFailure
@@ -29,6 +30,7 @@ class AsyncSMB:
         is_direct_tcp: bool = False,
     ) -> None:
         """Initialize instance."""
+        self.session_id = uuid4().hex
         self._service_name = service_name
         self._remote_name = remote_name
         self._target_ip = target_ip
@@ -88,7 +90,9 @@ class AsyncSMB:
         """Return bool is this FileSystem musicprovider has given file/dir."""
         try:
             await asyncio.to_thread(self._conn.getAttributes, self._service_name, path)
-        except (OperationFailure, SMBTimeout):
+        except (OperationFailure, SMBTimeout, TimeoutError):
+            return False
+        except IndexError:
             return False
         return True
 

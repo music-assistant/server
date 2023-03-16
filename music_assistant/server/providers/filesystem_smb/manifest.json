@@ -20,12 +20,12 @@
       "required": true
     },
     {
-      "key": "root_path",
+      "key": "subfolder",
       "type": "string",
-      "label": "Root path",
-      "description": "Use if your music is stored in a sublevel of the share. Defaults to the root '/' but you can use any sublevel here, like '/awesome/collection'",
-      "default_value": "/",
-      "required": true
+      "label": "Subfolder",
+      "description": "[optional] Use if your music is stored in a sublevel of the share. E.g. 'music' or 'music/collection'.",
+      "default_value": "",
+      "required": false
     },
     {
       "key": "username",
