@@ -18,7 +18,7 @@ orjson==3.8.6
 pillow==9.4.0
 PyChromecast==13.0.4
 pysmb==1.2.9.1
-python-slugify==7.0.0
+python-slugify==8.0.1
 pytube==12.1.2
 shortuuid==1.0.11
 soco==0.29.1

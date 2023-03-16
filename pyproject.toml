@@ -31,7 +31,7 @@ server = [
   "coloredlogs==15.0.1",
   "databases==0.7.0",
   "aiosqlite==0.18.0",
-  "python-slugify==7.0.0",
+  "python-slugify==8.0.1",
   "mashumaro==3.5.0",
   "memory-tempfile==2.2.3",
   "pillow==9.4.0",
