@@ -627,7 +627,7 @@ class YoutubeMusicProvider(MusicProvider):
                     raise UnplayableURLError(
                         f"Cannot obtain a valid URL for item '{item_id}' after renewing cipher."
                     )
-                LOGGER.info("Cipher expired. Obtaining new Cipher.")
+                LOGGER.debug("Cipher expired. Obtaining new Cipher.")
                 self._cipher = None
                 return self._parse_stream_url(
                     stream_format=stream_format, item_id=item_id, retry=False
