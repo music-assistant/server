@@ -46,7 +46,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install ffmpeg
           python -m pip install --upgrade pip build setuptools
-          pip install . .[test]
+          pip install .[server] .[test]
       - name: Pytest
         run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml tests/
