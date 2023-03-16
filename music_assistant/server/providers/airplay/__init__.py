@@ -67,12 +67,15 @@ PLAYER_CONFIG_ENTRIES = (
     ),
 )
 
+NEED_BRIDGE_RESTART = {"values/read_ahead", "values/encryption", "values/alac_encode"}
+
 
 class AirplayProvider(PlayerProvider):
     """Player provider for Airplay based players, using the slimproto bridge."""
 
     _bridge_bin: str | None = None
     _bridge_proc: asyncio.subprocess.Process | None = None
+    _timer_handle: asyncio.TimerHandle | None = None
     _closing: bool = False
     _config_file: str | None = None
 
@@ -105,18 +108,16 @@ class AirplayProvider(PlayerProvider):
         base_entries = slimproto_prov.get_player_config_entries(player_id)
         return tuple(base_entries + PLAYER_CONFIG_ENTRIES)
 
-    def on_player_config_changed(self, config: PlayerConfig) -> None:
+    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         # forward to slimproto too
         slimproto_prov = self.mass.get_provider("slimproto")
-        slimproto_prov.on_player_config_changed(config)
+        slimproto_prov.on_player_config_changed(config, changed_keys)
 
         async def update_config():
             # stop bridge (it will be auto restarted)
-            # TODO: only restart bridge if actual xml values changed
-            await self._stop_bridge()
-            # update the config
-            await self._check_config_xml()
+            if changed_keys.intersection(NEED_BRIDGE_RESTART):
+                self.restart_bridge()
 
         asyncio.create_task(update_config())
 
@@ -269,7 +270,6 @@ class AirplayProvider(PlayerProvider):
 
     async def _bridge_process_runner(self) -> None:
         """Run the bridge binary in the background."""
-        log_file = os.path.join(self.mass.storage_path, "airplay_bridge.log")
         self.logger.debug(
             "Starting Airplay bridge using config file %s",
             self._config_file,
@@ -280,12 +280,10 @@ class AirplayProvider(PlayerProvider):
             "localhost",
             "-x",
             self._config_file,
-            "-f",
-            log_file,
             "-I",
             "-Z",
             "-d",
-            "all=info",
+            "all=warn",
         ]
         start_success = False
         while True:
@@ -350,6 +348,7 @@ class AirplayProvider(PlayerProvider):
         common_elem.find("codecs").text = "pcm"
         common_elem.find("sample_rate").text = "44100"
         common_elem.find("resample").text = "0"
+        common_elem.find("player_volume").text = "20"
         # get/set all device configs
         for device_elem in xml_root.findall("device"):
             player_id = device_elem.find("mac").text
@@ -383,3 +382,17 @@ class AirplayProvider(PlayerProvider):
         # save config file
         async with aiofiles.open(self._config_file, "w") as _file:
             await _file.write(ET.tostring(xml_root).decode())
+
+    def restart_bridge(self) -> None:
+        """Schedule restart of bridge process."""
+        if self._timer_handle is not None:
+            self._timer_handle.cancel()
+            self._timer_handle = None
+
+        async def restart_bridge():
+            self.logger.info("Restarting Airplay bridge (due to config changes)")
+            await self._stop_bridge()
+            await self._check_config_xml()
+
+        # schedule the action for later
+        self._timer_handle = self.mass.loop.call_later(10, self.mass.create_task, restart_bridge)

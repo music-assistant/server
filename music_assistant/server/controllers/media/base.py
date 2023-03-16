@@ -8,9 +8,9 @@ from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING, Generic, TypeVar
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     MediaItemType,
     PagedItems,
@@ -169,7 +169,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # in 99% of the cases we just return lazy because we want the details as fast as possible
         # only if we really need to wait for the result (e.g. to prevent race conditions), we
         # can set lazy to false and we await to job to complete.
-        add_task = self.mass.create_task(self.add(details))
+        task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
+        add_task = self.mass.create_task(self.add, details, task_id=task_id)
         if not lazy:
             await add_task
             return add_task.result()
@@ -192,8 +193,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 for db_row in await self.mass.music.database.search(self.db_table, search_query)
             ]
 
-        prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov or ProviderFeature.SEARCH not in prov.supported_features:
+        try:
+            prov = self.mass.get_provider(provider_instance or provider_domain)
+        except ProviderUnavailableError:
+            return []
+        if ProviderFeature.SEARCH not in prov.supported_features:
             return []
         if not prov.library_supported(self.media_type):
             # assume library supported also means that this mediatype is supported
@@ -437,7 +441,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         await self.mass.music.database.update(
             self.db_table,
             match,
-            {"provider_mappings": json_dumps(db_item.provider_mappings)},
+            {"provider_mappings": serialize_to_json(db_item.provider_mappings)},
         )
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 
@@ -475,7 +479,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Return a dynamic list of tracks based on the given item."""
         ref_item = await self.get(item_id, provider_domain, provider_instance)
         for prov_mapping in ref_item.provider_mappings:
-            prov = self.mass.get_provider(prov_mapping.provider_instance)
+            try:
+                prov = self.mass.get_provider(prov_mapping.provider_instance)
+            except ProviderUnavailableError:
+                continue
             if not prov.available:
                 continue
             if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:

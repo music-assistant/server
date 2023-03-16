@@ -12,7 +12,7 @@
     },
     {
       "key": "cookie",
-      "type": "string",
+      "type": "secure_string",
       "label": "Cookie"
     }
   ],

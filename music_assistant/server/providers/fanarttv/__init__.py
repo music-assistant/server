@@ -16,6 +16,11 @@ from music_assistant.server.models.metadata_provider import MetadataProvider
 if TYPE_CHECKING:
     from music_assistant.common.models.media_items import Album, Artist
 
+SUPPORTED_FEATURES = (
+    ProviderFeature.ARTIST_METADATA,
+    ProviderFeature.ALBUM_METADATA,
+)
+
 # TODO: add support for personal api keys ?
 
 
@@ -36,10 +41,11 @@ class FanartTvMetadataProvider(MetadataProvider):
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
         self.throttler = Throttler(rate_limit=2, period=1)
-        self._attr_supported_features = (
-            ProviderFeature.ARTIST_METADATA,
-            ProviderFeature.ALBUM_METADATA,
-        )
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on fanart.tv."""

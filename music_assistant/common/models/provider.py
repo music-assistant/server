@@ -2,9 +2,9 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import Any, TypedDict
 
-from mashumaro import DataClassDictMixin
+from mashumaro.mixins.orjson import DataClassORJSONMixin
 
 from music_assistant.common.helpers.json import load_json_file
 
@@ -13,7 +13,7 @@ from .enums import MediaType, ProviderFeature, ProviderType
 
 
 @dataclass
-class ProviderManifest(DataClassDictMixin):
+class ProviderManifest(DataClassORJSONMixin):
     """ProviderManifest, details of a provider."""
 
     type: ProviderType
@@ -44,8 +44,7 @@ class ProviderManifest(DataClassDictMixin):
     @classmethod
     async def parse(cls: "ProviderManifest", manifest_file: str) -> "ProviderManifest":
         """Parse ProviderManifest from file."""
-        manifest_dict = await load_json_file(manifest_file)
-        return cls.from_dict(manifest_dict)
+        return await load_json_file(manifest_file, ProviderManifest)
 
 
 class ProviderInstance(TypedDict):
@@ -69,7 +68,11 @@ class SyncTask:
     media_types: tuple[MediaType]
     task: asyncio.Task
 
-    def __post_init__(self):
-        """Execute action after initialization."""
-        # make sure that the task does not get serialized.
-        setattr(self.task, "do_not_serialize", True)
+    def to_dict(self, *args, **kwargs) -> dict[str, Any]:
+        """Return SyncTask as (serializable) dict."""
+        # ruff: noqa:ARG002
+        return {
+            "provider_domain": self.provider_domain,
+            "provider_instance": self.provider_instance,
+            "media_types": [x.value for x in self.media_types],
+        }

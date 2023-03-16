@@ -7,12 +7,13 @@ aioslimproto==2.2.0
 aiosqlite==0.18.0
 async-upnp-client==0.33.1
 asyncio-throttle==1.0.2
+coloredlogs==15.0.1
 cryptography==39.0.2
 databases==0.7.0
 getmac==0.8.2
-mashumaro==3.5
+mashumaro==3.5.0
 memory-tempfile==2.2.3
-music-assistant-frontend==20230309.0
+music-assistant-frontend==20230313.0
 orjson==3.8.6
 pillow==9.4.0
 PyChromecast==13.0.4

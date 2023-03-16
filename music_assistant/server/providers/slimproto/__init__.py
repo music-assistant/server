@@ -158,7 +158,9 @@ class SlimprotoProvider(PlayerProvider):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return SLIM_PLAYER_CONFIG_ENTRIES
 
-    def on_player_config_changed(self, config: PlayerConfig) -> None:
+    def on_player_config_changed(
+        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+    ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         # during synced playback this value is requested multiple times a second,
         # so we cache it in a quick lookup dict
@@ -492,7 +494,7 @@ class SlimprotoProvider(PlayerProvider):
             for client in self._socket_clients.values():
                 self._handle_player_update(client)
             # precache player config
-            self.on_player_config_changed(self.mass.config.get_player_config(player_id))
+            self.on_player_config_changed(self.mass.config.get_player_config(player_id), set())
 
     def _handle_disconnected(self, client: SlimClient) -> None:
         """Handle a client disconnected event."""
@@ -607,7 +609,7 @@ def dict_to_strings(source: dict) -> list[str]:
     result: list[str] = []
 
     for key, value in source.items():
-        if value is None or value == "":
+        if value in (None, ""):
             continue
         if isinstance(value, list):
             for subval in value:

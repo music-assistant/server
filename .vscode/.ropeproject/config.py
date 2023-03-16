@@ -113,9 +113,7 @@ def set_prefs(prefs):
     # listed in module rope.base.oi.type_hinting.providers.interfaces
     # For example, you can add you own providers for Django Models, or disable
     # the search type-hinting in a class hierarchy, etc.
-    prefs[
-        "type_hinting_factory"
-    ] = "rope.base.oi.type_hinting.factory.default_type_hinting_factory"
+    prefs["type_hinting_factory"] = "rope.base.oi.type_hinting.factory.default_type_hinting_factory"
 
 
 def project_opened(project):

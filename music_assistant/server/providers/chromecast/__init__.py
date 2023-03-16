@@ -42,8 +42,6 @@ if TYPE_CHECKING:
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.socket_client import ConnectionStatus
 
-    from music_assistant.common.models.config_entries import PlayerConfig
-
 
 PLAYER_CONFIG_ENTRIES = tuple()
 
@@ -100,16 +98,6 @@ class ChromecastProvider(PlayerProvider):
         # stop all chromecasts
         for castplayer in list(self.castplayers.values()):
             await self._disconnect_chromecast(castplayer)
-
-    def on_player_config_changed(self, config: PlayerConfig) -> None:  # noqa: ARG002
-        """Call (by config manager) when the configuration of a player changes."""
-
-        # run discovery to catch any re-enabled players
-        async def restart_discovery():
-            await self.mass.loop.run_in_executor(None, self.browser.stop_discovery)
-            await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
-
-        self.mass.create_task(restart_discovery())
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -485,13 +473,15 @@ class ChromecastProvider(PlayerProvider):
     def _create_queue_item(queue_item: QueueItem, stream_url: str):
         """Create CC queue item from MA QueueItem."""
         duration = int(queue_item.duration) if queue_item.duration else None
-        if queue_item.media_type == MediaType.TRACK:
+        if queue_item.media_type == MediaType.TRACK and queue_item.media_item:
             stream_type = STREAM_TYPE_BUFFERED
             metadata = {
                 "metadataType": 3,
-                "albumName": queue_item.media_item.album.name,
+                "albumName": queue_item.media_item.album.name
+                if queue_item.media_item.album
+                else "",
                 "songName": queue_item.media_item.name,
-                "artist": queue_item.media_item.artist.name,
+                "artist": queue_item.media_item.artist.name if queue_item.media_item.artist else "",
                 "title": queue_item.name,
                 "images": [{"url": queue_item.image.url}] if queue_item.image else None,
             }
