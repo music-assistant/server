@@ -14,7 +14,7 @@ from music_assistant.common.models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
-    UnplayableURLError,
+    UnplayableMediaError,
 )
 from music_assistant.common.models.media_items import (
     Album,
@@ -622,7 +622,7 @@ class YoutubeMusicProvider(MusicProvider):
             # Verify if URL is playable. If not, obtain a new cipher and try again.
             if not await self._is_valid_deciphered_url(url=url):
                 if not retry:
-                    raise UnplayableURLError(
+                    raise UnplayableMediaError(
                         f"Cannot obtain a valid URL for item '{item_id}' after renewing cipher."
                     )
                 self.logger.debug("Cipher expired. Obtaining new Cipher.")
