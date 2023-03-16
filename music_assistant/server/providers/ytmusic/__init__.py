@@ -1,6 +1,5 @@
 """Youtube Music support for MusicAssistant."""
 import asyncio
-import logging
 import re
 from operator import itemgetter
 from time import time
@@ -55,7 +54,6 @@ from .helpers import (
 #     from collections.abc import AsyncGenerator
 
 CONF_COOKIE = "cookie"
-LOGGER = logging.getLogger(__name__)
 
 YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
@@ -627,7 +625,7 @@ class YoutubeMusicProvider(MusicProvider):
                     raise UnplayableURLError(
                         f"Cannot obtain a valid URL for item '{item_id}' after renewing cipher."
                     )
-                LOGGER.debug("Cipher expired. Obtaining new Cipher.")
+                self.logger.debug("Cipher expired. Obtaining new Cipher.")
                 self._cipher = None
                 return self._parse_stream_url(
                     stream_format=stream_format, item_id=item_id, retry=False
