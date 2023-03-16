@@ -79,6 +79,12 @@ class InvalidCommand(MusicAssistantError):
     error_code = 12
 
 
+class UnplayableURLError(MusicAssistantError):
+    """Error thrown when a URL cannot be played properly."""
+
+    error_code = 13
+
+
 def error_code_to_exception(error_code: int) -> MusicAssistantError:
     """Return MusicAssistant Error (exception) from error_code."""
     match error_code:
@@ -106,5 +112,7 @@ def error_code_to_exception(error_code: int) -> MusicAssistantError:
             return PlayerCommandFailed
         case 12:
             return InvalidCommand
+        case 13:
+            return UnplayableURLError
         case _:
             return MusicAssistantError
