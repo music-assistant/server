@@ -178,7 +178,7 @@ async def select_free_port(range_start: int, range_end: int) -> int:
     return await asyncio.to_thread(_select_free_port)
 
 
-async def get_ip_from_host(dns_name: str) -> str:
+async def get_ip_from_host(dns_name: str) -> str | None:
     """Resolve (first) IP-address for given dns name."""
 
     def _resolve():
@@ -186,7 +186,7 @@ async def get_ip_from_host(dns_name: str) -> str:
             return socket.gethostbyname(dns_name)
         except Exception:  # pylint: disable=broad-except
             # fail gracefully!
-            return dns_name
+            return None
 
     return await asyncio.to_thread(_resolve)
 

@@ -9,7 +9,8 @@ from contextlib import asynccontextmanager
 from smb.base import SharedFile
 
 from music_assistant.common.helpers.util import get_ip_from_host
-from music_assistant.constants import CONF_PASSWORD, CONF_PATH, CONF_USERNAME
+from music_assistant.common.models.errors import LoginFailed, SetupFailedError
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.providers.filesystem_local.base import (
     FileSystemItem,
     FileSystemProviderBase,
@@ -20,6 +21,10 @@ from music_assistant.server.providers.filesystem_local.helpers import (
 )
 
 from .helpers import AsyncSMB
+
+CONF_HOST = "host"
+CONF_SHARE = "share"
+CONF_ROOT_PATH = "root_path"
 
 
 async def create_item(file_path: str, entry: SharedFile, root_path: str) -> FileSystemItem:
@@ -52,24 +57,27 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         """Handle async initialization of the provider."""
         # silence SMB.SMBConnection logger a bit
         logging.getLogger("SMB.SMBConnection").setLevel("INFO")
-        # extract params from path
-        if self.config.get_value(CONF_PATH).startswith("\\\\"):
-            path_parts = self.config.get_value(CONF_PATH)[2:].split("\\", 2)
-        elif self.config.get_value(CONF_PATH).startswith("//"):
-            path_parts = self.config.get_value(CONF_PATH)[2:].split("/", 2)
-        elif self.config.get_value(CONF_PATH).startswith("smb://"):
-            path_parts = self.config.get_value(CONF_PATH)[6:].split("/", 2)
-        else:
-            path_parts = self.config.get_value(CONF_PATH).split(os.sep)
-        self._remote_name = path_parts[0]
-        self._service_name = path_parts[1]
-        if len(path_parts) > 2:
-            self._root_path = os.sep + path_parts[2]
 
-        default_target_ip = await get_ip_from_host(self._remote_name)
-        self._target_ip = self.config.get_value("target_ip") or default_target_ip
+        self._remote_name = self.config.get_value(CONF_HOST)
+        self._service_name = self.config.get_value(CONF_SHARE)
+
+        # validate provided path
+        root_path: str = self.config.get_value(CONF_ROOT_PATH)
+        if not root_path.startswith("/") or "\\" in root_path:
+            raise SetupFailedError("Invalid path provided")
+        self._root_path = self.config.get_value(CONF_ROOT_PATH)
+
+        # resolve dns name to IP
+        target_ip = await get_ip_from_host(self._remote_name)
+        if target_ip is None:
+            raise LoginFailed(
+                f"Unable to resolve {self._remote_name}, maybe use an IP address as remote host ?"
+            )
+        self._target_ip = target_ip
+
+        # test connection and return
+        # this code will raise if the connection did not succeed
         async with self._get_smb_connection():
-            # test connection and return
             return
 
     async def listdir(
@@ -106,7 +114,8 @@ class SMBFileSystemProvider(FileSystemProviderBase):
                             yield subitem
                     except (OSError, PermissionError) as err:
                         self.logger.warning("Skip folder %s: %s", item.path, str(err))
-                elif item.is_file or item.is_dir:
+                else:
+                    # yield single item (file or directory)
                     yield item
 
     async def resolve(self, file_path: str) -> FileSystemItem:

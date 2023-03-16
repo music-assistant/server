@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from io import BytesIO
-from typing import Any
 
 from smb.base import SharedFile, SMBTimeout
 from smb.smb_structs import OperationFailure
@@ -25,7 +24,9 @@ class AsyncSMB:
         username: str,
         password: str,
         target_ip: str,
-        options: dict[str, Any],
+        use_ntlm_v2: bool = True,
+        sign_options: int = 2,
+        is_direct_tcp: bool = False,
     ) -> None:
         """Initialize instance."""
         self._service_name = service_name
@@ -38,11 +39,9 @@ class AsyncSMB:
             password=self._password,
             my_name=SERVICE_NAME,
             remote_name=self._remote_name,
-            # choose sane default options but allow user to override them via the options dict
-            domain=options.get("domain", ""),
-            use_ntlm_v2=options.get("use_ntlm_v2", False),
-            sign_options=options.get("sign_options", 2),
-            is_direct_tcp=options.get("is_direct_tcp", False),
+            use_ntlm_v2=use_ntlm_v2,
+            sign_options=sign_options,
+            is_direct_tcp=is_direct_tcp,
         )
 
     async def list_path(self, path: str) -> list[SharedFile]:
