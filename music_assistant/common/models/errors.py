@@ -80,7 +80,7 @@ class InvalidCommand(MusicAssistantError):
 
 
 class UnplayableMediaError(MusicAssistantError):
-    """Error thrown when a URL cannot be played properly."""
+    """Error thrown when a MediaItem cannot be played properly."""
 
     error_code = 13
 
