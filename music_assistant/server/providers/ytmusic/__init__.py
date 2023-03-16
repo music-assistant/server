@@ -653,7 +653,7 @@ class YoutubeMusicProvider(MusicProvider):
         return self._cipher.get_signature(ciphered_signature)
 
     async def _is_valid_deciphered_url(self, url: str) -> bool:
-        """Verify whether the deciphered url is still valid."""
+        """Verify whether the URL has been deciphered using a valid cipher."""
         async with self.mass.http_session.head(url) as response:
             return response.status == 200
 
