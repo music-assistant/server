@@ -42,6 +42,7 @@ TRACK_EXTENSIONS = ("mp3", "m4a", "mp4", "flac", "wav", "ogg", "aiff", "wma", "d
 PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
+SEEKABLE_FILES = (ContentType.MP3, ContentType.WAV, ContentType.FLAC)
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -626,6 +627,7 @@ class FileSystemProviderBase(MusicProvider):
             sample_rate=prov_mapping.sample_rate,
             bit_depth=prov_mapping.bit_depth,
             direct=file_item.local_path,
+            can_seek=prov_mapping.content_type in SEEKABLE_FILES,
         )
 
     async def get_audio_stream(
