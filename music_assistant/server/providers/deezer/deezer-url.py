@@ -70,7 +70,7 @@ async def main(sng_id):
     url_resp = await get_url(licence_token, [track_token])
     url_info = url_resp.json()["data"][0]
     url = url_info["media"][0]["sources"][0]["url"]
-    print("FOUND URL!!! Here it is: " + url)
+    print("FOUND URL: " + url)
 
 
 asyncio.run(main(1518077822))
