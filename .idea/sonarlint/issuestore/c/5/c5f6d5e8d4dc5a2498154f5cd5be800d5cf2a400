@@ -1,0 +1,13 @@
+
+rpython:S3776î"TRefactor this function to reduce its Cognitive Complexity from 17 to the 15 allowed.(ÌçÊ¸ûÿÿÿÿ
+Npython:S3862¾"0Replace this expression with an iterable object.(úÍ›Óúÿÿÿÿ
+›python:S5864¾"}Replace this expression; Previous type checks suggest that it has type "AsyncGenerator[Artist, NoneType]" and isn't iterable.(úÍ›Óúÿÿÿÿ
+Ipython:S3862Ç"0Replace this expression with an iterable object.(¬À¤½
+•python:S5864Ç"|Replace this expression; Previous type checks suggest that it has type "AsyncGenerator[Album, NoneType]" and isn't iterable.(¬À¤½
+Ipython:S3862Ğ"0Replace this expression with an iterable object.(ÙÿƒÚ
+•python:S5864Ğ"|Replace this expression; Previous type checks suggest that it has type "AsyncGenerator[Track, NoneType]" and isn't iterable.(ÙÿƒÚ
+Npython:S3862Ù"0Replace this expression with an iterable object.(ëã†¼ıÿÿÿÿ
+špython:S5864Ù"|Replace this expression; Previous type checks suggest that it has type "AsyncGenerator[Radio, NoneType]" and isn't iterable.(ëã†¼ıÿÿÿÿ
+Npython:S3862â"0Replace this expression with an iterable object.(ıÃòÈıÿÿÿÿ
+python:S5864â"Replace this expression; Previous type checks suggest that it has type "AsyncGenerator[Playlist, NoneType]" and isn't iterable.(ıÃòÈıÿÿÿÿ
+mpython:S3776ï"TRefactor this function to reduce its Cognitive Complexity from 40 to the 15 allowed.(ÓŠ‹÷
