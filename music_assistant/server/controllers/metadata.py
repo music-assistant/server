@@ -259,38 +259,38 @@ class MetaDataController:
         media_item: MediaItemType,
         img_type: ImageType = ImageType.THUMB,
         resolve_local: bool = True,
+        allow_local: bool = True,
     ) -> str | None:
         """Get url to image for given media media_item."""
         if not media_item:
             return None
         if isinstance(media_item, ItemMapping):
             media_item = await self.mass.music.get_item_by_uri(media_item.uri)
-        for allow_local in (False, True):
-            if media_item and media_item.metadata.images:
-                for img in media_item.metadata.images:
-                    if img.type != img_type:
-                        continue
-                    if img.is_file and not allow_local:
-                        continue
-                    if img.is_file and resolve_local:
-                        # return imageproxy url for local filesystem items
-                        # the original path is double encoded
-                        encoded_url = urllib.parse.quote(urllib.parse.quote(img.url))
-                        return f"{self.mass.base_url}/imageproxy?path={encoded_url}"
-                    return img.url
+        if media_item and media_item.metadata.images:
+            for img in media_item.metadata.images:
+                if img.type != img_type:
+                    continue
+                if img.is_file and not allow_local:
+                    continue
+                if img.is_file and resolve_local:
+                    # return imageproxy url for local filesystem items
+                    # the original path is double encoded
+                    encoded_url = urllib.parse.quote(urllib.parse.quote(img.url))
+                    return f"{self.mass.base_url}/imageproxy?path={encoded_url}"
+                return img.url
 
-            # retry with track's album
-            if media_item.media_type == MediaType.TRACK and media_item.album:
-                return await self.get_image_url_for_item(media_item.album, img_type, resolve_local)
+        # retry with track's album
+        if media_item.media_type == MediaType.TRACK and media_item.album:
+            return await self.get_image_url_for_item(media_item.album, img_type, resolve_local)
 
-            # try artist instead for albums
-            if media_item.media_type == MediaType.ALBUM and media_item.artist:
-                return await self.get_image_url_for_item(media_item.artist, img_type, resolve_local)
+        # try artist instead for albums
+        if media_item.media_type == MediaType.ALBUM and media_item.artist:
+            return await self.get_image_url_for_item(media_item.artist, img_type, resolve_local)
 
-            # last resort: track artist(s)
-            if media_item.media_type == MediaType.TRACK and media_item.artists:
-                for artist in media_item.artists:
-                    return await self.get_image_url_for_item(artist, img_type, resolve_local)
+        # last resort: track artist(s)
+        if media_item.media_type == MediaType.TRACK and media_item.artists:
+            for artist in media_item.artists:
+                return await self.get_image_url_for_item(artist, img_type, resolve_local)
 
         return None
 
