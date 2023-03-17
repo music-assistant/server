@@ -28,7 +28,6 @@ class Provider:
         self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.providers.{self.domain}")
         self.cache = mass.cache
         self.available = False
-        self.last_error = None
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -90,5 +89,4 @@ class Provider:
             "instance_id": self.instance_id,
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
-            "last_error": self.last_error,
         }
