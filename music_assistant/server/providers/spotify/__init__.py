@@ -15,21 +15,16 @@ from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.enums import ProviderFeature
-from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
-from music_assistant.common.models.media_items import (
-    Album,
-    AlbumType,
-    Artist,
-    ContentType,
-    ImageType,
-    MediaItemImage,
-    MediaItemType,
-    MediaType,
-    Playlist,
-    ProviderMapping,
-    StreamDetails,
-    Track,
-)
+from music_assistant.common.models.errors import (LoginFailed,
+                                                  MediaNotFoundError)
+from music_assistant.common.models.media_items import (Album, AlbumType,
+                                                       Artist, ContentType,
+                                                       ImageType,
+                                                       MediaItemImage,
+                                                       MediaItemType,
+                                                       MediaType, Playlist,
+                                                       ProviderMapping,
+                                                       StreamDetails, Track)
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.helpers.process import AsyncProcess
