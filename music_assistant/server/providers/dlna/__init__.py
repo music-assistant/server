@@ -504,7 +504,7 @@ class DLNAPlayerProvider(PlayerProvider):
         if not self.mass.players.queues.get_item(dlna_player.udn, current_queue_item_id):
             return  # guard
         try:
-            next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
+            next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
                 dlna_player.udn, current_queue_item_id
             )
         except QueueEmpty:
