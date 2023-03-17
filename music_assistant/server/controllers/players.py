@@ -519,7 +519,8 @@ class PlayerController:
         count = 0
         while True:
             count += 1
-            for player_id, player in self._players.items():
+            for player in list(self._players.values()):
+                player_id = player.player_id
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
                 player_playing = (

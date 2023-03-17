@@ -177,19 +177,23 @@ class ConfigController:
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/update")
-    def update_provider_config(self, instance_id: str, update: ConfigUpdate) -> None:
+    async def update_provider_config(self, instance_id: str, update: ConfigUpdate) -> None:
         """Update ProviderConfig."""
         config = self.get_provider_config(instance_id)
         changed_keys = config.update(update)
-
-        if not changed_keys:
+        try:
+            prov = self.mass.get_provider(instance_id)
+            available = prov.available
+        except ProviderUnavailableError:
+            available = False
+        if not changed_keys and (config.enabled == available):
             # no changes
             return
-
+        # try to load the provider first to catch errors before we save it.
+        await self.mass.load_provider(config)
+        # load succeeded, save new config
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
         self.set(conf_key, config.to_raw())
-        updated_config = self.get_provider_config(config.instance_id)
-        self.mass.create_task(self.mass.load_provider(updated_config))
 
     @api_command("config/providers/add")
     async def add_provider_config(
@@ -219,6 +223,12 @@ class ConfigController:
         if existing["type"] == "music":
             # cleanup entries in library
             await self.mass.music.cleanup_provider(instance_id)
+
+    @api_command("config/providers/reload")
+    async def reload_provider(self, instance_id: str) -> None:
+        """Reload provider."""
+        config = self.get_provider_config(instance_id)
+        await self.mass.load_provider(config)
 
     @api_command("config/players")
     def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
