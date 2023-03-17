@@ -254,7 +254,9 @@ class FileSystemProviderBase(MusicProvider):
                 continue
 
             try:
+                # continue if the item did not change (checksum still the same)
                 if item.checksum == prev_checksums.get(item.path):
+                    cur_checksums[item.path] = item.checksum
                     continue
 
                 if item.ext in TRACK_EXTENSIONS:

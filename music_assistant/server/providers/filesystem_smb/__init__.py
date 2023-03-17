@@ -1,6 +1,5 @@
 """SMB filesystem provider for Music Assistant."""
 
-import contextvars
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -43,9 +42,6 @@ async def create_item(file_path: str, entry: SharedFile, root_path: str) -> File
     )
 
 
-smb_conn_ctx = contextvars.ContextVar("smb_conn_ctx", default=None)
-
-
 class SMBFileSystemProvider(FileSystemProviderBase):
     """Implementation of an SMB File System Provider."""
 
@@ -57,7 +53,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         # silence SMB.SMBConnection logger a bit
-        logging.getLogger("SMB.SMBConnection").setLevel("INFO")
+        logging.getLogger("SMB.SMBConnection").setLevel("WARNING")
 
         self._remote_name = self.config.get_value(CONF_HOST)
         self._service_name = self.config.get_value(CONF_SHARE)
@@ -105,22 +101,23 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         abs_path = get_absolute_path(self._root_path, path)
         async with self._get_smb_connection() as smb_conn:
             path_result: list[SharedFile] = await smb_conn.list_path(abs_path)
-            for entry in path_result:
-                if entry.filename.startswith("."):
-                    # skip invalid/system files and dirs
-                    continue
-                file_path = os.path.join(path, entry.filename)
-                item = await create_item(file_path, entry, self._root_path)
-                if recursive and item.is_dir:
-                    # yield sublevel recursively
-                    try:
-                        async for subitem in self.listdir(file_path, True):
-                            yield subitem
-                    except (OSError, PermissionError) as err:
-                        self.logger.warning("Skip folder %s: %s", item.path, str(err))
-                else:
-                    # yield single item (file or directory)
-                    yield item
+
+        for entry in path_result:
+            if entry.filename.startswith("."):
+                # skip invalid/system files and dirs
+                continue
+            file_path = os.path.join(path, entry.filename)
+            item = await create_item(file_path, entry, self._root_path)
+            if recursive and item.is_dir:
+                # yield sublevel recursively
+                try:
+                    async for subitem in self.listdir(file_path, True):
+                        yield subitem
+                except (OSError, PermissionError) as err:
+                    self.logger.warning("Skip folder %s: %s", item.path, str(err))
+            else:
+                # yield single item (file or directory)
+                yield item
 
     async def resolve(self, file_path: str) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem."""
@@ -161,11 +158,10 @@ class SMBFileSystemProvider(FileSystemProviderBase):
     @asynccontextmanager
     async def _get_smb_connection(self) -> AsyncGenerator[AsyncSMB, None]:
         """Get instance of AsyncSMB."""
-        # for a task that consists of multiple steps,
-        # the smb connection may be reused (shared through a contextvar)
-        if existing := smb_conn_ctx.get():
-            yield existing
-            return
+        # For now we just create a connection per call
+        # as that is the most reliable (but a bit slower)
+        # this could be improved by creating a connection pool
+        # if really needed
 
         async with AsyncSMB(
             remote_name=self._remote_name,
@@ -177,6 +173,4 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             sign_options=self.config.get_value("sign_options"),
             is_direct_tcp=self.config.get_value("is_direct_tcp"),
         ) as smb_conn:
-            token = smb_conn_ctx.set(smb_conn)
             yield smb_conn
-        smb_conn_ctx.reset(token)
