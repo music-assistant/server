@@ -191,57 +191,153 @@ class ConfigController:
         updated_config = self.get_provider_config(config.instance_id)
         self.mass.create_task(self.mass.load_provider(updated_config))
 
-    @api_command("config/providers/create")
-    def create_provider_config(
-        self, provider_domain: str, default_enabled: bool = False
+    @api_command("config/providers/add")
+    async def add_provider_config(
+        self, provider_domain: str, config: ProviderConfig | None = None
     ) -> ProviderConfig:
-        """Create default/empty ProviderConfig.
+        """Add new Provider (instance) Config Flow."""
+        if not config:
+            return self._get_default_provider_config(provider_domain)
+        # if provider config is provided, the frontend wants to submit a new provider instance
+        # based on the earlier created template config.
+        # try to load the provider first to catch errors before we save it.
+        await self.mass.load_provider(config)
+        # config provided and load success, storeconfig
+        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
+        self.set(conf_key, config.to_raw())
+        return config
 
-        This is intended to be used as helper method to add a new provider,
-        and it performs some quick sanity checks as well as handling the
-        instance_id generation.
-        """
-        # lookup provider manifest
-        for prov in self.mass.get_available_providers():
-            if prov.domain == provider_domain:
-                manifest = prov
-                break
-        else:
-            raise KeyError(f"Unknown provider domain: {provider_domain}")
-
-        # determine instance id based on previous configs
-        existing = {
-            x.instance_id for x in self.get_provider_configs(provider_domain=provider_domain)
-        }
-
-        if existing and not manifest.multi_instance:
-            raise ValueError(f"Provider {manifest.name} does not support multiple instances")
-
-        if len(existing) == 0:
-            instance_id = provider_domain
-            name = manifest.name
-        else:
-            instance_id = f"{provider_domain}{len(existing)+1}"
-            name = f"{manifest.name} {len(existing)+1}"
-
-        # all checks passed, return a default config
-        default_config = ProviderConfig.parse(
-            prov.config_entries,
-            {
-                "type": manifest.type.value,
-                "domain": manifest.domain,
-                "instance_id": instance_id,
-                "name": name,
-                "enabled": default_enabled,
-                "values": {},
-            },
-        )
-
-        # config provided and checks passed, storeconfig
+    @api_command("config/providers/remove")
+    async def remove_provider_config(self, instance_id: str) -> None:
+        """Remove ProviderConfig."""
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
-        self.set(conf_key, default_config.to_raw())
+        existing = self.get(conf_key)
+        if not existing:
+            raise KeyError(f"Provider {instance_id} does not exist")
+        self.remove(conf_key)
+        await self.mass.unload_provider(instance_id)
+        if existing["type"] == "music":
+            # cleanup entries in library
+            await self.mass.music.cleanup_provider(instance_id)
 
-        return default_config
+    @api_command("config/players")
+    def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
+        """Return all known player configurations, optionally filtered by provider domain."""
+        return [
+            self.get_player_config(player_id)
+            for player_id, raw_conf in self.get(CONF_PLAYERS).items()
+            if (provider in (None, raw_conf["provider"]))
+        ]
+
+    @api_command("config/players/get")
+    def get_player_config(self, player_id: str) -> PlayerConfig:
+        """Return configuration for a single player."""
+        if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
+            try:
+                prov = self.mass.get_provider(raw_conf["provider"])
+                prov_entries = prov.get_player_config_entries(player_id)
+            except (ProviderUnavailableError, PlayerUnavailableError):
+                prov_entries = tuple()
+                raw_conf["available"] = False
+                raw_conf["name"] = (
+                    raw_conf.get("name") or raw_conf.get("default_name") or raw_conf["player_id"]
+                )
+
+            entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
+            return PlayerConfig.parse(entries, raw_conf)
+        raise KeyError(f"No config found for player id {player_id}")
+
+    @api_command("config/players/get_value")
+    def get_player_config_value(self, player_id: str, key: str) -> ConfigEntryValue:
+        """Return single configentry value for a player."""
+        conf = self.get(f"{CONF_PLAYERS}/{player_id}")
+        if not conf:
+            player = self.mass.players.get(player_id)
+            if not player:
+                raise PlayerUnavailableError(f"Player {player_id} is not available")
+            conf = {"provider": player.provider, "player_id": player_id, "values": {}}
+        prov = self.mass.get_provider(conf["provider"])
+        entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(player_id)
+        for entry in entries:
+            if entry.key == key:
+                return ConfigEntryValue.parse(entry, conf["values"].get(key))
+        raise KeyError(f"ConfigEntry {key} is invalid")
+
+    @api_command("config/players/update")
+    def update_player_config(self, player_id: str, update: ConfigUpdate) -> None:
+        """Update PlayerConfig."""
+        config = self.get_player_config(player_id)
+        changed_keys = config.update(update)
+
+        if not changed_keys:
+            # no changes
+            return
+
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        self.set(conf_key, config.to_raw())
+        # send config updated event
+        self.mass.signal_event(
+            EventType.PLAYER_CONFIG_UPDATED,
+            object_id=config.player_id,
+            data=config,
+        )
+        # signal update to the player manager
+        try:
+            player = self.mass.players.get(config.player_id)
+            player.enabled = config.enabled
+            self.mass.players.update(config.player_id)
+        except PlayerUnavailableError:
+            pass
+
+        # signal player provider that the config changed
+        try:
+            if provider := self.mass.get_provider(config.provider):
+                assert isinstance(provider, PlayerProvider)
+                provider.on_player_config_changed(config, changed_keys)
+        except PlayerUnavailableError:
+            pass
+
+    @api_command("config/players/create")
+    async def create_player_config(
+        self, provider_domain: str, config: PlayerConfig | None = None
+    ) -> PlayerConfig:
+        """Register a new Player(config) if the provider supports this."""
+        provider: PlayerProvider = self.mass.get_provider(provider_domain)
+        return await provider.create_player_config(config)
+
+    @api_command("config/players/remove")
+    async def remove_player_config(self, player_id: str) -> None:
+        """Remove PlayerConfig."""
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        existing = self.get(conf_key)
+        if not existing:
+            raise KeyError(f"Player {player_id} does not exist")
+        self.remove(conf_key)
+        if provider := self.mass.get_provider(existing["provider"]):
+            assert isinstance(provider, PlayerProvider)
+            provider.on_player_config_removed(player_id)
+
+    def create_default_player_config(self, player_id: str, provider: str, name: str) -> None:
+        """
+        Create default/empty PlayerConfig.
+
+        This is meant as helper to create default configs when a player is registered.
+        Called by the player manager on player register.
+        """
+        # return early if the config already exists
+        if self.get(f"{CONF_PLAYERS}/{player_id}"):
+            # update default name if needed
+            self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
+            return
+        # config does not yet exist, create a default one
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        default_conf = PlayerConfig(
+            values={}, provider=provider, player_id=player_id, default_name=name
+        )
+        self.set(
+            conf_key,
+            default_conf.to_raw(),
+        )
 
     def create_default_provider_config(self, provider_domain: str) -> None:
         """
@@ -300,138 +396,6 @@ class ConfigController:
                 "values": {},
             },
         )
-
-    @api_command("config/providers/remove")
-    async def remove_provider_config(self, instance_id: str) -> None:
-        """Remove ProviderConfig."""
-        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
-        existing = self.get(conf_key)
-        if not existing:
-            raise KeyError(f"Provider {instance_id} does not exist")
-        self.remove(conf_key)
-        await self.mass.unload_provider(instance_id)
-        if existing["type"] == "music":
-            # cleanup entries in library
-            await self.mass.music.cleanup_provider(instance_id)
-
-    @api_command("config/players")
-    def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
-        """Return all known player configurations, optionally filtered by provider domain."""
-        return [
-            self.get_player_config(player_id)
-            for player_id, raw_conf in self.get(CONF_PLAYERS).items()
-            if (provider in (None, raw_conf["provider"]))
-        ]
-
-    @api_command("config/players/get")
-    def get_player_config(self, player_id: str) -> PlayerConfig:
-        """Return configuration for a single player."""
-        if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
-            try:
-                prov = self.mass.get_provider(raw_conf["provider"])
-                prov_entries = prov.get_player_config_entries(player_id)
-            except (ProviderUnavailableError, PlayerUnavailableError):
-                prov_entries = tuple()
-                raw_conf["available"] = False
-                raw_conf["name"] = (
-                    raw_conf.get("name") or raw_conf.get("default_name") or raw_conf["player_id"]
-                )
-
-            entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
-            return PlayerConfig.parse(entries, raw_conf)
-        raise KeyError(f"No config found for player id {player_id}")
-
-    @api_command("config/players/get_value")
-    def get_player_config_value(self, player_id: str, key: str) -> ConfigEntryValue:
-        """Return single configentry value for a player."""
-        conf = self.get(f"{CONF_PLAYERS}/{player_id}")
-        if not conf:
-            player = self.mass.players.get(player_id)
-            if not player:
-                raise PlayerUnavailableError(f"Player {player_id} is not available")
-            conf = {"provider": player.provider, "player_id": player_id, "values": {}}
-        prov = self.mass.get_provider(conf["provider"])
-        entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(player_id)
-        for entry in entries:
-            if entry.key == key:
-                return ConfigEntryValue.parse(entry, conf["values"].get(key))
-        raise KeyError(f"ConfigEntry {key} is invalid")
-
-    def create_default_player_config(self, player_id: str, provider: str, name: str) -> None:
-        """
-        Create default/empty PlayerConfig.
-
-        This is meant as helper to create default configs when a player is registered.
-        Called by the player manager on player register.
-        """
-        # return early if the config already exists
-        if self.get(f"{CONF_PLAYERS}/{player_id}"):
-            # update default name if needed
-            self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
-            return
-        # config does not yet exist, create a default one
-        conf_key = f"{CONF_PLAYERS}/{player_id}"
-        default_conf = PlayerConfig(
-            values={}, provider=provider, player_id=player_id, default_name=name
-        )
-        self.set(
-            conf_key,
-            default_conf.to_raw(),
-        )
-
-    @api_command("config/players/update")
-    def update_player_config(self, player_id: str, update: ConfigUpdate) -> None:
-        """Update PlayerConfig."""
-        config = self.get_player_config(player_id)
-        changed_keys = config.update(update)
-
-        if not changed_keys:
-            # no changes
-            return
-
-        conf_key = f"{CONF_PLAYERS}/{player_id}"
-        self.set(conf_key, config.to_raw())
-        # send config updated event
-        self.mass.signal_event(
-            EventType.PLAYER_CONFIG_UPDATED,
-            object_id=config.player_id,
-            data=config,
-        )
-        # signal update to the player manager
-        try:
-            player = self.mass.players.get(config.player_id)
-            player.enabled = config.enabled
-            self.mass.players.update(config.player_id)
-        except PlayerUnavailableError:
-            pass
-
-        # signal player provider that the config changed
-        try:
-            if provider := self.mass.get_provider(config.provider):
-                assert isinstance(provider, PlayerProvider)
-                provider.on_player_config_changed(config, changed_keys)
-        except PlayerUnavailableError:
-            pass
-
-    @api_command("config/players/create")
-    async def create_player_config(
-        self, provider_domain: str, config: PlayerConfig | None = None
-    ) -> PlayerConfig:
-        """Register a new Player(config) if the provider supports this."""
-        provider: PlayerProvider = self.mass.get_provider(provider_domain)
-        return await provider.create_player_config(config)
-
-    @api_command("config/players/remove")
-    async def remove_player_config(self, player_id: str) -> None:
-        """Remove PlayerConfig."""
-        conf_key = f"{CONF_PLAYERS}/{player_id}"
-        existing = self.get(conf_key)
-        if not existing:
-            raise KeyError(f"Player {player_id} does not exist")
-        self.remove(conf_key)
-        if provider := self.mass.get_provider(existing["provider"]):
-            assert isinstance(provider, PlayerProvider)
-            provider.on_player_config_removed(player_id)
 
     async def _load(self) -> None:
         """Load data from persistent storage."""
