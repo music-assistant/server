@@ -190,7 +190,8 @@ class ConfigController:
             # no changes
             return
         # try to load the provider first to catch errors before we save it.
-        await self.mass.load_provider(config)
+        if config.enabled:
+            await self.mass.load_provider(config)
         # load succeeded, save new config
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
         self.set(conf_key, config.to_raw())
