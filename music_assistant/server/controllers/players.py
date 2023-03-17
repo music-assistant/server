@@ -114,6 +114,9 @@ class PlayerController:
         if player_id in self._players:
             raise AlreadyRegisteredError(f"Player {player_id} is already registered")
 
+        # make sure a default config exists
+        self.mass.config.create_default_player_config(player_id, player.provider, player.name)
+
         player.enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
 
         # register playerqueue for this player

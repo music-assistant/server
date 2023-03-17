@@ -206,6 +206,13 @@ class Config(DataClassDictMixin):
 
         return changed_keys
 
+    def validate(self) -> None:
+        """Validate if configuration is valid."""
+        # For now we just use the parse method to check for not allowed None values
+        # this can be extended later
+        for value in self.values.values():
+            value.parse(value, value.value, allow_none=False)
+
 
 @dataclass
 class ProviderConfig(Config):
@@ -218,6 +225,8 @@ class ProviderConfig(Config):
     enabled: bool = True
     # name: an (optional) custom name for this provider instance/config
     name: str | None = None
+    # last_error: an optional error message if the provider could not be setup with this config
+    last_error: str | None = None
 
 
 @dataclass
@@ -230,6 +239,10 @@ class PlayerConfig(Config):
     enabled: bool = True
     # name: an (optional) custom name for this player
     name: str | None = None
+    # available: boolean to indicate if the player is available
+    available: bool = True
+    # default_name: default name to use when there is name available
+    default_name: str | None = None
 
 
 @dataclass

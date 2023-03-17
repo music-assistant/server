@@ -243,6 +243,64 @@ class ConfigController:
 
         return default_config
 
+    def create_default_provider_config(self, provider_domain: str) -> None:
+        """
+        Create default ProviderConfig.
+
+        This is meant as helper to create default configs for default enabled providers.
+        Called by the server initialization code which load all providers at startup.
+        """
+        for conf in self.get_provider_configs(provider_domain=provider_domain):
+            # return if there is already a config
+            return
+        # config does not yet exist, create a default one
+        default_config = self._get_default_provider_config(provider_domain)
+        conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
+        self.set(conf_key, default_config.to_raw())
+
+    def _get_default_provider_config(self, provider_domain: str) -> ProviderConfig:
+        """
+        Return default/empty ProviderConfig.
+
+        This is intended to be used as helper method to add a new provider,
+        and it performs some quick sanity checks as well as handling the
+        instance_id generation.
+        """
+        # lookup provider manifest
+        for prov in self.mass.get_available_providers():
+            if prov.domain == provider_domain:
+                manifest = prov
+                break
+        else:
+            raise KeyError(f"Unknown provider domain: {provider_domain}")
+
+        # determine instance id based on previous configs
+        existing = {
+            x.instance_id for x in self.get_provider_configs(provider_domain=provider_domain)
+        }
+
+        if existing and not manifest.multi_instance:
+            raise ValueError(f"Provider {manifest.name} does not support multiple instances")
+
+        if len(existing) == 0:
+            instance_id = provider_domain
+            name = manifest.name
+        else:
+            instance_id = f"{provider_domain}{len(existing)+1}"
+            name = f"{manifest.name} {len(existing)+1}"
+
+        # all checks passed, return a default config
+        return ProviderConfig.parse(
+            prov.config_entries,
+            {
+                "type": manifest.type.value,
+                "domain": manifest.domain,
+                "instance_id": instance_id,
+                "name": name,
+                "values": {},
+            },
+        )
+
     @api_command("config/providers/remove")
     async def remove_provider_config(self, instance_id: str) -> None:
         """Remove ProviderConfig."""
@@ -259,55 +317,29 @@ class ConfigController:
     @api_command("config/players")
     def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
-        result: dict[str, PlayerConfig] = {}
-        # we use an intermediate dict to cover both edge cases:
-        # - player does not yet have a config stored persistently
-        # - player is disabled in config and not available
+        return [
+            self.get_player_config(player_id)
+            for player_id, raw_conf in self.get(CONF_PLAYERS).items()
+            if (provider in (None, raw_conf["provider"]))
+        ]
 
-        # do all existing players first
-        for player in self.mass.players:
-            if provider is not None and player.provider != provider:
-                continue
-            result[player.player_id] = self.get_player_config(player.player_id)
-
-        # add remaining configs that do have a config stored but are not (yet) available now
-        raw_configs = self.get(CONF_PLAYERS, {})
-        for player_id, raw_conf in raw_configs.items():
-            if player_id in result:
-                continue
-            if provider is not None and raw_conf["provider"] != provider:
-                continue
+    @api_command("config/players/get")
+    def get_player_config(self, player_id: str) -> PlayerConfig:
+        """Return configuration for a single player."""
+        if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             try:
                 prov = self.mass.get_provider(raw_conf["provider"])
                 prov_entries = prov.get_player_config_entries(player_id)
             except (ProviderUnavailableError, PlayerUnavailableError):
                 prov_entries = tuple()
+                raw_conf["available"] = False
+                raw_conf["name"] = (
+                    raw_conf.get("name") or raw_conf.get("default_name") or raw_conf["player_id"]
+                )
 
             entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
-            result[player.player_id] = PlayerConfig.parse(entries, raw_conf)
-
-        return list(result.values())
-
-    @api_command("config/players/get")
-    def get_player_config(self, player_id: str) -> PlayerConfig:
-        """Return configuration for a single player."""
-        conf = self.get(f"{CONF_PLAYERS}/{player_id}")
-        if not conf:
-            player = self.mass.players.get(player_id, raise_unavailable=False)
-            conf = {
-                "provider": player.provider,
-                "player_id": player_id,
-                "enabled": player.enabled_by_default,
-            }
-
-        try:
-            prov = self.mass.get_provider(conf["provider"])
-            prov_entries = prov.get_player_config_entries(player_id)
-        except (ProviderUnavailableError, PlayerUnavailableError):
-            prov_entries = tuple()
-
-        entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
-        return PlayerConfig.parse(entries, conf)
+            return PlayerConfig.parse(entries, raw_conf)
+        raise KeyError(f"No config found for player id {player_id}")
 
     @api_command("config/players/get_value")
     def get_player_config_value(self, player_id: str, key: str) -> ConfigEntryValue:
@@ -324,6 +356,28 @@ class ConfigController:
             if entry.key == key:
                 return ConfigEntryValue.parse(entry, conf["values"].get(key))
         raise KeyError(f"ConfigEntry {key} is invalid")
+
+    def create_default_player_config(self, player_id: str, provider: str, name: str) -> None:
+        """
+        Create default/empty PlayerConfig.
+
+        This is meant as helper to create default configs when a player is registered.
+        Called by the player manager on player register.
+        """
+        # return early if the config already exists
+        if self.get(f"{CONF_PLAYERS}/{player_id}"):
+            # update default name if needed
+            self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
+            return
+        # config does not yet exist, create a default one
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        default_conf = PlayerConfig(
+            values={}, provider=provider, player_id=player_id, default_name=name
+        )
+        self.set(
+            conf_key,
+            default_conf.to_raw(),
+        )
 
     @api_command("config/players/update")
     def update_player_config(self, player_id: str, update: ConfigUpdate) -> None:
@@ -348,10 +402,6 @@ class ConfigController:
             player = self.mass.players.get(config.player_id)
             player.enabled = config.enabled
             self.mass.players.update(config.player_id)
-            # copy playername to find back the playername if its disabled
-            if not config.enabled and not config.name:
-                config.name = player.display_name
-                self.set(conf_key, config.to_raw())
         except PlayerUnavailableError:
             pass
 
