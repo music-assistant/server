@@ -34,4 +34,5 @@ class Frontend(PluginProvider):
 
     async def serve_static(self, file_path: str, _request: web.Request) -> web.FileResponse:
         """Serve file response."""
-        return web.FileResponse(file_path)
+        headers = {"Cache-Control": "no-cache"}
+        return web.FileResponse(file_path, headers=headers)
