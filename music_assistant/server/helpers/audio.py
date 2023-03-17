@@ -397,11 +397,13 @@ async def get_media_stream(
         strip_silence_end = False
 
     # collect all arguments for ffmpeg
+    seek_pos = seek_position if (streamdetails.direct or not streamdetails.can_seek) else 0
     args = await _get_ffmpeg_args(
         streamdetails=streamdetails,
         sample_rate=sample_rate,
         bit_depth=bit_depth,
-        seek_position=seek_position,
+        # only use ffmpeg seeking if the provider stream does not support seeking
+        seek_position=seek_pos,
         fade_in=fade_in,
     )
 
@@ -412,7 +414,8 @@ async def get_media_stream(
             """Task that grabs the source audio and feeds it to ffmpeg."""
             LOGGER.debug("writer started for %s", streamdetails.uri)
             music_prov = mass.get_provider(streamdetails.provider)
-            async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_position):
+            seek_pos = seek_position if streamdetails.can_seek else 0
+            async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
                 await ffmpeg_proc.write(audio_chunk)
             # write eof when last packet is received
             ffmpeg_proc.write_eof()
@@ -745,6 +748,8 @@ async def _get_ffmpeg_args(
     ]
     # collect input args
     input_args = []
+    if seek_position:
+        input_args += ["-ss", str(seek_position)]
     if streamdetails.direct:
         # ffmpeg can access the inputfile (or url) directly
         if streamdetails.direct.startswith("http"):
@@ -766,8 +771,6 @@ async def _get_ffmpeg_args(
                     "5xx",
                 ]
 
-        if seek_position:
-            input_args += ["-ss", str(seek_position)]
         input_args += ["-i", streamdetails.direct]
     else:
         # the input is received from pipe/stdin

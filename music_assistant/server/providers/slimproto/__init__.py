@@ -474,7 +474,7 @@ class SlimprotoProvider(PlayerProvider):
         if not client.current_metadata:
             return
         try:
-            next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
+            next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
                 client.player_id, client.current_metadata["item_id"]
             )
             await self._handle_play_media(client, next_item, send_flush=False, crossfade=crossfade)

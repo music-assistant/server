@@ -15,19 +15,11 @@ from music_assistant.common.models.enums import (
     QueueOption,
     RepeatMode,
 )
-from music_assistant.common.models.errors import (
-    MediaNotFoundError,
-    MusicAssistantError,
-    QueueEmpty,
-)
+from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError, QueueEmpty
 from music_assistant.common.models.media_items import MediaItemType, media_from_dict
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import (
-    CONF_FLOW_MODE,
-    FALLBACK_DURATION,
-    ROOT_LOGGER_NAME,
-)
+from music_assistant.constants import CONF_FLOW_MODE, FALLBACK_DURATION, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
 
 if TYPE_CHECKING:
@@ -469,6 +461,8 @@ class PlayerQueuesController:
         player_prov = self.mass.players.get_player_provider(queue_id)
         flow_mode = self.mass.config.get_player_config_value(queue.queue_id, CONF_FLOW_MODE)
         queue.flow_mode = flow_mode.value
+        # make sure that the queue item image is resolved
+        await queue_item.resolve_image_url(self.mass)
         await player_prov.cmd_play_media(
             queue_id,
             queue_item=queue_item,
@@ -587,7 +581,7 @@ class PlayerQueuesController:
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
-    def player_ready_for_next_track(
+    async def player_ready_for_next_track(
         self, queue_or_player_id: str, current_item_id: str | None = None
     ) -> tuple[QueueItem, bool]:
         """Call when a player is ready to load the next track into the buffer.
@@ -609,6 +603,8 @@ class PlayerQueuesController:
         next_item = self.get_item(queue.queue_id, next_index)
         if not next_item:
             raise QueueEmpty("No more tracks left in the queue.")
+        # make sure that the queue item image is resolved
+        await next_item.resolve_image_url(self.mass)
         queue.index_in_buffer = next_index
         # work out crossfade
         crossfade = queue.crossfade_enabled

@@ -6,28 +6,38 @@
   "codeowners": ["@MarvinSchenkel", "@marcelveldt"],
   "config_entries": [
     {
-      "key": "path",
+      "key": "host",
       "type": "string",
-      "label": "Path",
-      "description": "Full SMB path to the files, e.g. \\\\server\\share\\folder or smb://server/share"
+      "label": "Remote host",
+      "description": "The hostname of the SMB/CIFS server to connect to. For example mynas.local. You may need to use the IP address instead of DNS name.",
+      "required": true
+    },
+    {
+      "key": "share",
+      "type": "string",
+      "label": "Share",
+      "description": "The name of the share/service you'd like to connect to on the remote host, For example 'media'.",
+      "required": true
+    },
+    {
+      "key": "subfolder",
+      "type": "string",
+      "label": "Subfolder",
+      "description": "[optional] Use if your music is stored in a sublevel of the share. E.g. 'music' or 'music/collection'.",
+      "default_value": "",
+      "required": false
     },
     {
       "key": "username",
       "type": "string",
-      "label": "Username"
+      "label": "Username",
+      "default_value": "anonymous",
+      "required": true
     },
     {
       "key": "password",
       "type": "secure_string",
       "label": "Password"
-    },
-    {
-      "key": "target_ip",
-      "type": "string",
-      "label": "Target IP",
-      "description": "Use in case of DNS resolve issues. Connect to this IP instead of the DNS name.",
-      "advanced": true,
-      "required": false
     },
     {
       "key": "domain",
@@ -43,7 +53,7 @@
       "type": "boolean",
       "label": "Use NTLM v2",
       "default_value": true,
-      "description": "Indicates whether pysmb should be NTLMv1 or NTLMv2 authentication algorithm for authentication. The choice of NTLMv1 and NTLMv2 is configured on the remote server, and there is no mechanism to auto-detect which algorithm has been configured. Hence, we can only “guess” or try both algorithms. On Sambda, Windows Vista and Windows 7, NTLMv2 is enabled by default. On Windows XP, we can use NTLMv1 before NTLMv2.",
+      "description": "Indicates whether NTLMv1 or NTLMv2 authentication algorithm should be used for authentication. The choice of NTLMv1 and NTLMv2 is configured on the remote server, and there is no mechanism to auto-detect which algorithm has been configured. Hence, we can only “guess” or try both algorithms. On Sambda, Windows Vista and Windows 7, NTLMv2 is enabled by default. On Windows XP, we can use NTLMv1 before NTLMv2.",
       "advanced": true,
       "required": false
     },
@@ -65,7 +75,7 @@
       "key": "is_direct_tcp",
       "type": "boolean",
       "label": "Use Direct TCP",
-      "default_value": true,
+      "default_value": false,
       "description": "Controls whether the NetBIOS over TCP/IP (is_direct_tcp=False) or the newer Direct hosting of SMB over TCP/IP (is_direct_tcp=True) will be used for the communication. The default parameter is False which will use NetBIOS over TCP/IP for wider compatibility (TCP port: 139).",
       "advanced": true,
       "required": false

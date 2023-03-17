@@ -42,6 +42,7 @@ TRACK_EXTENSIONS = ("mp3", "m4a", "mp4", "flac", "wav", "ogg", "aiff", "wma", "d
 PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
+SEEKABLE_FILES = (ContentType.MP3, ContentType.WAV, ContentType.FLAC)
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -253,8 +254,9 @@ class FileSystemProviderBase(MusicProvider):
                 continue
 
             try:
-                cur_checksums[item.path] = item.checksum
+                # continue if the item did not change (checksum still the same)
                 if item.checksum == prev_checksums.get(item.path):
+                    cur_checksums[item.path] = item.checksum
                     continue
 
                 if item.ext in TRACK_EXTENSIONS:
@@ -275,6 +277,9 @@ class FileSystemProviderBase(MusicProvider):
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", item.path, str(err))
+            else:
+                # save item's checksum only if the parse succeeded
+                cur_checksums[item.path] = item.checksum
 
             # save checksums every 100 processed items
             # this allows us to pickup where we leftoff when initial scan gets interrupted
@@ -624,6 +629,7 @@ class FileSystemProviderBase(MusicProvider):
             sample_rate=prov_mapping.sample_rate,
             bit_depth=prov_mapping.bit_depth,
             direct=file_item.local_path,
+            can_seek=prov_mapping.content_type in SEEKABLE_FILES,
         )
 
     async def get_audio_stream(
