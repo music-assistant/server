@@ -462,6 +462,8 @@ class StreamDetails(DataClassDictMixin):
     data: Any = None
     # if the url/file is supported by ffmpeg directly, use direct stream
     direct: str | None = None
+    # bool to indicate that the providers 'get_audio_stream' supports seeking of the item
+    can_seek: bool = True
     # callback: optional callback function (or coroutine) to call when the stream completes.
     # needed for streaming provivders to report what is playing
     # receives the streamdetails as only argument from which to grab

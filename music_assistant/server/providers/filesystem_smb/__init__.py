@@ -1,6 +1,5 @@
 """SMB filesystem provider for Music Assistant."""
 
-import contextvars
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -9,7 +8,9 @@ from contextlib import asynccontextmanager
 from smb.base import SharedFile
 
 from music_assistant.common.helpers.util import get_ip_from_host
-from music_assistant.constants import CONF_PASSWORD, CONF_PATH, CONF_USERNAME
+from music_assistant.common.models.errors import LoginFailed
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.providers.filesystem_local.base import (
     FileSystemItem,
     FileSystemProviderBase,
@@ -20,6 +21,10 @@ from music_assistant.server.providers.filesystem_local.helpers import (
 )
 
 from .helpers import AsyncSMB
+
+CONF_HOST = "host"
+CONF_SHARE = "share"
+CONF_SUBFOLDER = "subfolder"
 
 
 async def create_item(file_path: str, entry: SharedFile, root_path: str) -> FileSystemItem:
@@ -37,9 +42,6 @@ async def create_item(file_path: str, entry: SharedFile, root_path: str) -> File
     )
 
 
-smb_conn_ctx = contextvars.ContextVar("smb_conn_ctx", default=None)
-
-
 class SMBFileSystemProvider(FileSystemProviderBase):
     """Implementation of an SMB File System Provider."""
 
@@ -51,25 +53,31 @@ class SMBFileSystemProvider(FileSystemProviderBase):
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         # silence SMB.SMBConnection logger a bit
-        logging.getLogger("SMB.SMBConnection").setLevel("INFO")
-        # extract params from path
-        if self.config.get_value(CONF_PATH).startswith("\\\\"):
-            path_parts = self.config.get_value(CONF_PATH)[2:].split("\\", 2)
-        elif self.config.get_value(CONF_PATH).startswith("//"):
-            path_parts = self.config.get_value(CONF_PATH)[2:].split("/", 2)
-        elif self.config.get_value(CONF_PATH).startswith("smb://"):
-            path_parts = self.config.get_value(CONF_PATH)[6:].split("/", 2)
-        else:
-            path_parts = self.config.get_value(CONF_PATH).split(os.sep)
-        self._remote_name = path_parts[0]
-        self._service_name = path_parts[1]
-        if len(path_parts) > 2:
-            self._root_path = os.sep + path_parts[2]
+        logging.getLogger("SMB.SMBConnection").setLevel("WARNING")
 
-        default_target_ip = await get_ip_from_host(self._remote_name)
-        self._target_ip = self.config.get_value("target_ip") or default_target_ip
+        self._remote_name = self.config.get_value(CONF_HOST)
+        self._service_name = self.config.get_value(CONF_SHARE)
+
+        # validate provided path
+        subfolder: str = self.config.get_value(CONF_SUBFOLDER)
+        subfolder.replace("\\", "/")
+        if not subfolder.startswith("/"):
+            subfolder = "/" + subfolder
+        if not subfolder.endswith("/"):
+            subfolder += "/"
+        self._root_path = subfolder
+
+        # resolve dns name to IP
+        target_ip = await get_ip_from_host(self._remote_name)
+        if target_ip is None:
+            raise LoginFailed(
+                f"Unable to resolve {self._remote_name}, maybe use an IP address as remote host ?"
+            )
+        self._target_ip = target_ip
+
+        # test connection and return
+        # this code will raise if the connection did not succeed
         async with self._get_smb_connection():
-            # test connection and return
             return
 
     async def listdir(
@@ -93,21 +101,23 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         abs_path = get_absolute_path(self._root_path, path)
         async with self._get_smb_connection() as smb_conn:
             path_result: list[SharedFile] = await smb_conn.list_path(abs_path)
-            for entry in path_result:
-                if entry.filename.startswith("."):
-                    # skip invalid/system files and dirs
-                    continue
-                file_path = os.path.join(path, entry.filename)
-                item = await create_item(file_path, entry, self._root_path)
-                if recursive and item.is_dir:
-                    # yield sublevel recursively
-                    try:
-                        async for subitem in self.listdir(file_path, True):
-                            yield subitem
-                    except (OSError, PermissionError) as err:
-                        self.logger.warning("Skip folder %s: %s", item.path, str(err))
-                elif item.is_file or item.is_dir:
-                    yield item
+
+        for entry in path_result:
+            if entry.filename.startswith("."):
+                # skip invalid/system files and dirs
+                continue
+            file_path = os.path.join(path, entry.filename)
+            item = await create_item(file_path, entry, self._root_path)
+            if recursive and item.is_dir:
+                # yield sublevel recursively
+                try:
+                    async for subitem in self.listdir(file_path, True):
+                        yield subitem
+                except (OSError, PermissionError) as err:
+                    self.logger.warning("Skip folder %s: %s", item.path, str(err))
+            else:
+                # yield single item (file or directory)
+                yield item
 
     async def resolve(self, file_path: str) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem."""
@@ -124,6 +134,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
                 file_size=entry.file_size,
             )
 
+    @use_cache(15 * 60)
     async def exists(self, file_path: str) -> bool:
         """Return bool if this FileSystem musicprovider has given file/dir."""
         abs_path = get_absolute_path(self._root_path, file_path)
@@ -147,11 +158,10 @@ class SMBFileSystemProvider(FileSystemProviderBase):
     @asynccontextmanager
     async def _get_smb_connection(self) -> AsyncGenerator[AsyncSMB, None]:
         """Get instance of AsyncSMB."""
-        # for a task that consists of multiple steps,
-        # the smb connection may be reused (shared through a contextvar)
-        if existing := smb_conn_ctx.get():
-            yield existing
-            return
+        # For now we just create a connection per call
+        # as that is the most reliable (but a bit slower)
+        # this could be improved by creating a connection pool
+        # if really needed
 
         async with AsyncSMB(
             remote_name=self._remote_name,
@@ -159,8 +169,8 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             username=self.config.get_value(CONF_USERNAME),
             password=self.config.get_value(CONF_PASSWORD),
             target_ip=self._target_ip,
-            options={key: value.value for key, value in self.config.values.items()},
+            use_ntlm_v2=self.config.get_value("use_ntlm_v2"),
+            sign_options=self.config.get_value("sign_options"),
+            is_direct_tcp=self.config.get_value("is_direct_tcp"),
         ) as smb_conn:
-            token = smb_conn_ctx.set(smb_conn)
             yield smb_conn
-        smb_conn_ctx.reset(token)
