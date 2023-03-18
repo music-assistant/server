@@ -54,7 +54,7 @@ SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
-    # ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
@@ -305,7 +305,10 @@ class TidalProvider(MusicProvider):
                 url=f"http://www.tidal.com/playlists/{playlist_id}",
             )
         )
-        playlist.is_editable = playlist_obj.creator.name == "me"
+        is_editable = False
+        if playlist_obj.creator.name == "me":
+            is_editable = True
+        playlist.is_editable = is_editable
         playlist_image = playlist_obj.picture
         playlist_image_parsed = str(playlist_image).replace("-", "/")
         playlist.metadata.images = [
