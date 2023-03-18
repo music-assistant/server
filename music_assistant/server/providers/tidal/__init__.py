@@ -295,7 +295,7 @@ class TidalProvider(MusicProvider):
             item_id=playlist_id,
             provider=self.domain,
             name=playlist_obj.name,
-            owner=playlist_obj.creator,
+            owner=playlist_obj.creator.name,
         )
         playlist.add_provider_mapping(
             ProviderMapping(
