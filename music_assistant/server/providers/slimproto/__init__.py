@@ -27,11 +27,11 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.json_rpc import parse_args
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import PlayerConfig
     from music_assistant.server.providers.json_rpc import JSONRPCApi
 
 # sync constants
@@ -59,6 +59,8 @@ class SyncPlayPoint:
 
 
 CONF_SYNC_ADJUST = "sync_adjust"
+CONF_PLAYER_VOLUME = "player_volume"
+DEFAULT_PLAYER_VOLUME = 20
 
 SLIM_PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
@@ -71,6 +73,14 @@ SLIM_PLAYER_CONFIG_ENTRIES = (
         "and you always hear the audio too late on this player, you can shift the audio a bit.",
         advanced=True,
     ),
+    ConfigEntry(
+        key=CONF_PLAYER_VOLUME,
+        type=ConfigEntryType.INTEGER,
+        default_value=DEFAULT_PLAYER_VOLUME,
+        label="Default startup volume",
+        description="Default volume level to set/use when initializing the player.",
+        advanced=True,
+    ),
 )
 
 
@@ -80,14 +90,12 @@ class SlimprotoProvider(PlayerProvider):
     _socket_servers: tuple[asyncio.Server | asyncio.BaseTransport]
     _socket_clients: dict[str, SlimClient]
     _sync_playpoints: dict[str, deque[SyncPlayPoint]]
-    _sync_adjusts: dict[str, int]
     _virtual_providers: dict[str, tuple[Callable, Callable]]
 
     async def setup(self) -> None:
         """Handle async initialization of the provider."""
         self._socket_clients = {}
         self._sync_playpoints = {}
-        self._sync_adjusts = {}
         self._virtual_providers = {}
         # autodiscovery of the slimproto server does not work
         # when the port is not the default (3483) so we hardcode it for now
@@ -157,14 +165,6 @@ class SlimprotoProvider(PlayerProvider):
     def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return SLIM_PLAYER_CONFIG_ENTRIES
-
-    def on_player_config_changed(
-        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
-    ) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
-        # during synced playback this value is requested multiple times a second,
-        # so we cache it in a quick lookup dict
-        self._sync_adjusts[config.player_id] = config.get_value(CONF_SYNC_ADJUST)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -474,7 +474,7 @@ class SlimprotoProvider(PlayerProvider):
         if not client.current_metadata:
             return
         try:
-            next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
+            next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
                 client.player_id, client.current_metadata["item_id"]
             )
             await self._handle_play_media(client, next_item, send_flush=False, crossfade=crossfade)
@@ -493,8 +493,11 @@ class SlimprotoProvider(PlayerProvider):
             # update existing players so they can update their `can_sync_with` field
             for client in self._socket_clients.values():
                 self._handle_player_update(client)
-            # precache player config
-            self.on_player_config_changed(self.mass.config.get_player_config(player_id), set())
+        # handle init/startup volume
+        init_volume = self.mass.config.get(
+            f"{CONF_PLAYERS}/{player_id}/{CONF_PLAYER_VOLUME}", DEFAULT_PLAYER_VOLUME
+        )
+        self.mass.create_task(client.volume_set(init_volume))
 
     def _handle_disconnected(self, client: SlimClient) -> None:
         """Handle a client disconnected event."""
@@ -531,7 +534,9 @@ class SlimprotoProvider(PlayerProvider):
 
     def _get_corrected_elapsed_milliseconds(self, client: SlimClient) -> int:
         """Return corrected elapsed milliseconds."""
-        sync_delay = self._sync_adjusts[client.player_id]
+        sync_delay = self.mass.config.get(
+            f"{CONF_PLAYERS}/{client.player_id}/{CONF_SYNC_ADJUST}", 0
+        )
         if sync_delay != 0:
             return client.elapsed_milliseconds - sync_delay
         return client.elapsed_milliseconds

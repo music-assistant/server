@@ -17,7 +17,8 @@ RUN set -x \
     && apt-get install -y --no-install-recommends \
         build-essential \
         libffi-dev \
-        cargo
+        cargo \
+        git
 
 WORKDIR /wheels
 COPY requirements_all.txt .
