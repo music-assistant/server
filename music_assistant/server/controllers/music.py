@@ -228,6 +228,7 @@ class MusicController:
                         item_id="root",
                         provider=prov.domain,
                         path=f"{prov.instance_id}://",
+                        uri=f"{prov.instance_id}://",
                         name=prov.name,
                     )
                     for prov in self.providers
@@ -244,11 +245,21 @@ class MusicController:
         self, uri: str, force_refresh: bool = False, lazy: bool = True
     ) -> MediaItemType:
         """Fetch MediaItem by uri."""
-        media_type, provider_domain, item_id = parse_uri(uri)
+        media_type, provider_domain_or_instance_id, item_id = parse_uri(uri)
+        for prov in self.providers:
+            if prov.instance_id == provider_domain_or_instance_id:
+                provider_instance = prov.instance_id
+                provider_domain = None
+                break
+        else:
+            provider_instance = None
+            provider_domain = provider_domain_or_instance_id
+
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
             provider_domain=provider_domain,
+            provider_instance=provider_instance,
             force_refresh=force_refresh,
             lazy=lazy,
         )
