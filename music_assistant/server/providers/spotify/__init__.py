@@ -23,10 +23,10 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemType,
     MediaType,
     Playlist,
     ProviderMapping,
+    SearchResults,
     StreamDetails,
     Track,
 )
@@ -79,14 +79,14 @@ class SpotifyProvider(MusicProvider):
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
-        result = []
+        result = SearchResults()
         searchtypes = []
         if MediaType.ARTIST in media_types:
             searchtypes.append("artist")
@@ -102,25 +102,25 @@ class SpotifyProvider(MusicProvider):
             "search", q=search_query, type=searchtype, limit=limit
         ):
             if "artists" in searchresult:
-                result += [
+                result.artists += [
                     await self._parse_artist(item)
                     for item in searchresult["artists"]["items"]
                     if (item and item["id"])
                 ]
             if "albums" in searchresult:
-                result += [
+                result.albums += [
                     await self._parse_album(item)
                     for item in searchresult["albums"]["items"]
                     if (item and item["id"])
                 ]
             if "tracks" in searchresult:
-                result += [
+                result.tracks += [
                     await self._parse_track(item)
                     for item in searchresult["tracks"]["items"]
                     if (item and item["id"])
                 ]
             if "playlists" in searchresult:
-                result += [
+                result.playlists += [
                     await self._parse_playlist(item)
                     for item in searchresult["playlists"]["items"]
                     if (item and item["id"])

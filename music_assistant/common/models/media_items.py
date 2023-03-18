@@ -418,6 +418,17 @@ class PagedItems(DataClassDictMixin):
     total: int | None = None
 
 
+@dataclass
+class SearchResults(DataClassDictMixin):
+    """Model for results from a search query."""
+
+    artists: list[Artist | ItemMapping] = field(default_factory=list)
+    albums: list[Album | ItemMapping] = field(default_factory=list)
+    tracks: list[Track | ItemMapping] = field(default_factory=list)
+    playlists: list[Playlist | ItemMapping] = field(default_factory=list)
+    radio: list[Radio | ItemMapping] = field(default_factory=list)
+
+
 def media_from_dict(media_item: dict) -> MediaItemType:
     """Return MediaItem from dict."""
     if media_item["media_type"] == "artist":

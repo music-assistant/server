@@ -147,7 +147,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 # the file provider can handle uri's from all providers so simply add the uri
                 track_id_to_add = track_version.url or create_uri(
                     MediaType.TRACK,
-                    track_version.provider_domain,
+                    track_version.provider_instance,
                     track_version.item_id,
                 )
                 break
