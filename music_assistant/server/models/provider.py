@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant.common.models.config_entries import ConfigEntryValue, ProviderConfig
 from music_assistant.common.models.enums import ProviderFeature, ProviderType
 from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
-from music_assistant.constants import ROOT_LOGGER_NAME
+from music_assistant.constants import CONF_LOG_LEVEL, ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
@@ -26,6 +26,9 @@ class Provider:
         self.manifest = manifest
         self.config = config
         self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.providers.{self.instance_id}")
+        log_level = config.get_value(CONF_LOG_LEVEL)
+        if log_level != "GLOBAL":
+            self.logger.setLevel(log_level)
         self.cache = mass.cache
         self.available = False
 

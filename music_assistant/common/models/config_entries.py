@@ -15,6 +15,7 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
+    CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALISATION,
     CONF_VOLUME_NORMALISATION_TARGET,
@@ -252,6 +253,25 @@ class ConfigUpdate(DataClassDictMixin):
     enabled: bool | None = None
     name: str | None = None
     values: dict[str, ConfigValueType] | None = None
+
+
+DEFAULT_PROVIDER_CONFIG_ENTRIES = (
+    ConfigEntry(
+        key=CONF_LOG_LEVEL,
+        type=ConfigEntryType.STRING,
+        label="Log level",
+        options=[
+            ConfigValueOption("global", "GLOBAL"),
+            ConfigValueOption("info", "INFO"),
+            ConfigValueOption("warning", "WARNING"),
+            ConfigValueOption("error", "ERROR"),
+            ConfigValueOption("debug", "DEBIG"),
+        ],
+        default_value="GLOBAL",
+        description="Set the log verbosity for this provider",
+        advanced=True,
+    ),
+)
 
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
