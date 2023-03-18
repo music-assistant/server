@@ -72,11 +72,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
         return db_item
 
-    async def create(self, name: str, provider: str | None = None) -> Playlist:
+    async def create(self, name: str, provider_instance_or_domain: str | None = None) -> Playlist:
         """Create new playlist."""
         # if provider is omitted, just pick first provider
-        if provider:
-            provider = self.mass.get_provider(provider)
+        if provider_instance_or_domain:
+            provider = self.mass.get_provider(provider_instance_or_domain)
         else:
             provider = next(
                 (

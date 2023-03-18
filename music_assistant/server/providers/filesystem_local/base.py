@@ -598,7 +598,8 @@ class FileSystemProviderBase(MusicProvider):
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
-        filename = await self.resolve(f"{name}.m3u")
+        # filename = await self.resolve(f"{name}.m3u")
+        filename = f"{name}.m3u"
         await self.write_file_content(filename, b"")
         playlist = await self.get_playlist(filename)
         db_playlist = await self.mass.music.playlists.add_db_item(playlist)
