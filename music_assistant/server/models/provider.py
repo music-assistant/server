@@ -25,7 +25,7 @@ class Provider:
         self.mass = mass
         self.manifest = manifest
         self.config = config
-        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.providers.{self.domain}")
+        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.providers.{self.instance_id}")
         self.cache = mass.cache
         self.available = False
 
