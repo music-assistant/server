@@ -191,6 +191,8 @@ class Config(DataClassDictMixin):
         for key in ("enabled", "name"):
             cur_val = getattr(self, key, None)
             new_val = getattr(update, key, None)
+            if new_val is None:
+                continue
             if new_val == cur_val:
                 continue
             setattr(self, key, new_val)
