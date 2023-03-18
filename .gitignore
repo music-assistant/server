@@ -14,3 +14,4 @@ venv/
 .tox/
 *.egg-info/
 *.spec
+.history

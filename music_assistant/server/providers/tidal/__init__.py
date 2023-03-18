@@ -41,19 +41,20 @@ from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
-from .helpers import get_album, get_library_albums, get_library_artists
+from .helpers import (
+    get_album,
+    get_library_albums,
+    get_library_artists,
+    get_library_playlists,
+    get_library_tracks,
+)
 
 CACHE_DIR = gettempdir()
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
-    ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.LIBRARY_ARTISTS_EDIT,
-    ProviderFeature.LIBRARY_ALBUMS_EDIT,
-    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-    ProviderFeature.LIBRARY_TRACKS_EDIT,
-    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    # ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
@@ -121,14 +122,43 @@ class TidalProvider(MusicProvider):
         """Retrieve all library albums from Tidal."""
         albums_obj = await get_library_albums(self._tidal_session, self._tidal_user.id)
         for album in albums_obj:
-            yield await self._parse_album(
-                album,
-            )
+            yield await self._parse_album(album)
+
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+        """Retrieve library tracks from Tidal."""
+        tracks_obj = await get_library_tracks(self._tidal_session, self._tidal_user.id)
+        for track in tracks_obj:
+            # Library tracks sometimes do not have a valid artist id
+            # In that case, call the API for track details based on track id
+            # try:
+            yield await self._parse_track(track)
+            # except InvalidDataError:
+            #    track = await self.get_track(track["videoId"])
+            #    yield track
+
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+        """Retrieve all library playlists from the provider."""
+        playlists_obj = await get_library_playlists(self._tidal_session, self._tidal_user.id)
+        for playlist in playlists_obj:
+            yield await self._parse_playlist(playlist)
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         album_obj = await get_album(self._tidal_session, prov_album_id)
         return await self._parse_album(album_obj) if album_obj else None
+
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Get album tracks for given album id."""
+        album_obj = await get_album(prov_album_id=prov_album_id)
+        if not album_obj.tracks:
+            return []
+        tracks = []
+        for idx, track_obj in enumerate(album_obj.tracks, 1):
+            track = await self._parse_track(track_obj=track_obj)
+            track.disc_number = 0
+            track.track_number = idx
+            tracks.append(track)
+        return tracks
 
     async def _parse_artist(self, artist_obj):
         """Parse tidal artist object to generic layout."""
@@ -205,6 +235,87 @@ class TidalProvider(MusicProvider):
             )
         )
         return album
+
+    async def _parse_track(self, track_obj, artist=None):
+        """Parse tidal track object to generic layout."""
+        name = track_obj.name
+        version = track_obj.version
+        track = Track(
+            item_id=track_obj.id,
+            provider=self.domain,
+            name=name,
+            version=version,
+            duration=track_obj.duration / 1000,
+            disc_number=track_obj.volume_num,
+            track_number=track_obj.track_num,
+            # position=track_obj.get("position"),
+        )
+        # if artist:
+        track.artists = []
+        for track_artist in track_obj.artists:
+            artist = await self._parse_artist(track_artist)
+            track.artists.append(artist)
+
+        track.metadata.explicit = track_obj.explicit
+        """ if "preview_url" in track_obj:
+            track.metadata.preview = track_obj["preview_url"]
+        if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
+            track.isrc = track_obj["external_ids"]["isrc"]
+        if "album" in track_obj:
+            track.album = await self._parse_album(track_obj["album"])
+            if track_obj["album"].get("images"):
+                track.metadata.images = [
+                    MediaItemImage(ImageType.THUMB, track_obj["album"]["images"][0]["url"])
+                ]
+        if track_obj.get("copyright"):
+            track.metadata.copyright = track_obj["copyright"]
+        if track_obj.get("explicit"):
+            track.metadata.explicit = True
+        if track_obj.get("popularity"):
+            track.metadata.popularity = track_obj["popularity"] """
+        track_id = track_obj.id
+        available = track_obj.available
+        track.add_provider_mapping(
+            ProviderMapping(
+                item_id=track_obj.id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
+                content_type=ContentType.OGG,
+                bit_rate=320,
+                url=f"http://www.tidal.com/tracks/{track_id}",
+                available=available,
+            )
+        )
+        return track
+
+    async def _parse_playlist(self, playlist_obj):
+        """Parse tidal playlist object to generic layout."""
+        playlist_id = playlist_obj.id
+        playlist = Playlist(
+            item_id=playlist_id,
+            provider=self.domain,
+            name=playlist_obj.name,
+            owner=playlist_obj.creator,
+        )
+        playlist.add_provider_mapping(
+            ProviderMapping(
+                item_id=playlist_id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
+                url=f"http://www.tidal.com/playlists/{playlist_id}",
+            )
+        )
+        playlist.is_editable = playlist_obj.creator.name == "me"
+        playlist_image = playlist_obj.picture
+        playlist_image_parsed = str(playlist_image).replace("-", "/")
+        playlist.metadata.images = [
+            MediaItemImage(
+                ImageType.THUMB,
+                f"https://resources.tidal.com/images/{playlist_image_parsed}/320x320.jpg",
+            )
+        ]
+        playlist.metadata.checksum = str(playlist_obj._etag)
+        return playlist
 
 
 """    async def get_library_albums(self) -> AsyncGenerator[Album, None]:

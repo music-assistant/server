@@ -17,10 +17,7 @@ async def get_library_artists(session: tidalapi.Session, user_id: str) -> dict[s
     """Async wrapper around the tidalapi User Favorites Artists function."""
 
     def _get_library_artists():
-        favorites = tidalapi.Favorites(session, user_id)
-        artists = favorites.artists()
-        # Sync properties with uniformal artist object
-        return artists
+        return tidalapi.Favorites(session, user_id).artists(limit=9999)
 
     return await asyncio.to_thread(_get_library_artists)
 
@@ -29,10 +26,7 @@ async def get_library_albums(session: tidalapi.Session, user_id: str) -> dict[st
     """Async wrapper around the tidalapi User Favorites Albums function."""
 
     def _get_library_albums():
-        favorites = tidalapi.Favorites(session, user_id)
-        albums = favorites.albums()
-        # Sync properties with uniformal artist object
-        return albums
+        return tidalapi.Favorites(session, user_id).albums(limit=9999)
 
     return await asyncio.to_thread(_get_library_albums)
 
@@ -44,3 +38,19 @@ async def get_album(session: tidalapi.Session, prov_album_id: str) -> dict[str, 
         return tidalapi.Album(session, prov_album_id)
 
     return await asyncio.to_thread(_get_album)
+
+async def get_library_tracks(session: tidalapi.Session, user_id: str) -> dict[str, str]:
+    """Async wrapper around the tidalapi get_library_tracks function."""
+
+    def _get_library_tracks():
+        return tidalapi.Favorites(session, user_id).tracks(limit=9999)
+
+    return await asyncio.to_thread(_get_library_tracks)
+
+async def get_library_playlists(session: tidalapi.Session, user_id: str) -> dict[str, str]:
+    """Async wrapper around the tidalapi get_library_playlists function."""
+
+    def _get_library_playlists():
+        return tidalapi.Favorites(session, user_id).playlists(limit=9999)
+
+    return await asyncio.to_thread(_get_library_playlists)
