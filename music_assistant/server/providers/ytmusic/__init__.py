@@ -23,10 +23,10 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemType,
     MediaType,
     Playlist,
     ProviderMapping,
+    SearchResults,
     StreamDetails,
     Track,
 )
@@ -97,7 +97,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
@@ -116,17 +116,17 @@ class YoutubeMusicProvider(MusicProvider):
             if media_types[0] == MediaType.PLAYLIST:
                 ytm_filter = "playlists"
         results = await search(query=search_query, ytm_filter=ytm_filter, limit=limit)
-        parsed_results = []
+        parsed_results = SearchResults()
         for result in results:
             try:
                 if result["resultType"] == "artist":
-                    parsed_results.append(await self._parse_artist(result))
+                    parsed_results.artists.append(await self._parse_artist(result))
                 elif result["resultType"] == "album":
-                    parsed_results.append(await self._parse_album(result))
+                    parsed_results.albums.append(await self._parse_album(result))
                 elif result["resultType"] == "playlist":
-                    parsed_results.append(await self._parse_playlist(result))
+                    parsed_results.playlists.append(await self._parse_playlist(result))
                 elif result["resultType"] == "song" and (track := await self._parse_track(result)):
-                    parsed_results.append(track)
+                    parsed_results.tracks.append(track)
             except InvalidDataError:
                 pass  # ignore invalid item
         return parsed_results

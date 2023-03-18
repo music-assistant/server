@@ -208,11 +208,21 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = await prov.search(
+        searchresult = await prov.search(
             search_query,
             [self.media_type],
             limit,
         )
+        if self.media_type == MediaType.ARTIST:
+            items = searchresult.artists
+        elif self.media_type == MediaType.ALBUM:
+            items = searchresult.albums
+        elif self.media_type == MediaType.TRACK:
+            items = searchresult.tracks
+        elif self.media_type == MediaType.PLAYLIST:
+            items = searchresult.playlists
+        else:
+            items = searchresult.radio
         # store (serializable items) in cache
         if not prov.domain.startswith("filesystem"):  # do not cache filesystem results
             self.mass.create_task(

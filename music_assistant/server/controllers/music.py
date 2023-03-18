@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 import logging
 import statistics
+from itertools import zip_longest
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
@@ -15,7 +15,7 @@ from music_assistant.common.models.media_items import (
     BrowseFolder,
     MediaItem,
     MediaItemType,
-    media_from_dict,
+    SearchResults,
 )
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
@@ -111,7 +111,7 @@ class MusicController:
         search_query: str,
         media_types: list[MediaType] = MediaType.ALL,
         limit: int = 10,
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform global search for media items on all providers.
 
         :param search_query: Search query.
@@ -120,21 +120,50 @@ class MusicController:
         """
         # include results from all music providers
         provider_instances = (item.instance_id for item in self.providers)
-        # TODO: sort by name and filter out duplicates ?
-        return list(
-            itertools.chain.from_iterable(
-                await asyncio.gather(
-                    *[
-                        self.search_provider(
-                            search_query,
-                            media_types,
-                            provider_instance=provider_instance,
-                            limit=limit,
-                        )
-                        for provider_instance in provider_instances
-                    ]
+        results_per_provider: list[SearchResults] = await asyncio.gather(
+            *[
+                self.search_provider(
+                    search_query,
+                    media_types,
+                    provider_instance=provider_instance,
+                    limit=limit,
                 )
-            )
+                for provider_instance in provider_instances
+            ]
+        )
+        # return result from all providers while keeping index
+        # so the result is sorted as each provider delivered
+        return SearchResults(
+            artists=[
+                item
+                for sublist in zip_longest(*[x.artists for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ],
+            albums=[
+                item
+                for sublist in zip_longest(*[x.albums for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ],
+            tracks=[
+                item
+                for sublist in zip_longest(*[x.tracks for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ],
+            playlists=[
+                item
+                for sublist in zip_longest(*[x.playlists for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ],
+            radio=[
+                item
+                for sublist in zip_longest(*[x.radio for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ],
         )
 
     async def search_provider(
@@ -144,7 +173,7 @@ class MusicController:
         provider_domain: str | None = None,
         provider_instance: str | None = None,
         limit: int = 10,
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform search on given provider.
 
         :param search_query: Search query
@@ -157,30 +186,31 @@ class MusicController:
         try:
             prov = self.mass.get_provider(provider_instance or provider_domain)
         except ProviderUnavailableError:
-            return []
+            return SearchResults()
         if ProviderFeature.SEARCH not in prov.supported_features:
-            return []
+            return SearchResults()
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
 
         # prefer cache items (if any)
-        cache_key = f"{prov.instance_id}.search.{search_query}.{limit}"
+        media_types_str = ",".join(media_types)
+        cache_key = f"{prov.instance_id}.search.{search_query}.{limit}.{media_types_str}"
         cache_key += "".join(x for x in media_types)
 
         if cache := await self.mass.cache.get(cache_key):
-            return [media_from_dict(x) for x in cache]
+            return SearchResults.from_dict(cache)
         # no items in cache - get listing from provider
-        items = await prov.search(
+        result = await prov.search(
             search_query,
             media_types,
             limit,
         )
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(cache_key, [x.to_dict() for x in items], expiration=86400 * 7)
+            self.mass.cache.set(cache_key, result.to_dict(), expiration=86400 * 7)
         )
-        return items
+        return result
 
     @api_command("music/browse")
     async def browse(self, path: str | None = None) -> BrowseFolder:
@@ -349,7 +379,18 @@ class MusicController:
         except MusicAssistantError:
             pass
 
-        for item in await self.search(media_item.name, [media_item.media_type], 20):
+        searchresult = await self.search(media_item.name, [media_item.media_type], 20)
+        if media_item.media_type == MediaType.ARTIST:
+            result = searchresult.artists
+        elif media_item.media_type == MediaType.ALBUM:
+            result = searchresult.albums
+        elif media_item.media_type == MediaType.TRACK:
+            result = searchresult.tracks
+        elif media_item.media_type == MediaType.PLAYLIST:
+            result = searchresult.playlists
+        else:
+            result = searchresult.radio
+        for item in result:
             if item.available:
                 await self.get_item(item.media_type, item.item_id, item.provider, lazy=False)
         return None

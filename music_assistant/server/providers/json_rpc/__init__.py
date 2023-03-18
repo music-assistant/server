@@ -203,6 +203,20 @@ class JSONRPCApi(PluginProvider):
         else:
             self.mass.create_task(self.mass.players.queues.seek, number)
 
+    def _handle_power(self, player_id: str, value: str | int) -> int | None:
+        """Handle player `time` command."""
+        # <playerid> power <0|1|?|>
+        # The "power" command turns the player on or off.
+        # Use 0 to turn off, 1 to turn on, ? to query and
+        # no parameter to toggle the power state of the player.
+        player = self.mass.players.get(player_id)
+        assert player is not None
+
+        if value == "?":
+            return int(player.powered)
+
+        self.mass.create_task(self.mass.players.cmd_power, player_id, bool(value))
+
     def _handle_playlist(
         self,
         player_id: str,
