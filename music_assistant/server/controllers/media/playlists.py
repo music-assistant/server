@@ -147,7 +147,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 # the file provider can handle uri's from all providers so simply add the uri
                 track_id_to_add = track_version.url or create_uri(
                     MediaType.TRACK,
-                    track_version.provider_domain,
+                    track_version.provider_instance,
                     track_version.item_id,
                 )
                 break
@@ -301,7 +301,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         # NOTE: In theory we can return a few more items than limit here
         # Shuffle the final items list
-        return random.sample(final_items, len(final_items))
+        return random.sample(list(final_items), len(final_items))
 
     async def _get_dynamic_tracks(
         self, media_item: Playlist, limit: int = 25  # noqa: ARG002

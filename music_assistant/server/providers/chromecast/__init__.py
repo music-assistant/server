@@ -408,7 +408,7 @@ class ChromecastProvider(PlayerProvider):
         if not current_queue_item_id:
             return  # guard
         try:
-            next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
+            next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
                 castplayer.player_id, current_queue_item_id
             )
         except QueueEmpty:
@@ -483,14 +483,14 @@ class ChromecastProvider(PlayerProvider):
                 "songName": queue_item.media_item.name,
                 "artist": queue_item.media_item.artist.name if queue_item.media_item.artist else "",
                 "title": queue_item.name,
-                "images": [{"url": queue_item.image.url}] if queue_item.image else None,
+                "images": [{"url": queue_item.image_url}] if queue_item.image_url else None,
             }
         else:
             stream_type = STREAM_TYPE_LIVE
             metadata = {
                 "metadataType": 0,
                 "title": queue_item.name,
-                "images": [{"url": queue_item.image.url}] if queue_item.image else None,
+                "images": [{"url": queue_item.image_url}] if queue_item.image_url else None,
             }
         return {
             "autoplay": True,

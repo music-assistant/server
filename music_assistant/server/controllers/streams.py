@@ -477,7 +477,7 @@ class StreamsController:
                     (
                         queue_track,
                         use_crossfade,
-                    ) = self.mass.players.queues.player_ready_for_next_track(
+                    ) = await self.mass.players.queues.player_ready_for_next_track(
                         queue_id, queue_track.queue_item_id
                     )
                 except QueueEmpty:

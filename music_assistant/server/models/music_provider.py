@@ -11,6 +11,7 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     Playlist,
     Radio,
+    SearchResults,
     StreamDetails,
     Track,
 )
@@ -31,7 +32,7 @@ class MusicProvider(Provider):
         search_query: str,
         media_types: list[MediaType] | None = None,
         limit: int = 5,
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
@@ -40,7 +41,7 @@ class MusicProvider(Provider):
         """
         if ProviderFeature.SEARCH in self.supported_features:
             raise NotImplementedError
-        return []
+        return SearchResults()
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
