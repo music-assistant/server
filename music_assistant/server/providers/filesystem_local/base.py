@@ -22,11 +22,11 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemType,
     MediaType,
     Playlist,
     ProviderMapping,
     Radio,
+    SearchResults,
     StreamDetails,
     Track,
 )
@@ -146,9 +146,9 @@ class FileSystemProviderBase(MusicProvider):
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5  # noqa: ARG002
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform search on this file based musicprovider."""
-        result: list[MediaItemType] = []
+        result = SearchResults()
         # searching the filesystem is slow and unreliable,
         # instead we make some (slow) freaking queries to the db ;-)
         params = {
@@ -158,20 +158,16 @@ class FileSystemProviderBase(MusicProvider):
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
             query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            tracks = await self.mass.music.tracks.get_db_items_by_query(query, params)
-            result += tracks
+            result.tracks = await self.mass.music.tracks.get_db_items_by_query(query, params)
         if media_types is None or MediaType.ALBUM in media_types:
             query = "SELECT * FROM albums WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            albums = await self.mass.music.albums.get_db_items_by_query(query, params)
-            result += albums
+            result.albums = await self.mass.music.albums.get_db_items_by_query(query, params)
         if media_types is None or MediaType.ARTIST in media_types:
             query = "SELECT * FROM artists WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            artists = await self.mass.music.artists.get_db_items_by_query(query, params)
-            result += artists
+            result.artists = await self.mass.music.artists.get_db_items_by_query(query, params)
         if media_types is None or MediaType.PLAYLIST in media_types:
             query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            playlists = await self.mass.music.playlists.get_db_items_by_query(query, params)
-            result += playlists
+            result.playlists = await self.mass.music.playlists.get_db_items_by_query(query, params)
         return result
 
     async def browse(self, path: str) -> BrowseFolder:
