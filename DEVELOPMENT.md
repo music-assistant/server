@@ -16,8 +16,41 @@ With this repository cloned locally, execute the following commands in a termina
 * Hit (Fn +) F5 to start Music Assistant locally
 * The pre-compiled UI of Music Assistant will be available at `localhost:8095` 🎉
 
+All code is linted and verified using [pre-commit](https://pre-commit.com/). To make sure that all these checks are executed successfully *before* you push your code:
+* `pip install pre-commit`
+* `pre-commit install`
+This ensures that the pre-commit checks kick in when you create a commit locally.
+
+The Music Assistant server is fully built in Python. The Python language has no real supported for multi-threading. This is why Music Assistant heavily relies on asyncio to handle blocking IO. It is important to get a good understanding of asynchronous programming before building your first provider. [This](https://www.youtube.com/watch?v=M-UcUs7IMIM) video is an excellent first step in the world of asyncio.
+
 ## 🎵 Building your own Music Provider
-Will follow soon™
+A Music Provider is one of the provider types that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Filesystem and SMB can be put in the Music Provider category. All Music Providers can be found in the `music_assistant/server/providers` folder.
+
+**Adding the necessary files for a new Music Provider**
+
+Add a new folder to the `providers` folder with the name of provider. Add two files inside:
+1. `__init__.py`. This file contains the Python code of your provider.
+2. `manifest.json`. This file contains metadata and configuration for your provider.
+
+**Configuring the manifest.json file**
+
+The easiest way to get start is to copy the contents of the manifest of an existing Music Provider, e.g. Spotify or Youtube Music. The manifest can contain the following properties:
+| Name  | Description  | Type  |
+|---|---|---|
+| type  | Always `music`  | string  |
+| domain  | The internal unique id of the provider, e.g. `spotify` or `ytmusic`  | string  |
+| name  | The full name of the provider, e.g. `Spotify` or `Youtube Music`  | string  |
+| description  | The full description of the provider  | string  |
+| codeowners  | List of Github names of the codeowners of the provider  | array[string]  |
+| config_entries  | List of configurable properties for the provider, e.g. `username` or `password`*. | array[object]  |
+| config_entries.key  | The unique key of the config entry, used to obtain the value in the provider code  | string  |
+| config_entries.type  | The type of the config entry. Possible values: `string`, `secure_string` (for passwords), `boolean`, `float`, `integer`, `label` (for a single line of text in the settings page)  | string  |
+| config_entries.label | The label of the config entry. Used in the settings page | string |
+| requirements | List of requirements for the provider in pip string format. Supported values are `package==version` and `git+https://gitrepoforpackage` | array[string]
+| documentation | URL to the Github discussion containing the documentation for the provider. | string |
+| multi_instances | Whether multiple instances of the configuration are supported, e.g. multiple user accounts for Spotify | boolean |
+
+\* These `config_entries` are used to automatically generate the settings page for the provider in the front-end. The values can be obtained via `self.config.get_value(key)`.
 
 ## ▶️ Building your own Player Provider
 Will follow soon™
