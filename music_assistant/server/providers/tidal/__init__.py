@@ -17,7 +17,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.common.models.config_entries import ConfigEntryValue, ProviderConfig
 from music_assistant.common.models.enums import ProviderFeature, ProviderType
-from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -43,10 +43,13 @@ from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
     get_album,
+    get_album_tracks,
     get_library_albums,
     get_library_artists,
     get_library_playlists,
     get_library_tracks,
+    get_playlist,
+    get_playlist_tracks,
 )
 
 CACHE_DIR = gettempdir()
@@ -149,16 +152,30 @@ class TidalProvider(MusicProvider):
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
-        album_obj = await get_album(prov_album_id=prov_album_id)
-        if not album_obj.tracks:
-            return []
-        tracks = []
-        for idx, track_obj in enumerate(album_obj.tracks, 1):
-            track = await self._parse_track(track_obj=track_obj)
-            track.disc_number = 0
-            track.track_number = idx
-            tracks.append(track)
-        return tracks
+        result = []
+        tracks = await get_album_tracks(self._tidal_session, prov_album_id)
+        for index, track in enumerate(tracks, 1):
+            if track.available:
+                track = await self._parse_track(track)
+                track.position = index
+                result.append(track)
+        return result
+
+    async def get_playlist(self, prov_playlist_id) -> Playlist:
+        """Get full playlist details by id."""
+        playlist_obj = await get_playlist(self._tidal_session, prov_playlist_id)
+        return await self._parse_playlist(playlist_obj) if playlist_obj else None
+
+    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+        """Get all playlist tracks for given playlist id."""
+        result = []
+        tracks = await get_playlist_tracks(self._tidal_session, prov_playlist_id=prov_playlist_id)
+        for index, track in enumerate(tracks, 1):
+            if track.available:
+                track = await self._parse_track(track)
+                track.position = index
+                result.append(track)
+        return result
 
     async def _parse_artist(self, artist_obj):
         """Parse tidal artist object to generic layout."""
@@ -240,8 +257,13 @@ class TidalProvider(MusicProvider):
         """Parse tidal track object to generic layout."""
         name = track_obj.name
         version = track_obj.version
+        track_id = None
+        if hasattr(track_obj, "id"):
+            track_id = track_obj.id
+        elif hasattr(track_obj, "item_id"):
+            track_id = track_obj.item_id
         track = Track(
-            item_id=track_obj.id,
+            item_id=track_id,
             provider=self.domain,
             name=name,
             version=version,
@@ -273,11 +295,10 @@ class TidalProvider(MusicProvider):
             track.metadata.explicit = True
         if track_obj.get("popularity"):
             track.metadata.popularity = track_obj["popularity"] """
-        track_id = track_obj.id
         available = track_obj.available
         track.add_provider_mapping(
             ProviderMapping(
-                item_id=track_obj.id,
+                item_id=track_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 content_type=ContentType.OGG,
