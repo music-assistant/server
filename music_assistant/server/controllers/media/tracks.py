@@ -43,6 +43,7 @@ class TracksController(MediaControllerBase[Track]):
         self.mass.register_api_command("music/track/versions", self.versions)
         self.mass.register_api_command("music/track/update", self.update_db_item)
         self.mass.register_api_command("music/track/delete", self.delete_db_item)
+        self.mass.register_api_command("music/track/preview", self.get_preview_url)
 
     async def get(
         self,

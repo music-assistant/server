@@ -16,6 +16,7 @@ from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dum
 from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
     DEFAULT_PLAYER_CONFIG_ENTRIES,
+    DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ConfigEntryValue,
     ConfigUpdate,
     PlayerConfig,
@@ -155,10 +156,7 @@ class ConfigController:
         raw_values: dict[str, dict] = self.get(CONF_PROVIDERS, {})
         prov_entries = {x.domain: x.config_entries for x in self.mass.get_available_providers()}
         return [
-            ProviderConfig.parse(
-                prov_entries[prov_conf["domain"]],
-                prov_conf,
-            )
+            self.get_provider_config(prov_conf["instance_id"])
             for prov_conf in raw_values.values()
             if (provider_type is None or prov_conf["type"] == provider_type)
             and (provider_domain is None or prov_conf["domain"] == provider_domain)
@@ -173,7 +171,8 @@ class ConfigController:
             for prov in self.mass.get_available_providers():
                 if prov.domain != raw_conf["domain"]:
                     continue
-                return ProviderConfig.parse(prov.config_entries, raw_conf)
+                config_entries = DEFAULT_PROVIDER_CONFIG_ENTRIES + tuple(prov.config_entries)
+                return ProviderConfig.parse(config_entries, raw_conf)
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/update")
