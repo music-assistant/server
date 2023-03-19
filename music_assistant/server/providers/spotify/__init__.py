@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import platform
@@ -364,12 +365,10 @@ class SpotifyProvider(MusicProvider):
         album = Album(item_id=album_obj["id"], provider=self.domain, name=name, version=version)
         for artist_obj in album_obj["artists"]:
             album.artists.append(await self._parse_artist(artist_obj))
-        if album_obj["album_type"] == "single":
-            album.album_type = AlbumType.SINGLE
-        elif album_obj["album_type"] == "compilation":
-            album.album_type = AlbumType.COMPILATION
-        elif album_obj["album_type"] == "album":
-            album.album_type = AlbumType.ALBUM
+
+        with contextlib.suppress(ValueError):
+            album.album_type = AlbumType(album_obj["album_type"])
+
         if "genres" in album_obj:
             album.metadata.genre = set(album_obj["genres"])
         if album_obj.get("images"):
