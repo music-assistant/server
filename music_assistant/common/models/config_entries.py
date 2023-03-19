@@ -110,6 +110,7 @@ class ConfigEntryValue(ConfigEntry):
         if not isinstance(result.value, expected_type):
             if result.value is None and allow_none:
                 # In some cases we allow this (e.g. create default config)
+                result.value = result.default_value
                 return result
             # handle common conversions/mistakes
             if expected_type == float and isinstance(result.value, int):
@@ -204,7 +205,10 @@ class Config(DataClassDictMixin):
                 cur_val = self.values[key].value
                 if cur_val == new_val:
                     continue
-                self.values[key].value = new_val
+                if new_val is None:
+                    self.values[key].value = self.values[key].default_value
+                else:
+                    self.values[key].value = new_val
                 changed_keys.add(f"values/{key}")
 
         return changed_keys

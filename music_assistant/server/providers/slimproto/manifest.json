@@ -9,6 +9,7 @@
   "requirements": ["aioslimproto==2.2.0"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/1123",
   "multi_instance": false,
-  "builtin": true,
-  "load_by_default": true
+  "builtin": false,
+  "load_by_default": true,
+  "depends_on": "lms_cli"
 }
