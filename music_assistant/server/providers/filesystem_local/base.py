@@ -13,7 +13,11 @@ import xmltodict
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.enums import ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -37,6 +41,8 @@ from music_assistant.server.helpers.tags import parse_tags, split_items
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import get_parentdir
+
+CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 
 TRACK_EXTENSIONS = ("mp3", "m4a", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
 PLAYLIST_EXTENSIONS = ("m3u", "pls")
@@ -237,6 +243,21 @@ class FileSystemProviderBase(MusicProvider):
         if prev_checksums is None:
             prev_checksums = {}
 
+        # process all deleted (or renamed) files first
+        cur_filenames = set()
+        async for item in self.listdir("", recursive=True):
+            if "." not in item.name or not item.ext:
+                # skip system files and files without extension
+                continue
+
+            if item.ext not in SUPPORTED_EXTENSIONS:
+                # unsupported file extension
+                continue
+            cur_filenames.add(item.path)
+        # work out deletions
+        deleted_files = set(prev_checksums.keys()) - cur_filenames
+        await self._process_deletions(deleted_files)
+
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_checksums = {}
@@ -287,9 +308,6 @@ class FileSystemProviderBase(MusicProvider):
 
         # store (final) checksums in cache
         await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
-        # work out deletions
-        deleted_files = set(prev_checksums.keys()) - set(cur_checksums.keys())
-        await self._process_deletions(deleted_files)
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
@@ -308,7 +326,7 @@ class FileSystemProviderBase(MusicProvider):
             if db_item := await controller.get_db_item_by_prov_id(
                 file_path, provider_instance=self.instance_id
             ):
-                await controller.remove_prov_mapping(db_item.item_id, self.instance_id)
+                await controller.delete_db_item(db_item.item_id, True)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
@@ -371,14 +389,27 @@ class FileSystemProviderBase(MusicProvider):
                             artist.musicbrainz_id = tags.musicbrainz_albumartistids[index]
                     album_artists.append(artist)
             else:
-                # always fallback to various artists as album artist if user did not tag album artist
-                # ID3 tag properly because we must have an album artist
-                self.logger.warning(
-                    "%s is missing ID3 tag [albumartist], using %s as fallback",
-                    file_item.path,
-                    VARIOUS_ARTISTS,
-                )
-                album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS)]
+                # album artist tag is missing, determine fallback
+                fallback_action = self.config.get_value(CONF_MISSING_ALBUM_ARTIST_ACTION)
+                if fallback_action == "various_artists":
+                    self.logger.warning(
+                        "%s is missing ID3 tag [albumartist], using %s as fallback",
+                        file_item.path,
+                        VARIOUS_ARTISTS,
+                    )
+                    album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS)]
+                elif fallback_action == "track_artist":
+                    self.logger.warning(
+                        "%s is missing ID3 tag [albumartist], using track artist(s) as fallback",
+                        file_item.path,
+                    )
+                    album_artists = [
+                        await self._parse_artist(name=track_artist_str)
+                        for track_artist_str in tags.artists
+                    ]
+                else:
+                    # default action is to skip the track
+                    raise InvalidDataError(f"{file_item.path} is missing ID3 tag [albumartist]")
 
             track.album = await self._parse_album(
                 tags.album,
@@ -395,8 +426,8 @@ class FileSystemProviderBase(MusicProvider):
                 artist := next((x for x in track.album.artists if x.name == track_artist_str), None)
             ):
                 track.artists.append(artist)
-                continue
-            artist = await self._parse_artist(track_artist_str)
+            else:
+                artist = await self._parse_artist(track_artist_str)
             if not artist.musicbrainz_id:
                 with contextlib.suppress(IndexError):
                     artist.musicbrainz_id = tags.musicbrainz_artistids[index]
