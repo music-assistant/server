@@ -279,7 +279,7 @@ DEFAULT_PROVIDER_CONFIG_ENTRIES = (
             ConfigValueOption("info", "INFO"),
             ConfigValueOption("warning", "WARNING"),
             ConfigValueOption("error", "ERROR"),
-            ConfigValueOption("debug", "DEBIG"),
+            ConfigValueOption("debug", "DEBUG"),
         ],
         default_value="GLOBAL",
         description="Set the log verbosity for this provider",
