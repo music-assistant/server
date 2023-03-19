@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
+SYNC_INTERVAL = 3 * 3600
 
 
 class MusicController:
@@ -68,6 +69,7 @@ class MusicController:
         """Async initialize of module."""
         # setup library database
         await self._setup_database()
+        self.mass.create_task(self.start_sync(reschedule=SYNC_INTERVAL))
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -82,6 +84,7 @@ class MusicController:
         self,
         media_types: list[MediaType] | None = None,
         providers: list[str] | None = None,
+        reschedule: int | None = None,
     ) -> None:
         """Start running the sync of (all or selected) musicproviders.
 
@@ -97,8 +100,15 @@ class MusicController:
             if provider.instance_id not in providers:
                 continue
             self._start_provider_sync(provider.instance_id, media_types)
-        # trgger metadata scan after provider sync completed
+        # trigger metadata scan after provider sync completed
         self.mass.metadata.start_scan()
+
+        # reschedule task if needed
+        def create_sync_task():
+            self.mass.create_task(self.start_sync, media_types, providers, reschedule)
+
+        if reschedule is not None:
+            self.mass.loop.call_later(reschedule, create_sync_task)
 
     @api_command("music/synctasks")
     def get_running_sync_tasks(self) -> list[SyncTask]:

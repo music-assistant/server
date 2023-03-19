@@ -124,8 +124,8 @@ PlaylistItem = TypedDict(
 def playlist_item_from_mass(queue_item: QueueItem, index: int = 0) -> PlaylistItem:
     """Parse PlaylistItem for the Json RPC interface from MA QueueItem."""
     if queue_item.media_item and queue_item.media_type == MediaType.TRACK:
-        artist = queue_item.media_item.artist.name
-        album = queue_item.media_item.album.name
+        artist = queue_item.media_item.artist.name if queue_item.media_item.artist else ""
+        album = queue_item.media_item.album.name if queue_item.media_item.album else ""
         title = queue_item.media_item.name
     elif queue_item.streamdetails and queue_item.streamdetails.stream_title:
         if " - " in queue_item.streamdetails.stream_title:

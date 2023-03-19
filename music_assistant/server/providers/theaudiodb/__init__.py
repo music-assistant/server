@@ -64,6 +64,7 @@ ALBUMTYPE_MAPPING = {
     "Single": AlbumType.SINGLE,
     "Compilation": AlbumType.COMPILATION,
     "Album": AlbumType.ALBUM,
+    "EP": AlbumType.EP,
 }
 
 

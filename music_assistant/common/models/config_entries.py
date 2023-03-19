@@ -108,16 +108,24 @@ class ConfigEntryValue(ConfigEntry):
         if entry.type == ConfigEntryType.LABEL:
             result.value = result.label
         if not isinstance(result.value, expected_type):
-            if result.value is None and allow_none:
-                # In some cases we allow this (e.g. create default config)
-                result.value = result.default_value
+            # value type does not match
+            try:
+                # try to simply convert it
+                result.value = expected_type(result.value)
                 return result
+            except ValueError:
+                pass
             # handle common conversions/mistakes
             if expected_type == float and isinstance(result.value, int):
                 result.value = float(result.value)
                 return result
             if expected_type == int and isinstance(result.value, float):
                 result.value = int(result.value)
+                return result
+            # fallback to default
+            if result.value is None and allow_none:
+                # In some cases we allow this (e.g. create default config)
+                result.value = result.default_value
                 return result
             if entry.default_value:
                 LOGGER.warning(
@@ -271,7 +279,7 @@ DEFAULT_PROVIDER_CONFIG_ENTRIES = (
             ConfigValueOption("info", "INFO"),
             ConfigValueOption("warning", "WARNING"),
             ConfigValueOption("error", "ERROR"),
-            ConfigValueOption("debug", "DEBIG"),
+            ConfigValueOption("debug", "DEBUG"),
         ],
         default_value="GLOBAL",
         description="Set the log verbosity for this provider",
