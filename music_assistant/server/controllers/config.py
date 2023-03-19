@@ -397,7 +397,7 @@ class ConfigController:
 
         # all checks passed, return a default config
         return ProviderConfig.parse(
-            prov.config_entries,
+            DEFAULT_PROVIDER_CONFIG_ENTRIES + tuple(prov.config_entries),
             {
                 "type": manifest.type.value,
                 "domain": manifest.domain,
