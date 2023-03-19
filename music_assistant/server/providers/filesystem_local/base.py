@@ -464,14 +464,11 @@ class FileSystemProviderBase(MusicProvider):
         # try to parse albumtype
         if track.album and track.album.album_type == AlbumType.UNKNOWN:
             album_type = tags.album_type
-            if album_type and "compilation" in album_type:
-                track.album.album_type = AlbumType.COMPILATION
-            elif album_type and "single" in album_type:
-                track.album.album_type = AlbumType.SINGLE
-            elif album_type and "album" in album_type:
-                track.album.album_type = AlbumType.ALBUM
-            elif track.album.sort_name in track.sort_name:
-                track.album.album_type = AlbumType.SINGLE
+            try:
+                track.album.album_type = AlbumType(album_type)
+            except (ValueError, KeyError):
+                if track.album.sort_name in track.sort_name:
+                    track.album.album_type = AlbumType.SINGLE
 
         # set checksum to invalidate any cached listings
         checksum_timestamp = str(int(time()))
