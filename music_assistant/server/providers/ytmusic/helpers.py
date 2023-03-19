@@ -48,7 +48,7 @@ async def get_playlist(
     def _get_playlist():
         user = username if is_brand_account(username) else None
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
-        playlist = ytm.get_playlist(playlistId=prov_playlist_id)
+        playlist = ytm.get_playlist(playlistId=prov_playlist_id, limit=None)
         playlist["checksum"] = get_playlist_checksum(playlist)
         return playlist
 
