@@ -97,7 +97,7 @@ class MusicController:
             if provider.instance_id not in providers:
                 continue
             self._start_provider_sync(provider.instance_id, media_types)
-        # trgger metadata scan after provider sync completed
+        # trigger metadata scan after provider sync completed
         self.mass.metadata.start_scan()
 
     @api_command("music/synctasks")
