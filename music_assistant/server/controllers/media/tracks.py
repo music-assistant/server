@@ -43,6 +43,7 @@ class TracksController(MediaControllerBase[Track]):
         self.mass.register_api_command("music/track/versions", self.versions)
         self.mass.register_api_command("music/track/update", self.update_db_item)
         self.mass.register_api_command("music/track/delete", self.delete_db_item)
+        self.mass.register_api_command("music/track/preview", self.get_preview_url)
 
     async def get(
         self,
@@ -133,15 +134,9 @@ class TracksController(MediaControllerBase[Track]):
             if loose_compare_strings(track.name, prov_item.name)
             and compare_artists(prov_item.artists, track.artists, any_match=True)
         }
-        # make sure that the 'base' version is included
+        # make sure that the 'base' version is NOT included
         for prov_version in track.provider_mappings:
-            if prov_version.item_id in all_versions:
-                continue
-            # grab full item here including album details etc
-            prov_track = await self.get_provider_item(
-                prov_version.item_id, prov_version.provider_instance
-            )
-            all_versions[prov_version.item_id] = prov_track
+            all_versions.pop(prov_version.item_id, None)
 
         # return the aggregated result
         return all_versions.values()

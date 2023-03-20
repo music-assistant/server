@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import urllib.parse
@@ -15,6 +16,7 @@ import aiofiles
 from aiohttp import web
 
 from music_assistant.common.models.enums import ImageType, MediaType, ProviderFeature, ProviderType
+from music_assistant.common.models.errors import ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -75,7 +77,7 @@ class MetaDataController:
             self._pref_lang = lang.upper()
 
     def start_scan(self) -> None:
-        """Start background scan for missing Artist metadata."""
+        """Start background scan for missing metadata."""
 
         async def scan_artist_metadata():
             """Background task that scans for artists missing metadata on filesystem providers."""
@@ -84,18 +86,19 @@ class MetaDataController:
 
             LOGGER.info("Start scan for missing artist metadata")
             self.scan_busy = True
-            for prov in self.mass.music.providers:
-                if not prov.is_file():
+            async for artist in self.mass.music.artists.iter_db_items():
+                if artist.metadata.last_refresh is not None:
                     continue
-                async for artist in self.mass.music.artists.iter_db_items_by_prov_id(
-                    provider_instance=prov.instance_id
-                ):
-                    if artist.metadata.last_refresh is not None:
-                        continue
-                    # simply grabbing the full artist will trigger a full fetch
+                # most important is to see artist thumb in listings
+                # so if that is already present, move on
+                # full details can be grabbed later
+                if artist.image:
+                    continue
+                # simply grabbing the full artist will trigger a full fetch
+                with contextlib.suppress(ProviderUnavailableError):
                     await self.mass.music.artists.get(artist.item_id, artist.provider, lazy=False)
-                    # this is slow on purpose to not cause stress on the metadata providers
-                    await asyncio.sleep(30)
+                # this is slow on purpose to not cause stress on the metadata providers
+                await asyncio.sleep(30)
             self.scan_busy = False
             LOGGER.info("Finished scan for missing artist metadata")
 

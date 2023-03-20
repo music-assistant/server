@@ -49,15 +49,9 @@ class RadioController(MediaControllerBase[Radio]):
             for prov_item in prov_items
             if loose_compare_strings(radio.name, prov_item.name)
         }
-        # make sure that the 'base' version is included
+        # make sure that the 'base' version is NOT included
         for prov_version in radio.provider_mappings:
-            if prov_version.item_id in all_versions:
-                continue
-            radio_copy = Radio.from_dict(radio.to_dict())
-            radio_copy.item_id = prov_version.item_id
-            radio_copy.provider = prov_version.provider_domain
-            radio_copy.provider_mappings = {prov_version}
-            all_versions[prov_version.item_id] = radio_copy
+            all_versions.pop(prov_version.item_id, None)
 
         # return the aggregated result
         return all_versions.values()

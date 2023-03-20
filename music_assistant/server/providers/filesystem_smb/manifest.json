@@ -79,6 +79,20 @@
       "description": "Controls whether the NetBIOS over TCP/IP (is_direct_tcp=False) or the newer Direct hosting of SMB over TCP/IP (is_direct_tcp=True) will be used for the communication. The default parameter is False which will use NetBIOS over TCP/IP for wider compatibility (TCP port: 139).",
       "advanced": true,
       "required": false
+    },
+    {
+      "key": "missing_album_artist_action",
+      "type": "string",
+      "label": "Action when a track is missing the Albumartist ID3 tag",
+      "default_value": "skip",
+      "description": "Music Assistant prefers information stored in ID3 tags and only uses online sources for additional metadata. This means that the ID3 tags need to be accurate, preferably tagged with MusicBrainz Picard.",
+      "advanced": true,
+      "required": false,
+      "options": [
+        { "title": "Skip track and log warning", "value": "skip" },
+        { "title": "Use Track artist(s)", "value": "track_artist" },
+        { "title": "Use Various Artists", "value": "various_artists" }
+      ]
     }
   ],
 
