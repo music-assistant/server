@@ -52,6 +52,16 @@ The easiest way to get start is to copy the contents of the manifest of an exist
 
 \* These `config_entries` are used to automatically generate the settings page for the provider in the front-end. The values can be obtained via `self.config.get_value(key)`.
 
+**Creating the provider**
+
+Create a file called `__init__.py` inside the folder of your provider. This file will contain the logic for the provider. All Music Providers must inherit from the [`MusicProvider`](./music_assistant/server/models/music_provider.py) base class and override the necessary functions where applicable. A few things to note:
+* The `setup()` function is called by Music Assistant upon initialization of the provider. It gives you the opportunity the prepare the provider for usage. For example, logging in a user or obtaining a token can be done in this function.
+* A provider should let Music Assistant know which [`ProviderFeatures`](./music_assistant/common/models/enums.py) it supports by implementing the property `supported_features`, which returns a list of `ProviderFeatures`.
+* Music Assistant support multiple ways to playback music:
+    1. Raw bytes, see the [Spotify](./music_assistant/server/providers/spotify/__init__.py) provider as an example
+    2. Direct URL, see the [Youtube Music](.//music_assistant/server/providers/ytmusic/__init__.py) provider as an example
+
+
 ## ▶️ Building your own Player Provider
 Will follow soon™
 
