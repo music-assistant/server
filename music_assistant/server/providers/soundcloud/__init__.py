@@ -39,8 +39,8 @@ SUPPORTED_FEATURES = (
     # ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.BROWSE,
-    ProviderFeature.SEARCH,
+    # ProviderFeature.BROWSE,
+    # ProviderFeature.SEARCH,
     # ProviderFeature.ARTIST_ALBUMS,
     # ProviderFeature.ARTIST_TOPTRACKS,
     # ProviderFeature.SIMILAR_TRACKS,
@@ -67,21 +67,22 @@ class SoundcloudMusicProvider(MusicProvider):
         ):
             raise LoginFailed("Invalid login credentials")
 
-        def connect():
-            soundcloud_account = Soundcloud(
-                o_auth=self.config.get_value(CONF_AUTHORIZATION),
-                client_id=self.config.get_value(CONF_CLIENT_ID),
-            )
-            return soundcloud_account.get_account_details()
+        # def connect():
+        #     print("connect")
+        #     soundcloud_account = Soundcloud(
+        #         o_auth=self.config.get_value(CONF_AUTHORIZATION),
+        #         client_id=self.config.get_value(CONF_CLIENT_ID),
+        #     )
+        #     return soundcloud_account.get_account_details()
 
-        self._soundcloud = await self._run_async(connect)
+        # self._soundcloud = await self._run_async(connect)
         username = self.config.get_value(CONF_USERNAME)
         client_id = self.config.get_value(CONF_CLIENT_ID)
         auth_token = self.config.get_value(CONF_AUTHORIZATION)
 
-        # self._soundcloud = Soundcloud(auth_token, client_id)
-        # self.me = self._soundcloud.get_account_details()
-        # self.user_id = self.me["id"]
+        self._soundcloud = Soundcloud(auth_token, client_id)
+        self.me = self._soundcloud.get_account_details()
+        self.user_id = self.me["id"]
         # assert me.permalink == username
         # print(self.me["id"])
         # print(type(self.me))
@@ -135,11 +136,11 @@ class SoundcloudMusicProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Soundcloud."""
         following = self._soundcloud.get_following(self.user_id)
-        for item in following["collection"]:
+        for artist in following["collection"]:
             # print(item)
-            if item and item["id"]:
-                # print(item)
-                yield await self._parse_artist(item)
+            # if artist and artist["id"]:
+            # print(item)
+            yield await self._parse_artist(artist)
 
         # artists_obj = await get_library_artists(
         #     headers=self._headers, username=self.config.get_value(CONF_USERNAME)
@@ -162,11 +163,8 @@ class SoundcloudMusicProvider(MusicProvider):
         for item in playlists["collection"]:
             # print(item)
             if "playlist" in item:
-                if item:
-                    if item["playlist"]["title"]:
-                        yield await self._parse_playlist(item)
-                    elif item["system_playlist"]["title"]:
-                        yield await self._parse_playlist(item)
+                if item and (item["playlist"]["title"] or item["system_playlist"]["title"]):
+                    yield await self._parse_playlist(item)
             elif "system_playlist" in item:
                 if item:
                     if item["system_playlist"]["title"]:
@@ -179,22 +177,25 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Youtube Music."""
-        tracks_obj = self._soundcloud.get_tracks_liked()
-        print(tracks_obj["collection"])
+        tracks = self._soundcloud.get_tracks_liked()
+        print(tracks["collection"])
         # tracks_obj = await get_library_tracks(
         #     headers=self._headers, username=self.config.get_value(CONF_USERNAME)
         # )
-        for item in tracks_obj["collection"]:
+        for item in tracks["collection"]:
+            print("item")
+            print(item)
             track = self._soundcloud.get_track_details(item)
-            print(track)
+            print("track")
+            print(track[0])
             # Library tracks sometimes do not have a valid artist id
             # In that case, call the API for track details based on track id
             try:
-                yield await self._parse_track(track)
+                yield await self._parse_track(track[0])
             except InvalidDataError:
                 print(track)
-                track = await self.get_track(track["videoId"])
-                yield track
+            #     track = await self.get_track(track["videoId"])
+            #     yield track
 
     # async def get_album(self, prov_album_id) -> Album:
     #     """Get full album details by id."""
@@ -449,7 +450,7 @@ class SoundcloudMusicProvider(MusicProvider):
         ) as response:
             return await response.text()
 
-    async def _initialize_headers(self, cookie: str) -> dict[str, str]:
+        # async def _initialize_headers(self, cookie: str) -> dict[str, str]:
         """Return headers to include in the requests."""
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",  # noqa: E501
@@ -548,12 +549,8 @@ class SoundcloudMusicProvider(MusicProvider):
         """Parse a YT Artist response to Artist model object."""
         artist_id = None
         permalink = artist_obj["permalink"]
-        if "channelId" in artist_obj:
+        if "id" in artist_obj and artist_obj["id"]:
             artist_id = artist_obj["id"]
-        elif "id" in artist_obj and artist_obj["id"]:
-            artist_id = artist_obj["id"]
-        # elif artist_obj["name"] == "Various Artists":
-        #     artist_id = "UCUTXlgdcKU5vfzFqHOWIvkA"
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
         artist = Artist(item_id=artist_id, name=artist_obj["username"], provider=self.domain)
@@ -578,7 +575,6 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
-        # print(playlist_obj)
         # playlist = Playlist(
         #     item_id=playlist_obj["playlist"]["id"],
         #     provider=self.domain,
@@ -619,10 +615,10 @@ class SoundcloudMusicProvider(MusicProvider):
             )
             if "description" in playlist_obj["playlist"]:
                 playlist.metadata.description = playlist_obj["playlist"]["description"]
-            if "avatar_url" in playlist_obj["playlist"] and playlist_obj["playlist"]["artwork_url"]:
-                playlist.metadata.images = await self._parse_thumbnails(
-                    playlist_obj["playlist"]["artwork_url"]
-                )
+            # if "artwork_url" in playlist_obj["playlist"] and playlist_obj["playlist"]["artwork_url"]:
+            #     playlist.metadata.images = await self._parse_thumbnails(
+            #         playlist_obj["playlist"]["artwork_url"]
+            #     )
             is_editable = False
             # if playlist_obj.get("sharing") and playlist_obj.get("sharing") == "private":
             #     is_editable = True
@@ -635,15 +631,16 @@ class SoundcloudMusicProvider(MusicProvider):
                 )
             )
         playlist.metadata.checksum = playlist_obj.get("checksum")
+        print(playlist.metadata.checksum)
         return playlist
 
     async def _parse_track(self, track_obj: dict) -> Track:
         """Parse a YT Track response to a Track model object."""
-        print(track_obj[0])
+        print(track_obj)
         # print("KAAAAAAAAAAAAAAAAAK")
-        track = Track(item_id=track_obj[0]["id"], provider=self.domain, name=track_obj[0]["title"])
+        track = Track(item_id=track_obj["id"], provider=self.domain, name=track_obj[0]["title"])
 
-        track.artist = await self._parse_artist(await self._run_async(track_obj.artist))
+        # track.artist = await self._parse_artist(await self._run_async(track_obj.artist))
         if "username" in track_obj[0]:
             track.artists = [
                 await self._parse_artist(artist)

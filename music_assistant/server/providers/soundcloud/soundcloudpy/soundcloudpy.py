@@ -7,6 +7,8 @@ BASE_URL = "https://api-v2.soundcloud.com"
 
 
 class Soundcloud:
+    """Soundcloud"""
+
     def __init__(self, o_auth, client_id):
         #: Client id for soundcloud account(must be 32bytes length)
         if len(client_id) != 32:
@@ -18,7 +20,10 @@ class Soundcloud:
 
         # To get the last version of Firefox to prevent some type of deprecated version
         json_versions = dict(
-            requests.get("https://product-details.mozilla.org/1.0/firefox_versions.json").json()
+            requests.get(
+                "https://product-details.mozilla.org/1.0/firefox_versions.json",
+                timeout=10,
+            ).json()
         )
         firefox_version = json_versions.get("LATEST_FIREFOX_VERSION")
 
@@ -31,13 +36,13 @@ class Soundcloud:
         }
 
         # Version of soundcloud app
-        app_json = requests.get("https://soundcloud.com/versions.json")
+        app_json = requests.get("https://soundcloud.com/versions.json", timeout=10)
         self.app_version = dict(app_json.json()).get("app")
 
     # ---------------- USER ----------------
 
     def get_account_details(self):
-        req = requests.get(f"{BASE_URL}/me", headers=self.headers)
+        req = requests.get(f"{BASE_URL}/me", headers=self.headers, timeout=10)
         return req.json()
 
     def get_user_details(self, user_id):
@@ -46,7 +51,9 @@ class Soundcloud:
         """
 
         req = requests.get(
-            f"{BASE_URL}/users/{user_id}?client_id={self.client_id}", headers=self.headers
+            f"{BASE_URL}/users/{user_id}?client_id={self.client_id}",
+            headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -58,6 +65,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/me/followers/ids?linked_partitioning=1&client_id={self.client_id}&limit={limit}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -71,6 +79,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/users/{own_user_id}/followings?client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -82,6 +91,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/me/suggested/users/who_to_follow?view=recommended-first&client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -93,6 +103,7 @@ class Soundcloud:
         req = requests.post(
             f"{BASE_URL}/me/followings/{user_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.status_code
 
@@ -104,6 +115,7 @@ class Soundcloud:
         req = requests.delete(
             f"{BASE_URL}/me/followings/{user_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.status_code
 
@@ -121,6 +133,7 @@ class Soundcloud:
             f"{BASE_URL}/users/{own_user_id}/conversations/{user_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
             json=body,
+            timeout=10,
         )
         return req.json()
 
@@ -134,6 +147,7 @@ class Soundcloud:
         req = requests.delete(
             f"{BASE_URL}/users/{own_user_id}/conversations/{user_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -146,6 +160,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/stream/users/{user_id}/reposts?client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -159,6 +174,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/me/play-history/tracks?client_id={self.client_id}&limit={limit}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -168,7 +184,9 @@ class Soundcloud:
         """
 
         req = requests.get(
-            f"{BASE_URL}/tracks/{track_id}/likers?client_id={self.client_id}", headers=self.headers
+            f"{BASE_URL}/tracks/{track_id}/likers?client_id={self.client_id}",
+            headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -178,7 +196,9 @@ class Soundcloud:
         """
 
         req = requests.get(
-            f"{BASE_URL}/tracks?ids={track_id}&client_id={self.client_id}", headers=self.headers
+            f"{BASE_URL}/tracks?ids={track_id}&client_id={self.client_id}",
+            headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -190,6 +210,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/me/track_likes/ids?client_id={self.client_id}&limit={limit}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -200,6 +221,7 @@ class Soundcloud:
         req = requests.put(
             f"{BASE_URL}/users/{user_id}/track_likes/{track_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
 
         # Return "OK" if successful request
@@ -212,6 +234,7 @@ class Soundcloud:
         req = requests.delete(
             f"{BASE_URL}/users/{user_id}/track_likes/{track_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
 
         # Return "OK" if successful request
@@ -221,6 +244,7 @@ class Soundcloud:
         req = requests.put(
             f"{BASE_URL}/me/track_reposts/{track_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
 
         # Return the status code of the request
@@ -230,6 +254,7 @@ class Soundcloud:
         req = requests.delete(
             f"{BASE_URL}/me/track_reposts/{track_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
 
         # Return the status code of the request
@@ -244,6 +269,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/recent-tracks/{genre}?client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -256,14 +282,19 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/search/tracks?q=&filter.genre_or_tag={genre}&sort=popular&client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
+        return req.json()
 
     def get_track_id_from_permalink(self, url_track):
         """
         :param url_track: string with the url like: "https://soundcloud.com/postmalone/post-malone-hateful"
         """
 
-        req = requests.get(url_track)
+        req = requests.get(
+            url_track,
+            timeout=10,
+        )
 
         scrap = str(
             BeautifulSoup(req.content, "html.parser")
@@ -271,11 +302,9 @@ class Soundcloud:
             .get("content")
         )
 
-        index = str(scrap).find(":", 14, -1)
+        index = scrap.find(":", 14, -1)
 
-        track = scrap[index + 1 :]
-
-        return track
+        return scrap[index + 1 :]
 
     def get_tracks_from_user(self, user_id, limit=10):
         """
@@ -285,6 +314,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/users/{user_id}/tracks?representation=&client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -297,6 +327,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/users/{user_id}/toptracks?client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -304,7 +335,9 @@ class Soundcloud:
 
     def get_account_playlists(self):
         req = requests.get(
-            f"{BASE_URL}/me/library/all?client_id{self.client_id}", headers=self.headers
+            f"{BASE_URL}/me/library/all?client_id{self.client_id}",
+            headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -316,6 +349,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/playlists/{playlist_id}?representation=full&client_id={self.client_id}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -351,6 +385,7 @@ class Soundcloud:
         req = requests.post(
             f"{BASE_URL}/playlists?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
             json=body,
         )
         return req.json()
@@ -359,6 +394,7 @@ class Soundcloud:
         req = requests.delete(
             f"{BASE_URL}/playlists/{playlist_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -370,6 +406,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/me/playlist_likes/ids?limit={limit}&linked_partitioning=1&client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -383,6 +420,7 @@ class Soundcloud:
         req = requests.put(
             f"{BASE_URL}/users/{user_id}/playlist_likes/{playlist_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
 
         # Return "OK" if like successful
@@ -398,6 +436,7 @@ class Soundcloud:
         req = requests.delete(
             f"{BASE_URL}/users/{user_id}/playlist_likes/{playlist_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
 
         # Return "OK" if like successful
@@ -411,6 +450,7 @@ class Soundcloud:
         req = requests.put(
             f"{BASE_URL}/me/playlist_reposts/{playlist_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.status_code
 
@@ -422,6 +462,7 @@ class Soundcloud:
         req = requests.delete(
             f"{BASE_URL}/me/playlist_reposts/{playlist_id}?client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.status_code
 
@@ -434,6 +475,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/playlists/discovery?tag={genre}&client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -446,6 +488,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/users/{user_id}/playlists_without_albums?client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -457,7 +500,9 @@ class Soundcloud:
         """
 
         req = requests.get(
-            f"{BASE_URL}/tracks/{track_id}/related?client_id={self.client_id}", headers=self.headers
+            f"{BASE_URL}/tracks/{track_id}/related?client_id={self.client_id}",
+            headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -472,7 +517,11 @@ class Soundcloud:
 
         stream_url = f"{media_url}?client_id={self.client_id}&track_authorization={track_auth}"
 
-        req = requests.get(stream_url, headers=self.headers)
+        req = requests.get(
+            stream_url,
+            headers=self.headers,
+            timeout=10,
+        )
 
         return dict(req.json()).get("url")
 
@@ -486,6 +535,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/tracks/{track_id}/comments?threaded=0&filter_replies=1&client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -497,18 +547,20 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/mixed-selections?variant_ids=&client_id={self.client_id}&limit={limit}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
     def search_tracks(self, query_string, limit=10):
         """
-        :param query_string: string to search on souncloud for tracks
+        :param query_string: string to search on soundcloud for tracks
         :param limit: limit of recommended playlists make for you
         """
 
         req = requests.get(
             f"{BASE_URL}/search?q={query_string}&variant_ids=&facet=model&client_id={self.client_id}&limit={limit}&offset=0&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -516,6 +568,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/stream?offset=10&limit={limit}&promoted_playlist=true&client_id={self.client_id}&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -528,6 +581,7 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/users/{user_id}/albums?client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
 
@@ -540,5 +594,6 @@ class Soundcloud:
         req = requests.get(
             f"{BASE_URL}/stream/users/{user_id}?client_id={self.client_id}&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
+            timeout=10,
         )
         return req.json()
