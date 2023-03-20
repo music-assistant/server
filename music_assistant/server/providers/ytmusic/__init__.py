@@ -545,7 +545,12 @@ class YoutubeMusicProvider(MusicProvider):
             )
         )
         if authors := playlist_obj.get("author"):
-            playlist.owner = authors[0]["name"] if isinstance(authors, list) else authors["name"]
+            if isinstance(authors, str):
+                playlist.owner = authors
+            elif isinstance(authors, list):
+                playlist.owner = authors[0]["name"]
+            else:
+                playlist.owner = authors["name"]
         else:
             playlist.owner = self.instance_id
         playlist.metadata.checksum = playlist_obj.get("checksum")
