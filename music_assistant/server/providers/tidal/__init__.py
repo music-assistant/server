@@ -50,6 +50,8 @@ from .helpers import (
     get_library_tracks,
     get_playlist,
     get_playlist_tracks,
+    get_track,
+    get_track_url,
 )
 
 CACHE_DIR = gettempdir()
@@ -161,6 +163,11 @@ class TidalProvider(MusicProvider):
                 result.append(track)
         return result
 
+    async def get_track(self, prov_track_id) -> Track:
+        """Get full track details by id."""
+        track_obj = await get_track(self._tidal_session, prov_track_id)
+        return await self._parse_track(track_obj) if track_obj else None
+
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         playlist_obj = await get_playlist(self._tidal_session, prov_playlist_id)
@@ -176,6 +183,23 @@ class TidalProvider(MusicProvider):
                 track.position = index
                 result.append(track)
         return result
+
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
+        """Return the content details for the given track when it will be streamed."""
+        # make sure a valid track is requested.
+        track = await get_track(self._tidal_session, item_id)
+        url = await get_track_url(self._tidal_session, item_id)
+        if not track:
+            raise MediaNotFoundError(f"track {item_id} not found")
+        # make sure that the token is still valid by just requesting it
+        await self.login()
+        return StreamDetails(
+            item_id=track.id,
+            provider=self.domain,
+            content_type=ContentType.OGG,
+            duration=track.duration,
+            direct=url,
+        )
 
     async def _parse_artist(self, artist_obj):
         """Parse tidal artist object to generic layout."""

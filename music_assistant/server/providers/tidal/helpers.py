@@ -40,6 +40,24 @@ async def get_album(session: tidalapi.Session, prov_album_id: str) -> dict[str, 
     return await asyncio.to_thread(_get_album)
 
 
+async def get_track(session: tidalapi.Session, prov_track_id: str) -> dict[str, str]:
+    """Async wrapper around the tidalapi get_album function."""
+
+    def _get_track():
+        return tidalapi.Track(session, prov_track_id)
+
+    return await asyncio.to_thread(_get_track)
+
+
+async def get_track_url(session: tidalapi.Session, prov_track_id: str) -> dict[str, str]:
+    """Async wrapper around the tidalapi get_album function."""
+
+    def _get_track_url():
+        return tidalapi.Track(session, prov_track_id).get_url()
+
+    return await asyncio.to_thread(_get_track_url)
+
+
 async def get_album_tracks(session: tidalapi.Session, prov_album_id: str) -> dict[str, str]:
     """Async wrapper around the tidalapi get_album function."""
 
