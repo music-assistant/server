@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import urllib.parse
@@ -15,6 +16,7 @@ import aiofiles
 from aiohttp import web
 
 from music_assistant.common.models.enums import ImageType, MediaType, ProviderFeature, ProviderType
+from music_assistant.common.models.errors import ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -75,7 +77,7 @@ class MetaDataController:
             self._pref_lang = lang.upper()
 
     def start_scan(self) -> None:
-        """Start background scan for missing Artist metadata."""
+        """Start background scan for missing metadata."""
 
         async def scan_artist_metadata():
             """Background task that scans for artists missing metadata on filesystem providers."""
@@ -84,18 +86,19 @@ class MetaDataController:
 
             LOGGER.info("Start scan for missing artist metadata")
             self.scan_busy = True
-            for prov in self.mass.music.providers:
-                if not prov.is_file():
+            async for artist in self.mass.music.artists.iter_db_items():
+                if artist.metadata.last_refresh is not None:
                     continue
-                async for artist in self.mass.music.artists.iter_db_items_by_prov_id(
-                    provider_instance=prov.instance_id
-                ):
-                    if artist.metadata.last_refresh is not None:
-                        continue
-                    # simply grabbing the full artist will trigger a full fetch
+                # most important is to see artist thumb in listings
+                # so if that is already present, move on
+                # full details can be grabbed later
+                if artist.image:
+                    continue
+                # simply grabbing the full artist will trigger a full fetch
+                with contextlib.suppress(ProviderUnavailableError):
                     await self.mass.music.artists.get(artist.item_id, artist.provider, lazy=False)
-                    # this is slow on purpose to not cause stress on the metadata providers
-                    await asyncio.sleep(30)
+                # this is slow on purpose to not cause stress on the metadata providers
+                await asyncio.sleep(30)
             self.scan_busy = False
             LOGGER.info("Finished scan for missing artist metadata")
 
@@ -251,8 +254,6 @@ class MetaDataController:
         img_path = await self.get_image_url_for_item(
             media_item=media_item,
             img_type=img_type,
-            allow_local=True,
-            local_as_base64=False,
         )
         if not img_path:
             return None
@@ -262,8 +263,8 @@ class MetaDataController:
         self,
         media_item: MediaItemType,
         img_type: ImageType = ImageType.THUMB,
+        resolve_local: bool = True,
         allow_local: bool = True,
-        local_as_base64: bool = False,
     ) -> str | None:
         """Get url to image for given media media_item."""
         if not media_item:
@@ -276,29 +277,25 @@ class MetaDataController:
                     continue
                 if img.is_file and not allow_local:
                     continue
-                if img.is_file and local_as_base64:
-                    # return base64 string of the image (compatible with browsers)
-                    return await self.get_thumbnail(img.url, base64=True)
+                if img.is_file and resolve_local:
+                    # return imageproxy url for local filesystem items
+                    # the original path is double encoded
+                    encoded_url = urllib.parse.quote(urllib.parse.quote(img.url))
+                    return f"{self.mass.base_url}/imageproxy?path={encoded_url}"
                 return img.url
 
         # retry with track's album
         if media_item.media_type == MediaType.TRACK and media_item.album:
-            return await self.get_image_url_for_item(
-                media_item.album, img_type, allow_local, local_as_base64
-            )
+            return await self.get_image_url_for_item(media_item.album, img_type, resolve_local)
 
         # try artist instead for albums
         if media_item.media_type == MediaType.ALBUM and media_item.artist:
-            return await self.get_image_url_for_item(
-                media_item.artist, img_type, allow_local, local_as_base64
-            )
+            return await self.get_image_url_for_item(media_item.artist, img_type, resolve_local)
 
         # last resort: track artist(s)
         if media_item.media_type == MediaType.TRACK and media_item.artists:
             for artist in media_item.artists:
-                return await self.get_image_url_for_item(
-                    artist, img_type, allow_local, local_as_base64
-                )
+                return await self.get_image_url_for_item(artist, img_type, resolve_local)
 
         return None
 

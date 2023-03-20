@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
 
 from .enums import MediaType
-from .media_items import ItemMapping, MediaItemImage, Radio, StreamDetails, Track
+from .media_items import ItemMapping, Radio, StreamDetails, Track
+
+if TYPE_CHECKING:
+    from music_assistant.server import MusicAssistant
 
 
 @dataclass
@@ -23,7 +26,7 @@ class QueueItem(DataClassDictMixin):
     sort_index: int = 0
     streamdetails: StreamDetails | None = None
     media_item: Track | Radio | None = None
-    image: MediaItemImage | None = None
+    image_url: str | None = None
 
     def __post_init__(self):
         """Set default values."""
@@ -71,5 +74,14 @@ class QueueItem(DataClassDictMixin):
             name=name,
             duration=media_item.duration,
             media_item=media_item,
-            image=media_item.image,
+        )
+
+    async def resolve_image_url(self, mass: MusicAssistant) -> None:
+        """Resolve Image URL for the MediaItem."""
+        if self.image_url:
+            return
+        if not self.media_item:
+            return
+        self.image_url = await mass.metadata.get_image_url_for_item(
+            self.media_item, resolve_local=True
         )

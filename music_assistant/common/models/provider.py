@@ -56,7 +56,6 @@ class ProviderInstance(TypedDict):
     instance_id: str
     supported_features: list[ProviderFeature]
     available: bool
-    last_error: str | None
 
 
 @dataclass

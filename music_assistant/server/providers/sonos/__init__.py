@@ -446,7 +446,7 @@ class SonosPlayerProvider(PlayerProvider):
 
         self.sonosplayers[player_id] = sonos_player
 
-        self.mass.players.register(sonos_player.player)
+        self.mass.players.register_or_update(sonos_player.player)
 
     def _handle_av_transport_event(self, sonos_player: SonosPlayer, event: SonosEvent):
         """Handle a soco.SoCo AVTransport event."""
@@ -504,7 +504,7 @@ class SonosPlayerProvider(PlayerProvider):
         if not self.mass.players.queues.get_item(sonos_player.player_id, current_queue_item_id):
             return  # guard
         try:
-            next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
+            next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
                 sonos_player.player_id, current_queue_item_id
             )
         except QueueEmpty:

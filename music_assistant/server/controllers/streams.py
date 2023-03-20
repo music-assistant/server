@@ -285,10 +285,13 @@ class StreamsController:
         url = f"{self.mass.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
         return url
 
-    async def get_preview_url(self, provider: str, track_id: str) -> str:
+    def get_preview_url(self, provider_domain_or_instance_id: str, track_id: str) -> str:
         """Return url to short preview sample."""
         enc_track_id = urllib.parse.quote(track_id)
-        return f"{self.mass.base_url}/preview?provider={provider}&item_id={enc_track_id}"
+        return (
+            f"{self.mass.base_url}/stream/preview?"
+            f"provider={provider_domain_or_instance_id}&item_id={enc_track_id}"
+        )
 
     async def _serve_queue_stream(self, request: web.Request) -> web.Response:
         """Serve Queue Stream audio to player(s)."""
@@ -477,7 +480,7 @@ class StreamsController:
                     (
                         queue_track,
                         use_crossfade,
-                    ) = self.mass.players.queues.player_ready_for_next_track(
+                    ) = await self.mass.players.queues.player_ready_for_next_track(
                         queue_id, queue_track.queue_item_id
                     )
                 except QueueEmpty:
@@ -600,11 +603,11 @@ class StreamsController:
 
     async def _serve_preview(self, request: web.Request):
         """Serve short preview sample."""
-        provider_mapping = request.query["provider_mapping"]
+        provider_domain_or_instance_id = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/mp3"})
         await resp.prepare(request)
-        async for chunk in get_preview_stream(self.mass, provider_mapping, item_id):
+        async for chunk in get_preview_stream(self.mass, provider_domain_or_instance_id, item_id):
             await resp.write(chunk)
         return resp
 

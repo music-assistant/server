@@ -3,7 +3,7 @@
 import pathlib
 from typing import Final
 
-__version__: Final[str] = "2.0.0b6"
+__version__: Final[str] = "2.0.0b10"
 
 SCHEMA_VERSION: Final[int] = 19
 
@@ -47,6 +47,7 @@ CONF_EQ_MID: Final[str] = "eq_mid"
 CONF_EQ_TREBLE: Final[str] = "eq_treble"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
+CONF_LOG_LEVEL: Final[str] = "log_level"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"

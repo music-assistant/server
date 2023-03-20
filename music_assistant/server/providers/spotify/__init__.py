@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import platform
@@ -23,10 +24,10 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemType,
     MediaType,
     Playlist,
     ProviderMapping,
+    SearchResults,
     StreamDetails,
     Track,
 )
@@ -79,14 +80,14 @@ class SpotifyProvider(MusicProvider):
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
-        result = []
+        result = SearchResults()
         searchtypes = []
         if MediaType.ARTIST in media_types:
             searchtypes.append("artist")
@@ -102,25 +103,25 @@ class SpotifyProvider(MusicProvider):
             "search", q=search_query, type=searchtype, limit=limit
         ):
             if "artists" in searchresult:
-                result += [
+                result.artists += [
                     await self._parse_artist(item)
                     for item in searchresult["artists"]["items"]
                     if (item and item["id"])
                 ]
             if "albums" in searchresult:
-                result += [
+                result.albums += [
                     await self._parse_album(item)
                     for item in searchresult["albums"]["items"]
                     if (item and item["id"])
                 ]
             if "tracks" in searchresult:
-                result += [
+                result.tracks += [
                     await self._parse_track(item)
                     for item in searchresult["tracks"]["items"]
                     if (item and item["id"])
                 ]
             if "playlists" in searchresult:
-                result += [
+                result.playlists += [
                     await self._parse_playlist(item)
                     for item in searchresult["playlists"]["items"]
                     if (item and item["id"])
@@ -364,12 +365,10 @@ class SpotifyProvider(MusicProvider):
         album = Album(item_id=album_obj["id"], provider=self.domain, name=name, version=version)
         for artist_obj in album_obj["artists"]:
             album.artists.append(await self._parse_artist(artist_obj))
-        if album_obj["album_type"] == "single":
-            album.album_type = AlbumType.SINGLE
-        elif album_obj["album_type"] == "compilation":
-            album.album_type = AlbumType.COMPILATION
-        elif album_obj["album_type"] == "album":
-            album.album_type = AlbumType.ALBUM
+
+        with contextlib.suppress(ValueError):
+            album.album_type = AlbumType(album_obj["album_type"])
+
         if "genres" in album_obj:
             album.metadata.genre = set(album_obj["genres"])
         if album_obj.get("images"):
