@@ -291,6 +291,8 @@ class FileSystemProviderBase(MusicProvider):
                     # playlist is always in-library
                     playlist.in_library = True
                     await self.mass.music.playlists.add_db_item(playlist)
+            except MusicAssistantError as err:
+                self.logger.error("Error processing %s - %s", item.path, str(err))
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", item.path, str(err))
@@ -409,7 +411,7 @@ class FileSystemProviderBase(MusicProvider):
                     ]
                 else:
                     # default action is to skip the track
-                    raise InvalidDataError(f"{file_item.path} is missing ID3 tag [albumartist]")
+                    raise InvalidDataError("missing ID3 tag [albumartist]")
 
             track.album = await self._parse_album(
                 tags.album,
