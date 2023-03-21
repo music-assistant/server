@@ -1,5 +1,6 @@
-import asyncio
-from typing import AsyncGenerator, Callable
+from asyncio import TaskGroup
+from typing import AsyncGenerator, Callable, Coroutine
+from async_lru import alru_cache
 
 from plexapi.library import MusicSection as PlexMusicSection
 from plexapi.myplex import MyPlexAccount
@@ -10,8 +11,8 @@ from plexapi.audio import Artist as PlexArtist
 
 from music_assistant.common.models.enums import ProviderFeature, MediaType, ImageType, ContentType
 from music_assistant.common.models.errors import LoginFailed, InvalidDataError, MediaNotFoundError
-from music_assistant.common.models.media_items import StreamDetails, Track, Playlist, Radio, Album, Artist, \
-    MediaItemType, MediaItemImage, ProviderMapping
+from music_assistant.common.models.media_items import StreamDetails, Track, Playlist, Album, Artist, \
+    MediaItemImage, ProviderMapping, SearchResults
 from music_assistant.server.models.music_provider import MusicProvider
 from plexapi.server import PlexServer
 
@@ -50,12 +51,18 @@ class PlexProvider(MusicProvider):
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         return SUPPORTED_FEATURES
 
-    @classmethod
-    async def _run_async(cls, call: Callable, *args, **kwargs):
-        return await asyncio.to_thread(call, *args, **kwargs)
+    async def _run_async(self, call: Callable, *args, **kwargs):
+        return await self.mass.create_task(call, *args, **kwargs)
 
     async def _get_data(self, key, cls=None):
         return await self._run_async(self._plex_library.fetchItem, key, cls)
+
+    @alru_cache(maxsize=128, ttl=300)
+    async def _get_data_cached(self, key, ma_cls):
+        if ma_cls == Artist:
+            return await self._parse_artist(await self._get_data(key, PlexArtist))
+        if ma_cls == Album:
+            return await self._parse_album(await self._get_data(key, PlexAlbum))
 
     async def _parse(self, plex_media):
         if plex_media.type == "artist":
@@ -68,29 +75,41 @@ class PlexProvider(MusicProvider):
             return await self._parse_playlist(plex_media)
         return None
 
-    async def _search_track(self, search_query, limit):
+    async def _search_track(self, search_query, limit) -> list[PlexTrack]:
         return await self._run_async(self._plex_library.searchTracks, title=search_query, limit=limit)
 
-    async def _search_album(self, search_query, limit):
+    async def _search_album(self, search_query, limit) -> list[PlexAlbum]:
         return await self._run_async(self._plex_library.searchAlbums, title=search_query, limit=limit)
 
-    async def _search_artist(self, search_query, limit):
+    async def _search_artist(self, search_query, limit) -> list[PlexArtist]:
         return await self._run_async(self._plex_library.searchArtists, title=search_query, limit=limit)
 
-    async def _search_playlist(self, search_query, limit):
+    async def _search_playlist(self, search_query, limit) -> list[PlexPlaylist]:
         return await self._run_async(self._plex_library.playlists, title=search_query, limit=limit)
 
-    async def _search_track_advanced(self, limit, **kwargs):
+    async def _search_track_advanced(self, limit, **kwargs) -> list[PlexTrack]:
         return await self._run_async(self._plex_library.searchTracks, filters=kwargs, limit=limit)
 
-    async def _search_album_advanced(self, limit, **kwargs):
+    async def _search_album_advanced(self, limit, **kwargs) -> list[PlexAlbum]:
         return await self._run_async(self._plex_library.searchAlbums, filters=kwargs, limit=limit)
 
-    async def _search_artist_advanced(self, limit, **kwargs):
+    async def _search_artist_advanced(self, limit, **kwargs) -> list[PlexArtist]:
         return await self._run_async(self._plex_library.searchArtists, filters=kwargs, limit=limit)
 
-    async def _search_playlist_advanced(self, limit, **kwargs):
+    async def _search_playlist_advanced(self, limit, **kwargs) -> list[PlexPlaylist]:
         return await self._run_async(self._plex_library.playlists, filters=kwargs, limit=limit)
+
+    async def _search_and_parse(self, search_coro: Coroutine, parse_coro: Callable):
+        tasks = []
+        async with TaskGroup() as tg:
+            for item in await search_coro:
+                tasks.append(tg.create_task(parse_coro(item)))
+
+        results = []
+        for task in tasks:
+            results.append(task.result())
+
+        return results
 
     async def _parse_album(self, plex_album: PlexAlbum) -> Album:
         """Parse a Plex Album response to an Album model object."""
@@ -107,7 +126,7 @@ class PlexProvider(MusicProvider):
         if plex_album.summary:
             album.metadata.description = plex_album.summary
 
-        album.artist = await self._parse_artist(await asyncio.to_thread(plex_album.artist))
+        album.artist = await self._get_data_cached(plex_album.parentKey, Artist)
 
         album.add_provider_mapping(
             ProviderMapping(
@@ -163,15 +182,14 @@ class PlexProvider(MusicProvider):
         """Parse a Plex Track response to a Track model object."""
         track = Track(item_id=plex_track.key, provider=self.domain, name=plex_track.title)
 
-        track.artist = await self._parse_artist(
-            await self._run_async(plex_track.artist)
-        )
+        if plex_track.grandparentKey:
+            track.artist = await self._get_data_cached(plex_track.grandparentKey, Artist)
 
         # guard that track has valid artists
         if plex_track.thumbUrl:
             track.metadata.images = [MediaItemImage(ImageType.THUMB, plex_track.thumbUrl, True)]
-        if plex_album := await self._run_async(plex_track.album):
-            track.album = await self._parse_album(plex_album)
+        if plex_track.parentKey:
+            track.album = await self._get_data_cached(plex_track.parentKey, Album)
         if plex_track.duration:
             track.duration = int(plex_track.duration / 1000)
         if plex_track.trackNumber:
@@ -201,31 +219,45 @@ class PlexProvider(MusicProvider):
             self,
             search_query: str,
             media_types: list[MediaType] | None = None,
-            limit: int = 5,
-    ) -> list[MediaItemType]:
+            limit: int = 20,
+    ) -> SearchResults:
         if not media_types:
             media_types = [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST]
 
-        tasks = []
+        tasks = {}
 
-        for media_type in media_types:
+        async with TaskGroup() as tg:
+            for media_type in media_types:
+                if media_type == MediaType.ARTIST:
+                    tasks[MediaType.ARTIST] = tg.create_task(
+                        self._search_and_parse(self._search_artist(search_query, limit), self._parse_artist)
+                    )
+                elif media_type == MediaType.ALBUM:
+                    tasks[MediaType.ARTIST] = tg.create_task(
+                        self._search_and_parse(self._search_album(search_query, limit), self._parse_album)
+                    )
+                elif media_type == MediaType.TRACK:
+                    tasks[MediaType.ARTIST] = tg.create_task(
+                        self._search_and_parse(self._search_track(search_query, limit), self._parse_track)
+                    )
+                elif media_type == MediaType.PLAYLIST:
+                    tasks[MediaType.ARTIST] = tg.create_task(
+                        self._search_and_parse(self._search_playlist(search_query, limit), self._parse_playlist)
+                    )
+
+        search_results = SearchResults()
+
+        for media_type, task in tasks.items():
             if media_type == MediaType.ARTIST:
-                tasks.append(self._search_artist(search_query, limit))
-            if media_type == MediaType.ALBUM:
-                tasks.append(self._search_album(search_query, limit))
-            if media_type == MediaType.TRACK:
-                tasks.append(self._search_track(search_query, limit))
-            if media_type == MediaType.PLAYLIST:
-                tasks.append(self._search_playlist(search_query, limit))
+                search_results.artists = task.result()
+            elif media_type == MediaType.ALBUM:
+                search_results.albums = task.result()
+            elif media_type == MediaType.TRACK:
+                search_results.tracks = task.result()
+            elif media_type == MediaType.PLAYLIST:
+                search_results.playlists = task.result()
 
-        search_results = await asyncio.gather(*tasks)
-
-        results = []
-        for task_result in search_results:
-            for plex_result in task_result:
-                results.append(await self._parse(plex_result))
-
-        return results
+        return search_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Plex Music."""
@@ -254,7 +286,7 @@ class PlexProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Plex Music."""
         tracks_obj = await self._search_track(
-            None, limit=9999
+            None, limit=99999
         )
         for track in tracks_obj:
             yield await self._parse_track(track)
