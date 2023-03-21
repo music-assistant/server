@@ -34,8 +34,7 @@ Add a new folder to the `providers` folder with the name of provider. Add two fi
 
 **Configuring the manifest.json file**
 
-The easiest way to get start is to copy the contents of the manifest of an existing Music Provider, e.g. Spotify or Youtube Music. The manifest can contain the following properties:
-
+The easiest way to get start is to copy the contents of the manifest of an existing Music Provider, e.g. Spotify or Youtube Music. See [the manifest section](#⚙️-manifest-file) for all available properties.
 
 **Creating the provider**
 
