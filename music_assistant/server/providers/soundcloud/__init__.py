@@ -9,15 +9,12 @@ from urllib.parse import unquote
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
-from music_assistant.common.models.media_items import (
+from music_assistant.common.models.media_items import (  # ContentType,; ImageType,; MediaType,
     Album,
     AlbumType,
     Artist,
-    ContentType,
-    ImageType,
     MediaItemImage,
     MediaItemType,
-    MediaType,
     Playlist,
     ProviderMapping,
     StreamDetails,
@@ -29,7 +26,7 @@ from music_assistant.constants import CONF_USERNAME
 from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
-from .soundcloudpy.soundcloudpy import Soundcloud
+from .soundcloudpy.asyncsoundcloudpy import SoundcloudAsync
 
 CONF_CLIENT_ID = "client_id"
 CONF_AUTHORIZATION = "authorization"
@@ -80,8 +77,13 @@ class SoundcloudMusicProvider(MusicProvider):
         client_id = self.config.get_value(CONF_CLIENT_ID)
         auth_token = self.config.get_value(CONF_AUTHORIZATION)
 
-        self._soundcloud = Soundcloud(auth_token, client_id)
-        self.me = self._soundcloud.get_account_details()
+        async with SoundcloudAsync(auth_token, client_id) as account:
+            print(account)
+            status = await account.login()
+            print(status)
+
+        self._soundcloud = account
+        self.me = await account.get_account_details()
         self.user_id = self.me["id"]
         # assert me.permalink == username
         # print(self.me["id"])
@@ -135,7 +137,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Soundcloud."""
-        following = self._soundcloud.get_following(self.user_id)
+        following = await self._soundcloud.get_following(self.user_id)
         for artist in following["collection"]:
             # print(item)
             # if artist and artist["id"]:
@@ -158,7 +160,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
-        playlists = self._soundcloud.get_account_playlists()
+        playlists = await self._soundcloud.get_account_playlists()
         # print(playlists)
         for item in playlists["collection"]:
             # print(item)
@@ -177,23 +179,29 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Youtube Music."""
-        tracks = self._soundcloud.get_tracks_liked()
-        print(tracks["collection"])
+        tracks = await self._soundcloud.get_tracks_liked()
+        # print("get_library_tracks")
+        # print("get_library_tracks", tracks["collection"])
         # tracks_obj = await get_library_tracks(
         #     headers=self._headers, username=self.config.get_value(CONF_USERNAME)
         # )
         for item in tracks["collection"]:
-            print("item")
-            print(item)
-            track = self._soundcloud.get_track_details(item)
-            print("track")
-            print(track[0])
+            # print("item")
+            # print(item)
+            track = await self._soundcloud.get_track_details(item)
+            # print("track")
+            # try:
+            #     print(track[0]["id"])
+            # except IndexError:
+            #     print("IndexError", track)
             # Library tracks sometimes do not have a valid artist id
             # In that case, call the API for track details based on track id
             try:
                 yield await self._parse_track(track[0])
-            except InvalidDataError:
-                print(track)
+            # except InvalidDataError:
+            # print(track)
+            except IndexError:
+                print("IndexError", track)
             #     track = await self.get_track(track["videoId"])
             #     yield track
 
@@ -222,24 +230,24 @@ class SoundcloudMusicProvider(MusicProvider):
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         # print(prov_artist_id)
-        artist_obj = self._soundcloud.get_user_details(user_id=prov_artist_id)
+        artist_obj = await self._soundcloud.get_user_details(user_id=prov_artist_id)
 
         return await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
 
-    # async def get_track(self, prov_track_id) -> Track:
-    #     """Get full track details by id."""
-    #     track_obj = await get_track(prov_track_id=prov_track_id)
-    #     return await self._parse_track(track_obj)
+    async def get_track(self, prov_track_id) -> Track:
+        """Get full track details by id."""
+        track_obj = await self._soundcloud.get_track_details(track_id=prov_track_id)
+        return await self._parse_track(track_obj[0])
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        playlist_obj = self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
-        print(playlist_obj)
+        playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
+        # print(playlist_obj)
         return await self._parse_playlist(playlist_obj)
 
     async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
-        playlist_obj = self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
+        playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
         if "tracks" not in playlist_obj:
             return []
         tracks = []
@@ -396,7 +404,7 @@ class SoundcloudMusicProvider(MusicProvider):
                     if track:
                         tracks.append(track)
                 except InvalidDataError:
-                    track = await self.get_track(track["videoId"])
+                    track = await self.get_track(track["id"])
                     if track:
                         tracks.append(track)
             return tracks
@@ -404,33 +412,37 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        data = {
-            "playbackContext": {
-                "contentPlaybackContext": {"signatureTimestamp": self._signature_timestamp}
-            },
-            "video_id": item_id,
-        }
-        track_obj = await self._post_data("player", data=data)
-        stream_format = await self._parse_stream_format(track_obj)
-        url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
-        stream_details = StreamDetails(
+        track = await self.get_track(item_id)
+        if not track:
+            raise MediaNotFoundError(f"track {item_id} not found")
+        # make sure that the token is still valid by just requesting it
+        # await self.login()
+        return StreamDetails(
+            item_id=track.item_id,
             provider=self.domain,
-            item_id=item_id,
-            content_type=ContentType.try_parse(stream_format["mimeType"]),
-            direct=url,
+            content_type=ContentType.MP3,
+            duration=track.duration,
         )
-        if (
-            track_obj["streamingData"].get("expiresInSeconds")
-            and track_obj["streamingData"].get("expiresInSeconds").isdigit()
-        ):
-            stream_details.expires = time() + int(
-                track_obj["streamingData"].get("expiresInSeconds")
-            )
-        if stream_format.get("audioChannels") and str(stream_format.get("audioChannels")).isdigit():
-            stream_details.channels = int(stream_format.get("audioChannels"))
-        if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():
-            stream_details.sample_rate = int(stream_format.get("audioSampleRate"))
-        return stream_details
+
+        # url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
+        # stream_details = StreamDetails(
+        #     provider=self.domain,
+        #     item_id=item_id,
+        #     content_type=ContentType.try_parse(stream_format["mimeType"]),
+        #     direct=url,
+        # )
+        # if (
+        #     track_obj["streamingData"].get("expiresInSeconds")
+        #     and track_obj["streamingData"].get("expiresInSeconds").isdigit()
+        # ):
+        #     stream_details.expires = time() + int(
+        #         track_obj["streamingData"].get("expiresInSeconds")
+        #     )
+        # if stream_format.get("audioChannels") and str(stream_format.get("audioChannels")).isdigit():
+        #     stream_details.channels = int(stream_format.get("audioChannels"))
+        # if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():
+        #     stream_details.sample_rate = int(stream_format.get("audioSampleRate"))
+        # return stream_details
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):  # noqa: ARG002
         url = f"{YTM_BASE_URL}{endpoint}"
@@ -465,30 +477,6 @@ class SoundcloudMusicProvider(MusicProvider):
         origin = headers.get("origin", headers.get("x-origin"))
         headers["Authorization"] = ytmusicapi.helpers.get_authorization(sapisid + " " + origin)
         self._headers = headers
-
-    # async def login(self):
-    #     """Login to soundcloud."""
-
-    #     username = self.config.get_value(CONF_USERNAME)
-    #     client_id = self.config.get_value(CONF_CLIENT_ID)
-    #     auth_token = self.config.get_value(CONF_AUTHORIZATION)
-
-    #     self._soundcloud = Soundcloud(client_id, auth_token)
-    #     self.me = self._soundcloud.get_account_details()
-    # assert me.permalink == username
-    # print(self.me)
-    # print(self.me.id)
-    # print(type(self.me))
-    # return None
-    # self._soundcloud = SoundCloud(client_id, auth_token)
-    # assert _soundcloud.is_client_id_valid()
-    # assert _soundcloud.is_auth_token_valid()
-    # self.me = _soundcloud.get_user_by_username(username)
-    # # assert me.permalink == username
-    # print(self.me)
-    # print(self.me.id)
-    # print(type(self.me))
-    # return None
 
     async def _initialize_context(self) -> dict[str, str]:
         """Return a dict to use as a context in requests."""
@@ -548,6 +536,7 @@ class SoundcloudMusicProvider(MusicProvider):
     async def _parse_artist(self, artist_obj: dict) -> Artist:
         """Parse a YT Artist response to Artist model object."""
         artist_id = None
+        # print(artist_obj)
         permalink = artist_obj["permalink"]
         if "id" in artist_obj and artist_obj["id"]:
             artist_id = artist_obj["id"]
@@ -631,130 +620,178 @@ class SoundcloudMusicProvider(MusicProvider):
                 )
             )
         playlist.metadata.checksum = playlist_obj.get("checksum")
-        print(playlist.metadata.checksum)
+        # print(playlist.metadata.checksum)
         return playlist
 
     async def _parse_track(self, track_obj: dict) -> Track:
         """Parse a YT Track response to a Track model object."""
-        print(track_obj)
-        # print("KAAAAAAAAAAAAAAAAAK")
-        track = Track(item_id=track_obj["id"], provider=self.domain, name=track_obj[0]["title"])
+        # print(track_obj)
+        # print("Parse track", track_obj["id"])
+        name, version = parse_title_and_version(track_obj["title"])
+        track = Track(
+            item_id=track_obj["id"],
+            provider=self.domain,
+            name=name,
+            version=version,
+            duration=track_obj["duration"] / 1000,
+        )
+        user_id = track_obj["user"]["id"]
+        # print(user_id)
+        user = await self._soundcloud.get_user_details(user_id)
+        # print(user)
+        artist = await self._parse_artist(user)
+        if artist and artist.item_id not in {x.item_id for x in track.artists}:
+            # print("if artist and artist.item_id not in ")
+            # print(artist)
+            # print("if artist and artist.item_id not in ")
+            track.artists.append(artist)
+            # print("if artist and artist.item_id not in ")
+        # track = Track(item_id=track_obj["id"], provider=self.domain, name=track_obj["title"])
 
-        # track.artist = await self._parse_artist(await self._run_async(track_obj.artist))
-        if "username" in track_obj[0]:
-            track.artists = [
-                await self._parse_artist(artist)
-                for artist in track_obj["username"]
-                # if artist.get("id")
-                # or artist.get("channelId")
-                # or artist.get("name") == "Various Artists"
-            ]
-        # guard that track has valid artists
-        if not track.artists:
-            raise InvalidDataError("Track is missing artists")
-        if "artwork_url" in track_obj and track_obj["artwork_url"]:
-            track.metadata.images = await self._parse_thumbnails(track_obj["artwork_url"])
-        if (
-            track_obj.get("album")
-            and track_obj.get("artists")
-            and isinstance(track_obj.get("album"), dict)
-            and track_obj["album"].get("id")
-        ):
-            album = track_obj["album"]
-            album["artists"] = track_obj["artists"]
-            track.album = await self._parse_album(album, album["id"])
-        if "isExplicit" in track_obj:
-            track.metadata.explicit = track_obj["isExplicit"]
-        if "duration" in track_obj and str(track_obj["duration"]).isdigit():
-            track.duration = int(track_obj["duration"])
-        elif "duration_seconds" in track_obj and str(track_obj["duration_seconds"]).isdigit():
-            track.duration = int(track_obj["duration_seconds"])
-        available = True
-        if "isAvailable" in track_obj:
-            available = track_obj["isAvailable"]
+        # track.metadata.explicit = track_obj["explicit"]
+        if "artwork_url" in track_obj:
+            track.metadata.preview = track_obj["artwork_url"]
+        # if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
+        #     track.isrc = track_obj["external_ids"]["isrc"]
+        if "album" in track_obj:
+            track.album = await self._parse_album(track_obj["album"])
+            if track_obj["album"].get("images"):
+                track.metadata.images = [
+                    MediaItemImage(ImageType.THUMB, track_obj["album"]["images"][0]["url"])
+                ]
+        if track_obj.get("copyright"):
+            track.metadata.copyright = track_obj["copyright"]
+        if track_obj.get("explicit"):
+            track.metadata.explicit = True
+        if track_obj.get("popularity"):
+            track.metadata.popularity = track_obj["popularity"]
         track.add_provider_mapping(
             ProviderMapping(
-                item_id=str(track_obj["videoId"]),
+                item_id=track_obj["id"],
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                available=available,
-                content_type=ContentType.M4A,
+                content_type=ContentType.MP3,
+                # bit_rate=320,
+                url=track_obj["permalink_url"],
             )
         )
         return track
 
-    async def _get_signature_timestamp(self):
-        """Get a signature timestamp required to generate valid stream URLs."""
-        response = await self._get_data(url=YTM_DOMAIN)
-        match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
-        if match is None:
-            # retry with youtube domain
-            response = await self._get_data(url=YT_DOMAIN)
-            match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
-        if match is None:
-            raise Exception("Could not identify the URL for base.js player.")
-        url = YTM_DOMAIN + match.group(1)
-        response = await self._get_data(url=url)
-        match = re.search(r"signatureTimestamp[:=](\d+)", response)
-        if match is None:
-            raise Exception("Unable to identify the signatureTimestamp.")
-        return int(match.group(1))
+        # # track.artist = await self._parse_artist(await self._run_async(track_obj.artist))
+        # if "username" in track_obj:
+        #     track.artists = [
+        #         await self._parse_artist(artist)
+        #         for artist in track_obj["username"]
+        #         # if artist.get("id")
+        #         # or artist.get("channelId")
+        #         # or artist.get("name") == "Various Artists"
+        #     ]
+        # # guard that track has valid artists
+        # if not track.artists:
+        #     raise InvalidDataError("Track is missing artists")
+        # if "artwork_url" in track_obj and track_obj["artwork_url"]:
+        #     track.metadata.images = await self._parse_thumbnails(track_obj["artwork_url"])
+        # if (
+        #     track_obj.get("album")
+        #     and track_obj.get("artists")
+        #     and isinstance(track_obj.get("album"), dict)
+        #     and track_obj["album"].get("id")
+        # ):
+        #     album = track_obj["album"]
+        #     album["artists"] = track_obj["artists"]
+        #     track.album = await self._parse_album(album, album["id"])
+        # if "explicit" in track_obj:
+        #     track.metadata.explicit = track_obj["explicit"]
+        # if "duration" in track_obj and str(track_obj["duration"]).isdigit():
+        #     track.duration = int(track_obj["duration"])
+        # elif "duration_seconds" in track_obj and str(track_obj["duration_seconds"]).isdigit():
+        #     track.duration = int(track_obj["duration_seconds"])
+        # available = True
+        # if "isAvailable" in track_obj:
+        #     available = track_obj["isAvailable"]
+        # track.add_provider_mapping(
+        #     ProviderMapping(
+        #         item_id=str(track_obj["id"]),
+        #         provider_domain=self.domain,
+        #         provider_instance=self.instance_id,
+        #         available=available,
+        #         content_type=ContentType.MP3,
+        #     )
+        # )
+        # return track
 
-    async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
-        """Figure out the stream URL to use based on the YT track object."""
-        url = None
-        if stream_format.get("signatureCipher"):
-            # Secured URL
-            cipher_parts = {}
-            for part in stream_format["signatureCipher"].split("&"):
-                key, val = part.split("=", maxsplit=1)
-                cipher_parts[key] = unquote(val)
-            signature = await self._decipher_signature(
-                ciphered_signature=cipher_parts["s"], item_id=item_id
-            )
-            url = cipher_parts["url"] + "&sig=" + signature
-        elif stream_format.get("url"):
-            # Non secured URL
-            url = stream_format.get("url")
-        return url
+    # async def _get_signature_timestamp(self):
+    #     """Get a signature timestamp required to generate valid stream URLs."""
+    #     response = await self._get_data(url=YTM_DOMAIN)
+    #     match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
+    #     if match is None:
+    #         # retry with youtube domain
+    #         response = await self._get_data(url=YT_DOMAIN)
+    #         match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
+    #     if match is None:
+    #         raise Exception("Could not identify the URL for base.js player.")
+    #     url = YTM_DOMAIN + match.group(1)
+    #     response = await self._get_data(url=url)
+    #     match = re.search(r"signatureTimestamp[:=](\d+)", response)
+    #     if match is None:
+    #         raise Exception("Unable to identify the signatureTimestamp.")
+    #     return int(match.group(1))
 
-    @classmethod
-    async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
-        """Parse and sort a list of thumbnails and return the highest quality."""
-        thumb = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)[0]
-        return [MediaItemImage(ImageType.THUMB, thumb["url"])]
+    # async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
+    #     """Figure out the stream URL to use based on the YT track object."""
+    #     url = None
+    #     if stream_format.get("signatureCipher"):
+    #         # Secured URL
+    #         cipher_parts = {}
+    #         for part in stream_format["signatureCipher"].split("&"):
+    #             key, val = part.split("=", maxsplit=1)
+    #             cipher_parts[key] = unquote(val)
+    #         signature = await self._decipher_signature(
+    #             ciphered_signature=cipher_parts["s"], item_id=item_id
+    #         )
+    #         url = cipher_parts["url"] + "&sig=" + signature
+    #     elif stream_format.get("url"):
+    #         # Non secured URL
+    #         url = stream_format.get("url")
+    #     return url
 
-    @classmethod
-    async def _parse_stream_format(cls, track_obj: dict) -> dict:
-        """Grab the highest available audio stream from available streams."""
-        stream_format = {}
-        quality_mapper = {
-            "AUDIO_QUALITY_LOW": 1,
-            "AUDIO_QUALITY_MEDIUM": 2,
-            "AUDIO_QUALITY_HIGH": 3,
-        }
-        for adaptive_format in track_obj["streamingData"]["adaptiveFormats"]:
-            if adaptive_format["mimeType"].startswith("audio") and (
-                not stream_format
-                or quality_mapper.get(adaptive_format["audioQuality"], 0)
-                > quality_mapper.get(stream_format["audioQuality"], 0)
-            ):
-                stream_format = adaptive_format
-        if stream_format is None:
-            raise MediaNotFoundError("No stream found for this track")
-        return stream_format
+    # @classmethod
+    # async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
+    #     """Parse and sort a list of thumbnails and return the highest quality."""
+    #     thumb = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)[0]
+    #     return [MediaItemImage(ImageType.THUMB, thumb["url"])]
 
-    async def _decipher_signature(self, ciphered_signature: str, item_id: str):
-        """Decipher the signature, required to build the Stream URL."""
+    # @classmethod
+    # async def _parse_stream_format(cls, track_obj: dict) -> dict:
+    #     """Grab the highest available audio stream from available streams."""
+    #     stream_format = {}
+    #     quality_mapper = {
+    #         "AUDIO_QUALITY_LOW": 1,
+    #         "AUDIO_QUALITY_MEDIUM": 2,
+    #         "AUDIO_QUALITY_HIGH": 3,
+    #     }
+    #     for adaptive_format in track_obj["streamingData"]["adaptiveFormats"]:
+    #         if adaptive_format["mimeType"].startswith("audio") and (
+    #             not stream_format
+    #             or quality_mapper.get(adaptive_format["audioQuality"], 0)
+    #             > quality_mapper.get(stream_format["audioQuality"], 0)
+    #         ):
+    #             stream_format = adaptive_format
+    #     if stream_format is None:
+    #         raise MediaNotFoundError("No stream found for this track")
+    #     return stream_format
 
-        def _decipher():
-            embed_url = f"https://www.youtube.com/embed/{item_id}"
-            embed_html = pytube.request.get(embed_url)
-            js_url = pytube.extract.js_url(embed_html)
-            ytm_js = pytube.request.get(js_url)
-            cipher = pytube.cipher.Cipher(js=ytm_js)
-            return cipher
+    # async def _decipher_signature(self, ciphered_signature: str, item_id: str):
+    #     """Decipher the signature, required to build the Stream URL."""
 
-        if not self._cipher:
-            self._cipher = await asyncio.to_thread(_decipher)
-        return self._cipher.get_signature(ciphered_signature)
+    #     def _decipher():
+    #         embed_url = f"https://www.youtube.com/embed/{item_id}"
+    #         embed_html = pytube.request.get(embed_url)
+    #         js_url = pytube.extract.js_url(embed_html)
+    #         ytm_js = pytube.request.get(js_url)
+    #         cipher = pytube.cipher.Cipher(js=ytm_js)
+    #         return cipher
+
+    #     if not self._cipher:
+    #         self._cipher = await asyncio.to_thread(_decipher)
+    #     return self._cipher.get_signature(ciphered_signature)

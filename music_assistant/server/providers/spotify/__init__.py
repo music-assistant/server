@@ -397,6 +397,7 @@ class SpotifyProvider(MusicProvider):
 
     async def _parse_track(self, track_obj, artist=None):
         """Parse spotify track object to generic layout."""
+        print(track_obj)
         name, version = parse_title_and_version(track_obj["name"])
         track = Track(
             item_id=track_obj["id"],
