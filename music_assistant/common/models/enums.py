@@ -217,10 +217,12 @@ class PlayerType(StrEnum):
 
     player: A regular player.
     group: A (dedicated) group player or playergroup.
+    stereo_pair: Two speakers playing as one stereo pair.
     """
 
     PLAYER = "player"
     GROUP = "group"
+    STEREO_PAIR = "stereo_pair"
 
 
 class PlayerFeature(StrEnum):

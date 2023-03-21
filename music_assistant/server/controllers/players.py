@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
@@ -503,15 +504,16 @@ class PlayerController:
             # it is the master in a sync group and thus always present as child player
             child_players.append(player)
         for child_id in player.group_childs:
-            if child_player := self.get(child_id):
-                if not (not only_powered or child_player.powered):
-                    continue
-                if not (
-                    not only_playing
-                    or child_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
-                ):
-                    continue
-                child_players.append(child_player)
+            with contextlib.suppress(PlayerUnavailableError):
+                if child_player := self.get(child_id):
+                    if not (not only_powered or child_player.powered):
+                        continue
+                    if not (
+                        not only_playing
+                        or child_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+                    ):
+                        continue
+                    child_players.append(child_player)
         return child_players
 
     async def _poll_players(self) -> None:

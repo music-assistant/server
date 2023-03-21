@@ -48,6 +48,7 @@ CONF_EQ_TREBLE: Final[str] = "eq_treble"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_LOG_LEVEL: Final[str] = "log_level"
+CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
