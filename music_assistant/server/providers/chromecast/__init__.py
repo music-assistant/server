@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 import time
@@ -93,8 +94,18 @@ class ChromecastProvider(PlayerProvider):
         """Handle close/cleanup of the provider."""
         if not self.browser:
             return
+
         # stop discovery
-        await self.mass.loop.run_in_executor(None, self.browser.stop_discovery)
+        def stop_discovery():
+            """Stop the chromecast discovery threads."""
+            if self.browser._zc_browser:
+                with contextlib.suppress(RuntimeError):
+                    self.browser._zc_browser.cancel()
+
+            self.browser.host_browser.stop.set()
+            self.browser.host_browser.join()
+
+        await self.mass.loop.run_in_executor(None, stop_discovery)
         # stop all chromecasts
         for castplayer in list(self.castplayers.values()):
             await self._disconnect_chromecast(castplayer)
@@ -279,7 +290,9 @@ class ChromecastProvider(PlayerProvider):
                     castplayer.mz_controller = mz_controller
                 castplayer.cc.start()
 
-                self.mass.loop.call_soon_threadsafe(self.mass.players.register, castplayer.player)
+                self.mass.loop.call_soon_threadsafe(
+                    self.mass.players.register_or_update, castplayer.player
+                )
 
             # if player was already added, the player will take care of reconnects itself.
             castplayer.cast_info.update(disc_info)

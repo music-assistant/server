@@ -1,11 +1,14 @@
 """JSON-RPC API which is more or less compatible with Logitech Media Server."""
 from __future__ import annotations
 
+import asyncio
+import urllib.parse
 from typing import Any
 
 from aiohttp import web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
+from music_assistant.common.helpers.util import select_free_port
 from music_assistant.common.models.enums import PlayerState
 from music_assistant.server.models.plugin import PluginProvider
 
@@ -56,13 +59,86 @@ def parse_args(raw_values: list[int | str]) -> tuple[ArgsType, KwargsType]:
     return (args, kwargs)
 
 
-class JSONRPCApi(PluginProvider):
-    """Basic JSON-RPC API implementation, (partly) compatible with Logitech Media Server."""
+class LmsCli(PluginProvider):
+    """Basic LMS CLI (json rpc and telnet) implementation, (partly) compatible with Logitech Media Server."""
+
+    cli_port: int = 9090
 
     async def setup(self) -> None:
         """Handle async initialization of the plugin."""
+        self.logger.info("Registering jsonrpc endpoints on the webserver")
         self.mass.webapp.router.add_get("/jsonrpc.js", self._handle_jsonrpc)
         self.mass.webapp.router.add_post("/jsonrpc.js", self._handle_jsonrpc)
+        # setup (telnet) cli for players requesting basic info on that port
+        self.cli_port = await select_free_port(9090, 9190)
+        self.logger.info("Starting (telnet) CLI on port %s", self.cli_port)
+        await asyncio.start_server(self._handle_cli_client, "0.0.0.0", self.cli_port),
+
+    async def _handle_cli_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """Handle new connection on the legacy CLI."""
+        # https://raw.githubusercontent.com/Logitech/slimserver/public/7.8/HTML/EN/html/docs/cli-api.html
+        # https://github.com/elParaguayo/LMS-CLI-Documentation/blob/master/LMS-CLI.md
+        self.logger.info("Client connected on Telnet CLI")
+        try:
+            while True:
+                raw_request = await reader.readline()
+                raw_request = raw_request.strip().decode("utf-8")
+                # request comes in as url encoded strings, separated by space
+                raw_params = [urllib.parse.unquote(x) for x in raw_request.split(" ")]
+                # the first param is either a macaddress or a command
+                if ":" in raw_params[0]:
+                    # assume this is a mac address (=player_id)
+                    player_id = raw_params[0]
+                    command = raw_params[1]
+                    command_params = raw_params[2:]
+                else:
+                    player_id = ""
+                    command = raw_params[0]
+                    command_params = raw_params[1:]
+
+                args, kwargs = parse_args(command_params)
+
+                response: str = raw_request
+
+                # check if we have a handler for this command
+                # note that we only have support for very limited commands
+                # just enough for compatibility with players but not to be used as api
+                # with 3rd party tools!
+                if handler := getattr(self, f"_handle_{command}", None):
+                    self.logger.debug(
+                        "Handling CLI-request (player: %s command: %s - args: %s - kwargs: %s)",
+                        player_id,
+                        command,
+                        str(args),
+                        str(kwargs),
+                    )
+                    cmd_result: list[str] = handler(player_id, *args, **kwargs)
+                    if isinstance(cmd_result, dict):
+                        result_parts = dict_to_strings(cmd_result)
+                        result_str = " ".join(urllib.parse.quote(x) for x in result_parts)
+                    elif not cmd_result:
+                        result_str = ""
+                    else:
+                        result_str = str(cmd_result)
+                    response += " " + result_str
+                else:
+                    self.logger.warning(
+                        "No handler for %s (player: %s - args: %s - kwargs: %s)",
+                        command,
+                        player_id,
+                        str(args),
+                        str(kwargs),
+                    )
+                # echo back the request and the result (if any)
+                response += "\n"
+                writer.write(response.encode("utf-8"))
+                await writer.drain()
+        except Exception as err:
+            self.logger.debug("Error handling CLI command", exc_info=err)
+        finally:
+            self.logger.debug("Client disconnected from Telnet CLI")
 
     async def _handle_jsonrpc(self, request: web.Request) -> web.Response:
         """Handle request for image proxy."""
@@ -203,6 +279,20 @@ class JSONRPCApi(PluginProvider):
         else:
             self.mass.create_task(self.mass.players.queues.seek, number)
 
+    def _handle_power(self, player_id: str, value: str | int) -> int | None:
+        """Handle player `time` command."""
+        # <playerid> power <0|1|?|>
+        # The "power" command turns the player on or off.
+        # Use 0 to turn off, 1 to turn on, ? to query and
+        # no parameter to toggle the power state of the player.
+        player = self.mass.players.get(player_id)
+        assert player is not None
+
+        if value == "?":
+            return int(player.powered)
+
+        self.mass.create_task(self.mass.players.cmd_power, player_id, bool(value))
+
     def _handle_playlist(
         self,
         player_id: str,
@@ -269,3 +359,23 @@ class JSONRPCApi(PluginProvider):
             self.mass.create_task(self.mass.players.queues.pause, player_id)
         else:
             self.mass.create_task(self.mass.players.queues.play, player_id)
+
+
+def dict_to_strings(source: dict) -> list[str]:
+    """Convert dict to key:value strings (used in slimproto cli)."""
+    result: list[str] = []
+
+    for key, value in source.items():
+        if value in (None, ""):
+            continue
+        if isinstance(value, list):
+            for subval in value:
+                if isinstance(subval, dict):
+                    result += dict_to_strings(subval)
+                else:
+                    result.append(str(subval))
+        elif isinstance(value, dict):
+            result += dict_to_strings(subval)
+        else:
+            result.append(f"{key}:{str(value)}")
+    return result
