@@ -218,7 +218,7 @@ class ChromecastProvider(PlayerProvider):
         """Send POWER command to given player."""
         castplayer = self.castplayers[player_id]
         # handle player that is hidden by active group player, use mute as power
-        if castplayer.player.hidden_by:
+        if castplayer.active_group:
             await self.cmd_volume_mute(player_id, not powered)
             return
         if powered:
@@ -363,8 +363,10 @@ class ChromecastProvider(PlayerProvider):
             status.volume_level,
         )
         castplayer.player.name = castplayer.cast_info.friendly_name
-        if castplayer.player.hidden_by:
+        if castplayer.active_group:
+            # use mute as power when group is active
             castplayer.player.powered = not status.volume_muted
+        else:
             castplayer.player.powered = (
                 castplayer.cc.app_id is not None
                 and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
