@@ -44,9 +44,13 @@ from music_assistant.server.models.music_provider import MusicProvider
 from .helpers import (
     get_album,
     get_album_tracks,
+    get_artist,
+    get_artist_albums,
+    get_artist_toptracks,
     get_library_albums,
     get_library_artists,
     get_library_playlists,
+    get_library_radios,
     get_library_tracks,
     get_playlist,
     get_playlist_tracks,
@@ -60,6 +64,7 @@ SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
@@ -147,6 +152,11 @@ class TidalProvider(MusicProvider):
         for playlist in playlists_obj:
             yield await self._parse_playlist(playlist)
 
+    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+        radios_obj = await get_library_radios(self._tidal_session)
+        for radio in radios_obj:
+            yield await self._parse_radio(radio)
+
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         album_obj = await get_album(self._tidal_session, prov_album_id)
@@ -156,6 +166,31 @@ class TidalProvider(MusicProvider):
         """Get album tracks for given album id."""
         result = []
         tracks = await get_album_tracks(self._tidal_session, prov_album_id)
+        for index, track in enumerate(tracks, 1):
+            if track.available:
+                track = await self._parse_track(track)
+                track.position = index
+                result.append(track)
+        return result
+
+    async def get_artist(self, prov_artist_id) -> Artist:
+        """Get full artist details by id."""
+        artist_obj = await get_artist(self._tidal_session, prov_artist_id)
+        return await self._parse_artist(artist_obj) if artist_obj else None
+
+    async def get_artist_albums(self, prov_artist_id) -> list[Album]:
+        """Get a list of all albums for the given artist."""
+        result = []
+        albums = await get_artist_albums(self._tidal_session, prov_artist_id)
+        for album in albums:
+            album = await self._parse_album(album)
+            result.append(album)
+        return result
+
+    async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
+        """Get a list of 10 most popular tracks for the given artist."""
+        result = []
+        tracks = await get_artist_toptracks(self._tidal_session, prov_artist_id)
         for index, track in enumerate(tracks, 1):
             if track.available:
                 track = await self._parse_track(track)
@@ -196,7 +231,7 @@ class TidalProvider(MusicProvider):
         return StreamDetails(
             item_id=track.id,
             provider=self.domain,
-            content_type=ContentType.OGG,
+            content_type=ContentType.FLAC,
             duration=track.duration,
             direct=url,
         )
@@ -232,20 +267,22 @@ class TidalProvider(MusicProvider):
         return artist
 
     async def _parse_album(self, album_obj: dict):
-        """Parse spotify album object to generic layout."""
+        """Parse tidal album object to generic layout."""
         # name, version = parse_title_and_version(album_obj["name"])
         name = album_obj.name
-        version = album_obj.version
+        version = None
+        if album_obj.version != "null":
+            version = album_obj.version
         album_id = album_obj.id
         album = Album(item_id=album_id, provider=self.domain, name=name, version=version)
         for artist_obj in album_obj.artists:
             album.artists.append(await self._parse_artist(artist_obj))
-        # if album_obj["album_type"] == "single":
-        #    album.album_type = AlbumType.SINGLE
-        # elif album_obj["album_type"] == "compilation":
-        #    album.album_type = AlbumType.COMPILATION
-        # elif album_obj["album_type"] == "album":
-        album.album_type = AlbumType.ALBUM
+        if album_obj.type == "SINGLE":
+            album.album_type = AlbumType.SINGLE
+        elif album_obj.type == "COMPILATION":
+            album.album_type = AlbumType.COMPILATION
+        elif album_obj.type == "ALBUM":
+            album.album_type = AlbumType.ALBUM
         # if "genres" in album_obj:
         #    album.metadata.genre = set(album_obj["genres"])
         # if album_obj.get("images"):
@@ -280,7 +317,9 @@ class TidalProvider(MusicProvider):
     async def _parse_track(self, track_obj, artist=None):
         """Parse tidal track object to generic layout."""
         name = track_obj.name
-        version = track_obj.version
+        version = None
+        if track_obj.version != "null":
+            version = track_obj.version
         track_id = None
         if hasattr(track_obj, "id"):
             track_id = track_obj.id
@@ -294,6 +333,7 @@ class TidalProvider(MusicProvider):
             duration=track_obj.duration / 1000,
             disc_number=track_obj.volume_num,
             track_number=track_obj.track_num,
+            isrc=track_obj.isrc,
             # position=track_obj.get("position"),
         )
         # if artist:
@@ -303,6 +343,8 @@ class TidalProvider(MusicProvider):
             track.artists.append(artist)
 
         track.metadata.explicit = track_obj.explicit
+        track.metadata.popularity = track_obj.popularity
+        track.metadata.copyright = track_obj.copyright
         """ if "preview_url" in track_obj:
             track.metadata.preview = track_obj["preview_url"]
         if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
@@ -313,25 +355,38 @@ class TidalProvider(MusicProvider):
                 track.metadata.images = [
                     MediaItemImage(ImageType.THUMB, track_obj["album"]["images"][0]["url"])
                 ]
-        if track_obj.get("copyright"):
-            track.metadata.copyright = track_obj["copyright"]
-        if track_obj.get("explicit"):
-            track.metadata.explicit = True
-        if track_obj.get("popularity"):
-            track.metadata.popularity = track_obj["popularity"] """
+         """
         available = track_obj.available
         track.add_provider_mapping(
             ProviderMapping(
                 item_id=track_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.OGG,
-                bit_rate=320,
+                content_type=ContentType.FLAC,
+                bit_rate=1411,
                 url=f"http://www.tidal.com/tracks/{track_id}",
                 available=available,
             )
         )
         return track
+
+    async def _parse_radio(self, radio_obj):
+        radio_id = radio_obj.id
+        radio = Radio(
+            item_id=radio_id,
+            provider=self.domain,
+            name=radio_obj.title,
+            # owner=radio_obj.creator.name,
+        )
+        radio.add_provider_mapping(
+            ProviderMapping(
+                item_id=radio_id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
+                url=f"http://listen.tidal.com/view/pages/mix/{radio_id}",
+            )
+        )
+        return radio
 
     async def _parse_playlist(self, playlist_obj):
         """Parse tidal playlist object to generic layout."""

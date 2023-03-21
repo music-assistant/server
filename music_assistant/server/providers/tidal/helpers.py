@@ -22,6 +22,40 @@ async def get_library_artists(session: tidalapi.Session, user_id: str) -> dict[s
     return await asyncio.to_thread(_get_library_artists)
 
 
+async def get_artist(session: tidalapi.Session, prov_artist_id: str) -> dict[str, str]:
+    """Async wrapper around the tidalapi get_artist function."""
+
+    def _get_artist():
+        return tidalapi.Artist(session, prov_artist_id)
+
+    return await asyncio.to_thread(_get_artist)
+
+
+async def get_artist_albums(session: tidalapi.Session, prov_artist_id: str) -> dict[str, str]:
+    """Async wrapper around the tidalapi get_artist_albums function."""
+
+    def _get_artist_albums():
+        all_albums = []
+        albums = tidalapi.Artist(session, prov_artist_id).get_albums(limit=9999)
+        eps_singles = tidalapi.Artist(session, prov_artist_id).get_albums_ep_singles(limit=9999)
+        compilations = tidalapi.Artist(session, prov_artist_id).get_albums_other(limit=9999)
+        all_albums.extend(albums)
+        all_albums.extend(eps_singles)
+        all_albums.extend(compilations)
+        return all_albums
+
+    return await asyncio.to_thread(_get_artist_albums)
+
+
+async def get_artist_toptracks(session: tidalapi.Session, prov_artist_id: str) -> dict[str, str]:
+    """Async wrapper around the tidalapi get_artist_toptracks function."""
+
+    def _get_artist_toptracks():
+        return tidalapi.Artist(session, prov_artist_id).get_top_tracks(limit=10)
+
+    return await asyncio.to_thread(_get_artist_toptracks)
+
+
 async def get_library_albums(session: tidalapi.Session, user_id: str) -> dict[str, str]:
     """Async wrapper around the tidalapi User Favorites Albums function."""
 
@@ -82,9 +116,22 @@ async def get_library_playlists(session: tidalapi.Session, user_id: str) -> dict
     def _get_library_playlists():
 
         return tidalapi.LoggedInUser(session, user_id).playlist_and_favorite_playlists()
-        # return tidalapi.Favorites(session, user_id).playlists(limit=9999)
 
     return await asyncio.to_thread(_get_library_playlists)
+
+
+async def get_library_radios(session: tidalapi.Session) -> dict[str, str]:
+    """Async wrapper around the tidalapi function."""
+
+    def _get_library_radios():
+        audio_mixes = []
+        mixes = session.mixes()
+        for mix in mixes:
+            if "VIDEO_DAILY_MIX" != mix.mix_type:
+                audio_mixes.append(mix)
+        return audio_mixes
+
+    return await asyncio.to_thread(_get_library_radios)
 
 
 async def get_playlist(session: tidalapi.Session, prov_playlist_id: str) -> dict[str, str]:
