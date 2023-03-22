@@ -3,16 +3,26 @@
   "domain": "deezer",
   "name": "Deezer",
   "description": "Support for the Deezer streaming provider in Music Assistant.",
-  "codeowners": ["@marcelveldt"],
+  "codeowners": ["@marcelveldt", "@Un10ck3d"],
   "config_entries": [
     {
-      "key": "token",
+      "key": "app_id",
       "type": "string",
-      "label": "API token"
+      "label": "App Id"
+    },
+    {
+      "key": "app_secret",
+      "type": "string",
+      "label": "App Secret"
+    },
+    {
+      "key": "access_token",
+      "type": "string",
+      "label": "Api token"
     }
   ],
 
-  "requirements": ["requests==2.28.2", "deezer-python"],
-  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/816",
-  "multi_instance": true
+  "requirements": ["requests==2.28.2", "deezer-python==5.8.1"],
+  "documentation": "None at the moment",
+  "multi_instance": false
 }
