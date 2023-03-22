@@ -1,14 +1,14 @@
 """Soundcloud support for MusicAssistant."""
 import asyncio
-import re
-from operator import itemgetter
-from time import time
+
+# import re
+# from operator import itemgetter
 from typing import AsyncGenerator, Callable  # noqa: UP035
 from urllib.parse import unquote
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType, ProviderFeature
-from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed
 from music_assistant.common.models.media_items import (  # ContentType,; ImageType,; MediaType,
     Album,
     AlbumType,
@@ -20,13 +20,15 @@ from music_assistant.common.models.media_items import (  # ContentType,; ImageTy
     StreamDetails,
     Track,
 )
-from music_assistant.constants import CONF_USERNAME
 
 # from music_assistant.server.helpers.app_vars import app_var
-from music_assistant.server.helpers.process import AsyncProcess
+# from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .soundcloudpy.asyncsoundcloudpy import SoundcloudAsync
+
+# from music_assistant.constants import CONF_USERNAME
+
 
 CONF_CLIENT_ID = "client_id"
 CONF_AUTHORIZATION = "authorization"
@@ -36,11 +38,11 @@ SUPPORTED_FEATURES = (
     # ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
-    # ProviderFeature.BROWSE,
-    # ProviderFeature.SEARCH,
-    # ProviderFeature.ARTIST_ALBUMS,
-    # ProviderFeature.ARTIST_TOPTRACKS,
-    # ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_TRACKS,
 )
 
 
@@ -54,13 +56,14 @@ class SoundcloudMusicProvider(MusicProvider):
     _cipher = None
     _user_id = None
     _soundcloud = None
+    _me = None
 
     async def setup(self) -> None:
         """Set up the Soundcloud provider."""
         if (
             not self.config.get_value(CONF_CLIENT_ID)
             or not self.config.get_value(CONF_AUTHORIZATION)
-            or not self.config.get_value(CONF_USERNAME)
+            # or not self.config.get_value(CONF_USERNAME)
         ):
             raise LoginFailed("Invalid login credentials")
 
@@ -73,18 +76,18 @@ class SoundcloudMusicProvider(MusicProvider):
         #     return soundcloud_account.get_account_details()
 
         # self._soundcloud = await self._run_async(connect)
-        username = self.config.get_value(CONF_USERNAME)
+        # username = self.config.get_value(CONF_USERNAME)
         client_id = self.config.get_value(CONF_CLIENT_ID)
         auth_token = self.config.get_value(CONF_AUTHORIZATION)
 
         async with SoundcloudAsync(auth_token, client_id) as account:
-            print(account)
-            status = await account.login()
-            print(status)
+            # print(account)
+            await account.login()
+            # print(status)
 
         self._soundcloud = account
-        self.me = await account.get_account_details()
-        self.user_id = self.me["id"]
+        self._me = await account.get_account_details()
+        self._user_id = self._me["id"]
         # assert me.permalink == username
         # print(self.me["id"])
         # print(type(self.me))
@@ -108,36 +111,32 @@ class SoundcloudMusicProvider(MusicProvider):
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
-        ytm_filter = None
-        if len(media_types) == 1:
-            # YTM does not support multiple searchtypes, falls back to all if no type given
-            if media_types[0] == MediaType.ARTIST:
-                ytm_filter = "artists"
-            if media_types[0] == MediaType.ALBUM:
-                ytm_filter = "albums"
-            if media_types[0] == MediaType.TRACK:
-                ytm_filter = "songs"
-            if media_types[0] == MediaType.PLAYLIST:
-                ytm_filter = "playlists"
-        results = await search(query=search_query, ytm_filter=ytm_filter, limit=limit)
-        parsed_results = []
-        for result in results:
+        if not media_types:
+            media_types = [MediaType.TRACK]
+
+        tasks = [
+            self._soundcloud.search_tracks(search_query, limit)
+            for media_type in media_types
+            if media_type == MediaType.TRACK
+        ]
+        search_results = await asyncio.gather(*tasks)
+
+        results = []
+        for item in search_results[0]["collection"]:
+            print(item)
+            track = await self._soundcloud.get_track_details(item["id"])
+            print(track)
             try:
-                if result["resultType"] == "artist":
-                    parsed_results.append(await self._parse_artist(result))
-                elif result["resultType"] == "album":
-                    parsed_results.append(await self._parse_album(result))
-                elif result["resultType"] == "playlist":
-                    parsed_results.append(await self._parse_playlist(result))
-                elif result["resultType"] == "song" and (track := await self._parse_track(result)):
-                    parsed_results.append(track)
-            except InvalidDataError:
-                pass  # ignore invalid item
-        return parsed_results
+                await self._parse_track(track)
+            except IndexError:
+                continue
+            results.append(track)
+
+        return results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Soundcloud."""
-        following = await self._soundcloud.get_following(self.user_id)
+        following = await self._soundcloud.get_following(self._user_id)
         for artist in following["collection"]:
             # print(item)
             # if artist and artist["id"]:
@@ -167,10 +166,8 @@ class SoundcloudMusicProvider(MusicProvider):
             if "playlist" in item:
                 if item and (item["playlist"]["title"] or item["system_playlist"]["title"]):
                     yield await self._parse_playlist(item)
-            elif "system_playlist" in item:
-                if item:
-                    if item["system_playlist"]["title"]:
-                        yield await self._parse_playlist(item)
+            elif "system_playlist" in item and item and item["system_playlist"]["title"]:
+                yield await self._parse_playlist(item)
             # elif item and item["system_playlist"]["title"]:
             #     # print(item)
             #     yield await self._parse_playlist(item)
@@ -201,7 +198,7 @@ class SoundcloudMusicProvider(MusicProvider):
             # except InvalidDataError:
             # print(track)
             except IndexError:
-                print("IndexError", track)
+                continue
             #     track = await self.get_track(track["videoId"])
             #     yield track
 
@@ -251,15 +248,21 @@ class SoundcloudMusicProvider(MusicProvider):
         if "tracks" not in playlist_obj:
             return []
         tracks = []
+        # print(playlist_obj)
         for index, track in enumerate(playlist_obj["tracks"]):
             # if track["isAvailable"]:
             # Playlist tracks sometimes do not have a valid artist id
             # In that case, call the API for track details based on track id
             try:
-                track = await self._parse_track(track)
+                # print(track["id"])
+                song = await self._soundcloud.get_track_details(track["id"])
+                # print(song[0])
+                track = await self._parse_track(song[0])
                 if track:
                     track.position = index
                     tracks.append(track)
+            except KeyError:
+                print(track)
             except InvalidDataError:
                 track = await self.get_track(track["id"])
                 if track:
@@ -267,225 +270,189 @@ class SoundcloudMusicProvider(MusicProvider):
                     tracks.append(track)
         return tracks
 
-    # async def get_artist_albums(self, prov_artist_id) -> list[Album]:
-    #     """Get a list of albums for the given artist."""
-    #     artist_obj = await get_artist(prov_artist_id=prov_artist_id)
-    #     if "albums" in artist_obj and "results" in artist_obj["albums"]:
-    #         albums = []
-    #         for album_obj in artist_obj["albums"]["results"]:
-    #             if "artists" not in album_obj:
-    #                 album_obj["artists"] = [
-    #                     {"id": artist_obj["channelId"], "name": artist_obj["name"]}
-    #                 ]
-    #             albums.append(await self._parse_album(album_obj, album_obj["browseId"]))
-    #         return albums
-    #     return []
+    async def get_artist_albums(self, prov_artist_id) -> list[Album]:
+        """Get a list of albums for the given artist."""
+        album_obj = await self._soundcloud.get_album_from_user(user_id=prov_artist_id, limit=25)
+        # print(tracks_obj)
+        albums = []
+        for album in album_obj["collection"]:
+            try:
+                # print(album)
+                # item = await self._soundcloud.get_track_details(album["id"])
+                # print(song[0])
+                _album = await self._parse_album(album[0])
+                # if track:
+                #     track.position = index
+                albums.append(_album)
+            except KeyError:
+                print(album)
+            # except InvalidDataError:
+            #     track = await self.get_track(track["id"])
+            #     if track:
+            #         track.position = index
+            #         tracks.append(track)
+            print(albums)
+        return albums
 
-    # async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
-    #     """Get a list of 25 most popular tracks for the given artist."""
-    #     artist_obj = await get_artist(prov_artist_id=prov_artist_id)
-    #     if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
-    #         prov_playlist_id = artist_obj["songs"]["browseId"]
-    #         playlist_tracks = await self.get_playlist_tracks(prov_playlist_id=prov_playlist_id)
-    #         return playlist_tracks[:25]
-    #     return []
-
-    async def library_add(self, prov_item_id, media_type: MediaType) -> None:
-        """Add an item to the library."""
-        result = False
-        if media_type == MediaType.ARTIST:
-            result = await library_add_remove_artist(
-                headers=self._headers,
-                prov_artist_id=prov_item_id,
-                add=True,
-                username=self.config.get_value(CONF_USERNAME),
-            )
-        elif media_type == MediaType.ALBUM:
-            result = await library_add_remove_album(
-                headers=self._headers,
-                prov_item_id=prov_item_id,
-                add=True,
-                username=self.config.get_value(CONF_USERNAME),
-            )
-        elif media_type == MediaType.PLAYLIST:
-            result = await library_add_remove_playlist(
-                headers=self._headers,
-                prov_item_id=prov_item_id,
-                add=True,
-                username=self.config.get_value(CONF_USERNAME),
-            )
-        elif media_type == MediaType.TRACK:
-            raise NotImplementedError
-        return result
-
-    async def library_remove(self, prov_item_id, media_type: MediaType):
-        """Remove an item from the library."""
-        result = False
-        if media_type == MediaType.ARTIST:
-            result = await library_add_remove_artist(
-                headers=self._headers,
-                prov_artist_id=prov_item_id,
-                add=False,
-                username=self.config.get_value(CONF_USERNAME),
-            )
-        elif media_type == MediaType.ALBUM:
-            result = await library_add_remove_album(
-                headers=self._headers,
-                prov_item_id=prov_item_id,
-                add=False,
-                username=self.config.get_value(CONF_USERNAME),
-            )
-        elif media_type == MediaType.PLAYLIST:
-            result = await library_add_remove_playlist(
-                headers=self._headers,
-                prov_item_id=prov_item_id,
-                add=False,
-                username=self.config.get_value(CONF_USERNAME),
-            )
-        elif media_type == MediaType.TRACK:
-            raise NotImplementedError
-        return result
-
-    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        """Add track(s) to playlist."""
-        return await add_remove_playlist_tracks(
-            headers=self._headers,
-            prov_playlist_id=prov_playlist_id,
-            prov_track_ids=prov_track_ids,
-            add=True,
-            username=self.config.get_value(CONF_USERNAME),
+    async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
+        """Get a list of 25 most popular tracks for the given artist."""
+        tracks_obj = await self._soundcloud.get_popular_tracks_user(
+            user_id=prov_artist_id, limit=25
         )
+        # print(tracks_obj)
+        tracks = []
+        for track in tracks_obj["collection"]:
+            try:
+                # print(track["id"])
+                song = await self._soundcloud.get_track_details(track["id"])
+                # print(song[0])
+                track = await self._parse_track(song[0])
+                # if track:
+                #     track.position = index
+                tracks.append(track)
+            except KeyError:
+                print(track)
+            # except InvalidDataError:
+            #     track = await self.get_track(track["id"])
+            #     if track:
+            #         track.position = index
+            #         tracks.append(track)
+        return tracks
 
-    async def remove_playlist_tracks(
-        self, prov_playlist_id: str, positions_to_remove: tuple[int]
-    ) -> None:
-        """Remove track(s) from playlist."""
-        playlist_obj = await get_playlist(
-            prov_playlist_id=prov_playlist_id,
-            headers=self._headers,
-            username=self.config.get_value(CONF_USERNAME),
-        )
-        if "tracks" not in playlist_obj:
-            return None
-        tracks_to_delete = []
-        for index, track in enumerate(playlist_obj["tracks"]):
-            if index in positions_to_remove:
-                # YT needs both the videoId and the setVideoId in order to remove
-                # the track. Thus, we need to obtain the playlist details and
-                # grab the info from there.
-                tracks_to_delete.append(
-                    {"videoId": track["videoId"], "setVideoId": track["setVideoId"]}
-                )
+    # async def library_add(self, prov_item_id, media_type: MediaType) -> None:
+    #     """Add an item to the library."""
+    #     result = False
+    #     if media_type == MediaType.ARTIST:
+    #         result = await library_add_remove_artist(
+    #             headers=self._headers,
+    #             prov_artist_id=prov_item_id,
+    #             add=True,
+    #             username=self.config.get_value(CONF_USERNAME),
+    #         )
+    #     elif media_type == MediaType.ALBUM:
+    #         result = await library_add_remove_album(
+    #             headers=self._headers,
+    #             prov_item_id=prov_item_id,
+    #             add=True,
+    #             username=self.config.get_value(CONF_USERNAME),
+    #         )
+    #     elif media_type == MediaType.PLAYLIST:
+    #         result = await library_add_remove_playlist(
+    #             headers=self._headers,
+    #             prov_item_id=prov_item_id,
+    #             add=True,
+    #             username=self.config.get_value(CONF_USERNAME),
+    #         )
+    #     elif media_type == MediaType.TRACK:
+    #         raise NotImplementedError
+    #     return result
 
-        return await add_remove_playlist_tracks(
-            headers=self._headers,
-            prov_playlist_id=prov_playlist_id,
-            prov_track_ids=tracks_to_delete,
-            add=False,
-            username=self.config.get_value(CONF_USERNAME),
-        )
+    # async def library_remove(self, prov_item_id, media_type: MediaType):
+    #     """Remove an item from the library."""
+    #     result = False
+    #     if media_type == MediaType.ARTIST:
+    #         result = await library_add_remove_artist(
+    #             headers=self._headers,
+    #             prov_artist_id=prov_item_id,
+    #             add=False,
+    #             username=self.config.get_value(CONF_USERNAME),
+    #         )
+    #     elif media_type == MediaType.ALBUM:
+    #         result = await library_add_remove_album(
+    #             headers=self._headers,
+    #             prov_item_id=prov_item_id,
+    #             add=False,
+    #             username=self.config.get_value(CONF_USERNAME),
+    #         )
+    #     elif media_type == MediaType.PLAYLIST:
+    #         result = await library_add_remove_playlist(
+    #             headers=self._headers,
+    #             prov_item_id=prov_item_id,
+    #             add=False,
+    #             username=self.config.get_value(CONF_USERNAME),
+    #         )
+    #     elif media_type == MediaType.TRACK:
+    #         raise NotImplementedError
+    #     return result
+
+    # async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
+    #     """Add track(s) to playlist."""
+    #     return await add_remove_playlist_tracks(
+    #         headers=self._headers,
+    #         prov_playlist_id=prov_playlist_id,
+    #         prov_track_ids=prov_track_ids,
+    #         add=True,
+    #         username=self.config.get_value(CONF_USERNAME),
+    #     )
+
+    # async def remove_playlist_tracks(
+    #     self, prov_playlist_id: str, positions_to_remove: tuple[int]
+    # ) -> None:
+    #     """Remove track(s) from playlist."""
+    #     playlist_obj = await get_playlist(
+    #         prov_playlist_id=prov_playlist_id,
+    #         headers=self._headers,
+    #         username=self.config.get_value(CONF_USERNAME),
+    #     )
+    #     if "tracks" not in playlist_obj:
+    #         return None
+    #     tracks_to_delete = []
+    #     for index, track in enumerate(playlist_obj["tracks"]):
+    #         if index in positions_to_remove:
+    #             # YT needs both the videoId and the setVideoId in order to remove
+    #             # the track. Thus, we need to obtain the playlist details and
+    #             # grab the info from there.
+    #             tracks_to_delete.append(
+    #                 {"videoId": track["videoId"], "setVideoId": track["setVideoId"]}
+    #             )
+
+    #     return await add_remove_playlist_tracks(
+    #         headers=self._headers,
+    #         prov_playlist_id=prov_playlist_id,
+    #         prov_track_ids=tracks_to_delete,
+    #         add=False,
+    #         username=self.config.get_value(CONF_USERNAME),
+    #     )
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        result = []
-        result = await get_song_radio_tracks(
-            headers=self._headers,
-            username=self.config.get_value(CONF_USERNAME),
-            prov_item_id=prov_track_id,
-            limit=limit,
-        )
-        if "tracks" in result:
-            tracks = []
-            for track in result["tracks"]:
-                # Playlist tracks sometimes do not have a valid artist id
-                # In that case, call the API for track details based on track id
-                try:
-                    track = await self._parse_track(track)
-                    if track:
-                        tracks.append(track)
-                except InvalidDataError:
-                    track = await self.get_track(track["id"])
-                    if track:
-                        tracks.append(track)
-            return tracks
-        return []
+        tracks_obj = await self._soundcloud.get_recommended(track_id=prov_track_id, limit=25)
+        # print(tracks_obj)
+        tracks = []
+        for track in tracks_obj["collection"]:
+            try:
+                # print(track["id"])
+                song = await self._soundcloud.get_track_details(track["id"])
+                # print(song[0])
+                track = await self._parse_track(song[0])
+                # if track:
+                #     track.position = index
+                tracks.append(track)
+            except KeyError:
+                print(track)
+            # except InvalidDataError:
+            #     track = await self.get_track(track["id"])
+            #     if track:
+            #         track.position = index
+            #         tracks.append(track)
+        return tracks
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        track = await self.get_track(item_id)
-        if not track:
-            raise MediaNotFoundError(f"track {item_id} not found")
-        # make sure that the token is still valid by just requesting it
-        # await self.login()
+        track_details = await self._soundcloud.get_track_details(track_id=item_id)
+        # media_url = track_details[0]["media"]["transcodings"][0]["url"]
+        stream_format = track_details[0]["media"]["transcodings"][0]["format"]["mime_type"]
+        # print(format)
+        # track_auth = track_details[0]["track_authorization"]
+        # stream_url = f"{media_url}?client_id={self.client_id}&track_authorization={track_auth}"
+        # print(stream_url)
+        url = await self._soundcloud.get_stream_url(track_id=item_id)
         return StreamDetails(
-            item_id=track.item_id,
             provider=self.domain,
-            content_type=ContentType.MP3,
-            duration=track.duration,
+            item_id=item_id,
+            content_type=ContentType.try_parse(stream_format),
+            direct=url,
         )
-
-        # url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
-        # stream_details = StreamDetails(
-        #     provider=self.domain,
-        #     item_id=item_id,
-        #     content_type=ContentType.try_parse(stream_format["mimeType"]),
-        #     direct=url,
-        # )
-        # if (
-        #     track_obj["streamingData"].get("expiresInSeconds")
-        #     and track_obj["streamingData"].get("expiresInSeconds").isdigit()
-        # ):
-        #     stream_details.expires = time() + int(
-        #         track_obj["streamingData"].get("expiresInSeconds")
-        #     )
-        # if stream_format.get("audioChannels") and str(stream_format.get("audioChannels")).isdigit():
-        #     stream_details.channels = int(stream_format.get("audioChannels"))
-        # if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():
-        #     stream_details.sample_rate = int(stream_format.get("audioSampleRate"))
-        # return stream_details
-
-    async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):  # noqa: ARG002
-        url = f"{YTM_BASE_URL}{endpoint}"
-        data.update(self._context)
-        async with self.mass.http_session.post(
-            url,
-            headers=self._headers,
-            json=data,
-            verify_ssl=False,
-            cookies=self._cookies,
-        ) as response:
-            return await response.json()
-
-    async def _get_data(self, url: str, params: dict = None):
-        async with self.mass.http_session.get(
-            url, headers=self._headers, params=params, cookies=self._cookies
-        ) as response:
-            return await response.text()
-
-        # async def _initialize_headers(self, cookie: str) -> dict[str, str]:
-        """Return headers to include in the requests."""
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",  # noqa: E501
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Content-Type": "application/json",
-            "X-Goog-AuthUser": "0",
-            "x-origin": "https://music.youtube.com",
-            "Cookie": cookie,
-        }
-        sapisid = ytmusicapi.helpers.sapisid_from_cookie(cookie)
-        origin = headers.get("origin", headers.get("x-origin"))
-        headers["Authorization"] = ytmusicapi.helpers.get_authorization(sapisid + " " + origin)
-        self._headers = headers
-
-    async def _initialize_context(self) -> dict[str, str]:
-        """Return a dict to use as a context in requests."""
-        self._context = {
-            "context": {
-                "client": {"clientName": "WEB_REMIX", "clientVersion": "0.1"},
-                "user": {},
-            }
-        }
 
     async def _parse_album(self, album_obj: dict, album_id: str = None) -> Album:
         """Parse a YT Album response to an Album model object."""
@@ -501,8 +468,8 @@ class SoundcloudMusicProvider(MusicProvider):
         )
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
-        if "thumbnails" in album_obj:
-            album.metadata.images = await self._parse_thumbnails(album_obj["thumbnails"])
+        # if "thumbnails" in album_obj:
+        #     album.metadata.images = await self._parse_thumbnails(album_obj["thumbnails"])
         if "description" in album_obj:
             album.metadata.description = unquote(album_obj["description"])
         if "artists" in album_obj:
@@ -564,18 +531,10 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
-        # playlist = Playlist(
-        #     item_id=playlist_obj["playlist"]["id"],
-        #     provider=self.domain,
-        #     name=playlist_obj["playlist"]["title"],
-        # )
-        # if "description" in playlist_obj["playlist"]:
-        #     playlist.metadata.description = playlist_obj["playlist"]["description"]
-        # if "avatar_url" in playlist_obj["playlist"] and playlist_obj["playlist"]["artwork_url"]:
-        #     playlist.metadata.images = await self._parse_thumbnails(
-        #         playlist_obj["playlist"]["artwork_url"]
-        #     )
-        if not "playlist" in playlist_obj:
+        # if "avatar_url" in playlist_obj and playlist_obj["artwork_url"]:
+        #     playlist.metadata.images = await self._parse_thumbnails(playlist_obj["artwork_url"])
+        is_editable = False
+        if "playlist" not in playlist_obj:
             playlist = Playlist(
                 item_id=playlist_obj["id"],
                 provider=self.domain,
@@ -583,9 +542,6 @@ class SoundcloudMusicProvider(MusicProvider):
             )
             if "description" in playlist_obj:
                 playlist.metadata.description = playlist_obj["description"]
-            if "avatar_url" in playlist_obj and playlist_obj["artwork_url"]:
-                playlist.metadata.images = await self._parse_thumbnails(playlist_obj["artwork_url"])
-            is_editable = False
             # if playlist_obj.get("sharing") and playlist_obj.get("sharing") == "private":
             #     is_editable = True
             playlist.is_editable = is_editable
@@ -604,11 +560,6 @@ class SoundcloudMusicProvider(MusicProvider):
             )
             if "description" in playlist_obj["playlist"]:
                 playlist.metadata.description = playlist_obj["playlist"]["description"]
-            # if "artwork_url" in playlist_obj["playlist"] and playlist_obj["playlist"]["artwork_url"]:
-            #     playlist.metadata.images = await self._parse_thumbnails(
-            #         playlist_obj["playlist"]["artwork_url"]
-            #     )
-            is_editable = False
             # if playlist_obj.get("sharing") and playlist_obj.get("sharing") == "private":
             #     is_editable = True
             playlist.is_editable = is_editable
@@ -650,9 +601,10 @@ class SoundcloudMusicProvider(MusicProvider):
 
         # track.metadata.explicit = track_obj["explicit"]
         if "artwork_url" in track_obj:
+            # print(track_obj["artwork_url"])
             track.metadata.preview = track_obj["artwork_url"]
-        # if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
-        #     track.isrc = track_obj["external_ids"]["isrc"]
+        # else:
+        #     print("no artwork_url")
         if "album" in track_obj:
             track.album = await self._parse_album(track_obj["album"])
             if track_obj["album"].get("images"):
@@ -676,122 +628,3 @@ class SoundcloudMusicProvider(MusicProvider):
             )
         )
         return track
-
-        # # track.artist = await self._parse_artist(await self._run_async(track_obj.artist))
-        # if "username" in track_obj:
-        #     track.artists = [
-        #         await self._parse_artist(artist)
-        #         for artist in track_obj["username"]
-        #         # if artist.get("id")
-        #         # or artist.get("channelId")
-        #         # or artist.get("name") == "Various Artists"
-        #     ]
-        # # guard that track has valid artists
-        # if not track.artists:
-        #     raise InvalidDataError("Track is missing artists")
-        # if "artwork_url" in track_obj and track_obj["artwork_url"]:
-        #     track.metadata.images = await self._parse_thumbnails(track_obj["artwork_url"])
-        # if (
-        #     track_obj.get("album")
-        #     and track_obj.get("artists")
-        #     and isinstance(track_obj.get("album"), dict)
-        #     and track_obj["album"].get("id")
-        # ):
-        #     album = track_obj["album"]
-        #     album["artists"] = track_obj["artists"]
-        #     track.album = await self._parse_album(album, album["id"])
-        # if "explicit" in track_obj:
-        #     track.metadata.explicit = track_obj["explicit"]
-        # if "duration" in track_obj and str(track_obj["duration"]).isdigit():
-        #     track.duration = int(track_obj["duration"])
-        # elif "duration_seconds" in track_obj and str(track_obj["duration_seconds"]).isdigit():
-        #     track.duration = int(track_obj["duration_seconds"])
-        # available = True
-        # if "isAvailable" in track_obj:
-        #     available = track_obj["isAvailable"]
-        # track.add_provider_mapping(
-        #     ProviderMapping(
-        #         item_id=str(track_obj["id"]),
-        #         provider_domain=self.domain,
-        #         provider_instance=self.instance_id,
-        #         available=available,
-        #         content_type=ContentType.MP3,
-        #     )
-        # )
-        # return track
-
-    # async def _get_signature_timestamp(self):
-    #     """Get a signature timestamp required to generate valid stream URLs."""
-    #     response = await self._get_data(url=YTM_DOMAIN)
-    #     match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
-    #     if match is None:
-    #         # retry with youtube domain
-    #         response = await self._get_data(url=YT_DOMAIN)
-    #         match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
-    #     if match is None:
-    #         raise Exception("Could not identify the URL for base.js player.")
-    #     url = YTM_DOMAIN + match.group(1)
-    #     response = await self._get_data(url=url)
-    #     match = re.search(r"signatureTimestamp[:=](\d+)", response)
-    #     if match is None:
-    #         raise Exception("Unable to identify the signatureTimestamp.")
-    #     return int(match.group(1))
-
-    # async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
-    #     """Figure out the stream URL to use based on the YT track object."""
-    #     url = None
-    #     if stream_format.get("signatureCipher"):
-    #         # Secured URL
-    #         cipher_parts = {}
-    #         for part in stream_format["signatureCipher"].split("&"):
-    #             key, val = part.split("=", maxsplit=1)
-    #             cipher_parts[key] = unquote(val)
-    #         signature = await self._decipher_signature(
-    #             ciphered_signature=cipher_parts["s"], item_id=item_id
-    #         )
-    #         url = cipher_parts["url"] + "&sig=" + signature
-    #     elif stream_format.get("url"):
-    #         # Non secured URL
-    #         url = stream_format.get("url")
-    #     return url
-
-    # @classmethod
-    # async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
-    #     """Parse and sort a list of thumbnails and return the highest quality."""
-    #     thumb = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)[0]
-    #     return [MediaItemImage(ImageType.THUMB, thumb["url"])]
-
-    # @classmethod
-    # async def _parse_stream_format(cls, track_obj: dict) -> dict:
-    #     """Grab the highest available audio stream from available streams."""
-    #     stream_format = {}
-    #     quality_mapper = {
-    #         "AUDIO_QUALITY_LOW": 1,
-    #         "AUDIO_QUALITY_MEDIUM": 2,
-    #         "AUDIO_QUALITY_HIGH": 3,
-    #     }
-    #     for adaptive_format in track_obj["streamingData"]["adaptiveFormats"]:
-    #         if adaptive_format["mimeType"].startswith("audio") and (
-    #             not stream_format
-    #             or quality_mapper.get(adaptive_format["audioQuality"], 0)
-    #             > quality_mapper.get(stream_format["audioQuality"], 0)
-    #         ):
-    #             stream_format = adaptive_format
-    #     if stream_format is None:
-    #         raise MediaNotFoundError("No stream found for this track")
-    #     return stream_format
-
-    # async def _decipher_signature(self, ciphered_signature: str, item_id: str):
-    #     """Decipher the signature, required to build the Stream URL."""
-
-    #     def _decipher():
-    #         embed_url = f"https://www.youtube.com/embed/{item_id}"
-    #         embed_html = pytube.request.get(embed_url)
-    #         js_url = pytube.extract.js_url(embed_html)
-    #         ytm_js = pytube.request.get(js_url)
-    #         cipher = pytube.cipher.Cipher(js=ytm_js)
-    #         return cipher
-
-    #     if not self._cipher:
-    #         self._cipher = await asyncio.to_thread(_decipher)
-    #     return self._cipher.get_signature(ciphered_signature)

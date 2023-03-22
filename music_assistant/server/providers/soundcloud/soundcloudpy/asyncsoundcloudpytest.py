@@ -2,7 +2,8 @@ import asyncio
 
 # from asyncsoundcloudpy import Soundcloud
 import asyncsoundcloudpy
-import yaml
+
+# import yaml
 
 
 async def main():
@@ -10,9 +11,9 @@ async def main():
         o_auth="",
         client_id="",
     ) as account:
-        print(account)
+        # print(account)
         status = await account.login()
-        print(status)
+        # print(status)
 
     get_account_details = await account.get_account_details()
     print(get_account_details["id"])
@@ -26,9 +27,9 @@ async def main():
     print(get_user_details_2["username"])
     print(get_user_details_2["full_name"])
     print(get_user_details_2["avatar_url"])
-    print("get_followers######################################################################")
-    get_followers = await account.get_followers()
-    print(get_followers["collection"])
+    # print("get_followers######################################################################")
+    # get_followers = await account.get_followers()
+    # print(get_followers["collection"])
     print("get_tracks_liked######################################################################")
     get_tracks_liked = await account.get_tracks_liked()
     print(get_tracks_liked["collection"])
@@ -97,8 +98,12 @@ async def main():
     playlist_id = 1542606805
     get_playlist_details = await account.get_playlist_details(playlist_id)
     print(get_playlist_details["tracks"][0]["id"])
-    # print("######################################################################")
-    # print("######################################################################")
+    print("get_stream_url######################################################################")
+    get_stream_url = await account.get_stream_url(track_id)
+    print(get_stream_url)
+    print("search######################################################################")
+    search = await account.search_tracks("retro")
+    print(search["collection"])
     # print("######################################################################")
     # print("######################################################################")
     # print("######################################################################")
