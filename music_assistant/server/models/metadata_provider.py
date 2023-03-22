@@ -36,19 +36,16 @@ class MetadataProvider(Provider):
         """Retrieve metadata for an artist on this Metadata provider."""
         if ProviderFeature.ARTIST_METADATA in self.supported_features:
             raise NotImplementedError
-        return
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for an album on this Metadata provider."""
         if ProviderFeature.ALBUM_METADATA in self.supported_features:
             raise NotImplementedError
-        return
 
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve metadata for a track on this Metadata provider."""
         if ProviderFeature.TRACK_METADATA in self.supported_features:
             raise NotImplementedError
-        return
 
     async def get_musicbrainz_artist_id(
         self, artist: Artist, ref_albums: Iterable[Album], ref_tracks: Iterable[Track]
@@ -56,4 +53,3 @@ class MetadataProvider(Provider):
         """Discover MusicBrainzArtistId for an artist given some reference albums/tracks."""
         if ProviderFeature.GET_ARTIST_MBID in self.supported_features:
             raise NotImplementedError
-        return

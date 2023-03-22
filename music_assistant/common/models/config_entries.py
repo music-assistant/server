@@ -15,6 +15,7 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
+    CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALISATION,
     CONF_VOLUME_NORMALISATION_TARGET,
@@ -107,15 +108,24 @@ class ConfigEntryValue(ConfigEntry):
         if entry.type == ConfigEntryType.LABEL:
             result.value = result.label
         if not isinstance(result.value, expected_type):
-            if result.value is None and allow_none:
-                # In some cases we allow this (e.g. create default config)
+            # value type does not match
+            try:
+                # try to simply convert it
+                result.value = expected_type(result.value)
                 return result
+            except ValueError:
+                pass
             # handle common conversions/mistakes
             if expected_type == float and isinstance(result.value, int):
                 result.value = float(result.value)
                 return result
             if expected_type == int and isinstance(result.value, float):
                 result.value = int(result.value)
+                return result
+            # fallback to default
+            if result.value is None and allow_none:
+                # In some cases we allow this (e.g. create default config)
+                result.value = result.default_value
                 return result
             if entry.default_value:
                 LOGGER.warning(
@@ -190,6 +200,8 @@ class Config(DataClassDictMixin):
         for key in ("enabled", "name"):
             cur_val = getattr(self, key, None)
             new_val = getattr(update, key, None)
+            if new_val is None:
+                continue
             if new_val == cur_val:
                 continue
             setattr(self, key, new_val)
@@ -201,10 +213,20 @@ class Config(DataClassDictMixin):
                 cur_val = self.values[key].value
                 if cur_val == new_val:
                     continue
-                self.values[key].value = new_val
+                if new_val is None:
+                    self.values[key].value = self.values[key].default_value
+                else:
+                    self.values[key].value = new_val
                 changed_keys.add(f"values/{key}")
 
         return changed_keys
+
+    def validate(self) -> None:
+        """Validate if configuration is valid."""
+        # For now we just use the parse method to check for not allowed None values
+        # this can be extended later
+        for value in self.values.values():
+            value.parse(value, value.value, allow_none=False)
 
 
 @dataclass
@@ -218,6 +240,8 @@ class ProviderConfig(Config):
     enabled: bool = True
     # name: an (optional) custom name for this provider instance/config
     name: str | None = None
+    # last_error: an optional error message if the provider could not be setup with this config
+    last_error: str | None = None
 
 
 @dataclass
@@ -230,6 +254,10 @@ class PlayerConfig(Config):
     enabled: bool = True
     # name: an (optional) custom name for this player
     name: str | None = None
+    # available: boolean to indicate if the player is available
+    available: bool = True
+    # default_name: default name to use when there is name available
+    default_name: str | None = None
 
 
 @dataclass
@@ -239,6 +267,25 @@ class ConfigUpdate(DataClassDictMixin):
     enabled: bool | None = None
     name: str | None = None
     values: dict[str, ConfigValueType] | None = None
+
+
+DEFAULT_PROVIDER_CONFIG_ENTRIES = (
+    ConfigEntry(
+        key=CONF_LOG_LEVEL,
+        type=ConfigEntryType.STRING,
+        label="Log level",
+        options=[
+            ConfigValueOption("global", "GLOBAL"),
+            ConfigValueOption("info", "INFO"),
+            ConfigValueOption("warning", "WARNING"),
+            ConfigValueOption("error", "ERROR"),
+            ConfigValueOption("debug", "DEBUG"),
+        ],
+        default_value="GLOBAL",
+        description="Set the log verbosity for this provider",
+        advanced=True,
+    ),
+)
 
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (

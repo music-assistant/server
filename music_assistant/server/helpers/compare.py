@@ -33,7 +33,7 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     if str1 is None or str2 is None:
         return False
     # return early if total length mismatch
-    if abs(len(str1) - len(str2)) > 2:
+    if abs(len(str1) - len(str2)) > 4:
         return False
     if not strict:
         return create_safe_string(str1) == create_safe_string(str2)

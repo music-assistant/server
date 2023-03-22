@@ -116,15 +116,9 @@ class AlbumsController(MediaControllerBase[Album]):
             for prov_item in prov_items
             if loose_compare_strings(album.name, prov_item.name)
         }
-        # make sure that the 'base' version is included
+        # make sure that the 'base' version is NOT included
         for prov_version in album.provider_mappings:
-            if prov_version.item_id in all_versions:
-                continue
-            album_copy = Album.from_dict(album.to_dict())
-            album_copy.item_id = prov_version.item_id
-            album_copy.provider = prov_version.provider_domain
-            album_copy.provider_mappings = {prov_version}
-            all_versions[prov_version.item_id] = album_copy
+            all_versions.pop(prov_version.item_id, None)
 
         # return the aggregated result
         return all_versions.values()
@@ -260,7 +254,7 @@ class AlbumsController(MediaControllerBase[Album]):
         assert not (db_rows and not recursive), "Tracks attached to album"
         for db_row in db_rows:
             with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
+                await self.mass.music.tracks.delete_db_item(db_row["item_id"], recursive)
 
         # delete the album itself from db
         await super().delete_db_item(item_id)
