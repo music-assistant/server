@@ -12,7 +12,7 @@ async def main():
         client_id="",
     ) as account:
         # print(account)
-        status = await account.login()
+        await account.login()
         # print(status)
 
     get_account_details = await account.get_account_details()

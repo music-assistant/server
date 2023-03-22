@@ -33,7 +33,6 @@ class SoundcloudAsync:
 
     async def login(self):
         """Login to soundcloud."""
-        # print("login")
         if len(self.client_id) != 32:
             raise ValueError("Not valid client id")
 
@@ -481,15 +480,9 @@ class SoundcloudAsync:
     async def get_stream_url(self, track_id):
         """:param track_id: track id"""
         full_json = await self.get_track_details(track_id)
-        # print(full_json)
-        # full_json = list(json.loads(await self.get_track_details(track_id)))
         media_url = full_json[0]["media"]["transcodings"][0]["url"]
-        # format = full_json[0]["media"]["transcodings"][0]["format"]["mime_type"]
-        # print(format)
         track_auth = full_json[0]["track_authorization"]
-
         stream_url = f"{media_url}?client_id={self.client_id}&track_authorization={track_auth}"
-        # print(stream_url)
         req = await self.get(
             stream_url,
             headers=self.headers,

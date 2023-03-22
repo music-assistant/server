@@ -208,7 +208,6 @@ class MetaDataController:
 
     async def get_artist_musicbrainz_id(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
-        print(artist)
         ref_albums = await self.mass.music.artists.albums(artist=artist)
         ref_tracks = await self.mass.music.artists.tracks(artist=artist)
 
@@ -218,7 +217,6 @@ class MetaDataController:
 
         # try all providers one by one until we have a match
         for provider in providers:
-            print(provider)
             if ProviderFeature.GET_ARTIST_MBID not in provider.supported_features:
                 continue
             if musicbrainz_id := await provider.get_musicbrainz_artist_id(

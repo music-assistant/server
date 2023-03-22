@@ -1,8 +1,5 @@
 """Soundcloud support for MusicAssistant."""
 import asyncio
-
-# import re
-# from operator import itemgetter
 from typing import AsyncGenerator, Callable  # noqa: UP035
 from urllib.parse import unquote
 
@@ -20,15 +17,9 @@ from music_assistant.common.models.media_items import (  # ContentType,; ImageTy
     StreamDetails,
     Track,
 )
-
-# from music_assistant.server.helpers.app_vars import app_var
-# from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .soundcloudpy.asyncsoundcloudpy import SoundcloudAsync
-
-# from music_assistant.constants import CONF_USERNAME
-
 
 CONF_CLIENT_ID = "client_id"
 CONF_AUTHORIZATION = "authorization"
@@ -60,38 +51,20 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def setup(self) -> None:
         """Set up the Soundcloud provider."""
-        if (
-            not self.config.get_value(CONF_CLIENT_ID)
-            or not self.config.get_value(CONF_AUTHORIZATION)
-            # or not self.config.get_value(CONF_USERNAME)
+        if not self.config.get_value(CONF_CLIENT_ID) or not self.config.get_value(
+            CONF_AUTHORIZATION
         ):
             raise LoginFailed("Invalid login credentials")
 
-        # def connect():
-        #     print("connect")
-        #     soundcloud_account = Soundcloud(
-        #         o_auth=self.config.get_value(CONF_AUTHORIZATION),
-        #         client_id=self.config.get_value(CONF_CLIENT_ID),
-        #     )
-        #     return soundcloud_account.get_account_details()
-
-        # self._soundcloud = await self._run_async(connect)
-        # username = self.config.get_value(CONF_USERNAME)
         client_id = self.config.get_value(CONF_CLIENT_ID)
         auth_token = self.config.get_value(CONF_AUTHORIZATION)
 
         async with SoundcloudAsync(auth_token, client_id) as account:
-            # print(account)
             await account.login()
-            # print(status)
 
         self._soundcloud = account
         self._me = await account.get_account_details()
         self._user_id = self._me["id"]
-        # assert me.permalink == username
-        # print(self.me["id"])
-        # print(type(self.me))
-        # return None
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -123,93 +96,97 @@ class SoundcloudMusicProvider(MusicProvider):
 
         results = []
         for item in search_results[0]["collection"]:
-            print(item)
             track = await self._soundcloud.get_track_details(item["id"])
-            print(track)
+            # track = await self.get_track(item["id"])
             try:
-                await self._parse_track(track)
-            except IndexError:
+                await self._parse_track(track[0])
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug("Search-parse_track")
+                self.logger.debug(search_query)
+                self.logger.debug(search_results)
+                self.logger.debug(track)
+                self.logger.debug(error)
                 continue
             results.append(track)
 
         return results
 
+    # async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    #     """Retrieve library albums from Soundcloud."""
+    #     albums =
+    #     self.logger.debug(albums["collection"])
+    #     for item in albums["collection"]:
+    #         # album = await self._soundcloud.get_track_details(item)
+    #         album =
+    #         self.logger.debug(type(album))
+    #         try:
+    #             yield await self._parse_album(album[0])
+    #         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+    #             self.logger.debug("get_library_albums")
+    #             self.logger.debug(album)
+    #             self.logger.debug(error)
+    #             continue
+
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Soundcloud."""
         following = await self._soundcloud.get_following(self._user_id)
         for artist in following["collection"]:
-            # print(item)
-            # if artist and artist["id"]:
-            # print(item)
-            yield await self._parse_artist(artist)
-
-        # artists_obj = await get_library_artists(
-        #     headers=self._headers, username=self.config.get_value(CONF_USERNAME)
-        # )
-        # for artist in artists_obj:
-        #     yield await self._parse_artist(artist)
-
-    # async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-    #     """Retrieve all library albums from Youtube Music."""
-    #     albums_obj = await get_library_albums(
-    #         headers=self._headers, username=self.config.get_value(CONF_USERNAME)
-    #     )
-    #     for album in albums_obj:
-    #         yield await self._parse_album(album, album["browseId"])
+            try:
+                yield await self._parse_artist(artist)
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug("get_library_artists")
+                self.logger.debug(artist)
+                self.logger.debug(error)
+                continue
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-        """Retrieve all library playlists from the provider."""
+        """Retrieve all library playlists from Soundcloud."""
         playlists = await self._soundcloud.get_account_playlists()
-        # print(playlists)
         for item in playlists["collection"]:
-            # print(item)
             if "playlist" in item:
                 if item and (item["playlist"]["title"] or item["system_playlist"]["title"]):
-                    yield await self._parse_playlist(item)
+                    try:
+                        yield await self._parse_playlist(item)
+                    except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                        self.logger.debug("get_library_playlists-playlist")
+                        self.logger.debug(item)
+                        self.logger.debug(error)
+                        continue
             elif "system_playlist" in item and item and item["system_playlist"]["title"]:
-                yield await self._parse_playlist(item)
-            # elif item and item["system_playlist"]["title"]:
-            #     # print(item)
-            #     yield await self._parse_playlist(item)
-        # for playlist in playlists_obj:
-        #     yield await self._parse_playlist(playlist)
+                try:
+                    yield await self._parse_playlist(item)
+                except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                    self.logger.debug("get_library_playlists-system_playlist")
+                    self.logger.debug(item)
+                    self.logger.debug(error)
+                    continue
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
-        """Retrieve library tracks from Youtube Music."""
+        """Retrieve library tracks from Soundcloud."""
         tracks = await self._soundcloud.get_tracks_liked()
-        # print("get_library_tracks")
-        # print("get_library_tracks", tracks["collection"])
-        # tracks_obj = await get_library_tracks(
-        #     headers=self._headers, username=self.config.get_value(CONF_USERNAME)
-        # )
+        # self.logger.debug(tracks["collection"])
         for item in tracks["collection"]:
-            # print("item")
-            # print(item)
             track = await self._soundcloud.get_track_details(item)
-            # print("track")
-            # try:
-            #     print(track[0]["id"])
-            # except IndexError:
-            #     print("IndexError", track)
-            # Library tracks sometimes do not have a valid artist id
-            # In that case, call the API for track details based on track id
+            # track = await self.get_track(item)
+            # self.logger.debug(type(track))
             try:
                 yield await self._parse_track(track[0])
-            # except InvalidDataError:
-            # print(track)
             except IndexError:
                 continue
-            #     track = await self.get_track(track["videoId"])
-            #     yield track
+            except (KeyError, TypeError, InvalidDataError) as error:
+                self.logger.debug("get_library_tracks")
+                self.logger.debug(track)
+                self.logger.debug(error)
+                continue
 
-    # async def get_album(self, prov_album_id) -> Album:
-    #     """Get full album details by id."""
-    #     album_obj = await get_album(prov_album_id=prov_album_id)
-    #     return (
-    #         await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
-    #         if album_obj
-    #         else None
-    #     )
+    async def get_album(self, prov_album_id) -> Album:
+        """Get full album details by id."""
+        album_obj = await get_album(prov_album_id=prov_album_id)
+        return (
+            await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
+            if album_obj
+            else None
+        )
 
     # async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
     #     """Get album tracks for given album id."""
@@ -226,21 +203,39 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
-        # print(prov_artist_id)
         artist_obj = await self._soundcloud.get_user_details(user_id=prov_artist_id)
-
-        return await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
+        try:
+            artist = await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
+        except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+            self.logger.debug("get_artist")
+            self.logger.debug(prov_artist_id)
+            self.logger.debug(artist_obj)
+            self.logger.debug(error)
+        return artist
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         track_obj = await self._soundcloud.get_track_details(track_id=prov_track_id)
-        return await self._parse_track(track_obj[0])
+        try:
+            track = await self._parse_track(track_obj[0])
+        except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+            self.logger.debug("get_track")
+            self.logger.debug(prov_track_id)
+            self.logger.debug(track_obj)
+            self.logger.debug(error)
+        return track
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
-        # print(playlist_obj)
-        return await self._parse_playlist(playlist_obj)
+        try:
+            playlist = await self._parse_playlist(playlist_obj)
+        except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+            self.logger.debug("get_playlist")
+            self.logger.debug(prov_playlist_id)
+            self.logger.debug(playlist_obj)
+            self.logger.debug(error)
+        return playlist
 
     async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
@@ -248,50 +243,34 @@ class SoundcloudMusicProvider(MusicProvider):
         if "tracks" not in playlist_obj:
             return []
         tracks = []
-        # print(playlist_obj)
         for index, track in enumerate(playlist_obj["tracks"]):
-            # if track["isAvailable"]:
-            # Playlist tracks sometimes do not have a valid artist id
-            # In that case, call the API for track details based on track id
+            song = await self._soundcloud.get_track_details(track["id"])
+            # song = await self.get_track(track["id"])
             try:
-                # print(track["id"])
-                song = await self._soundcloud.get_track_details(track["id"])
-                # print(song[0])
                 track = await self._parse_track(song[0])
                 if track:
                     track.position = index
                     tracks.append(track)
-            except KeyError:
-                print(track)
-            except InvalidDataError:
-                track = await self.get_track(track["id"])
-                if track:
-                    track.position = index
-                    tracks.append(track)
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug("get_playlist_tracks")
+                self.logger.debug(track)
+                self.logger.debug(error)
+                continue
         return tracks
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
         album_obj = await self._soundcloud.get_album_from_user(user_id=prov_artist_id, limit=25)
-        # print(tracks_obj)
         albums = []
         for album in album_obj["collection"]:
             try:
-                # print(album)
-                # item = await self._soundcloud.get_track_details(album["id"])
-                # print(song[0])
                 _album = await self._parse_album(album[0])
-                # if track:
-                #     track.position = index
                 albums.append(_album)
-            except KeyError:
-                print(album)
-            # except InvalidDataError:
-            #     track = await self.get_track(track["id"])
-            #     if track:
-            #         track.position = index
-            #         tracks.append(track)
-            print(albums)
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug("get_artist_albums")
+                self.logger.debug(album)
+                self.logger.debug(error)
+                continue
         return albums
 
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
@@ -299,153 +278,57 @@ class SoundcloudMusicProvider(MusicProvider):
         tracks_obj = await self._soundcloud.get_popular_tracks_user(
             user_id=prov_artist_id, limit=25
         )
-        # print(tracks_obj)
         tracks = []
         for track in tracks_obj["collection"]:
+            song = await self._soundcloud.get_track_details(track["id"])
+            # song = await self.get_track(track["id"])
             try:
-                # print(track["id"])
-                song = await self._soundcloud.get_track_details(track["id"])
-                # print(song[0])
                 track = await self._parse_track(song[0])
-                # if track:
-                #     track.position = index
                 tracks.append(track)
-            except KeyError:
-                print(track)
-            # except InvalidDataError:
-            #     track = await self.get_track(track["id"])
-            #     if track:
-            #         track.position = index
-            #         tracks.append(track)
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug("get_artist_toptracks")
+                self.logger.debug(track)
+                self.logger.debug(error)
+                continue
         return tracks
 
     # async def library_add(self, prov_item_id, media_type: MediaType) -> None:
     #     """Add an item to the library."""
-    #     result = False
-    #     if media_type == MediaType.ARTIST:
-    #         result = await library_add_remove_artist(
-    #             headers=self._headers,
-    #             prov_artist_id=prov_item_id,
-    #             add=True,
-    #             username=self.config.get_value(CONF_USERNAME),
-    #         )
-    #     elif media_type == MediaType.ALBUM:
-    #         result = await library_add_remove_album(
-    #             headers=self._headers,
-    #             prov_item_id=prov_item_id,
-    #             add=True,
-    #             username=self.config.get_value(CONF_USERNAME),
-    #         )
-    #     elif media_type == MediaType.PLAYLIST:
-    #         result = await library_add_remove_playlist(
-    #             headers=self._headers,
-    #             prov_item_id=prov_item_id,
-    #             add=True,
-    #             username=self.config.get_value(CONF_USERNAME),
-    #         )
-    #     elif media_type == MediaType.TRACK:
-    #         raise NotImplementedError
-    #     return result
 
     # async def library_remove(self, prov_item_id, media_type: MediaType):
     #     """Remove an item from the library."""
-    #     result = False
-    #     if media_type == MediaType.ARTIST:
-    #         result = await library_add_remove_artist(
-    #             headers=self._headers,
-    #             prov_artist_id=prov_item_id,
-    #             add=False,
-    #             username=self.config.get_value(CONF_USERNAME),
-    #         )
-    #     elif media_type == MediaType.ALBUM:
-    #         result = await library_add_remove_album(
-    #             headers=self._headers,
-    #             prov_item_id=prov_item_id,
-    #             add=False,
-    #             username=self.config.get_value(CONF_USERNAME),
-    #         )
-    #     elif media_type == MediaType.PLAYLIST:
-    #         result = await library_add_remove_playlist(
-    #             headers=self._headers,
-    #             prov_item_id=prov_item_id,
-    #             add=False,
-    #             username=self.config.get_value(CONF_USERNAME),
-    #         )
-    #     elif media_type == MediaType.TRACK:
-    #         raise NotImplementedError
-    #     return result
 
     # async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
     #     """Add track(s) to playlist."""
-    #     return await add_remove_playlist_tracks(
-    #         headers=self._headers,
-    #         prov_playlist_id=prov_playlist_id,
-    #         prov_track_ids=prov_track_ids,
-    #         add=True,
-    #         username=self.config.get_value(CONF_USERNAME),
-    #     )
 
     # async def remove_playlist_tracks(
     #     self, prov_playlist_id: str, positions_to_remove: tuple[int]
     # ) -> None:
     #     """Remove track(s) from playlist."""
-    #     playlist_obj = await get_playlist(
-    #         prov_playlist_id=prov_playlist_id,
-    #         headers=self._headers,
-    #         username=self.config.get_value(CONF_USERNAME),
-    #     )
-    #     if "tracks" not in playlist_obj:
-    #         return None
-    #     tracks_to_delete = []
-    #     for index, track in enumerate(playlist_obj["tracks"]):
-    #         if index in positions_to_remove:
-    #             # YT needs both the videoId and the setVideoId in order to remove
-    #             # the track. Thus, we need to obtain the playlist details and
-    #             # grab the info from there.
-    #             tracks_to_delete.append(
-    #                 {"videoId": track["videoId"], "setVideoId": track["setVideoId"]}
-    #             )
-
-    #     return await add_remove_playlist_tracks(
-    #         headers=self._headers,
-    #         prov_playlist_id=prov_playlist_id,
-    #         prov_track_ids=tracks_to_delete,
-    #         add=False,
-    #         username=self.config.get_value(CONF_USERNAME),
-    #     )
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         tracks_obj = await self._soundcloud.get_recommended(track_id=prov_track_id, limit=25)
-        # print(tracks_obj)
         tracks = []
         for track in tracks_obj["collection"]:
+            song = await self._soundcloud.get_track_details(track["id"])
+            # song = await self.get_track(track["id"])
             try:
-                # print(track["id"])
-                song = await self._soundcloud.get_track_details(track["id"])
-                # print(song[0])
                 track = await self._parse_track(song[0])
-                # if track:
-                #     track.position = index
                 tracks.append(track)
-            except KeyError:
-                print(track)
-            # except InvalidDataError:
-            #     track = await self.get_track(track["id"])
-            #     if track:
-            #         track.position = index
-            #         tracks.append(track)
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug("get_similar_tracks")
+                self.logger.debug(track)
+                self.logger.debug(error)
+                continue
+
         return tracks
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         track_details = await self._soundcloud.get_track_details(track_id=item_id)
-        # media_url = track_details[0]["media"]["transcodings"][0]["url"]
+        # track_details = await self.get_track(item_id)
         stream_format = track_details[0]["media"]["transcodings"][0]["format"]["mime_type"]
-        # print(format)
-        # track_auth = track_details[0]["track_authorization"]
-        # stream_url = f"{media_url}?client_id={self.client_id}&track_authorization={track_auth}"
-        # print(stream_url)
         url = await self._soundcloud.get_stream_url(track_id=item_id)
         return StreamDetails(
             provider=self.domain,
@@ -455,7 +338,7 @@ class SoundcloudMusicProvider(MusicProvider):
         )
 
     async def _parse_album(self, album_obj: dict, album_id: str = None) -> Album:
-        """Parse a YT Album response to an Album model object."""
+        """Parse a Soundcloud Album response to an Album model object."""
         album_id = album_id or album_obj.get("id") or album_obj.get("browseId")
         if "title" in album_obj:
             name = album_obj["title"]
@@ -466,8 +349,6 @@ class SoundcloudMusicProvider(MusicProvider):
             name=name,
             provider=self.domain,
         )
-        if album_obj.get("year") and album_obj["year"].isdigit():
-            album.year = album_obj["year"]
         # if "thumbnails" in album_obj:
         #     album.metadata.images = await self._parse_thumbnails(album_obj["thumbnails"])
         if "description" in album_obj:
@@ -476,9 +357,6 @@ class SoundcloudMusicProvider(MusicProvider):
             album.artists = [
                 await self._parse_artist(artist)
                 for artist in album_obj["artists"]
-                # artist object may be missing an id
-                # in that case its either a performer (like the composer) OR this
-                # is a Various artists compilation album...
                 if (artist.get("id") or artist["name"] == "Various Artists")
             ]
         if "type" in album_obj:
@@ -501,9 +379,8 @@ class SoundcloudMusicProvider(MusicProvider):
         return album
 
     async def _parse_artist(self, artist_obj: dict) -> Artist:
-        """Parse a YT Artist response to Artist model object."""
+        """Parse a Soundcloud user response to Artist model object."""
         artist_id = None
-        # print(artist_obj)
         permalink = artist_obj["permalink"]
         if "id" in artist_obj and artist_obj["id"]:
             artist_id = artist_obj["id"]
@@ -512,7 +389,6 @@ class SoundcloudMusicProvider(MusicProvider):
         artist = Artist(item_id=artist_id, name=artist_obj["username"], provider=self.domain)
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
-        # print(artist_obj)
         if artist_obj.get("avatar_url"):
             img_url = artist_obj["avatar_url"]
             if "2a96cbd8b46e442fc41c2b86b821562f" not in img_url:
@@ -530,7 +406,7 @@ class SoundcloudMusicProvider(MusicProvider):
         return artist
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
-        """Parse a YT Playlist response to a Playlist object."""
+        """Parse a Soundcloud Playlist response to a Playlist object."""
         # if "avatar_url" in playlist_obj and playlist_obj["artwork_url"]:
         #     playlist.metadata.images = await self._parse_thumbnails(playlist_obj["artwork_url"])
         is_editable = False
@@ -571,13 +447,10 @@ class SoundcloudMusicProvider(MusicProvider):
                 )
             )
         playlist.metadata.checksum = playlist_obj.get("checksum")
-        # print(playlist.metadata.checksum)
         return playlist
 
     async def _parse_track(self, track_obj: dict) -> Track:
-        """Parse a YT Track response to a Track model object."""
-        # print(track_obj)
-        # print("Parse track", track_obj["id"])
+        """Parse a Soundcloud Track response to a Track model object."""
         name, version = parse_title_and_version(track_obj["title"])
         track = Track(
             item_id=track_obj["id"],
@@ -587,24 +460,15 @@ class SoundcloudMusicProvider(MusicProvider):
             duration=track_obj["duration"] / 1000,
         )
         user_id = track_obj["user"]["id"]
-        # print(user_id)
         user = await self._soundcloud.get_user_details(user_id)
-        # print(user)
         artist = await self._parse_artist(user)
         if artist and artist.item_id not in {x.item_id for x in track.artists}:
-            # print("if artist and artist.item_id not in ")
-            # print(artist)
-            # print("if artist and artist.item_id not in ")
             track.artists.append(artist)
-            # print("if artist and artist.item_id not in ")
         # track = Track(item_id=track_obj["id"], provider=self.domain, name=track_obj["title"])
 
         # track.metadata.explicit = track_obj["explicit"]
         if "artwork_url" in track_obj:
-            # print(track_obj["artwork_url"])
             track.metadata.preview = track_obj["artwork_url"]
-        # else:
-        #     print("no artwork_url")
         if "album" in track_obj:
             track.album = await self._parse_album(track_obj["album"])
             if track_obj["album"].get("images"):

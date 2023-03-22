@@ -7,23 +7,17 @@
   "config_entries": [
     {
       "key": "client_id",
-      "type": "string",
+      "type": "secure_string",
       "label": "Client id"
     },
     {
       "key": "authorization",
-      "type": "string",
+      "type": "secure_string",
       "label": "Authorization"
     }
   ],
 
-  "requirements": [
-    "soundcloud-lib",
-    "soundcloud-v2",
-    "bs4",
-    "requests",
-    "pysoundcloud"
-  ],
+  "requirements": ["bs4"],
   "documentation": "",
   "multi_instance": true
 }
