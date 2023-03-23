@@ -185,12 +185,6 @@ class StreamsController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self.mass.webserver.register_route("/stream/preview", self._serve_preview)
-        self.mass.webserver.register_route(
-            "/stream/{player_id}/{queue_item_id}/{stream_id}.{fmt}",
-            self._serve_queue_stream,
-        )
-
         ffmpeg_present, libsoxr_support, version = await check_audio_support()
         if not ffmpeg_present:
             LOGGER.error("FFmpeg binary not found on your system, playback will NOT work!.")
@@ -293,7 +287,7 @@ class StreamsController:
             f"provider={provider_domain_or_instance_id}&item_id={enc_track_id}"
         )
 
-    async def _serve_queue_stream(self, request: web.Request) -> web.Response:
+    async def serve_queue_stream(self, request: web.Request) -> web.Response:
         """Serve Queue Stream audio to player(s)."""
         LOGGER.debug(
             "Got %s request to %s from %s\nheaders: %s\n",
@@ -602,7 +596,7 @@ class StreamsController:
 
         LOGGER.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
-    async def _serve_preview(self, request: web.Request):
+    async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""
         provider_domain_or_instance_id = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])

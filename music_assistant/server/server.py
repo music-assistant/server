@@ -113,10 +113,10 @@ class MusicAssistant:
             await self.unload_provider(prov_id)
         # stop core controllers
         await self.streams.close()
+        await self.webserver.close()
         await self.metadata.close()
         await self.music.close()
         await self.players.close()
-        await self.webserver.close()
         # cleanup cache and config
         await self.config.close()
         await self.cache.close()
