@@ -1,15 +1,18 @@
 """Youtube Music support for MusicAssistant."""
+from __future__ import annotations
+
 import asyncio
 import re
 from operator import itemgetter
 from time import time
-from typing import AsyncGenerator  # noqa: UP035
+from typing import TYPE_CHECKING, AsyncGenerator  # noqa: UP035
 from urllib.parse import unquote
 
 import pytube
 import ytmusicapi
 
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -50,6 +53,13 @@ from .helpers import (
     search,
 )
 
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+
 CONF_COOKIE = "cookie"
 
 YT_DOMAIN = "https://www.youtube.com"
@@ -72,6 +82,34 @@ SUPPORTED_FEATURES = (
 # ruff: noqa: PLW2901, RET504
 
 
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = YoutubeMusicProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(
+            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+        ),
+        ConfigEntry(
+            key=CONF_COOKIE,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Login Cookie",
+            required=True,
+            description="The Login cookie you grabbed from an existing session, "
+            "see the documentation.",
+        ),
+    )
+
+
 class YoutubeMusicProvider(MusicProvider):
     """Provider for Youtube Music."""
 
@@ -81,7 +119,7 @@ class YoutubeMusicProvider(MusicProvider):
     _signature_timestamp = 0
     _cipher = None
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Set up the YTMusic provider."""
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_COOKIE):
             raise LoginFailed("Invalid login credentials")

@@ -5,20 +5,49 @@ import asyncio
 import os
 import os.path
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
 import aiofiles
 from aiofiles.os import wrap
 
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.constants import CONF_PATH
 
-from .base import FileSystemItem, FileSystemProviderBase
+from .base import CONF_ENTRY_MISSING_ALBUM_ARTIST, FileSystemItem, FileSystemProviderBase
 from .helpers import get_absolute_path, get_relative_path
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
 
 listdir = wrap(os.listdir)
 isdir = wrap(os.path.isdir)
 isfile = wrap(os.path.isfile)
 exists = wrap(os.path.exists)
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = LocalFileSystemProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(key="path", type=ConfigEntryType.STRING, label="Path", default_value="/media"),
+        CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    )
 
 
 async def create_item(base_path: str, entry: os.DirEntry) -> FileSystemItem:
@@ -46,7 +75,7 @@ async def create_item(base_path: str, entry: os.DirEntry) -> FileSystemItem:
 class LocalFileSystemProvider(FileSystemProviderBase):
     """Implementation of a musicprovider for local files."""
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         conf_path = self.config.get_value(CONF_PATH)
         if not await isdir(conf_path):

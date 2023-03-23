@@ -3,10 +3,7 @@
   "domain": "frontend",
   "name": "Frontend",
   "description": "The default Music Assistant (web) frontend, written in Vue, hosted within the Music Assistant server.",
-  "codeowners": ["@marcelveldt"],
-  "config_entries": [
-  ],
-
+  "codeowners": ["@music-assistant"],
   "requirements": ["music-assistant-frontend==20230319.1"],
   "documentation": "",
   "multi_instance": false,

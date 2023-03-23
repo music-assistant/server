@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import urllib.parse
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.util import select_free_port
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import PlayerState
 from music_assistant.server.models.plugin import PluginProvider
 
@@ -23,10 +24,33 @@ from .models import (
     player_status_from_mass,
 )
 
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+
 # ruff: noqa: ARG002, E501
 
 ArgsType = list[int | str]
 KwargsType = dict[str, Any]
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = LmsCli(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
 
 
 def parse_value(raw_value: int | str) -> int | str | tuple[str, int | str]:
@@ -64,7 +88,7 @@ class LmsCli(PluginProvider):
 
     cli_port: int = 9090
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the plugin."""
         self.logger.info("Registering jsonrpc endpoints on the webserver")
         self.mass.webapp.router.add_get("/jsonrpc.js", self._handle_jsonrpc)

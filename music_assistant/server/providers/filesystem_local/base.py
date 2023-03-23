@@ -12,6 +12,11 @@ from time import time
 import xmltodict
 
 from music_assistant.common.helpers.util import parse_title_and_version
+from music_assistant.common.models.config_entries import (
+    ConfigEntry,
+    ConfigEntryType,
+    ConfigValueOption,
+)
 from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
@@ -43,6 +48,25 @@ from music_assistant.server.models.music_provider import MusicProvider
 from .helpers import get_parentdir
 
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
+
+CONF_ENTRY_MISSING_ALBUM_ARTIST = (
+    ConfigEntry(
+        key=CONF_MISSING_ALBUM_ARTIST_ACTION,
+        type=ConfigEntryType.STRING,
+        label="Action when a track is missing the Albumartist ID3 tag",
+        default_value="skip",
+        description="Music Assistant prefers information stored in ID3 tags and only uses"
+        " online sources for additional metadata. This means that the ID3 tags need to be "
+        "accurate, preferably tagged with MusicBrainz Picard.",
+        advanced=True,
+        required=False,
+        options=(
+            ConfigValueOption("Skip track and log warning", "skip"),
+            ConfigValueOption("Use Track artist(s)", "track_artist"),
+            ConfigValueOption("Use Various Artists", "various_artists"),
+        ),
+    ),
+)
 
 TRACK_EXTENSIONS = ("mp3", "m4a", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
 PLAYLIST_EXTENSIONS = ("m3u", "pls")
@@ -109,7 +133,7 @@ class FileSystemProviderBase(MusicProvider):
         return SUPPORTED_FEATURES
 
     @abstractmethod
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
 
     @abstractmethod

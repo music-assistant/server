@@ -29,7 +29,10 @@ from music_assistant.constants import CONF_PLAYERS
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    pass
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
 
 # sync constants
 MIN_DEVIATION_ADJUST = 10  # 10 milliseconds
@@ -81,6 +84,22 @@ SLIM_PLAYER_CONFIG_ENTRIES = (
 )
 
 
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = SlimprotoProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
+
+
 class SlimprotoProvider(PlayerProvider):
     """Base/builtin provider for players using the SLIM protocol (aka slimproto)."""
 
@@ -89,7 +108,7 @@ class SlimprotoProvider(PlayerProvider):
     _sync_playpoints: dict[str, deque[SyncPlayPoint]]
     _virtual_providers: dict[str, tuple[Callable, Callable]]
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._socket_clients = {}
         self._sync_playpoints = {}
@@ -106,7 +125,7 @@ class SlimprotoProvider(PlayerProvider):
             await start_discovery(slimproto_port, cli_port, self.mass.port),
         )
 
-    async def close(self) -> None:
+    async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         if hasattr(self, "_socket_clients"):
             for client in list(self._socket_clients.values()):

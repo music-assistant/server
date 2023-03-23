@@ -23,6 +23,7 @@ from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.search import async_search
 from async_upnp_client.utils import CaseInsensitiveDict
 
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ContentType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
@@ -34,7 +35,10 @@ from music_assistant.server.models.player_provider import PlayerProvider
 from .helpers import DLNANotifyServer
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import PlayerConfig
+    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
 
 PLAYER_FEATURES = (
     PlayerFeature.SET_MEMBERS,
@@ -47,6 +51,22 @@ PLAYER_CONFIG_ENTRIES = tuple()  # we don't have any player config entries (for 
 _DLNAPlayerProviderT = TypeVar("_DLNAPlayerProviderT", bound="DLNAPlayerProvider")
 _R = TypeVar("_R")
 _P = ParamSpec("_P")
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = DLNAPlayerProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
 
 
 def catch_request_errors(
@@ -176,7 +196,7 @@ class DLNAPlayerProvider(PlayerProvider):
     upnp_factory: UpnpFactory
     notify_server: DLNANotifyServer
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self.dlnaplayers = {}
         self.lock = asyncio.Lock()

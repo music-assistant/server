@@ -8,7 +8,6 @@ from mashumaro.mixins.orjson import DataClassORJSONMixin
 
 from music_assistant.common.helpers.json import load_json_file
 
-from .config_entries import ConfigEntry
 from .enums import MediaType, ProviderFeature, ProviderType
 
 
@@ -23,15 +22,11 @@ class ProviderManifest(DataClassORJSONMixin):
     codeowners: list[str]
 
     # optional params
-    # config_entries: list of config entries required to configure/setup this provider
-    config_entries: list[ConfigEntry] = field(default_factory=list)
+
     # requirements: list of (pip style) python packages required for this provider
     requirements: list[str] = field(default_factory=list)
     # documentation: link/url to documentation.
     documentation: str | None = None
-    # init_class: class to initialize, within provider's package
-    # e.g. `SpotifyProvider`. (autodetect if None)
-    init_class: str | None = None
     # multi_instance: whether multiple instances of the same provider are allowed/possible
     multi_instance: bool = False
     # builtin: whether this provider is a system/builtin and can not disabled/removed

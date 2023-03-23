@@ -3,9 +3,7 @@
   "domain": "lms_cli",
   "name": "LMS CLI",
   "description": "Basic CLI implementation (classic + JSON-RPC), which is (partly) compatible with Logitech Media Server to maximize compatibility with Squeezebox players.",
-  "codeowners": ["@marcelveldt"],
-  "config_entries": [
-  ],
+  "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "",
   "multi_instance": false,
