@@ -511,7 +511,7 @@ class SoundcloudAsync:
             headers=self.headers,
         )
 
-    async def search_tracks(self, query_string, limit=10):
+    async def search(self, query_string, limit=10):
         """
         :param query_string: string to search on soundcloud for tracks
         :param limit: limit of recommended playlists make for you

@@ -1,0 +1,59 @@
+{
+  "avatar_url": "https://i1.sndcdn.com/avatars-000275218815-7i0q1h-large.jpg",
+  "city": "Ibiza Electronica",
+  "comments_count": 0,
+  "country_code": "None",
+  "created_at": "2008-11-04T12:00:11Z",
+  "creator_subscriptions": [
+    {
+      "product": {
+        "id": "creator-pro-unlimited"
+      }
+    }
+  ],
+  "creator_subscription": {
+    "product": {
+      "id": "creator-pro-unlimited"
+    }
+  },
+  "description": "EARTHLING - DJ Celli\n\nEarthling is the solo project of DJ Celli. Psychedelic blast-off music to lose your marbles to. Celli\"s other projects include: Everblast, Soundaholix, Vatos Locos, and Third Ear Audio\n\nIbiza based Celli has been partying and producing in the Psychedelic trance scene since its beginnings in the early 90\"s.\n\nFrom his roots as an underground party organiser in Ibiza he soon started producing music releasing his first track Just Say Yes on T.I.P. Records in 1999, followed by his debut album entitled Patterns on Acidance Records in 2001\n\nHe has since produced a further two albums he has now released an astounding 250 tracks, and 12 albums under various pseudonyms such as : Soundaholix (with GMS) , Third Ear Audio ( with Nick Doof), Vatos Locos and Everblast (with Chromatone), Celli rocks dancefloors, bringing his unique psychedelic sound to the far reaches of the planet... His Earthling LIVE shows showcase his best music and always unreleased cutting edge tracks as well\n\nHe is also an exceptional DJ - doing extended DJ sets at many of the big Psychedelic festivals \n\nHe is part of the Zero1 Music record label. Zero 1 Music has amongst others artists: GMS, Tron, Chromatone, Soundaholix, Everblast, Wrecked Machines, KIM, DJ Mack, DJ Moon, Virtual Light \n\nCelli\"s other projects include: \n\nMANDELBROT:\n(With DJ Lucas - Supermodule)\nhttps://soundcloud.com/mandelbrot_tip\n\nEVERBLAST:\n(With Chromatone)\nhttps://soundcloud.com/everblast\nwww.facebook.com/everblastproject?fref=ts\n\nSOUNDAHOLIX:\n(With Riktam and Bansi)\nhttps://soundcloud.com/soundaholix\nwww.facebook.com/Soundaholix?fref=ts\n\nTROUBLE: \nWith K.I.M\nhttps://soundcloud.com/trouble-music-34635623\n\nTHIRD EAR AUDIO:\n(Chill out project with Nick Doof)\nhttps://soundcloud.com/thirdearaudio\nwww.facebook.com/thirdearaudio?fref=ts",
+  "followers_count": 98827,
+  "followings_count": 982,
+  "first_name": "Celli Earthling Psychedelic,",
+  "full_name": "Celli Earthling Psychedelic, Psy, PsyTrance, Trance, Goa, Trance",
+  "groups_count": 0,
+  "id": 31816,
+  "kind": "user",
+  "last_modified": "2023-03-14T12:45:48Z",
+  "last_name": "Psy, PsyTrance, Trance, Goa, Trance",
+  "likes_count": 17,
+  "playlist_likes_count": 0,
+  "permalink": "earthling",
+  "permalink_url": "https://soundcloud.com/earthling",
+  "playlist_count": 8,
+  "reposts_count": "None",
+  "track_count": 138,
+  "uri": "https://api.soundcloud.com/users/31816",
+  "urn": "soundcloud:users:31816",
+  "username": "Earthling (Zero1 Music)",
+  "verified": "True",
+  "visuals": {
+    "urn": "soundcloud:users:31816",
+    "enabled": "True",
+    "visuals": [
+      {
+        "urn": "soundcloud:visuals:206791",
+        "entry_time": 0,
+        "visual_url": "https://i1.sndcdn.com/visuals-000000031816-p2NxCk-original.jpg"
+      }
+    ],
+    "tracking": "None"
+  },
+  "badges": {
+    "pro": "False",
+    "pro_unlimited": "True",
+    "verified": "True"
+  },
+  "station_urn": "soundcloud:system-playlists:artist-stations:31816",
+  "station_permalink": "artist-stations:31816"
+}
