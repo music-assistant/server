@@ -118,7 +118,8 @@ class SoundcloudAsync:
         )
 
     async def get_track_by_genre_recent(self, genre, limit=10):
-        """
+        """Get track by genre recent.
+
         :param genre: string of the genre to get tracks
         :param limit: limit of playlists to get
         """
@@ -129,7 +130,8 @@ class SoundcloudAsync:
         )
 
     async def get_track_by_genre_popular(self, genre, limit=10):
-        """
+        """Get track by genre popular.
+
         :param genre: string of the genre to get tracks
         :param limit: limit of playlists to get
         """
@@ -141,7 +143,8 @@ class SoundcloudAsync:
         )
 
     async def get_track_id_from_permalink(self, url_track):
-        """
+        """Get track id from permalink.
+
         :param url_track: string with the url like:
         "https://soundcloud.com/postmalone/post-malone-hateful"
         """
@@ -160,7 +163,8 @@ class SoundcloudAsync:
         return scrap[index + 1 :]
 
     async def get_tracks_from_user(self, user_id, limit=10):
-        """
+        """Get tracks from user.
+
         :param user_id: id of the user to get his tracks
         :param limit:   number of tracks to get from user
         """
@@ -172,7 +176,8 @@ class SoundcloudAsync:
         )
 
     async def get_popular_tracks_user(self, user_id, limit=12):
-        """
+        """Get popular track from user.
+
         :param user_id: id of the user to get his tracks
         :param limit:   number of tracks to get from user
         """
@@ -199,7 +204,8 @@ class SoundcloudAsync:
         )
 
     async def get_playlists_by_genre(self, genre, limit=10):
-        """
+        """Get playlists by genre.
+
         :param genre: string of the genre to get tracks
         :param limit: limit of playlists to get
         """
@@ -211,7 +217,8 @@ class SoundcloudAsync:
         )
 
     async def get_playlists_from_user(self, user_id, limit=10):
-        """
+        """Get playlists from user.
+
         :param user_id: user id to get his playlists
         :param limit: limit of playlists to get
         """
@@ -245,7 +252,8 @@ class SoundcloudAsync:
         return dict(req).get("url")
 
     async def get_comments_track(self, track_id, limit=100):
-        """
+        """Get track comments.
+
         :param track_id: track id for get the comments from
         :param limit:    limit of tracks to get
         :add: with "next_href" in the return json you can keep getting more comments than limit
@@ -266,7 +274,8 @@ class SoundcloudAsync:
         )
 
     async def search(self, query_string, limit=25):
-        """
+        """Search.
+
         :param query_string: string to search on soundcloud for tracks
         :param limit: limit of recommended playlists make for you
         """
@@ -285,7 +294,8 @@ class SoundcloudAsync:
         )
 
     async def get_album_from_user(self, user_id, limit=5):
-        """
+        """Get album from user.
+
         :param user_id: user to get the albums from
         :param limit:   numbers of albums to get from the user
         """
@@ -296,7 +306,8 @@ class SoundcloudAsync:
         )
 
     async def get_all_feed_user(self, user_id, limit=20):
-        """
+        """Get all feed from user.
+
         :param user_id: user to get the albums from
         :param limit:   numbers of items to get from the user's feed
         """
@@ -313,6 +324,7 @@ class SoundcloudAsync:
 
     async def __aenter__(self) -> SoundcloudAsync:
         """Async enter.
+
         Returns:
             The PVOutput object.
         """
@@ -320,6 +332,7 @@ class SoundcloudAsync:
 
     async def __aexit__(self, *_exc_info) -> None:
         """Async exit.
+
         Args:
             _exc_info: Exec type.
         """
