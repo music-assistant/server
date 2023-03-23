@@ -72,7 +72,7 @@ def main() -> int:
 
         existing = final_requirements.get(package_name)
         if existing:
-            print("WARNING: ignore duplicate package: %s - existing: %s" % package_name, existing)
+            print(f"WARNING: ignore duplicate package: {package_name} - existing: {existing}")
             continue
         final_requirements[package_name] = req_str
 

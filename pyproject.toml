@@ -46,12 +46,12 @@ test = [
   "black==23.1.0",
   "codespell==2.2.4",
   "mypy==1.1.1",
-  "ruff==0.0.256",
+  "ruff==0.0.257",
   "pytest==7.2.2",
-  "pytest-asyncio==0.20.3",
+  "pytest-asyncio==0.21.0",
   "pytest-aiohttp==1.0.4",
   "pytest-cov==4.0.0",
-  "pre-commit==3.1.1"
+  "pre-commit==3.2.0"
 ]
 
 [project.scripts]

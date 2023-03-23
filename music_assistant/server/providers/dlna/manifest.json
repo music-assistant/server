@@ -6,7 +6,7 @@
   "codeowners": ["@music-assistant"],
   "config_entries": [
   ],
-  "requirements": ["async-upnp-client==0.33.1", "getmac==0.8.2"],
+  "requirements": ["async-upnp-client==0.33.1"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/1139",
   "multi_instance": false,
   "builtin": false,
