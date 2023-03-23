@@ -13,7 +13,7 @@ databases==0.7.0
 git+https://github.com/pytube/pytube.git@refs/pull/1501/head
 mashumaro==3.5.0
 memory-tempfile==2.2.3
-music-assistant-frontend==20230323.0
+music-assistant-frontend==20230323.1
 orjson==3.8.7
 pillow==9.4.0
 PyChromecast==13.0.5
