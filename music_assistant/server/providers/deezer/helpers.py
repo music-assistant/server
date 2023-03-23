@@ -13,9 +13,9 @@ dzr: (which heavily inspired the track url and decoder but is not used) https://
 import asyncio
 import json
 from time import time
-import requests
 
 import deezer
+import requests
 
 
 class credential:
@@ -227,6 +227,7 @@ async def search(query: str, filter: str = None) -> deezer.PaginatedList:  # typ
 
     return await asyncio.to_thread(_search)
 
+
 async def _get_sid():
     """Get a session id"""
     return requests.get(
@@ -236,7 +237,7 @@ async def _get_sid():
 
 
 async def _get_user_data(tok, sid):
-    """Get user data. """
+    """Get user data."""
     return requests.get(
         url="https://www.deezer.com/ajax/gw-light.php",
         params={
@@ -274,6 +275,7 @@ async def _generate_url(usr_lic, track_tok):
     }
     response = requests.post(url, data=json.dumps(payload))
     return response
+
 
 async def get_url(track_id) -> str:
     sid = await _get_sid()
