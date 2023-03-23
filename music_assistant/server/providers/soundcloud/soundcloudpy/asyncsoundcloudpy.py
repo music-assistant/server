@@ -6,9 +6,6 @@ from aiohttp.client import ClientSession
 from attr import dataclass
 from bs4 import BeautifulSoup
 
-# import json
-
-
 BASE_URL = "https://api-v2.soundcloud.com"
 
 
@@ -72,19 +69,6 @@ class SoundcloudAsync:
             headers=self.headers,
         )
 
-    # async def get_followers(self, limit=500):
-    #     """
-    #     :param limit: max numbers of follower accounts to get
-    #     """
-
-    #     req = await self.get(
-    #         f"{BASE_URL}/me/followers/ids?linked_partitioning=1&client_id={
-    #           self.client_id}&limit={limit}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     return req
-
     async def get_following(self, own_user_id, limit=120):
         """:param limit: max numbers of following accounts"""
         return await self.get(
@@ -101,75 +85,6 @@ class SoundcloudAsync:
             f"{self.app_version}",
             headers=self.headers,
         )
-
-    # async def follow(self, user_id):
-    #     """
-    #     :param user_id: id of the user requested
-    #     """
-
-    #     req = await self.post(
-    #         f"{BASE_URL}/me/followings/{user_id}?client_id={self.client_id}"
-    #         f"&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     return req.status_code
-
-    # async def unfollow(self, user_id):
-    #     """
-    #     :param user_id: id of the user requested
-    #     """
-
-    #     req = await self.delete(
-    #         f"{BASE_URL}/me/followings/{user_id}?client_id={self.client_id}"
-    #         f"&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     return req.status_code
-
-    # async def send_message(self, user_id, message):
-    #     """
-    #     :param user_id: id of the user requested
-    #     :param message: string with the content of the message
-    #     """
-
-    #     body = {"contents": message}
-
-    #     own_user_id = dict(json.loads(self.get_account_details())).get("id")
-
-    #     return await self.post(
-    #         f"{BASE_URL}/users/{own_user_id}/conversations/{user_id}?"
-    #         f"client_id={self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #         json=body,
-    #     )
-
-    # async def delete_conversation(self, user_id):
-    #     """
-    #     :param user_id: id of the user requested
-    #     """
-
-    #     own_user_id = dict(json.loads(self.get_account_details())).get("id")
-
-    #     return await self.delete(
-    #         f"{BASE_URL}/users/{own_user_id}/conversations/{user_id}?"
-    #         f"client_id={self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    # async def get_repost_from_user(self, user_id, limit):
-    #     """
-    #     :param user_id: id of the user requested
-    #     :param limit: number of repost to get
-    #     """
-
-    #     return await self.get(
-    #         f"{BASE_URL}/stream/users/{user_id}/reposts?"
-    #         f"client_id={self.client_id}&limit={limit}&offset=0&"
-    #         f"linked_partitioning=1&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
 
     # ---------------- TRACKS ----------------
 
@@ -201,52 +116,6 @@ class SoundcloudAsync:
             f"limit={limit}&app_version={self.app_version}",
             headers=self.headers,
         )
-
-    # async def like_a_track(self, track_id):
-    #     # To like a track we need the account id
-    #     user_id = dict(json.loads(self.get_account_details())).get("id")
-
-    #     req = await self.put(
-    #         f"{BASE_URL}/users/{user_id}/track_likes/{track_id}?client_id="
-    #         f"{self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     # Return "OK" if successful request)
-    #     return req
-
-    # async def unlike_a_track(self, track_id):
-    #     # To unlike a track we need the account id
-    #     user_id = dict(self.get_account_details()).get("id")
-
-    #     req = await self.delete(
-    #         f"{BASE_URL}/users/{user_id}/track_likes/{track_id}?client_id="
-    #         f"{self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     # Return "OK" if successful request
-    #     return req.text
-
-    # async def repost_track(self, track_id):
-    #     req = await self.put(
-    #         f"{BASE_URL}/me/track_reposts/{track_id}?client_id="
-    #         f"{self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     # Return the status code of the request
-    #     return req.status_code
-
-    # async def unrepost_track(self, track_id):
-    #     req = await self.delete(
-    #         f"{BASE_URL}/me/track_reposts/{track_id}?client_id="
-    #         f"{self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     # Return the status code of the request
-    #     return req.status_code
 
     async def get_track_by_genre_recent(self, genre, limit=10):
         """
@@ -329,121 +198,6 @@ class SoundcloudAsync:
             headers=self.headers,
         )
 
-    # async def create_playlist(self, title, track_list, public=False, description=None):
-    #     """
-    #     :param title: str of the playlist title
-    #     :param track_list: python list with the tracks_ids to be in the new playlist
-    #     :param public: boolean (True if public/False if private)
-    #     :param description: description of the playlist
-    #     """
-
-    #     # If there is no track on the list throw an error
-    #     if len(track_list) == 0:
-    #         raise ValueError("Empty list for creating playlist")
-
-    #     # Public or Private depends on what you selected (Private default)
-    #     privacy = "public" if public else "private"
-
-    #     # Body for POST requests of playlist
-    #     body = {
-    #         "playlist": {
-    #             "title": title,
-    #             "sharing": privacy,
-    #             "tracks": track_list,
-    #             "_resource_type": "playlist",
-    #         }
-    #     }
-
-    #     # If there is a description include it
-    #     if description != None:
-    #         body["playlist"].update({"description": description})
-
-    #     req = await self.post(
-    #         f"{BASE_URL}/playlists?client_id={self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #         json=body,
-    #     )
-
-    #     return req
-
-    # async def delete_playlist(self, playlist_id):
-    #     req = await self.delete(
-    # f"{BASE_URL}/playlists/{playlist_id}?client_id={self.client_id}"
-    # f"&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     return req
-
-    # async def get_playlists_liked(self, limit=50):
-    #     """
-    #     :param limit: limit of recommended playlists make for you
-    #     """
-
-    #     return await self.get(
-    #         f"{BASE_URL}/me/playlist_likes/ids?limit={limit}&linked_partitioning=1&client_id"
-    #         f"={self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    # async def like_playlist(self, playlist_id):
-    #     """
-    #     :param playlist_id: playlist id
-    #     """
-
-    #     user_id = dict(json.loads(self.get_account_details())).get("id")
-
-    #     req = await self.put(
-    #         f"{BASE_URL}/users/{user_id}/playlist_likes/{playlist_id}?client_id"
-    #         f"={self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     # Return "OK" if like successful
-    #     return req.text
-
-    # async def unlike_playlist(self, playlist_id):
-    #     """
-    #     :param playlist_id: playlist id
-    #     """
-
-    #     user_id = dict(json.loads(self.get_account_details())).get("id")
-
-    #     req = await self.delete(
-    #         f"{BASE_URL}/users/{user_id}/playlist_likes/{playlist_id}?client_id="
-    #         f"{self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     # Return "OK" if like successful
-    #     return req.text
-
-    # async def repost_playlist(self, playlist_id):
-    #     """
-    #     :param playlist_id: playlist id
-    #     """
-
-    #     req = await self.put(
-    #         f"{BASE_URL}/me/playlist_reposts/{playlist_id}?client_id={self.client_id}"
-    #         f"&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     return req.status_code
-
-    # async def unrepost_playlist(self, playlist_id):
-    #     """
-    #     :param playlist_id: playlist id
-    #     """
-
-    #     req = await self.delete(
-    #         f"{BASE_URL}/me/playlist_reposts/{playlist_id}?client_id="
-    #         f"{self.client_id}&app_version={self.app_version}",
-    #         headers=self.headers,
-    #     )
-
-    #     return req.status_code
-
     async def get_playlists_by_genre(self, genre, limit=10):
         """
         :param genre: string of the genre to get tracks
@@ -511,7 +265,7 @@ class SoundcloudAsync:
             headers=self.headers,
         )
 
-    async def search(self, query_string, limit=10):
+    async def search(self, query_string, limit=25):
         """
         :param query_string: string to search on soundcloud for tracks
         :param limit: limit of recommended playlists make for you
@@ -556,8 +310,6 @@ class SoundcloudAsync:
         """Close open client session."""
         if self.session:
             await self.session.close()
-        # if self.session and self._close_session:
-        #     await self.session.close()
 
     async def __aenter__(self) -> SoundcloudAsync:
         """Async enter.
