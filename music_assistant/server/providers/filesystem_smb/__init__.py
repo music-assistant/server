@@ -111,7 +111,7 @@ async def get_config_entries(
             label="Use NTLM v2",
             required=False,
             advanced=True,
-            default_value="",
+            default_value=False,
             description="Indicates whether NTLMv1 or NTLMv2 authentication algorithm should "
             "be used for authentication. The choice of NTLMv1 and NTLMv2 is configured on "
             "the remote server, and there is no mechanism to auto-detect which algorithm has "
