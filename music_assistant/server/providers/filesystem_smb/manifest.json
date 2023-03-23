@@ -6,5 +6,6 @@
   "codeowners": ["@MarvinSchenkel"],
   "requirements": ["pysmb==1.2.9.1"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
-  "multi_instance": true
+  "multi_instance": true,
+  "icon": "mdi:mdi-network"
 }

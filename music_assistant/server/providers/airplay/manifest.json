@@ -9,5 +9,6 @@
   "multi_instance": false,
   "builtin": false,
   "load_by_default": true,
-  "depends_on": "slimproto"
+  "depends_on": "slimproto",
+  "icon": "md:airplay"
 }

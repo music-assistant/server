@@ -35,6 +35,11 @@ class ProviderManifest(DataClassORJSONMixin):
     load_by_default: bool = False
     # depends_on: depends on another provider to function
     depends_on: str | None = None
+    # icon: icon url (svg or transparent png) max 256 pixels
+    # may also be a direct base64 encoded image string
+    # if this attribute is omitted and an icon.svg or icon.png is found in the provider
+    # folder, it will be read instead.
+    icon: str | None = None
 
     @classmethod
     async def parse(cls: "ProviderManifest", manifest_file: str) -> "ProviderManifest":
@@ -51,6 +56,7 @@ class ProviderInstance(TypedDict):
     instance_id: str
     supported_features: list[ProviderFeature]
     available: bool
+    icon: str | None
 
 
 @dataclass

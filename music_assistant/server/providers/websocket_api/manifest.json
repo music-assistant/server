@@ -8,5 +8,6 @@
   "documentation": "",
   "multi_instance": false,
   "builtin": true,
-  "load_by_default": true
+  "load_by_default": true,
+  "icon": "md:webhook"
 }

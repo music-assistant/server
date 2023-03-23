@@ -26,6 +26,7 @@ from music_assistant.server.controllers.players import PlayerController
 from music_assistant.server.controllers.streams import StreamsController
 from music_assistant.server.controllers.webserver import WebserverController
 from music_assistant.server.helpers.api import APICommandHandler, api_command
+from music_assistant.server.helpers.images import get_icon_string
 from music_assistant.server.helpers.util import get_provider_module
 
 from .models import ProviderInstanceType
@@ -404,6 +405,13 @@ class MusicAssistant:
                     continue
                 try:
                     provider_manifest = await ProviderManifest.parse(file_path)
+                    # check for icon file
+                    if not provider_manifest.icon:
+                        for icon_file in ("icon.svg", "icon.png"):
+                            icon_path = os.path.join(dir_path, icon_file)
+                            if os.path.isfile(icon_path):
+                                provider_manifest.icon = await get_icon_string(icon_path)
+                                break
                     self._available_providers[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", dir_str)
                 except Exception as exc:  # pylint: disable=broad-except
