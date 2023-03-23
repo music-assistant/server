@@ -217,6 +217,10 @@ class CastStatusListener:
             "%s got new media_status for group: %s", self.castplayer.player.display_name, group_uuid
         )
 
+    def load_media_failed(self, item, error_code):
+        """Call when media failed to load."""
+        self.prov.logger.warning("Load media failed: %s - error code: %s", item, error_code)
+
     def invalidate(self):
         """
         Invalidate this status listener.

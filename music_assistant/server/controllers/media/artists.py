@@ -10,11 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
-from music_assistant.common.models.errors import (
-    MediaNotFoundError,
-    ProviderUnavailableError,
-    UnsupportedFeaturedException,
-)
+from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -186,9 +182,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         cache_checksum: Any = None,
     ) -> list[Track]:
         """Return top tracks for an artist on given provider."""
-        try:
-            prov = self.mass.get_provider(provider_instance or provider_domain)
-        except ProviderUnavailableError:
+        prov = self.mass.get_provider(provider_instance or provider_domain)
+        if prov is None:
             return []
         # prefer cache items (if any)
         cache_key = f"{prov.instance_id}.artist_toptracks.{item_id}"
@@ -224,9 +219,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         cache_checksum: Any = None,
     ) -> list[Album]:
         """Return albums for an artist on given provider."""
-        try:
-            prov = self.mass.get_provider(provider_instance or provider_domain)
-        except ProviderUnavailableError:
+        prov = self.mass.get_provider(provider_instance or provider_domain)
+        if prov is None:
             return []
         # prefer cache items (if any)
         cache_key = f"{prov.instance_id}.artist_albums.{item_id}"
@@ -371,9 +365,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the artist's top tracks."""
-        try:
-            prov = self.mass.get_provider(provider_instance or provider_domain)
-        except ProviderUnavailableError:
+        prov = self.mass.get_provider(provider_instance or provider_domain)
+        if prov is None:
             return []
         if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []

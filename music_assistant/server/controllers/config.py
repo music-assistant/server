@@ -23,11 +23,7 @@ from music_assistant.common.models.config_entries import (
     ProviderConfig,
 )
 from music_assistant.common.models.enums import EventType, ProviderType
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    PlayerUnavailableError,
-    ProviderUnavailableError,
-)
+from music_assistant.common.models.errors import InvalidDataError, PlayerUnavailableError
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID, ENCRYPT_SUFFIX
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -180,11 +176,7 @@ class ConfigController:
         """Update ProviderConfig."""
         config = self.get_provider_config(instance_id)
         changed_keys = config.update(update)
-        try:
-            prov = self.mass.get_provider(instance_id)
-            available = prov.available
-        except ProviderUnavailableError:
-            available = False
+        available = prov.available if (prov := self.mass.get_provider(instance_id)) else False
         if not changed_keys and (config.enabled == available):
             # no changes
             return
@@ -245,16 +237,14 @@ class ConfigController:
     def get_player_config(self, player_id: str) -> PlayerConfig:
         """Return configuration for a single player."""
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
-            try:
-                prov = self.mass.get_provider(raw_conf["provider"])
+            if prov := self.mass.get_provider(raw_conf["provider"]):
                 prov_entries = prov.get_player_config_entries(player_id)
-            except (ProviderUnavailableError, PlayerUnavailableError):
+            else:
                 prov_entries = tuple()
                 raw_conf["available"] = False
                 raw_conf["name"] = (
                     raw_conf.get("name") or raw_conf.get("default_name") or raw_conf["player_id"]
                 )
-
             entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
             return PlayerConfig.parse(entries, raw_conf)
         raise KeyError(f"No config found for player id {player_id}")

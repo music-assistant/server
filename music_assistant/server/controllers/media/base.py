@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     MediaItemType,
     PagedItems,
@@ -192,10 +192,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 self.item_cls.from_db_row(db_row)
                 for db_row in await self.mass.music.database.search(self.db_table, search_query)
             ]
-
-        try:
-            prov = self.mass.get_provider(provider_instance or provider_domain)
-        except ProviderUnavailableError:
+        prov = self.mass.get_provider(provider_instance or provider_domain)
+        if prov is None:
             return []
         if ProviderFeature.SEARCH not in prov.supported_features:
             return []
@@ -418,7 +416,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             item = await self.get_db_item(item_id)
         else:
             provider = self.mass.get_provider(provider_domain_or_instance_id)
-            item = await provider.get_item(self.media_type, item_id)
+            item = (await provider.get_item(self.media_type, item_id)) if provider else None
         if not item:
             raise MediaNotFoundError(
                 f"{self.media_type.value}://{item_id} not found on provider {provider_domain_or_instance_id}"  # noqa: E501
@@ -489,11 +487,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Return a dynamic list of tracks based on the given item."""
         ref_item = await self.get(item_id, provider_domain, provider_instance)
         for prov_mapping in ref_item.provider_mappings:
-            try:
-                prov = self.mass.get_provider(prov_mapping.provider_instance)
-            except ProviderUnavailableError:
-                continue
-            if not prov.available:
+            prov = self.mass.get_provider(prov_mapping.provider_instance)
+            if prov is None:
                 continue
             if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
                 continue
