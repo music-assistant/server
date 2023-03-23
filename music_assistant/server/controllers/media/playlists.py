@@ -86,10 +86,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 ),
                 None,
             )
-            if provider is None:
-                raise ProviderUnavailableError(
-                    "No provider available which allows playlists creation."
-                )
+        if provider is None:
+            raise ProviderUnavailableError("No provider available which allows playlists creation.")
 
         return await provider.create_playlist(name)
 
