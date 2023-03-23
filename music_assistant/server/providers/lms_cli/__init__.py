@@ -91,12 +91,19 @@ class LmsCli(PluginProvider):
     async def handle_setup(self) -> None:
         """Handle async initialization of the plugin."""
         self.logger.info("Registering jsonrpc endpoints on the webserver")
-        self.mass.webapp.router.add_get("/jsonrpc.js", self._handle_jsonrpc)
-        self.mass.webapp.router.add_post("/jsonrpc.js", self._handle_jsonrpc)
+        self.mass.webserver.register_route("/jsonrpc.js", self._handle_jsonrpc)
         # setup (telnet) cli for players requesting basic info on that port
         self.cli_port = await select_free_port(9090, 9190)
         self.logger.info("Starting (telnet) CLI on port %s", self.cli_port)
-        await asyncio.start_server(self._handle_cli_client, "0.0.0.0", self.cli_port),
+        await asyncio.start_server(self._handle_cli_client, "0.0.0.0", self.cli_port)
+
+    async def unload(self) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        """
+        self.mass.webserver.unregister_route("/jsonrpc.js")
 
     async def _handle_cli_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

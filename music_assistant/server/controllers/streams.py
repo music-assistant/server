@@ -185,8 +185,8 @@ class StreamsController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self.mass.webapp.router.add_get("/stream/preview", self._serve_preview)
-        self.mass.webapp.router.add_get(
+        self.mass.webserver.register_route("/stream/preview", self._serve_preview)
+        self.mass.webserver.register_route(
             "/stream/{player_id}/{queue_item_id}/{stream_id}.{fmt}",
             self._serve_queue_stream,
         )
@@ -282,14 +282,14 @@ class StreamsController:
 
         # generate player-specific URL for the stream job
         fmt = content_type.value
-        url = f"{self.mass.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
+        url = f"{self.mass.webserver.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
         return url
 
     def get_preview_url(self, provider_domain_or_instance_id: str, track_id: str) -> str:
         """Return url to short preview sample."""
         enc_track_id = urllib.parse.quote(track_id)
         return (
-            f"{self.mass.base_url}/stream/preview?"
+            f"{self.mass.webserver.base_url}/stream/preview?"
             f"provider={provider_domain_or_instance_id}&item_id={enc_track_id}"
         )
 

@@ -122,7 +122,7 @@ class SlimprotoProvider(PlayerProvider):
             # start slimproto server
             await asyncio.start_server(self._create_client, "0.0.0.0", slimproto_port),
             # setup discovery
-            await start_discovery(slimproto_port, cli_port, self.mass.port),
+            await start_discovery(slimproto_port, cli_port, self.mass.webserver.port),
         )
 
     async def unload(self) -> None:

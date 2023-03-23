@@ -49,7 +49,7 @@ class MetaDataController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self.mass.webapp.router.add_get("/imageproxy", self._handle_imageproxy)
+        self.mass.webserver.register_route("/imageproxy", self._handle_imageproxy)
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -279,7 +279,7 @@ class MetaDataController:
                     # return imageproxy url for local filesystem items
                     # the original path is double encoded
                     encoded_url = urllib.parse.quote(urllib.parse.quote(img.url))
-                    return f"{self.mass.base_url}/imageproxy?path={encoded_url}"
+                    return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}"
                 return img.url
 
         # retry with track's album
