@@ -23,7 +23,6 @@ LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.web")
 class WebserverController:
     """Controller to stream audio to players."""
 
-    index_path: str
     port: int
     webapp: web.Application
 
@@ -43,6 +42,7 @@ class WebserverController:
         """Async initialize of module."""
         self.webapp = web.Application()
         self.port = await select_free_port(8095, 9200)
+        LOGGER.info("Starting webserver on port %s", self.port)
         self._apprunner = web.AppRunner(self.webapp, access_log=None)
 
         # setup frontend
@@ -58,8 +58,8 @@ class WebserverController:
             "/assets", os.path.join(frontend_dir, "assets"), name="assets"
         )
         # add index
-        self.index_path = os.path.join(frontend_dir, "index.html")
-        handler = partial(self.serve_static, self.index_path)
+        index_path = os.path.join(frontend_dir, "index.html")
+        handler = partial(self.serve_static, index_path)
         self.webapp.router.add_get("/", handler)
         # register catch-all route to handle our custom paths
         self.webapp.router.add_route("*", "/{tail:.*}", self._handle_catch_all)
@@ -101,8 +101,16 @@ class WebserverController:
 
     async def _handle_catch_all(self, request: web.Request) -> web.Response:
         """Redirect request to correct destination."""
+        # find handler for the request
         for key in (f"{request.method}.{request.path}", f"*.{request.path}"):
             if handler := self._route_handlers.get(key):
                 return await handler(request)
-        # redirect all other to index
-        return await self.serve_static(self.index_path, request)
+        # deny all other requests
+        LOGGER.debug(
+            "Received %s request to %s from %s\nheaders: %s\n",
+            request.method,
+            request.path,
+            request.remote,
+            request.headers,
+        )
+        return web.Response(status=404)

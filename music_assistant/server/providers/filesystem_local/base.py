@@ -49,22 +49,20 @@ from .helpers import get_parentdir
 
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 
-CONF_ENTRY_MISSING_ALBUM_ARTIST = (
-    ConfigEntry(
-        key=CONF_MISSING_ALBUM_ARTIST_ACTION,
-        type=ConfigEntryType.STRING,
-        label="Action when a track is missing the Albumartist ID3 tag",
-        default_value="skip",
-        description="Music Assistant prefers information stored in ID3 tags and only uses"
-        " online sources for additional metadata. This means that the ID3 tags need to be "
-        "accurate, preferably tagged with MusicBrainz Picard.",
-        advanced=True,
-        required=False,
-        options=(
-            ConfigValueOption("Skip track and log warning", "skip"),
-            ConfigValueOption("Use Track artist(s)", "track_artist"),
-            ConfigValueOption("Use Various Artists", "various_artists"),
-        ),
+CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
+    key=CONF_MISSING_ALBUM_ARTIST_ACTION,
+    type=ConfigEntryType.STRING,
+    label="Action when a track is missing the Albumartist ID3 tag",
+    default_value="skip",
+    description="Music Assistant prefers information stored in ID3 tags and only uses"
+    " online sources for additional metadata. This means that the ID3 tags need to be "
+    "accurate, preferably tagged with MusicBrainz Picard.",
+    advanced=True,
+    required=False,
+    options=(
+        ConfigValueOption("Skip track and log warning", "skip"),
+        ConfigValueOption("Use Track artist(s)", "track_artist"),
+        ConfigValueOption("Use Various Artists", "various_artists"),
     ),
 )
 

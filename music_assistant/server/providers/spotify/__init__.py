@@ -108,7 +108,22 @@ class SpotifyProvider(MusicProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
+        return (
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+            ProviderFeature.LIBRARY_ARTISTS_EDIT,
+            ProviderFeature.LIBRARY_ALBUMS_EDIT,
+            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+            ProviderFeature.LIBRARY_TRACKS_EDIT,
+            ProviderFeature.PLAYLIST_TRACKS_EDIT,
+            ProviderFeature.BROWSE,
+            ProviderFeature.SEARCH,
+            ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.ARTIST_TOPTRACKS,
+            ProviderFeature.SIMILAR_TRACKS,
+        )
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5

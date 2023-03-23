@@ -209,6 +209,17 @@ class DLNAPlayerProvider(PlayerProvider):
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
         self.mass.create_task(self._run_discovery())
 
+    async def unload(self) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        """
+        self.mass.webserver.unregister_route("/notify", "NOTIFY")
+        async with asyncio.TaskGroup() as tg:
+            for dlna_player in self.dlnaplayers.values():
+                tg.create_task(self._device_disconnect(dlna_player))
+
     def on_player_config_changed(
         self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
     ) -> None:
@@ -392,8 +403,6 @@ class DLNAPlayerProvider(PlayerProvider):
             old_device = dlna_player.device
             dlna_player.device = None
             await old_device.async_unsubscribe_services()
-
-        await self._async_release_event_notifier(dlna_player.event_addr)
 
     async def _device_discovered(self, udn: str, description_url: str) -> None:
         """Handle discovered DLNA player."""
