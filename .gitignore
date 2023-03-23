@@ -14,8 +14,3 @@ venv/
 .tox/
 *.egg-info/
 *.spec
-
-
-*.conf
-/music_assistant/server/providers/soundcloud/tests
-/music_assistant/server/providers/soundcloud/soundcloudpy/soundcloudpytest.py
