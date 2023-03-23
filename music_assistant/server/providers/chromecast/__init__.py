@@ -41,7 +41,29 @@ if TYPE_CHECKING:
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.socket_client import ConnectionStatus
 
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+
 CONF_ALT_APP = "alt_app"
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = ChromecastProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
 
 
 @dataclass
@@ -68,7 +90,7 @@ class ChromecastProvider(PlayerProvider):
     castplayers: dict[str, CastPlayer]
     _discover_lock: threading.Lock
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._discover_lock = threading.Lock()
         self.castplayers = {}
@@ -87,7 +109,7 @@ class ChromecastProvider(PlayerProvider):
         # start discovery in executor
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 
-    async def close(self) -> None:
+    async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         if not self.browser:
             return

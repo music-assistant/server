@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import random
+from base64 import b64encode
 from io import BytesIO
 from typing import TYPE_CHECKING
 
+import aiofiles
 from PIL import Image
 
 from music_assistant.server.helpers.tags import get_embedded_image
@@ -73,3 +75,15 @@ async def create_collage(mass: MusicAssistant, images: list[str]) -> bytes:
         return final_data.getvalue()
 
     return await asyncio.to_thread(_save_collage)
+
+
+async def get_icon_string(icon_path: str) -> str:
+    """Get icon as (base64 encoded) string."""
+    ext = icon_path.rsplit(".")[-1]
+    assert ext in ("png", "svg", "ico", "jpg")
+    async with aiofiles.open(icon_path, "rb") as _file:
+        img_data = await _file.read()
+    enc_image = b64encode(img_data).decode()
+    if ext == "svg":
+        return f"data:image/svg+xml;base64,{enc_image}"
+    return f"data:image/{ext};base64,{enc_image}"

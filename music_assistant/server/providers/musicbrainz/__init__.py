@@ -13,13 +13,18 @@ import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import create_sort_name
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.media_items import Album, Artist, Track
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
 
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
@@ -27,12 +32,28 @@ LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 SUPPORTED_FEATURES = (ProviderFeature.GET_ARTIST_MBID,)
 
 
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = MusicbrainzProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
+
+
 class MusicbrainzProvider(MetadataProvider):
     """The Musicbrainz Metadata provider."""
 
     throttler: Throttler
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
         self.throttler = Throttler(rate_limit=1, period=1)

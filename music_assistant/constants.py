@@ -24,10 +24,6 @@ SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
 # if duration is None (e.g. radio stream):Final[str] = 48 hours
 FALLBACK_DURATION: Final[int] = 172800
 
-# Name of the environment-variable to override base_url
-BASE_URL_OVERRIDE_ENVNAME: Final[str] = "MASS_BASE_URL"
-
-
 # config keys
 CONF_SERVER_ID: Final[str] = "server_id"
 CONF_WEB_IP: Final[str] = "webserver.ip"

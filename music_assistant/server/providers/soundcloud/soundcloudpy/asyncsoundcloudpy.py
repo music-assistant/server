@@ -1,34 +1,38 @@
-"""Async helpers for connecting to the Soundcloud API.
+"""
+Async helpers for connecting to the Soundcloud API.
 
 This file is based on soundcloudpy from Naím Rodríguez https://github.com/naim-prog
 Original package https://github.com/naim-prog/soundcloud-py
 """
 from __future__ import annotations
 
-import aiohttp
-from aiohttp.client import ClientSession
-from attr import dataclass
+from typing import TYPE_CHECKING
 
 BASE_URL = "https://api-v2.soundcloud.com"
 
+if TYPE_CHECKING:
+    from aiohttp.client import ClientSession
 
-@dataclass
-class SoundcloudAsync:
+
+class SoundcloudAsyncAPI:
     """Soundcloud."""
-
-    o_auth: str
-    client_id: str
-    headers = None
-    app_version = None
-    firefox_version = None
-    request_timeout: float = 8.0
 
     session: ClientSession | None = None
 
+    def __init__(self, auth_token: str, client_id: str, http_session: ClientSession) -> None:
+        """Initialize SoundcloudAsyncAPI."""
+        self.o_auth = auth_token
+        self.client_id = client_id
+        self.http_session = http_session
+        self.headers = None
+        self.app_version = None
+        self.firefox_version = None
+        self.request_timeout: float = 8.0
+
     async def get(self, url, headers=None, params=None):
         """Async get."""
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url=url, params=params) as response:
+        async with self.http_session as session:
+            async with session.get(url=url, params=params, headers=headers) as response:
                 return await response.json()
 
     async def login(self):
@@ -299,24 +303,3 @@ class SoundcloudAsync:
             f"&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
         )
-
-    async def close(self) -> None:
-        """Close open client session."""
-        if self.session:
-            await self.session.close()
-
-    async def __aenter__(self) -> SoundcloudAsync:
-        """Async enter.
-
-        Returns:
-            The SoundcloudAsync object.
-        """
-        return self
-
-    async def __aexit__(self, *_exc_info) -> None:
-        """Async exit.
-
-        Args:
-            _exc_info: Exec type.
-        """
-        await self.close()

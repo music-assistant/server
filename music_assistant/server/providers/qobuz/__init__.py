@@ -6,12 +6,14 @@ import hashlib
 import time
 from collections.abc import AsyncGenerator
 from json import JSONDecodeError
+from typing import TYPE_CHECKING
 
 import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version, try_parse_int
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -31,6 +33,13 @@ from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
 from music_assistant.server.models.music_provider import MusicProvider
 
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
@@ -48,13 +57,36 @@ SUPPORTED_FEATURES = (
 )
 
 
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = QobuzProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(
+            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+        ),
+        ConfigEntry(
+            key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, label="Password", required=True
+        ),
+    )
+
+
 class QobuzProvider(MusicProvider):
     """Provider for the Qobux music service."""
 
     _user_auth_info: str | None = None
     _throttler: Throttler
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=4, period=1)
 
