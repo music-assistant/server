@@ -2,7 +2,6 @@
 import asyncio
 
 # from urllib.parse import unquote
-import json
 from typing import AsyncGenerator, Callable  # noqa: UP035
 
 from music_assistant.common.helpers.util import parse_title_and_version
@@ -191,8 +190,8 @@ class SoundcloudMusicProvider(MusicProvider):
         if "tracks" not in playlist_obj:
             return []
         tracks = []
-        for index, track in enumerate(playlist_obj["tracks"]):
-            song = await self._soundcloud.get_track_details(track["id"])
+        for index, item in enumerate(playlist_obj["tracks"]):
+            song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
                 if track:
@@ -211,8 +210,8 @@ class SoundcloudMusicProvider(MusicProvider):
             user_id=prov_artist_id, limit=25
         )
         tracks = []
-        for track in tracks_obj["collection"]:
-            song = await self._soundcloud.get_track_details(track["id"])
+        for item in tracks_obj["collection"]:
+            song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
                 tracks.append(track)
@@ -225,10 +224,10 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        tracks_obj = await self._soundcloud.get_recommended(track_id=prov_track_id, limit=25)
+        tracks_obj = await self._soundcloud.get_recommended(track_id=prov_track_id, limit=limit)
         tracks = []
-        for track in tracks_obj["collection"]:
-            song = await self._soundcloud.get_track_details(track["id"])
+        for item in tracks_obj["collection"]:
+            song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
                 tracks.append(track)
