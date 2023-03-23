@@ -1,4 +1,4 @@
-"""Asyncio.
+"""Async helpers for connecting to the Soundcloud API.
 
 This file is based on soundcloudpy from Naím Rodríguez https://github.com/naim-prog
 Original package https://github.com/naim-prog/soundcloud-py
@@ -330,7 +330,7 @@ class SoundcloudAsync:
         """Async enter.
 
         Returns:
-            The PVOutput object.
+            The SoundcloudAsync object.
         """
         return self
 

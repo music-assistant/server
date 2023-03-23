@@ -1,8 +1,6 @@
 """Soundcloud support for MusicAssistant."""
 import asyncio
-
-# from urllib.parse import unquote
-from typing import AsyncGenerator, Callable  # noqa: UP035
+from collections.abc import AsyncGenerator, Callable
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.enums import ProviderFeature
@@ -98,13 +96,11 @@ class SoundcloudMusicProvider(MusicProvider):
         for item in searchresult["collection"]:
             media_type = item["kind"]
             if media_type == "user":
-                result.artists += [await self._parse_artist(item)]
+                result.artists.append(await self._parse_artist(item))
             elif media_type == "track":
-                result.tracks += [await self._parse_track(item)]
+                result.tracks.append(await self._parse_track(item))
             elif media_type == "playlist":
-                result.playlists += [await self._parse_playlist(item)]
-            else:
-                self.logger.debug("Wrong search media_type")
+                result.playlists.append(await self._parse_playlist(item))
         return result
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
@@ -114,9 +110,7 @@ class SoundcloudMusicProvider(MusicProvider):
             try:
                 yield await self._parse_artist(artist)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("get_library_artists")
-                self.logger.debug(artist)
-                self.logger.debug(error)
+                self.logger.debug("Parse artist failed: %s", artist, exc_info=error)
                 continue
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
@@ -128,9 +122,7 @@ class SoundcloudMusicProvider(MusicProvider):
             try:
                 yield await self._parse_playlist(playlist_obj)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("get_library_playlists-playlist")
-                self.logger.debug(playlist_obj)
-                self.logger.debug(error)
+                self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
                 continue
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
@@ -143,9 +135,7 @@ class SoundcloudMusicProvider(MusicProvider):
             except IndexError:
                 continue
             except (KeyError, TypeError, InvalidDataError) as error:
-                self.logger.debug("get_library_tracks")
-                self.logger.debug(track)
-                self.logger.debug(error)
+                self.logger.debug("Parse track failed: %s", track, exc_info=error)
                 continue
 
     async def get_artist(self, prov_artist_id) -> Artist:
@@ -154,10 +144,7 @@ class SoundcloudMusicProvider(MusicProvider):
         try:
             artist = await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-            self.logger.debug("get_artist")
-            self.logger.debug(prov_artist_id)
-            self.logger.debug(artist_obj)
-            self.logger.debug(error)
+            self.logger.debug("Parse artist failed: %s", artist_obj, exc_info=error)
         return artist
 
     async def get_track(self, prov_track_id) -> Track:
@@ -166,10 +153,7 @@ class SoundcloudMusicProvider(MusicProvider):
         try:
             track = await self._parse_track(track_obj[0])
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-            self.logger.debug("get_track")
-            self.logger.debug(prov_track_id)
-            self.logger.debug(track_obj)
-            self.logger.debug(error)
+            self.logger.debug("Parse track failed: %s", track_obj, exc_info=error)
         return track
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
@@ -178,10 +162,7 @@ class SoundcloudMusicProvider(MusicProvider):
         try:
             playlist = await self._parse_playlist(playlist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-            self.logger.debug("get_playlist")
-            self.logger.debug(prov_playlist_id)
-            self.logger.debug(playlist_obj)
-            self.logger.debug(error)
+            self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
         return playlist
 
     async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
@@ -198,9 +179,7 @@ class SoundcloudMusicProvider(MusicProvider):
                     track.position = index
                     tracks.append(track)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("get_playlist_tracks")
-                self.logger.debug(track)
-                self.logger.debug(error)
+                self.logger.debug("Parse track failed: %s", song, exc_info=error)
                 continue
         return tracks
 
@@ -216,9 +195,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 track = await self._parse_track(song[0])
                 tracks.append(track)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("get_artist_toptracks")
-                self.logger.debug(track)
-                self.logger.debug(error)
+                self.logger.debug("Parse track failed: %s", song, exc_info=error)
                 continue
         return tracks
 
@@ -232,9 +209,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 track = await self._parse_track(song[0])
                 tracks.append(track)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("get_similar_tracks")
-                self.logger.debug(track)
-                self.logger.debug(error)
+                self.logger.debug("Parse track failed: %s", song, exc_info=error)
                 continue
 
         return tracks
