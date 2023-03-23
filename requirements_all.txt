@@ -7,6 +7,7 @@ aioslimproto==2.2.0
 aiosqlite==0.18.0
 async-upnp-client==0.33.1
 asyncio-throttle==1.0.2
+bs4==0.0.1
 coloredlogs==15.0.1
 cryptography==39.0.2
 databases==0.7.0
