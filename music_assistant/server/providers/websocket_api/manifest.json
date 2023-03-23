@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "domain": "websocket_api",
+  "name": "Websocket API",
+  "description": "The default Websocket API for interacting with Music Assistant which is also used by the Music Assistant frontend.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": true,
+  "load_by_default": true,
+  "icon": "md:webhook"
+}

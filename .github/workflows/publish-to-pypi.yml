@@ -2,7 +2,7 @@ name: Publish releases to PyPI
 
 on:
   release:
-    types: [published, prereleased]
+    types: [published]
 
 jobs:
   build-and-publish:
@@ -21,7 +21,7 @@ jobs:
         run: >-
           python3 -m build
       - name: Publish release to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.6.4
+        uses: pypa/gh-action-pypi-publish@v1.8.3
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}

@@ -6,12 +6,14 @@ import hashlib
 import time
 from collections.abc import AsyncGenerator
 from json import JSONDecodeError
+from typing import TYPE_CHECKING
 
 import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version, try_parse_int
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -20,16 +22,62 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemType,
     MediaType,
     Playlist,
     ProviderMapping,
+    SearchResults,
     StreamDetails,
     Track,
 )
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
 from music_assistant.server.models.music_provider import MusicProvider
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+
+SUPPORTED_FEATURES = (
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+)
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = QobuzProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(
+            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+        ),
+        ConfigEntry(
+            key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, label="Password", required=True
+        ),
+    )
 
 
 class QobuzProvider(MusicProvider):
@@ -38,24 +86,10 @@ class QobuzProvider(MusicProvider):
     _user_auth_info: str | None = None
     _throttler: Throttler
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=4, period=1)
-        self._attr_supported_features = (
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.LIBRARY_ARTISTS_EDIT,
-            ProviderFeature.LIBRARY_ALBUMS_EDIT,
-            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            ProviderFeature.LIBRARY_TRACKS_EDIT,
-            ProviderFeature.PLAYLIST_TRACKS_EDIT,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-        )
+
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
             raise LoginFailed("Invalid login credentials")
         # try to get a token, raise if that fails
@@ -63,16 +97,21 @@ class QobuzProvider(MusicProvider):
         if not token:
             raise LoginFailed(f"Login failed for user {self.config.get_value(CONF_USERNAME)}")
 
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
+
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
-        result = []
+        result = SearchResults()
         params = {"query": search_query, "limit": limit}
         if len(media_types) == 1:
             # qobuz does not support multiple searchtypes, falls back to all if no type given
@@ -86,25 +125,25 @@ class QobuzProvider(MusicProvider):
                 params["type"] = "playlists"
         if searchresult := await self._get_data("catalog/search", **params):
             if "artists" in searchresult:
-                result += [
+                result.artists += [
                     await self._parse_artist(item)
                     for item in searchresult["artists"]["items"]
                     if (item and item["id"])
                 ]
             if "albums" in searchresult:
-                result += [
+                result.albums += [
                     await self._parse_album(item)
                     for item in searchresult["albums"]["items"]
                     if (item and item["id"])
                 ]
             if "tracks" in searchresult:
-                result += [
+                result.tracks += [
                     await self._parse_track(item)
                     for item in searchresult["tracks"]["items"]
                     if (item and item["id"])
                 ]
             if "playlists" in searchresult:
-                result += [
+                result.playlists += [
                     await self._parse_playlist(item)
                     for item in searchresult["playlists"]["items"]
                     if (item and item["id"])

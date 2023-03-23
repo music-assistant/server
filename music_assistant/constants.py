@@ -3,7 +3,7 @@
 import pathlib
 from typing import Final
 
-__version__: Final[str] = "2.0.0b1"
+__version__: Final[str] = "2.0.0b10"
 
 SCHEMA_VERSION: Final[int] = 19
 
@@ -24,10 +24,6 @@ SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
 # if duration is None (e.g. radio stream):Final[str] = 48 hours
 FALLBACK_DURATION: Final[int] = 172800
 
-# Name of the environment-variable to override base_url
-BASE_URL_OVERRIDE_ENVNAME: Final[str] = "MASS_BASE_URL"
-
-
 # config keys
 CONF_SERVER_ID: Final[str] = "server_id"
 CONF_WEB_IP: Final[str] = "webserver.ip"
@@ -47,6 +43,8 @@ CONF_EQ_MID: Final[str] = "eq_mid"
 CONF_EQ_TREBLE: Final[str] = "eq_treble"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
+CONF_LOG_LEVEL: Final[str] = "log_level"
+CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
@@ -68,6 +66,8 @@ DB_TABLE_THUMBS: Final[str] = "thumbnails"
 DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
 
 # all other
-MASS_LOGO_ONLINE: Final[str] = (
-    "https://github.com/home-assistant/brands/" "raw/master/custom_integrations/mass/icon%402x.png"
-)
+MASS_LOGO_ONLINE: Final[
+    str
+] = "https://github.com/home-assistant/brands/raw/master/custom_integrations/mass/icon%402x.png"
+ENCRYPT_SUFFIX = "_encrypted_"
+SECURE_STRING_SUBSTITUTE = "this_value_is_encrypted"

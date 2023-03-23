@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType
 from music_assistant.common.models.media_items import (
     Artist,
@@ -19,16 +21,37 @@ from music_assistant.server.helpers.playlists import fetch_playlist
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = URLProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
+
 
 class URLProvider(MusicProvider):
     """Music Provider for manual URL's/files added to the queue."""
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider.
 
         Called when provider is registered.
         """
-        self._attr_available = True
         self._full_url = {}
 
     async def get_track(self, prov_track_id: str) -> Track:

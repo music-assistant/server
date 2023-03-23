@@ -2,18 +2,17 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import Any, TypedDict
 
-from mashumaro import DataClassDictMixin
+from mashumaro.mixins.orjson import DataClassORJSONMixin
 
 from music_assistant.common.helpers.json import load_json_file
 
-from .config_entries import ConfigEntry
 from .enums import MediaType, ProviderFeature, ProviderType
 
 
 @dataclass
-class ProviderManifest(DataClassDictMixin):
+class ProviderManifest(DataClassORJSONMixin):
     """ProviderManifest, details of a provider."""
 
     type: ProviderType
@@ -23,15 +22,11 @@ class ProviderManifest(DataClassDictMixin):
     codeowners: list[str]
 
     # optional params
-    # config_entries: list of config entries required to configure/setup this provider
-    config_entries: list[ConfigEntry] = field(default_factory=list)
+
     # requirements: list of (pip style) python packages required for this provider
     requirements: list[str] = field(default_factory=list)
     # documentation: link/url to documentation.
     documentation: str | None = None
-    # init_class: class to initialize, within provider's package
-    # e.g. `SpotifyProvider`. (autodetect if None)
-    init_class: str | None = None
     # multi_instance: whether multiple instances of the same provider are allowed/possible
     multi_instance: bool = False
     # builtin: whether this provider is a system/builtin and can not disabled/removed
@@ -40,12 +35,16 @@ class ProviderManifest(DataClassDictMixin):
     load_by_default: bool = False
     # depends_on: depends on another provider to function
     depends_on: str | None = None
+    # icon: icon url (svg or transparent png) max 256 pixels
+    # may also be a direct base64 encoded image string
+    # if this attribute is omitted and an icon.svg or icon.png is found in the provider
+    # folder, it will be read instead.
+    icon: str | None = None
 
     @classmethod
     async def parse(cls: "ProviderManifest", manifest_file: str) -> "ProviderManifest":
         """Parse ProviderManifest from file."""
-        manifest_dict = await load_json_file(manifest_file)
-        return cls.from_dict(manifest_dict)
+        return await load_json_file(manifest_file, ProviderManifest)
 
 
 class ProviderInstance(TypedDict):
@@ -57,7 +56,7 @@ class ProviderInstance(TypedDict):
     instance_id: str
     supported_features: list[ProviderFeature]
     available: bool
-    last_error: str | None
+    icon: str | None
 
 
 @dataclass
@@ -69,7 +68,11 @@ class SyncTask:
     media_types: tuple[MediaType]
     task: asyncio.Task
 
-    def __post_init__(self):
-        """Execute action after initialization."""
-        # make sure that the task does not get serialized.
-        setattr(self.task, "do_not_serialize", True)
+    def to_dict(self, *args, **kwargs) -> dict[str, Any]:
+        """Return SyncTask as (serializable) dict."""
+        # ruff: noqa:ARG002
+        return {
+            "provider_domain": self.provider_domain,
+            "provider_instance": self.provider_instance,
+            "media_types": [x.value for x in self.media_types],
+        }

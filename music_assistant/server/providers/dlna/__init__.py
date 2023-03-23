@@ -23,6 +23,7 @@ from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.search import async_search
 from async_upnp_client.utils import CaseInsensitiveDict
 
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ContentType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
@@ -34,7 +35,10 @@ from music_assistant.server.models.player_provider import PlayerProvider
 from .helpers import DLNANotifyServer
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import PlayerConfig
+    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
 
 PLAYER_FEATURES = (
     PlayerFeature.SET_MEMBERS,
@@ -47,6 +51,22 @@ PLAYER_CONFIG_ENTRIES = tuple()  # we don't have any player config entries (for 
 _DLNAPlayerProviderT = TypeVar("_DLNAPlayerProviderT", bound="DLNAPlayerProvider")
 _R = TypeVar("_R")
 _P = ParamSpec("_P")
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = DLNAPlayerProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
 
 
 def catch_request_errors(
@@ -176,7 +196,7 @@ class DLNAPlayerProvider(PlayerProvider):
     upnp_factory: UpnpFactory
     notify_server: DLNANotifyServer
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self.dlnaplayers = {}
         self.lock = asyncio.Lock()
@@ -189,7 +209,20 @@ class DLNAPlayerProvider(PlayerProvider):
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
         self.mass.create_task(self._run_discovery())
 
-    def on_player_config_changed(self, config: PlayerConfig) -> None:  # noqa: ARG002
+    async def unload(self) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        """
+        self.mass.webserver.unregister_route("/notify", "NOTIFY")
+        async with asyncio.TaskGroup() as tg:
+            for dlna_player in self.dlnaplayers.values():
+                tg.create_task(self._device_disconnect(dlna_player))
+
+    def on_player_config_changed(
+        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+    ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         # run discovery to catch any re-enabled players
         self.mass.create_task(self._run_discovery())
@@ -371,8 +404,6 @@ class DLNAPlayerProvider(PlayerProvider):
             dlna_player.device = None
             await old_device.async_unsubscribe_services()
 
-        await self._async_release_event_notifier(dlna_player.event_addr)
-
     async def _device_discovered(self, udn: str, description_url: str) -> None:
         """Handle discovered DLNA player."""
         async with self.lock:
@@ -386,11 +417,9 @@ class DLNAPlayerProvider(PlayerProvider):
             else:
                 # new player detected, setup our DLNAPlayer wrapper
 
+                # ignore disabled players
                 conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
-                # disable sonos players by default in dlna provider to
-                # prevent duplicate with sonos provider
-                enabled_by_default = "rincon" not in udn.lower()
-                enabled = self.mass.config.get(conf_key, default=enabled_by_default)
+                enabled = self.mass.config.get(conf_key, True)
                 if not enabled:
                     self.logger.debug("Ignoring disabled player: %s", udn)
                     return
@@ -411,7 +440,8 @@ class DLNAPlayerProvider(PlayerProvider):
                             address=description_url,
                             manufacturer="unknown",
                         ),
-                        enabled_by_default=enabled_by_default,
+                        # disable sonos players by default in dlna
+                        enabled_by_default="rincon" not in udn.lower(),
                     ),
                     description_url=description_url,
                 )
@@ -503,7 +533,7 @@ class DLNAPlayerProvider(PlayerProvider):
         if not self.mass.players.queues.get_item(dlna_player.udn, current_queue_item_id):
             return  # guard
         try:
-            next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
+            next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
                 dlna_player.udn, current_queue_item_id
             )
         except QueueEmpty:

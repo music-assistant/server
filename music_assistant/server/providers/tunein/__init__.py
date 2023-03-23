@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from time import time
+from typing import TYPE_CHECKING
 
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import create_sort_name
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     ContentType,
@@ -24,26 +26,59 @@ from music_assistant.server.helpers.playlists import fetch_playlist
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
+SUPPORTED_FEATURES = (
+    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.BROWSE,
+)
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    if not config.get_value(CONF_USERNAME):
+        raise LoginFailed("Username is invalid")
+
+    prov = TuneInProvider(mass, manifest, config)
+    if "@" in config.get_value(CONF_USERNAME):
+        prov.logger.warning(
+            "Emailadress detected instead of username, "
+            "it is advised to use the tunein username instead of email."
+        )
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(
+            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+        ),
+    )
+
 
 class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
     _throttler: Throttler
 
-    async def setup(self) -> None:
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
+
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=1)
-        self._attr_supported_features = (
-            ProviderFeature.LIBRARY_RADIOS,
-            ProviderFeature.BROWSE,
-        )
-        if not self.config.get_value(CONF_USERNAME):
-            raise LoginFailed("Username is invalid")
-        if "@" in self.config.get_value(CONF_USERNAME):
-            self.logger.warning(
-                "Emailadress detected instead of username, "
-                "it is advised to use the tunein username instead of email."
-            )
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""

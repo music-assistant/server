@@ -5,7 +5,7 @@ import random
 from time import time
 from typing import Any
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import (
@@ -72,11 +72,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
         return db_item
 
-    async def create(self, name: str, provider: str | None = None) -> Playlist:
+    async def create(self, name: str, provider_instance_or_domain: str | None = None) -> Playlist:
         """Create new playlist."""
         # if provider is omitted, just pick first provider
-        if provider:
-            provider = self.mass.get_provider(provider)
+        if provider_instance_or_domain:
+            provider = self.mass.get_provider(provider_instance_or_domain)
         else:
             provider = next(
                 (
@@ -86,10 +86,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 ),
                 None,
             )
-            if provider is None:
-                raise ProviderUnavailableError(
-                    "No provider available which allows playlists creation."
-                )
+        if provider is None:
+            raise ProviderUnavailableError("No provider available which allows playlists creation.")
 
         return await provider.create_playlist(name)
 
@@ -147,7 +145,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 # the file provider can handle uri's from all providers so simply add the uri
                 track_id_to_add = track_version.url or create_uri(
                     MediaType.TRACK,
-                    track_version.provider_domain,
+                    track_version.provider_instance,
                     track_version.item_id,
                 )
                 break
@@ -228,8 +226,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "sort_name": item.sort_name,
                 "owner": item.owner,
                 "is_editable": item.is_editable,
-                "metadata": json_dumps(metadata),
-                "provider_mappings": json_dumps(provider_mappings),
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
             },
         )
         # update/set provider_mappings table
@@ -301,7 +299,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         # NOTE: In theory we can return a few more items than limit here
         # Shuffle the final items list
-        return random.sample(final_items, len(final_items))
+        return random.sample(list(final_items), len(final_items))
 
     async def _get_dynamic_tracks(
         self, media_item: Playlist, limit: int = 25  # noqa: ARG002

@@ -3,20 +3,7 @@
   "domain": "qobuz",
   "name": "Qobuz",
   "description": "Qobuz support for Music Assistant: Lossless (and hi-res) Music provider.",
-  "codeowners": ["@marcelveldt"],
-  "config_entries": [
-    {
-      "key": "username",
-      "type": "string",
-      "label": "Username"
-    },
-    {
-      "key": "password",
-      "type": "password",
-      "label": "Password"
-    }
-  ],
-
+  "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/817",
   "multi_instance": true

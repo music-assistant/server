@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import platform
@@ -9,12 +10,14 @@ import time
 from collections.abc import AsyncGenerator
 from json.decoder import JSONDecodeError
 from tempfile import gettempdir
+from typing import TYPE_CHECKING
 
 import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -23,10 +26,10 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemType,
     MediaType,
     Playlist,
     ProviderMapping,
+    SearchResults,
     StreamDetails,
     Track,
 )
@@ -35,7 +38,53 @@ from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+
 CACHE_DIR = gettempdir()
+SUPPORTED_FEATURES = (
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_TRACKS,
+)
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = SpotifyProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(
+            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+        ),
+        ConfigEntry(
+            key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, label="Password", required=True
+        ),
+    )
 
 
 class SpotifyProvider(MusicProvider):
@@ -45,12 +94,21 @@ class SpotifyProvider(MusicProvider):
     _sp_user: str | None = None
     _librespot_bin: str | None = None
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=0.1)
         self._cache_dir = CACHE_DIR
         self._ap_workaround = False
-        self._attr_supported_features = (
+
+        # try to get a token, raise if that fails
+        self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
+        # try login which will raise if it fails
+        await self.login()
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return (
             ProviderFeature.LIBRARY_ARTISTS,
             ProviderFeature.LIBRARY_ALBUMS,
             ProviderFeature.LIBRARY_TRACKS,
@@ -66,21 +124,17 @@ class SpotifyProvider(MusicProvider):
             ProviderFeature.ARTIST_TOPTRACKS,
             ProviderFeature.SIMILAR_TRACKS,
         )
-        # try to get a token, raise if that fails
-        self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
-        # try login which will raise if it fails
-        await self.login()
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
-        result = []
+        result = SearchResults()
         searchtypes = []
         if MediaType.ARTIST in media_types:
             searchtypes.append("artist")
@@ -96,25 +150,25 @@ class SpotifyProvider(MusicProvider):
             "search", q=search_query, type=searchtype, limit=limit
         ):
             if "artists" in searchresult:
-                result += [
+                result.artists += [
                     await self._parse_artist(item)
                     for item in searchresult["artists"]["items"]
                     if (item and item["id"])
                 ]
             if "albums" in searchresult:
-                result += [
+                result.albums += [
                     await self._parse_album(item)
                     for item in searchresult["albums"]["items"]
                     if (item and item["id"])
                 ]
             if "tracks" in searchresult:
-                result += [
+                result.tracks += [
                     await self._parse_track(item)
                     for item in searchresult["tracks"]["items"]
                     if (item and item["id"])
                 ]
             if "playlists" in searchresult:
-                result += [
+                result.playlists += [
                     await self._parse_playlist(item)
                     for item in searchresult["playlists"]["items"]
                     if (item and item["id"])
@@ -358,12 +412,10 @@ class SpotifyProvider(MusicProvider):
         album = Album(item_id=album_obj["id"], provider=self.domain, name=name, version=version)
         for artist_obj in album_obj["artists"]:
             album.artists.append(await self._parse_artist(artist_obj))
-        if album_obj["album_type"] == "single":
-            album.album_type = AlbumType.SINGLE
-        elif album_obj["album_type"] == "compilation":
-            album.album_type = AlbumType.COMPILATION
-        elif album_obj["album_type"] == "album":
-            album.album_type = AlbumType.ALBUM
+
+        with contextlib.suppress(ValueError):
+            album.album_type = AlbumType(album_obj["album_type"])
+
         if "genres" in album_obj:
             album.metadata.genre = set(album_obj["genres"])
         if album_obj.get("images"):

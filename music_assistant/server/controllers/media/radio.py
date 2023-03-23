@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from time import time
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType
 from music_assistant.common.models.media_items import Radio, Track
 from music_assistant.constants import DB_TABLE_RADIOS
@@ -49,15 +49,9 @@ class RadioController(MediaControllerBase[Radio]):
             for prov_item in prov_items
             if loose_compare_strings(radio.name, prov_item.name)
         }
-        # make sure that the 'base' version is included
+        # make sure that the 'base' version is NOT included
         for prov_version in radio.provider_mappings:
-            if prov_version.item_id in all_versions:
-                continue
-            radio_copy = Radio.from_dict(radio.to_dict())
-            radio_copy.item_id = prov_version.item_id
-            radio_copy.provider = prov_version.provider_domain
-            radio_copy.provider_mappings = {prov_version}
-            all_versions[prov_version.item_id] = radio_copy
+            all_versions.pop(prov_version.item_id, None)
 
         # return the aggregated result
         return all_versions.values()
@@ -121,8 +115,8 @@ class RadioController(MediaControllerBase[Radio]):
                 # always prefer name from updated item here
                 "name": item.name,
                 "sort_name": item.sort_name,
-                "metadata": json_dumps(metadata),
-                "provider_mappings": json_dumps(provider_mappings),
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
             },
         )
         # update/set provider_mappings table

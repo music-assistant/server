@@ -10,6 +10,7 @@ import tomllib
 from pathlib import Path
 
 PACKAGE_REGEX = re.compile(r"^(?:--.+\s)?([-_\.\w\d]+).*==.+$")
+GIT_REPO_REGEX = re.compile(r"^(git\+https:\/\/[-_\.\w\d\/]+[@-_\.\w\d\/]*)$")
 
 
 def gather_core_requirements() -> list[str]:
@@ -60,10 +61,11 @@ def main() -> int:
     for req_str in core_reqs + extra_reqs:
         if match := PACKAGE_REGEX.search(req_str):
             package_name = match.group(1).lower().replace("_", "-")
-            if package_name in final_requirements:
-                # duplicate package without version is safe to ignore
-                print("ignoring %s" % package_name)
-                continue
+        elif match := GIT_REPO_REGEX.search(req_str):
+            package_name = match.group(1)
+        elif package_name in final_requirements:
+            # duplicate package without version is safe to ignore
+            continue
         else:
             print("Found requirement without version specifier: %s" % req_str)
             package_name = req_str

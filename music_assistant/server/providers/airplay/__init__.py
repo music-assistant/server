@@ -16,13 +16,16 @@ import aiofiles
 
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import PlayerConfig
+    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.providers.slimproto import SlimprotoProvider
 
 
@@ -67,16 +70,35 @@ PLAYER_CONFIG_ENTRIES = (
     ),
 )
 
+NEED_BRIDGE_RESTART = {"values/read_ahead", "values/encryption", "values/alac_encode"}
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = AirplayProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
+
 
 class AirplayProvider(PlayerProvider):
     """Player provider for Airplay based players, using the slimproto bridge."""
 
     _bridge_bin: str | None = None
     _bridge_proc: asyncio.subprocess.Process | None = None
+    _timer_handle: asyncio.TimerHandle | None = None
     _closing: bool = False
     _config_file: str | None = None
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._config_file = os.path.join(self.mass.storage_path, "airplay_bridge.xml")
         # locate the raopbridge binary (will raise if that fails)
@@ -94,7 +116,7 @@ class AirplayProvider(PlayerProvider):
         # start running the bridge
         asyncio.create_task(self._bridge_process_runner())
 
-    async def close(self) -> None:
+    async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         self._closing = True
         await self._stop_bridge()
@@ -105,18 +127,16 @@ class AirplayProvider(PlayerProvider):
         base_entries = slimproto_prov.get_player_config_entries(player_id)
         return tuple(base_entries + PLAYER_CONFIG_ENTRIES)
 
-    def on_player_config_changed(self, config: PlayerConfig) -> None:
+    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         # forward to slimproto too
         slimproto_prov = self.mass.get_provider("slimproto")
-        slimproto_prov.on_player_config_changed(config)
+        slimproto_prov.on_player_config_changed(config, changed_keys)
 
         async def update_config():
             # stop bridge (it will be auto restarted)
-            # TODO: only restart bridge if actual xml values changed
-            await self._stop_bridge()
-            # update the config
-            await self._check_config_xml()
+            if changed_keys.intersection(NEED_BRIDGE_RESTART):
+                self.restart_bridge()
 
         asyncio.create_task(update_config())
 
@@ -269,7 +289,6 @@ class AirplayProvider(PlayerProvider):
 
     async def _bridge_process_runner(self) -> None:
         """Run the bridge binary in the background."""
-        log_file = os.path.join(self.mass.storage_path, "airplay_bridge.log")
         self.logger.debug(
             "Starting Airplay bridge using config file %s",
             self._config_file,
@@ -280,12 +299,13 @@ class AirplayProvider(PlayerProvider):
             "localhost",
             "-x",
             self._config_file,
-            "-f",
-            log_file,
             "-I",
             "-Z",
             "-d",
-            "all=info",
+            "all=warn",
+            # filter out macbooks and apple tv's
+            "-m",
+            "macbook,apple-tv,appletv",
         ]
         start_success = False
         while True:
@@ -317,6 +337,7 @@ class AirplayProvider(PlayerProvider):
 
     async def _check_config_xml(self, recreate: bool = False) -> None:
         """Check the bridge config XML file."""
+        # ruff: noqa: PLR0915
         if recreate or not os.path.isfile(self._config_file):
             if os.path.isfile(self._config_file):
                 os.remove(self._config_file)
@@ -350,28 +371,39 @@ class AirplayProvider(PlayerProvider):
         common_elem.find("codecs").text = "pcm"
         common_elem.find("sample_rate").text = "44100"
         common_elem.find("resample").text = "0"
+        common_elem.find("player_volume").text = "20"
+
+        # default values for players
+        for conf_entry in PLAYER_CONFIG_ENTRIES:
+            if conf_entry.type == ConfigEntryType.LABEL:
+                continue
+            conf_val = conf_entry.default_value
+            xml_elem = common_elem.find(conf_entry.key)
+            if xml_elem is None:
+                xml_elem = ET.SubElement(common_elem, conf_entry.key)
+            if conf_entry.type == ConfigEntryType.BOOLEAN:
+                xml_elem.text = "1" if conf_val else "0"
+            else:
+                xml_elem.text = str(conf_val)
+
         # get/set all device configs
         for device_elem in xml_root.findall("device"):
             player_id = device_elem.find("mac").text
-            try:
-                player_conf = self.mass.config.get_player_config(player_id)
-            except PlayerUnavailableError:
-                player_conf = None
+            # use raw config values because players are not
+            # yet available at startup/init (race condition)
+            raw_player_conf = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+            if not raw_player_conf:
+                continue
             # prefer name from UDN because default name is often wrong
             udn = device_elem.find("udn").text
             udn_name = udn.split("@")[1].split("._")[0]
             device_elem.find("name").text = udn_name
-            device_elem.find("enabled").text = (
-                "1" if (not player_conf or player_conf.enabled) else "0"
-            )
+            device_elem.find("enabled").text = "1" if raw_player_conf["enabled"] else "0"
 
             for conf_entry in PLAYER_CONFIG_ENTRIES:
                 if conf_entry.type == ConfigEntryType.LABEL:
                     continue
-                if player_conf:
-                    conf_val = player_conf.get_value(conf_entry.key)
-                else:
-                    conf_val = conf_entry.default_value
+                conf_val = raw_player_conf["values"].get(conf_entry.key, conf_entry.default_value)
                 xml_elem = device_elem.find(conf_entry.key)
                 if xml_elem is None:
                     xml_elem = ET.SubElement(device_elem, conf_entry.key)
@@ -383,3 +415,17 @@ class AirplayProvider(PlayerProvider):
         # save config file
         async with aiofiles.open(self._config_file, "w") as _file:
             await _file.write(ET.tostring(xml_root).decode())
+
+    def restart_bridge(self) -> None:
+        """Schedule restart of bridge process."""
+        if self._timer_handle is not None:
+            self._timer_handle.cancel()
+            self._timer_handle = None
+
+        async def restart_bridge():
+            self.logger.info("Restarting Airplay bridge (due to config changes)")
+            await self._stop_bridge()
+            await self._check_config_xml()
+
+        # schedule the action for later
+        self._timer_handle = self.mass.loop.call_later(10, self.mass.create_task, restart_bridge)

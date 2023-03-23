@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
 
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.media_items import ImageType, MediaItemImage, MediaItemMetadata
 from music_assistant.server.controllers.cache import use_cache
@@ -14,7 +15,16 @@ from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=n
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.media_items import Album, Artist
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+SUPPORTED_FEATURES = (
+    ProviderFeature.ARTIST_METADATA,
+    ProviderFeature.ALBUM_METADATA,
+)
 
 # TODO: add support for personal api keys ?
 
@@ -27,19 +37,36 @@ IMG_MAPPING = {
 }
 
 
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = FanartTvMetadataProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
+
+
 class FanartTvMetadataProvider(MetadataProvider):
     """Fanart.tv Metadata provider."""
 
     throttler: Throttler
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
         self.throttler = Throttler(rate_limit=2, period=1)
-        self._attr_supported_features = (
-            ProviderFeature.ARTIST_METADATA,
-            ProviderFeature.ALBUM_METADATA,
-        )
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on fanart.tv."""

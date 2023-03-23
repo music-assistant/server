@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from music_assistant.common.helpers.util import create_safe_string, create_sort_name
-from music_assistant.common.models.enums import AlbumType
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -34,7 +33,7 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     if str1 is None or str2 is None:
         return False
     # return early if total length mismatch
-    if abs(len(str1) - len(str2)) > 2:
+    if abs(len(str1) - len(str2)) > 4:
         return False
     if not strict:
         return create_safe_string(str1) == create_safe_string(str2)
@@ -238,11 +237,9 @@ def compare_track(left_track: Track, right_track: Track):
             for right_album in right_track.albums:
                 if compare_album(left_album, right_album):
                     return True
-    # fallback: both albums are compilations and (near-exact) track duration match
-    if (
-        abs(left_track.duration - right_track.duration) <= 2
-        and left_track.album.album_type in (AlbumType.UNKNOWN, AlbumType.COMPILATION)
-        and right_track.album.album_type in (AlbumType.UNKNOWN, AlbumType.COMPILATION)
+    # fallback: exact album match and (near-exact) track duration match
+    if abs(left_track.duration - right_track.duration) <= 3 and compare_album(
+        left_track.album, right_track.album
     ):
         return True
     return False

@@ -3,18 +3,9 @@
   "domain": "filesystem_local",
   "name": "Local Filesystem",
   "description": "Support for music files that are present on a local accessible disk/folder.",
-  "codeowners": ["@marcelveldt"],
-  "config_entries": [
-    {
-      "key": "path",
-      "type": "string",
-      "label": "Path",
-      "default_value": "/media"
-    }
-  ],
-
+  "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
   "multi_instance": true,
-  "init_class": "LocalFileSystemProvider"
+  "icon": "mdi:mdi-harddisk"
 }

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import urllib.parse
 from collections import deque
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -15,7 +14,6 @@ from aioslimproto.client import TransitionType as SlimTransition
 from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
 
-from music_assistant.common.helpers.util import select_free_port
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -27,12 +25,14 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.server.models.player_provider import PlayerProvider
-from music_assistant.server.providers.json_rpc import parse_args
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import PlayerConfig
-    from music_assistant.server.providers.json_rpc import JSONRPCApi
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
 
 # sync constants
 MIN_DEVIATION_ADJUST = 10  # 10 milliseconds
@@ -59,6 +59,8 @@ class SyncPlayPoint:
 
 
 CONF_SYNC_ADJUST = "sync_adjust"
+CONF_PLAYER_VOLUME = "player_volume"
+DEFAULT_PLAYER_VOLUME = 20
 
 SLIM_PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
@@ -71,7 +73,31 @@ SLIM_PLAYER_CONFIG_ENTRIES = (
         "and you always hear the audio too late on this player, you can shift the audio a bit.",
         advanced=True,
     ),
+    ConfigEntry(
+        key=CONF_PLAYER_VOLUME,
+        type=ConfigEntryType.INTEGER,
+        default_value=DEFAULT_PLAYER_VOLUME,
+        label="Default startup volume",
+        description="Default volume level to set/use when initializing the player.",
+        advanced=True,
+    ),
 )
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = SlimprotoProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
 
 
 class SlimprotoProvider(PlayerProvider):
@@ -80,30 +106,26 @@ class SlimprotoProvider(PlayerProvider):
     _socket_servers: tuple[asyncio.Server | asyncio.BaseTransport]
     _socket_clients: dict[str, SlimClient]
     _sync_playpoints: dict[str, deque[SyncPlayPoint]]
-    _sync_adjusts: dict[str, int]
     _virtual_providers: dict[str, tuple[Callable, Callable]]
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._socket_clients = {}
         self._sync_playpoints = {}
-        self._sync_adjusts = {}
         self._virtual_providers = {}
         # autodiscovery of the slimproto server does not work
         # when the port is not the default (3483) so we hardcode it for now
         slimproto_port = 3483
-        cli_port = await select_free_port(9090, 9190)
+        cli_port = cli_prov.cli_port if (cli_prov := self.mass.get_provider("lms_cli")) else None
         self.logger.info("Starting SLIMProto server on port %s", slimproto_port)
         self._socket_servers = (
             # start slimproto server
             await asyncio.start_server(self._create_client, "0.0.0.0", slimproto_port),
             # setup discovery
-            await start_discovery(slimproto_port, cli_port, self.mass.port),
-            # setup (telnet) cli for players requesting basic info on that port
-            await asyncio.start_server(self._handle_cli_client, "0.0.0.0", cli_port),
+            await start_discovery(slimproto_port, cli_port, self.mass.webserver.port),
         )
 
-    async def close(self) -> None:
+    async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         if hasattr(self, "_socket_clients"):
             for client in list(self._socket_clients.values()):
@@ -157,12 +179,6 @@ class SlimprotoProvider(PlayerProvider):
     def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return SLIM_PLAYER_CONFIG_ENTRIES
-
-    def on_player_config_changed(self, config: PlayerConfig) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
-        # during synced playback this value is requested multiple times a second,
-        # so we cache it in a quick lookup dict
-        self._sync_adjusts[config.player_id] = config.get_value(CONF_SYNC_ADJUST)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -364,7 +380,7 @@ class SlimprotoProvider(PlayerProvider):
             if virtual_provider_info:
                 # if this player is part of a virtual provider run the callback
                 virtual_provider_info[0](player)
-            self.mass.players.register(player)
+            self.mass.players.register_or_update(player)
 
         # update player state on player events
         player.available = True
@@ -472,7 +488,7 @@ class SlimprotoProvider(PlayerProvider):
         if not client.current_metadata:
             return
         try:
-            next_item, crossfade = self.mass.players.queues.player_ready_for_next_track(
+            next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
                 client.player_id, client.current_metadata["item_id"]
             )
             await self._handle_play_media(client, next_item, send_flush=False, crossfade=crossfade)
@@ -491,8 +507,11 @@ class SlimprotoProvider(PlayerProvider):
             # update existing players so they can update their `can_sync_with` field
             for client in self._socket_clients.values():
                 self._handle_player_update(client)
-            # precache player config
-            self.on_player_config_changed(self.mass.config.get_player_config(player_id))
+        # handle init/startup volume
+        init_volume = self.mass.config.get(
+            f"{CONF_PLAYERS}/{player_id}/{CONF_PLAYER_VOLUME}", DEFAULT_PLAYER_VOLUME
+        )
+        self.mass.create_task(client.volume_set(init_volume))
 
     def _handle_disconnected(self, client: SlimClient) -> None:
         """Handle a client disconnected event."""
@@ -529,94 +548,9 @@ class SlimprotoProvider(PlayerProvider):
 
     def _get_corrected_elapsed_milliseconds(self, client: SlimClient) -> int:
         """Return corrected elapsed milliseconds."""
-        sync_delay = self._sync_adjusts[client.player_id]
+        sync_delay = self.mass.config.get(
+            f"{CONF_PLAYERS}/{client.player_id}/{CONF_SYNC_ADJUST}", 0
+        )
         if sync_delay != 0:
             return client.elapsed_milliseconds - sync_delay
         return client.elapsed_milliseconds
-
-    async def _handle_cli_client(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        """Handle new connection on the legacy CLI."""
-        # https://raw.githubusercontent.com/Logitech/slimserver/public/7.8/HTML/EN/html/docs/cli-api.html
-        self.logger.info("Client connected on Telnet CLI")
-        try:
-            while True:
-                raw_request = await reader.readline()
-                raw_request = raw_request.strip().decode("utf-8")
-                # request comes in as url encoded strings, separated by space
-                raw_params = [urllib.parse.unquote(x) for x in raw_request.split(" ")]
-                # the first param is either a macaddress or a command
-                if ":" in raw_params[0]:
-                    # assume this is a mac address (=player_id)
-                    player_id = raw_params[0]
-                    command = raw_params[1]
-                    command_params = raw_params[2:]
-                else:
-                    player_id = ""
-                    command = raw_params[0]
-                    command_params = raw_params[1:]
-
-                args, kwargs = parse_args(command_params)
-
-                response: str = raw_request
-
-                # check if we have a handler for this command
-                # note that we only have support for very limited commands
-                # just enough for compatibility with players but not to be used as api
-                # with 3rd party tools!
-                json_rpc: JSONRPCApi = self.mass.get_provider("json_rpc")
-                assert json_rpc is not None
-                if handler := getattr(json_rpc, f"_handle_{command}", None):
-                    self.logger.debug(
-                        "Handling CLI-request (player: %s command: %s - args: %s - kwargs: %s)",
-                        player_id,
-                        command,
-                        str(args),
-                        str(kwargs),
-                    )
-                    cmd_result: list[str] = handler(player_id, *args, **kwargs)
-                    if isinstance(cmd_result, dict):
-                        result_parts = dict_to_strings(cmd_result)
-                        result_str = " ".join(urllib.parse.quote(x) for x in result_parts)
-                    elif not cmd_result:
-                        result_str = ""
-                    else:
-                        result_str = str(cmd_result)
-                    response += " " + result_str
-                else:
-                    self.logger.warning(
-                        "No handler for %s (player: %s - args: %s - kwargs: %s)",
-                        command,
-                        player_id,
-                        str(args),
-                        str(kwargs),
-                    )
-                # echo back the request and the result (if any)
-                response += "\n"
-                writer.write(response.encode("utf-8"))
-                await writer.drain()
-        except Exception as err:
-            self.logger.debug("Error handling CLI command", exc_info=err)
-        finally:
-            self.logger.debug("Client disconnected from Telnet CLI")
-
-
-def dict_to_strings(source: dict) -> list[str]:
-    """Convert dict to key:value strings (used in slimproto cli)."""
-    result: list[str] = []
-
-    for key, value in source.items():
-        if value is None or value == "":
-            continue
-        if isinstance(value, list):
-            for subval in value:
-                if isinstance(subval, dict):
-                    result += dict_to_strings(subval)
-                else:
-                    result.append(str(subval))
-        elif isinstance(value, dict):
-            result += dict_to_strings(subval)
-        else:
-            result.append(f"{key}:{str(value)}")
-    return result

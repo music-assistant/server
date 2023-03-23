@@ -6,7 +6,7 @@ import contextlib
 from random import choice, random
 from typing import TYPE_CHECKING
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
@@ -112,15 +112,9 @@ class AlbumsController(MediaControllerBase[Album]):
             for prov_item in prov_items
             if loose_compare_strings(album.name, prov_item.name)
         }
-        # make sure that the 'base' version is included
+        # make sure that the 'base' version is NOT included
         for prov_version in album.provider_mappings:
-            if prov_version.item_id in all_versions:
-                continue
-            album_copy = Album.from_dict(album.to_dict())
-            album_copy.item_id = prov_version.item_id
-            album_copy.provider = prov_version.provider_domain
-            album_copy.provider_mappings = {prov_version}
-            all_versions[prov_version.item_id] = album_copy
+            all_versions.pop(prov_version.item_id, None)
 
         # return the aggregated result
         return all_versions.values()
@@ -184,7 +178,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 self.db_table,
                 {
                     **item.to_db_row(),
-                    "artists": json_dumps(album_artists) or None,
+                    "artists": serialize_to_json(album_artists) or None,
                     "sort_artist": sort_artist,
                 },
             )
@@ -235,9 +229,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 "year": item.year or cur_item.year,
                 "upc": item.upc or cur_item.upc,
                 "album_type": album_type,
-                "artists": json_dumps(album_artists) or None,
-                "metadata": json_dumps(metadata),
-                "provider_mappings": json_dumps(provider_mappings),
+                "artists": serialize_to_json(album_artists) or None,
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
                 "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
             },
         )
@@ -256,7 +250,7 @@ class AlbumsController(MediaControllerBase[Album]):
         assert not (db_rows and not recursive), "Tracks attached to album"
         for db_row in db_rows:
             with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
+                await self.mass.music.tracks.delete_db_item(db_row["item_id"], recursive)
 
         # delete the album itself from db
         await super().delete_db_item(item_id)
@@ -269,8 +263,9 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
         prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov:
+        if prov is None:
             return []
+
         full_album = await self.get_provider_item(item_id, provider_instance or provider_domain)
         # prefer cache items (if any)
         cache_key = f"{prov.instance_id}.albumtracks.{item_id}"
@@ -300,7 +295,9 @@ class AlbumsController(MediaControllerBase[Album]):
     ):
         """Generate a dynamic list of tracks based on the album content."""
         prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
+        if prov is None:
+            return []
+        if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []
         album_tracks = await self._get_provider_album_tracks(
             item_id=item_id,

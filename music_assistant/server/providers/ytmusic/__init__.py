@@ -1,16 +1,24 @@
 """Youtube Music support for MusicAssistant."""
+from __future__ import annotations
+
 import asyncio
 import re
 from operator import itemgetter
 from time import time
-from typing import AsyncGenerator  # noqa: UP035
+from typing import TYPE_CHECKING, AsyncGenerator  # noqa: UP035
 from urllib.parse import unquote
 
 import pytube
 import ytmusicapi
 
-from music_assistant.common.models.enums import ProviderFeature
-from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    UnplayableMediaError,
+)
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -18,10 +26,10 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemType,
     MediaType,
     Playlist,
     ProviderMapping,
+    SearchResults,
     StreamDetails,
     Track,
 )
@@ -45,8 +53,12 @@ from .helpers import (
     search,
 )
 
-# if TYPE_CHECKING:
-#     from collections.abc import AsyncGenerator
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
 
 CONF_COOKIE = "cookie"
 
@@ -54,8 +66,48 @@ YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
 
+SUPPORTED_FEATURES = (
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_TRACKS,
+)
+
 # TODO: fix disabled tests
 # ruff: noqa: PLW2901, RET504
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = YoutubeMusicProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(
+            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+        ),
+        ConfigEntry(
+            key=CONF_COOKIE,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Login Cookie",
+            required=True,
+            description="The Login cookie you grabbed from an existing session, "
+            "see the documentation.",
+        ),
+    )
 
 
 class YoutubeMusicProvider(MusicProvider):
@@ -67,19 +119,8 @@ class YoutubeMusicProvider(MusicProvider):
     _signature_timestamp = 0
     _cipher = None
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Set up the YTMusic provider."""
-        self._attr_supported_features = (
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-            ProviderFeature.SIMILAR_TRACKS,
-        )
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_COOKIE):
             raise LoginFailed("Invalid login credentials")
         await self._initialize_headers(cookie=self.config.get_value(CONF_COOKIE))
@@ -87,9 +128,14 @@ class YoutubeMusicProvider(MusicProvider):
         self._cookies = {"CONSENT": "YES+1"}
         self._signature_timestamp = await self._get_signature_timestamp()
 
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
+
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
@@ -108,17 +154,17 @@ class YoutubeMusicProvider(MusicProvider):
             if media_types[0] == MediaType.PLAYLIST:
                 ytm_filter = "playlists"
         results = await search(query=search_query, ytm_filter=ytm_filter, limit=limit)
-        parsed_results = []
+        parsed_results = SearchResults()
         for result in results:
             try:
                 if result["resultType"] == "artist":
-                    parsed_results.append(await self._parse_artist(result))
+                    parsed_results.artists.append(await self._parse_artist(result))
                 elif result["resultType"] == "album":
-                    parsed_results.append(await self._parse_album(result))
+                    parsed_results.albums.append(await self._parse_album(result))
                 elif result["resultType"] == "playlist":
-                    parsed_results.append(await self._parse_playlist(result))
+                    parsed_results.playlists.append(await self._parse_playlist(result))
                 elif result["resultType"] == "song" and (track := await self._parse_track(result)):
-                    parsed_results.append(track)
+                    parsed_results.tracks.append(track)
             except InvalidDataError:
                 pass  # ignore invalid item
         return parsed_results
@@ -536,6 +582,15 @@ class YoutubeMusicProvider(MusicProvider):
                 provider_instance=self.instance_id,
             )
         )
+        if authors := playlist_obj.get("author"):
+            if isinstance(authors, str):
+                playlist.owner = authors
+            elif isinstance(authors, list):
+                playlist.owner = authors[0]["name"]
+            else:
+                playlist.owner = authors["name"]
+        else:
+            playlist.owner = self.instance_id
         playlist.metadata.checksum = playlist_obj.get("checksum")
         return playlist
 
@@ -601,7 +656,7 @@ class YoutubeMusicProvider(MusicProvider):
             raise Exception("Unable to identify the signatureTimestamp.")
         return int(match.group(1))
 
-    async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
+    async def _parse_stream_url(self, stream_format: dict, item_id: str, retry: bool = True) -> str:
         """Figure out the stream URL to use based on the YT track object."""
         url = None
         if stream_format.get("signatureCipher"):
@@ -614,10 +669,41 @@ class YoutubeMusicProvider(MusicProvider):
                 ciphered_signature=cipher_parts["s"], item_id=item_id
             )
             url = cipher_parts["url"] + "&sig=" + signature
+            # Verify if URL is playable. If not, obtain a new cipher and try again.
+            if not await self._is_valid_deciphered_url(url=url):
+                if not retry:
+                    raise UnplayableMediaError(
+                        f"Cannot obtain a valid URL for item '{item_id}' after renewing cipher."
+                    )
+                self.logger.debug("Cipher expired. Obtaining new Cipher.")
+                self._cipher = None
+                return self._parse_stream_url(
+                    stream_format=stream_format, item_id=item_id, retry=False
+                )
         elif stream_format.get("url"):
             # Non secured URL
             url = stream_format.get("url")
         return url
+
+    async def _decipher_signature(self, ciphered_signature: str, item_id: str):
+        """Decipher the signature, required to build the Stream URL."""
+
+        def _decipher():
+            embed_url = f"https://www.youtube.com/embed/{item_id}"
+            embed_html = pytube.request.get(embed_url)
+            js_url = pytube.extract.js_url(embed_html)
+            ytm_js = pytube.request.get(js_url)
+            cipher = pytube.cipher.Cipher(js=ytm_js)
+            return cipher
+
+        if not self._cipher:
+            self._cipher = await asyncio.to_thread(_decipher)
+        return self._cipher.get_signature(ciphered_signature)
+
+    async def _is_valid_deciphered_url(self, url: str) -> bool:
+        """Verify whether the URL has been deciphered using a valid cipher."""
+        async with self.mass.http_session.head(url) as response:
+            return response.status == 200
 
     @classmethod
     async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
@@ -644,18 +730,3 @@ class YoutubeMusicProvider(MusicProvider):
         if stream_format is None:
             raise MediaNotFoundError("No stream found for this track")
         return stream_format
-
-    async def _decipher_signature(self, ciphered_signature: str, item_id: str):
-        """Decipher the signature, required to build the Stream URL."""
-
-        def _decipher():
-            embed_url = f"https://www.youtube.com/embed/{item_id}"
-            embed_html = pytube.request.get(embed_url)
-            js_url = pytube.extract.js_url(embed_html)
-            ytm_js = pytube.request.get(js_url)
-            cipher = pytube.cipher.Cipher(js=ytm_js)
-            return cipher
-
-        if not self._cipher:
-            self._cipher = await asyncio.to_thread(_decipher)
-        return self._cipher.get_signature(ciphered_signature)

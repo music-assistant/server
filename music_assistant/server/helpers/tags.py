@@ -199,7 +199,9 @@ class AudioTags:
         return self.tags.get(key, default)
 
 
-async def parse_tags(input_file: str | AsyncGenerator[bytes, None]) -> AudioTags:
+async def parse_tags(
+    input_file: str | AsyncGenerator[bytes, None], file_size: int | None = None
+) -> AudioTags:
     """Parse tags from a media file.
 
     input_file may be a (local) filename/url accessible by ffmpeg or
@@ -227,12 +229,17 @@ async def parse_tags(input_file: str | AsyncGenerator[bytes, None]) -> AudioTags
         if file_path == "-":
             # feed the file contents to the process
             async def chunk_feeder():
-                # pylint: disable=protected-access
+                bytes_written = 0
                 async for chunk in input_file:
                     try:
                         await proc.write(chunk)
                     except BrokenPipeError:
                         break  # race-condition: read enough data for tags
+
+                    # grabbing the first 5MB is enough to get the embedded tags
+                    bytes_written += len(chunk)
+                    if bytes_written > (5 * 1024000):
+                        break
                 proc.write_eof()
 
             proc.attach_task(chunk_feeder())
@@ -242,7 +249,11 @@ async def parse_tags(input_file: str | AsyncGenerator[bytes, None]) -> AudioTags
             data = json.loads(res)
             if error := data.get("error"):
                 raise InvalidDataError(error["string"])
-            return AudioTags.parse(data)
+            tags = AudioTags.parse(data)
+            if not tags.duration and file_size and tags.bit_rate:
+                # estimate duration from filesize/bitrate
+                tags.duration = int((file_size * 8) / tags.bit_rate)
+            return tags
         except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
             raise InvalidDataError(f"Unable to retrieve info for {file_path}: {str(err)}") from err
 

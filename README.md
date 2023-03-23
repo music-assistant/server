@@ -52,11 +52,16 @@ ____________
 
 - Because the server heavily relies on multicast techniques like mDNS and uPNP to discover players in your network it MUST be run in the same Layer 2 network as your player devices.
 
-- The server itself hosts a very simple webserver to stream audio to devices. This webinterface must be run at HTTP (so no HTTPS) and accessible by IP-address from local players. See the server's logging at startup if it correctly auto-detected the locl IP.
+- The server itself hosts a very simple webserver to stream audio to devices. This webinterface must be run at HTTP (so no HTTPS) and accessible by IP-address from local players. See the server's logging at startup if it correctly auto-detected the local IP.
 
-- The server itself hosts a websocket API and a JSON RPC API which is more or less compatible with LMS. The Music Assistant fronted communicates with the serer using the websockets API.
+- The server itself hosts a websocket API and a JSON RPC API which is more or less compatible with LMS. The Music Assistant fronted communicates with the server using the websockets API.
 
 - The webinterface of the server can be reached on the tcp port 8095 by default (unless that port is occupied, then it picks the next available port). See the server's logging to confirm the port.
+
+
+## Support, documentation
+Because this project originated out of a Home Assistant integration, we maintain all our documentatation and enduser support in a separate reposity:
+https://github.com/music-assistant/hass-music-assistant
 
 
 [repository-badge]: https://img.shields.io/badge/Add%20repository%20to%20my-Home%20Assistant-41BDF5?logo=home-assistant&style=for-the-badge

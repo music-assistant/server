@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
@@ -39,6 +39,7 @@ class TracksController(MediaControllerBase[Track]):
         self.mass.register_api_command("music/track/versions", self.versions)
         self.mass.register_api_command("music/track/update", self.update_db_item)
         self.mass.register_api_command("music/track/delete", self.delete_db_item)
+        self.mass.register_api_command("music/track/preview", self.get_preview_url)
 
     async def get(
         self,
@@ -129,15 +130,9 @@ class TracksController(MediaControllerBase[Track]):
             if loose_compare_strings(track.name, prov_item.name)
             and compare_artists(prov_item.artists, track.artists, any_match=True)
         }
-        # make sure that the 'base' version is included
+        # make sure that the 'base' version is NOT included
         for prov_version in track.provider_mappings:
-            if prov_version.item_id in all_versions:
-                continue
-            # grab full item here including album details etc
-            prov_track = await self.get_provider_item(
-                prov_version.item_id, prov_version.provider_instance
-            )
-            all_versions[prov_version.item_id] = prov_track
+            all_versions.pop(prov_version.item_id, None)
 
         # return the aggregated result
         return all_versions.values()
@@ -197,7 +192,9 @@ class TracksController(MediaControllerBase[Track]):
     ):
         """Generate a dynamic list of tracks based on the track."""
         prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
+        if prov is None:
+            return []
+        if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []
         # Grab similar tracks from the music provider
         similar_tracks = await prov.get_similar_tracks(prov_track_id=item_id, limit=limit)
@@ -250,8 +247,8 @@ class TracksController(MediaControllerBase[Track]):
                 self.db_table,
                 {
                     **item.to_db_row(),
-                    "artists": json_dumps(track_artists),
-                    "albums": json_dumps(track_albums),
+                    "artists": serialize_to_json(track_artists),
+                    "albums": serialize_to_json(track_albums),
                     "sort_artist": sort_artist,
                     "sort_album": sort_album,
                 },
@@ -293,10 +290,10 @@ class TracksController(MediaControllerBase[Track]):
                 "sort_name": item.sort_name if overwrite else cur_item.sort_name,
                 "version": item.version if overwrite else cur_item.version,
                 "duration": item.duration if overwrite else cur_item.duration,
-                "artists": json_dumps(track_artists),
-                "albums": json_dumps(track_albums),
-                "metadata": json_dumps(metadata),
-                "provider_mappings": json_dumps(provider_mappings),
+                "artists": serialize_to_json(track_artists),
+                "albums": serialize_to_json(track_albums),
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
                 "isrc": item.isrc or cur_item.isrc,
             },
         )

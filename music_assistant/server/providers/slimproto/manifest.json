@@ -2,13 +2,12 @@
   "type": "player",
   "domain": "slimproto",
   "name": "Slimproto",
-  "description": "Support for slimproto based players (e.g. squeezebox, squeezelite). Music Assistant emulates a Logitech Media Server.",
-  "codeowners": ["@marcelveldt"],
-  "config_entries": [
-  ],
+  "description": "Support for slimproto based players (e.g. squeezebox, squeezelite).",
+  "codeowners": ["@music-assistant"],
   "requirements": ["aioslimproto==2.2.0"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/1123",
   "multi_instance": false,
-  "builtin": true,
-  "load_by_default": true
+  "builtin": false,
+  "load_by_default": true,
+  "depends_on": "lms_cli"
 }

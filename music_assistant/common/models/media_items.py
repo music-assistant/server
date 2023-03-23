@@ -418,6 +418,17 @@ class PagedItems(DataClassDictMixin):
     total: int | None = None
 
 
+@dataclass
+class SearchResults(DataClassDictMixin):
+    """Model for results from a search query."""
+
+    artists: list[Artist | ItemMapping] = field(default_factory=list)
+    albums: list[Album | ItemMapping] = field(default_factory=list)
+    tracks: list[Track | ItemMapping] = field(default_factory=list)
+    playlists: list[Playlist | ItemMapping] = field(default_factory=list)
+    radio: list[Radio | ItemMapping] = field(default_factory=list)
+
+
 def media_from_dict(media_item: dict) -> MediaItemType:
     """Return MediaItem from dict."""
     if media_item["media_type"] == "artist":
@@ -462,6 +473,8 @@ class StreamDetails(DataClassDictMixin):
     data: Any = None
     # if the url/file is supported by ffmpeg directly, use direct stream
     direct: str | None = None
+    # bool to indicate that the providers 'get_audio_stream' supports seeking of the item
+    can_seek: bool = True
     # callback: optional callback function (or coroutine) to call when the stream completes.
     # needed for streaming provivders to report what is playing
     # receives the streamdetails as only argument from which to grab

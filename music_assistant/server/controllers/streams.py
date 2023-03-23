@@ -185,13 +185,13 @@ class StreamsController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self.mass.webapp.router.add_get("/stream/preview", self._serve_preview)
-        self.mass.webapp.router.add_get(
+        self.mass.webserver.register_route("/stream/preview", self._serve_preview)
+        self.mass.webserver.register_route(
             "/stream/{player_id}/{queue_item_id}/{stream_id}.{fmt}",
             self._serve_queue_stream,
         )
 
-        ffmpeg_present, libsoxr_support = await check_audio_support(True)
+        ffmpeg_present, libsoxr_support, version = await check_audio_support()
         if not ffmpeg_present:
             LOGGER.error("FFmpeg binary not found on your system, playback will NOT work!.")
         elif not libsoxr_support:
@@ -200,7 +200,11 @@ class StreamsController:
                 "highest quality audio not available. "
             )
         await self._cleanup_stale()
-        LOGGER.info("Started stream controller")
+        LOGGER.info(
+            "Started stream controller (using ffmpeg version %s %s)",
+            version,
+            "with libsoxr support" if libsoxr_support else "",
+        )
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -278,13 +282,16 @@ class StreamsController:
 
         # generate player-specific URL for the stream job
         fmt = content_type.value
-        url = f"{self.mass.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
+        url = f"{self.mass.webserver.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
         return url
 
-    async def get_preview_url(self, provider: str, track_id: str) -> str:
+    def get_preview_url(self, provider_domain_or_instance_id: str, track_id: str) -> str:
         """Return url to short preview sample."""
         enc_track_id = urllib.parse.quote(track_id)
-        return f"{self.mass.base_url}/preview?provider={provider}&item_id={enc_track_id}"
+        return (
+            f"{self.mass.webserver.base_url}/stream/preview?"
+            f"provider={provider_domain_or_instance_id}&item_id={enc_track_id}"
+        )
 
     async def _serve_queue_stream(self, request: web.Request) -> web.Response:
         """Serve Queue Stream audio to player(s)."""
@@ -414,13 +421,14 @@ class StreamsController:
                     await resp.write(chunk)
                     bytes_streamed += len(chunk)
 
-                    # do not allow the player to prebuffer more than 10 seconds
-                    seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
-                    if (
-                        seconds_streamed > 10
-                        and (seconds_streamed - player.corrected_elapsed_time) > 10
-                    ):
-                        await asyncio.sleep(1)
+                    # DISABLE FOR NOW TO AVOID ISSUES WITH SONOS ICW YOUTUBE MUSIC
+                    # do not allow the player to prebuffer more than 30 seconds
+                    # seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
+                    # if (
+                    #     seconds_streamed > 30
+                    #     and (seconds_streamed - player.corrected_elapsed_time) > 30
+                    # ):
+                    #     await asyncio.sleep(1)
 
                     if not enable_icy:
                         continue
@@ -473,7 +481,7 @@ class StreamsController:
                     (
                         queue_track,
                         use_crossfade,
-                    ) = self.mass.players.queues.player_ready_for_next_track(
+                    ) = await self.mass.players.queues.player_ready_for_next_track(
                         queue_id, queue_track.queue_item_id
                     )
                 except QueueEmpty:
@@ -596,11 +604,11 @@ class StreamsController:
 
     async def _serve_preview(self, request: web.Request):
         """Serve short preview sample."""
-        provider_mapping = request.query["provider_mapping"]
+        provider_domain_or_instance_id = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/mp3"})
         await resp.prepare(request)
-        async for chunk in get_preview_stream(self.mass, provider_mapping, item_id):
+        async for chunk in get_preview_stream(self.mass, provider_domain_or_instance_id, item_id):
             await resp.write(chunk)
         return resp
 

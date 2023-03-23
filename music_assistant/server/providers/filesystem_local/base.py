@@ -12,8 +12,17 @@ from time import time
 import xmltodict
 
 from music_assistant.common.helpers.util import parse_title_and_version
+from music_assistant.common.models.config_entries import (
+    ConfigEntry,
+    ConfigEntryType,
+    ConfigValueOption,
+)
 from music_assistant.common.models.enums import ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -22,11 +31,11 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemType,
     MediaType,
     Playlist,
     ProviderMapping,
     Radio,
+    SearchResults,
     StreamDetails,
     Track,
 )
@@ -38,10 +47,41 @@ from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import get_parentdir
 
+CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
+
+CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
+    key=CONF_MISSING_ALBUM_ARTIST_ACTION,
+    type=ConfigEntryType.STRING,
+    label="Action when a track is missing the Albumartist ID3 tag",
+    default_value="skip",
+    description="Music Assistant prefers information stored in ID3 tags and only uses"
+    " online sources for additional metadata. This means that the ID3 tags need to be "
+    "accurate, preferably tagged with MusicBrainz Picard.",
+    advanced=True,
+    required=False,
+    options=(
+        ConfigValueOption("Skip track and log warning", "skip"),
+        ConfigValueOption("Use Track artist(s)", "track_artist"),
+        ConfigValueOption("Use Various Artists", "various_artists"),
+    ),
+)
+
 TRACK_EXTENSIONS = ("mp3", "m4a", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
 PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
+SEEKABLE_FILES = (ContentType.MP3, ContentType.WAV, ContentType.FLAC)
+
+SUPPORTED_FEATURES = (
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+)
 
 
 @dataclass
@@ -85,19 +125,13 @@ class FileSystemProviderBase(MusicProvider):
     Supports having URI's from streaming providers within m3u playlist.
     """
 
-    _attr_supported_features = (
-        ProviderFeature.LIBRARY_ARTISTS,
-        ProviderFeature.LIBRARY_ALBUMS,
-        ProviderFeature.LIBRARY_TRACKS,
-        ProviderFeature.LIBRARY_PLAYLISTS,
-        ProviderFeature.PLAYLIST_TRACKS_EDIT,
-        ProviderFeature.PLAYLIST_CREATE,
-        ProviderFeature.BROWSE,
-        ProviderFeature.SEARCH,
-    )
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return SUPPORTED_FEATURES
 
     @abstractmethod
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
 
     @abstractmethod
@@ -140,9 +174,9 @@ class FileSystemProviderBase(MusicProvider):
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5  # noqa: ARG002
-    ) -> list[MediaItemType]:
+    ) -> SearchResults:
         """Perform search on this file based musicprovider."""
-        result: list[MediaItemType] = []
+        result = SearchResults()
         # searching the filesystem is slow and unreliable,
         # instead we make some (slow) freaking queries to the db ;-)
         params = {
@@ -152,20 +186,16 @@ class FileSystemProviderBase(MusicProvider):
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
             query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            tracks = await self.mass.music.tracks.get_db_items_by_query(query, params)
-            result += tracks
+            result.tracks = await self.mass.music.tracks.get_db_items_by_query(query, params)
         if media_types is None or MediaType.ALBUM in media_types:
             query = "SELECT * FROM albums WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            albums = await self.mass.music.albums.get_db_items_by_query(query, params)
-            result += albums
+            result.albums = await self.mass.music.albums.get_db_items_by_query(query, params)
         if media_types is None or MediaType.ARTIST in media_types:
             query = "SELECT * FROM artists WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            artists = await self.mass.music.artists.get_db_items_by_query(query, params)
-            result += artists
+            result.artists = await self.mass.music.artists.get_db_items_by_query(query, params)
         if media_types is None or MediaType.PLAYLIST in media_types:
             query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            playlists = await self.mass.music.playlists.get_db_items_by_query(query, params)
-            result += playlists
+            result.playlists = await self.mass.music.playlists.get_db_items_by_query(query, params)
         return result
 
     async def browse(self, path: str) -> BrowseFolder:
@@ -235,6 +265,21 @@ class FileSystemProviderBase(MusicProvider):
         if prev_checksums is None:
             prev_checksums = {}
 
+        # process all deleted (or renamed) files first
+        cur_filenames = set()
+        async for item in self.listdir("", recursive=True):
+            if "." not in item.name or not item.ext:
+                # skip system files and files without extension
+                continue
+
+            if item.ext not in SUPPORTED_EXTENSIONS:
+                # unsupported file extension
+                continue
+            cur_filenames.add(item.path)
+        # work out deletions
+        deleted_files = set(prev_checksums.keys()) - cur_filenames
+        await self._process_deletions(deleted_files)
+
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_checksums = {}
@@ -248,8 +293,9 @@ class FileSystemProviderBase(MusicProvider):
                 continue
 
             try:
-                cur_checksums[item.path] = item.checksum
+                # continue if the item did not change (checksum still the same)
                 if item.checksum == prev_checksums.get(item.path):
+                    cur_checksums[item.path] = item.checksum
                     continue
 
                 if item.ext in TRACK_EXTENSIONS:
@@ -267,9 +313,14 @@ class FileSystemProviderBase(MusicProvider):
                     # playlist is always in-library
                     playlist.in_library = True
                     await self.mass.music.playlists.add_db_item(playlist)
+            except MusicAssistantError as err:
+                self.logger.error("Error processing %s - %s", item.path, str(err))
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", item.path, str(err))
+            else:
+                # save item's checksum only if the parse succeeded
+                cur_checksums[item.path] = item.checksum
 
             # save checksums every 100 processed items
             # this allows us to pickup where we leftoff when initial scan gets interrupted
@@ -281,9 +332,6 @@ class FileSystemProviderBase(MusicProvider):
 
         # store (final) checksums in cache
         await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
-        # work out deletions
-        deleted_files = set(prev_checksums.keys()) - set(cur_checksums.keys())
-        await self._process_deletions(deleted_files)
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
@@ -302,7 +350,7 @@ class FileSystemProviderBase(MusicProvider):
             if db_item := await controller.get_db_item_by_prov_id(
                 file_path, provider_instance=self.instance_id
             ):
-                await controller.remove_prov_mapping(db_item.item_id, self.instance_id)
+                await controller.delete_db_item(db_item.item_id, True)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
@@ -338,7 +386,7 @@ class FileSystemProviderBase(MusicProvider):
 
         # parse tags
         input_file = file_item.local_path or self.read_file_content(file_item.absolute_path)
-        tags = await parse_tags(input_file)
+        tags = await parse_tags(input_file, file_item.file_size)
 
         name, version = parse_title_and_version(tags.title)
         track = Track(
@@ -365,14 +413,27 @@ class FileSystemProviderBase(MusicProvider):
                             artist.musicbrainz_id = tags.musicbrainz_albumartistids[index]
                     album_artists.append(artist)
             else:
-                # always fallback to various artists as album artist if user did not tag album artist
-                # ID3 tag properly because we must have an album artist
-                self.logger.warning(
-                    "%s is missing ID3 tag [albumartist], using %s as fallback",
-                    file_item.path,
-                    VARIOUS_ARTISTS,
-                )
-                album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS)]
+                # album artist tag is missing, determine fallback
+                fallback_action = self.config.get_value(CONF_MISSING_ALBUM_ARTIST_ACTION)
+                if fallback_action == "various_artists":
+                    self.logger.warning(
+                        "%s is missing ID3 tag [albumartist], using %s as fallback",
+                        file_item.path,
+                        VARIOUS_ARTISTS,
+                    )
+                    album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS)]
+                elif fallback_action == "track_artist":
+                    self.logger.warning(
+                        "%s is missing ID3 tag [albumartist], using track artist(s) as fallback",
+                        file_item.path,
+                    )
+                    album_artists = [
+                        await self._parse_artist(name=track_artist_str)
+                        for track_artist_str in tags.artists
+                    ]
+                else:
+                    # default action is to skip the track
+                    raise InvalidDataError("missing ID3 tag [albumartist]")
 
             track.album = await self._parse_album(
                 tags.album,
@@ -389,8 +450,8 @@ class FileSystemProviderBase(MusicProvider):
                 artist := next((x for x in track.album.artists if x.name == track_artist_str), None)
             ):
                 track.artists.append(artist)
-                continue
-            artist = await self._parse_artist(track_artist_str)
+            else:
+                artist = await self._parse_artist(track_artist_str)
             if not artist.musicbrainz_id:
                 with contextlib.suppress(IndexError):
                     artist.musicbrainz_id = tags.musicbrainz_artistids[index]
@@ -427,14 +488,11 @@ class FileSystemProviderBase(MusicProvider):
         # try to parse albumtype
         if track.album and track.album.album_type == AlbumType.UNKNOWN:
             album_type = tags.album_type
-            if album_type and "compilation" in album_type:
-                track.album.album_type = AlbumType.COMPILATION
-            elif album_type and "single" in album_type:
-                track.album.album_type = AlbumType.SINGLE
-            elif album_type and "album" in album_type:
-                track.album.album_type = AlbumType.ALBUM
-            elif track.album.sort_name in track.sort_name:
-                track.album.album_type = AlbumType.SINGLE
+            try:
+                track.album.album_type = AlbumType(album_type)
+            except (ValueError, KeyError):
+                if track.album.sort_name in track.sort_name:
+                    track.album.album_type = AlbumType.SINGLE
 
         # set checksum to invalidate any cached listings
         checksum_timestamp = str(int(time()))
@@ -592,7 +650,8 @@ class FileSystemProviderBase(MusicProvider):
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
-        filename = await self.resolve(f"{name}.m3u")
+        # filename = await self.resolve(f"{name}.m3u")
+        filename = f"{name}.m3u"
         await self.write_file_content(filename, b"")
         playlist = await self.get_playlist(filename)
         db_playlist = await self.mass.music.playlists.add_db_item(playlist)
@@ -619,6 +678,7 @@ class FileSystemProviderBase(MusicProvider):
             sample_rate=prov_mapping.sample_rate,
             bit_depth=prov_mapping.bit_depth,
             direct=file_item.local_path,
+            can_seek=prov_mapping.content_type in SEEKABLE_FILES,
         )
 
     async def get_audio_stream(

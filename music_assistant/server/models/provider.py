@@ -4,10 +4,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from music_assistant.common.models.config_entries import ConfigEntryValue, ProviderConfig
+from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import ProviderFeature, ProviderType
 from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
-from music_assistant.constants import ROOT_LOGGER_NAME
+from music_assistant.constants import CONF_LOG_LEVEL, ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
@@ -18,8 +18,6 @@ if TYPE_CHECKING:
 class Provider:
     """Base representation of a Provider implementation within Music Assistant."""
 
-    _attr_supported_features: tuple[ProviderFeature, ...] = tuple()
-
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
@@ -27,24 +25,21 @@ class Provider:
         self.mass = mass
         self.manifest = manifest
         self.config = config
-        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.providers.{self.domain}")
+        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.providers.{self.instance_id}")
+        log_level = config.get_value(CONF_LOG_LEVEL)
+        if log_level != "GLOBAL":
+            self.logger.setLevel(log_level)
         self.cache = mass.cache
         self.available = False
-        self.last_error = None
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
-        """Return the features supported by this MusicProvider."""
-        return self._attr_supported_features
+        """Return the features supported by this Provider."""
+        return tuple()
 
-    async def setup(self) -> None:
-        """Handle async initialization of the provider.
-
-        Called when provider is registered (or its config updated).
+    async def unload(self) -> None:
         """
-
-    async def close(self) -> None:
-        """Handle close/cleanup of the provider.
+        Handle unload/close of the provider.
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
@@ -75,14 +70,6 @@ class Provider:
             return f"{self.manifest.name}.{postfix}"
         return self.manifest.name
 
-    @property
-    def config_entries(self) -> list[ConfigEntryValue]:
-        """Return list of all ConfigEntries including values for this provider(instance)."""
-        return [
-            ConfigEntryValue.parse(x, self.config.values.get(x.key))
-            for x in self.manifest.config_entries
-        ]
-
     def to_dict(self, *args, **kwargs) -> ProviderInstance:  # noqa: ARG002
         """Return Provider(instance) as serializable dict."""
         return {
@@ -92,5 +79,4 @@ class Provider:
             "instance_id": self.instance_id,
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
-            "last_error": self.last_error,
         }

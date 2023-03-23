@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING, Generic, TypeVar
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
@@ -169,7 +169,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # in 99% of the cases we just return lazy because we want the details as fast as possible
         # only if we really need to wait for the result (e.g. to prevent race conditions), we
         # can set lazy to false and we await to job to complete.
-        add_task = self.mass.create_task(self.add(details))
+        task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
+        add_task = self.mass.create_task(self.add, details, task_id=task_id)
         if not lazy:
             await add_task
             return add_task.result()
@@ -191,9 +192,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 self.item_cls.from_db_row(db_row)
                 for db_row in await self.mass.music.database.search(self.db_table, search_query)
             ]
-
         prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov or ProviderFeature.SEARCH not in prov.supported_features:
+        if prov is None:
+            return []
+        if ProviderFeature.SEARCH not in prov.supported_features:
             return []
         if not prov.library_supported(self.media_type):
             # assume library supported also means that this mediatype is supported
@@ -204,11 +206,21 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = await prov.search(
+        searchresult = await prov.search(
             search_query,
             [self.media_type],
             limit,
         )
+        if self.media_type == MediaType.ARTIST:
+            items = searchresult.artists
+        elif self.media_type == MediaType.ALBUM:
+            items = searchresult.albums
+        elif self.media_type == MediaType.TRACK:
+            items = searchresult.tracks
+        elif self.media_type == MediaType.PLAYLIST:
+            items = searchresult.playlists
+        else:
+            items = searchresult.radio
         # store (serializable items) in cache
         if not prov.domain.startswith("filesystem"):  # do not cache filesystem results
             self.mass.create_task(
@@ -404,10 +416,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             item = await self.get_db_item(item_id)
         else:
             provider = self.mass.get_provider(provider_domain_or_instance_id)
-            item = await provider.get_item(self.media_type, item_id)
+            item = (await provider.get_item(self.media_type, item_id)) if provider else None
         if not item:
             raise MediaNotFoundError(
-                f"{self.media_type.value}//{item_id} not found on provider {provider_domain_or_instance_id}"  # noqa: E501
+                f"{self.media_type.value}://{item_id} not found on provider {provider_domain_or_instance_id}"  # noqa: E501
             )
         return item
 
@@ -437,7 +449,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         await self.mass.music.database.update(
             self.db_table,
             match,
-            {"provider_mappings": json_dumps(db_item.provider_mappings)},
+            {"provider_mappings": serialize_to_json(db_item.provider_mappings)},
         )
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 
@@ -476,7 +488,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         ref_item = await self.get(item_id, provider_domain, provider_instance)
         for prov_mapping in ref_item.provider_mappings:
             prov = self.mass.get_provider(prov_mapping.provider_instance)
-            if not prov.available:
+            if prov is None:
                 continue
             if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
                 continue

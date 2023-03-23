@@ -8,7 +8,7 @@ from random import choice, random
 from time import time
 from typing import TYPE_CHECKING, Any
 
-from music_assistant.common.helpers.json import json_dumps
+from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
@@ -183,7 +183,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Track]:
         """Return top tracks for an artist on given provider."""
         prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov:
+        if prov is None:
             return []
         # prefer cache items (if any)
         cache_key = f"{prov.instance_id}.artist_toptracks.{item_id}"
@@ -220,7 +220,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Album]:
         """Return albums for an artist on given provider."""
         prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov:
+        if prov is None:
             return []
         # prefer cache items (if any)
         cache_key = f"{prov.instance_id}.artist_albums.{item_id}"
@@ -323,8 +323,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "name": item.name if overwrite else cur_item.name,
                 "sort_name": item.sort_name if overwrite else cur_item.sort_name,
                 "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
-                "metadata": json_dumps(metadata),
-                "provider_mappings": json_dumps(provider_mappings),
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
             },
         )
         # update/set provider_mappings table
@@ -366,7 +366,9 @@ class ArtistsController(MediaControllerBase[Artist]):
     ):
         """Generate a dynamic list of tracks based on the artist's top tracks."""
         prov = self.mass.get_provider(provider_instance or provider_domain)
-        if not prov or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
+        if prov is None:
+            return []
+        if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []
         top_tracks = await self.get_provider_artist_toptracks(
             item_id=item_id,

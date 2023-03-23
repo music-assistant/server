@@ -17,7 +17,8 @@ RUN set -x \
     && apt-get install -y --no-install-recommends \
         build-essential \
         libffi-dev \
-        cargo
+        cargo \
+        git
 
 WORKDIR /wheels
 COPY requirements_all.txt .
@@ -27,7 +28,7 @@ COPY requirements_all.txt .
 RUN set -x \
     && pip install --upgrade pip \
     && pip install build maturin \
-    && pip wheel -r requirements_all.txt --find-links "https://wheels.home-assistant.io/musllinux/"
+    && pip wheel -r requirements_all.txt
 
 # build music assistant wheel
 COPY music_assistant music_assistant
@@ -46,6 +47,7 @@ WORKDIR /app
 RUN set -x \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+        ca-certificates \
         curl \
         git \
         wget \
@@ -77,10 +79,6 @@ LABEL \
     io.hass.description="Music Assistant Server/Core" \
     io.hass.platform="${TARGETPLATFORM}" \
     io.hass.type="addon"
-
-EXPOSE 8095/tcp
-EXPOSE 9090/tcp
-EXPOSE 3483/tcp
 
 VOLUME [ "/data" ]
 
