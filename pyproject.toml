@@ -65,7 +65,7 @@ target-version = ['py311']
 line-length = 100
 
 [tool.codespell]
-ignore-words-list = "provid,hass"
+ignore-words-list = "provid,hass,followings"
 
 [tool.mypy]
 python_version = "3.11"
