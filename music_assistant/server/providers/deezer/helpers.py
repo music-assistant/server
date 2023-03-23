@@ -13,6 +13,7 @@ dzr: (which heavily inspired the track url and decoder but is not used) https://
 import asyncio
 import json
 from time import time
+import requests
 
 import deezer
 
@@ -225,3 +226,64 @@ async def search(query: str, filter: str = None) -> deezer.PaginatedList:  # typ
         return result
 
     return await asyncio.to_thread(_search)
+
+async def _get_sid():
+    """Get a session id"""
+    return requests.get(
+        url="http://www.deezer.com/ajax/gw-light.php",
+        params={"method": "deezer.ping", "api_version": "1.0", "api_token": ""},
+    ).json()["results"]["SESSION"]
+
+
+async def _get_user_data(tok, sid):
+    """Get user data. """
+    return requests.get(
+        url="https://www.deezer.com/ajax/gw-light.php",
+        params={
+            "method": "deezer.getUserData",
+            "input": "3",
+            "api_version": "1.0",
+            "api_token": tok,
+        },
+        headers={"Cookie": f"sid={sid}"},
+    ).json()["results"]
+
+
+async def _get_song_info(tok, sid, track_id):
+    """Get info for song. Cant use that of deezer-python because we need the track token"""
+    return requests.post(
+        url="https://www.deezer.com/ajax/gw-light.php",
+        params={
+            "method": "song.getListData",
+            "input": "3",
+            "api_version": "1.0",
+            "api_token": tok,
+        },
+        headers={"Cookie": f"sid={sid}"},
+        data=json.dumps({"sng_ids": track_id}),
+    ).json()["results"]["data"][0]
+
+
+async def _generate_url(usr_lic, track_tok):
+    """Get the url for the given track"""
+    url = "https://media.deezer.com/v1/get_url"
+    payload = {
+        "license_token": usr_lic,
+        "media": [{"type": "FULL", "formats": [{"cipher": "BF_CBC_STRIPE", "format": "MP3_128"}]}],
+        "track_tokens": track_tok,
+    }
+    response = requests.post(url, data=json.dumps(payload))
+    return response
+
+async def get_url(track_id) -> str:
+    sid = await _get_sid()
+    user_data = await _get_user_data("", sid)
+    licence_token = user_data["USER"]["OPTIONS"]["license_token"]
+    check_form = user_data["checkForm"]
+    song_info = await _get_song_info(track_id=[track_id], sid=sid, tok=check_form)
+    track_token = song_info["TRACK_TOKEN"]
+    track_id = song_info["SNG_ID"]
+    url_resp = await _generate_url(licence_token, [track_token])
+    url_info = url_resp.json()["data"][0]
+    url = url_info["media"][0]["sources"][0]["url"]
+    return url
