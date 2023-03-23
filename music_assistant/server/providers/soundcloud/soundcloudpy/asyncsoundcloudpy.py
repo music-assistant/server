@@ -8,7 +8,6 @@ from __future__ import annotations
 import aiohttp
 from aiohttp.client import ClientSession
 from attr import dataclass
-from bs4 import BeautifulSoup
 
 BASE_URL = "https://api-v2.soundcloud.com"
 
@@ -145,26 +144,6 @@ class SoundcloudAsync:
             f"{self.app_version}",
             headers=self.headers,
         )
-
-    async def get_track_id_from_permalink(self, url_track):
-        """Get track id from permalink.
-
-        :param url_track: string with the url like:
-        "https://soundcloud.com/postmalone/post-malone-hateful"
-        """
-        req = await self.get(
-            url_track,
-        )
-
-        scrap = str(
-            BeautifulSoup(req.content, "html.parser")
-            .find("meta", property="al:android:url")
-            .get("content")
-        )
-
-        index = scrap.find(":", 14, -1)
-
-        return scrap[index + 1 :]
 
     async def get_tracks_from_user(self, user_id, limit=10):
         """Get tracks from user.
