@@ -4,19 +4,6 @@
   "name": "Soundcloud",
   "description": "Support for the Soundcloud streaming provider in Music Assistant.",
   "codeowners": ["@gieljnssns"],
-  "config_entries": [
-    {
-      "key": "client_id",
-      "type": "secure_string",
-      "label": "Client id"
-    },
-    {
-      "key": "authorization",
-      "type": "secure_string",
-      "label": "Authorization"
-    }
-  ],
-
   "requirements": [],
   "documentation": "https://github.com/orgs/music-assistant/discussions/1160",
   "multi_instance": true
