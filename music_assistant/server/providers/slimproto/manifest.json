@@ -3,9 +3,7 @@
   "domain": "slimproto",
   "name": "Slimproto",
   "description": "Support for slimproto based players (e.g. squeezebox, squeezelite).",
-  "codeowners": ["@marcelveldt"],
-  "config_entries": [
-  ],
+  "codeowners": ["@music-assistant"],
   "requirements": ["aioslimproto==2.2.0"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/1123",
   "multi_instance": false,

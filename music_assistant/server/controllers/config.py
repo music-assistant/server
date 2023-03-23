@@ -26,6 +26,7 @@ from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import InvalidDataError, PlayerUnavailableError
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID, ENCRYPT_SUFFIX
 from music_assistant.server.helpers.api import api_command
+from music_assistant.server.helpers.util import get_provider_module
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -143,16 +144,16 @@ class ConfigController:
         self.save()
 
     @api_command("config/providers")
-    def get_provider_configs(
+    async def get_provider_configs(
         self,
         provider_type: ProviderType | None = None,
         provider_domain: str | None = None,
     ) -> list[ProviderConfig]:
         """Return all known provider configurations, optionally filtered by ProviderType."""
         raw_values: dict[str, dict] = self.get(CONF_PROVIDERS, {})
-        prov_entries = {x.domain: x.config_entries for x in self.mass.get_available_providers()}
+        prov_entries = {x.domain for x in self.mass.get_available_providers()}
         return [
-            self.get_provider_config(prov_conf["instance_id"])
+            await self.get_provider_config(prov_conf["instance_id"])
             for prov_conf in raw_values.values()
             if (provider_type is None or prov_conf["type"] == provider_type)
             and (provider_domain is None or prov_conf["domain"] == provider_domain)
@@ -161,20 +162,22 @@ class ConfigController:
         ]
 
     @api_command("config/providers/get")
-    def get_provider_config(self, instance_id: str) -> ProviderConfig:
+    async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
             for prov in self.mass.get_available_providers():
                 if prov.domain != raw_conf["domain"]:
                     continue
-                config_entries = DEFAULT_PROVIDER_CONFIG_ENTRIES + tuple(prov.config_entries)
+                prov_mod = await get_provider_module(prov.domain)
+                prov_config_entries = await prov_mod.get_config_entries(self.mass, prov)
+                config_entries = DEFAULT_PROVIDER_CONFIG_ENTRIES + prov_config_entries
                 return ProviderConfig.parse(config_entries, raw_conf)
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/update")
     async def update_provider_config(self, instance_id: str, update: ConfigUpdate) -> None:
         """Update ProviderConfig."""
-        config = self.get_provider_config(instance_id)
+        config = await self.get_provider_config(instance_id)
         changed_keys = config.update(update)
         available = prov.available if (prov := self.mass.get_provider(instance_id)) else False
         if not changed_keys and (config.enabled == available):
@@ -195,7 +198,7 @@ class ConfigController:
     ) -> ProviderConfig:
         """Add new Provider (instance) Config Flow."""
         if not config:
-            return self._get_default_provider_config(provider_domain)
+            return await self._get_default_provider_config(provider_domain)
         # if provider config is provided, the frontend wants to submit a new provider instance
         # based on the earlier created template config.
         # try to load the provider first to catch errors before we save it.
@@ -221,7 +224,7 @@ class ConfigController:
     @api_command("config/providers/reload")
     async def reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
-        config = self.get_provider_config(instance_id)
+        config = await self.get_provider_config(instance_id)
         await self.mass.load_provider(config)
 
     @api_command("config/players")
@@ -341,22 +344,22 @@ class ConfigController:
             default_conf.to_raw(),
         )
 
-    def create_default_provider_config(self, provider_domain: str) -> None:
+    async def create_default_provider_config(self, provider_domain: str) -> None:
         """
         Create default ProviderConfig.
 
         This is meant as helper to create default configs for default enabled providers.
         Called by the server initialization code which load all providers at startup.
         """
-        for conf in self.get_provider_configs(provider_domain=provider_domain):
+        for conf in await self.get_provider_configs(provider_domain=provider_domain):
             # return if there is already a config
             return
         # config does not yet exist, create a default one
-        default_config = self._get_default_provider_config(provider_domain)
+        default_config = await self._get_default_provider_config(provider_domain)
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
         self.set(conf_key, default_config.to_raw())
 
-    def _get_default_provider_config(self, provider_domain: str) -> ProviderConfig:
+    async def _get_default_provider_config(self, provider_domain: str) -> ProviderConfig:
         """
         Return default/empty ProviderConfig.
 
@@ -374,7 +377,7 @@ class ConfigController:
 
         # determine instance id based on previous configs
         existing = {
-            x.instance_id for x in self.get_provider_configs(provider_domain=provider_domain)
+            x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
         }
 
         if existing and not manifest.multi_instance:
@@ -388,8 +391,10 @@ class ConfigController:
             name = f"{manifest.name} {len(existing)+1}"
 
         # all checks passed, return a default config
+        prov_mod = await get_provider_module(provider_domain)
+        config_entries = await prov_mod.get_config_entries(self.mass, manifest)
         return ProviderConfig.parse(
-            DEFAULT_PROVIDER_CONFIG_ENTRIES + tuple(prov.config_entries),
+            DEFAULT_PROVIDER_CONFIG_ENTRIES + config_entries,
             {
                 "type": manifest.type.value,
                 "domain": manifest.domain,

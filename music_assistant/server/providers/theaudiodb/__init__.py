@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
 
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.media_items import (
     Album,
@@ -26,6 +27,11 @@ from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = (
     ProviderFeature.ARTIST_METADATA,
@@ -68,12 +74,28 @@ ALBUMTYPE_MAPPING = {
 }
 
 
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = AudioDbMetadataProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
+
+
 class AudioDbMetadataProvider(MetadataProvider):
     """The AudioDB Metadata provider."""
 
     throttler: Throttler
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
         self.throttler = Throttler(rate_limit=2, period=1)

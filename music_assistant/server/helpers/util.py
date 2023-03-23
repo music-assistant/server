@@ -1,7 +1,14 @@
 """Various (server-only) tools and helpers."""
+from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+from functools import lru_cache
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from music_assistant.server.models import ProviderModuleType
 
 LOGGER = logging.getLogger(__name__)
 
@@ -20,3 +27,13 @@ async def install_package(package: str) -> None:
     if proc.returncode != 0:
         msg = f"Failed to install package {package}\n{stderr.decode()}"
         raise RuntimeError(msg)
+
+
+async def get_provider_module(domain: str) -> ProviderModuleType:
+    """Return module for given provider domain."""
+
+    @lru_cache
+    def _get_provider_module(domain: str) -> ProviderModuleType:
+        return importlib.import_module(f".{domain}", "music_assistant.server.providers")
+
+    return await asyncio.to_thread(_get_provider_module, domain)

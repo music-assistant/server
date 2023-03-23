@@ -65,7 +65,7 @@ class ConfigEntry(DataClassDictMixin):
     default_value: ConfigValueType = None
     required: bool = True
     # options [optional]: select from list of possible values/options
-    options: list[ConfigValueOption] | None = None
+    options: tuple[ConfigValueOption] | None = None
     # range [optional]: select values within range
     range: tuple[int, int] | None = None
     # description [optional]: extended description of the setting.

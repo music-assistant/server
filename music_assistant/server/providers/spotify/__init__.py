@@ -10,12 +10,14 @@ import time
 from collections.abc import AsyncGenerator
 from json.decoder import JSONDecodeError
 from tempfile import gettempdir
+from typing import TYPE_CHECKING
 
 import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -36,6 +38,13 @@ from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+
 CACHE_DIR = gettempdir()
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -55,6 +64,29 @@ SUPPORTED_FEATURES = (
 )
 
 
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = SpotifyProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(
+            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+        ),
+        ConfigEntry(
+            key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, label="Password", required=True
+        ),
+    )
+
+
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
 
@@ -62,7 +94,7 @@ class SpotifyProvider(MusicProvider):
     _sp_user: str | None = None
     _librespot_bin: str | None = None
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=0.1)
         self._cache_dir = CACHE_DIR
@@ -76,7 +108,22 @@ class SpotifyProvider(MusicProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
+        return (
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+            ProviderFeature.LIBRARY_ARTISTS_EDIT,
+            ProviderFeature.LIBRARY_ALBUMS_EDIT,
+            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+            ProviderFeature.LIBRARY_TRACKS_EDIT,
+            ProviderFeature.PLAYLIST_TRACKS_EDIT,
+            ProviderFeature.BROWSE,
+            ProviderFeature.SEARCH,
+            ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.ARTIST_TOPTRACKS,
+            ProviderFeature.SIMILAR_TRACKS,
+        )
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5

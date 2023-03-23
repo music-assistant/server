@@ -14,6 +14,7 @@ from soco.events_base import Event as SonosEvent
 from soco.events_base import SubscriptionBase
 from soco.groups import ZoneGroup
 
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import (
     ContentType,
     MediaType,
@@ -29,7 +30,10 @@ from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import PlayerConfig
+    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
 
 
 PLAYER_FEATURES = (
@@ -39,6 +43,22 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_SET,
 )
 PLAYER_CONFIG_ENTRIES = tuple()  # we don't have any player config entries (for now)
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = SonosPlayerProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
 
 
 @dataclass
@@ -196,7 +216,7 @@ class SonosPlayerProvider(PlayerProvider):
     sonosplayers: dict[str, SonosPlayer]
     _discovery_running: bool
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self.sonosplayers = {}
         self._discovery_running = False
@@ -205,7 +225,7 @@ class SonosPlayerProvider(PlayerProvider):
         logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
         self.mass.create_task(self._run_discovery())
 
-    async def close(self) -> None:
+    async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         if hasattr(self, "sonosplayers"):
             for player in self.sonosplayers.values():

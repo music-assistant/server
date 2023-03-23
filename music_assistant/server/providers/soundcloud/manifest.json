@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "soundcloud",
+  "name": "Soundcloud",
+  "description": "Support for the Soundcloud streaming provider in Music Assistant.",
+  "codeowners": ["@gieljnssns"],
+  "requirements": [],
+  "documentation": "https://github.com/orgs/music-assistant/discussions/1160",
+  "multi_instance": true
+}

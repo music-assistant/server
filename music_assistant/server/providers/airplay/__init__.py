@@ -22,7 +22,10 @@ from music_assistant.constants import CONF_PLAYERS
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import PlayerConfig
+    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.providers.slimproto import SlimprotoProvider
 
 
@@ -70,6 +73,22 @@ PLAYER_CONFIG_ENTRIES = (
 NEED_BRIDGE_RESTART = {"values/read_ahead", "values/encryption", "values/alac_encode"}
 
 
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = AirplayProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
+
+
 class AirplayProvider(PlayerProvider):
     """Player provider for Airplay based players, using the slimproto bridge."""
 
@@ -79,7 +98,7 @@ class AirplayProvider(PlayerProvider):
     _closing: bool = False
     _config_file: str | None = None
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._config_file = os.path.join(self.mass.storage_path, "airplay_bridge.xml")
         # locate the raopbridge binary (will raise if that fails)
@@ -97,7 +116,7 @@ class AirplayProvider(PlayerProvider):
         # start running the bridge
         asyncio.create_task(self._bridge_process_runner())
 
-    async def close(self) -> None:
+    async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         self._closing = True
         await self._stop_bridge()
