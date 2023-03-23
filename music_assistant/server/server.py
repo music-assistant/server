@@ -16,7 +16,7 @@ from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroc
 from music_assistant.common.helpers.util import get_ip, get_ip_pton, select_free_port
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
-from music_assistant.common.models.errors import ProviderUnavailableError, SetupFailedError
+from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import CONF_PROVIDERS, CONF_SERVER_ID, CONF_WEB_IP, ROOT_LOGGER_NAME
@@ -183,14 +183,18 @@ class MusicAssistant:
         """Return all loaded/running Providers (instances)."""
         return list(self._providers.values())
 
-    def get_provider(self, provider_instance_or_domain: str) -> ProviderInstanceType:
+    def get_provider(
+        self, provider_instance_or_domain: str, return_unavailable: bool = False
+    ) -> ProviderInstanceType | None:
         """Return provider by instance id (or domain)."""
-        if prov := self._providers.get(provider_instance_or_domain):
+        prov = self._providers.get(provider_instance_or_domain)
+        if prov is not None and (return_unavailable or prov.available):
             return prov
         for prov in self._providers.values():
-            if prov.domain == provider_instance_or_domain:
+            if prov.domain == provider_instance_or_domain and return_unavailable or prov.available:
                 return prov
-        raise ProviderUnavailableError(f"Provider {provider_instance_or_domain} is not available")
+        LOGGER.warning("Provider {provider_instance_or_domain} is not available")
+        return None
 
     def signal_event(
         self,
@@ -323,11 +327,9 @@ class MusicAssistant:
         # handle dependency on other provider
         if prov_manifest.depends_on:
             for _ in range(30):
-                try:
-                    self.get_provider(prov_manifest.depends_on)
+                if self.get_provider(prov_manifest.depends_on):
                     break
-                except ProviderUnavailableError:
-                    await asyncio.sleep(1)
+                await asyncio.sleep(1)
             else:
                 raise SetupFailedError(
                     f"Provider {domain} depends on {prov_manifest.depends_on} "

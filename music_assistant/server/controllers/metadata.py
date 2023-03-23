@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import urllib.parse
 from base64 import b64encode
+from contextlib import suppress
 from random import shuffle
 from time import time
 from typing import TYPE_CHECKING
@@ -16,7 +16,7 @@ import aiofiles
 from aiohttp import web
 
 from music_assistant.common.models.enums import ImageType, MediaType, ProviderFeature, ProviderType
-from music_assistant.common.models.errors import ProviderUnavailableError
+from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -95,7 +95,7 @@ class MetaDataController:
                 if artist.image:
                     continue
                 # simply grabbing the full artist will trigger a full fetch
-                with contextlib.suppress(ProviderUnavailableError):
+                with suppress(MediaNotFoundError):
                     await self.mass.music.artists.get(artist.item_id, artist.provider, lazy=False)
                 # this is slow on purpose to not cause stress on the metadata providers
                 await asyncio.sleep(30)
