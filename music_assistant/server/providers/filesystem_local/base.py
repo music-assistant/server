@@ -675,6 +675,9 @@ class FileSystemProviderBase(MusicProvider):
         track.isrc.update(tags.isrc)
         track.metadata.copyright = tags.get("copyright")
         track.metadata.lyrics = tags.get("lyrics")
+        explicit_tag = tags.get("itunesadvisory")
+        if explicit_tag is not None:
+            track.metadata.explicit = explicit_tag == "1"
         track.musicbrainz_id = tags.musicbrainz_trackid
         track.metadata.chapters = tags.chapters
         if track.album:
@@ -684,7 +687,7 @@ class FileSystemProviderBase(MusicProvider):
                 track.album.year = tags.year
             track.album.barcode.update(tags.barcode)
             track.album.album_type = tags.album_type
-
+            track.album.metadata.explicit = track.metadata.explicit
         # set checksum to invalidate any cached listings
         track.metadata.checksum = file_item.checksum
         if track.album:
