@@ -316,19 +316,13 @@ class MetaDataController:
             # assume (double) encoded url, decode it
             path = urllib.parse.unquote(path)
 
-        try:
+        with suppress(FileNotFoundError):
             image_data = await self.get_thumbnail(path, size=size, source=source)
-        except Exception as err:
-            LOGGER.exception(str(err), exc_info=err)
-            image_data = None
-
-        if not image_data:
-            return web.Response(status=404)
-
-        # we set the cache header to 1 year (forever)
-        # the client can use the checksum value to refresh when content changes
-        return web.Response(
-            body=image_data,
-            headers={"Cache-Control": "max-age=31536000"},
-            content_type="image/png",
-        )
+            # we set the cache header to 1 year (forever)
+            # the client can use the checksum value to refresh when content changes
+            return web.Response(
+                body=image_data,
+                headers={"Cache-Control": "max-age=31536000"},
+                content_type="image/png",
+            )
+        return web.Response(status=404)
