@@ -134,6 +134,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         ), "provider_domain or provider_instance must be supplied"
         if force_provider_item:
             return await self.get_provider_item(item_id, provider_instance)
+        if details and details.provider == "database":
+            details = None
         db_item = await self.get_db_item_by_prov_id(
             item_id=item_id,
             provider_domain=provider_domain,
