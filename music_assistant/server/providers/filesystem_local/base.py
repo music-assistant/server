@@ -619,7 +619,7 @@ class FileSystemProviderBase(MusicProvider):
         await self.write_file_content(prov_playlist_id, playlist_data.encode("utf-8"))
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, positions_to_remove: tuple[int]
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
         if not await self.exists(prov_playlist_id):

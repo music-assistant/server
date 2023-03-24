@@ -334,7 +334,7 @@ class Track(MediaItem):
         return None
 
     @property
-    def isrcs(self) -> tuple[str]:
+    def isrcs(self) -> tuple[str, ...]:
         """Split multiple values in isrc field."""
         # sometimes the isrc contains multiple values, split by semicolon
         if not self.isrc:
