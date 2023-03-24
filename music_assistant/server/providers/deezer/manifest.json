@@ -3,26 +3,7 @@
   "domain": "deezer",
   "name": "Deezer",
   "description": "Support for the Deezer streaming provider in Music Assistant.",
-  "codeowners": ["@marcelveldt", "@Un10ck3d"],
-  "config_entries": [
-    {
-      "key": "app_id",
-      "type": "string",
-      "label": "App Id"
-    },
-    {
-      "key": "app_secret",
-      "type": "string",
-      "label": "App Secret"
-    },
-    {
-      "key": "access_token",
-      "type": "string",
-      "label": "Api token"
-    }
-  ],
-
+  "codeowners": ["@marcelveldt", "@Un10ck3d", "@music-assistant"],
   "requirements": ["deezer-python==5.8.1"],
-  "documentation": "None at the moment",
-  "multi_instance": false
+  "multi_instance": true
 }

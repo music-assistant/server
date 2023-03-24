@@ -3,8 +3,16 @@ from collections.abc import AsyncGenerator
 from time import time
 
 import deezer
+from asyncio_throttle.throttler import Throttler
 
-from music_assistant.common.models.enums import ContentType, MediaType, ProviderFeature
+from music_assistant.common.models.config_entries import ConfigEntry, ProviderConfig
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    ProviderFeature,
+)
+from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -13,7 +21,10 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
+from music_assistant.common.models.provider import ProviderManifest
+from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
+from music_assistant.server.server import MusicAssistant
 
 from .helpers import (
     Credential,
@@ -22,6 +33,7 @@ from .helpers import (
     add_user_tracks,
     get_album,
     get_artist,
+    get_deezer_client,
     get_playlist,
     get_track,
     get_url,
@@ -44,30 +56,76 @@ SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.LIBRARY_ARTISTS_EDIT,
-    ProviderFeature.LIBRARY_ALBUMS_EDIT,
-    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-    ProviderFeature.LIBRARY_TRACKS_EDIT,
-    ProviderFeature.PLAYLIST_TRACKS_EDIT,
-    ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.ALBUM_METADATA,
+    ProviderFeature.TRACK_METADATA,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_METADATA,
 )
+
+CONF_APP_ID = "app_id"
+CONF_APP_SECRET = "app_secret"
+CONF_ACCESS_TOKEN = "access_token"
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = DeezerProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(
+            key=CONF_APP_ID,
+            type=ConfigEntryType.STRING,
+            label="App id",
+            required=True,
+            description="The APP ID you grabbed from deezer developer portal",
+        ),
+        ConfigEntry(
+            key=CONF_APP_SECRET,
+            type=ConfigEntryType.STRING,
+            label="App secret",
+            required=True,
+            description="The APP SECRET you grabbed from deezer developer portal",
+        ),
+        ConfigEntry(
+            key=CONF_ACCESS_TOKEN,
+            type=ConfigEntryType.STRING,
+            label="Access token",
+            required=True,
+            description="The ACCESS TOKEN you got from oauth flow",
+        ),
+    )
 
 
 class DeezerProvider(MusicProvider):
     """Deezer provider support."""
 
     creds: Credential
+    _throttler: Throttler
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Set up the Deezer provider."""
+        self._throttler = Throttler(rate_limit=4, period=1)
         self.creds = Credential(
             self.config.get_value("app_id"),  # type: ignore
             self.config.get_value("app_secret"),  # type: ignore
             self.config.get_value("access_token"),  # type: ignore
         )
+        try:
+            await get_deezer_client(creds=self.creds)
+        except Exception:
+            raise LoginFailed("Invalid login credentials")
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -149,6 +207,14 @@ class DeezerProvider(MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         return await parse_track(mass=self, track=await get_track(track_id=int(prov_track_id)))
+
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Get all albums in a playlist."""
+        album = await get_album(album_id=int(prov_album_id))
+        tracks = []
+        for track in album.tracks:
+            tracks.append(await parse_track(mass=self, track=track))
+        return tracks
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
         """Get all tracks in a playlist."""
