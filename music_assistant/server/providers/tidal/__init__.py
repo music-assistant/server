@@ -10,13 +10,14 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from json.decoder import JSONDecodeError
 from tempfile import gettempdir
+from typing import TYPE_CHECKING
 
 import aiohttp
 import tidalapi
 from asyncio_throttle import Throttler
 
-from music_assistant.common.models.config_entries import ConfigEntryValue, ProviderConfig
-from music_assistant.common.models.enums import ProviderFeature, ProviderType
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -26,7 +27,6 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaItemType,
     MediaType,
     Playlist,
     ProviderMapping,
@@ -50,7 +50,6 @@ from .helpers import (
     get_library_albums,
     get_library_artists,
     get_library_playlists,
-    get_library_radios,
     get_library_tracks,
     get_playlist,
     get_playlist_tracks,
@@ -58,19 +57,33 @@ from .helpers import (
     get_track_url,
 )
 
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
 CACHE_DIR = gettempdir()
-SUPPORTED_FEATURES = (
-    ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_ALBUMS,
-    ProviderFeature.LIBRARY_TRACKS,
-    ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.LIBRARY_RADIOS,
-    ProviderFeature.BROWSE,
-    ProviderFeature.SEARCH,
-    ProviderFeature.ARTIST_ALBUMS,
-    ProviderFeature.ARTIST_TOPTRACKS,
-    ProviderFeature.SIMILAR_TRACKS,
-)
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = TidalProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(
+            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+        ),
+    )
 
 
 class TidalProvider(MusicProvider):
@@ -83,11 +96,8 @@ class TidalProvider(MusicProvider):
     _tidal_user: str | None = None
     _tidal_session: tidalapi.Session | None = None
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
-
-        if not self.config.get_value(CONF_USERNAME):
-            raise LoginFailed("Invalid login credentials")
         self._throttler = Throttler(rate_limit=1, period=0.1)
         self._cache_dir = CACHE_DIR
         self._ap_workaround = False
@@ -95,13 +105,19 @@ class TidalProvider(MusicProvider):
         # try to get a token, raise if that fails
         self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
         # try login which will raise if it fails
-
         await self.login()
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
+        return (
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+            ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.ARTIST_TOPTRACKS,
+        )
 
     async def login(self) -> dict:
         """Log-in Tidal and return tokeninfo."""
@@ -112,7 +128,6 @@ class TidalProvider(MusicProvider):
             )
         else:
             session.login_oauth_simple()
-            print(session.check_login())
             self._token_type = session.token_type
             self._access_token = session.access_token
             self._refresh_token = session.refresh_token
@@ -138,13 +153,7 @@ class TidalProvider(MusicProvider):
         """Retrieve library tracks from Tidal."""
         tracks_obj = await get_library_tracks(self._tidal_session, self._tidal_user.id)
         for track in tracks_obj:
-            # Library tracks sometimes do not have a valid artist id
-            # In that case, call the API for track details based on track id
-            # try:
             yield await self._parse_track(track)
-            # except InvalidDataError:
-            #    track = await self.get_track(track["videoId"])
-            #    yield track
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
@@ -249,18 +258,16 @@ class TidalProvider(MusicProvider):
                 url=f"http://www.tidal.com/artist/{artist_id}",
             )
         )
-        # if "genres" in artist_obj:
-        #    artist.metadata.genres = set(artist_obj["genres"])
-        # if artist_obj.get("images"):
-        #    for img in artist_obj["images"]:
-        # img_url = f"https://resources.tidal.com/images/{album_obj.picture.replace('-', '/')}/320x320.jpg"
-        #        if "2a96cbd8b46e442fc41c2b86b821562f" not in img_url:
-        picture = artist_obj.picture
-        picture_parsed = str(picture).replace("-", "/")
+        image_url = None
+        if artist_obj.name != "Various Artists":
+            try:
+                image_url = artist_obj.image(320)
+            except Exception:
+                print(f"Error: Artist {artist_id} has no available picture")
         artist.metadata.images = [
             MediaItemImage(
                 ImageType.THUMB,
-                f"https://resources.tidal.com/images/{picture_parsed}/320x320.jpg",
+                image_url,
             )
         ]
         #            break
@@ -268,7 +275,6 @@ class TidalProvider(MusicProvider):
 
     async def _parse_album(self, album_obj: dict):
         """Parse tidal album object to generic layout."""
-        # name, version = parse_title_and_version(album_obj["name"])
         name = album_obj.name
         version = None
         if album_obj.version != "null":
@@ -277,28 +283,24 @@ class TidalProvider(MusicProvider):
         album = Album(item_id=album_id, provider=self.domain, name=name, version=version)
         for artist_obj in album_obj.artists:
             album.artists.append(await self._parse_artist(artist_obj))
-        if album_obj.type == "SINGLE":
+        """ if album_obj.type == "SINGLE":
             album.album_type = AlbumType.SINGLE
         elif album_obj.type == "COMPILATION":
             album.album_type = AlbumType.COMPILATION
         elif album_obj.type == "ALBUM":
-            album.album_type = AlbumType.ALBUM
-        # if "genres" in album_obj:
-        #    album.metadata.genre = set(album_obj["genres"])
-        # if album_obj.get("images"):
-        cover = album_obj.cover
-        cover_parsed = str(cover).replace("-", "/")
+            album.album_type = AlbumType.ALBUM """
+        image_url = None
+        try:
+            image_url = album_obj.image(320)
+        except Exception:
+            print(f"Error: Album {album_id} has no available picture")
         album.metadata.images = [
             MediaItemImage(
                 ImageType.THUMB,
-                f"https://resources.tidal.com/images/{cover_parsed}/320x320.jpg",
+                image_url,
             )
         ]
-        # if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
         album.upc = album_obj.universal_product_number
-        # if "label" in album_obj:
-        #    album.metadata.label = album_obj["label"]
-        # if album_obj.get("release_date"):
         album.year = int(album_obj.year)
         album.metadata.copyright = album_obj.copyright
         album.metadata.explicit = album_obj.explicit
@@ -307,8 +309,8 @@ class TidalProvider(MusicProvider):
                 item_id=album_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.OGG,
-                bit_rate=320,
+                content_type=ContentType.FLAC,
+                bit_rate=1411,
                 url=f"http://www.tidal.com/album/{album_id}",
             )
         )
@@ -334,9 +336,7 @@ class TidalProvider(MusicProvider):
             disc_number=track_obj.volume_num,
             track_number=track_obj.track_num,
             isrc=track_obj.isrc,
-            # position=track_obj.get("position"),
         )
-        # if artist:
         track.artists = []
         for track_artist in track_obj.artists:
             artist = await self._parse_artist(track_artist)
@@ -345,17 +345,6 @@ class TidalProvider(MusicProvider):
         track.metadata.explicit = track_obj.explicit
         track.metadata.popularity = track_obj.popularity
         track.metadata.copyright = track_obj.copyright
-        """ if "preview_url" in track_obj:
-            track.metadata.preview = track_obj["preview_url"]
-        if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
-            track.isrc = track_obj["external_ids"]["isrc"]
-        if "album" in track_obj:
-            track.album = await self._parse_album(track_obj["album"])
-            if track_obj["album"].get("images"):
-                track.metadata.images = [
-                    MediaItemImage(ImageType.THUMB, track_obj["album"]["images"][0]["url"])
-                ]
-         """
         available = track_obj.available
         track.add_provider_mapping(
             ProviderMapping(
@@ -369,24 +358,6 @@ class TidalProvider(MusicProvider):
             )
         )
         return track
-
-    async def _parse_radio(self, radio_obj):
-        radio_id = radio_obj.id
-        radio = Radio(
-            item_id=radio_id,
-            provider=self.domain,
-            name=radio_obj.title,
-            # owner=radio_obj.creator.name,
-        )
-        radio.add_provider_mapping(
-            ProviderMapping(
-                item_id=radio_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=f"http://listen.tidal.com/view/pages/mix/{radio_id}",
-            )
-        )
-        return radio
 
     async def _parse_playlist(self, playlist_obj):
         """Parse tidal playlist object to generic layout."""
@@ -409,105 +380,16 @@ class TidalProvider(MusicProvider):
         if playlist_obj.creator.name == "me":
             is_editable = True
         playlist.is_editable = is_editable
-        playlist_image = playlist_obj.picture
-        playlist_image_parsed = str(playlist_image).replace("-", "/")
+        image_url = None
+        try:
+            image_url = playlist_obj.image(320)
+        except Exception:
+            print(f"Error: Playlist {playlist_id} has no available picture")
         playlist.metadata.images = [
             MediaItemImage(
                 ImageType.THUMB,
-                f"https://resources.tidal.com/images/{playlist_image_parsed}/320x320.jpg",
+                image_url,
             )
         ]
         playlist.metadata.checksum = str(playlist_obj._etag)
         return playlist
-
-
-"""    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-        return await super().get_library_albums()
-
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
-        return await super().get_library_tracks()
-
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-        return await super().get_library_playlists()
-
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        return await super().get_library_radios()
-
-    async def get_artist(self, prov_artist_id: str) -> Artist:
-        pass
-
-    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        return await super().get_artist_albums(prov_artist_id)
-
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        return await super().get_artist_toptracks(prov_artist_id)
-
-    async def get_album(self, prov_album_id: str) -> Album:
-        return await super().get_album(prov_album_id)
-
-    async def get_track(self, prov_track_id: str) -> Track:
-        return await super().get_track(prov_track_id)
-
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        return await super().get_playlist(prov_playlist_id)
-
-    async def get_radio(self, prov_radio_id: str) -> Radio:
-        return await super().get_radio(prov_radio_id)
-
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        return await super().get_album_tracks(prov_album_id)
-
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
-        return await super().get_playlist_tracks(prov_playlist_id)
-
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
-        return await super().library_add(prov_item_id, media_type)
-
-    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        return await super().library_remove(prov_item_id, media_type)
-
-    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        return await super().add_playlist_tracks(prov_playlist_id, prov_track_ids)
-
-    async def remove_playlist_tracks(
-        self, prov_playlist_id: str, positions_to_remove: tuple[int]
-    ) -> None:
-        return await super().remove_playlist_tracks(prov_playlist_id, positions_to_remove)
-
-    async def create_playlist(self, name: str) -> Playlist:
-        return await super().create_playlist(name)
-
-    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        return await super().get_similar_tracks(prov_track_id, limit)
-
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
-        pass
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        return await super().get_audio_stream(streamdetails, seek_position)
-
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
-        return await super().get_item(media_type, prov_item_id)
-
-    async def browse(self, path: str) -> BrowseFolder:
-        return await super().browse(path)
-
-    async def recommendations(self) -> list[BrowseFolder]:
-        return await super().recommendations()
-
-    async def sync_library(self, media_types: tuple[MediaType, ...] | None = None) -> None:
-        return await super().sync_library(media_types)
-
-    def is_file(self) -> bool:
-        return super().is_file()
-
-    def library_supported(self, media_type: MediaType) -> bool:
-        return super().library_supported(media_type)
-
-    def library_edit_supported(self, media_type: MediaType) -> bool:
-        return super().library_edit_supported(media_type)
-
-    def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType, None]:
-        return super()._get_library_gen(media_type) """

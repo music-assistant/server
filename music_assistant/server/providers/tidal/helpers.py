@@ -7,14 +7,12 @@ This also nicely separates the parsing logic from the Tidal provider logic.
 """
 
 import asyncio
-import json
-from time import time
 
 import tidalapi
 
 
 async def get_library_artists(session: tidalapi.Session, user_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi User Favorites Artists function."""
+    """Async wrapper around the tidalapi Favorites.artists function."""
 
     def _get_library_artists():
         return tidalapi.Favorites(session, user_id).artists(limit=9999)
@@ -23,7 +21,7 @@ async def get_library_artists(session: tidalapi.Session, user_id: str) -> dict[s
 
 
 async def get_artist(session: tidalapi.Session, prov_artist_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi get_artist function."""
+    """Async wrapper around the tidalapi Artist function."""
 
     def _get_artist():
         return tidalapi.Artist(session, prov_artist_id)
@@ -32,7 +30,7 @@ async def get_artist(session: tidalapi.Session, prov_artist_id: str) -> dict[str
 
 
 async def get_artist_albums(session: tidalapi.Session, prov_artist_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi get_artist_albums function."""
+    """Async wrapper around 3 tidalapi functions: Artist.get_albums, Artist.get_albums_ep_singles and Artist.get_albums_other"""
 
     def _get_artist_albums():
         all_albums = []
@@ -48,7 +46,7 @@ async def get_artist_albums(session: tidalapi.Session, prov_artist_id: str) -> d
 
 
 async def get_artist_toptracks(session: tidalapi.Session, prov_artist_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi get_artist_toptracks function."""
+    """Async wrapper around the tidalapi Artist.get_top_tracks function."""
 
     def _get_artist_toptracks():
         return tidalapi.Artist(session, prov_artist_id).get_top_tracks(limit=10)
@@ -57,7 +55,7 @@ async def get_artist_toptracks(session: tidalapi.Session, prov_artist_id: str) -
 
 
 async def get_library_albums(session: tidalapi.Session, user_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi User Favorites Albums function."""
+    """Async wrapper around the tidalapi Favorites.albums function."""
 
     def _get_library_albums():
         return tidalapi.Favorites(session, user_id).albums(limit=9999)
@@ -66,7 +64,7 @@ async def get_library_albums(session: tidalapi.Session, user_id: str) -> dict[st
 
 
 async def get_album(session: tidalapi.Session, prov_album_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi get_album function."""
+    """Async wrapper around the tidalapi Album function."""
 
     def _get_album():
         return tidalapi.Album(session, prov_album_id)
@@ -75,7 +73,7 @@ async def get_album(session: tidalapi.Session, prov_album_id: str) -> dict[str, 
 
 
 async def get_track(session: tidalapi.Session, prov_track_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi get_album function."""
+    """Async wrapper around the tidalapi Track function."""
 
     def _get_track():
         return tidalapi.Track(session, prov_track_id)
@@ -84,7 +82,7 @@ async def get_track(session: tidalapi.Session, prov_track_id: str) -> dict[str, 
 
 
 async def get_track_url(session: tidalapi.Session, prov_track_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi get_album function."""
+    """Async wrapper around the tidalapi Track.get_url function."""
 
     def _get_track_url():
         return tidalapi.Track(session, prov_track_id).get_url()
@@ -93,7 +91,7 @@ async def get_track_url(session: tidalapi.Session, prov_track_id: str) -> dict[s
 
 
 async def get_album_tracks(session: tidalapi.Session, prov_album_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi get_album function."""
+    """Async wrapper around the tidalapi Album.tracks function."""
 
     def _get_album_tracks():
         return tidalapi.Album(session, prov_album_id).tracks()
@@ -102,7 +100,7 @@ async def get_album_tracks(session: tidalapi.Session, prov_album_id: str) -> dic
 
 
 async def get_library_tracks(session: tidalapi.Session, user_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi get_library_tracks function."""
+    """Async wrapper around the tidalapi Favorites.tracks function."""
 
     def _get_library_tracks():
         return tidalapi.Favorites(session, user_id).tracks(limit=9999)
@@ -111,7 +109,7 @@ async def get_library_tracks(session: tidalapi.Session, user_id: str) -> dict[st
 
 
 async def get_library_playlists(session: tidalapi.Session, user_id: str) -> dict[str, str]:
-    """Async wrapper around the tidalapi get_library_playlists function."""
+    """Async wrapper around the tidalapi LoggedInUser.playlist_and_favorite_playlists function."""
 
     def _get_library_playlists():
 
@@ -120,22 +118,8 @@ async def get_library_playlists(session: tidalapi.Session, user_id: str) -> dict
     return await asyncio.to_thread(_get_library_playlists)
 
 
-async def get_library_radios(session: tidalapi.Session) -> dict[str, str]:
-    """Async wrapper around the tidalapi function."""
-
-    def _get_library_radios():
-        audio_mixes = []
-        mixes = session.mixes()
-        for mix in mixes:
-            if "VIDEO_DAILY_MIX" != mix.mix_type:
-                audio_mixes.append(mix)
-        return audio_mixes
-
-    return await asyncio.to_thread(_get_library_radios)
-
-
 async def get_playlist(session: tidalapi.Session, prov_playlist_id: str) -> dict[str, str]:
-    """Async wrapper around the tidal get_playlist function."""
+    """Async wrapper around the tidal Playlist function."""
 
     def _get_playlist():
         return tidalapi.Playlist(session, prov_playlist_id)
@@ -144,7 +128,7 @@ async def get_playlist(session: tidalapi.Session, prov_playlist_id: str) -> dict
 
 
 async def get_playlist_tracks(session: tidalapi.Session, prov_playlist_id: str) -> dict[str, str]:
-    """Async wrapper around the tidal get_playlist function."""
+    """Async wrapper around the tidal Playlist.tracks function."""
 
     def _get_playlist_tracks():
         return tidalapi.Playlist(session, prov_playlist_id).tracks(limit=9999)
