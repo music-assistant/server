@@ -65,7 +65,7 @@ class SyncTask:
 
     provider_domain: str
     provider_instance: str
-    media_types: tuple[MediaType]
+    media_types: tuple[MediaType, ...]
     task: asyncio.Task
 
     def to_dict(self, *args, **kwargs) -> dict[str, Any]:

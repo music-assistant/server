@@ -163,7 +163,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.get(db_playlist_id, provider_domain="database", force_refresh=True)
 
     async def remove_playlist_tracks(
-        self, db_playlist_id: str, positions_to_remove: tuple[int]
+        self, db_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove multiple tracks from playlist."""
         playlist = await self.get_db_item(db_playlist_id)

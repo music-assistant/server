@@ -35,7 +35,9 @@ if TYPE_CHECKING:
     from types import TracebackType
 
 EventCallBackType = Callable[[MassEvent], None]
-EventSubscriptionType = tuple[EventCallBackType, tuple[EventType] | None, tuple[str] | None]
+EventSubscriptionType = tuple[
+    EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
+]
 
 LOGGER = logging.getLogger(ROOT_LOGGER_NAME)
 

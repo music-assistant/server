@@ -56,7 +56,7 @@ class PlayerQueuesController:
         return iter(self._queues.values())
 
     @api_command("players/queue/all")
-    def all(self) -> tuple[PlayerQueue]:
+    def all(self) -> tuple[PlayerQueue, ...]:
         """Return all registered PlayerQueues."""
         return tuple(self._queues.values())
 
