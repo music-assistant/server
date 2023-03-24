@@ -12,6 +12,9 @@ from copy import copy
 
 import tidalapi
 
+"""Monkey Patching tidalapi.FetchedUser.parse to remove the broken 
+picture_id retrieval. Will be removed once the tidalapi package is updated. """
+
 
 def fetched_user_parse(self, json_obj):
     self.id = json_obj["id"]
