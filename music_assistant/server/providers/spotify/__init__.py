@@ -315,7 +315,7 @@ class SpotifyProvider(MusicProvider):
         return await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, positions_to_remove: tuple[int]
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
         track_uris = []

@@ -344,7 +344,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self,
         provider_domain: str | None = None,
         provider_instance: str | None = None,
-        provider_item_ids: tuple[str] | None = None,
+        provider_item_ids: tuple[str, ...] | None = None,
         limit: int = 500,
         offset: int = 0,
     ) -> list[ItemCls]:
@@ -375,7 +375,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self,
         provider_domain: str | None = None,
         provider_instance: str | None = None,
-        provider_item_ids: tuple[str] | None = None,
+        provider_item_ids: tuple[str, ...] | None = None,
         limit: int = 500,
         offset: int = 0,
     ) -> AsyncGenerator[ItemCls, None]:
